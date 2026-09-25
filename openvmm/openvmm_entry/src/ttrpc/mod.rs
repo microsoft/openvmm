@@ -1381,10 +1381,11 @@ impl VmService {
         };
 
         // Spawn the controller task.
-        let controller_task = self.driver.spawn(
-            "vm-controller",
-            controller.run(vm_controller_recv, event_send, notify_recv),
-        );
+        let controller_task = self.driver.spawn("vm-controller", async move {
+            let _ = controller
+                .run(vm_controller_recv, event_send, notify_recv)
+                .await;
+        });
 
         self.vm_controller = Some(vm_controller_send);
         self.vm_controller_events = Some(event_recv);
@@ -1501,6 +1502,9 @@ impl VmService {
             VmControllerEvent::ExitRequested { code } => {
                 tracing::info!(code, "exiting on guest power event");
                 return Some(code);
+            }
+            VmControllerEvent::ExitFailed { error } => {
+                tracing::error!(error = %error, "guest-requested exit failed in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
