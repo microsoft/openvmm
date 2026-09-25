@@ -6,6 +6,8 @@
 
 #![warn(missing_docs)]
 
+pub mod clock;
+
 use self::spec::CmosReg;
 use self::spec::ENABLE_OSCILLATOR_CONTROL;
 use self::spec::StatusRegA;
@@ -176,7 +178,7 @@ pub struct Rtc {
     enlightened_interrupts: bool,
 
     // Runtime deps
-    real_time_source: Box<dyn InspectableLocalClock>,
+    real_time_source: Box<dyn clock::UtcClockSource>,
     interrupt: LineInterrupt,
     vmtime_alarm: VmTimeAccess,
     vmtimer_periodic: VmTimerPeriodic,
@@ -194,6 +196,8 @@ pub struct Rtc {
 struct RtcState {
     addr: u8,
     cmos: CmosData,
+    time_valid: bool,
+    transaction_read_mask: Option<u16>,
 }
 
 impl RtcState {
@@ -220,6 +224,8 @@ impl RtcState {
             // default Hyper-V used, so we'll stick with it
             addr: 0x80,
             cmos,
+            time_valid: true,
+            transaction_read_mask: None,
         }
     }
 }
@@ -234,6 +240,10 @@ impl ChangeDeviceState for Rtc {
 
         self.update_timers();
         self.update_interrupt_line_level();
+    }
+
+    async fn advance_time(&mut self, duration: Duration) -> anyhow::Result<()> {
+        self.advance_clock(duration)
     }
 }
 
@@ -312,7 +322,7 @@ impl Rtc {
             initial_cmos,
             enlightened_interrupts,
 
-            real_time_source,
+            real_time_source: Box::new(clock::LocalClockUtcSource(real_time_source)),
             interrupt,
             vmtime_alarm: vmtime_source.access("rtc-alarm"),
             vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
@@ -674,7 +684,9 @@ impl Rtc {
                 // wait for a rising or falling transition of the bit (typically rising edge),
                 // and then the guest OS will wait for another of the same transition.
                 if !StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]).set() {
-                    let now = self.real_time_source.get_time();
+                    let Ok(now) = self.real_time_source.get_time() else {
+                        return self.status_a_without_clock(data);
+                    };
                     let elapsed = now - self.last_update_bit_blip;
 
                     // check if the programmed time jumped backwards
@@ -718,6 +730,7 @@ impl Rtc {
 
                 data.into()
             }
+            CmosReg::STATUS_D if !self.state.time_valid => StatusRegD::new().with_vrt(false).into(),
             CmosReg::STATUS_D => {
                 // always report valid ram time
                 StatusRegD::new().with_vrt(true).into()
@@ -774,16 +787,22 @@ impl Rtc {
             return;
         }
 
-        let real_time = self.real_time_source.get_time();
+        let Some(real_time) = self.sample_utc_clock() else {
+            return;
+        };
         let Ok(clock_time): Result<jiff::Timestamp, _> = real_time.try_into() else {
             tracelimit::warn_ratelimited!(
                 ?real_time,
                 "invalid date/time in real_time_source, skipping sync"
             );
+            self.invalidate_calendar();
             return;
         };
 
         let clock_time = clock_time.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        if !self.validate_calendar_year(&clock_time) {
+            return;
+        }
 
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
 
@@ -830,6 +849,7 @@ impl Rtc {
                 self.state.cmos[CmosReg::HOUR] |= 0x80;
             }
         }
+        self.state.time_valid = true;
 
         tracing::trace!(
             cmos_reg_status_b = self.state.cmos[CmosReg::STATUS_B],
@@ -918,6 +938,8 @@ impl PollDevice for Rtc {
 }
 
 mod save_restore {
+    mod snapshot;
+
     use super::*;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
@@ -935,6 +957,15 @@ mod save_restore {
             pub addr: u8,
             #[mesh(2)]
             pub cmos: [u8; 256],
+            /// Guest-visible RTC time at the stopped snapshot boundary.
+            #[mesh(3)]
+            pub clock_time_millis: i64,
+            /// Calendar registers already read from an active coherent sample.
+            #[mesh(4)]
+            pub transaction_read_mask: Option<u16>,
+            /// Whether the latched calendar sample is valid.
+            #[mesh(5)]
+            pub time_valid: Option<bool>,
         }
     }
 
@@ -942,20 +973,30 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let RtcState { addr, ref cmos } = self.state;
+            let RtcState { addr, ref cmos, .. } = self.state;
 
-            let saved_state = state::SavedState { addr, cmos: cmos.0 };
+            let saved_state = state::SavedState {
+                addr,
+                cmos: cmos.0,
+                clock_time_millis: self.saved_clock_time()?,
+                transaction_read_mask: self.state.transaction_read_mask,
+                time_valid: Some(self.state.time_valid),
+            };
 
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { addr, cmos } = state;
+            let fields = snapshot::Fields::validate(&state)?;
+            let state::SavedState { addr, cmos, .. } = state;
 
             self.state = RtcState {
                 addr,
                 cmos: CmosData(cmos),
+                time_valid: fields.time_valid,
+                transaction_read_mask: fields.transaction_read_mask,
             };
+            self.restore_clock(fields.clock_time_millis);
 
             self.update_timers();
             self.update_interrupt_line_level();
@@ -967,6 +1008,8 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    mod snapshot;
+
     use super::*;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
