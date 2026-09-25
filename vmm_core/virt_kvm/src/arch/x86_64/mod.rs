@@ -7,6 +7,7 @@
 
 mod regs;
 pub(crate) mod snp;
+mod tsc;
 mod vm_state;
 mod vp_state;
 
@@ -506,15 +507,6 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             self.vm.set_bsp(bsp_apic_id)?;
         }
 
-        let mut caps = virt::PartitionCapabilities::from_cpuid(
-            self.config.processor_topology,
-            &mut |function, index| cpuid.result(function, index, &[0; 4]),
-        )
-        .map_err(KvmError::Capabilities)?;
-
-        caps.can_freeze_time = false;
-        caps.nested_virt = self.nested_virt;
-
         // Create all VCPUs now so that they are assigned dense, sequential
         // vcpu_idx values (KVM assigns vcpu_idx in creation order).  KVM's
         // Hyper-V enlightenment code has a fast O(1) VP-index-to-vcpu lookup
@@ -526,6 +518,16 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         for vp_info in self.config.processor_topology.vps_arch() {
             self.vm.add_vp(vp_info.apic_id)?;
         }
+
+        let cpuid = tsc::add_frequency_leaves(&self.vm, bsp_apic_id, cpuid)?;
+        let mut caps = virt::PartitionCapabilities::from_cpuid(
+            self.config.processor_topology,
+            &mut |function, index| cpuid.result(function, index, &[0; 4]),
+        )
+        .map_err(KvmError::Capabilities)?;
+
+        caps.can_freeze_time = false;
+        caps.nested_virt = self.nested_virt;
 
         let mut gsi_routing = GsiRouting::new();
 
@@ -770,6 +772,22 @@ impl Partition for KvmPartition {
 
     fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
         virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
+    }
+
+    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        self.inner.tsc_frequency_hz()
+    }
+
+    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
+        self.inner.set_tsc_frequency_hz(frequency_hz)
+    }
+
+    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        Ok(Some(tsc::APIC_FREQUENCY_HZ))
+    }
+
+    fn advance_snapshot_time(&self, duration: Duration) -> Result<(), Self::Error> {
+        self.inner.advance_snapshot_time(duration)
     }
 
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
@@ -1865,6 +1883,11 @@ impl<'p> Processor for KvmProcessor<'p> {
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         KvmVpStateAccess::new(self)
+    }
+
+    fn advance_tsc(&mut self, cycles: u64) -> anyhow::Result<()> {
+        tsc::advance_tsc(&self.partition.kvm.vp(self.inner.vp_info.apic_id), cycles)?;
+        Ok(())
     }
 }
 
