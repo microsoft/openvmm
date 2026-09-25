@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(unix)]
+mod limits;
+
 use super::*;
 use crate::BindError;
 use crate::ChecksumState;
