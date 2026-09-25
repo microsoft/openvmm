@@ -49,9 +49,9 @@ before their implementation is connected end to end.
 
 `SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
 `state.bin`, and `memory.bin` to the requested directory. The VM must use the
-`MemoryConfig.backing_file_path` setting. The currently supported
-implementation hard-links that backing file into the snapshot, so after a
-successful save the VM can't be resumed and should be torn down. Each save
+`MemoryConfig.backing_file_path` setting, which the save copies into
+`memory.bin`. After a successful save the VM stays paused and `ResumeVM` is
+refused, so tear the VM down. Each save
 generates a unique snapshot ID (a GUID string) that is stored in
 `manifest.bin` and returned in `SaveVMResponse.snapshot_id`.
 Cancelling `SaveVM` only stops the caller from waiting; the save may still
