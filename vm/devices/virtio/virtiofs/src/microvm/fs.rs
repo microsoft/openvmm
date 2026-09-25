@@ -131,12 +131,23 @@ impl VirtioFs {
         let mut mount_options = LxVolumeOptions::new();
         mount_options.readonly(profile.is_readonly()).sandbox(true);
         let volume = mount_options.new_volume(root_path)?;
+        let denied_identities = profile
+            .denied_paths()
+            .iter()
+            .map(|path| {
+                volume
+                    .lstat(path)
+                    .map(|stat| (stat.device_nr, stat.inode_nr))
+            })
+            .collect::<lx::Result<Vec<_>>>()?;
         let mut inodes = InodeMap::new(false);
         let volume = Arc::new(VirtioFsVolume::new_with_strict_paths(
             volume,
             0,
             profile.is_readonly(),
             true,
+            profile.denied_paths().to_vec(),
+            denied_identities,
         ));
         let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
         profile.validate_opened_root(root_path, &root_stat)?;
