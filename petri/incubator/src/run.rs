@@ -85,7 +85,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
     let firmware = match &config.profile.boot {
         IncubatorBoot::LinuxDirect => Firmware::LinuxDirect {
             kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
-            initrd: ResolvedArtifact::from_local_path(config.initrd.clone()),
+            initrd: Some(ResolvedArtifact::from_local_path(config.initrd.clone())),
         },
         IncubatorBoot::Mshv(boot) => Firmware::Uefi {
             uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
