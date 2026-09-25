@@ -6,6 +6,8 @@
 //! guest-visible time.
 
 use super::Rtc;
+use super::RtcMode;
+use super::RtcState;
 use super::spec::CmosReg;
 use super::spec::StatusRegA;
 use anyhow::Context;
@@ -13,6 +15,9 @@ use inspect::Inspect;
 use local_clock::InspectableLocalClock;
 use local_clock::LocalClockTime;
 use std::time::Duration;
+use vmcore::line_interrupt::LineInterrupt;
+use vmcore::vmtime::VmTimeSource;
+use vmcore::vmtime::VmTimerPeriodic;
 
 /// A fallible UTC clock source for the RTC.
 pub trait UtcClockSource: Inspect + Send {
@@ -43,6 +48,34 @@ impl UtcClockSource for LocalClockUtcSource {
 }
 
 impl Rtc {
+    /// Creates a CMOS RTC with an injectable, fallible UTC clock source.
+    pub fn new_with_mode_and_utc_clock(
+        real_time_source: Box<dyn UtcClockSource>,
+        interrupt: LineInterrupt,
+        vmtime_source: &VmTimeSource,
+        century_reg_idx: u8,
+        initial_cmos: Option<[u8; 256]>,
+        enlightened_interrupts: bool,
+        mode: RtcMode,
+    ) -> Self {
+        Rtc {
+            century_reg: CmosReg(century_reg_idx),
+            initial_cmos,
+            enlightened_interrupts,
+            mode,
+
+            real_time_source,
+            interrupt,
+            vmtime_alarm: vmtime_source.access("rtc-alarm"),
+            vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
+            vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
+
+            last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+
+            state: RtcState::with_mode(initial_cmos, mode),
+        }
+    }
+
     /// Advances the guest-visible UTC time by `duration`.
     pub(super) fn advance_clock(&mut self, duration: Duration) -> anyhow::Result<()> {
         let delta = i64::try_from(duration.as_millis())
