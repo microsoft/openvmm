@@ -353,7 +353,9 @@ impl Worker for VmWorker {
             .context("failed to decode saved state")?;
         microvm_params.prepare_cold_boot(&mut vm, saved_state.is_some())?;
 
-        let vm = block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
+        let mut vm =
+            block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
+        vm.snapshot_boundary = microvm_params.snapshot_boundary;
 
         LOADED_VM.store(&vm);
 
@@ -878,6 +880,7 @@ pub(crate) struct LoadedVm {
     inner: LoadedVmInner,
     running: bool,
     snapshot_restore: restore::SnapshotRestore,
+    snapshot_boundary: microvm::SnapshotBoundary,
 }
 
 struct DynamicVpciDeviceEntry {
@@ -3242,6 +3245,7 @@ impl InitializedVm {
             state_units,
             running: false,
             snapshot_restore,
+            snapshot_boundary: Default::default(),
             inner: LoadedVmInner {
                 driver_source,
                 resolver,
@@ -3841,6 +3845,7 @@ impl LoadedVm {
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
             DeviceRemoved,
+            SnapshotBoundary(microvm::SnapshotBoundaryEvent),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3878,7 +3883,8 @@ impl LoadedVm {
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
                 let d = device_removal.wait().map(|()| Event::DeviceRemoved);
-                (a, b, c, d).race().await
+                let e = self.snapshot_boundary.recv().map(Event::SnapshotBoundary);
+                (a, b, c, d, e).race().await
             };
 
             let event = match event {
@@ -3971,6 +3977,18 @@ impl LoadedVm {
                     VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
                     VmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
+                            .await
+                    }
+                    VmRpc::QuiesceForSnapshot(rpc) => {
+                        rpc.handle(async |()| self.quiesce_for_snapshot().await)
+                            .await;
+                    }
+                    VmRpc::ResumeAfterFailedSnapshot(rpc) => {
+                        rpc.handle_failable(async |()| self.resume_after_failed_snapshot().await)
+                            .await;
+                    }
+                    VmRpc::ReleaseSnapshotBoundary(rpc) => {
+                        rpc.handle_failable(async |()| self.release_snapshot_boundary().await)
                             .await
                     }
                     VmRpc::Nmi(rpc) => rpc.handle_sync(|vpindex| {
@@ -4347,6 +4365,11 @@ impl LoadedVm {
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
                     self.inner.client_notify_send.send(reason);
+                }
+                Event::SnapshotBoundary(event) => {
+                    if !self.handle_snapshot_boundary(event).await {
+                        break;
+                    }
                 }
             }
         }
