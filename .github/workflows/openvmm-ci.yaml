@@ -264,7 +264,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -629,7 +629,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -800,7 +800,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1059,7 +1059,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1284,7 +1284,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1479,7 +1479,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1723,7 +1723,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1985,7 +1985,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2180,7 +2180,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2416,7 +2416,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2824,7 +2824,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3049,7 +3049,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3273,7 +3273,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3497,7 +3497,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3722,7 +3722,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3945,7 +3945,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4162,7 +4162,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4398,7 +4398,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4630,7 +4630,7 @@ jobs:
     - job3
     - job4
     - job6
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4859,7 +4859,7 @@ jobs:
       id-token: write
     needs:
     - job10
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4961,7 +4961,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5096,7 +5096,7 @@ jobs:
       id-token: write
     needs:
     - job10
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5231,7 +5231,7 @@ jobs:
     needs:
     - job7
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5333,7 +5333,7 @@ jobs:
     needs:
     - job7
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5435,7 +5435,7 @@ jobs:
     needs:
     - job5
     - job6
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5869,7 +5869,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6126,7 +6126,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6288,7 +6288,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6505,7 +6505,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6669,7 +6669,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6893,7 +6893,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
