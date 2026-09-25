@@ -494,6 +494,10 @@ fn virtio_mmio_config(
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
         ),
+        openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID => (
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
+        ),
         "virtio-blk" => {
             let block = sandbox_blocks
                 .get(*sandbox_block_index)
