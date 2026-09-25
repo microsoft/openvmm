@@ -97,6 +97,10 @@ mod ioctl {
     ioctl_read!(kvm_get_debugregs, KVMIO, 0xa1, kvm_debugregs);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, kvm_debugregs);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_int_bad!(kvm_set_tsc_khz, request_code_none!(KVMIO, 0xa2));
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_int_bad!(kvm_get_tsc_khz, request_code_none!(KVMIO, 0xa3));
     ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, kvm_enable_cap);
     #[cfg(target_arch = "x86_64")]
     ioctl_read!(kvm_get_xsave, KVMIO, 0xa4, kvm_xsave);
@@ -283,6 +287,18 @@ pub enum Error {
     SetRegs(#[source] nix::Error),
     #[error("SetSRegs")]
     SetSRegs(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetTscFrequency")]
+    GetTscFrequency(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("SetTscFrequency")]
+    SetTscFrequency(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetTscOffset")]
+    GetTscOffset(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("SetTscOffset")]
+    SetTscOffset(#[source] nix::Error),
     #[error("Run")]
     Run(#[source] nix::Error),
     #[error("RunMemoryFault(flags={flags:#x}, gpa={gpa:#x}, size={size:#x})")]
@@ -1276,6 +1292,58 @@ pub enum RoutingEntry {
 pub struct Processor<'a>(&'a Partition, u32);
 
 impl<'a> Processor<'a> {
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_frequency_hz(&self) -> Result<u64> {
+        // SAFETY: Calling the documented vCPU ioctl with no pointer argument.
+        let khz = unsafe { ioctl::kvm_get_tsc_khz(self.get().vcpu.as_raw_fd(), 0) }
+            .map_err(Error::GetTscFrequency)?;
+        if khz <= 0 {
+            return Err(Error::GetTscFrequency(nix::errno::Errno::EINVAL));
+        }
+        Ok(khz as u64 * 1000)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<()> {
+        let khz = frequency_hz
+            .checked_div(1000)
+            .and_then(|khz| libc::c_int::try_from(khz).ok())
+            .ok_or(Error::SetTscFrequency(nix::errno::Errno::EINVAL))?;
+        // SAFETY: Calling the documented vCPU ioctl with its integer value.
+        unsafe { ioctl::kvm_set_tsc_khz(self.get().vcpu.as_raw_fd(), khz) }
+            .map_err(Error::SetTscFrequency)?;
+        Ok(())
+    }
+
+    /// Gets the guest TSC offset, in guest TSC cycles.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_offset(&self) -> Result<u64> {
+        let mut offset = 0u64;
+        let attr = kvm_device_attr {
+            group: KVM_VCPU_TSC_CTRL,
+            attr: u64::from(KVM_VCPU_TSC_OFFSET),
+            addr: std::ptr::from_mut(&mut offset) as u64,
+            flags: 0,
+        };
+        // SAFETY: `attr.addr` points to `offset` for the duration of the ioctl.
+        unsafe {
+            ioctl::kvm_get_device_attr(self.get().vcpu.as_raw_fd(), &attr)
+                .map_err(Error::GetTscOffset)?;
+        }
+        Ok(offset)
+    }
+
+    /// Sets the guest TSC offset without KVM's TSC-write synchronization heuristic.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_tsc_offset(&self, offset: u64) -> Result<()> {
+        // SAFETY: `offset` is the u64 input required by KVM_VCPU_TSC_OFFSET.
+        unsafe {
+            self.set_device_attr(KVM_VCPU_TSC_CTRL, KVM_VCPU_TSC_OFFSET, &offset, 0)
+                .map_err(Error::SetTscOffset)?;
+        }
+        Ok(())
+    }
+
     pub fn enable_synic(&self) -> Result<()> {
         // TODO: We are not checking KVM_CAP_ENABLE_CAP_VM first.
         // TODO: We are not calling KVM_CHECK_EXTENSION first.
