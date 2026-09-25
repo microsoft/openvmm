@@ -287,6 +287,7 @@ impl LogProcessor {
 mod tests {
     use super::*;
     use crate::service::diagnostics::log::ALIGNMENT;
+    use std::mem::size_of;
     use test_with_tracing::test;
     use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
     use uefi_specs::hyperv::advanced_logger::DXE_PHASE;
