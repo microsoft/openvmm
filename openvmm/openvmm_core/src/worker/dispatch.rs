@@ -62,7 +62,6 @@ use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
-use mesh::payload::Protobuf;
 use mesh::payload::message::ProtobufMessage;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
@@ -92,6 +91,7 @@ use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::SavedState;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_pcat_locator::RomFileLocation;
@@ -106,7 +106,6 @@ use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
-use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::collections::VecDeque;
@@ -144,7 +143,6 @@ use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
 use vmbus_server::VmbusServer;
 use vmbus_server::hvsock::HvsockRelay;
-use vmcore::save_restore::SavedStateRoot;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vmtime::VmTime;
@@ -272,13 +270,6 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
-}
-
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "openvmm")]
-pub struct SavedState {
-    #[mesh(1)]
-    pub units: Vec<SavedStateUnit>,
 }
 
 async fn open_simple_disk(
@@ -4390,11 +4381,16 @@ impl LoadedVm {
     async fn save(&mut self) -> anyhow::Result<SavedState> {
         Ok(SavedState {
             units: self.state_units.save().await?,
+            inventory: self.state_units.inventory(),
         })
     }
 
     /// Restore state on the VM.
     async fn restore(&mut self, state: SavedState) -> anyhow::Result<()> {
+        // Saved state without an inventory is restored without the check.
+        if !state.inventory.is_empty() {
+            self.state_units.validate_inventory(&state.inventory)?;
+        }
         self.state_units.restore(state.units).await?;
         Ok(())
     }
