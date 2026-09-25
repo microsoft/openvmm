@@ -481,6 +481,16 @@ impl VmTimeKeeper {
         self.reset_to(vmtime).await
     }
 
+    /// Advances stopped VM time by `duration`.
+    pub async fn advance(&mut self, duration: Duration) {
+        let vmtime = self
+            .time
+            .stop_time()
+            .expect("VM time must be stopped before advancing")
+            .wrapping_add(duration);
+        self.reset_to(vmtime).await;
+    }
+
     async fn reset_to(&mut self, vmtime: VmTime) {
         assert!(!self.time.is_started(), "should be stopped");
         self.time = TimeState::Stopped(vmtime);
