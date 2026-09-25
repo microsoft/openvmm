@@ -22,6 +22,8 @@ const MAX_MEMORY_RANGES: usize = 128;
 const MAX_DEVICES: usize = 64;
 const MAX_DEVICE_RANGES: usize = 16;
 const MAX_STATE_UNITS: usize = 512;
+const MAX_ATTACHMENTS: usize = 64;
+const MAX_ATTACHMENT_IDENTITY_BYTES: usize = 4096;
 const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
 const MAX_CPU_CONTRACT_BYTES: usize = 1024 * 1024;
 
@@ -112,6 +114,36 @@ pub struct SnapshotDevice {
     pub queue_max_sizes: Vec<u32>,
 }
 
+/// Stable identity for a host resource required by a device.
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+pub struct SnapshotAttachment {
+    /// Stable attachment ID.
+    #[mesh(1)]
+    pub stable_id: String,
+    /// Attachment kind.
+    #[mesh(2)]
+    pub kind: String,
+    /// Whether restore requires the attachment.
+    #[mesh(3)]
+    pub required: bool,
+    /// Reconnection policy.
+    #[mesh(4)]
+    pub reconnect_policy: String,
+    /// Immutable identity kind.
+    #[mesh(5)]
+    pub identity_kind: String,
+    /// Provider identity or SHA-256 bytes.
+    #[mesh(6)]
+    pub identity: Vec<u8>,
+    /// Attachment length when applicable.
+    #[mesh(7)]
+    pub length: u64,
+    /// Bounded reconnect timeout. Zero for non-client policies.
+    #[mesh(8)]
+    pub reconnect_timeout_ms: u64,
+}
+
 /// Machine composition that becomes authoritative after capture.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
@@ -143,6 +175,9 @@ pub struct SnapshotMachineContract {
     /// Complete state-unit inventory in stable order.
     #[mesh(9)]
     pub state_unit_names: Vec<String>,
+    /// Required host attachments.
+    #[mesh(10)]
+    pub attachments: Vec<SnapshotAttachment>,
     /// Host wall time at the stopped capture boundary.
     #[mesh(11)]
     pub capture_wall_clock: Timestamp,
@@ -235,6 +270,7 @@ pub fn microvm_machine_contract(
     source_hypervisor: &str,
     boot_layout_version: u32,
     effective_command_line: String,
+    console_attachment: Option<SnapshotAttachment>,
     processor_count: u32,
     memory_size: u64,
     state_unit_names: Vec<String>,
@@ -278,7 +314,7 @@ pub fn microvm_machine_contract(
         length,
     };
 
-    let devices = vec![
+    let mut devices = vec![
         device("partition", "partition", "partition", Vec::new(), None, 0),
         device("vp0", "partition", "vcpu", Vec::new(), None, 1),
         device("vmtime", "vmtime", "clock", Vec::new(), None, 2),
@@ -333,6 +369,69 @@ pub fn microvm_machine_contract(
             10,
         ),
     ];
+    let mut attachments = Vec::new();
+    if let Some(attachment) = console_attachment {
+        let policy_is_valid = match attachment.reconnect_policy.as_str() {
+            "recreate-listener" => {
+                !attachment.required
+                    && attachment.reconnect_timeout_ms == 0
+                    && matches!(
+                        attachment.identity_kind.as_str(),
+                        "unix-socket" | "named-pipe" | "tcp"
+                    )
+            }
+            "reconnect-client" => {
+                attachment.required
+                    && attachment.reconnect_timeout_ms
+                        == openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS
+                    && matches!(
+                        attachment.identity_kind.as_str(),
+                        "unix-socket" | "named-pipe" | "tcp"
+                    )
+            }
+            "require-inherited-attachment" => {
+                attachment.required
+                    && attachment.reconnect_timeout_ms == 0
+                    && attachment.identity_kind == "provider"
+                    && attachment.identity == b"console"
+            }
+            "discard-while-disconnected" => {
+                !attachment.required
+                    && attachment.reconnect_timeout_ms == 0
+                    && attachment.identity_kind == "disconnected"
+                    && attachment.identity == b"discard"
+            }
+            _ => false,
+        };
+        anyhow::ensure!(
+            attachment.stable_id == "console:microvm-virtio0"
+                && attachment.kind == "virtio-console"
+                && policy_is_valid
+                && !attachment.identity.is_empty()
+                && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES
+                && attachment.length == 0,
+            "microVM console attachment has an unsupported reconnect policy"
+        );
+        devices.push(SnapshotDevice {
+            stable_id: "console:microvm-virtio0".to_owned(),
+            state_unit_name: format!(
+                "virtio-console-{}",
+                openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE
+            ),
+            kind: "virtio-console".to_owned(),
+            order: devices.len() as u32,
+            ranges: vec![mmio(
+                openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
+                openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+            )],
+            irq: Some(openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ),
+            transport: "virtio-mmio".to_owned(),
+            feature_banks: vec![0x3000_0001, 0x0000_0003],
+            queue_count: 2,
+            queue_max_sizes: vec![256, 256],
+        });
+        attachments.push(attachment);
+    }
 
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
@@ -344,6 +443,7 @@ pub fn microvm_machine_contract(
         topology,
         devices,
         state_unit_names,
+        attachments,
         capture_wall_clock,
         tsc_frequency_hz,
         tsc_tolerance_ppm: 0,
@@ -446,6 +546,10 @@ pub fn validate_microvm_machine_contract(
     anyhow::ensure!(
         contract.state_unit_names == expected.state_unit_names,
         "snapshot state-unit inventory or order doesn't match the requested machine"
+    );
+    anyhow::ensure!(
+        contract.attachments == expected.attachments,
+        "snapshot attachment inventory doesn't match the supplied attachments"
     );
     anyhow::ensure!(
         contract.tsc_frequency_hz == expected.tsc_frequency_hz
@@ -637,6 +741,46 @@ pub(super) fn validate_machine_contract_shape(
         );
     }
 
+    anyhow::ensure!(
+        contract.attachments.len() <= MAX_ATTACHMENTS,
+        "snapshot attachment inventory is too large"
+    );
+    let mut attachment_ids = HashSet::new();
+    for attachment in &contract.attachments {
+        anyhow::ensure!(
+            !attachment.stable_id.is_empty()
+                && attachment_ids.insert(attachment.stable_id.as_str()),
+            "snapshot contains an empty or duplicate attachment ID"
+        );
+        anyhow::ensure!(
+            !attachment.kind.is_empty()
+                && !attachment.reconnect_policy.is_empty()
+                && !attachment.identity_kind.is_empty()
+                && !attachment.identity.is_empty()
+                && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES,
+            "snapshot attachment '{}' has an incomplete identity",
+            attachment.stable_id,
+        );
+        anyhow::ensure!(
+            match attachment.reconnect_policy.as_str() {
+                "recreate-listener" => {
+                    !attachment.required && attachment.reconnect_timeout_ms == 0
+                }
+                "reconnect-client" => {
+                    attachment.required && attachment.reconnect_timeout_ms != 0
+                }
+                "require-inherited-attachment" => {
+                    attachment.required && attachment.reconnect_timeout_ms == 0
+                }
+                "discard-while-disconnected" => {
+                    !attachment.required && attachment.reconnect_timeout_ms == 0
+                }
+                _ => false,
+            },
+            "snapshot attachment '{}' has an invalid reconnect policy",
+            attachment.stable_id,
+        );
+    }
     Ok(())
 }
 
@@ -707,6 +851,7 @@ fn test_machine_contract() -> SnapshotMachineContract {
             },
         ],
         state_unit_names: vec!["portb".to_owned(), "shutdown".to_owned()],
+        attachments: Vec::new(),
         capture_wall_clock: std::time::SystemTime::now().into(),
         tsc_frequency_hz: 1_000_000_000,
         tsc_tolerance_ppm: 0,
@@ -728,6 +873,78 @@ fn test_machine_contract() -> SnapshotMachineContract {
 mod tests {
     use super::super::tests::test_manifest;
     use super::*;
+
+    fn microvm_console_attachment() -> SnapshotAttachment {
+        SnapshotAttachment {
+            stable_id: "console:microvm-virtio0".to_owned(),
+            kind: "virtio-console".to_owned(),
+            required: false,
+            reconnect_policy: "recreate-listener".to_owned(),
+            identity_kind: "tcp".to_owned(),
+            identity: b"127.0.0.1:5555".to_vec(),
+            length: 0,
+            reconnect_timeout_ms: 0,
+        }
+    }
+
+    fn generated_console_contract() -> SnapshotMachineContract {
+        microvm_machine_contract(
+            "whp",
+            MICROVM_BOOT_LAYOUT_VERSION,
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0002000:7"
+                .to_owned(),
+            Some(microvm_console_attachment()),
+            1,
+            1024,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtio-console-3489669120",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            std::time::SystemTime::now().into(),
+            1_000_000_000,
+            Some(1_000_000_000),
+            vec![1, 2, 3],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn generated_microvm_console_contract_has_fixed_abi() {
+        let contract = generated_console_contract();
+        let console = contract.devices.last().unwrap();
+        assert_eq!(console.stable_id, "console:microvm-virtio0");
+        assert_eq!(console.state_unit_name, "virtio-console-3489669120");
+        assert_eq!(console.ranges[0].start, 0xd000_2000);
+        assert_eq!(console.ranges[0].length, 0x1000);
+        assert_eq!(console.irq, Some(7));
+        assert_eq!(console.transport, "virtio-mmio");
+        assert_eq!(console.feature_banks, [0x3000_0001, 0x0000_0003]);
+        assert_eq!(console.queue_max_sizes, [256, 256]);
+        assert_eq!(contract.attachments, [microvm_console_attachment()]);
+    }
+
+    #[test]
+    fn validate_microvm_console_contract_rejects_attachment_change() {
+        let contract = generated_console_contract();
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        let mut expected = contract;
+        expected.attachments[0].identity = b"127.0.0.1:6666".to_vec();
+        let error = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
+        assert!(error.to_string().contains("attachment inventory"));
+    }
 
     #[test]
     fn validate_microvm_machine_contract_ok() {
