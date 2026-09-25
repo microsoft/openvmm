@@ -122,8 +122,12 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            static_ipv4: None,
             ports: Vec::new(),
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
@@ -187,8 +191,12 @@ impl PetriVmConfigOpenVmm {
                 mac_address,
                 endpoint: net_backend_resources::consomme::ConsommeHandle {
                     cidr: None,
+                    static_ipv4: None,
                     ports: Vec::new(),
                     recv: None,
+                    allow_host_local_access: None,
+                    map_gateway_to_host_loopback: None,
+                    gateway_loopback_proxy_port: None,
                 }
                 .into_resource(),
             })
@@ -217,8 +225,12 @@ impl PetriVmConfigOpenVmm {
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            static_ipv4: None,
             ports: Vec::new(),
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
@@ -267,8 +279,12 @@ impl PetriVmConfigOpenVmm {
     pub fn with_virtio_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            static_ipv4: None,
             ports: Vec::new(),
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
 
@@ -300,6 +316,7 @@ impl PetriVmConfigOpenVmm {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            static_ipv4: None,
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
@@ -309,6 +326,9 @@ impl PetriVmConfigOpenVmm {
                 guest_port: pipette_client::PIPETTE_PORT as u16,
             }],
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
