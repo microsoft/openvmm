@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(guest_arch = "x86_64")]
+mod tsc;
+
 use super::Vplc;
 use super::VtlPartition;
 use super::vtl2::Vtl2InterceptState;
@@ -38,6 +41,8 @@ pub(crate) struct ExitStats {
     memory: Counter,
     #[cfg(guest_arch = "x86_64")]
     cpuid: Counter,
+    #[cfg(guest_arch = "x86_64")]
+    rdtsc: Counter,
     #[cfg(guest_arch = "x86_64")]
     apic_eoi: Counter,
     cancel: Counter,
@@ -502,6 +507,7 @@ impl<'a> WhpProcessor<'a> {
 mod x86 {
     use crate::Hv1State;
     use crate::WhpProcessor;
+    use crate::WhpResultExt;
     use crate::emu;
     use crate::emu::WhpVpRefEmulation;
     use crate::memory::x86::GpaBackingType;
@@ -561,12 +567,16 @@ mod x86 {
                     self.handle_cpuid(info, exit);
                     &mut self.state.exits.cpuid
                 }
+                ExitReason::Rdtsc(info) => {
+                    self.handle_rdtsc_exit(dev, info, exit)?;
+                    &mut self.state.exits.rdtsc
+                }
                 ExitReason::ApicEoi(info) => {
                     self.handle_apic_eoi(info, dev);
                     &mut self.state.exits.apic_eoi
                 }
                 ExitReason::MsrAccess(info) => {
-                    self.handle_msr(dev, info, exit);
+                    self.handle_msr(dev, info, exit)?;
                     &mut self.state.exits.msr
                 }
                 ExitReason::InterruptWindow(info) => {
@@ -1222,7 +1232,10 @@ mod x86 {
             dev: &impl CpuIo,
             info: &whp::abi::WHV_X64_MSR_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
-        ) {
+        ) -> Result<(), VpHaltReason> {
+            if self.handle_restored_tsc_msr_exit(dev, info, exit)? {
+                return Ok(());
+            }
             let handled = if info.AccessInfo.IsWrite() {
                 self.msr_write(dev, exit, info.MsrNumber, info.Rax, info.Rdx)
             } else {
@@ -1238,8 +1251,10 @@ mod x86 {
 
                 self.current_whp()
                     .set_register(whp::Register128::PendingEvent, event.into())
-                    .unwrap();
+                    .for_op("inject general protection fault")
+                    .map_err(|error| dev.fatal_error(error.into()))?;
             }
+            Ok(())
         }
 
         fn msr_write(

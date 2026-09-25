@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(guest_arch = "x86_64")]
+mod tsc;
+
 use super::Error;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
@@ -16,11 +19,18 @@ use zerocopy::FromZeros;
 pub struct WhpVpStateAccess<'a, 'b> {
     run: &'a mut WhpProcessor<'b>,
     vtl: Vtl,
+    #[cfg(guest_arch = "x86_64")]
+    tsc_deadline: tsc::TscDeadlineRead,
 }
 
 impl<'a> WhpProcessor<'a> {
     pub(crate) fn access_state(&mut self, vtl: Vtl) -> WhpVpStateAccess<'_, 'a> {
-        WhpVpStateAccess { run: self, vtl }
+        WhpVpStateAccess {
+            run: self,
+            vtl,
+            #[cfg(guest_arch = "x86_64")]
+            tsc_deadline: Default::default(),
+        }
     }
 }
 
@@ -124,6 +134,7 @@ mod x86 {
         }
 
         fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
+            self.read_tsc_deadline_before_apic()?;
             self.run.save_apic(self.vtl)
         }
 
@@ -180,10 +191,22 @@ mod x86 {
         }
 
         fn tsc(&mut self) -> Result<vp::Tsc, Self::Error> {
+            if let Some(tsc) = self.restored_tsc()? {
+                return Ok(tsc);
+            }
             self.run.vp.get_register_state(self.vtl)
         }
 
         fn set_tsc(&mut self, value: &vp::Tsc) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)?;
+            self.restore_tsc(value)
+        }
+
+        fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+            self.saved_tsc_deadline()
+        }
+
+        fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
@@ -208,14 +231,6 @@ mod x86 {
         }
 
         fn set_tsc_aux(&mut self, value: &vp::TscAux) -> Result<(), Self::Error> {
-            self.run.vp.set_register_state(self.vtl, value)
-        }
-
-        fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
-            self.run.vp.get_register_state(self.vtl)
-        }
-
-        fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
