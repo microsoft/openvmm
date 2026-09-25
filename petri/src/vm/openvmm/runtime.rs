@@ -370,6 +370,22 @@ impl PetriVmOpenVmm {
         pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Wait for a microVM portb console marker.
+        pub async fn wait_for_microvm_portb_output(&mut self, marker: &str) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Wait for an exact byte sequence from the microVM portb console.
+        pub async fn wait_for_microvm_portb_bytes(&mut self, marker: &[u8]) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Write raw bytes to the microVM portb console input stream.
+        pub async fn write_microvm_portb_input(&mut self, input: &[u8]) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Perform one pulse save/restore operation.
+        pub async fn pulse_save_restore(&mut self) -> anyhow::Result<()>
+    );
 
     /// Wrap the provided future in a race with the worker process's halt
     /// notification channel. This is useful for preventing a future from

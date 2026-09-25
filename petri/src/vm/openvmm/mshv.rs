@@ -260,7 +260,7 @@ mod tests {
                         backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                         firmware: Firmware::LinuxDirect {
                             kernel: ResolvedArtifact::from_local_path(base.clone()),
-                            initrd: ResolvedArtifact::from_local_path(base.clone()),
+                            initrd: Some(ResolvedArtifact::from_local_path(base.clone())),
                         },
                         arch,
                         agent_image: None,
@@ -335,7 +335,7 @@ mod tests {
                         backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                         firmware: Firmware::LinuxDirect {
                             kernel: ResolvedArtifact::from_local_path(input.clone()),
-                            initrd: ResolvedArtifact::from_local_path(input.clone()),
+                            initrd: Some(ResolvedArtifact::from_local_path(input.clone())),
                         },
                         arch: MachineArch::host(),
                         agent_image: None,
@@ -394,7 +394,7 @@ mod tests {
                     backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                     firmware: Firmware::LinuxDirect {
                         kernel: ResolvedArtifact::from_local_path(base.clone()),
-                        initrd: ResolvedArtifact::from_local_path(base.clone()),
+                        initrd: Some(ResolvedArtifact::from_local_path(base.clone())),
                     },
                     arch: MachineArch::X86_64,
                     agent_image: None,
