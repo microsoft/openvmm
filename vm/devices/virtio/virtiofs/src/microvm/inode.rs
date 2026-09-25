@@ -22,17 +22,42 @@ impl VirtioFsVolume {
         id: u32,
         readonly: bool,
         strict_paths: bool,
+        denied_paths: Vec<PathBuf>,
+        denied_identities: Vec<(u64, u64)>,
     ) -> Self {
         Self {
             volume: Arc::new(volume),
             id,
             readonly,
             strict_paths,
+            denied_paths,
+            denied_identities,
         }
     }
 
     pub(crate) fn strict_paths(&self) -> bool {
         self.strict_paths
+    }
+
+    pub(crate) fn ensure_path_allowed(&self, path: &Path) -> lx::Result<()> {
+        if self
+            .denied_paths
+            .iter()
+            .any(|denied| path.starts_with(denied))
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_identity_allowed(&self, stat: &lx::Stat) -> lx::Result<()> {
+        if self
+            .denied_identities
+            .contains(&(stat.device_nr, stat.inode_nr))
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
     }
 }
 
@@ -51,6 +76,7 @@ impl VirtioFsInode {
         if lookup_count == 0 {
             return Err(lx::Error::EINVAL);
         }
+        volume.ensure_identity_allowed(stat)?;
         let mut inode = Self::with_attr(volume, path, stat);
         inode.lookup_count = AtomicU64::new(lookup_count);
         let aliases: BTreeSet<_> = aliases.into_iter().collect();
@@ -73,6 +99,7 @@ impl VirtioFsInode {
         }
         for path in self.aliases() {
             validate_relative_path(&path, true)?;
+            self.volume.ensure_path_allowed(&path)?;
             let mut prefix = PathBuf::new();
             for component in path.components() {
                 let Component::Normal(component) = component else {
@@ -98,5 +125,5 @@ pub(crate) fn validate_child_path(volume: &VirtioFsVolume, path: &Path) -> lx::R
     if volume.strict_paths() && relative_path_encoded_len(path)? > MAX_PATH_BYTES {
         return Err(lx::Error::E2BIG);
     }
-    Ok(())
+    volume.ensure_path_allowed(path)
 }
