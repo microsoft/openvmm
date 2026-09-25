@@ -598,7 +598,10 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
-        let ram = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let ram = tempfile::Builder::new()
+            .prefix(".openvmm-microvm-memory-")
+            .tempfile_in(dir.path())
+            .unwrap();
         initialize_snapshot_memory_backing_file(ram.as_file(), 1024).unwrap();
         let mut ram_handle = ram.reopen().unwrap();
         ram_handle.write_all(&[0x5a_u8; 1024]).unwrap();
