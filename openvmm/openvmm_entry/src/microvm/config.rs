@@ -7,7 +7,10 @@ use super::MicrovmResources;
 use super::MicrovmRestore;
 use super::console::ConsoleEndpoint;
 use super::console::effective_microvm_console;
+use super::console::effective_microvm_control_console;
+use super::console::microvm_console_attachments_share_endpoint;
 use super::console::microvm_console_socket_cleanup;
+use super::console::microvm_control_broker_config;
 use super::console::validate_microvm_console_attachment_namespace;
 use super::filesystem::EffectiveMicrovmFilesystem;
 use super::filesystem::MICROVM_FILESYSTEM_STABLE_ID;
@@ -40,6 +43,7 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::build_microvm_command_line;
+use openvmm_defs::microvm::build_microvm_control_command_line;
 use pal_async::DefaultDriver;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::cell::RefCell;
@@ -48,6 +52,7 @@ use std::thread;
 use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
 use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
+use virtio_resources::console::control::VirtioControlConsoleBrokerConfig;
 use vm_manifest_builder::MachineArch;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -69,11 +74,15 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     gateway_dns: bool,
     console: Option<ConsoleEndpoint>,
     portb: Option<Resource<SerialBackendHandle>>,
+    control_console: Option<ConsoleEndpoint>,
+    control_broker_config: Option<VirtioControlConsoleBrokerConfig>,
+    control_console_backend: Option<Resource<SerialBackendHandle>>,
     resources: MicrovmResources,
 }
 
 impl<'a> MicrovmConfigBuilder<'a> {
-    /// Validates the microVM options.
+    /// Validates the microVM options and resolves the effective network,
+    /// filesystem, and console attachments.
     pub(crate) fn new(opt: &'a Options, restore: &'a MicrovmRestore) -> anyhow::Result<Self> {
         let active = opt.machine == MachineProfileCli::Microvm;
         let restore_machine_contract = restore.machine_contract.as_ref();
@@ -133,7 +142,40 @@ impl<'a> MicrovmConfigBuilder<'a> {
         } else {
             None
         };
+        let control_console = if active {
+            effective_microvm_control_console(
+                opt.microvm.microvm_control_console.as_ref(),
+                restore_machine_contract,
+            )?
+        } else {
+            None
+        };
+        opt.validate_control_stdin_console(console.as_ref().map(|(config, _, _)| config))?;
+        let control_broker_config = control_console
+            .as_ref()
+            .map(|(endpoint, _, _)| microvm_control_broker_config(opt, endpoint))
+            .transpose()?;
+        anyhow::ensure!(
+            control_console.is_none() || console.is_some(),
+            "microVM control console requires the boot virtio-console"
+        );
+        if let (Some((_, _, boot)), Some((_, _, control))) = (&console, &control_console)
+            && control.identity_kind != "disconnected"
+        {
+            anyhow::ensure!(
+                !microvm_console_attachments_share_endpoint(boot, control),
+                "microVM boot and control consoles require distinct endpoints"
+            );
+        }
         if let Some((_, _, attachment)) = &console
+            && let Some(snapshot_dir) = opt
+                .restore_snapshot
+                .as_deref()
+                .or(opt.microvm.snapshot_destination.as_deref())
+        {
+            validate_microvm_console_attachment_namespace(attachment, snapshot_dir)?;
+        }
+        if let Some((_, _, attachment)) = &control_console
             && let Some(snapshot_dir) = opt
                 .restore_snapshot
                 .as_deref()
@@ -144,6 +186,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
 
         let resources = MicrovmResources {
             console_attachment: console
+                .as_ref()
+                .map(|(_, _, attachment)| attachment.clone()),
+            control_console_attachment: control_console
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
@@ -166,6 +211,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
             filesystem,
             gateway_dns,
             console,
+            control_console,
+            control_broker_config,
+            control_console_backend: None,
             portb: None,
             resources,
         })
@@ -197,10 +245,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
         if !self.active {
             return Ok(());
         }
-        let backend = if self
-            .console
-            .as_ref()
-            .is_some_and(|(config, _, _)| matches!(config, SerialConfigCli::Console))
+        let backend = if self.opt.microvm.microvm_control_auth_stdin
+            || self
+                .console
+                .as_ref()
+                .is_some_and(|(config, _, _)| matches!(config, SerialConfigCli::Console))
         {
             SerialConfigCli::Stderr
         } else {
@@ -216,8 +265,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
         Ok(())
     }
 
-    /// Connects the host side of the boot virtio-console, returning its
-    /// backend.
+    /// Connects the host side of the boot virtio-console and the dedicated
+    /// control console, returning the boot console backend.
     pub(crate) fn setup_virtio_consoles(
         &mut self,
         console_state: &RefCell<Option<ConsoleState<'static>>>,
@@ -274,6 +323,28 @@ impl<'a> MicrovmConfigBuilder<'a> {
         } else {
             None
         };
+        if let Some(serial_cfg) = self
+            .control_console
+            .as_ref()
+            .map(|(config, _, _)| config.clone())
+        {
+            self.control_console_backend = match serial_cfg {
+                SerialConfigCli::Pipe(path) => {
+                    let backend =
+                        serial_io::microvm::bind_control_serial(&path).with_context(|| {
+                            format!(
+                                "failed to bind microVM control console listener {}",
+                                path.display()
+                            )
+                        })?;
+                    self.resources.control_console_socket_cleanup =
+                        microvm_console_socket_cleanup(path)?;
+                    Some(backend)
+                }
+                SerialConfigCli::None => Some(DisconnectedSerialBackendHandle.into_resource()),
+                _ => unreachable!("microVM control console backend was validated"),
+            };
+        }
         Ok(virtio_console_backend)
     }
 
@@ -395,6 +466,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     &opt.cmdline,
                     opt.processors,
                     self.console.is_some(),
+                    self.control_console.is_some(),
                 )?,
             )
         };
@@ -515,6 +587,30 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|(_, attachment, _)| attachment.clone()),
         }
+    }
+
+    /// Adds the dedicated control virtio-console device.
+    pub(crate) fn add_control_console(
+        &mut self,
+        add_virtio_device: &mut impl FnMut(VirtioBusCli, Resource<VirtioDeviceHandle>),
+    ) -> anyhow::Result<()> {
+        if let Some(backend) = self.control_console_backend.take() {
+            let broker_config = self.control_broker_config.take().context(
+                "control-console backend is missing broker authentication configuration",
+            )?;
+            let resource: Resource<VirtioDeviceHandle> =
+                virtio_resources::console::control::VirtioControlConsoleHandle {
+                    backend,
+                    broker_config,
+                    attachment: self
+                        .control_console
+                        .as_ref()
+                        .map(|(_, attachment, _)| attachment.clone()),
+                }
+                .into_resource();
+            add_virtio_device(VirtioBusCli::Mmio, resource);
+        }
+        Ok(())
     }
 
     /// Completes the microVM configuration after the storage devices have been
@@ -695,8 +791,32 @@ fn build_effective_microvm_command_line(
     user_args: &[String],
     processor_count: u32,
     has_console: bool,
+    has_control_console: bool,
 ) -> anyhow::Result<String> {
-    let mut cmdline = build_microvm_command_line(user_args, has_console)?;
+    let mut cmdline = if has_control_console {
+        build_microvm_control_command_line(user_args, has_console)
+    } else {
+        build_microvm_command_line(user_args, has_console)
+    }?;
     openvmm_defs::microvm::append_microvm_processor_limit(&mut cmdline, processor_count)?;
     Ok(cmdline)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn boot_only_command_line_preserves_control_free_arguments() {
+        let user_args = [
+            r#"note="left right""#.to_owned(),
+            "--".to_owned(),
+            "driver_async_probe=virtio_mmio".to_owned(),
+            "nvx_control_tty=hvc9".to_owned(),
+            "virtio-mmio.device=0x1000@0xc0000000:1".to_owned(),
+        ];
+        assert!(build_effective_microvm_command_line(&user_args, 1, true, false).is_ok());
+        assert!(build_effective_microvm_command_line(&user_args, 1, true, true).is_err());
+    }
 }

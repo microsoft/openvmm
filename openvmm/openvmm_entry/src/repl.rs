@@ -67,6 +67,7 @@ use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 
+mod headless;
 pub(crate) mod launch;
 mod restore_ready;
 
@@ -524,6 +525,10 @@ pub(crate) async fn run_repl(
         has_vtl2,
         mut launch,
     } = resources;
+
+    if !launch.stdin_enabled {
+        return headless::run(&mut vm_controller_events).await;
+    }
 
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
