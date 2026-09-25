@@ -204,7 +204,7 @@ impl VirtioFsInode {
             self.lookup_count
                 .update(Ordering::AcqRel, Ordering::Acquire, |old_count| {
                     if lookup_count > old_count {
-                        tracing::warn!(node_id, "Too many forgets for inode");
+                        tracelimit::warn_ratelimited!(node_id, "Too many forgets for inode");
                     }
                     old_count.saturating_sub(lookup_count)
                 });
