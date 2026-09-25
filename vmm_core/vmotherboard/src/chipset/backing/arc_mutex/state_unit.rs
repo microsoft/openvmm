@@ -100,6 +100,7 @@ trait DynDevice: InspectMut + Send {
     async fn quiesce_input(&mut self) -> anyhow::Result<()>;
     async fn resume_input(&mut self) -> anyhow::Result<()>;
     async fn reset(&mut self);
+    async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()>;
     fn poll_device(&mut self, cx: &mut Context<'_>);
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
     async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
@@ -123,6 +124,10 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn reset(&mut self) {
         self.reset().await
+    }
+
+    async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
+        self.advance_time(duration).await
     }
 
     fn poll_device(&mut self, cx: &mut Context<'_>) {
@@ -253,6 +258,10 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
     async fn reset(&mut self) -> anyhow::Result<()> {
         self.device.clone().close().reset().await;
         Ok(())
+    }
+
+    async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
+        self.device.clone().close().advance_time(duration).await
     }
 
     async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
