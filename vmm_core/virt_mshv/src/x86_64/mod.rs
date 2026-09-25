@@ -5,6 +5,7 @@
 
 mod extint;
 pub(crate) mod finalize;
+mod tsc;
 mod vm_state;
 mod vp_state;
 
@@ -133,6 +134,7 @@ impl virt::Hypervisor for LinuxMshv {
                 nested: config.nested_virt,
             },
         )?;
+        let create_args = tsc::with_features1(create_args, false);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
@@ -524,6 +526,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
             }
         }
+        let cpuid = tsc::add_cpuid_leaves(&self.vmfd, cpuid)?;
         let cpuid = virt::CpuidLeafSet::new(cpuid);
 
         // Apply CPUID overrides partition-wide.
@@ -637,6 +640,22 @@ impl virt::Partition for MshvPartition {
 
     fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
         virt::x86::CpuCompatibilityContract::new(self.inner.caps(), &self.inner.config.cpuid)
+    }
+
+    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        self.inner.tsc_frequency_hz()
+    }
+
+    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
+        self.inner.set_tsc_frequency_hz(frequency_hz)
+    }
+
+    fn advance_snapshot_time(&self, _duration: std::time::Duration) -> Result<(), Self::Error> {
+        self.inner.advance_snapshot_time()
+    }
+
+    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        self.inner.apic_frequency_hz()
     }
 
     fn supports_initial_page_acceptance(
