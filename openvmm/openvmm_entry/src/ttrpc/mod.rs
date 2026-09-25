@@ -2954,6 +2954,10 @@ fn build_consomme_handle(
             .map(parse_port_config)
             .collect::<anyhow::Result<_>>()?,
         recv,
+        static_ipv4: None,
+        allow_host_local_access: None,
+        map_gateway_to_host_loopback: None,
+        gateway_loopback_proxy_port: None,
     })
 }
 
