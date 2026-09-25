@@ -5,13 +5,15 @@ for developers working on the save/restore subsystem.
 
 ## Directory layout
 
-A snapshot is stored as a directory containing three files:
+A snapshot is stored as a directory containing three required files and, for
+a mounted microVM scratch capture, one paired scratch image:
 
 ```text
 snapshot-dir/
 ├── manifest.bin   # Protobuf-encoded SnapshotManifest
 ├── state.bin      # Protobuf-encoded device saved state
-└── memory.bin     # Exact automatic RAM file or independent supplied-RAM clone
+├── memory.bin     # Exact automatic RAM file or independent supplied-RAM clone
+└── scratch.img    # Optional paired microVM writable scratch image
 ```
 
 ## Manifest format
@@ -21,11 +23,12 @@ The manifest is a protobuf message defined as
 in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
 crate's protobuf encoding.
 
-New snapshots use manifest version 3, which records a format magic, the
+New snapshots use manifest version 4, which records a format magic, the
 saved-state schema version and protobuf root type, and the exact length of
 `state.bin`. The legacy `state_sha256` and `memory_sha256` protobuf tags remain
-reserved so version 2 manifests can be decoded; version 3 requires both fields
-to be absent. Restore accepts versions 2 and 3.
+reserved so version 2 manifests can be decoded; versions 3 and 4 require both
+fields to be absent. Restore accepts versions 2 through 4; only version 4 may
+contain microVM sandbox blocks.
 
 Reading a snapshot bounds `manifest.bin` to 1 MiB and `state.bin` to 256 MiB,
 validates the manifest format before it reads `state.bin`, and requires
@@ -34,8 +37,11 @@ validates the manifest format before it reads `state.bin`, and requires
 The default format is a local machine-state contract, not an authenticated
 container. All versions receive the same regular-file, no-follow/no-reparse,
 bounded decoding, exact-length, inventory, and machine-contract validation,
-but the on-disk format does not authenticate same-length payload changes. Export or transport
-layers must provide broader integrity and authentication outside this format.
+but the on-disk format does not authenticate same-length payload changes.
+Version 4 records the SHA-256 and exact length of `scratch.img`, because guest
+RAM and a mounted writable filesystem must be restored as one exact pair.
+Export or transport layers must provide broader integrity and authentication
+outside this format.
 
 ## Device state (`state.bin`)
 
@@ -70,7 +76,8 @@ the source terminate instead of resume.
 
 Restore opens the snapshot directory once and resolves its artifacts relative
 to that handle. The directory must contain exactly `manifest.bin`, `state.bin`,
-and `memory.bin`, each a regular file. Guest RAM is a private copy-on-write
+and `memory.bin`, plus `scratch.img` when the manifest declares a paired
+scratch, each a regular file. Guest RAM is a private copy-on-write
 mapping of the opened `memory.bin` handle, so guest writes never reach the
 snapshot and it can be restored repeatedly. Windows uses read-only handles with
 `FILE_SHARE_READ` only, rejects reparse points, compares `FILE_ID_INFO` and EOF

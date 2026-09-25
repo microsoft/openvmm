@@ -190,7 +190,7 @@ impl VmController {
             Worker(WorkerEvent),
             VncWorker(WorkerEvent),
             Halt(HaltReason),
-            SnapshotRequest,
+            SnapshotRequest(chipset_resources::microvm::MicrovmSnapshotScratchPolicy),
         }
 
         let mut quit = false;
@@ -215,7 +215,7 @@ impl VmController {
                 let snapshot_request =
                     futures::stream::iter(self.microvm.snapshot_requests.as_mut())
                         .flatten()
-                        .map(|()| Event::SnapshotRequest);
+                        .map(Event::SnapshotRequest);
 
                 (rpc.into_stream(), vm, vnc, halt, snapshot_request)
                     .merge()
@@ -337,8 +337,8 @@ impl VmController {
                         }
                     }
                 }
-                Event::SnapshotRequest => {
-                    let action = self.handle_guest_snapshot_request().await;
+                Event::SnapshotRequest(scratch_policy) => {
+                    let action = self.handle_guest_snapshot_request(scratch_policy).await;
                     if let GuestSnapshotAction::Terminate { exit_code } = action {
                         event_send.send(VmControllerEvent::ExitRequested { code: exit_code });
                         break;
