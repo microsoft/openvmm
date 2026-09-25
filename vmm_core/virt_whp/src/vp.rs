@@ -1143,6 +1143,7 @@ mod x86 {
                 _ => {}
             }
 
+            self.fixup_topology_cpuid(function, index, &mut default);
             let [eax, ebx, ecx, edx] = default;
 
             if self.vp.partition.vtl2_emulation.is_some() && self.state.active_vtl == Vtl::Vtl0 {
