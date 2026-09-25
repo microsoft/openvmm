@@ -44,6 +44,10 @@ pub enum DeviceCommand {
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
+    /// Gate host input before establishing a snapshot vCPU boundary.
+    QuiesceInput(FailableRpc<(), ()>),
+    /// Resume host input after a failed snapshot transaction.
+    ResumeInput(FailableRpc<(), ()>),
     /// Config register read at byte offset with byte length.
     ReadConfig {
         offset: u16,
@@ -308,6 +312,8 @@ pub async fn run_device_task(
             DeviceCommand::Reset(rpc) => {
                 rpc.handle(async |()| task.reset().await).await;
             }
+            DeviceCommand::QuiesceInput(rpc) => task.quiesce_input(rpc).await,
+            DeviceCommand::ResumeInput(rpc) => task.resume_input(rpc).await,
             DeviceCommand::ReadConfig {
                 offset,
                 len,

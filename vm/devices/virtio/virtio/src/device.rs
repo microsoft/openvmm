@@ -111,6 +111,16 @@ pub trait VirtioDevice: InspectMut + Send {
         async {}
     }
 
+    /// Stops accepting new host input while preserving device and queue state.
+    fn quiesce_input(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Resumes host input after a failed save transaction.
+    fn resume_input(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
     /// Whether the device supports save/restore.
     ///
     /// Devices that return `false` will cause the transport's `save()` to
@@ -189,6 +199,12 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
+    /// Stops accepting new host input while preserving device state.
+    fn quiesce_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Resumes host input after a failed save transaction.
+    fn resume_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
     /// Whether the device supports save/restore.
     fn supports_save_restore(&self) -> bool;
 
@@ -258,6 +274,14 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(VirtioDevice::reset(self))
+    }
+
+    fn quiesce_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::quiesce_input(self))
+    }
+
+    fn resume_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::resume_input(self))
     }
 
     fn supports_save_restore(&self) -> bool {
