@@ -83,6 +83,10 @@ impl From<MachineProfileCli> for MachineProfile {
 /// Options of the microVM machine profile.
 #[derive(clap::Args)]
 pub struct MicrovmCli {
+    /// Expose a fresh OPENVMM_ENTROPY_V1 packet through the private portb restore channel.
+    #[clap(long, requires = "restore_snapshot")]
+    pub restore_entropy: bool,
+
     /// Capture a microVM snapshot to this directory when the guest writes PMIO 0x605.
     #[clap(long, value_name = "DIR", conflicts_with = "restore_snapshot")]
     pub snapshot_destination: Option<PathBuf>,

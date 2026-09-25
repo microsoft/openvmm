@@ -36,6 +36,34 @@ fn calculate_snapshot_downtime(
     Ok(downtime)
 }
 
+fn microvm_restore_packet(entropy: &[u8; 64]) -> Vec<u8> {
+    let mut packet = b"OPENVMM_ENTROPY_V1\0".to_vec();
+    packet.extend(entropy);
+    packet
+}
+
+fn microvm_generation_id(entropy: &[u8; 64]) -> [u8; 16] {
+    let mut generation_id = [0; 16];
+    generation_id.copy_from_slice(&entropy[..16]);
+    generation_id
+}
+
+pub(crate) fn fresh_microvm_generation_id() -> anyhow::Result<[u8; 16]> {
+    let mut generation_id = [0; 16];
+    getrandom::fill(&mut generation_id).context("failed to generate microVM generation ID")?;
+    Ok(generation_id)
+}
+
+pub(crate) fn fresh_microvm_restore_packet() -> anyhow::Result<([u8; 16], Vec<u8>)> {
+    let generation_id_create = openvmm_defs::profile::ProfileSpan::start();
+    let mut entropy = [0_u8; 64];
+    getrandom::fill(&mut entropy).context("failed to generate restore entropy")?;
+    let generation_id = microvm_generation_id(&entropy);
+    let packet = microvm_restore_packet(&entropy);
+    generation_id_create.complete("restore", "generation_id_create", Default::default());
+    Ok((generation_id, packet))
+}
+
 /// Restore-time inputs that shape a microVM configuration.
 #[derive(Default)]
 pub(crate) struct MicrovmRestore {
@@ -164,6 +192,11 @@ pub(crate) fn prepare_restore(
     } else {
         None
     };
+    if restore_machine_contract.is_some() && !opt.microvm.restore_entropy {
+        tracing::warn!(
+            "restoring cloned guest RNG state without fresh entropy injection; cryptographic workloads are unsafe"
+        );
+    }
     Ok(MicrovmRestore {
         machine_contract: restore_machine_contract,
         private_scratch_dir,
@@ -286,5 +319,14 @@ mod tests {
         )
         .unwrap_err();
         assert!(excessive.to_string().contains("exceeds the supported"));
+    }
+
+    #[test]
+    fn restore_packet_preserves_entropy() {
+        let entropy = [0x5a; 64];
+        assert_eq!(microvm_generation_id(&entropy), [0x5a; 16]);
+        let v1 = microvm_restore_packet(&entropy);
+        assert_eq!(&v1[..19], b"OPENVMM_ENTROPY_V1\0");
+        assert_eq!(&v1[19..], &entropy);
     }
 }

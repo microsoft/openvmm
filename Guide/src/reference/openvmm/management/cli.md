@@ -201,8 +201,18 @@ describes the source definitions.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
-    --restore-snapshot snapshot
+    --restore-snapshot snapshot --restore-entropy
   ```
+* `--restore-entropy`: Make a fresh `OPENVMM_ENTROPY_V1` packet available on
+  the private portb restore channel. The guest must consume the packet and
+  explicitly reseed its RNG. Restoring cloned RNG state without this option is
+  unsafe for cryptographic workloads and emits a warning.
+  Every microVM portb device also reports generation-ID support in status bit
+  5. Writing `0xa6` to the status port and reading 16 bytes from the data port
+  returns an opaque ID that is stable for that VM process and may be selected
+  repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
+  On restore, it is the first 16 bytes of the fresh entropy packet, allowing
+  the guest repair path to update clone identity without additional port I/O.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.

@@ -16,6 +16,8 @@ use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_network_endpoint;
+use super::restore::fresh_microvm_generation_id;
+use super::restore::fresh_microvm_restore_packet;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
@@ -312,9 +314,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
             return Ok(());
         };
         let opt = self.opt;
+        let (generation_id, restore_entropy) = if opt.microvm.restore_entropy {
+            fresh_microvm_restore_packet()?
+        } else {
+            (fresh_microvm_generation_id()?, Vec::new())
+        };
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
-            resource: MicrovmPortbHandle { io }.into_resource(),
+            resource: MicrovmPortbHandle {
+                io,
+                generation_id,
+                restore_entropy,
+            }
+            .into_resource(),
         });
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmShutdownHandle::ID.to_owned(),
