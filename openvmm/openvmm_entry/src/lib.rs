@@ -198,6 +198,7 @@ struct VmResources {
     consomme_rpc: Option<mesh::Sender<net_backend_resources::consomme::ConsommeRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+    microvm: microvm::MicrovmResources,
     /// Receives dirty rectangles from the synthetic video device for the VNC worker.
     dirty_rect_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     #[cfg(windows)]
@@ -2235,7 +2236,7 @@ async fn vm_config_from_command_line(
             device.port_name
         );
     }
-    microvm.finish(&mut cfg)?;
+    microvm.finish(&mut cfg, &mut resources)?;
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
@@ -2788,6 +2789,8 @@ async fn run_control_inner(
     let mesh = mesh_slot.as_ref().unwrap();
     let mut restore = snapshot_restore::SnapshotRestore::open(&opt)?;
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
+    let mut microvm =
+        microvm::MicrovmLaunch::new(&opt, &vm_config, std::mem::take(&mut resources.microvm))?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc.vnc {
@@ -2908,12 +2911,24 @@ async fn run_control_inner(
     // spin up the VM
     let (vm_rpc, rpc_recv) = mesh::channel();
     let (notify_send, notify_recv) = mesh::channel();
+    let (snapshot_boundary_requests, snapshot_ready, snapshot_requests) =
+        microvm.snapshot_channels();
+    let hypervisor = match &opt.hypervisor {
+        Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+        None if opt.machine == MachineProfileCli::Microvm => {
+            openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor()?
+        }
+        None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+    };
+    let source_hypervisor = hypervisor.id().to_owned();
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
         let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
             let (fd, state_msg) = restore.prepare(&opt)?;
             (Some(fd), Some(state_msg))
+        } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
+            (Some(shared_memory), None)
         } else {
             let shared_memory = opt
                 .memory_backing_file()
@@ -2930,21 +2945,15 @@ async fn run_control_inner(
         let restore_ready_sink = snapshot_restore::restore_ready_sink(&opt)?;
 
         let params = VmWorkerParameters {
-            hypervisor: match &opt.hypervisor {
-                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
-                None if opt.machine == MachineProfileCli::Microvm => {
-                    openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor()?
-                }
-                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
-            },
+            hypervisor,
             cfg: vm_config,
             saved_state,
             shared_memory,
             shared_memory_copy_on_write: restore.shared_memory_copy_on_write,
             snapshot_restore_guards: restore.guards,
-            snapshot_boundary_requests: None,
-            snapshot_ready: None,
-            snapshot_capture_enabled: false,
+            snapshot_boundary_requests,
+            snapshot_ready,
+            snapshot_capture_enabled: microvm.snapshot_capture_enabled(),
             restore_ready_sink,
             rpc: rpc_recv,
             notify: notify_send,
@@ -3005,11 +3014,12 @@ async fn run_control_inner(
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
         igvm_path: opt.igvm.clone(),
-        memory_backing_file: opt.memory_backing_file().cloned(),
+        memory_backing_file: microvm.memory_backing_file(&opt),
         memory: opt.memory_size(),
         processors: opt.processors,
         log_file: opt.log_file.clone(),
         crash_dump_path: opt.crash_dump_path.clone(),
+        microvm: microvm.into_controller(&opt, source_hypervisor, snapshot_requests),
         guest_power_actions: vm_controller::GuestPowerActions {
             shutdown: opt.guest_shutdown_action,
             reset: opt.guest_reset_action,

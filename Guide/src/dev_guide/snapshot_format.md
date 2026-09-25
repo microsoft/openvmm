@@ -11,7 +11,7 @@ A snapshot is stored as a directory containing three files:
 snapshot-dir/
 ├── manifest.bin   # Protobuf-encoded SnapshotManifest
 ├── state.bin      # Protobuf-encoded device saved state
-└── memory.bin     # Independent copy of the guest memory backing file
+└── memory.bin     # Exact automatic RAM file or independent supplied-RAM clone
 ```
 
 ## Manifest format
@@ -46,22 +46,25 @@ default values, forward/backward compatibility) apply.
 
 ## Memory (`memory.bin`)
 
-`memory.bin` is an independent copy of the file-backed guest RAM, so resuming
-or reusing the source VM cannot modify a published snapshot. Clone support is
-used when available, with allocated-range or zero-scan copying as a fallback on
-Linux; Windows uses a dense copy. The copy reads through an already-open handle
-rather than reopening the backing file's path, so replacing the source path
-cannot substitute different bytes.
+For automatically allocated microVM RAM, `memory.bin` is a hard link to the
+exact OpenVMM-owned backing handle. State and manifest are written and flushed
+first; OpenVMM then flushes the stopped guest's shared RAM mappings and exact
+backing handle, creates the link last, and verifies the linked handle's file
+identity and EOF before the staging directory is renamed into place. Linux
+prefers `linkat(AT_EMPTY_PATH)` and can use a `/proc/self/fd` link with a
+device/inode proof. Windows uses handle-relative `FileLinkInformation` and
+verifies `FILE_ID_INFO`. Filesystems that cannot create the link fall back to
+an independent sparse-aware copy.
 
-## Publication
-
-`write_snapshot()` writes and flushes `state.bin`, `memory.bin`, and
-`manifest.bin` in a uniquely named, private staging directory next to the
-destination, flushes the staging directory, and then renames it to the
-destination in one operation that never replaces an existing path. The rename
-is the commit point; the parent directory is flushed afterwards. A failure
-before the commit removes the staging directory and leaves the destination
-absent. The destination must not already exist.
+User-supplied RAM always uses the independent-copy path, never a hard link.
+Clone support is used when available, with allocated-range or zero-scan copying
+as a fallback on Linux; Windows uses a dense copy. Both paths use an
+already-open handle rather than reopening its pathname, so replacing the source
+path cannot substitute different bytes.
+Successful guest-requested capture is terminal for the source. If publication
+fails after the automatic link exists, OpenVMM removes and durably flushes the
+private staging directory before allowing rollback; uncertain cleanup makes
+the source terminate instead of resume.
 
 ## Restore
 
@@ -83,8 +86,8 @@ verified artifact broker.
 ## Code references
 
 - Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`
-- Format validation, publication, restore-side access, and file-system helpers:
-  `openvmm/openvmm_helpers/src/snapshot/`
+- Format validation, publication, restore-side access, file-system helpers,
+  and the microVM machine contract: `openvmm/openvmm_helpers/src/snapshot/`
 - Restore entry point: `prepare_snapshot_restore()` in
   `openvmm/openvmm_entry/src/snapshot_restore/prepare.rs`
 - File-backed memory: `SharedMemoryFd` type alias in

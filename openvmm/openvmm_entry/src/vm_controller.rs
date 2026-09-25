@@ -18,6 +18,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
+use microvm::GuestSnapshotAction;
 use openvmm_defs::rpc::VmRpc;
 use std::path::Path;
 use std::path::PathBuf;
@@ -25,6 +26,10 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Instant;
 use vmm_core_defs::HaltReason;
+
+mod microvm;
+
+pub(crate) use microvm::MicrovmController;
 
 /// Inspection target: host-side workers or the paravisor.
 #[derive(Clone, Copy, mesh::MeshPayload)]
@@ -126,6 +131,7 @@ pub struct VmController {
     pub(crate) processors: u32,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) crash_dump_path: Option<PathBuf>,
+    pub(crate) microvm: MicrovmController,
     pub(crate) guest_power_actions: GuestPowerActions,
 }
 
@@ -184,6 +190,7 @@ impl VmController {
             Worker(WorkerEvent),
             VncWorker(WorkerEvent),
             Halt(HaltReason),
+            SnapshotRequest,
         }
 
         let mut quit = false;
@@ -205,8 +212,12 @@ impl VmController {
                     .flatten()
                     .map(Event::VncWorker);
                 let halt = (&mut notify_recv).map(Event::Halt);
+                let snapshot_request =
+                    futures::stream::iter(self.microvm.snapshot_requests.as_mut())
+                        .flatten()
+                        .map(|()| Event::SnapshotRequest);
 
-                (rpc.into_stream(), vm, vnc, halt)
+                (rpc.into_stream(), vm, vnc, halt, snapshot_request)
                     .merge()
                     .next()
                     .await
@@ -326,6 +337,13 @@ impl VmController {
                         }
                     }
                 }
+                Event::SnapshotRequest => {
+                    let action = self.handle_guest_snapshot_request().await;
+                    if let GuestSnapshotAction::Terminate { exit_code } = action {
+                        event_send.send(VmControllerEvent::ExitRequested { code: exit_code });
+                        break;
+                    }
+                }
             }
         }
 
@@ -420,6 +438,9 @@ impl VmController {
     }
 
     async fn handle_restart(&mut self) -> anyhow::Result<()> {
+        if self.microvm.active {
+            anyhow::bail!("worker restart is unavailable for microVM");
+        }
         let vm_host = self
             .mesh
             .make_host("vm", self.log_file.clone())
@@ -462,6 +483,9 @@ impl VmController {
     }
 
     async fn handle_save_snapshot(&self, dir: &Path) -> anyhow::Result<()> {
+        if self.microvm.active {
+            anyhow::bail!("disk snapshots are unavailable for microVM");
+        }
         let memory_file_path = self
             .memory_backing_file
             .as_ref()

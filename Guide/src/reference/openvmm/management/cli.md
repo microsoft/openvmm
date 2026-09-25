@@ -43,7 +43,7 @@ describes the source definitions.
   `nr_cpus=<capacity>` from the validated processor topology. It reserves a 1-GiB
   MMIO gap from 3 to 4 GiB and exposes only PIC/IOAPIC, PIT, a CMOS RTC
   anchored to UTC,
-  the microVM portb console, the shutdown port, and the optional fixed virtio
+  the microVM portb console, lifecycle ports, and the optional fixed virtio
   devices described below. User arguments cannot override `earlycon=`,
   `console=`, `virtio_mmio.device=`, or `nr_cpus=`.
 
@@ -59,6 +59,27 @@ describes the source definitions.
 
   `microvm` uses one socket and one die,
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
+  Guest-requested snapshot capture is available on Linux/KVM, Linux/MSHV, and
+  Windows/WHP.
+* `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
+  writes to PMIO port `0x605`. The destination must not exist and its parent
+  must already be a directory. OpenVMM automatically creates file-backed RAM
+  in that parent when no memory backing file was supplied, quiesces the VM,
+  writes and flushes a sibling staging directory, and atomically renames it to
+  `DIR`. After a successful commit, the source VM terminates without executing
+  the instruction after the snapshot `out`.
+
+  `--snapshot-quiesce-timeout-ms <MILLISECONDS>` sets the bounded quiesce
+  timeout and defaults to 5000. A request with no configured destination is
+  ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
+  KVM, MSHV, or WHP, and shared file-backed RAM. It does not yet support
+  `--virtio-console`.
+
+  ```bash
+  openvmm --machine microvm --hypervisor kvm --memory 128M \
+    --kernel vmlinux --initrd initramfs.cpio.gz \
+    --snapshot-destination snapshot
+  ```
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
   comma-separated key/value list:

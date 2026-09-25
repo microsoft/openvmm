@@ -1346,6 +1346,7 @@ impl VmService {
             processors,
             log_file: None,
             crash_dump_path: req_config.crash_dump_path.map(Into::into),
+            microvm: Default::default(),
             guest_power_actions,
         };
 

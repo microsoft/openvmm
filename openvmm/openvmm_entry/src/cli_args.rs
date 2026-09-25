@@ -1418,6 +1418,10 @@ Syntax: id=<name>
     #[cfg(target_os = "linux")]
     #[clap(long, conflicts_with("pcat"))]
     pub iommu: Vec<IommuCli>,
+
+    /// microVM machine profile options.
+    #[clap(flatten)]
+    pub microvm: microvm::MicrovmCli,
 }
 
 impl Options {

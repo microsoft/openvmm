@@ -3,8 +3,10 @@
 
 //! MicroVM parts of the VM configuration built from the command line.
 
+use super::MicrovmResources;
 use crate::ConsoleState;
 use crate::Options;
+use crate::VmResources;
 use crate::cli_args::SerialConfigCli;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::serial_io;
@@ -12,6 +14,7 @@ use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
+use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use futures::AsyncReadExt;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
@@ -23,6 +26,7 @@ use pal_async::DefaultDriver;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::cell::RefCell;
 use std::thread;
+use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
 use vm_manifest_builder::MachineArch;
 use vm_resource::IntoResource;
@@ -39,6 +43,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     active: bool,
     console: Option<SerialConfigCli>,
     portb: Option<Resource<SerialBackendHandle>>,
+    resources: MicrovmResources,
 }
 
 impl<'a> MicrovmConfigBuilder<'a> {
@@ -70,6 +75,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             active,
             console,
             portb: None,
+            resources: MicrovmResources::default(),
         })
     }
 
@@ -148,7 +154,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         Ok(virtio_console_backend)
     }
 
-    /// Adds the portb and shutdown chipset devices.
+    /// Adds the portb, shutdown, and snapshot-request chipset devices.
     pub(crate) fn add_chipset_devices(
         &mut self,
         chipset_devices: &mut Vec<ChipsetDeviceHandle>,
@@ -156,6 +162,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let Some(io) = self.portb.take() else {
             return Ok(());
         };
+        let opt = self.opt;
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
             resource: MicrovmPortbHandle { io }.into_resource(),
@@ -163,6 +170,20 @@ impl<'a> MicrovmConfigBuilder<'a> {
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmShutdownHandle::ID.to_owned(),
             resource: MicrovmShutdownHandle.into_resource(),
+        });
+        chipset_devices.push(ChipsetDeviceHandle {
+            name: MicrovmSnapshotRequestHandle::ID.to_owned(),
+            resource: {
+                let (notify, requests) = mesh::channel();
+                self.resources.snapshot_requests = Some(requests);
+                MicrovmSnapshotRequestHandle {
+                    notify: Some(notify),
+                    input_gate_timeout: Duration::from_millis(
+                        opt.microvm.snapshot_quiesce_timeout_ms,
+                    ),
+                }
+                .into_resource()
+            },
         });
         Ok(())
     }
@@ -245,7 +266,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
 
     /// Completes the microVM configuration after the storage devices have been
     /// added, and validates the machine contract of every profile.
-    pub(crate) fn finish(self, cfg: &mut Config) -> anyhow::Result<()> {
+    pub(crate) fn finish(
+        mut self,
+        cfg: &mut Config,
+        resources: &mut VmResources,
+    ) -> anyhow::Result<()> {
         let opt = self.opt;
         if self.active {
             cfg.processor_topology.vps_per_socket = Some(opt.processors);
@@ -283,6 +308,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
             openvmm_defs::microvm::append_microvm_virtio_discovery(cmdline, has_console)?;
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
+
+        resources.microvm = std::mem::take(&mut self.resources);
         Ok(())
     }
 }
