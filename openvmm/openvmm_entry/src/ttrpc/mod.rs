@@ -3151,6 +3151,7 @@ fn build_virtio_fs(
                 String::new()
             },
         },
+        profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
     })
 }
 
