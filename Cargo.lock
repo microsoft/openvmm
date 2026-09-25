@@ -6149,6 +6149,7 @@ dependencies = [
  "hypervisor_resources",
  "libc",
  "mesh",
+ "net_backend_resources",
  "nix 0.30.1",
  "openvmm_defs",
  "pal",

@@ -13,6 +13,7 @@ use clap::ValueEnum;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmNetworkProfile;
 use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -31,6 +32,64 @@ pub enum MachineProfileCli {
 pub enum MicrovmNetworkProfileCli {
     /// Use the cross-platform user-mode Consomme NAT implementation.
     Portable,
+}
+
+/// Default action for one direction of microVM network traffic.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MicrovmNetworkActionCli {
+    /// Permit traffic in this direction.
+    Allow,
+    /// Deny traffic in this direction.
+    Deny,
+}
+
+/// Protocol for a localhost-to-guest port forward.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MicrovmLoopbackForwardProtocol {
+    /// Forward a TCP listener.
+    Tcp,
+    /// Forward a UDP socket.
+    Udp,
+}
+
+/// Explicit localhost port allowed to initiate traffic toward the guest.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MicrovmLoopbackForwardCli {
+    pub(crate) protocol: MicrovmLoopbackForwardProtocol,
+    pub(crate) host_port: u16,
+    pub(crate) guest_port: u16,
+}
+
+impl FromStr for MicrovmLoopbackForwardCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let fields = value.split(':').collect::<Vec<_>>();
+        let [protocol, host_port, guest_port] = fields.as_slice() else {
+            anyhow::bail!("expected <tcp|udp>:<HOST-PORT>:<GUEST-PORT>");
+        };
+        let protocol = match *protocol {
+            "tcp" => MicrovmLoopbackForwardProtocol::Tcp,
+            "udp" => MicrovmLoopbackForwardProtocol::Udp,
+            other => anyhow::bail!("invalid loopback-forward protocol '{other}'"),
+        };
+        let host_port = host_port
+            .parse::<u16>()
+            .context("invalid loopback-forward host port")?;
+        let guest_port = guest_port
+            .parse::<u16>()
+            .context("invalid loopback-forward guest port")?;
+        anyhow::ensure!(host_port != 0, "loopback-forward host port must be nonzero");
+        anyhow::ensure!(
+            guest_port != 0,
+            "loopback-forward guest port must be nonzero"
+        );
+        Ok(Self {
+            protocol,
+            host_port,
+            guest_port,
+        })
+    }
 }
 
 /// Capture tier for a microVM sandbox snapshot.
@@ -68,6 +127,23 @@ impl SnapshotTierCli {
 
     pub(crate) fn requires_paired_scratch(self) -> bool {
         !matches!(self, Self::Platform)
+    }
+}
+
+impl From<MicrovmNetworkProfileCli> for MicrovmNetworkProfile {
+    fn from(value: MicrovmNetworkProfileCli) -> Self {
+        match value {
+            MicrovmNetworkProfileCli::Portable => Self::Portable,
+        }
+    }
+}
+
+impl From<MicrovmNetworkActionCli> for net_backend_resources::egress::EgressAction {
+    fn from(value: MicrovmNetworkActionCli) -> Self {
+        match value {
+            MicrovmNetworkActionCli::Allow => Self::Allow,
+            MicrovmNetworkActionCli::Deny => Self::Deny,
+        }
     }
 }
 
@@ -132,6 +208,64 @@ pub struct MicrovmCli {
     /// Required host-network implementation contract for microVM `--net`.
     #[clap(long, value_enum, value_name = "PROFILE")]
     pub network_profile: Option<MicrovmNetworkProfileCli>,
+
+    /// Default action for connections initiated by the microVM guest.
+    #[clap(long, value_enum, value_name = "ACTION")]
+    pub network_egress: Option<MicrovmNetworkActionCli>,
+
+    /// Default action for new connections initiated toward the microVM guest.
+    ///
+    /// The portable profile supports only `deny`: its NAT admits responses to
+    /// guest-initiated flows but exposes no listener for new inbound connections.
+    #[clap(long, value_enum, value_name = "ACTION")]
+    pub network_ingress: Option<MicrovmNetworkActionCli>,
+
+    /// Permit matching IPv4 destinations, optionally restricted by TCP/UDP port.
+    #[clap(
+        long = "network-egress-allow",
+        value_name = "IPv4[/PREFIX][:tcp|udp:PORT]"
+    )]
+    pub network_egress_allow: Vec<net_backend_resources::egress::EgressRule>,
+
+    /// Deny matching IPv4 destinations before evaluating allow rules.
+    #[clap(
+        long = "network-egress-deny",
+        value_name = "IPv4[/PREFIX][:tcp|udp:PORT]"
+    )]
+    pub network_egress_deny: Vec<net_backend_resources::egress::EgressRule>,
+
+    /// Deny host-loopback access, or allow it with explicit localhost forwards.
+    ///
+    /// Explicit `allow` without forwards is unsupported: portable NAT cannot
+    /// provide generic bidirectional host-loopback connectivity.
+    #[clap(long, value_enum, value_name = "ACTION")]
+    pub host_loopback: Option<MicrovmNetworkActionCli>,
+
+    /// Exact guest-gateway TCP endpoint retained when host loopback is denied.
+    #[clap(long, value_name = "IPv4:TCP-PORT")]
+    pub network_proxy: Option<net_backend_resources::egress::TcpEndpoint>,
+
+    /// Forward one localhost TCP/UDP port into the guest.
+    #[clap(long, value_name = "tcp|udp:HOST-PORT:GUEST-PORT")]
+    pub host_loopback_forward: Vec<MicrovmLoopbackForwardCli>,
+
+    /// Select a preconfigured Linux TAP for a microVM NIC.
+    ///
+    /// This is incompatible with the portable microVM network profile.
+    #[clap(long, value_name = "NAME")]
+    pub net_tap: Option<String>,
+
+    /// Permit only these IPv4 destinations or CIDRs from the microVM guest.
+    #[clap(long, value_name = "IPv4[/PREFIX]", conflicts_with_all = ["block_host", "allow_endpoint"])]
+    pub allow_host: Vec<net_backend_resources::egress::Ipv4Cidr>,
+
+    /// Permit IPv4 except for these destinations or CIDRs from the microVM guest.
+    #[clap(long, value_name = "IPv4[/PREFIX]", conflicts_with_all = ["allow_host", "allow_endpoint"])]
+    pub block_host: Vec<net_backend_resources::egress::Ipv4Cidr>,
+
+    /// Permit only these exact IPv4 TCP destinations from the microVM guest.
+    #[clap(long, value_name = "IPv4:TCP-PORT", conflicts_with_all = ["allow_host", "block_host"])]
+    pub allow_endpoint: Vec<net_backend_resources::egress::TcpEndpoint>,
 
     /// attach the microVM virtio-fs device
     ///
@@ -225,16 +359,39 @@ pub(super) fn parse_endpoint(network: &str) -> Result<EndpointConfigCli, String>
 }
 
 impl Options {
+    /// Rejects unsupported microVM combinations before opening host resources.
+    pub(crate) fn validate_microvm_host_loopback(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.machine != MachineProfileCli::Microvm
+                || self.microvm.host_loopback != Some(MicrovmNetworkActionCli::Allow)
+                || !self.microvm.host_loopback_forward.is_empty(),
+            "the portable microVM network profile does not support generic host-loopback connectivity; explicit --host-loopback allow requires --host-loopback-forward for deliberate port publishing"
+        );
+        Ok(())
+    }
+
     pub(crate) fn validate_microvm_options(&self) -> anyhow::Result<()> {
+        self.validate_microvm_host_loopback()?;
         if self.machine != MachineProfileCli::Microvm {
             anyhow::ensure!(
-                self.microvm.network_profile.is_none()
+                self.microvm.net_tap.is_none()
+                    && self.microvm.network_profile.is_none()
+                    && self.microvm.network_egress.is_none()
+                    && self.microvm.network_ingress.is_none()
+                    && self.microvm.network_egress_allow.is_empty()
+                    && self.microvm.network_egress_deny.is_empty()
+                    && self.microvm.host_loopback.is_none()
+                    && self.microvm.network_proxy.is_none()
+                    && self.microvm.host_loopback_forward.is_empty()
+                    && self.microvm.allow_host.is_empty()
+                    && self.microvm.block_host.is_empty()
+                    && self.microvm.allow_endpoint.is_empty()
                     && self.microvm.microvm_mount.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && self.microvm.memory_capacity.is_none(),
-                "--network-profile, --mount, --microvm-sandbox-block, --restore-processors, --restore-memory, and --memory-capacity require a microVM machine"
+                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -491,6 +648,92 @@ impl Options {
             }),
             "microVM --net requires a bare IPv4/prefix and does not permit queue, VTL, Underhill, or PCIe modifiers"
         );
+        if let [network] = self.net.as_slice()
+            && let EndpointConfigCli::Microvm(config) = &network.endpoint
+        {
+            self.microvm_egress_policy(config)?;
+        }
+        anyhow::ensure!(
+            self.microvm.net_tap.is_none(),
+            "--net-tap is incompatible with the portable microVM network profile"
+        );
+        anyhow::ensure!(
+            self.microvm.network_ingress != Some(MicrovmNetworkActionCli::Allow),
+            "--network-ingress allow is unsupported by the portable microVM network profile"
+        );
+        anyhow::ensure!(
+            self.microvm.network_egress_allow.len() <= 256
+                && self.microvm.network_egress_deny.len() <= 256,
+            "microVM egress policy permits at most 256 allow rules and 256 deny rules"
+        );
+        anyhow::ensure!(
+            self.microvm.host_loopback_forward.len() <= 64,
+            "microVM host loopback permits at most 64 explicit port forwards"
+        );
+        if !self.microvm.host_loopback_forward.is_empty() {
+            anyhow::ensure!(
+                self.microvm.host_loopback == Some(MicrovmNetworkActionCli::Allow),
+                "--host-loopback-forward requires explicit --host-loopback allow"
+            );
+            anyhow::ensure!(
+                self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none(),
+                "microVM snapshots do not support live host-loopback port forwards"
+            );
+            let mut forwards = self.microvm.host_loopback_forward.clone();
+            forwards.sort_unstable();
+            forwards.dedup();
+            anyhow::ensure!(
+                forwards.len() == self.microvm.host_loopback_forward.len(),
+                "microVM host-loopback port forwards must be unique"
+            );
+            anyhow::ensure!(
+                forwards.windows(2).all(|pair| {
+                    pair[0].protocol != pair[1].protocol || pair[0].host_port != pair[1].host_port
+                }),
+                "microVM host-loopback forwards cannot bind one protocol and host port more than once"
+            );
+        }
+        anyhow::ensure!(
+            self.microvm.network_egress_allow.is_empty()
+                && self.microvm.network_egress_deny.is_empty()
+                || self.microvm.network_egress.is_some(),
+            "--network-egress is required with --network-egress-allow or --network-egress-deny"
+        );
+        anyhow::ensure!(
+            (self.microvm.network_egress_allow.is_empty()
+                && self.microvm.network_egress_deny.is_empty())
+                || (self.microvm.allow_host.is_empty()
+                    && self.microvm.block_host.is_empty()
+                    && self.microvm.allow_endpoint.is_empty()),
+            "L3/L4 egress rules cannot be combined with legacy --allow-host, --block-host, or --allow-endpoint policy"
+        );
+        anyhow::ensure!(
+            !matches!(
+                self.microvm.network_egress,
+                Some(MicrovmNetworkActionCli::Allow)
+            ) || (self.microvm.allow_host.is_empty() && self.microvm.allow_endpoint.is_empty()),
+            "--network-egress allow conflicts with default-deny egress allow rules"
+        );
+        anyhow::ensure!(
+            self.microvm.network_egress != Some(MicrovmNetworkActionCli::Deny)
+                || self.microvm.block_host.is_empty(),
+            "--network-egress deny conflicts with default-allow egress block rules"
+        );
+        anyhow::ensure!(
+            (self.microvm.allow_host.is_empty()
+                && self.microvm.block_host.is_empty()
+                && self.microvm.allow_endpoint.is_empty()
+                && self.microvm.network_egress_allow.is_empty()
+                && self.microvm.network_egress_deny.is_empty()
+                && self.microvm.host_loopback.is_none()
+                && self.microvm.network_proxy.is_none()
+                && self.microvm.host_loopback_forward.is_empty()
+                && self.microvm.network_egress.is_none()
+                && self.microvm.network_ingress.is_none())
+                || !self.net.is_empty()
+                || self.restore_snapshot.is_some(),
+            "microVM network policy requires --net or a networked snapshot restore"
+        );
         anyhow::ensure!(
             self.cxl_test.is_empty()
                 && self.pcie_root_complex.is_empty()
@@ -514,6 +757,56 @@ impl Options {
         );
 
         Ok(())
+    }
+
+    pub(crate) fn microvm_egress_policy(
+        &self,
+        network: &openvmm_defs::microvm::MicrovmNetworkConfig,
+    ) -> Result<
+        net_backend_resources::egress::EgressPolicy,
+        net_backend_resources::egress::InvalidEgressPolicy,
+    > {
+        use net_backend_resources::egress::EgressPolicyMode;
+
+        let mode = if !self.microvm.network_egress_allow.is_empty()
+            || !self.microvm.network_egress_deny.is_empty()
+        {
+            EgressPolicyMode::Rules {
+                default_action: self
+                    .microvm
+                    .network_egress
+                    .unwrap_or(MicrovmNetworkActionCli::Allow)
+                    .into(),
+                allow: self.microvm.network_egress_allow.clone(),
+                deny: self.microvm.network_egress_deny.clone(),
+            }
+        } else if !self.microvm.allow_host.is_empty() {
+            EgressPolicyMode::AllowList(self.microvm.allow_host.clone())
+        } else if !self.microvm.block_host.is_empty() {
+            EgressPolicyMode::BlockList(self.microvm.block_host.clone())
+        } else if !self.microvm.allow_endpoint.is_empty() {
+            EgressPolicyMode::TcpEndpoints(self.microvm.allow_endpoint.clone())
+        } else if self.microvm.network_egress == Some(MicrovmNetworkActionCli::Deny) {
+            EgressPolicyMode::DenyAll
+        } else {
+            EgressPolicyMode::AllowAll
+        };
+        net_backend_resources::egress::EgressPolicy::bind(
+            network.guest_ipv4,
+            network.prefix_length,
+            network.guest_mac,
+            network.derived_gateway_ipv4,
+            mode,
+        )
+        .and_then(|policy| {
+            policy.with_host_loopback(
+                self.microvm
+                    .host_loopback
+                    .unwrap_or(MicrovmNetworkActionCli::Allow)
+                    .into(),
+                self.microvm.network_proxy,
+            )
+        })
     }
 }
 
@@ -664,55 +957,6 @@ mod tests {
         ])
         .unwrap();
         assert!(unaligned.validate_microvm_options().is_err());
-    }
-
-    #[test]
-    fn test_microvm_network_options() {
-        let network = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--net",
-            "10.0.0.2/24",
-            "--network-profile",
-            "portable",
-        ])
-        .unwrap();
-        network.validate_microvm_options().unwrap();
-        assert!(matches!(
-            &network.net[0].endpoint,
-            EndpointConfigCli::Microvm(config) if config.prefix_length == 24
-        ));
-
-        for args in [
-            vec!["openvmm", "--machine", "microvm", "--net", "10.0.0.2/24"],
-            vec![
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--network-profile",
-                "portable",
-            ],
-            vec![
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--net",
-                "10.0.0.2/24",
-                "--net",
-                "10.0.1.2/24",
-                "--network-profile",
-                "portable",
-            ],
-            vec!["openvmm", "--network-profile", "portable"],
-        ] {
-            let options = Options::try_parse_from(args).unwrap();
-            assert!(options.validate_microvm_options().is_err());
-        }
-        assert!(
-            Options::try_parse_from(["openvmm", "--machine", "microvm", "--net", "10.0.0.0/24"])
-                .is_err()
-        );
     }
 
     #[test]
@@ -887,6 +1131,10 @@ mod tests {
             "earlycon=uart",
             "console=ttyS0",
             "virtio_mmio.device=bad",
+            "virtnet_ip=10.0.0.3",
+            "virtnet_mask=255.255.255.0",
+            "virtnet_gw=10.0.0.1",
+            "virtnet_dns=10.0.0.1",
             "nr_cpus=1",
             "virtfs_dir=/other",
             "virtfs_tag=other",
@@ -925,6 +1173,42 @@ mod tests {
         ])
         .unwrap();
         valid_console.validate_microvm_options().unwrap();
+        let valid_network = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+        ])
+        .unwrap();
+        valid_network.validate_microvm_options().unwrap();
+        match EndpointConfigCli::from_str("10.0.0.2/24").unwrap() {
+            EndpointConfigCli::Microvm(network) => {
+                assert_eq!(network.guest_ipv4, std::net::Ipv4Addr::new(10, 0, 0, 2));
+                assert_eq!(network.prefix_length, 24);
+                assert_eq!(network.netmask(), std::net::Ipv4Addr::new(255, 255, 255, 0));
+                assert_eq!(
+                    network.derived_gateway_ipv4,
+                    std::net::Ipv4Addr::new(10, 0, 0, 1)
+                );
+                assert_eq!(network.guest_mac.to_bytes(), [0x52, 0x54, 0, 0, 0, 2]);
+                assert_eq!(network.gateway_mac.to_bytes(), [0x52, 0x54, 0, 0, 0, 1]);
+            }
+            _ => panic!("Expected microVM network variant"),
+        }
+        for invalid in [
+            "10.0.0.2",
+            "10.0.0.2/0",
+            "10.0.0.2/31",
+            "10.0.0.0/24",
+            "10.0.0.1/24",
+            "10.0.0.255/24",
+            "fd00::2/64",
+        ] {
+            assert!(EndpointConfigCli::from_str(invalid).is_err(), "{invalid}");
+        }
         let valid_filesystem = Options::try_parse_from([
             "openvmm",
             "--machine",
@@ -936,7 +1220,16 @@ mod tests {
         valid_filesystem.validate_microvm_options().unwrap();
 
         for args in [
-            vec!["openvmm", "--mount", "/mnt/share,host"],
+            vec!["openvmm", "--machine", "microvm", "--net", "10.0.0.2/24"],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--network-profile",
+                "portable",
+                "--net-tap",
+                "tap0",
+            ],
             vec!["openvmm", "--machine", "microvm", "--uefi"],
             vec!["openvmm", "--machine", "microvm", "--hypervisor", "unknown"],
             vec!["openvmm", "--machine", "microvm", "--virtio-rng"],
@@ -958,9 +1251,247 @@ mod tests {
                 "port0",
             ],
             vec!["openvmm", "--machine", "microvm", "--net", "consomme"],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--net",
+                "10.0.1.2/24",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "queues=1:10.0.0.2/24",
+            ],
         ] {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
+        }
+    }
+
+    #[test]
+    fn test_microvm_host_loopback_generic_allow_is_rejected() {
+        let common = [
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--network-profile",
+            "portable",
+            "--host-loopback",
+            "allow",
+        ];
+        for extra in [
+            vec!["--net", "10.0.0.2/24"],
+            vec!["--net", "10.0.0.2/24", "--snapshot-destination", "snapshot"],
+            vec!["--restore-snapshot", "snapshot"],
+        ] {
+            let options = Options::try_parse_from(common.into_iter().chain(extra)).unwrap();
+            let error = options.validate_microvm_options().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("generic host-loopback connectivity"),
+                "{error}"
+            );
+        }
+        let forwarded = Options::try_parse_from(common.into_iter().chain([
+            "--net",
+            "10.0.0.2/24",
+            "--network-ingress",
+            "deny",
+            "--host-loopback-forward",
+            "tcp:3000:8080",
+            "--host-loopback-forward",
+            "udp:3000:8080",
+        ]))
+        .unwrap();
+        forwarded.validate_microvm_options().unwrap();
+    }
+
+    #[test]
+    fn test_microvm_egress_policy_is_typed_and_canonical() {
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+            "--allow-host",
+            "192.168.1.9/24",
+            "--allow-host",
+            "10.0.0.1",
+            "--allow-host",
+            "192.168.1.0/24",
+        ])
+        .unwrap();
+        options.validate_microvm_options().unwrap();
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let policy = options.microvm_egress_policy(&network).unwrap();
+        let net_backend_resources::egress::EgressPolicyMode::AllowList(rules) = policy.mode()
+        else {
+            panic!("expected allow-list policy")
+        };
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].network(), std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(rules[1].network(), std::net::Ipv4Addr::new(192, 168, 1, 0));
+        assert!(policy.allows_gateway_dns());
+
+        let endpoint = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+            "--allow-endpoint",
+            "10.0.0.9:8443",
+            "--allow-endpoint",
+            "192.0.2.7:443",
+            "--allow-endpoint",
+            "10.0.0.9:443",
+        ])
+        .unwrap();
+        endpoint.validate_microvm_options().unwrap();
+        let endpoint_policy = endpoint.microvm_egress_policy(&network).unwrap();
+        assert_eq!(
+            endpoint_policy.next_hops(),
+            &[
+                std::net::Ipv4Addr::new(10, 0, 0, 1),
+                std::net::Ipv4Addr::new(10, 0, 0, 9),
+            ]
+        );
+
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--allow-host",
+                "192.0.2.0/24",
+                "--block-host",
+                "198.51.100.1",
+            ])
+            .is_err()
+        );
+        let missing_network = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--allow-host",
+            "192.0.2.0/24",
+        ])
+        .unwrap();
+        assert!(missing_network.validate_microvm_options().is_err());
+        let standard =
+            Options::try_parse_from(["openvmm", "--allow-endpoint", "192.0.2.7:443"]).unwrap();
+        assert!(standard.validate_microvm_options().is_err());
+    }
+
+    #[test]
+    fn test_microvm_directional_network_policy_is_independent_and_fail_closed() {
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        for (arguments, expected_mode) in [
+            (
+                ["--network-egress", "allow", "--network-ingress", "deny"].as_slice(),
+                "allow-all",
+            ),
+            (
+                ["--network-egress", "deny", "--network-ingress", "deny"].as_slice(),
+                "deny-all",
+            ),
+            (["--network-egress", "deny"].as_slice(), "deny-all"),
+            (["--network-ingress", "deny"].as_slice(), "allow-all"),
+            (
+                ["--network-egress", "allow", "--block-host", "192.0.2.1"].as_slice(),
+                "block-list",
+            ),
+            (
+                ["--network-egress", "deny", "--allow-host", "192.0.2.1"].as_slice(),
+                "allow-list",
+            ),
+        ] {
+            let options = Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--net",
+                    "10.0.0.2/24",
+                    "--network-profile",
+                    "portable",
+                ]
+                .into_iter()
+                .chain(arguments.iter().copied()),
+            )
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+            assert_eq!(
+                options.microvm_egress_policy(&network).unwrap().mode_name(),
+                expected_mode
+            );
+        }
+
+        for arguments in [
+            ["--network-ingress", "allow"].as_slice(),
+            ["--network-egress", "deny", "--network-ingress", "allow"].as_slice(),
+            ["--network-egress", "allow", "--allow-host", "192.0.2.1"].as_slice(),
+            ["--network-egress", "deny", "--block-host", "192.0.2.1"].as_slice(),
+        ] {
+            let options = Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--net",
+                    "10.0.0.2/24",
+                    "--network-profile",
+                    "portable",
+                ]
+                .into_iter()
+                .chain(arguments.iter().copied()),
+            )
+            .unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+    }
+
+    #[test]
+    fn test_microvm_endpoint_policy_rejects_invalid_identities_before_resources() {
+        for address in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "169.254.1.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "10.0.0.0",
+            "10.0.0.2",
+            "10.0.0.255",
+        ] {
+            let options = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--allow-endpoint",
+                &format!("{address}:443"),
+            ])
+            .unwrap();
+            assert!(
+                options.validate_microvm_options().is_err(),
+                "invalid endpoint address {address} was accepted"
+            );
         }
     }
 

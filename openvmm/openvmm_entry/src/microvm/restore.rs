@@ -9,6 +9,7 @@ use crate::cli_args;
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
+use net_backend_resources::egress::EgressPolicy;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
@@ -113,6 +114,24 @@ pub(crate) fn fresh_microvm_restore_packet(
     )?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
     Ok((generation_id, packet))
+}
+
+pub(super) fn align_legacy_network_policy_contract(
+    saved: &SnapshotMachineContract,
+    expected: &mut SnapshotMachineContract,
+) {
+    let (Some(saved), Some(expected)) = (
+        saved.microvm_network.as_ref(),
+        expected.microvm_network.as_mut(),
+    ) else {
+        return;
+    };
+    if matches!(saved.egress_policy_encoding_version, 0 | 1) {
+        expected.egress_policy_encoding_version = saved.egress_policy_encoding_version;
+        expected
+            .egress_policy_sha256
+            .clone_from(&saved.egress_policy_sha256);
+    }
 }
 
 /// Restore-time inputs that shape a microVM configuration.
@@ -302,7 +321,11 @@ pub(crate) fn prepare_restore(
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
-    Option<(&'a MicrovmNetworkConfig, &'a SnapshotAttachment)>,
+    Option<(
+        &'a MicrovmNetworkConfig,
+        &'a EgressPolicy,
+        &'a SnapshotAttachment,
+    )>,
     Option<(
         &'a MicrovmFilesystemConfig,
         &'a Path,
@@ -335,17 +358,18 @@ pub(crate) fn validate_restore_contract(
         .machine_contract
         .as_ref()
         .context("microVM snapshot is missing its authoritative machine contract")?;
+    let network = network.map(|(config, policy, attachment)| (config, policy, attachment.clone()));
     let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
     let filesystem = saved_contract
         .microvm_filesystem
         .as_ref()
         .and(filesystem)
         .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()));
-    let expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
+    let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
-        network.map(|(config, attachment)| (config, attachment.clone())),
+        network,
         filesystem_slot,
         filesystem,
         console_attachment.cloned(),
@@ -360,6 +384,7 @@ pub(crate) fn validate_restore_contract(
         saved_contract.apic_frequency_hz,
         saved_contract.cpu_contract.clone(),
     )?;
+    align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
     openvmm_helpers::snapshot::microvm::validate_microvm_machine_contract(
         manifest,
         &expected_contract,

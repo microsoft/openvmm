@@ -197,6 +197,18 @@ pub struct SnapshotMicrovmNetwork {
     /// Deterministic gateway MAC address.
     #[mesh(5)]
     pub gateway_mac: Vec<u8>,
+    /// Canonical run-scoped egress policy mode.
+    #[mesh(6)]
+    pub egress_policy_mode: String,
+    /// SHA-256 of the canonical run-scoped egress policy.
+    #[mesh(7)]
+    pub egress_policy_sha256: Vec<u8>,
+    /// Whether restore must supply the same policy contract.
+    #[mesh(8)]
+    pub egress_policy_required: bool,
+    /// Version of the canonical egress-policy digest encoding.
+    #[mesh(10)]
+    pub egress_policy_encoding_version: u32,
 }
 
 /// Canonical guest-visible policy of the microVM filesystem.
@@ -290,7 +302,10 @@ impl SnapshotMicrovmFilesystem {
 }
 
 impl SnapshotMicrovmNetwork {
-    fn new(config: &openvmm_defs::microvm::MicrovmNetworkConfig) -> Self {
+    fn new(
+        config: &openvmm_defs::microvm::MicrovmNetworkConfig,
+        egress_policy: &net_backend_resources::egress::EgressPolicy,
+    ) -> Self {
         Self {
             profile: config.profile.as_str().to_owned(),
             guest_ipv4: u32::from(config.guest_ipv4),
@@ -298,8 +313,37 @@ impl SnapshotMicrovmNetwork {
             gateway_ipv4: u32::from(config.derived_gateway_ipv4),
             guest_mac: config.guest_mac.to_bytes().to_vec(),
             gateway_mac: config.gateway_mac.to_bytes().to_vec(),
+            egress_policy_mode: egress_policy.mode_name().to_owned(),
+            egress_policy_sha256: sha2::Sha256::digest(egress_policy.canonical_bytes()).to_vec(),
+            egress_policy_required: egress_policy.is_active(),
+            egress_policy_encoding_version:
+                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
         }
     }
+}
+
+/// Validates a restore-time policy against the snapshot's canonical contract.
+pub fn validate_microvm_network_policy(
+    saved: &SnapshotMicrovmNetwork,
+    policy: &net_backend_resources::egress::EgressPolicy,
+) -> anyhow::Result<()> {
+    let encoding_version = match saved.egress_policy_encoding_version {
+        0 => 1,
+        version => version,
+    };
+    let canonical = policy
+        .canonical_bytes_for_version(encoding_version)
+        .with_context(|| {
+            format!("snapshot egress policy encoding version {encoding_version} is unsupported")
+        })?;
+    let digest = sha2::Sha256::digest(canonical);
+    anyhow::ensure!(
+        saved.egress_policy_mode == policy.mode_name()
+            && saved.egress_policy_sha256 == digest.as_slice()
+            && saved.egress_policy_required == policy.is_active(),
+        "restore-time egress policy does not match the snapshot contract"
+    );
+    Ok(())
 }
 
 /// Machine composition that becomes authoritative after capture.
@@ -602,6 +646,7 @@ pub fn microvm_machine_contract(
     effective_command_line: String,
     network: Option<(
         &openvmm_defs::microvm::MicrovmNetworkConfig,
+        &net_backend_resources::egress::EgressPolicy,
         SnapshotAttachment,
     )>,
     filesystem_slot: bool,
@@ -738,7 +783,7 @@ pub fn microvm_machine_contract(
         ),
     ];
     let mut attachments = Vec::new();
-    let microvm_network = if let Some((network, attachment)) = network {
+    let microvm_network = if let Some((network, egress_policy, attachment)) = network {
         let policy_is_valid = matches!(source_hypervisor, "kvm" | "mshv" | "whp")
             && attachment.reconnect_policy == "recreate-endpoint"
             && !attachment.required
@@ -793,7 +838,7 @@ pub fn microvm_machine_contract(
             queue_max_sizes: vec![256, 256],
         });
         attachments.push(attachment);
-        Some(SnapshotMicrovmNetwork::new(network))
+        Some(SnapshotMicrovmNetwork::new(network, egress_policy))
     } else {
         None
     };
@@ -1382,8 +1427,26 @@ pub(super) fn validate_machine_contract_shape(
                 && network.gateway_mac == parsed.gateway_mac.to_bytes(),
             "snapshot static network identity is not canonical"
         );
+        let valid_policy_requirement = match network.egress_policy_mode.as_str() {
+            "allow-all" => !network.egress_policy_required,
+            "deny-all" | "allow-list" | "block-list" | "endpoint" => network.egress_policy_required,
+            "rules" => true,
+            _ => false,
+        };
+        anyhow::ensure!(
+            valid_policy_requirement,
+            "snapshot egress policy requirement is invalid"
+        );
+        anyhow::ensure!(
+            matches!(
+                network.egress_policy_encoding_version,
+                0 | 1 | 2 | net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
+            ),
+            "snapshot egress policy encoding version {} is unsupported",
+            network.egress_policy_encoding_version
+        );
+        validate_sha256(&network.egress_policy_sha256, "egress policy")?;
     }
-
     if let Some(filesystem) = &contract.microvm_filesystem {
         anyhow::ensure!(
             !filesystem.canonical_host_path.is_empty(),
@@ -1976,17 +2039,41 @@ mod tests {
     }
 
     fn generated_network_contract(source_hypervisor: &str) -> SnapshotMachineContract {
+        generated_network_contract_with_mode(
+            source_hypervisor,
+            net_backend_resources::egress::EgressPolicyMode::AllowList(vec![
+                "192.0.2.0/24".parse().unwrap(),
+            ]),
+        )
+    }
+
+    fn generated_network_contract_with_mode(
+        source_hypervisor: &str,
+        mode: net_backend_resources::egress::EgressPolicyMode,
+    ) -> SnapshotMachineContract {
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let egress_policy = net_backend_resources::egress::EgressPolicy::bind(
+            network.guest_ipv4,
+            network.prefix_length,
+            network.guest_mac,
+            network.derived_gateway_ipv4,
+            mode,
+        )
+        .unwrap();
         let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0000000:{irq} {}",
-            network.command_line_fragment_with_dns(true)
+            network.command_line_fragment_with_dns(egress_policy.allows_gateway_dns())
         );
         microvm_machine_contract(
             source_hypervisor,
             MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
-            Some((&network, microvm_network_attachment(source_hypervisor))),
+            Some((
+                &network,
+                &egress_policy,
+                microvm_network_attachment(source_hypervisor),
+            )),
             false,
             None,
             None,
@@ -2205,7 +2292,52 @@ mod tests {
             );
             assert_eq!(network.guest_mac, [0x52, 0x54, 0, 0, 0, 2]);
             assert_eq!(network.gateway_mac, [0x52, 0x54, 0, 0, 0, 1]);
+            assert_eq!(network.egress_policy_mode, "allow-list");
+            assert_eq!(network.egress_policy_sha256.len(), 32);
+            assert!(network.egress_policy_required);
+            assert_eq!(
+                network.egress_policy_encoding_version,
+                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
+            );
         }
+    }
+
+    #[test]
+    fn generated_microvm_network_contract_accepts_deny_all_egress() {
+        let contract = generated_network_contract_with_mode(
+            "whp",
+            net_backend_resources::egress::EgressPolicyMode::DenyAll,
+        );
+
+        let network = contract.microvm_network.as_ref().unwrap();
+        assert_eq!(network.egress_policy_mode, "deny-all");
+        assert!(network.egress_policy_required);
+        assert!(!contract.effective_command_line.contains("virtnet_dns="));
+        validate_supported_microvm_contract(&contract).unwrap();
+    }
+
+    #[test]
+    fn legacy_network_policy_digest_remains_valid() {
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let policy = net_backend_resources::egress::EgressPolicy::bind(
+            network.guest_ipv4,
+            network.prefix_length,
+            network.guest_mac,
+            network.derived_gateway_ipv4,
+            net_backend_resources::egress::EgressPolicyMode::TcpEndpoints(vec![
+                "10.0.0.9:443".parse().unwrap(),
+                "192.0.2.7:443".parse().unwrap(),
+            ]),
+        )
+        .unwrap();
+        let mut saved = SnapshotMicrovmNetwork::new(&network, &policy);
+        saved.egress_policy_encoding_version = 0;
+        saved.egress_policy_sha256 =
+            sha2::Sha256::digest(policy.canonical_bytes_for_version(1).unwrap()).to_vec();
+
+        validate_microvm_network_policy(&saved, &policy).unwrap();
+        saved.egress_policy_encoding_version = u32::MAX;
+        assert!(validate_microvm_network_policy(&saved, &policy).is_err());
     }
 
     #[test]

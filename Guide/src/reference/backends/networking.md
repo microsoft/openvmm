@@ -164,3 +164,11 @@ own async task.
 
 Currently `netvsp` and `net_mana` support multi-queue; `virtio_net`
 is limited to a single queue pair.
+
+## microVM portable profile
+
+The microVM `portable` network profile always selects Consomme on Linux/KVM,
+Linux/MSHV, and Windows/WHP. It is explicitly required with
+`--network-profile portable` whenever a microVM uses `--net`; `--net-tap` is
+not part of this profile. Snapshot restore recreates a new endpoint generation
+instead of serializing host sockets or protocol flows.

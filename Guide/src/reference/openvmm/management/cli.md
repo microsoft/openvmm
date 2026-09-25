@@ -47,7 +47,6 @@ describes the source definitions.
   devices described below. User arguments cannot override `earlycon=`,
   `console=`, `virtio_mmio.device=`, `nr_cpus=`, `virtnet_*=`, or `virtfs_*=`.
 
-  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`.
   One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
   dormant when `--mount` is omitted; an optional `--mount` binds HostFs to it;
   one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
@@ -82,19 +81,86 @@ describes the source definitions.
 
   `portable` uses an in-process Consomme endpoint on Linux/KVM, Linux/MSHV,
   and Windows/WHP. It needs no TAP, root access, driver, or host network
-  configuration. The gateway provides DNS over UDP and
+  configuration. `--net-tap` is incompatible and is rejected before any
+  endpoint or host resource is created. The gateway provides DNS over UDP and
   TCP, ICMP echo, and outbound TCP/UDP through ordinary host sockets. Consomme
-  rejects IPv4 fragments deterministically. Its per-connection TCP buffers start at 16 KiB and
+  rejects IPv4 fragments deterministically; policy filtering remains before
+  host socket creation. Its per-connection TCP buffers start at 16 KiB and
   are bounded at 4 MiB; UDP bindings expire after five minutes; and at most
   256 DNS requests are pending at once. At most 128 TCP, 256 UDP, and 16 ICMP
   guest flows are active at once; excess flows are deterministically rejected
   before a host socket is created.
 
+  `--allow-host <IPv4[/PREFIX]>`, `--block-host <IPv4[/PREFIX]>`, and
+  `--allow-endpoint <IPv4:TCP-PORT>` are repeatable, mutually exclusive
+  egress modes. Filtering runs before host socket creation. Active policy
+  fails closed for malformed packets, non-IPv4 traffic, and IPv4 options.
+  Exact endpoint mode also rejects UDP, ICMP, VLAN, fragments, and every TCP
+  destination not listed. Endpoint addresses must be usable unicast identities;
+  unspecified, current-network, loopback, link-local, multicast, reserved,
+  guest-self, subnet-network, and subnet-broadcast addresses are rejected before
+  host resources are opened. For each endpoint, ARP may resolve the endpoint
+  itself when it is on-link, or the gateway otherwise. Duplicate endpoint
+  addresses share one canonical next hop. This layer-2 permission does not relax
+  the independent destination, TCP, or port check. No implicit DNS exception is
+  added.
+
+  `--network-egress <allow|deny>` and `--network-ingress <allow|deny>` map
+  directional network default actions onto the portable profile. Egress defaults
+  to `allow`; ingress defaults to `deny`, preserving the profile's existing
+  behavior when neither option is present. Egress `deny` without allow rules
+  blocks every guest-originated frame before Consomme opens a host socket.
+  Responses belonging to a guest-initiated flow remain permitted when ingress
+  is denied; unsolicited connections toward the guest remain unavailable.
+
+  The portable profile cannot truthfully provide unrestricted inbound
+  connectivity, so `--network-ingress allow` is rejected before VM resources
+  are opened. Egress `allow` may accompany `--block-host`; egress `deny` may
+  accompany `--allow-host` or `--allow-endpoint`. Contradictory default and
+  rule combinations are rejected at the same validation boundary.
+
+  `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
+  the generic L3/L4 policy form. A rule is either `IPv4[/PREFIX]` or
+  `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`. These flags require an
+  explicit `--network-egress` default, accept at most 256 rules in each list,
+  and cannot be mixed with the legacy `--allow-host`, `--block-host`, or
+  `--allow-endpoint` forms. Deny rules are evaluated before allow rules.
+  Address-only rules apply to every IPv4 protocol; port-specific policies
+  reject fragmented IPv4 traffic because later fragments do not carry a
+  verifiable transport header. Parsing, canonicalization, and contradictory
+  option checks complete before VM resources are opened.
+
+  `--host-loopback <allow|deny>` controls host-local access. The portable
+  profile cannot provide generic bidirectional host-loopback connectivity:
+  explicit `allow` without `--host-loopback-forward` is rejected before VM
+  resources are opened. With deliberate forwards, `allow` preserves
+  guest-to-host access subject to egress policy and publishes only the named
+  host-to-guest ports. Omitting the option preserves the existing
+  guest-gateway-to-host-loopback mapping without publishing guest ports.
+  `deny` blocks general gateway and host-local destinations and rejects every
+  `--host-loopback-forward`.
+
+  `--network-proxy <IPv4:TCP-PORT>` preserves one exact proxy endpoint when
+  host loopback is denied. The guest-visible address must equal the derived
+  gateway, and only that TCP port is translated to host loopback. UDP on the
+  same port is not exempt, even with ordinary egress allowed. The exception is
+  included in the snapshot policy digest.
+
+  `--host-loopback-forward <tcp|udp:HOST-PORT:GUEST-PORT>` binds one localhost
+  port and forwards it into the guest. It requires explicit
+  `--host-loopback allow`; duplicate bindings and more than 64 forwards are
+  rejected before resources are opened. Live forwards are process-local
+  attachments and are rejected for snapshot capture or restore.
+  Explicit forwarding is port publishing, not support for a generic
+  bidirectional host-loopback allow policy.
+
   Networked snapshots record the `portable` profile, drain accepted TX and
-  endpoint-ready RX at the capture boundary, rewind unused guest RX descriptors,
-  and recreate a fresh Consomme endpoint generation on restore.
-  Restore of a networked snapshot requires `--network-profile portable`. Native
-  sockets and NAT flow tables are not serialized. The capture
+  endpoint-ready RX at the capture boundary, rewind unused guest RX
+  descriptors, and recreate a fresh Consomme endpoint generation on restore.
+  Restore of a networked snapshot requires `--network-profile portable` and
+  the same active egress policy rules. The policy digest binds the saved static
+  identity and its derived ARP next hops, which are reconstructed before vCPUs
+  start. Native sockets and NAT flow tables are not serialized. The capture
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
@@ -148,9 +214,9 @@ describes the source definitions.
   KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must
   be cached regular raw files with nonzero 512-byte-aligned geometry. An
   attached virtio console saves accepted but undelivered input and the offset
-  of a partially forwarded guest transmit descriptor. An attached microVM virtio-net device saves its
-  static identity, queue progress, drained packet ownership, and endpoint
-  generation.
+  of a partially forwarded guest transmit descriptor. An attached microVM
+  virtio-net device saves its static identity, queue progress, drained packet
+  ownership, endpoint generation, and policy requirement.
   The fixed microVM virtio-fs slot saves either an explicit dormant state or,
   when attached, its negotiated FUSE policy, namespace and handle identifiers,
   aliases, and directory cookies. The host tree remains external live state.
@@ -196,8 +262,8 @@ describes the source definitions.
   reject additive attachment.
 
   When the snapshot contains virtio-net, restore also requires
-  `--network-profile portable`; the snapshot's profile must match the supplied
-  portable configuration.
+  `--network-profile portable`; the snapshot's profile and canonical egress
+  policy must match the supplied portable configuration.
 
   For sandbox-block snapshots, restore repeats each read-only
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
