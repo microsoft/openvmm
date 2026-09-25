@@ -3,8 +3,9 @@
 
 //! File-system helpers for snapshot artifacts, including their
 //! platform-specific implementations: private files and directories,
-//! no-replace renames and directory flushes, and sparse-aware clone and copy
-//! with allocation accounting.
+//! no-replace renames and directory flushes, directory-relative artifact
+//! access, exact-file hard links, and sparse-aware clone and copy with
+//! allocation accounting.
 
 use anyhow::Context;
 #[cfg(windows)]
@@ -15,6 +16,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 
 const COPY_BUFFER_SIZE: usize = 1024 * 1024;
 
@@ -140,6 +142,207 @@ pub(super) fn write_bytes(path: &Path, bytes: &[u8], description: &str) -> anyho
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn create_hard_link_from_handle(
+    source: &std::fs::File,
+    directory: &std::fs::File,
+    name: &str,
+) -> std::io::Result<&'static str> {
+    use nix::fcntl::AT_FDCWD;
+    use nix::fcntl::AtFlags;
+    use std::os::fd::AsRawFd;
+
+    match nix::unistd::linkat(
+        source,
+        Path::new(""),
+        directory,
+        name,
+        AtFlags::AT_EMPTY_PATH,
+    ) {
+        Ok(()) => return Ok("linkat-empty-path"),
+        Err(error)
+            if matches!(
+                error,
+                nix::errno::Errno::EPERM | nix::errno::Errno::EINVAL | nix::errno::Errno::ENOENT
+            ) =>
+        {
+            tracing::debug!(
+                error = &nix_error(error) as &dyn std::error::Error,
+                "AT_EMPTY_PATH hard link is unavailable"
+            );
+        }
+        Err(error) => return Err(nix_error(error)),
+    }
+
+    let source_path = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
+    // Following is required to link the descriptor's target rather than the
+    // procfs symlink itself. The descriptor remains live, and the caller proves
+    // the resulting device/inode against `source` before publication.
+    nix::unistd::linkat(
+        AT_FDCWD,
+        &source_path,
+        directory,
+        name,
+        AtFlags::AT_SYMLINK_FOLLOW,
+    )
+    .map(|()| "linkat-proc-fd")
+    .map_err(nix_error)
+}
+
+#[cfg(windows)]
+pub(super) fn create_hard_link_from_handle(
+    source: &std::fs::File,
+    directory: &std::fs::File,
+    name: &str,
+) -> std::io::Result<&'static str> {
+    pal::windows::fs::relative::hard_link_relative(source, directory, std::ffi::OsStr::new(name))?;
+    Ok("file-link-information")
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(super) fn create_hard_link_from_handle(
+    _source: &std::fs::File,
+    _directory: &std::fs::File,
+    _name: &str,
+) -> std::io::Result<&'static str> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "exact-file hard links are unsupported on this platform",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn hard_link_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(
+            libc::EACCES
+                | libc::EMLINK
+                | libc::EINVAL
+                | libc::ELOOP
+                | libc::ENOENT
+                | libc::ENOSYS
+                | libc::EOPNOTSUPP
+                | libc::EPERM
+                | libc::EXDEV
+        )
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn hard_link_is_unsupported(error: &std::io::Error) -> bool {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    use windows_sys::Win32::Foundation::ERROR_FILE_SYSTEM_LIMITATION;
+    use windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION;
+    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+    use windows_sys::Win32::Foundation::ERROR_NOT_SAME_DEVICE;
+    use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
+    use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
+    use windows_sys::Win32::Foundation::ERROR_TOO_MANY_LINKS;
+
+    matches!(
+        error.raw_os_error(),
+        Some(raw) if matches!(
+            raw as u32,
+            ERROR_ACCESS_DENIED
+                | ERROR_FILE_SYSTEM_LIMITATION
+                | ERROR_INVALID_FUNCTION
+                | ERROR_INVALID_PARAMETER
+                | ERROR_NOT_SAME_DEVICE
+                | ERROR_NOT_SUPPORTED
+                | ERROR_PRIVILEGE_NOT_HELD
+                | ERROR_TOO_MANY_LINKS
+        )
+    )
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(super) fn hard_link_is_unsupported(_error: &std::io::Error) -> bool {
+    true
+}
+
+pub(super) fn verify_hard_link_identity(
+    source: &std::fs::File,
+    linked: &std::fs::File,
+    expected_length: u64,
+) -> anyhow::Result<()> {
+    let source_metadata = source
+        .metadata()
+        .context("failed to re-inspect automatic snapshot RAM handle")?;
+    let linked_metadata = linked
+        .metadata()
+        .context("failed to inspect linked snapshot memory")?;
+    anyhow::ensure!(
+        source_metadata.file_type().is_file() && linked_metadata.file_type().is_file(),
+        "automatic snapshot RAM hard link does not resolve to regular files"
+    );
+    anyhow::ensure!(
+        source_metadata.len() == expected_length && linked_metadata.len() == expected_length,
+        "automatic snapshot RAM hard-link EOF does not match manifest ({expected_length} bytes)"
+    );
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        anyhow::ensure!(
+            source_metadata.dev() == linked_metadata.dev()
+                && source_metadata.ino() == linked_metadata.ino(),
+            "automatic snapshot RAM hard link has the wrong device or inode"
+        );
+    }
+    #[cfg(windows)]
+    {
+        let source_identity = pal::windows::fs::relative::file_identity(source)
+            .context("failed to query automatic snapshot RAM identity")?;
+        let linked_identity = pal::windows::fs::relative::file_identity(linked)
+            .context("failed to query linked snapshot RAM identity")?;
+        anyhow::ensure!(
+            source_identity == linked_identity && source_identity.end_of_file == expected_length,
+            "automatic snapshot RAM hard link has the wrong file identity or EOF"
+        );
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    anyhow::bail!("exact-file hard-link identity checks are unsupported on this platform");
+
+    Ok(())
+}
+
+/// Sizes a newly created snapshot RAM backing.
+///
+/// Windows leaves the file non-sparse to avoid slow copy-on-write faults from
+/// sparse files. Other supported platforms retain sparse allocation.
+pub fn initialize_snapshot_memory_backing_file(
+    file: &std::fs::File,
+    size: u64,
+) -> anyhow::Result<u64> {
+    let metadata = file
+        .metadata()
+        .context("failed to inspect new snapshot memory backing")?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "snapshot memory backing handle is not a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() == 0,
+        "new snapshot memory backing is not empty"
+    );
+
+    size_empty_file(file, size, "snapshot memory backing")?;
+    let allocated_bytes = allocated_file_bytes(file, size)
+        .context("failed to inspect snapshot memory backing allocation")?;
+    #[cfg(not(windows))]
+    anyhow::ensure!(
+        allocated_bytes == 0,
+        "snapshot memory backing allocated {allocated_bytes} bytes while sizing to {size} bytes"
+    );
+    tracing::info!(
+        logical_bytes = size,
+        allocated_bytes,
+        "initialized snapshot RAM backing"
+    );
+    Ok(allocated_bytes)
+}
+
 pub(super) fn copy_exact(
     source_file: &std::fs::File,
     destination_path: &Path,
@@ -195,7 +398,6 @@ pub(super) fn copy_exact(
     Ok(())
 }
 
-#[cfg(not(windows))]
 fn size_empty_file(file: &std::fs::File, length: u64, description: &str) -> anyhow::Result<()> {
     file.set_len(0)
         .with_context(|| format!("failed to reset {description}"))?;
@@ -451,6 +653,138 @@ pub(super) fn allocated_file_bytes(file: &std::fs::File, _length: u64) -> anyhow
     Ok(file.metadata()?.len())
 }
 
+pub(super) struct OpenedSnapshotDirectory {
+    pub(super) file: std::fs::File,
+    path: PathBuf,
+}
+
+impl OpenedSnapshotDirectory {
+    pub(super) fn open_for_publication(path: &Path) -> anyhow::Result<Self> {
+        Self::open_impl(path, true)
+    }
+
+    fn open_impl(path: &Path, allow_changes: bool) -> anyhow::Result<Self> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+            use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+            use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+            use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+
+            options
+                .share_mode(if allow_changes {
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+                } else {
+                    FILE_SHARE_READ
+                })
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        #[cfg(not(windows))]
+        let _ = allow_changes;
+        let file = options
+            .open(path)
+            .with_context(|| format!("failed to open snapshot directory {}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("failed to inspect snapshot directory {}", path.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir(),
+            "snapshot path is not a directory: {}",
+            path.display(),
+        );
+        reject_windows_reparse_point(&metadata, "snapshot directory", path)?;
+        Ok(Self {
+            file,
+            path: path.to_owned(),
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn open_regular_file(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<std::fs::File> {
+        #[cfg(target_os = "linux")]
+        let file = {
+            use nix::fcntl::OFlag;
+            use nix::sys::stat::Mode;
+
+            let fd = nix::fcntl::openat(
+                &self.file,
+                name,
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(nix_error)
+            .with_context(|| {
+                format!(
+                    "failed to open {description} at {}",
+                    self.display_path(name).display()
+                )
+            })?;
+            std::fs::File::from(fd)
+        };
+        #[cfg(windows)]
+        let file = pal::windows::fs::relative::open_relative_read_only(
+            &self.file,
+            std::ffi::OsStr::new(name),
+        )
+        .with_context(|| {
+            format!(
+                "failed to open {description} at {}",
+                self.display_path(name).display()
+            )
+        })?;
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let file = open_regular_file_impl(&self.path.join(name), description)?;
+
+        validate_opened_regular_file(&file, description, &self.display_path(name))?;
+        Ok(file)
+    }
+
+    pub(super) fn open_regular_file_for_identity(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<std::fs::File> {
+        #[cfg(windows)]
+        let file = pal::windows::fs::relative::open_relative_for_identity(
+            &self.file,
+            std::ffi::OsStr::new(name),
+        )
+        .with_context(|| {
+            format!(
+                "failed to open {description} at {}",
+                self.display_path(name).display()
+            )
+        })?;
+        #[cfg(not(windows))]
+        let file = self.open_regular_file(name, description)?;
+
+        validate_opened_regular_file(&file, description, &self.display_path(name))?;
+        Ok(file)
+    }
+
+    pub(super) fn display_path(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.path.join(name)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn nix_error(error: nix::errno::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(error as i32)
+}
+
 pub(super) fn open_regular_file(path: &Path, description: &str) -> anyhow::Result<std::fs::File> {
     open_regular_file_impl(path, description)
 }
@@ -554,7 +888,7 @@ mod tests {
             .create_new(true)
             .open(source_path)
             .unwrap();
-        source.set_len(MEMORY_SIZE).unwrap();
+        initialize_snapshot_memory_backing_file(&source, MEMORY_SIZE).unwrap();
         source.write_all(b"head").unwrap();
         source.seek(SeekFrom::End(-4)).unwrap();
         source.write_all(b"tail").unwrap();
