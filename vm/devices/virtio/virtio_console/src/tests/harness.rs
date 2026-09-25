@@ -280,6 +280,22 @@ impl TestHarness {
         self.handle = handle;
     }
 
+    pub(super) fn replace_with_broker(&mut self, instance_id: [u8; 16], capability: [u8; 32]) {
+        let (io, handle) = new_controlled_mock_serial();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(self.driver.clone()));
+        self.device = VirtioConsoleDevice::new_broker(
+            &driver_source,
+            Box::new(io),
+            VirtioControlConsoleBrokerConfig {
+                instance_id,
+                capability,
+                expected_peer_identity: LocalPeerIdentity::UnixUid(1000),
+                auth_timeout_ms: 5000,
+            },
+        );
+        self.handle = handle;
+    }
+
     pub(super) async fn send_guest_bytes(&mut self, desc_index: u16, bytes: &[u8]) {
         self.post_tx_and_signal(desc_index, bytes);
         let (used_id, used_len) = self.wait_for_tx_used().await;
