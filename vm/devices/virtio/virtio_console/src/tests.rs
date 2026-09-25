@@ -7,6 +7,10 @@
 //! serial IO backend, and real virtio queues — then drive requests through the
 //! descriptor rings just as a guest driver would.
 
+mod direct;
+mod harness;
+mod saved_state;
+
 use crate::VirtioConsoleDevice;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -55,7 +59,7 @@ const TX_USED_ADDR: u64 = 0x12000;
 
 // Data area for payloads
 const DATA_BASE: u64 = 0x20000;
-const TOTAL_MEM_SIZE: usize = 0x30000;
+const TOTAL_MEM_SIZE: usize = 0x200000;
 
 // --- MockSerialIo ---
 
@@ -77,6 +81,8 @@ struct MockShared {
     write_limit_then_disconnect: Option<usize>,
     /// If set, each poll_write accepts at most this many bytes (persistent).
     max_write_size: Option<usize>,
+    /// Extra state used by `harness::ControlledMockSerialIo`.
+    controls: harness::MockControls,
 }
 
 /// A mock `SerialIo` implementation backed by shared state.
@@ -245,6 +251,7 @@ fn new_mock_serial() -> (MockSerialIo, MockSerialHandle) {
         disconnect_waker: None,
         write_limit_then_disconnect: None,
         max_write_size: None,
+        controls: Default::default(),
     }));
     (
         MockSerialIo {
@@ -310,6 +317,14 @@ impl TestHarness {
 
     /// Enable the device with both queues.
     async fn enable(&mut self) {
+        self.enable_with_state(None, None).await;
+    }
+
+    async fn enable_with_state(
+        &mut self,
+        receive_state: Option<virtio::queue::QueueState>,
+        transmit_state: Option<virtio::queue::QueueState>,
+    ) {
         let features = VirtioDeviceFeatures::new();
 
         // Queue 0: receiveq (host→guest)
@@ -329,7 +344,7 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &features,
-                None,
+                receive_state,
             )
             .await
             .unwrap();
@@ -351,7 +366,7 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &features,
-                None,
+                transmit_state,
             )
             .await
             .unwrap();

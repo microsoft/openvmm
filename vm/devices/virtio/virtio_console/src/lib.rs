@@ -36,6 +36,7 @@
 
 mod direct;
 pub mod resolver;
+mod saved_state;
 mod spec;
 #[cfg(test)]
 mod tests;
@@ -62,6 +63,9 @@ use virtio::VirtioQueue;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -113,7 +117,7 @@ impl VirtioDevice for VirtioConsoleDevice {
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
         let guest_memory = resources.guest_memory.clone();
-        let queue = VirtioQueue::new(
+        let mut queue = VirtioQueue::new(
             *features,
             resources.params,
             resources.guest_memory,
@@ -122,40 +126,18 @@ impl VirtioDevice for VirtioConsoleDevice {
             initial_state,
         )?;
 
-        assert!(idx < 2);
+        anyhow::ensure!(idx < 2, "invalid virtio-console queue index {idx}");
 
-        if self.worker.has_state() {
-            // Worker is already running with the other queue — inject this one.
-            // update_with cancels the current run iteration, applies the
-            // closure, then the worker restarts.
-            self.worker.update_with(move |_worker, state| {
-                if let Some(state) = state {
-                    if idx == 0 {
-                        state.receiveq = Some(queue);
-                    } else {
-                        state.transmitq = Some(queue);
-                    }
-                }
-            });
+        self.worker.stop().await;
+        let state = self.worker.state_mut().unwrap();
+        saved_state::check_restored_tx_offset(idx, state.partial_transmit, &mut queue)?;
+        state.mem = guest_memory;
+        if idx == 0 {
+            state.receiveq = Some(queue);
         } else {
-            // First queue to start — create the worker state.
-            let (receiveq, transmitq) = if idx == 0 {
-                (Some(queue), None)
-            } else {
-                (None, Some(queue))
-            };
-            self.worker.insert(
-                &self.driver,
-                "virtio-console",
-                ConsoleWorkerState {
-                    receiveq,
-                    transmitq,
-                    mem: guest_memory,
-                    partial_transmit: 0,
-                },
-            );
-            self.worker.start();
+            state.transmitq = Some(queue);
         }
+        self.worker.start();
         Ok(())
     }
 
@@ -172,21 +154,45 @@ impl VirtioDevice for VirtioConsoleDevice {
         let queue = match idx {
             0 => state.receiveq.take(),
             1 => state.transmitq.take(),
-            _ => unreachable!(),
+            _ => return None,
         };
 
-        // If both queues have been taken, remove the worker state entirely.
-        // Otherwise, restart the worker so the remaining queue stays active.
-        if state.receiveq.is_none() && state.transmitq.is_none() {
-            self.worker.remove();
-        } else {
+        // Keep the stopped worker state when both queues are gone so private
+        // TX/RX progress remains available to snapshot capture.
+        if state.receiveq.is_some() || state.transmitq.is_some() {
             self.worker.start();
         }
 
         queue.map(|q| q.queue_state())
     }
 
-    async fn reset(&mut self) {}
+    async fn reset(&mut self) {
+        self.reset_private_state();
+    }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.set_input_gated(true).await
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.set_input_gated(false).await
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
+
+    fn save_device(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        self.save_private_state()
+    }
+
+    fn restore_device(&mut self, state: Option<SavedStateBlob>) -> Result<(), RestoreError> {
+        self.restore_private_state(state)
+    }
+
+    fn device_state_validator(&self) -> virtio::device::saved_state::DeviceStateValidator {
+        self.private_state_validator()
+    }
 }
 
 struct ConsoleWorker {
@@ -201,6 +207,9 @@ struct ConsoleWorkerState {
     /// Bytes already written for the current transmitq descriptor.
     /// Must survive cancel/restart to avoid re-sending data.
     partial_transmit: usize,
+    #[inspect(with = "std::collections::VecDeque::len")]
+    staged_rx: std::collections::VecDeque<u8>,
+    input_gated: bool,
 }
 
 impl InspectTaskMut<ConsoleWorkerState> for ConsoleWorker {
@@ -257,6 +266,8 @@ impl ConsoleWorker {
         let mut io = parking_lot::Mutex::new(serial_io);
         let mem = &state.mem;
         let partial_transmit = &mut state.partial_transmit;
+        let staged_rx = &mut state.staged_rx;
+        let input_gated = state.input_gated;
 
         // If neither queue is present, there's nothing to do.
         if receiveq.is_none() && transmitq.is_none() {
@@ -298,7 +309,7 @@ impl ConsoleWorker {
                     | futures::future::Either::Right((result, _)) => result?,
                 };
             } else {
-                let rx = direct::receive(receiveq, &io, mem);
+                let rx = direct::receive(receiveq, &io, mem, staged_rx, input_gated);
                 let tx = async {
                     let Some(transmitq) = transmitq.as_mut() else {
                         std::future::pending().await
