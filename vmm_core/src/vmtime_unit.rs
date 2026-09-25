@@ -38,6 +38,11 @@ impl StateUnit for KeeperUnit<'_> {
         self.0.restore(state.parse()?).await;
         Ok(())
     }
+
+    async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
+        self.0.advance(duration).await;
+        Ok(())
+    }
 }
 
 /// Runs the VM time keeper, responding to state changes from `recv`, until
