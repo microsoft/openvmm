@@ -115,7 +115,7 @@ pub trait ProtobufSaveRestore {
 }
 
 /// An opaque saved state blob, encoded as a protobuf message.
-#[derive(Debug, Protobuf)]
+#[derive(Clone, Debug, Protobuf)]
 #[mesh(transparent)]
 pub struct SavedStateBlob(ProtobufAny);
 
@@ -242,5 +242,18 @@ pub mod private {
                     Some(&protofile::message_description::<$ident>());
             };
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NoSavedState;
+    use super::SavedStateBlob;
+
+    #[test]
+    fn cloned_saved_state_blob_parses() {
+        let state = SavedStateBlob::new(NoSavedState);
+        state.clone().parse::<NoSavedState>().unwrap();
+        state.parse::<NoSavedState>().unwrap();
     }
 }
