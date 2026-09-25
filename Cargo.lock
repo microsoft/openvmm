@@ -10916,12 +10916,15 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chipset_device",
+ "event-listener",
  "fuse",
  "futures",
  "guestmem",
  "inspect",
  "lx",
  "lxutil",
+ "mesh",
  "ntapi",
  "pal",
  "pal_async",

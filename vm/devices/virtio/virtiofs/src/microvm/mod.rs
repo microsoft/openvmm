@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! microVM-specific virtio-fs profile, policy, and device support.
+//! microVM-specific virtio-fs profile, policy, persistence, and device support.
 
 pub(crate) mod device;
+pub(crate) mod file;
 pub(crate) mod fs;
 #[cfg(test)]
 mod fs_tests;
