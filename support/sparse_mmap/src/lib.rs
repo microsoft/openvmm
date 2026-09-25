@@ -18,6 +18,7 @@ pub use sys::MappableRef;
 pub use sys::SparseMapping;
 pub use sys::alloc_shared_memory;
 pub use sys::alloc_shared_memory_hugetlb;
+pub use sys::copy_on_write::new_mappable_from_file_copy_on_write;
 pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
@@ -188,6 +189,8 @@ impl SparseMapping {
 
 #[cfg(test)]
 mod tests {
+    mod copy_on_write;
+
     use super::*;
 
     static BUF: [u8; 65536] = [0xcc; 65536];
