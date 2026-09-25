@@ -36,8 +36,9 @@
 
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "the control-session broker consumes the protocol")
+    expect(dead_code, reason = "the broker worker drives the state machine")
 )]
+pub(crate) mod control_session_broker;
 pub(crate) mod control_session_protocol;
 mod direct;
 pub mod resolver;
