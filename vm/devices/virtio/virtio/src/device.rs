@@ -105,10 +105,30 @@ pub trait VirtioDevice: InspectMut + Send {
 
     /// Reset device-internal state to initial values.
     ///
-    /// Called after all queues have been stopped on guest-initiated reset.
+    /// Called after all queues have been stopped, on a guest-initiated reset
+    /// and on a reset of the VM. The reset keeps the host-input gate that
+    /// [`quiesce_input`](Self::quiesce_input) closed: only
+    /// [`resume_input`](Self::resume_input) opens it, so a guest that resets
+    /// the device while the VMM holds its input gets none until the VMM
+    /// releases it.
+    ///
     /// Default: no-op.
     fn reset(&mut self) -> impl Future<Output = ()> + Send {
         async {}
+    }
+
+    /// Stops accepting new host input while preserving device and queue state.
+    ///
+    /// The gate holds, across queue restarts and resets, until
+    /// [`resume_input`](Self::resume_input). Queues that start while it is
+    /// closed start gated.
+    fn quiesce_input(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Resumes host input after a failed save transaction.
+    fn resume_input(&mut self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
     }
 
     /// Whether the device supports save/restore.
@@ -196,6 +216,12 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
+    /// Stops accepting new host input while preserving device state.
+    fn quiesce_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
+    /// Resumes host input after a failed save transaction.
+    fn resume_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
     /// Whether the device supports save/restore.
     fn supports_save_restore(&self) -> bool;
 
@@ -266,6 +292,14 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(VirtioDevice::reset(self))
+    }
+
+    fn quiesce_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::quiesce_input(self))
+    }
+
+    fn resume_input(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::resume_input(self))
     }
 
     fn supports_save_restore(&self) -> bool {
