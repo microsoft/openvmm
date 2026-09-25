@@ -87,6 +87,8 @@ use windows_sys::Win32::System::Memory::PAGE_READONLY;
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 #[cfg(windows)]
+use windows_sys::Win32::System::Memory::PAGE_WRITECOPY;
+#[cfg(windows)]
 use windows_sys::Win32::System::Memory::SECTION_MAP_READ;
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::SECTION_MAP_WRITE;
@@ -118,6 +120,8 @@ pub(crate) enum MapperRole {
         /// enabled when this is set. Carried on the `Primary` variant because it
         /// is meaningless for a secondary mapper.
         supports_memory_fault_resolution: bool,
+        /// Whether to retain fault counters for diagnostics.
+        track_memory_faults: bool,
     },
     /// Any other mapper; plain read-write 4 KB pages.
     Secondary,
@@ -131,8 +135,8 @@ struct MappingProps {
     /// Backed by private anonymous memory (committed up front) rather than a
     /// shared file/section mapping.
     private: bool,
-    /// General per-mapping fault counters, always present. See [`FaultStats`].
-    stats: FaultStats,
+    /// Optional per-mapping fault counters. See [`FaultStats`].
+    stats: Option<FaultStats>,
     /// Soft-large-page (Windows THP) state, or `None` when the scheme does not
     /// apply (non-primary/device mappers, read-only or non-THP ranges, and every
     /// non-Windows host). See the [`soft_lp`] module.
@@ -141,16 +145,28 @@ struct MappingProps {
 
 /// Per-mapping fault counters, exposed via `Inspect`.
 ///
-/// Recorded for every mapping regardless of host OS, role, or backing, so
-/// general fault accounting is available even on mappings that never use soft
-/// large pages. Kept per mapping — one set of counters per backing, and thus
-/// per NUMA node — so they scale for large multi-NUMA-node VMs rather than
-/// contending on a single global counter. The counters are plain atomics
-/// (`SharedCounter`), bumped in place under the mapping-index read lock.
+/// When diagnostics request accounting, counters are recorded for every mapping
+/// regardless of host OS or backing, including mappings that never use soft
+/// large pages. They remain absent on the default path. Counters are kept per
+/// mapping — one set per backing, and thus per NUMA node — so they scale for
+/// large multi-NUMA-node VMs rather than contending on a single global counter.
+/// The counters are plain atomics (`SharedCounter`), bumped in place under the
+/// mapping-index read lock.
 #[derive(Debug, Default, Inspect)]
 struct FaultStats {
     /// Guest memory faults resolved for this mapping.
     guest_faults: SharedCounter,
+    /// Bytes returned to the backend while resolving guest memory faults.
+    populated_bytes: SharedCounter,
+}
+
+/// Aggregate fault counters for all mappings owned by a VA mapper.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MemoryFaultCounters {
+    /// Guest memory faults resolved through this mapper.
+    pub guest_faults: u64,
+    /// Bytes returned to the backend while resolving those faults.
+    pub populated_bytes: u64,
 }
 
 /// A virtual address space mapper for guest memory.
@@ -173,6 +189,23 @@ impl std::fmt::Debug for VaMapper {
     }
 }
 
+impl VaMapper {
+    pub(crate) fn fault_counters(&self) -> MemoryFaultCounters {
+        self.inner.mappings.read().iter().fold(
+            MemoryFaultCounters::default(),
+            |mut total, (_, props)| {
+                if let Some(stats) = &props.stats {
+                    total.guest_faults = total.guest_faults.wrapping_add(stats.guest_faults.get());
+                    total.populated_bytes = total
+                        .populated_bytes
+                        .wrapping_add(stats.populated_bytes.get());
+                }
+                total
+            },
+        )
+    }
+}
+
 impl Drop for VaMapper {
     fn drop(&mut self) {
         // Do not join the mapper thread here. The mapping manager must process
@@ -189,10 +222,10 @@ impl Drop for VaMapper {
 impl Inspect for VaMapper {
     /// Contributes each mapping's counters to the shared `mappings` node, keyed
     /// by GPA range, so the stats sit alongside the mapping they describe (the
-    /// mapping-manager entry with the same range merges with this one). Every
-    /// mapping contributes a `faults` child (general fault accounting); only
-    /// soft-large-page mappings (the primary mapper's writable THP ranges on
-    /// Windows) additionally contribute a `soft_large_pages` child.
+    /// mapping-manager entry with the same range merges with this one). Mappings
+    /// contribute a `faults` child when accounting is enabled; soft-large-page
+    /// mappings (the primary mapper's writable THP ranges on Windows)
+    /// additionally contribute a `soft_large_pages` child.
     fn inspect(&self, req: inspect::Request<'_>) {
         req.respond().field(
             "mappings",
@@ -205,7 +238,9 @@ impl Inspect for VaMapper {
                         &range.to_string(),
                         inspect::adhoc(|req| {
                             let mut resp = req.respond();
-                            resp.field("faults", &props.stats);
+                            if let Some(stats) = &props.stats {
+                                resp.field("faults", stats);
+                            }
                             if let Some(sl) = &props.soft_lp {
                                 resp.field("soft_large_pages", sl);
                             }
@@ -248,6 +283,8 @@ struct MapperInner {
     /// wedge on the first guest write; the primary mapper only enables them when
     /// this is set.
     supports_memory_fault_resolution: bool,
+    /// Whether mappings retain guest-memory fault counters for diagnostics.
+    track_memory_faults: bool,
     req_send: mesh::Sender<MappingRequest>,
     /// Maintains a weak reference to avoid a reference cycle with the partition.
     host_access: OnceLock<HostAccess>,
@@ -354,7 +391,8 @@ impl MapperTask {
         // `soft_lp` module. They also depend on the partition delivering write
         // faults to raise deferred-protect windows, so don't even build one when
         // the partition can't resolve faults.
-        let soft_lp = if self.inner.supports_memory_fault_resolution {
+        let copy_on_write = matches!(params.backing, MappingBacking::CopyOnWriteFile { .. });
+        let soft_lp = if self.inner.supports_memory_fault_resolution && !copy_on_write {
             SoftLp::new(
                 params.range,
                 &params.policy,
@@ -375,8 +413,15 @@ impl MapperTask {
                 mappable,
                 file_offset,
             } => {
-                self.map_file(&params, mappable, *file_offset, deferred_protect)?;
+                self.map_file(&params, mappable, *file_offset, deferred_protect, false)?;
                 false
+            }
+            MappingBacking::CopyOnWriteFile {
+                mappable,
+                file_offset,
+            } => {
+                self.map_file(&params, mappable, *file_offset, false, true)?;
+                true
             }
             MappingBacking::Private => {
                 self.map_private(&params, deferred_protect)?;
@@ -387,7 +432,7 @@ impl MapperTask {
             params.range,
             MappingProps {
                 private,
-                stats: FaultStats::default(),
+                stats: self.inner.track_memory_faults.then(FaultStats::default),
                 soft_lp,
             },
         );
@@ -402,6 +447,7 @@ impl MapperTask {
         mappable: &super::mappable::Mappable,
         file_offset: u64,
         deferred_protect: bool,
+        copy_on_write: bool,
     ) -> Result<(), MappingError> {
         let &MappingParams {
             range,
@@ -423,18 +469,29 @@ impl MapperTask {
         // fails with ERROR_INVALID_PARAMETER). Deferred protect implies
         // `writable`.
         #[cfg(windows)]
-        let (protect, access) = (
-            if writable {
-                PAGE_READWRITE
-            } else {
-                PAGE_READONLY
-            },
-            if writable {
-                SECTION_MAP_READ | SECTION_MAP_WRITE
-            } else {
-                SECTION_MAP_READ
-            },
-        );
+        let (protect, access) = if copy_on_write {
+            (
+                if writable {
+                    PAGE_WRITECOPY
+                } else {
+                    PAGE_READONLY
+                },
+                SECTION_MAP_READ,
+            )
+        } else {
+            (
+                if writable {
+                    PAGE_READWRITE
+                } else {
+                    PAGE_READONLY
+                },
+                if writable {
+                    SECTION_MAP_READ | SECTION_MAP_WRITE
+                } else {
+                    SECTION_MAP_READ
+                },
+            )
+        };
         // `deferred_protect` is only consulted on Windows below; keep it live on
         // other targets so the shared parameter doesn't warn.
         let _ = deferred_protect;
@@ -451,13 +508,23 @@ impl MapperTask {
                 )
             }
             _ => {
-                self.inner.mapping.map_file(
-                    range.start() as usize,
-                    range.len() as usize,
-                    mappable,
-                    file_offset,
-                    writable,
-                )
+                if copy_on_write {
+                    self.inner.mapping.map_file_copy_on_write(
+                        range.start() as usize,
+                        range.len() as usize,
+                        mappable,
+                        file_offset,
+                        writable,
+                    )
+                } else {
+                    self.inner.mapping.map_file(
+                        range.start() as usize,
+                        range.len() as usize,
+                        mappable,
+                        file_offset,
+                        writable,
+                    )
+                }
             }
         };
 
@@ -732,11 +799,12 @@ impl VaMapper {
         // Soft large pages apply only to the primary mapper, and only when the
         // partition resolves faults; `supports_memory_fault_resolution` rides on
         // the `Primary` variant.
-        let (primary, supports_memory_fault_resolution) = match role {
+        let (primary, supports_memory_fault_resolution, track_memory_faults) = match role {
             MapperRole::Primary {
                 supports_memory_fault_resolution,
-            } => (true, supports_memory_fault_resolution),
-            MapperRole::Secondary => (false, false),
+                track_memory_faults,
+            } => (true, supports_memory_fault_resolution, track_memory_faults),
+            MapperRole::Secondary => (false, false, false),
         };
         let mapping = match &remote_process {
             None => SparseMapping::new_with_minimum_alignment(
@@ -769,6 +837,7 @@ impl VaMapper {
             eager: AtomicBool::new(eager),
             primary,
             supports_memory_fault_resolution,
+            track_memory_faults,
             req_send,
             host_access: OnceLock::new(),
         });
@@ -1010,19 +1079,22 @@ impl ResolveMemoryFault for VaMapper {
                 UnexpectedPageFault,
             ));
         }
-        props.stats.guest_faults.increment();
-
         // Soft large pages (Windows) raise the covering 2 MB window on the first
         // write and may resolve to the whole window; every other mapping (and
         // every non-Windows host) resolves to the single faulting page.
-        match &props.soft_lp {
+        let populated = match &props.soft_lp {
             Some(sl) => sl
                 .resolve(&self.inner.mapping, fault, write, start, end)
                 .map_err(|err| {
                     GuestMemoryBackingError::new(GuestMemoryErrorKind::Other, fault.start(), err)
                 }),
             None => Ok(fault),
+        }?;
+        if let Some(stats) = &props.stats {
+            stats.guest_faults.increment();
+            stats.populated_bytes.add(populated.len());
         }
+        Ok(populated)
     }
 }
 

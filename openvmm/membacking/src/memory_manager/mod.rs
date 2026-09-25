@@ -8,6 +8,7 @@ mod device_memory;
 pub use device_memory::DeviceMemoryMapper;
 
 use crate::RemoteProcess;
+use crate::mapping_manager::FileMappingMode;
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingBacking;
 use crate::mapping_manager::MappingManager;
@@ -62,11 +63,22 @@ pub struct GuestMemoryManager {
     supports_memory_fault_resolution: bool,
 }
 
+/// Aggregate guest-physical fault counters for a memory manager.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoryFaultCounters {
+    /// Guest memory faults resolved through the VMM.
+    pub guest_faults: u64,
+    /// Bytes returned to the backend while resolving those faults.
+    pub populated_bytes: u64,
+}
+
 /// A single RAM backing allocation — one memfd or anonymous region.
 #[derive(Debug)]
 struct RamBacking {
     /// The file-backed memory handle. `None` for private (anonymous) backings.
     mappable: Option<Mappable>,
+    /// How writes to a file-backed mapping are handled.
+    file_mapping_mode: FileMappingMode,
     /// GPA ranges covered by this backing.
     ranges: Vec<MemoryRange>,
     /// Prefetch pages at build time.
@@ -169,6 +181,9 @@ pub enum MemoryBuildError {
     /// Hugepages are incompatible with x86 legacy RAM splitting.
     #[error("hugepages are incompatible with x86 legacy RAM splitting")]
     HugepagesWithLegacy,
+    /// Copy-on-write mappings require an existing file backing.
+    #[error("copy-on-write file mapping requires an existing memory backing")]
+    CopyOnWriteWithoutExistingBacking,
     /// Invalid hugepage size.
     #[error("hugepage size {0} must be a power of two and at least the host page size")]
     InvalidHugepageSize(MemorySize),
@@ -212,6 +227,7 @@ pub struct RamBackingRequest {
     hugepages: bool,
     hugepage_size: Option<u64>,
     existing_mappable: Option<Mappable>,
+    file_mapping_mode: FileMappingMode,
     host_numa_node: Option<u32>,
 }
 
@@ -229,6 +245,7 @@ impl RamBackingRequest {
             hugepages: false,
             hugepage_size: None,
             existing_mappable: None,
+            file_mapping_mode: FileMappingMode::Shared,
             host_numa_node: None,
         }
     }
@@ -269,6 +286,12 @@ impl RamBackingRequest {
     /// When set, no new allocation is performed for this backing.
     pub fn existing_mappable(mut self, mappable: Mappable) -> Self {
         self.existing_mappable = Some(mappable);
+        self
+    }
+
+    /// Controls whether writes update an existing file backing.
+    pub fn file_mapping_mode(mut self, mode: FileMappingMode) -> Self {
+        self.file_mapping_mode = mode;
         self
     }
 
@@ -348,6 +371,7 @@ pub struct GuestMemoryBuilder {
     pin_mappings: bool,
     x86_legacy_support: bool,
     supports_memory_fault_resolution: bool,
+    track_memory_faults: bool,
     backing_requests: Vec<RamBackingRequest>,
 }
 
@@ -359,6 +383,7 @@ impl GuestMemoryBuilder {
             pin_mappings: false,
             x86_legacy_support: false,
             supports_memory_fault_resolution: false,
+            track_memory_faults: false,
             backing_requests: Vec::new(),
         }
     }
@@ -404,6 +429,12 @@ impl GuestMemoryBuilder {
         self
     }
 
+    /// Enables guest-memory fault accounting for diagnostics.
+    pub fn track_memory_faults(mut self, enable: bool) -> Self {
+        self.track_memory_faults = enable;
+        self
+    }
+
     /// Adds a RAM backing request. Call once per backing (one per NUMA node,
     /// or once for a non-NUMA VM).
     pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
@@ -427,6 +458,11 @@ impl GuestMemoryBuilder {
             }
             if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
+            }
+            if req.file_mapping_mode == FileMappingMode::CopyOnWrite
+                && req.existing_mappable.is_none()
+            {
+                return Err(MemoryBuildError::CopyOnWriteWithoutExistingBacking);
             }
             if req.host_numa_node.is_some()
                 && cfg!(not(any(target_os = "linux", target_os = "windows")))
@@ -485,6 +521,7 @@ impl GuestMemoryBuilder {
             if req.private_memory {
                 backings.push(RamBacking {
                     mappable: None,
+                    file_mapping_mode: FileMappingMode::Shared,
                     ranges: req.ranges,
                     prefetch: req.prefetch,
                     transparent_hugepages: req.transparent_hugepages,
@@ -538,6 +575,7 @@ impl GuestMemoryBuilder {
 
             backings.push(RamBacking {
                 mappable: Some(mappable),
+                file_mapping_mode: req.file_mapping_mode,
                 ranges: req.ranges,
                 // On Windows, hugepage (SEC_LARGE_PAGES) backing only yields 2 MB
                 // SLAT entries when the SLAT is populated in >= 512-page batches;
@@ -575,6 +613,7 @@ impl GuestMemoryBuilder {
             max_addr,
             max_hugepage_size,
             self.supports_memory_fault_resolution,
+            self.track_memory_faults,
         )
         .await
         .map_err(MemoryBuildError::VaMapper)?;
@@ -624,12 +663,18 @@ impl GuestMemoryBuilder {
                     // region-driven DMA machinery (mapped by host VA). Without
                     // this, an assigned device DMAing to private RAM would take
                     // IOMMU faults (silent DMA failure).
-                    let backing_kind = match &backing.mappable {
-                        Some(mappable) => MappingBacking::File {
+                    let backing_kind = match (&backing.mappable, backing.file_mapping_mode) {
+                        (Some(mappable), FileMappingMode::Shared) => MappingBacking::File {
                             mappable: mappable.clone(),
                             file_offset,
                         },
-                        None => MappingBacking::Private,
+                        (Some(mappable), FileMappingMode::CopyOnWrite) => {
+                            MappingBacking::CopyOnWriteFile {
+                                mappable: mappable.clone(),
+                                file_offset,
+                            }
+                        }
+                        (None, _) => MappingBacking::Private,
                     };
                     region
                         .add_mapping(
@@ -688,17 +733,42 @@ impl GuestMemoryBuilder {
 #[derive(Debug, MeshPayload)]
 pub struct SharedMemoryBacking {
     guest_ram: Mappable,
+    file_mapping_mode: FileMappingMode,
 }
 
 impl SharedMemoryBacking {
     /// Create a SharedMemoryBacking from a mappable handle/fd.
     pub fn from_mappable(guest_ram: Mappable) -> Self {
-        Self { guest_ram }
+        Self {
+            guest_ram,
+            file_mapping_mode: FileMappingMode::Shared,
+        }
+    }
+
+    /// Create a SharedMemoryBacking with an explicit file mapping mode.
+    pub fn from_mappable_with_mode(
+        guest_ram: Mappable,
+        file_mapping_mode: FileMappingMode,
+    ) -> Self {
+        Self {
+            guest_ram,
+            file_mapping_mode,
+        }
     }
 
     /// Returns the mappable, consuming this backing.
     pub fn into_mappable(self) -> Mappable {
         self.guest_ram
+    }
+
+    /// Returns whether writes to this backing are private to the current VM.
+    pub fn is_copy_on_write(&self) -> bool {
+        self.file_mapping_mode == FileMappingMode::CopyOnWrite
+    }
+
+    /// Returns the mappable and mapping mode, consuming this backing.
+    pub fn into_parts(self) -> (Mappable, FileMappingMode) {
+        (self.guest_ram, self.file_mapping_mode)
     }
 }
 
@@ -734,6 +804,15 @@ impl GuestMemoryManager {
     pub fn client(&self) -> GuestMemoryClient {
         GuestMemoryClient {
             mapping_manager: self.mapping_manager.client().clone(),
+        }
+    }
+
+    /// Returns aggregate guest-physical fault and population counters.
+    pub fn fault_counters(&self) -> MemoryFaultCounters {
+        let counters = self.va_mapper.fault_counters();
+        MemoryFaultCounters {
+            guest_faults: counters.guest_faults,
+            populated_bytes: counters.populated_bytes,
         }
     }
 
@@ -783,8 +862,12 @@ impl GuestMemoryManager {
         if self.guest_ram.len() != 1 {
             return None;
         }
+        if self.guest_ram[0].file_mapping_mode != FileMappingMode::Shared {
+            return None;
+        }
         Some(SharedMemoryBacking {
             guest_ram: self.guest_ram[0].mappable.clone()?,
+            file_mapping_mode: FileMappingMode::Shared,
         })
     }
 
@@ -927,6 +1010,9 @@ mod tests {
     use super::*;
     use pal_async::async_test;
     use std::error::Error as _;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::Write;
 
     /// Build a GuestMemoryManager with the given backing range groups,
     /// and return a GuestMemory handle for read/write testing.
@@ -965,6 +1051,70 @@ mod tests {
             err,
             MemoryBuildError::HugepagesWithExistingBacking
         ));
+    }
+
+    #[async_test]
+    async fn test_copy_on_write_existing_backing_is_private() {
+        let size = SparseMapping::page_size() as u64;
+        let original = vec![0x5a_u8; size as usize];
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&original).unwrap();
+        file.sync_all().unwrap();
+        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file, false).unwrap();
+        let backing = RamBackingRequest::new(vec![MemoryRange::new(0..size)])
+            .existing_mappable(mappable.into())
+            .file_mapping_mode(FileMappingMode::CopyOnWrite);
+        let manager = GuestMemoryBuilder::new()
+            .add_backing(backing)
+            .build(size)
+            .await
+            .unwrap();
+
+        assert!(manager.shared_memory_backing().is_none());
+        let memory = manager.client().guest_memory().await.unwrap();
+        memory.write_at(0, &[0xa5]).unwrap();
+        assert_eq!(memory.read_plain::<u8>(0).unwrap(), 0xa5);
+
+        file.rewind().unwrap();
+        let mut file_bytes = Vec::new();
+        file.read_to_end(&mut file_bytes).unwrap();
+        assert_eq!(file_bytes, original);
+    }
+
+    #[async_test]
+    async fn test_snapshot_cow_and_fresh_private_expansion_are_independent() {
+        let page = SparseMapping::page_size() as u64;
+        let original = vec![0x5a_u8; page as usize];
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&original).unwrap();
+        file.sync_all().unwrap();
+        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file, false).unwrap();
+
+        let manager = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..page)])
+                    .existing_mappable(mappable.into())
+                    .file_mapping_mode(FileMappingMode::CopyOnWrite),
+            )
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(page..2 * page)]).private_memory(true),
+            )
+            .build(2 * page)
+            .await
+            .unwrap();
+        let memory = manager.client().guest_memory().await.unwrap();
+
+        assert_eq!(memory.read_plain::<u8>(0).unwrap(), 0x5a);
+        assert_eq!(memory.read_plain::<u8>(page).unwrap(), 0);
+        memory.write_at(0, &[0xa5]).unwrap();
+        memory.write_at(page, &[0xcc]).unwrap();
+        assert_eq!(memory.read_plain::<u8>(0).unwrap(), 0xa5);
+        assert_eq!(memory.read_plain::<u8>(page).unwrap(), 0xcc);
+
+        file.rewind().unwrap();
+        let mut file_bytes = Vec::new();
+        file.read_to_end(&mut file_bytes).unwrap();
+        assert_eq!(file_bytes, original);
     }
 
     #[test]

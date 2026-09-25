@@ -4600,6 +4600,7 @@ dependencies = [
  "range_map_vec",
  "slab",
  "sparse_mmap",
+ "tempfile",
  "thiserror 2.0.16",
  "tracing",
  "virt",
