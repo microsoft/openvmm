@@ -35,6 +35,7 @@ fn profile(root_path: &Path) -> MicroVmVirtioFsProfile {
         MICROVM_ATTACHMENT_ID.to_owned(),
         microvm_root_identity(root_path).unwrap(),
         true,
+        Vec::new(),
     )
     .unwrap()
 }
@@ -133,6 +134,36 @@ fn microvm_runtime_path_and_map_limits_are_enforced() {
     );
     fs.inner.files.write().next_handle = 0;
     assert_eq!(fs.preflight_file_insert().unwrap_err(), lx::Error::ENOSPC);
+}
+
+#[test]
+fn microvm_denied_subtree_is_not_lookupable() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::create_dir(root_path.join("allowed")).unwrap();
+    std::fs::create_dir(root_path.join("secrets")).unwrap();
+    std::fs::write(root_path.join("secrets").join("token"), b"secret").unwrap();
+    let profile = MicroVmVirtioFsProfile::from_attachment(
+        MICROVM_ATTACHMENT_ID.to_owned(),
+        microvm_root_identity(root_path).unwrap(),
+        false,
+        vec!["secrets".to_owned()],
+    )
+    .unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+
+    let denied = match root.lookup_child(lx::LxStr::from_bytes(b"secrets")) {
+        Err(error) => error,
+        Ok(_) => panic!("denied subtree was lookupable"),
+    };
+    assert_eq!(denied, lx::Error::EACCES);
+    root.lookup_child(lx::LxStr::from_bytes(b"allowed"))
+        .unwrap();
+    assert_eq!(
+        root.child_path(lx::LxStr::from_bytes(b"..")).unwrap_err(),
+        lx::Error::EINVAL
+    );
 }
 
 #[test]

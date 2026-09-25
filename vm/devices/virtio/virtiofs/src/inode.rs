@@ -45,6 +45,8 @@ pub(crate) struct VirtioFsVolume {
     pub(crate) readonly: bool,
     stable_file_ids: bool,
     pub(crate) strict_paths: bool,
+    pub(crate) denied_paths: Vec<PathBuf>,
+    pub(crate) denied_identities: Vec<(u64, u64)>,
 }
 
 impl VirtioFsVolume {
@@ -56,6 +58,8 @@ impl VirtioFsVolume {
             readonly,
             stable_file_ids,
             strict_paths: false,
+            denied_paths: Vec::new(),
+            denied_identities: Vec::new(),
         }
     }
 
@@ -117,6 +121,7 @@ impl VirtioFsInode {
     /// Create a new inode for the specified path.
     pub fn new(volume: Arc<VirtioFsVolume>, path: PathBuf) -> lx::Result<(Self, lx::Stat)> {
         let stat = volume.lstat(&path)?;
+        volume.ensure_identity_allowed(&stat)?;
         let inode = Self::with_attr(volume, path, &stat);
         Ok((inode, stat))
     }

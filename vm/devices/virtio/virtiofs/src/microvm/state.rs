@@ -162,6 +162,9 @@ pub(crate) fn validate_reopenable_alias(
     path: &Path,
 ) -> anyhow::Result<lx::Stat> {
     validate_relative_path(path, true).map_err(anyhow::Error::from)?;
+    volume
+        .ensure_path_allowed(path)
+        .map_err(anyhow::Error::from)?;
     let mut prefix = PathBuf::new();
     for component in path.components() {
         let std::path::Component::Normal(component) = component else {
