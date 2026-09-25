@@ -12,6 +12,7 @@ use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
+use serial_core::LocalPeerIdentity;
 use serial_core::SerialIo;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_core::resources::ResolvedSerialBackend;
@@ -172,6 +173,35 @@ impl SerialIo for SocketSerialBackend {
         }
         Poll::Ready(Ok(()))
     }
+
+    fn local_peer_identity(&self) -> io::Result<Option<LocalPeerIdentity>> {
+        let Some(current) = &self.current else {
+            return Ok(None);
+        };
+        local_peer_identity(current.get())
+    }
+
+    fn disconnect_current(&mut self) -> io::Result<()> {
+        self.current = None;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn local_peer_identity(socket: &Socket) -> io::Result<Option<LocalPeerIdentity>> {
+    use std::os::fd::AsFd;
+
+    if socket.local_addr()?.family() as i32 != libc::AF_UNIX {
+        return Ok(None);
+    }
+    Ok(Some(LocalPeerIdentity::UnixUid(
+        pal::unix::credentials::unix_socket_peer_user_id(socket.as_fd())?,
+    )))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn local_peer_identity(_socket: &Socket) -> io::Result<Option<LocalPeerIdentity>> {
+    Ok(None)
 }
 
 impl AsyncRead for SocketSerialBackend {
@@ -328,5 +358,16 @@ mod tests {
         let _replacement = UnixStream::connect(&path).unwrap();
         poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
         assert!(backend.is_connected());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_socket_reports_same_uid_peer() {
+        let (left, _right) =
+            Socket::pair(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        assert_eq!(
+            local_peer_identity(&left).unwrap(),
+            Some(LocalPeerIdentity::UnixUid(pal::unix::effective_user_id()))
+        );
     }
 }
