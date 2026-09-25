@@ -3,6 +3,7 @@
 
 //! Virtual processor state management.
 
+mod boundary;
 #[cfg(guest_arch = "x86_64")]
 mod tsc;
 
@@ -844,7 +845,8 @@ impl VpSet {
     /// Stops all VPs.
     pub async fn stop(&mut self) {
         if self.started {
-            self.vps
+            let stops = self
+                .vps
                 .iter()
                 .map(|vp| {
                     let (send, recv) = mesh::oneshot();
@@ -852,9 +854,9 @@ impl VpSet {
                     // Ignore VPs whose runners have been dropped.
                     async { recv.await.ok() }
                 })
-                .collect::<JoinAll<_>>()
-                .await;
+                .collect::<JoinAll<_>>();
             self.started = false;
+            stops.await;
         }
     }
 
