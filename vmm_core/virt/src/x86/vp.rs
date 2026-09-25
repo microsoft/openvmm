@@ -3,6 +3,8 @@
 
 //! Per-VP state.
 
+mod snapshot;
+
 use super::SegmentRegister;
 use super::TableRegister;
 use super::X86PartitionCapabilities;
