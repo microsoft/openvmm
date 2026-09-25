@@ -419,6 +419,7 @@ impl VmService {
             }
         });
 
+        let mut exit_error = None;
         let quit = loop {
             // Take the controller events receiver out of self so it can be
             // polled in the select without borrowing self.
@@ -496,9 +497,14 @@ impl VmService {
                     );
                     break false;
                 }
-                Action::ControllerEvent(Some(event)) => {
-                    self.handle_controller_event(event);
-                }
+                Action::ControllerEvent(Some(event)) => match self.handle_controller_event(event) {
+                    Ok(true) => break true,
+                    Ok(false) => {}
+                    Err(error) => {
+                        exit_error = Some(error);
+                        break true;
+                    }
+                },
                 Action::ControllerEvent(None) => {} // handled above
                 Action::WaitVmCancelled(reason) => {
                     tracing::debug!("WaitVm client cancelled");
@@ -530,7 +536,11 @@ impl VmService {
             let _ = Arc::try_unwrap(vm).ok().expect("no more VM references");
         }
         drop(cancel_send);
-        server_task.await
+        server_task.await?;
+        match exit_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn start_rpc<F, R>(
@@ -1546,23 +1556,23 @@ impl VmService {
         Ok(())
     }
 
-    fn handle_controller_event(&mut self, event: VmControllerEvent) {
-        match event {
+    fn handle_controller_event(&mut self, event: VmControllerEvent) -> anyhow::Result<bool> {
+        Ok(match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
                 self.lifecycle = VmLifecycle::Halted(reason);
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
+                false
             }
-            VmControllerEvent::ExitRequested { code } => {
-                // The protocol has no `exit` power action, so this should not
-                // occur in ttrpc/grpc mode; log rather than exiting the server
-                // out from under its clients.
-                tracing::warn!(code, "unexpected exit request in server mode");
-            }
-            VmControllerEvent::ExitFailed { error } => {
-                tracing::error!(error = %error, "guest-requested exit failed in server mode");
+            event @ (VmControllerEvent::ExitRequested { .. }
+            | VmControllerEvent::ExitFailed { .. }) => {
+                return microvm::handle_exit_event(
+                    event,
+                    &mut self.lifecycle,
+                    &mut self.wait_vm_response,
+                );
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -1583,13 +1593,15 @@ impl VmService {
                 self.vm.take();
                 self.vm_controller.take();
                 self.lifecycle = VmLifecycle::Uninitialized;
+                false
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
                     tracing::error!(error = %err, "VNC worker stopped unexpectedly");
                 }
+                false
             }
-        }
+        })
     }
 
     fn add_pcie_device(
