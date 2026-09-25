@@ -6,6 +6,7 @@ mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
 mod ioapic_iommu_wiring;
+mod microvm;
 mod pcie_topology;
 mod pcie_wiring;
 mod restore;
@@ -132,6 +133,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
 use vm_topology::pcie::PcieHostBridgeCxlInfo;
 use vm_topology::processor::ProcessorTopology;
+#[cfg(guest_arch = "aarch64")]
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::aarch64::GicVersion;
@@ -512,7 +514,10 @@ struct X86TopologyResult {
 }
 
 #[cfg(guest_arch = "x86_64")]
-fn build_x86_topology(config: &ProcessorTopologyConfig) -> anyhow::Result<X86TopologyResult> {
+fn build_x86_topology(
+    config: &ProcessorTopologyConfig,
+    machine_profile: MachineProfile,
+) -> anyhow::Result<X86TopologyResult> {
     use vm_topology::processor::x86::X2ApicState;
 
     let arch = match &config.arch {
@@ -520,7 +525,7 @@ fn build_x86_topology(config: &ProcessorTopologyConfig) -> anyhow::Result<X86Top
         Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
         _ => anyhow::bail!("invalid architecture config"),
     };
-    let mut builder = TopologyBuilder::from_host_topology()?;
+    let mut builder = microvm::x86_topology_builder(machine_profile)?;
     builder.apic_id_offset(arch.apic_id_offset);
     if let Some(smt) = config.enable_smt {
         builder.smt_enabled(smt);
@@ -1200,7 +1205,7 @@ impl InitializedVm {
         };
         #[cfg(not(guest_arch = "aarch64"))]
         let mut processor_topology = {
-            let result = build_x86_topology(&cfg.processor_topology)?;
+            let result = build_x86_topology(&cfg.processor_topology, cfg.machine_profile)?;
             result.processor_topology
         };
 

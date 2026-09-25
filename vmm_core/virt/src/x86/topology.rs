@@ -3,6 +3,8 @@
 
 //! Provides processor topology related cpuid leaves.
 
+mod bsp_identity;
+
 use crate::CpuidLeaf;
 use std::cmp::min;
 use thiserror::Error;
@@ -44,6 +46,7 @@ pub fn topology_cpuid<'a>(
         return Err(UnknownVendor(vendor));
     };
 
+    let first_leaf = leaves.len();
     // Set the number of VPs per socket in leaf 01h.
     leaves.push(
         CpuidLeaf::new(
@@ -90,6 +93,7 @@ pub fn topology_cpuid<'a>(
         amd_processor_topology_definition_cpuid(topology, leaves);
     }
 
+    bsp_identity::apply(topology, &mut leaves[first_leaf..]);
     Ok(())
 }
 
