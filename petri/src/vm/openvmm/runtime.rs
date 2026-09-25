@@ -90,7 +90,9 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         tracing::info!(?halt_reason, "Got halt reason");
 
         let reason = match halt_reason {
-            HaltReason::PowerOff => PetriHaltReason::PowerOff,
+            HaltReason::PowerOff | HaltReason::PowerOffWithStatus { .. } => {
+                PetriHaltReason::PowerOff
+            }
             HaltReason::Reset => PetriHaltReason::Reset,
             HaltReason::Hibernate => PetriHaltReason::Hibernate,
             HaltReason::TripleFault { .. } => PetriHaltReason::TripleFault,
