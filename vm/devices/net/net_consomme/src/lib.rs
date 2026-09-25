@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod egress;
+mod quiesce;
 pub mod resolver;
 
 use anyhow::Context as _;
@@ -378,6 +379,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             },
             stats: Default::default(),
             driver: config.driver,
+            input_quiesced: false,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -443,6 +445,7 @@ pub struct ConsommeQueue {
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
+    input_quiesced: bool,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -679,9 +682,13 @@ fn process_message(
     }
 }
 
+#[async_trait]
 impl net_backend::Queue for ConsommeQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
         self.process_tx(pool);
+        if self.input_quiesced {
+            return self.poll_ready_quiesced();
+        }
 
         // TODO: handle messages asynchronously from any queue processing, since
         // there is no guarantee the queue will be processed at all (e.g., if
@@ -699,6 +706,9 @@ impl net_backend::Queue for ConsommeQueue {
     }
 
     fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
+        if self.input_quiesced {
+            return;
+        }
         self.state.rx_avail.extend(done);
     }
 
@@ -733,6 +743,18 @@ impl net_backend::Queue for ConsommeQueue {
             *x = y;
         }
         Ok(n)
+    }
+
+    async fn quiesce(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+    ) -> anyhow::Result<net_backend::quiesce::QueueQuiesceResult> {
+        self.quiesce_queue(pool)
+    }
+
+    fn resume(&mut self) -> anyhow::Result<()> {
+        self.input_quiesced = false;
+        Ok(())
     }
 }
 
