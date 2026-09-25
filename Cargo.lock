@@ -5169,6 +5169,7 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
 ]
