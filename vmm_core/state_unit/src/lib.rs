@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod start;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -222,6 +224,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
 }
 
 #[derive(Debug)]
@@ -490,27 +493,17 @@ impl StateUnits {
     /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
-    pub async fn start_stopped_units(&mut self) {
+    pub async fn start_stopped_units(&mut self) -> anyhow::Result<()> {
         if self.is_running() {
-            self.start().await;
+            self.start().await?;
         }
+        Ok(())
     }
 
     /// Starts all the state units.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         self.restore_allowed = false;
-        self.run_op(
-            "start",
-            None,
-            State::Stopped,
-            State::Starting,
-            State::Running,
-            StateRequest::Start,
-            |_, _| Some(()),
-            |unit| Some(&unit.dependencies),
-        )
-        .await;
-        self.running = true;
+        self.start_with_rollback().await
     }
 
     /// Stops all the state units.
@@ -1047,6 +1040,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod start;
+
     use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
@@ -1219,7 +1214,7 @@ mod tests {
         let state = units.save().await.unwrap();
         units.restore(state).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
@@ -1293,13 +1288,13 @@ mod tests {
             .add("b")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
 
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
         units.stop().await;
-        units.start().await;
+        units.start().await.unwrap();
 
         units.stop().await;
 
@@ -1347,7 +1342,7 @@ mod tests {
                 )
             })
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         let state = units.save().await.unwrap();
@@ -1457,7 +1452,7 @@ mod tests {
             );
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         a.remove().await;
@@ -1467,7 +1462,7 @@ mod tests {
             assert!(inner.units[&c.handle().id.id].dependencies.is_empty());
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         // Removing the remaining unit leaves the set empty.
