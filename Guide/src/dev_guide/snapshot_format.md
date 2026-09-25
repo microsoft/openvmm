@@ -11,7 +11,7 @@ A snapshot is stored as a directory containing three files:
 snapshot-dir/
 ├── manifest.bin   # Protobuf-encoded SnapshotManifest
 ├── state.bin      # Protobuf-encoded device saved state
-└── memory.bin     # Hard link to the guest memory backing file
+└── memory.bin     # Independent copy of the guest memory backing file
 ```
 
 ## Manifest format
@@ -40,26 +40,28 @@ default values, forward/backward compatibility) apply.
 
 ## Memory (`memory.bin`)
 
-`memory.bin` is a hard link to the file-backed guest RAM file. During a save,
-`write_snapshot()` creates this hard link using `std::fs::hard_link`.
+`memory.bin` is an independent copy of the file-backed guest RAM, so resuming
+or reusing the source VM cannot modify a published snapshot. Clone support is
+used when available, with allocated-range or zero-scan copying as a fallback on
+Linux; Windows uses a dense copy. The copy reads through an already-open handle
+rather than reopening the backing file's path, so replacing the source path
+cannot substitute different bytes.
 
-```admonish note
-The hard-link approach means the memory backing file and snapshot directory
-must reside on the same filesystem. If they are on different filesystems,
-`write_snapshot` returns an error with a suggestion to place the backing
-file inside the snapshot directory.
-```
+## Publication
 
-### Same-file detection
-
-If the user passes `--memory file=<snapshot_dir>/memory.bin`, the source and
-target of the hard link are the same file. The code detects this by
-canonicalizing both paths and comparing them. When they match, the hard-link
-step is skipped.
+`write_snapshot()` writes and flushes `state.bin`, `memory.bin`, and
+`manifest.bin` in a uniquely named, private staging directory next to the
+destination, flushes the staging directory, and then renames it to the
+destination in one operation that never replaces an existing path. The rename
+is the commit point; the parent directory is flushed afterwards. A failure
+before the commit removes the staging directory and leaves the destination
+absent. The destination must not already exist.
 
 ## Code references
 
 - Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`
+- Format validation, publication, and file-system helpers:
+  `openvmm/openvmm_helpers/src/snapshot/`
 - Restore entry point: `prepare_snapshot_restore()` in
   `openvmm/openvmm_entry/src/lib.rs`
 - File-backed memory: `SharedMemoryFd` type alias in
