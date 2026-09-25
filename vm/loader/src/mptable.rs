@@ -140,9 +140,10 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
         MP_CONFIG_HEADER_SIZE + MP_PROCESSOR_SIZE * config.apic_ids.len()
     );
 
+    let ioapic_id = u8::try_from(config.apic_ids.len()).map_err(|_| Error::TooManyEntries)?;
     table.extend_from_slice(&[1, 0]);
     table.extend_from_slice(b"ISA   ");
-    table.extend_from_slice(&[2, 0, 0x11, 1]);
+    table.extend_from_slice(&[2, ioapic_id, 0x11, 1]);
     table.extend_from_slice(&0xfec0_0000u32.to_le_bytes());
 
     for irq in (0u8..16).filter(|irq| *irq != 2) {
@@ -154,7 +155,7 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
         };
         table.extend_from_slice(&[3, 0]);
         table.extend_from_slice(&flags.to_le_bytes());
-        table.extend_from_slice(&[0, irq, 0, pin]);
+        table.extend_from_slice(&[0, irq, ioapic_id, pin]);
     }
 
     let table_len = u16::try_from(table.len()).map_err(|_| Error::TooManyEntries)?;
@@ -221,6 +222,16 @@ mod tests {
                 assert_eq!(entry[1], index as u8);
                 assert_eq!(entry[3], if index == 0 { 3 } else { 1 });
             }
+            let ioapic_offset = MP_CONFIG_HEADER_SIZE + MP_PROCESSOR_SIZE * processor_count + 8;
+            assert_eq!(tables.configuration_table[ioapic_offset], 2);
+            assert_eq!(
+                tables.configuration_table[ioapic_offset + 1],
+                processor_count as u8
+            );
+            for entry in tables.configuration_table[ioapic_offset + 8..].chunks_exact(8) {
+                assert_eq!(entry[0], 3);
+                assert_eq!(entry[6], processor_count as u8);
+            }
         }
     }
 
@@ -246,6 +257,14 @@ mod tests {
                 level_triggered_irqs: &[16],
             }),
             Err(Error::InvalidIrq(16))
+        );
+        let apic_ids = (0..256).collect::<Vec<_>>();
+        assert_eq!(
+            build(&MpTableConfig {
+                apic_ids: &apic_ids,
+                level_triggered_irqs: &[],
+            }),
+            Err(Error::TooManyEntries)
         );
         let apic_ids = (0..=256).collect::<Vec<_>>();
         assert!(matches!(
