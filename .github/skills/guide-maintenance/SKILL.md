@@ -107,3 +107,36 @@ grep -r "crate_name" Guide/src/
 # Find placeholder topics (empty links) in SUMMARY.md
 grep '()\s*$' Guide/src/SUMMARY.md
 ```
+
+---
+
+## Attestation Documentation
+
+Use these references when reviewing attestation changes. Guide paths are
+relative to `Guide/src/`.
+
+| Code path | Guide page |
+| --- | --- |
+| `openhcl/openhcl_attestation_protocol/src/igvm_attest/` | `reference/architecture/openhcl/attestation_protocol.md` |
+| `openhcl/openhcl_attestation_protocol/src/vmgs.rs` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/underhill_attestation/` | `reference/architecture/openhcl/attestation.md`, `reference/architecture/openhcl/attestation_protocol.md` |
+| `openhcl/tee_call/` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/underhill_core/src/worker.rs` | `reference/architecture/openhcl/attestation.md` |
+| `vm/devices/get/test_igvm_agent_lib/` | `reference/architecture/openhcl/attestation_protocol.md` |
+
+### What to Flag
+
+- Changes to attestation request/response versions, framing, envelope validation,
+   context-hash encoding, or transport limits must update
+   `reference/architecture/openhcl/attestation_protocol.md`.
+- Changes to boot SKR, context adoption, hardware protector layouts, KDF inputs,
+   or hardware recovery and rollback behavior must update
+   `reference/architecture/openhcl/attestation.md`. Worker changes unrelated to
+   attestation do not require edits to these pages.
+- Keep the protection overview as the attestation navigation root. Add runtime
+   migration recovery as a child page when its implementation lands; that page
+   should own event handling, enrollment, retries, and runtime TCB-floor policy,
+   linking to the existing protector/KDF reference rather than duplicating it.
+   Add its code references and links at that time, not placeholders beforehand.
+- Protocol examples should document fixture usage and link to the Guide for
+   normative contracts, rather than maintaining a second protocol specification.

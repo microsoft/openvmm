@@ -78,6 +78,18 @@ pub struct HyperVPetriRuntime {
     properties: PetriVmProperties,
 }
 
+impl HyperVPetriRuntime {
+    /// Cold-start after shutdown without reusing the previous boot's events.
+    pub async fn start_after_shutdown(&mut self) -> anyhow::Result<()> {
+        self.vm.start_after_shutdown().await
+    }
+
+    /// Confirm that the VM is Off before inspecting its backing state files.
+    pub async fn wait_for_stopped(&self) -> anyhow::Result<()> {
+        self.vm.wait_for_stopped().await
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
     type VmmConfig = ();

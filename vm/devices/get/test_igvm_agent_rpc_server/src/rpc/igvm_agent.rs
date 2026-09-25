@@ -232,6 +232,40 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             "windows_datacenter_core_2025_x64_prepped_tdx_hw_ak_stable",
             IgvmAttestTestConfig::StateRefresh,
         ),
+        // Only ctx_v2 adds a scenario. Refresh reuses the existing stateful
+        // SNP/TDX tests; VBS has no persistent hardware context cache.
+        (
+            "ubuntu_2504_server_x64_snp_ctx_v2",
+            IgvmAttestTestConfig::KeyReleaseV2,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ctx_v2",
+            IgvmAttestTestConfig::KeyReleaseV2,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ctx_v2",
+            IgvmAttestTestConfig::KeyReleaseV2,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ctx_v2",
+            IgvmAttestTestConfig::KeyReleaseV2,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_cvm_guest",
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_cvm_guest",
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_cvm_guest",
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_cvm_guest",
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+        ),
         // `multiarch::tpm138` runs the same tests against the 1.38 vTPM. Its
         // test-function names are abbreviated to keep VM names under the
         // 100-character limit, so they need their own patterns here.
@@ -448,4 +482,64 @@ pub fn process_igvm_attest(
         return Err(TestAgentFacadeError::InvalidRequest);
     }
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // This Windows-only crate has no test_with_tracing dependency. Resolver
+    // tests need no registry state, RPC service, or initialized tracing.
+    #[test]
+    fn context_configs_resolve_for_all_supported_images_and_isolations() {
+        let cases = [
+            (
+                "multiarch::tpm",
+                "ctx_v2",
+                IgvmAttestTestConfig::KeyReleaseV2,
+            ),
+            (
+                "multiarch::tpm",
+                "cvm_guest",
+                IgvmAttestTestConfig::KeyReleaseContextRefresh,
+            ),
+            (
+                "multiarch::tpm138",
+                "cvm_guest",
+                IgvmAttestTestConfig::KeyReleaseContextRefresh,
+            ),
+        ];
+        for image in [
+            "ubuntu_2504_server_x64",
+            "windows_datacenter_core_2025_x64_prepped",
+        ] {
+            for isolation in ["snp", "tdx"] {
+                for (module, test_fn, expected) in cases {
+                    let name =
+                        format!("{module}::hyperv_openhcl_uefi_x64_{image}_{isolation}_{test_fn}");
+                    assert!(name.len() <= 100, "VM name would be truncated: {name}");
+                    let Some(IgvmAgentTestSetting::TestConfig(actual)) = resolve_test_config(&name)
+                    else {
+                        panic!("no context config for {name}");
+                    };
+                    assert_eq!(
+                        std::mem::discriminant(&actual),
+                        std::mem::discriminant(&expected),
+                        "wrong context config for {name}"
+                    );
+                }
+            }
+        }
+        for (_, test_fn, _) in cases {
+            for image_and_isolation in [
+                "ubuntu_2504_server_x64_vbs",
+                "windows_datacenter_core_2025_x64_prepped_vbs",
+                "ubuntu_2404_server_x64_snp",
+                "windows_datacenter_core_2022_x64_tdx",
+            ] {
+                assert!(resolve_test_config(&format!("{image_and_isolation}_{test_fn}")).is_none());
+            }
+            assert!(resolve_test_config(test_fn).is_none());
+        }
+    }
 }

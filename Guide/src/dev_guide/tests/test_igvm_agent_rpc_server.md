@@ -29,6 +29,28 @@ For tests that declare this artifact, Flowey:
 This lifecycle is part of `cargo xflowey vmm-tests-run`; most developers do not
 need to start the process themselves.
 
+## Key-release context coverage
+
+The server selects per-VM behavior from the test name. Linux and Windows
+guests use the same plans on SNP and TDX:
+
+- `use_hw_unseal` supplies a context hash on the first V3 key release and
+  retains it in memory. Later requests must contain that hash; the agent
+  then returns a service error with hardware unsealing allowed. The test
+  checks that recovery preserves the context, AK, and TPM NV data.
+- `cvm_guest` (in both the TPM 1.85 and TPM 1.38 modules) returns a new
+  hash on each successful V3 release. Each request must contain the hash
+  issued in the preceding response. The tests verify changed guest-visible
+  context across reboot while AK and NV data remain intact. VBS variants
+  retain their ordinary attestation behavior.
+- `ctx_v2` responds to V3 key requests with V2 responses. It verifies absent
+  context, V3 hardware protectors, and persistent state across a cold boot.
+
+These request checks include Hyper-V's automatic initial reboot. A failed
+context assertion returns a distinct service error with hardware unsealing
+disabled, so recovery cannot hide a failed test expectation. Parser and
+boot-flow unit tests cover malformed and missing required context separately.
+
 ## Direct use
 
 For focused Windows debugging, build and launch it directly:
