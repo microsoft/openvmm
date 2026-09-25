@@ -4,6 +4,7 @@
 //! Windows security API wrappers.
 
 pub mod create;
+pub mod user_sid;
 
 use std::ffi::c_void;
 use std::fmt::Debug;
