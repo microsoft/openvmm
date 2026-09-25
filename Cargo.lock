@@ -10437,6 +10437,7 @@ name = "vmbus_guest"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "guestmem_core",
  "guid",
  "hvdef",
  "hyperv_keyboard_protocol",
@@ -10447,6 +10448,7 @@ dependencies = [
  "spin",
  "thiserror 2.0.16",
  "vmbus_core",
+ "vmbus_ring",
  "zerocopy",
 ]
 

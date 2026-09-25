@@ -32,6 +32,8 @@ use crate::Error;
 use crate::Result;
 use crate::channel::Channel;
 use crate::channel::ChannelState;
+use crate::ring::IncomingRingExt;
+use crate::ring::OutgoingRingExt;
 use crate::ring::PacketFlags;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
@@ -97,12 +99,18 @@ impl Keyboard {
     /// views over its send / recv rings. `send_mem` is the ring the
     /// guest writes into (host reads); `recv_mem` is the ring the
     /// host writes into (guest reads).
-    pub fn new(channel: Channel, send_mem: RawRingMem, recv_mem: RawRingMem) -> Self {
-        Self {
+    pub fn new(channel: Channel, send_mem: RawRingMem, recv_mem: RawRingMem) -> Result<Self> {
+        Ok(Self {
             channel,
-            send: SendRing::new(send_mem),
-            recv: RecvRing::new(recv_mem),
-        }
+            send: SendRing::new(send_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "SendRing::new rejected ring memory",
+            })?,
+            recv: RecvRing::new(recv_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "RecvRing::new rejected ring memory",
+            })?,
+        })
     }
 
     /// Send a `MESSAGE_PROTOCOL_REQUEST` and wait for the paired
@@ -230,7 +238,7 @@ impl Keyboard {
 
     fn recv_next(&self) -> Result<Option<InboundPacket>> {
         let mut buf = [0u8; MAXIMUM_MESSAGE_SIZE];
-        match self.recv.read(&mut buf) {
+        match self.recv.read_packet(&mut buf) {
             Ok(pkt) => {
                 if pkt.payload.len() < 4 {
                     return Ok(Some(InboundPacket::Other {

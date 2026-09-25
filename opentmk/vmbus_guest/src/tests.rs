@@ -1625,68 +1625,69 @@ mod ring_tests {
     use crate::protocol::PacketFlags;
     use crate::protocol::PacketType;
     use crate::ring::FlatRingMem;
+    use crate::ring::IncomingRingExt;
+    use crate::ring::OutgoingRingExt;
     use crate::ring::RecvRing;
-    use crate::ring::RingMem;
     use crate::ring::SendRing;
-    use alloc::sync::Arc;
+    use vmbus_ring::Ring;
+    use vmbus_ring::RingMem;
     use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
 
     /// Small helper: build a paired sender + receiver over the same
-    /// underlying [`FlatRingMem`].
-    fn pair(data_len: usize) -> (SendRing<Arc<FlatRingMem>>, RecvRing<Arc<FlatRingMem>>) {
-        let mem = Arc::new(FlatRingMem::new(data_len));
-        (SendRing::new(mem.clone()), RecvRing::new(mem))
-    }
-
-    // Delegate RingMem for Arc so send/recv can share the same backing.
-    impl<M: RingMem> RingMem for Arc<M> {
-        fn control(&self) -> &[core::sync::atomic::AtomicU32] {
-            (**self).control()
-        }
-        fn data_len(&self) -> usize {
-            (**self).data_len()
-        }
-        fn read_at(&self, off: usize, data: &mut [u8]) {
-            (**self).read_at(off, data)
-        }
-        fn write_at(&self, off: usize, data: &[u8]) {
-            (**self).write_at(off, data)
-        }
+    /// underlying [`FlatRingMem`]. Upstream's `FlatRingMem` is
+    /// internally Arc-wrapped so `Clone` gives shared backing at
+    /// near-zero cost.
+    ///
+    /// Unmasks the reader's interrupt bit — upstream's
+    /// `IncomingRing::new` masks by default, but every guest test
+    /// here checks the empty→non-empty signal decision on a live
+    /// (unmasked) ring.
+    fn pair(data_len: usize) -> (SendRing<FlatRingMem>, RecvRing<FlatRingMem>) {
+        let mem = FlatRingMem::new(data_len);
+        let send = SendRing::new(mem.clone()).unwrap();
+        let recv = RecvRing::new(mem).unwrap();
+        recv.set_interrupt_mask_hint(false);
+        (send, recv)
     }
 
     #[test]
     fn write_then_read_single_packet() {
         let (send, recv) = pair(4096);
         let payload = b"hello world";
-        let signal = send.write_inband(payload, PacketFlags::new(), 42).unwrap();
+        // Request completion so upstream preserves the transaction_id
+        // on read; without the flag, `transaction_id` is dropped by
+        // vmbus_ring's parse (matches Windows/Linux semantics).
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        let signal = send.write_inband(payload, flags, 42).unwrap();
         assert!(signal, "empty→non-empty should signal");
 
         let mut buf = [0u8; 256];
-        let pkt = recv.read(&mut buf).unwrap();
+        let pkt = recv.read_packet(&mut buf).unwrap();
         assert_eq!(pkt.descriptor.packet_type, PacketType::VM_PKT_DATA_INBAND);
         assert_eq!(pkt.descriptor.transaction_id, 42);
         assert_eq!(pkt.ext_header_len, 0);
         assert_eq!(&pkt.payload[..payload.len()], payload);
-        // Padding bytes are undefined per protocol; only the payload
-        // length is meaningful. Trailing bytes are zero here because we
-        // zero-fill on write.
         assert_eq!(recv.available(), 0);
     }
 
     #[test]
     fn write_n_read_back_fifo() {
         let (send, recv) = pair(4096);
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
         for i in 0..8u64 {
             let payload = [i as u8; 40];
-            let _ = send.write_inband(&payload, PacketFlags::new(), i).unwrap();
+            let _ = send.write_inband(&payload, flags, i).unwrap();
         }
         let mut buf = [0u8; 128];
         for i in 0..8u64 {
-            let pkt = recv.read(&mut buf).unwrap();
+            let pkt = recv.read_packet(&mut buf).unwrap();
             assert_eq!(pkt.descriptor.transaction_id, i);
             assert_eq!(pkt.payload[0], i as u8);
         }
-        assert!(matches!(recv.read(&mut buf), Err(Error::RingEmpty)));
+        assert!(matches!(recv.read_packet(&mut buf), Err(Error::RingEmpty)));
     }
 
     #[test]
@@ -1698,8 +1699,8 @@ mod ring_tests {
         assert!(!send.write_inband(b"b", PacketFlags::new(), 0).unwrap());
         // Drain both.
         let mut buf = [0u8; 32];
-        recv.read(&mut buf).unwrap();
-        recv.read(&mut buf).unwrap();
+        recv.read_packet(&mut buf).unwrap();
+        recv.read_packet(&mut buf).unwrap();
         // Now empty again → next write signals.
         assert!(send.write_inband(b"c", PacketFlags::new(), 0).unwrap());
     }
@@ -1712,23 +1713,21 @@ mod ring_tests {
         recv.set_interrupt_mask(false);
         // Drain and try again on empty.
         let mut buf = [0u8; 32];
-        recv.read(&mut buf).unwrap();
+        recv.read_packet(&mut buf).unwrap();
         assert!(send.write_inband(b"y", PacketFlags::new(), 0).unwrap());
     }
 
     #[test]
     fn wraparound() {
-        // 64-byte data area — smallest legal power-of-two that fits
-        // more than one 32-byte inband packet (16-byte descriptor +
-        // 8-byte payload padded + 8-byte footer = 32 bytes).
-        let (send, recv) = pair(64);
+        // 4096-byte data area is the smallest upstream engine accepts.
+        // Loop enough times to walk past the wrap boundary.
+        let (send, recv) = pair(4096);
         let mut buf = [0u8; 64];
-        // Fill and drain enough times to cross the boundary.
-        for i in 0..20u64 {
-            let _ = send
-                .write_inband(&[i as u8; 4], PacketFlags::new(), i)
-                .unwrap();
-            let pkt = recv.read(&mut buf).unwrap();
+        let mut flags = PacketFlags::new();
+        flags.set_request_completion(true);
+        for i in 0..200u64 {
+            let _ = send.write_inband(&[i as u8; 4], flags, i).unwrap();
+            let pkt = recv.read_packet(&mut buf).unwrap();
             assert_eq!(pkt.descriptor.transaction_id, i);
             assert_eq!(pkt.payload[0], i as u8);
         }
@@ -1736,16 +1735,25 @@ mod ring_tests {
 
     #[test]
     fn ring_full_returns_error() {
-        // 64-byte ring: room for exactly one 32-byte packet minus the
-        // reserved slot (56 bytes usable).
-        let (send, _recv) = pair(64);
-        // First 32-byte packet fits.
-        send.write_inband(&[0u8; 4], PacketFlags::new(), 0).unwrap();
-        // Second 32-byte packet does not (56 - 32 = 24 < 32).
-        assert!(matches!(
-            send.write_inband(&[0u8; 4], PacketFlags::new(), 1),
-            Err(Error::RingFull)
-        ));
+        // Fill a 4096-byte ring with a lot of small packets and check
+        // that RingFull comes back cleanly once the ring is full.
+        let (send, _recv) = pair(4096);
+        let payload = [0u8; 32];
+        // 32-byte payload padded to 32 + 16 desc + 8 footer = 56 bytes
+        // per packet. 4096 / 56 = 73 packets fit; the 74th should be
+        // Full. Give ourselves 500 attempts to hit the cap.
+        let mut any_full = false;
+        for i in 0..500u64 {
+            match send.write_inband(&payload, PacketFlags::new(), i) {
+                Ok(_) => continue,
+                Err(Error::RingFull) => {
+                    any_full = true;
+                    break;
+                }
+                Err(other) => panic!("unexpected error: {other:?}"),
+            }
+        }
+        assert!(any_full, "expected RingFull after filling the ring");
     }
 
     #[test]
@@ -1753,7 +1761,7 @@ mod ring_tests {
         let (send, recv) = pair(4096);
         send.write_completion(&[1, 2, 3, 4], 99).unwrap();
         let mut buf = [0u8; 64];
-        let pkt = recv.read(&mut buf).unwrap();
+        let pkt = recv.read_packet(&mut buf).unwrap();
         assert_eq!(pkt.descriptor.packet_type, PacketType::VM_PKT_COMP);
         assert_eq!(pkt.descriptor.transaction_id, 99);
         assert_eq!(&pkt.payload[..4], &[1, 2, 3, 4]);
@@ -1763,7 +1771,7 @@ mod ring_tests {
     fn read_empty_returns_ring_empty() {
         let (_send, recv) = pair(4096);
         let mut buf = [0u8; 32];
-        assert!(matches!(recv.read(&mut buf), Err(Error::RingEmpty)));
+        assert!(matches!(recv.read_packet(&mut buf), Err(Error::RingEmpty)));
     }
 
     #[test]
@@ -1771,7 +1779,7 @@ mod ring_tests {
         // The pending_send_sz hint is now owned by the SendRing
         // (writer). Verify it round-trips through the control page.
         let (send, _recv) = pair(4096);
-        send.set_pending_send_size(2048);
+        send.set_pending_send_size(2048).unwrap();
         let v = send
             .mem()
             .control()
@@ -1798,7 +1806,7 @@ mod ring_tests {
         let (send, recv) = pair(4096);
         send.write_inband(b"x", PacketFlags::new(), 0).unwrap();
         let mut buf = [0u8; 32];
-        recv.read(&mut buf).unwrap();
+        recv.read_packet(&mut buf).unwrap();
         // pending_send_sz is 0 (writer hasn't stored anything).
         assert_eq!(
             recv.drain_signal_decision(32),
@@ -1856,27 +1864,36 @@ mod ring_tests {
 
     #[test]
     fn packet_with_ext_header() {
+        // Upstream's IncomingRing parses the ext header as a typed
+        // GpaDirectHeader for VM_PKT_DATA_USING_GPA_DIRECT packets,
+        // so the test payload here is a well-formed header (reserved
+        // = 0, range_count = 1) rather than 0xAA bytes.
         let (send, recv) = pair(4096);
-        let ext = [0xAAu8; 8];
+        let ext = GpaDirectHeader {
+            reserved: 0,
+            range_count: 1,
+        };
         let payload = [0xBBu8; 16];
         send.write_packet(
             PacketType::VM_PKT_DATA_USING_GPA_DIRECT,
-            &ext,
+            ext.as_bytes(),
             &payload,
             PacketFlags::new(),
             7,
         )
         .unwrap();
         let mut buf = [0u8; 128];
-        let pkt = recv.read(&mut buf).unwrap();
+        let pkt = recv.read_packet(&mut buf).unwrap();
         assert_eq!(
             pkt.descriptor.packet_type,
             PacketType::VM_PKT_DATA_USING_GPA_DIRECT
         );
         assert_eq!(pkt.ext_header_len, 8);
         assert_eq!(&pkt.payload[..payload.len()], &payload);
-        // The ext header sits before the payload in the read buffer.
-        assert_eq!(&buf[..8], &ext);
+        // Verify the reconstructed header round-trips.
+        let (hdr, _) = GpaDirectHeader::read_from_prefix(&buf).unwrap();
+        assert_eq!(hdr.reserved, 0);
+        assert_eq!(hdr.range_count, 1);
     }
 
     /// Cross-implementation wire test: verify our `SendRing` produces
@@ -1935,7 +1952,7 @@ mod ring_tests {
 
         // Descriptor sanity: type = 0x9 (GPA_DIRECT), tid = 42.
         let mut buf = [0u8; 256];
-        let pkt = recv.read(&mut buf).unwrap();
+        let pkt = recv.read_packet(&mut buf).unwrap();
         assert_eq!(
             pkt.descriptor.packet_type,
             PacketType::VM_PKT_DATA_USING_GPA_DIRECT

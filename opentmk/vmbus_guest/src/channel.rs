@@ -15,7 +15,7 @@
 //! records the GPADL handle it was opened over but does **not**
 //! allocate or free the pages. This keeps the state machine
 //! host-testable and lets callers plug in either the
-//! [`crate::ring::OwnedRingMem`] host allocator or a UEFI page
+//! `FlatRingMem` host allocator or a UEFI page
 //! allocation.
 //!
 //! # Typical use

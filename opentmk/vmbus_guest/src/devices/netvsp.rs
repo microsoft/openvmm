@@ -116,6 +116,8 @@ use crate::gpadl::establish_gpadl;
 use crate::protocol::PacketType;
 use crate::protocol::TransferPageHeader;
 use crate::protocol::TransferPageRange;
+use crate::ring::IncomingRingExt;
+use crate::ring::OutgoingRingExt;
 use crate::ring::PacketFlags;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
@@ -742,8 +744,14 @@ impl Netvsp {
 
         Ok(Self {
             channel,
-            send: SendRing::new(send_mem),
-            recv: RecvRing::new(recv_mem),
+            send: SendRing::new(send_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "SendRing::new rejected ring memory",
+            })?,
+            recv: RecvRing::new(recv_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "RecvRing::new rejected ring memory",
+            })?,
             ring_base: base,
             ring_layout: layout,
             version: INVALID_PROTOCOL_VERSION,
@@ -1277,7 +1285,7 @@ impl Netvsp {
         let mut got_rndis_response = false;
         let mut buf = [0u8; 512];
         for _ in 0..DEFAULT_MAX_POLLS {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
                         PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
@@ -1575,7 +1583,7 @@ impl Netvsp {
         let mut got_rndis_response = false;
         let mut buf = [0u8; 512];
         for _ in 0..DEFAULT_MAX_POLLS {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
                         PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
@@ -1903,7 +1911,7 @@ impl Netvsp {
         // (the packet stays at head, no future read makes progress).
         let mut buf = [0u8; 4096];
         for _ in 0..DEFAULT_MAX_POLLS {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(pkt) => {
                     match pkt.descriptor.packet_type {
                         PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
@@ -1991,7 +1999,7 @@ impl Netvsp {
         let mut buf = [0u8; 4096];
         let iters = if max_polls == 0 { 1 } else { max_polls };
         for _ in 0..iters {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(pkt) => match pkt.descriptor.packet_type {
                     PacketType::VM_PKT_DATA_USING_XFER_PAGES => {
                         let host_tid = pkt.descriptor.transaction_id;
@@ -2279,7 +2287,7 @@ impl Netvsp {
         // reaping other completions and acking xfer-page arrivals.
         let mut buf = [0u8; 4096];
         for _ in 0..FUZZ_SEND_MAX_POLLS {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(pkt) => match pkt.descriptor.packet_type {
                     PacketType::VM_PKT_COMP if pkt.descriptor.transaction_id == tid => {
                         let _ = self.free_completed_tx(tid);
@@ -2522,7 +2530,7 @@ impl Netvsp {
         // Spin the recv ring waiting for a VM_PKT_COMP with matching tid.
         let mut recv_buf = [0u8; 512];
         for _ in 0..max_polls {
-            match self.recv.read(&mut recv_buf) {
+            match self.recv.read_packet(&mut recv_buf) {
                 Ok(pkt) => {
                     if pkt.descriptor.packet_type == PacketType::VM_PKT_COMP
                         && pkt.descriptor.transaction_id == tid

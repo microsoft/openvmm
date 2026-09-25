@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 bitfield-struct.workspace = true
+guestmem_core.workspace = true
 guid.workspace = true
 hvdef.workspace = true
 hyperv_keyboard_protocol.workspace = true
@@ -18,6 +19,7 @@ opentmk_core.workspace = true
 spin.workspace = true
 thiserror.workspace = true
 vmbus_core.workspace = true
+vmbus_ring.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "uefi")'.dependencies]

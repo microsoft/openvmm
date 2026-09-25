@@ -1,295 +1,578 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Ring-buffer send / receive.
+//! Guest ring-buffer helpers built on top of [`vmbus_ring::OutgoingRing`]
+//! and [`vmbus_ring::IncomingRing`].
 //!
-//! Layout follows Linux `drivers/hv/ring_buffer.c` and openvmm's
-//! `vmbus_ring`. Each half of a full-duplex channel has a **control
-//! page** (4 KiB) at offset 0 and a **data area** of N contiguous pages
-//! after it:
+//! # Design
 //!
-//! ```text
-//! +----------------------+  page 0 (control page)
-//! | word[0] write_index  |  aka `in`
-//! | word[1] read_index   |  aka `out`
-//! | word[2] interrupt_mask|
-//! | word[3] pending_send_sz|
-//! | ...                  |
-//! | word[16] feature_bits|
-//! +----------------------+  page 1 .. N (data pages)
-//! | packet_descriptor    |
-//! | optional ext header  |
-//! | payload (8-aligned)  |
-//! | footer               |
-//! | ... next packet ...  |
-//! +----------------------+
-//! ```
+//! Upstream `vmbus_ring::OutgoingRing<M>` and
+//! `vmbus_ring::IncomingRing<M>` own the ring-buffer state machine:
+//! write-index reservation, wrap-around arithmetic, packet-descriptor
+//! construction, ordering fences, and the empty→non-empty signal
+//! decision. Guest code consumes those types directly.
 //!
-//! The writer signals the host **only** on an empty → non-empty
-//! transition when `interrupt_mask == 0`. Signalling on every
-//! packet risks Hyper-V's DoS throttling; the peer clears
-//! `interrupt_mask` to explicitly ask for the wake.
+//! For call-site ergonomics this module provides two extension traits:
 //!
-//! # Usage
+//! * [`OutgoingRingExt`] adds `write_inband` / `write_completion` /
+//!   `write_gpa_direct` / `write_packet` / `write_raw_packet` /
+//!   `set_pending_send_size` on any `OutgoingRing<M>`.
+//! * [`IncomingRingExt`] adds `read` / `available` / `set_interrupt_mask`
+//!   / `pending_send_size` / `supports_pending_send_size` /
+//!   `drain_signal_decision` on any `IncomingRing<M>`.
 //!
-//! Rings are single-producer / single-consumer, always paired
-//! `SendRing<M>` + `RecvRing<M>` per direction, both wrapping a shared
-//! memory abstraction:
+//! Bring the traits into scope with
+//! `use crate::ring::{OutgoingRingExt, IncomingRingExt};` and the
+//! methods become available on the concrete ring types.
 //!
-//! * [`RawRingMem`] — for real GPA-mapped rings (UEFI target).
-//! * [`OwnedRingMem`] — for host tests. Allocates a boxed buffer.
-//! * [`FlatRingMem`] — for pure computation in tests.
-//!
-//! ## Writing a packet (guest → host)
-//!
-//! ```ignore
-//! use vmbus_guest::ring::{SendRing, PacketFlags};
-//!
-//! let mut flags = PacketFlags::new();
-//! flags.set_request_completion(true);
-//! let need_signal = send.write_inband(payload, flags, /*tid=*/ 42)?;
-//! // `need_signal` (returned by every `write_*` method) is `true`
-//! // exactly when this write crossed the empty→non-empty transition
-//! // AND the peer hasn't masked interrupts. Signal only when it's
-//! // true — unconditional signalling wakes the host once per packet
-//! // and risks Hyper-V's DoS throttling (see the top-level note on
-//! // the writer signalling only on empty→non-empty).
-//! if need_signal {
-//!     channel.signal(&mut ctx)?;
-//! }
-//! # Ok::<_, vmbus_guest::Error>(())
-//! ```
-//!
-//! For a GPA-direct external buffer (used by netvsp for RNDIS
-//! payloads), use [`SendRing::write_gpa_direct`] instead — it packs
-//! the descriptor + [`crate::protocol::GpaDirectHeader`] +
-//! [`crate::protocol::GpaRange`] + PFN list before the NVSP payload.
-//!
-//! ## Reading a packet (host → guest)
-//!
-//! ```ignore
-//! use vmbus_guest::Error;
-//! let mut buf = [0u8; 4096];
-//! loop {
-//!     match recv.read(&mut buf) {
-//!         Ok(pkt) => { /* dispatch on pkt.descriptor.packet_type */ }
-//!         Err(Error::RingEmpty) => break,
-//!         Err(e) => return Err(e),
-//!     }
-//! }
-//! // After draining a batch, tell the host whether it needs to be
-//! // woken (only fires on the pending_send_sz threshold crossing).
-//! if recv.drain_signal_decision(bytes_read) == SignalDecision::Signal {
-//!     channel.signal(&mut ctx)?;
-//! }
-//! ```
-//!
-//! ## Back-pressure (writer blocked)
-//!
-//! When [`SendRing::write_packet`] returns
-//! [`crate::Error::RingFull`], the ring has already published a
-//! non-zero `pending_send_sz` hint so the reader will kick us once it
-//! frees enough room. Bounded retry / caller-supplied yielding is
-//! the correct response; do not busy-loop the write.
-//!
-//! # Concurrency
-//!
-//! Rings are single-threaded on both sides. On weakly-ordered targets
-//! (aarch64 UEFI) the implementation uses `SeqCst` on both the
-//! writer's `write_idx` publish + `read_idx` reload and the reader's
-//! `read_idx` publish + `pending_send_sz` reload to close the Dekker
-//! rendezvous that decides when a signal is needed.
+//! [`RawRingMem`] is guest's implementation of [`RingMem`] over
+//! identity-mapped guest-physical pages — used by the UEFI target
+//! path. Upstream's own [`FlatRingMem`] backs unit tests via a boxed
+//! byte slice.
+
+#![allow(clippy::doc_lazy_continuation)]
 
 use crate::Error;
 use crate::Result;
 use crate::protocol::GpaDirectHeader;
-use crate::protocol::GpaRange;
 use crate::protocol::PacketDescriptor;
 use crate::protocol::PacketType;
-use alloc::boxed::Box;
-use alloc::vec;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::slice::from_raw_parts;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
-use zerocopy::FromBytes;
+use guestmem_core::MemoryRead;
+use guestmem_core::MemoryWrite;
+use guestmem_core::ranges::PagedRange;
+use vmbus_ring::IncomingPacketType;
+use vmbus_ring::IncomingRing;
+use vmbus_ring::OutgoingPacket;
+use vmbus_ring::OutgoingPacketType;
+use vmbus_ring::OutgoingRing;
+use vmbus_ring::Ring;
+use vmbus_ring::WriteError;
 use zerocopy::IntoBytes;
 
 pub use crate::protocol::PacketFlags;
+pub use vmbus_ring::CONTROL_WORD_COUNT;
+pub use vmbus_ring::FlatRingMem;
+pub use vmbus_ring::IncomingRing as RecvRing;
+pub use vmbus_ring::OutgoingRing as SendRing;
+pub use vmbus_ring::RingMem;
 
-/// Control-page word indices (matches openvmm `Control`).
+/// Feature bit advertising support for the reader-side
+/// `pending_send_size` back-pressure protocol.
+pub const FEATURE_SUPPORTS_PENDING_SEND_SIZE: u32 = 0x1;
+
+// -- Constants --------------------------------------------------------------
+
+/// Size (in bytes) of the ring control page.
+pub const CONTROL_PAGE_SIZE: usize = 4096;
+
+/// Wire size of [`PacketDescriptor`] in bytes.
+const DESCRIPTOR_SIZE: usize = size_of::<PacketDescriptor>();
+
+/// Wire size of the ring packet footer.
+const FOOTER_SIZE: usize = 8;
+
+/// Word indices in the ring control page (mirrors
+/// `vmbus_ring::protocol::Control`).
 const IDX_IN: usize = 0;
 const IDX_OUT: usize = 1;
 const IDX_INTERRUPT_MASK: usize = 2;
 const IDX_PENDING_SEND_SZ: usize = 3;
 const IDX_FEATURE_BITS: usize = 16;
 
-/// Number of `u32` words the control page exposes.
-pub const CONTROL_WORD_COUNT: usize = IDX_FEATURE_BITS + 1;
-
-/// Size (in bytes) of the ring control page.
-pub const CONTROL_PAGE_SIZE: usize = 4096;
-
-/// Packet footer: reserved word followed by the ring offset of the
-/// packet, both `u32`. See `openvmm/vmbus_ring::Footer`.
-#[repr(C)]
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Default,
-    zerocopy::IntoBytes,
-    zerocopy::FromBytes,
-    zerocopy::Immutable,
-    zerocopy::KnownLayout,
-)]
-struct Footer {
-    reserved: u32,
-    offset: u32,
-}
-
-const DESCRIPTOR_SIZE: usize = size_of::<PacketDescriptor>();
-const FOOTER_SIZE: usize = size_of::<Footer>();
-
 /// Round `n` up to a multiple of 8.
 const fn align8(n: usize) -> usize {
     (n + 7) & !7
 }
 
-/// Backing memory for one ring buffer.
+// -- Return types -----------------------------------------------------------
+
+/// A packet returned from [`IncomingRingExt::read_packet`].
 ///
-/// Implementors expose a control page (accessed as `AtomicU32`) and a
-/// power-of-two-sized data area that supports byte-granular reads and
-/// writes. The trait is intentionally minimal so we can share the send
-/// / recv state machine between:
-///   * a test-friendly [`FlatRingMem`] backed by a boxed byte slice, and
-///   * a UEFI implementation over guest-physical pages (added later).
+/// Presents a guest-typed [`PacketDescriptor`] shape over upstream's
+/// [`vmbus_ring::IncomingPacket`]. `packet_type` and `transaction_id`
+/// are populated from the upstream parse; the remaining descriptor
+/// fields are synthesized from the payload/ext-header sizes.
+pub struct RecvPacket<'a> {
+    /// Descriptor as observed on the wire.
+    pub descriptor: PacketDescriptor,
+    /// Payload bytes (without the descriptor or ext header).
+    pub payload: &'a [u8],
+    /// Length of the extended header in bytes. Non-zero only for
+    /// `VM_PKT_DATA_USING_GPA_DIRECT` / `VM_PKT_DATA_USING_XFER_PAGES`
+    /// packets; the ext-header bytes sit at `buf[..ext_header_len]`
+    /// and the payload at `buf[ext_header_len..]`.
+    pub ext_header_len: usize,
+}
+
+/// Decision returned by [`IncomingRingExt::drain_signal_decision`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SignalDecision {
+    /// Signal the peer — it was blocked on `pending_send_size` and
+    /// just crossed the transition to "enough free space".
+    Signal,
+    /// No signal needed.
+    NoSignal,
+}
+
+// -- OutgoingRingExt --------------------------------------------------------
+
+/// Guest-side helpers on top of [`vmbus_ring::OutgoingRing`].
+pub trait OutgoingRingExt<M: RingMem> {
+    /// Post an `VM_PKT_DATA_INBAND` packet with `payload`.
+    ///
+    /// Returns `Ok(true)` when this write crossed the empty→non-empty
+    /// transition and the peer hasn't masked interrupts — callers
+    /// should invoke `Channel::signal` only on that transition.
+    fn write_inband(&self, payload: &[u8], flags: PacketFlags, transaction_id: u64)
+    -> Result<bool>;
+
+    /// Post a completion packet (`VM_PKT_COMP`) referencing
+    /// `transaction_id`.
+    fn write_completion(&self, payload: &[u8], transaction_id: u64) -> Result<bool>;
+
+    /// Post a `VM_PKT_DATA_USING_GPA_DIRECT` packet with a
+    /// single-range GPA-direct extended header referencing an
+    /// external, contiguous buffer.
+    #[allow(clippy::too_many_arguments)]
+    fn write_gpa_direct(
+        &self,
+        pfns: &[u64],
+        byte_offset: u32,
+        byte_count: u32,
+        payload: &[u8],
+        flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool>;
+
+    /// Post a packet of arbitrary type. `ext_header` is placed between
+    /// the descriptor and payload (used e.g. for GPA-direct headers).
+    fn write_packet(
+        &self,
+        packet_type: PacketType,
+        ext_header: &[u8],
+        payload: &[u8],
+        flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool>;
+
+    /// Post a packet with a caller-supplied raw descriptor. Bypasses
+    /// upstream's descriptor construction so the caller (typically the
+    /// fuzzer) can emit self-inconsistent packets.
+    fn write_raw_packet(&self, descriptor: &[u8; DESCRIPTOR_SIZE], payload: &[u8]) -> Result<bool>;
+
+    /// Publish the pending-send-size hint. The peer signals us when
+    /// `size` bytes become free.
+    fn set_pending_send_size_hint(&self, size: u32);
+}
+
+impl<M: RingMem + Sync> OutgoingRingExt<M> for OutgoingRing<M> {
+    fn write_inband(
+        &self,
+        payload: &[u8],
+        flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool> {
+        let typ = if flags.request_completion() {
+            OutgoingPacketType::InBandWithCompletion
+        } else {
+            OutgoingPacketType::InBandNoCompletion
+        };
+        write_via_upstream(self, transaction_id, typ, payload)
+    }
+
+    fn write_completion(&self, payload: &[u8], transaction_id: u64) -> Result<bool> {
+        write_via_upstream(
+            self,
+            transaction_id,
+            OutgoingPacketType::Completion,
+            payload,
+        )
+    }
+
+    fn write_gpa_direct(
+        &self,
+        pfns: &[u64],
+        byte_offset: u32,
+        byte_count: u32,
+        payload: &[u8],
+        _flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool> {
+        // Guest-side validation mirrors what the old inline
+        // implementation enforced.
+        if pfns.is_empty() {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "gpa-direct requires at least one PFN",
+            });
+        }
+        let offset_u = byte_offset as usize;
+        let count_u = byte_count as usize;
+        let max = pfns.len() * 0x1000;
+        if offset_u >= 0x1000 || count_u == 0 || offset_u + count_u > max {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "gpa-direct byte range does not fit PFN list",
+            });
+        }
+        let range = PagedRange::new(offset_u, count_u, pfns).ok_or(Error::Parse {
+            ty: None,
+            reason: "gpa-direct: PagedRange::new rejected offset/len/pfns",
+        })?;
+        let ranges = [range];
+        write_via_upstream(
+            self,
+            transaction_id,
+            OutgoingPacketType::GpaDirect(&ranges),
+            payload,
+        )
+    }
+
+    fn write_packet(
+        &self,
+        packet_type: PacketType,
+        ext_header: &[u8],
+        payload: &[u8],
+        flags: PacketFlags,
+        transaction_id: u64,
+    ) -> Result<bool> {
+        // Not all packet_type values map to upstream's typed variants
+        // (upstream only exposes InBand/Completion/GpaDirect/
+        // TransferPages). Route the common cases through the typed
+        // path and fall through to a raw write for everything else.
+        match packet_type {
+            PacketType::VM_PKT_DATA_INBAND if ext_header.is_empty() => {
+                self.write_inband(payload, flags, transaction_id)
+            }
+            PacketType::VM_PKT_COMP if ext_header.is_empty() => {
+                self.write_completion(payload, transaction_id)
+            }
+            _ => {
+                // Raw path: caller-owned ext_header and packet_type.
+                let msg_len = DESCRIPTOR_SIZE + align8(ext_header.len()) + align8(payload.len());
+                let desc = PacketDescriptor {
+                    packet_type,
+                    data_offset8: ((DESCRIPTOR_SIZE + align8(ext_header.len())) / 8) as u16,
+                    length8: (msg_len / 8) as u16,
+                    flags,
+                    transaction_id,
+                };
+                raw_write(self, desc.as_bytes(), ext_header, payload)
+            }
+        }
+    }
+
+    fn write_raw_packet(&self, descriptor: &[u8; DESCRIPTOR_SIZE], payload: &[u8]) -> Result<bool> {
+        raw_write(self, descriptor, &[], payload)
+    }
+
+    fn set_pending_send_size_hint(&self, size: u32) {
+        self.mem().control()[IDX_PENDING_SEND_SZ].store(size, Ordering::SeqCst);
+    }
+}
+
+/// Common typed-write path: acquire an offset, write, commit, return
+/// the empty→non-empty signal decision.
+fn write_via_upstream<M: RingMem>(
+    ring: &OutgoingRing<M>,
+    transaction_id: u64,
+    typ: OutgoingPacketType<'_>,
+    payload: &[u8],
+) -> Result<bool> {
+    let mut off = ring.outgoing().map_err(map_ring_err)?;
+    let packet = OutgoingPacket {
+        transaction_id,
+        size: payload.len(),
+        typ,
+    };
+    let range = match ring.write(&mut off, &packet) {
+        Ok(r) => r,
+        Err(WriteError::Full(need)) => {
+            // Publish pending_send_size so the reader wakes us when
+            // space opens up.
+            let hint = need.min(u32::MAX as usize) as u32;
+            ring.mem().control()[IDX_PENDING_SEND_SZ].store(hint, Ordering::SeqCst);
+            return Err(Error::RingFull);
+        }
+        Err(WriteError::Corrupt(_)) => {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "upstream OutgoingRing::write returned a corrupt-ring error",
+            });
+        }
+    };
+    // Clear any stale pending_send_size hint from a prior full-ring
+    // event now that the write succeeded.
+    ring.mem().control()[IDX_PENDING_SEND_SZ].store(0, Ordering::SeqCst);
+    if !payload.is_empty() {
+        range
+            .writer(ring)
+            .write(payload)
+            .map_err(|_| Error::Parse {
+                ty: None,
+                reason: "writer over RingRange refused payload",
+            })?;
+    }
+    Ok(ring.commit_write(&mut off))
+}
+
+/// Low-level write bypassing upstream's descriptor construction.
 ///
-/// # Contract
-///
-/// * The data area size in bytes is a power of two and a multiple of 8.
-/// * `read_at` / `write_at` treat the data area as a wrap-around ring:
-///   offsets outside `[0, data_len)` panic. Callers are responsible for
-///   wrapping.
-/// * Byte reads and writes are not synchronised with the peer — the
-///   `write_index` / `read_index` publish/subscribe is what enforces
-///   memory ordering.
-pub trait RingMem {
-    /// Control words. Must be at least [`CONTROL_WORD_COUNT`] entries.
-    fn control(&self) -> &[AtomicU32];
-    /// Size of the data area in bytes.
-    fn data_len(&self) -> usize;
-    /// Copy `data.len()` bytes from `off` into `data`. Offset must be
-    /// in `[0, data_len)`.
-    fn read_at(&self, off: usize, data: &mut [u8]);
-    /// Copy `data` into the ring at `off`. Offset must be in
-    /// `[0, data_len)`.
-    fn write_at(&self, off: usize, data: &[u8]);
-}
-
-/// A boxed-slice backed [`RingMem`] used for host tests. Not intended
-/// for the real UEFI code path — that will supply its own [`RingMem`]
-/// that reads / writes guest-physical memory directly.
-pub struct FlatRingMem {
-    control: Box<[AtomicU32]>,
-    data: Box<[AtomicU8]>,
-}
-
-impl FlatRingMem {
-    /// Create a ring with `data_len` bytes of data area. Must be a
-    /// power of two and a multiple of 8.
-    pub fn new(data_len: usize) -> Self {
-        assert!(data_len.is_power_of_two() && data_len >= 8);
-        let control: Box<[AtomicU32]> =
-            (0..CONTROL_WORD_COUNT).map(|_| AtomicU32::new(0)).collect();
-        let data: Box<[AtomicU8]> = (0..data_len).map(|_| AtomicU8::new(0)).collect();
-        Self { control, data }
-    }
-}
-
-impl RingMem for FlatRingMem {
-    fn control(&self) -> &[AtomicU32] {
-        &self.control
+/// Manages the write-index directly on the `RingMem` control page so
+/// callers (namely `write_raw_packet` and the arbitrary-type arm of
+/// `write_packet`) can inject descriptors upstream would reject.
+fn raw_write<M: RingMem>(
+    ring: &OutgoingRing<M>,
+    descriptor: &[u8],
+    ext_header: &[u8],
+    payload: &[u8],
+) -> Result<bool> {
+    assert_eq!(descriptor.len(), DESCRIPTOR_SIZE);
+    let ext_padded = align8(ext_header.len());
+    let payload_padded = align8(payload.len());
+    let total = DESCRIPTOR_SIZE + ext_padded + payload_padded + FOOTER_SIZE;
+    let mem = ring.mem();
+    let ring_len = mem.len() as u32;
+    let ctrl = mem.control();
+    let write_idx = ctrl[IDX_IN].load(Ordering::Relaxed);
+    let read_idx = ctrl[IDX_OUT].load(Ordering::Acquire);
+    let free = available_free(write_idx, read_idx, ring_len) as usize;
+    if free < total {
+        ctrl[IDX_PENDING_SEND_SZ].store(total as u32, Ordering::SeqCst);
+        let read_idx = ctrl[IDX_OUT].load(Ordering::SeqCst);
+        let free = available_free(write_idx, read_idx, ring_len) as usize;
+        if free < total {
+            return Err(Error::RingFull);
+        }
+        ctrl[IDX_PENDING_SEND_SZ].store(0, Ordering::SeqCst);
     }
 
-    fn data_len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn read_at(&self, off: usize, data: &mut [u8]) {
-        assert!(off < self.data.len());
-        let mask = self.data.len() - 1;
-        for (i, byte) in data.iter_mut().enumerate() {
-            *byte = self.data[(off + i) & mask].load(Ordering::Relaxed);
+    let mut cursor = write_idx as usize;
+    mem.write_at(cursor, descriptor);
+    cursor += DESCRIPTOR_SIZE;
+    if !ext_header.is_empty() {
+        mem.write_at(cursor, ext_header);
+        cursor += ext_header.len();
+        if ext_padded > ext_header.len() {
+            let zeros = [0u8; 8];
+            mem.write_at(cursor, &zeros[..ext_padded - ext_header.len()]);
+            cursor += ext_padded - ext_header.len();
         }
     }
+    if !payload.is_empty() {
+        mem.write_at(cursor, payload);
+        cursor += payload.len();
+        if payload_padded > payload.len() {
+            let zeros = [0u8; 8];
+            mem.write_at(cursor, &zeros[..payload_padded - payload.len()]);
+            cursor += payload_padded - payload.len();
+        }
+    }
+    // Footer: reserved u32 + starting write_idx u32.
+    let mut footer = [0u32; 2];
+    footer[1] = write_idx;
+    mem.write_at(cursor, footer.as_bytes());
 
-    fn write_at(&self, off: usize, data: &[u8]) {
-        assert!(off < self.data.len());
-        let mask = self.data.len() - 1;
-        for (i, byte) in data.iter().enumerate() {
-            self.data[(off + i) & mask].store(*byte, Ordering::Relaxed);
+    let new_write_idx = (write_idx + total as u32) & (ring_len - 1);
+    ctrl[IDX_IN].store(new_write_idx, Ordering::SeqCst);
+    let read_after = ctrl[IDX_OUT].load(Ordering::SeqCst);
+    let was_empty = read_after == write_idx;
+    let peer_wants_signal = ctrl[IDX_INTERRUPT_MASK].load(Ordering::SeqCst) == 0;
+    Ok(was_empty && peer_wants_signal)
+}
+
+// -- IncomingRingExt --------------------------------------------------------
+
+/// Guest-side helpers on top of [`vmbus_ring::IncomingRing`].
+pub trait IncomingRingExt<M: RingMem> {
+    /// Read one packet into `buf`. Returns `Err(Error::RingEmpty)` if
+    /// the ring is empty.
+    ///
+    /// Named `read_packet` (rather than `read`) to avoid shadowing
+    /// [`IncomingRing::read`], which has an incompatible signature
+    /// (`&mut IncomingOffset` instead of a byte buffer).
+    fn read_packet<'a>(&self, buf: &'a mut [u8]) -> Result<RecvPacket<'a>>;
+
+    /// Number of bytes available to read right now.
+    fn available(&self) -> u32;
+
+    /// Mask host→guest signalling.
+    fn set_interrupt_mask_hint(&self, masked: bool);
+
+    /// Whether the ring's writer (the host, for a RecvRing) has
+    /// advertised support for the `pending_send_size` protocol.
+    fn supports_pending_send_size_hint(&self) -> bool;
+
+    /// Read the writer's current pending-send-size hint. Non-zero
+    /// means the writer is blocked waiting for at least this many
+    /// free bytes.
+    fn pending_send_size_hint(&self) -> u32;
+
+    /// Compute the reader-side signal decision after `bytes_read`
+    /// bytes have been advanced past `read_index`.
+    fn drain_signal_decision(&self, bytes_read: u32) -> SignalDecision;
+}
+
+impl<M: RingMem + Sync> IncomingRingExt<M> for IncomingRing<M> {
+    fn read_packet<'a>(&self, buf: &'a mut [u8]) -> Result<RecvPacket<'a>> {
+        let mut off = self.incoming().map_err(map_ring_err)?;
+        let pkt = IncomingRing::read(self, &mut off).map_err(|e| match e {
+            vmbus_ring::ReadError::Empty => Error::RingEmpty,
+            vmbus_ring::ReadError::Corrupt(_) => Error::Parse {
+                ty: None,
+                reason: "upstream IncomingRing::read returned a corrupt-ring error",
+            },
+        })?;
+        // Synthesize a guest-shaped RecvPacket. Descriptor's typed
+        // fields (packet_type / flags / transaction_id) come from the
+        // upstream parse; length8 / data_offset8 are computed from
+        // the buffer geometry.
+        let (packet_type, ext_hdr_bytes) = match &pkt.typ {
+            IncomingPacketType::InBand => (PacketType::VM_PKT_DATA_INBAND, 0),
+            IncomingPacketType::Completion => (PacketType::VM_PKT_COMP, 0),
+            IncomingPacketType::GpaDirect(_, ext) => (
+                PacketType::VM_PKT_DATA_USING_GPA_DIRECT,
+                size_of::<GpaDirectHeader>() + ext.len(),
+            ),
+            IncomingPacketType::TransferPages(_, _, ext) => (
+                PacketType::VM_PKT_DATA_USING_XFER_PAGES,
+                size_of::<crate::protocol::TransferPageHeader>() + ext.len(),
+            ),
+        };
+        let payload_len = pkt.payload.len();
+        let ext_header_len = ext_hdr_bytes;
+        let needed = ext_header_len + payload_len;
+        if buf.len() < needed {
+            return Err(Error::Parse {
+                ty: None,
+                reason: "recv buffer smaller than packet payload",
+            });
+        }
+        // Read ext_header (if any) into buf[..ext_header_len].
+        match &pkt.typ {
+            IncomingPacketType::InBand | IncomingPacketType::Completion => {}
+            IncomingPacketType::GpaDirect(range_count, ext_range) => {
+                let hdr = GpaDirectHeader {
+                    reserved: 0,
+                    range_count: *range_count,
+                };
+                let hlen = size_of::<GpaDirectHeader>();
+                buf[..hlen].copy_from_slice(hdr.as_bytes());
+                ext_range
+                    .reader(self)
+                    .read(&mut buf[hlen..ext_header_len])
+                    .map_err(|_| Error::Parse {
+                        ty: None,
+                        reason: "reader over GpaDirect ext-header range refused",
+                    })?;
+            }
+            IncomingPacketType::TransferPages(id, range_count, ext_range) => {
+                let hdr = crate::protocol::TransferPageHeader {
+                    transfer_page_set_id: *id,
+                    reserved: 0,
+                    range_count: *range_count,
+                };
+                let hlen = size_of::<crate::protocol::TransferPageHeader>();
+                buf[..hlen].copy_from_slice(hdr.as_bytes());
+                ext_range
+                    .reader(self)
+                    .read(&mut buf[hlen..ext_header_len])
+                    .map_err(|_| Error::Parse {
+                        ty: None,
+                        reason: "reader over TransferPages ext-header range refused",
+                    })?;
+            }
+        }
+        // Read payload into buf[ext_header_len..needed].
+        if payload_len > 0 {
+            pkt.payload
+                .reader(self)
+                .read(&mut buf[ext_header_len..needed])
+                .map_err(|_| Error::Parse {
+                    ty: None,
+                    reason: "reader over payload range refused",
+                })?;
+        }
+        let _need_signal = self.commit_read(&mut off);
+        let msg_len = DESCRIPTOR_SIZE + ext_header_len + align8(payload_len);
+        let mut flags = PacketFlags::new();
+        // Preserve the completion-requested bit: upstream's parse
+        // sets `transaction_id.is_some()` iff the packet had
+        // PACKET_FLAG_COMPLETION_REQUESTED (or was a Completion).
+        if pkt.transaction_id.is_some() && !matches!(pkt.typ, IncomingPacketType::Completion) {
+            flags.set_request_completion(true);
+        }
+        let descriptor = PacketDescriptor {
+            packet_type,
+            data_offset8: ((DESCRIPTOR_SIZE + ext_header_len) / 8) as u16,
+            length8: (msg_len / 8) as u16,
+            flags,
+            transaction_id: pkt.transaction_id.unwrap_or(0),
+        };
+        Ok(RecvPacket {
+            descriptor,
+            payload: &buf[ext_header_len..needed],
+            ext_header_len,
+        })
+    }
+
+    fn available(&self) -> u32 {
+        let ctrl = self.mem().control();
+        let write_idx = ctrl[IDX_IN].load(Ordering::Acquire);
+        let read_idx = ctrl[IDX_OUT].load(Ordering::Relaxed);
+        available_data(write_idx, read_idx, self.mem().len() as u32)
+    }
+
+    fn set_interrupt_mask_hint(&self, masked: bool) {
+        self.mem().control()[IDX_INTERRUPT_MASK].store(masked as u32, Ordering::Release);
+    }
+
+    fn supports_pending_send_size_hint(&self) -> bool {
+        let bits = self.mem().control()[IDX_FEATURE_BITS].load(Ordering::Relaxed);
+        (bits & FEATURE_SUPPORTS_PENDING_SEND_SIZE) != 0
+    }
+
+    fn pending_send_size_hint(&self) -> u32 {
+        self.mem().control()[IDX_PENDING_SEND_SZ].load(Ordering::SeqCst)
+    }
+
+    fn drain_signal_decision(&self, bytes_read: u32) -> SignalDecision {
+        if !self.supports_pending_send_size_hint() {
+            return SignalDecision::NoSignal;
+        }
+        let pending = self.pending_send_size_hint();
+        if pending == 0 {
+            return SignalDecision::NoSignal;
+        }
+        let ring_len = self.mem().len() as u32;
+        let ctrl = self.mem().control();
+        let write_idx = ctrl[IDX_IN].load(Ordering::SeqCst);
+        let read_idx = ctrl[IDX_OUT].load(Ordering::SeqCst);
+        let new_free = available_free(write_idx, read_idx, ring_len);
+        let old_free = new_free.saturating_sub(bytes_read);
+        if old_free < pending && new_free >= pending {
+            SignalDecision::Signal
+        } else {
+            SignalDecision::NoSignal
         }
     }
 }
 
-/// Owning ring memory backed by an aligned byte buffer. Suitable for
-/// both host tests and the eventual UEFI implementation once the caller
-/// supplies a page-aligned allocation.
-pub struct OwnedRingMem {
-    control: Box<[AtomicU32]>,
-    data: Box<[AtomicU8]>,
-}
-
-impl OwnedRingMem {
-    /// Allocate a ring with `data_pages` pages of data (each 4096 bytes).
-    /// `data_pages` must be a power of two.
-    pub fn new(data_pages: usize) -> Self {
-        assert!(data_pages.is_power_of_two() && data_pages > 0);
-        let data_len = data_pages * CONTROL_PAGE_SIZE;
-        let control = (0..CONTROL_WORD_COUNT).map(|_| AtomicU32::new(0)).collect();
-        let data = vec![0u8; data_len].into_iter().map(AtomicU8::new).collect();
-        Self { control, data }
-    }
-}
-
-impl RingMem for OwnedRingMem {
-    fn control(&self) -> &[AtomicU32] {
-        &self.control
-    }
-
-    fn data_len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn read_at(&self, off: usize, data: &mut [u8]) {
-        assert!(off < self.data.len());
-        let mask = self.data.len() - 1;
-        for (i, byte) in data.iter_mut().enumerate() {
-            *byte = self.data[(off + i) & mask].load(Ordering::Relaxed);
-        }
-    }
-
-    fn write_at(&self, off: usize, data: &[u8]) {
-        assert!(off < self.data.len());
-        let mask = self.data.len() - 1;
-        for (i, byte) in data.iter().enumerate() {
-            self.data[(off + i) & mask].store(*byte, Ordering::Relaxed);
-        }
-    }
-}
+// -- RawRingMem -------------------------------------------------------------
 
 /// A [`RingMem`] backed by two raw pointers into identity-mapped
 /// guest-physical memory.
 ///
-/// Unlike [`FlatRingMem`] / [`OwnedRingMem`] this does not own the
-/// pages — the caller must keep them alive (typically by allocating
-/// them from a leaky global allocator) and must ensure the layout
-/// matches the VMBus wire format: the `control` pointer references a
-/// 4 KiB control page whose first `CONTROL_WORD_COUNT` `u32` slots
-/// hold the ring indices, and `data` points at `data_len` bytes of
+/// Unlike upstream's [`FlatRingMem`] this does not own the pages —
+/// the caller must keep them alive and guarantee the layout matches
+/// the VMBus wire format: the `control` pointer references a 4 KiB
+/// control page whose first [`CONTROL_WORD_COUNT`] `u32` slots hold
+/// the ring indices, and `data` points at `data_len` bytes of
 /// contiguous data pages (power-of-two).
 ///
 /// # Safety
@@ -305,6 +588,7 @@ pub struct RawRingMem {
     control: *const AtomicU32,
     data: *const AtomicU8,
     data_len: usize,
+    _marker: PhantomData<()>,
 }
 
 // SAFETY: All access goes through atomic operations on `*const AtomicU8`
@@ -330,114 +614,58 @@ impl RawRingMem {
             control,
             data,
             data_len,
+            _marker: PhantomData,
         }
     }
 }
 
 impl RingMem for RawRingMem {
-    fn control(&self) -> &[AtomicU32] {
+    fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
         // SAFETY: caller of `new` guaranteed the control pointer is
-        // valid for `CONTROL_WORD_COUNT` `AtomicU32`s and outlives us.
-        #[expect(unsafe_code, reason = "materialise slice over control page")]
+        // valid for at least `CONTROL_WORD_COUNT` `AtomicU32`s.
+        #[expect(unsafe_code, reason = "materialise array over control page")]
         unsafe {
-            from_raw_parts(self.control, CONTROL_WORD_COUNT)
+            &*self.control.cast::<[AtomicU32; CONTROL_WORD_COUNT]>()
         }
     }
 
-    fn data_len(&self) -> usize {
-        self.data_len
-    }
-
-    fn read_at(&self, off: usize, data: &mut [u8]) {
-        assert!(off < self.data_len);
+    fn read_at(&self, mut addr: usize, data: &mut [u8]) {
+        // Contract: addr + data.len() <= data_len * 2 (wrap once).
+        if addr >= self.data_len {
+            addr -= self.data_len;
+        }
         let mask = self.data_len - 1;
         for (i, byte) in data.iter_mut().enumerate() {
             // SAFETY: caller of `new` guaranteed data is valid for
             // `data_len` bytes; masking keeps the index in range.
             #[expect(unsafe_code, reason = "raw ring data read")]
             unsafe {
-                *byte = (*self.data.add((off + i) & mask)).load(Ordering::Relaxed);
+                *byte = (*self.data.add((addr + i) & mask)).load(Ordering::Relaxed);
             }
         }
     }
 
-    fn write_at(&self, off: usize, data: &[u8]) {
-        assert!(off < self.data_len);
+    fn write_at(&self, mut addr: usize, data: &[u8]) {
+        if addr >= self.data_len {
+            addr -= self.data_len;
+        }
         let mask = self.data_len - 1;
         for (i, byte) in data.iter().enumerate() {
-            // SAFETY: as above.
+            // SAFETY: as in read_at.
             #[expect(unsafe_code, reason = "raw ring data write")]
             unsafe {
-                (*self.data.add((off + i) & mask)).store(*byte, Ordering::Relaxed);
+                (*self.data.add((addr + i) & mask)).store(*byte, Ordering::Relaxed);
             }
         }
     }
-}
 
-/// Common accessor helpers shared by [`SendRing`] and [`RecvRing`].
-fn ctrl_in<M: RingMem>(m: &M) -> &AtomicU32 {
-    &m.control()[IDX_IN]
-}
-fn ctrl_out<M: RingMem>(m: &M) -> &AtomicU32 {
-    &m.control()[IDX_OUT]
-}
-fn ctrl_interrupt_mask<M: RingMem>(m: &M) -> &AtomicU32 {
-    &m.control()[IDX_INTERRUPT_MASK]
-}
-fn ctrl_pending_send<M: RingMem>(m: &M) -> &AtomicU32 {
-    &m.control()[IDX_PENDING_SEND_SZ]
-}
-fn ctrl_feature_bits<M: RingMem>(m: &M) -> &AtomicU32 {
-    &m.control()[IDX_FEATURE_BITS]
-}
-
-/// Feature bit 0 in `feature_bits`. When set by the ring's **writer**,
-/// the writer promises to observe the `pending_send_sz` protocol
-/// (i.e. it will kick the reader when free space crosses the pending
-/// threshold). Openvmm and Linux both check this bit on the ring
-/// they're reading, so the guest must set it on its **SendRing** at
-/// init; the host sets it on the guest's **RecvRing**.
-///
-/// Matches `vmbus_ring::FEATURE_SUPPORTS_PENDING_SEND_SIZE = 1`.
-pub const FEATURE_SUPPORTS_PENDING_SEND_SIZE: u32 = 0x1;
-
-/// Write `bytes` into `mem` at `off`, wrapping at the ring boundary.
-fn write_wrapping<M: RingMem>(mem: &M, off: usize, bytes: &[u8]) {
-    if bytes.is_empty() {
-        return;
-    }
-    let len = mem.data_len();
-    let start = off & (len - 1);
-    if start + bytes.len() <= len {
-        mem.write_at(start, bytes);
-    } else {
-        let first = len - start;
-        mem.write_at(start, &bytes[..first]);
-        mem.write_at(0, &bytes[first..]);
+    fn len(&self) -> usize {
+        self.data_len
     }
 }
 
-/// Read `bytes` from `mem` at `off`, wrapping at the ring boundary.
-fn read_wrapping<M: RingMem>(mem: &M, off: usize, bytes: &mut [u8]) {
-    if bytes.is_empty() {
-        return;
-    }
-    let len = mem.data_len();
-    let start = off & (len - 1);
-    if start + bytes.len() <= len {
-        mem.read_at(start, bytes);
-    } else {
-        let first = len - start;
-        let (a, b) = bytes.split_at_mut(first);
-        mem.read_at(start, a);
-        mem.read_at(0, b);
-    }
-}
+// -- Free-space accounting --------------------------------------------------
 
-/// Number of free bytes available for the writer.
-///
-/// One slot is reserved so `write_idx == read_idx` unambiguously means
-/// empty (Linux ring_buffer.c does the same).
 fn available_free(write_idx: u32, read_idx: u32, ring_len: u32) -> u32 {
     if write_idx >= read_idx {
         ring_len - (write_idx - read_idx) - 8
@@ -446,7 +674,6 @@ fn available_free(write_idx: u32, read_idx: u32, ring_len: u32) -> u32 {
     }
 }
 
-/// Number of bytes the reader can pull from the ring.
 fn available_data(write_idx: u32, read_idx: u32, ring_len: u32) -> u32 {
     if write_idx >= read_idx {
         write_idx - read_idx
@@ -455,599 +682,16 @@ fn available_data(write_idx: u32, read_idx: u32, ring_len: u32) -> u32 {
     }
 }
 
-/// Writer half of a ring buffer.
-///
-/// Concurrency-unsafe on purpose: a ring is a single-producer /
-/// single-consumer channel, and the writer side owns the
-/// `pending_send_sz` protocol on the control page. The
-/// `PhantomData<*const ()>` marker makes `SendRing` `!Send + !Sync`
-/// so callers can't accidentally share a writer across threads.
-pub struct SendRing<M: RingMem> {
-    mem: M,
-    _not_send_sync: PhantomData<*const ()>,
-}
+// -- Error mapping ----------------------------------------------------------
 
-impl<M: RingMem> SendRing<M> {
-    /// Construct a new send ring over `mem`.
-    ///
-    /// Advertises `FEATURE_SUPPORTS_PENDING_SEND_SIZE` on the send
-    /// ring's control page — the guest is the writer of this ring,
-    /// and the writer owns the `feature_bits` slot per
-    /// `vmbus_ring::OutgoingRing::new` in openvmm. Openvmm and
-    /// Linux both check this bit on the ring they're reading before
-    /// honouring any `pending_send_sz` we might post.
-    ///
-    /// Also zeros `pending_send_sz` to a known state.
-    pub fn new(mem: M) -> Self {
-        ctrl_feature_bits(&mem).store(FEATURE_SUPPORTS_PENDING_SEND_SIZE, Ordering::Relaxed);
-        ctrl_pending_send(&mem).store(0, Ordering::Relaxed);
-        Self {
-            mem,
-            _not_send_sync: PhantomData,
-        }
-    }
-
-    /// Set the pending-send-size hint on our SendRing's control page.
-    ///
-    /// The peer (host reader) inspects this after draining and, on a
-    /// transition from "not enough space" → "enough space", signals
-    /// us. `size` is the number of free bytes we need before we can
-    /// make progress. `size == 0` clears the hint. Uses `SeqCst` to
-    /// keep ordering with the `read_idx` load we perform on the
-    /// retry path in `write_packet`.
-    pub fn set_pending_send_size(&self, size: u32) {
-        ctrl_pending_send(&self.mem).store(size, Ordering::SeqCst);
-    }
-
-    /// Backing memory.
-    pub fn mem(&self) -> &M {
-        &self.mem
-    }
-
-    /// Post an inband packet with `payload`. Returns `true` if the
-    /// caller should signal the peer (i.e. the ring transitioned from
-    /// empty to non-empty and the peer has interrupts unmasked).
-    ///
-    /// See `PACKET_TYPE_IN_BAND` (0x6) in openvmm's `vmbus_ring`.
-    pub fn write_inband(
-        &self,
-        payload: &[u8],
-        flags: PacketFlags,
-        transaction_id: u64,
-    ) -> Result<bool> {
-        self.write_packet(
-            PacketType::VM_PKT_DATA_INBAND,
-            &[],
-            payload,
-            flags,
-            transaction_id,
-        )
-    }
-
-    /// Post a completion packet (`VM_PKT_COMP`, 0xB) referencing the
-    /// original `transaction_id`.
-    pub fn write_completion(&self, payload: &[u8], transaction_id: u64) -> Result<bool> {
-        self.write_packet(
-            PacketType::VM_PKT_COMP,
-            &[],
-            payload,
-            PacketFlags::new(),
-            transaction_id,
-        )
-    }
-
-    /// Post a `VM_PKT_DATA_USING_GPA_DIRECT` (type 0x9) packet with
-    /// a single-range GPA-direct extended header referencing an
-    /// external, contiguous buffer via its guest PFNs.
-    ///
-    /// Wire layout after descriptor:
-    /// ```text
-    /// GpaDirectHeader { reserved: 0, range_count: 1 }
-    /// GpaRange { byte_count, byte_offset }
-    /// u64 pfns[]
-    /// ```
-    /// then the (optional) `payload` bytes, then footer.
-    ///
-    /// * `pfns` — page frame numbers of the external data buffer,
-    ///   in order. Must not be empty.
-    /// * `byte_offset` — byte offset into the first PFN's page where
-    ///   the data starts (typically 0 for page-aligned buffers).
-    /// * `byte_count` — total byte length of the external data. Must
-    ///   be `<= pfns.len() * 4096 - byte_offset`.
-    /// * `payload` — additional inline payload (typically the NVSP
-    ///   `Nvsp1MsgSendRndisPacket` header). Empty payload is fine.
-    ///
-    /// Called with `flags.set_request_completion(true)` when a
-    /// completion is expected.
-    pub fn write_gpa_direct(
-        &self,
-        pfns: &[u64],
-        byte_offset: u32,
-        byte_count: u32,
-        payload: &[u8],
-        flags: PacketFlags,
-        transaction_id: u64,
-    ) -> Result<bool> {
-        if pfns.is_empty() {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "write_gpa_direct requires >= 1 PFN",
-            });
-        }
-        // Guard against byte_offset >= the covered region so the
-        // subtraction below can't underflow into a huge u64 and
-        // silently pass a caller that's out of range.
-        let region = (pfns.len() as u64).saturating_mul(4096);
-        if byte_offset as u64 >= region {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "write_gpa_direct byte_offset exceeds PFN range",
-            });
-        }
-        let expected_bytes = region - byte_offset as u64;
-        if (byte_count as u64) > expected_bytes {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "write_gpa_direct byte_count exceeds PFN range",
-            });
-        }
-
-        // Build the extended header on the stack — max reasonable
-        // size is `range_count=1, PFN count < 4` for our RNDIS use
-        // (single-page control message). Cap at 32 PFNs = ~264 bytes.
-        //
-        // Header layout:
-        //   GpaDirectHeader (8B) + GpaRange (8B) + PFNs (8B × N)
-        const MAX_PFNS: usize = 32;
-        if pfns.len() > MAX_PFNS {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "write_gpa_direct pfn list too long for stack buffer",
-            });
-        }
-        let mut ext_buf = [0u8; 16 + 8 * MAX_PFNS];
-        let hdr = GpaDirectHeader {
-            reserved: 0,
-            range_count: 1,
-        };
-        let rng = GpaRange {
-            byte_count,
-            byte_offset,
-        };
-        ext_buf[..8].copy_from_slice(hdr.as_bytes());
-        ext_buf[8..16].copy_from_slice(rng.as_bytes());
-        for (i, &pfn) in pfns.iter().enumerate() {
-            let off = 16 + i * 8;
-            ext_buf[off..off + 8].copy_from_slice(&pfn.to_le_bytes());
-        }
-        let ext_len = 16 + pfns.len() * 8;
-        self.write_packet(
-            PacketType::VM_PKT_DATA_USING_GPA_DIRECT,
-            &ext_buf[..ext_len],
-            payload,
-            flags,
-            transaction_id,
-        )
-    }
-
-    /// Post a packet of arbitrary type. `ext_header` is placed between
-    /// the descriptor and payload (used e.g. for GPA-direct headers).
-    ///
-    /// # Return value
-    ///
-    /// Returns `Ok(true)` exactly when this write crossed the ring
-    /// from empty to non-empty **and** the peer hasn't masked
-    /// interrupts (`interrupt_mask == 0`). Callers should invoke
-    /// [`crate::channel::Channel::signal`] **only** on that transition
-    /// — signalling on every packet risks Hyper-V's DoS throttling
-    /// (see the module-level note on empty→non-empty signalling).
-    /// Returns `Ok(false)` on a successful write that doesn't cross
-    /// the transition (host already has data queued or has masked
-    /// interrupts).
-    pub fn write_packet(
-        &self,
-        packet_type: PacketType,
-        ext_header: &[u8],
-        payload: &[u8],
-        flags: PacketFlags,
-        transaction_id: u64,
-    ) -> Result<bool> {
-        // `msg_len` = descriptor + ext_header + payload (all padded to
-        // 8). This is what goes into `length8`. `total_ring_len` also
-        // includes the 8-byte footer and is what we advance
-        // `write_idx` by. Must match openvmm/Windows/Linux wire
-        // convention — see `vmbus_ring::OutgoingRing::write` in
-        // openvmm:
-        //   length8 = msg_len / 8    (EXCLUDES footer)
-        //   ring advances by msg_len + FOOTER_SIZE
-        // Getting this wrong makes every packet mis-parseable by the
-        // host.
-        let ext_hdr_aligned = align8(ext_header.len());
-        let payload_aligned = align8(payload.len());
-        let data_offset_bytes = DESCRIPTOR_SIZE + ext_hdr_aligned;
-        let msg_len = data_offset_bytes + payload_aligned;
-        let total_ring_len = msg_len + FOOTER_SIZE;
-        if msg_len > u16::MAX as usize * 8 {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "packet too large",
-            });
-        }
-
-        let write_idx = self.reserve(total_ring_len)?;
-
-        // Descriptor.
-        let desc = PacketDescriptor {
-            packet_type,
-            flags,
-            data_offset8: (data_offset_bytes / 8) as u16,
-            length8: (msg_len / 8) as u16,
-            transaction_id,
-        };
-        let mut cursor = write_idx as usize;
-        write_wrapping(&self.mem, cursor, desc.as_bytes());
-        cursor += DESCRIPTOR_SIZE;
-
-        // Optional extended header (padded to 8).
-        if !ext_header.is_empty() {
-            write_wrapping(&self.mem, cursor, ext_header);
-            let pad = ext_hdr_aligned - ext_header.len();
-            if pad != 0 {
-                write_wrapping(&self.mem, cursor + ext_header.len(), &[0u8; 8][..pad]);
-            }
-            cursor += ext_hdr_aligned;
-        }
-
-        // Payload (with zero-padding to 8).
-        if !payload.is_empty() {
-            write_wrapping(&self.mem, cursor, payload);
-            let pad = payload_aligned - payload.len();
-            if pad != 0 {
-                write_wrapping(&self.mem, cursor + payload.len(), &[0u8; 8][..pad]);
-            }
-            cursor += payload_aligned;
-        }
-
-        // Footer.
-        let footer = Footer {
-            reserved: 0,
-            offset: write_idx,
-        };
-        write_wrapping(&self.mem, cursor, footer.as_bytes());
-
-        Ok(self.commit(write_idx, total_ring_len))
-    }
-
-    /// Post a packet whose 16-byte [`PacketDescriptor`] is supplied
-    /// **verbatim** by the caller, followed by `payload`.
-    ///
-    /// This is the raw-fuzzing counterpart to [`Self::write_packet`]:
-    /// the caller owns every descriptor field, including `length8`,
-    /// `data_offset8`, `flags` and `packet_type`, so it can emit
-    /// packets whose self-described geometry disagrees with what is
-    /// actually in the ring. That inconsistency is exactly the host
-    /// parser surface the vmbus fuzzer exists to exercise, and mirrors
-    /// the legacy puppet `send_raw_packet_outbound` path.
-    ///
-    /// The guest's own ring bookkeeping deliberately ignores the
-    /// descriptor's `length8` and advances `write_index` by the real
-    /// number of bytes written (`descriptor + padded payload +
-    /// footer`). Trusting a fuzzed `length8` here would corrupt our
-    /// own ring state and desynchronise every later packet rather than
-    /// testing the host.
-    ///
-    /// Returns the same empty→non-empty signal decision as
-    /// [`Self::write_packet`].
-    pub fn write_raw_packet(
-        &self,
-        descriptor: &[u8; DESCRIPTOR_SIZE],
-        payload: &[u8],
-    ) -> Result<bool> {
-        let payload_aligned = align8(payload.len());
-        let total_ring_len = DESCRIPTOR_SIZE + payload_aligned + FOOTER_SIZE;
-        let write_idx = self.reserve(total_ring_len)?;
-
-        let mut cursor = write_idx as usize;
-        write_wrapping(&self.mem, cursor, descriptor);
-        cursor += DESCRIPTOR_SIZE;
-
-        if !payload.is_empty() {
-            write_wrapping(&self.mem, cursor, payload);
-            let pad = payload_aligned - payload.len();
-            if pad != 0 {
-                write_wrapping(&self.mem, cursor + payload.len(), &[0u8; 8][..pad]);
-            }
-            cursor += payload_aligned;
-        }
-
-        let footer = Footer {
-            reserved: 0,
-            offset: write_idx,
-        };
-        write_wrapping(&self.mem, cursor, footer.as_bytes());
-
-        Ok(self.commit(write_idx, total_ring_len))
-    }
-
-    /// Reserve `total_ring_len` bytes at the ring's write index,
-    /// observing the `pending_send_sz` back-pressure protocol.
-    ///
-    /// Returns the write index the caller should start writing at, or
-    /// [`Error::RingFull`] when the ring cannot fit the packet (in
-    /// which case `pending_send_sz` is left set so the reader kicks us
-    /// once it frees the room).
-    fn reserve(&self, total_ring_len: usize) -> Result<u32> {
-        let ring_len = self.mem.data_len() as u32;
-        // Snapshot ring pointers. `Acquire` on `out` synchronises with
-        // the reader's `Release` publish of `read_index`.
-        let write_idx = ctrl_in(&self.mem).load(Ordering::Relaxed);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::Acquire);
-        let free = available_free(write_idx, read_idx, ring_len) as usize;
-        if free < total_ring_len {
-            // Not enough room. Publish the pending_send_sz hint on
-            // our SendRing so the reader knows how much space we
-            // need before signalling us. Then reload read_idx
-            // (SeqCst) and recheck; a concurrent reader may have
-            // drained between the initial load above and our store
-            // below. Without the recheck we could lose the wakeup
-            // and deadlock (writer waits for signal that reader
-            // won't send because pending_send_sz wasn't visible
-            // yet when it drained).
-            ctrl_pending_send(&self.mem).store(total_ring_len as u32, Ordering::SeqCst);
-            let read_idx_reload = ctrl_out(&self.mem).load(Ordering::SeqCst);
-            let free_reload = available_free(write_idx, read_idx_reload, ring_len) as usize;
-            if free_reload < total_ring_len {
-                // Still full. Leave pending_send_sz set — the reader
-                // will kick us when it frees the room.
-                return Err(Error::RingFull);
-            }
-            // Space appeared after our store. Clear the hint (we
-            // don't need a signal) and fall through to the write.
-            ctrl_pending_send(&self.mem).store(0, Ordering::SeqCst);
-        }
-        Ok(write_idx)
-    }
-
-    /// Publish a packet written at `write_idx` spanning
-    /// `total_ring_len` bytes, and decide whether the peer needs a
-    /// signal.
-    fn commit(&self, write_idx: u32, total_ring_len: usize) -> bool {
-        let ring_len = self.mem.data_len() as u32;
-        // Publish the new write_index with SeqCst. This is required
-        // to correctly race with the reader's SeqCst read_index
-        // store in `RecvRing::read`: the SeqCst pair guarantees that
-        // when both threads reload the peer's index after their own
-        // publish, at least one observes the other's fresh value.
-        // Without this, the "was the reader idle at publish time"
-        // test below can miss a wakeup and deadlock the guest→host
-        // path (matches openvmm `OutgoingRing::commit_write` in
-        // `vmbus_ring::lib.rs`, and the memory-barrier + reload
-        // pattern in Linux's `hv_signal_on_write`).
-        let old_write_idx = write_idx;
-        let new_write_idx = (write_idx + total_ring_len as u32) & (ring_len - 1);
-        ctrl_in(&self.mem).store(new_write_idx, Ordering::SeqCst);
-
-        // Signal decision: after publishing our new write_idx,
-        // reload read_idx with SeqCst. The reader was idle at the
-        // moment we published iff it has caught up to the write_idx
-        // we had **before** this write — i.e. `read_idx_after ==
-        // old_write_idx`. Comparing against the pre-load snapshot
-        // (as we used to do) misses the case where the reader
-        // drained everything between the pre-load and our publish
-        // and then parked.
-        let read_idx_after = ctrl_out(&self.mem).load(Ordering::SeqCst);
-        let was_empty = read_idx_after == old_write_idx;
-        let peer_wants_signal = ctrl_interrupt_mask(&self.mem).load(Ordering::SeqCst) == 0;
-        was_empty && peer_wants_signal
-    }
-}
-
-/// Reader half of a ring buffer.
-///
-/// Concurrency-unsafe on purpose: a ring is a single-producer /
-/// single-consumer channel, and the reader side owns the read-index
-/// publish that pairs with the writer's `pending_send_sz` protocol.
-/// The `PhantomData<*const ()>` marker makes `RecvRing` `!Send +
-/// !Sync` so callers can't accidentally share a reader across
-/// threads.
-pub struct RecvRing<M: RingMem> {
-    mem: M,
-    _not_send_sync: PhantomData<*const ()>,
-}
-
-/// A packet returned by [`RecvRing::read`].
-pub struct RecvPacket<'a> {
-    /// Descriptor as it appears on the wire.
-    pub descriptor: PacketDescriptor,
-    /// Payload bytes copied out of the ring, without the descriptor,
-    /// extended header, or footer, and stripped of trailing pad.
-    pub payload: &'a [u8],
-    /// Length of the extended header in bytes (used by GPA-direct /
-    /// transfer-page packets).
-    pub ext_header_len: usize,
-}
-
-impl<M: RingMem> RecvRing<M> {
-    /// Construct a new recv ring over `mem`.
-    pub fn new(mem: M) -> Self {
-        Self {
-            mem,
-            _not_send_sync: PhantomData,
-        }
-    }
-
-    /// Backing memory.
-    pub fn mem(&self) -> &M {
-        &self.mem
-    }
-
-    /// Number of bytes available to read right now.
-    pub fn available(&self) -> u32 {
-        let write_idx = ctrl_in(&self.mem).load(Ordering::Acquire);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::Relaxed);
-        available_data(write_idx, read_idx, self.mem.data_len() as u32)
-    }
-
-    /// Read one packet into `buf`. Returns `Err(Error::RingEmpty)` if
-    /// no packet is available.
-    ///
-    /// `buf` must be at least `descriptor.length8 * 8 - FOOTER_SIZE`
-    /// bytes long to hold the ext-header + payload; on a smaller buffer
-    /// the read fails with [`Error::Parse`] and the packet is left
-    /// pending. On success `read_index` is advanced past the packet.
-    pub fn read<'a>(&self, buf: &'a mut [u8]) -> Result<RecvPacket<'a>> {
-        let ring_len = self.mem.data_len() as u32;
-        let write_idx = ctrl_in(&self.mem).load(Ordering::Acquire);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::Relaxed);
-        if write_idx == read_idx {
-            return Err(Error::RingEmpty);
-        }
-
-        // Read the descriptor.
-        let mut desc_bytes = [0u8; DESCRIPTOR_SIZE];
-        read_wrapping(&self.mem, read_idx as usize, &mut desc_bytes);
-        let (descriptor, _) =
-            PacketDescriptor::read_from_prefix(&desc_bytes).map_err(|_| Error::Parse {
-                ty: None,
-                reason: "descriptor cast failed",
-            })?;
-
-        // Wire semantics: `length8` is msg_len/8 EXCLUDING the
-        // 8-byte footer (matches openvmm `vmbus_ring::parse_packet`
-        // and Windows). The reader must advance by
-        // `msg_len + FOOTER_SIZE`.
-        let msg_len = descriptor.length8 as usize * 8;
-        let data_offset_bytes = descriptor.data_offset8 as usize * 8;
-        let total_ring_len = msg_len + FOOTER_SIZE;
-        if msg_len < data_offset_bytes
-            || data_offset_bytes < DESCRIPTOR_SIZE
-            || total_ring_len > available_data(write_idx, read_idx, ring_len) as usize
-        {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "descriptor length out of range",
-            });
-        }
-        let payload_bytes = msg_len - data_offset_bytes;
-        let ext_header_len = data_offset_bytes - DESCRIPTOR_SIZE;
-        let needed = ext_header_len + payload_bytes;
-        if buf.len() < needed {
-            return Err(Error::Parse {
-                ty: None,
-                reason: "recv buffer smaller than packet payload",
-            });
-        }
-
-        // Read the extended header + payload region into `buf`.
-        let ext_off = read_idx as usize + DESCRIPTOR_SIZE;
-        read_wrapping(&self.mem, ext_off, &mut buf[..needed]);
-
-        // Advance read_index past the whole packet (msg_len + footer).
-        // SeqCst is required to correctly rendezvous with the peer
-        // writer's `pending_send_sz` protocol: the writer does
-        // `pending_send_sz.store(SeqCst); read_idx.load(SeqCst)`; the
-        // reader must mirror with a SeqCst store on read_idx (and a
-        // SeqCst load of pending_send_sz in `drain_signal_decision`)
-        // for the "at least one side observes the other's store"
-        // guarantee to hold on weakly-ordered targets (aarch64 UEFI).
-        // openvmm's `IncomingRing::commit_read` uses SeqCst here for
-        // the same reason.
-        let new_read_idx = (read_idx + total_ring_len as u32) & (ring_len - 1);
-        ctrl_out(&self.mem).store(new_read_idx, Ordering::SeqCst);
-
-        Ok(RecvPacket {
-            descriptor,
-            payload: &buf[ext_header_len..needed],
-            ext_header_len,
-        })
-    }
-
-    /// Mask host→guest signalling.
-    pub fn set_interrupt_mask(&self, masked: bool) {
-        ctrl_interrupt_mask(&self.mem).store(masked as u32, Ordering::Release);
-    }
-
-    /// Whether the ring's **writer** (the host, for a RecvRing) has
-    /// advertised support for the `pending_send_sz` protocol. When
-    /// this is false, we should not perform the reader-side signal
-    /// decision — the host won't be listening.
-    pub fn supports_pending_send_size(&self) -> bool {
-        let bits = ctrl_feature_bits(&self.mem).load(Ordering::Relaxed);
-        (bits & FEATURE_SUPPORTS_PENDING_SEND_SIZE) != 0
-    }
-
-    /// Read the writer's current pending-send-size hint. Non-zero
-    /// means the writer is blocked waiting for at least this many
-    /// free bytes.
-    pub fn pending_send_size(&self) -> u32 {
-        ctrl_pending_send(&self.mem).load(Ordering::SeqCst)
-    }
-}
-
-/// Decision returned by [`RecvRing::drain_signal_decision`] after
-/// draining packets from the RECV ring.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SignalDecision {
-    /// The peer (host) is blocked writing and just crossed from
-    /// "not enough space" → "enough space". The caller should invoke
-    /// `Channel::signal(ctx)` to wake it.
-    Signal,
-    /// No signal is needed: the writer isn't blocked, doesn't
-    /// support the protocol, or hasn't crossed the transition.
-    NoSignal,
-}
-
-impl<M: RingMem> RecvRing<M> {
-    /// Compute the signal decision for a batch of reads that
-    /// advanced `read_index` by `bytes_read`. This is the
-    /// reader-side half of the `pending_send_sz` protocol: the
-    /// peer writer parks itself and posts a `pending_send_sz`
-    /// hint (in bytes) when its ring is full; we drain, compute
-    /// how much space is now free, and signal the writer only on
-    /// the transition from "not enough free space" to "enough
-    /// free space".
-    ///
-    /// Call this **after** all reads in a batch have completed and
-    /// `read_index` has been published. Returns
-    /// [`SignalDecision::Signal`] on the exact boundary crossing —
-    /// signalling on every drain would risk Hyper-V's DoS throttling.
-    ///
-    /// # Convention
-    ///
-    /// `bytes_read` is the difference between the pre-drain and
-    /// post-drain `read_index` (mod ring length). Callers can obtain
-    /// it by snapshotting `mem().control()[IDX_OUT]` before their
-    /// first read.
-    ///
-    /// The test corresponds to:
-    /// * `old_free < pending_send_sz` **and**
-    /// * `new_free >= pending_send_sz`
-    ///
-    /// Matches Linux's `hv_pkt_iter_close` and openvmm's
-    /// `IncomingRing::commit_read_and_notify` semantics.
-    pub fn drain_signal_decision(&self, bytes_read: u32) -> SignalDecision {
-        if !self.supports_pending_send_size() {
-            return SignalDecision::NoSignal;
-        }
-        let pending = self.pending_send_size();
-        if pending == 0 {
-            return SignalDecision::NoSignal;
-        }
-        let ring_len = self.mem.data_len() as u32;
-        // SeqCst on both loads — the reader half of the pending_send_sz
-        // Dekker rendezvous requires all four Dekker operations
-        // (writer's store+load, reader's store+load) be SeqCst.
-        let write_idx = ctrl_in(&self.mem).load(Ordering::SeqCst);
-        let read_idx = ctrl_out(&self.mem).load(Ordering::SeqCst);
-        let new_free = available_free(write_idx, read_idx, ring_len);
-        // `old_free` reconstructed: before this batch of reads,
-        // `read_idx` was `bytes_read` behind, so `free` was smaller
-        // by the same amount.
-        let old_free = new_free.saturating_sub(bytes_read);
-        if old_free < pending && new_free >= pending {
-            SignalDecision::Signal
-        } else {
-            SignalDecision::NoSignal
-        }
+fn map_ring_err(err: vmbus_ring::Error) -> Error {
+    Error::Parse {
+        ty: None,
+        reason: match err {
+            vmbus_ring::Error::InvalidRingMemory => "invalid ring memory",
+            vmbus_ring::Error::InvalidRingPointer => "invalid ring pointers",
+            vmbus_ring::Error::InvalidMessageLength => "invalid message length",
+            _ => "upstream vmbus_ring error",
+        },
     }
 }

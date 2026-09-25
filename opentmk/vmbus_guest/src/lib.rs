@@ -164,7 +164,7 @@
 //! Two subtleties trip up first-time callers of the ring API:
 //!
 //! * **Signal only on the empty→non-empty transition.**
-//!   [`ring::SendRing::write_packet`] (and its wrappers
+//!   [`ring::OutgoingRingExt::write_packet`] (and its wrappers
 //!   `write_inband`, `write_completion`, `write_gpa_direct`) return
 //!   `Ok(true)` exactly when this write crossed the ring from empty
 //!   to non-empty **and** the host hasn't masked interrupts.
@@ -315,7 +315,7 @@ use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 /// the hypervisor — SIMP/SIEFP register writes in
 /// [`synic::init_synic`], GPADL PFN lists in
 /// [`gpadl::establish_gpadl`], and GPA-direct external buffer
-/// descriptors in [`ring::SendRing::write_gpa_direct`] — routes the
+/// descriptors in [`ring::OutgoingRingExt::write_gpa_direct`] — routes the
 /// address through this function. If the identity-map invariant
 /// ever fails (e.g. isolating opentmk under its own CR3, or a
 /// paravisor VTL1 layout that remaps guest memory), replace the

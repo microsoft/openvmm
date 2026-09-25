@@ -56,6 +56,8 @@ use crate::protocol::PacketFlags;
 use crate::protocol::PacketType;
 use crate::protocol::VMBUS_CONNECTION_ID_LEGACY;
 use crate::protocol::VMBUS_CONNECTION_ID_MODERN;
+use crate::ring::IncomingRingExt;
+use crate::ring::OutgoingRingExt;
 use crate::ring::RawRingMem;
 use crate::ring::RecvRing;
 use crate::ring::SendRing;
@@ -352,8 +354,14 @@ impl RawChannel {
 
         Ok(Self {
             channel,
-            send: SendRing::new(send_mem),
-            recv: RecvRing::new(recv_mem),
+            send: SendRing::new(send_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "SendRing::new rejected ring memory",
+            })?,
+            recv: RecvRing::new(recv_mem).map_err(|_| Error::Parse {
+                ty: None,
+                reason: "RecvRing::new rejected ring memory",
+            })?,
             ring_base: base,
             ring_layout: layout,
             next_transaction_id: 1,
@@ -427,7 +435,7 @@ impl RawChannel {
         let mut buf = alloc::vec![0u8; RING_DATA_BYTES.min(64 * 1024)];
         let mut count = 0;
         for _ in 0..max_packets {
-            match self.recv.read(&mut buf) {
+            match self.recv.read_packet(&mut buf) {
                 Ok(_) => count += 1,
                 // `Parse` here means the *host* wrote a descriptor we
                 // can't make sense of. Stop rather than spin: the read
