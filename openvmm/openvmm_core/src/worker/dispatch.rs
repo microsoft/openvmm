@@ -12,6 +12,7 @@ mod pcie_topology;
 mod pcie_wiring;
 mod restore;
 mod smmu_wiring;
+mod snapshot_rpc;
 
 use self::device_removal::DeviceRemovalState;
 use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
