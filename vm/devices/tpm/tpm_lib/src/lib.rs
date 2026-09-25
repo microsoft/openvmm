@@ -68,8 +68,10 @@ pub const TPM_V185_MAX_NV_INDEX_SIZE: u16 = 16 * 1024;
 // Scale this with maximum attestation payload
 pub(crate) const MAX_ATTESTATION_INDEX_SIZE: u16 = 2900;
 
-pub(crate) const RSA_2K_MODULUS_BITS: u16 = 2048;
-pub(crate) const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
+/// Size of an RSA-2048 modulus in bits.
+pub const RSA_2K_MODULUS_BITS: u16 = 2048;
+/// Size of an RSA-2048 modulus in bytes.
+pub const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
 /// Operation types for provisioning telemetry.
@@ -1942,7 +1944,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     /// * `duplicate` - The private part of the key to be imported.
     /// * `in_sym_seed` - The value associated with `duplicate`.
     ///
-    pub(crate) fn import(
+    pub fn import(
         &mut self,
         auth_handle: ReservedHandle,
         object_public: &Tpm2bPublic,
@@ -1987,7 +1989,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     /// * `in_private` - The private part of the key to be loaded.
     /// * `in_public` - The public part of the key to be loaded.
     ///
-    pub(crate) fn load(
+    pub fn load(
         &mut self,
         auth_handle: ReservedHandle,
         in_private: &Tpm2bBuffer,
@@ -2077,6 +2079,43 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         AlgIdEnum::SHA256.into(),
         object_attributes,
         &AUTH_POLICY_A_SHA_256,
+        rsa_params,
+        &[0u8; RSA_2K_MODULUS_SIZE],
+    )
+    .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
+
+    Ok(in_public)
+}
+
+/// Returns the public template for SRK
+/// https://github.com/canonical/snapd/blob/9cb4b26eed4e49eba34ea2838e6fec3404621729/secboot/secboot_sb_test.go#L367C2-L367C19
+pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+    let symmetric = TpmtSymDefObject::new(
+        AlgIdEnum::AES.into(),
+        Some(128),
+        Some(AlgIdEnum::CFB.into()),
+    );
+
+    //let scheme = TpmtRsaScheme::new(AlgIdEnum::RSA.into(), Some(AlgIdEnum::SHA256.into()));
+    // Define the RSA scheme as TPM2_ALG_NULL for general use
+    let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0); // 0 exponent means use default (2^16 + 1)
+
+    let object_attributes = TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_decrypt(true);
+
+    let in_public = TpmtPublic::new(
+        AlgIdEnum::RSA.into(),
+        AlgIdEnum::SHA256.into(),
+        object_attributes,
+        &[],
         rsa_params,
         &[0u8; RSA_2K_MODULUS_SIZE],
     )

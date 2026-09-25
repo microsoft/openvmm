@@ -11231,6 +11231,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtpm_util"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "ctrlc",
+ "getrandom 0.4.2",
+ "hex",
+ "ms-tpm-20-ref",
+ "openssl",
+ "parking_lot",
+ "sha2",
+ "tempfile",
+ "test_with_tracing",
+ "tpm_lib",
+ "tpm_protocol",
+ "tracing",
+ "tracing-subscriber",
+ "zerocopy",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

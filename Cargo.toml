@@ -59,6 +59,7 @@ members = [
   "vm/loader/snp_bootshim",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "vm/vtpm_util",
   # opentmk
   "opentmk",
   "opentmk/opentmk_executor",
