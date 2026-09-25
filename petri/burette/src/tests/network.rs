@@ -512,6 +512,7 @@ mod tap {
                     enable_rx_gso: false,
                     mac_address: TAP_MAC_ADDRESS,
                     endpoint,
+                    egress_policy: None,
                     save_restore: false,
                     static_ipv4: None,
                     effective_features: None,

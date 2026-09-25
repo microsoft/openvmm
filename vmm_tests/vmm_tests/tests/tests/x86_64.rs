@@ -259,6 +259,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                                 enable_rx_gso: false,
                                 mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
                                 endpoint: NullHandle.into_resource(),
+                                egress_policy: None,
                                 save_restore: false,
                                 static_ipv4: None,
                                 effective_features: None,
