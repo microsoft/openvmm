@@ -863,7 +863,7 @@ The openhcl personality requires explicit --hv --vtl2."#
 
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
-    /// Accepts serial config (console | stderr | listen=\<path\> |
+    /// Accepts serial config (console | stderr | listen=\<path\> | connect=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
     /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
@@ -2888,7 +2888,7 @@ impl FromStr for ComSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
+/// (console | stderr | listen=\<path\> | connect=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | connect=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
@@ -2898,6 +2898,8 @@ pub enum SerialConfigCli {
     Stderr,
     Pipe(PathBuf),
     Tcp(SocketAddr),
+    ConnectPipe(PathBuf),
+    ConnectTcp(SocketAddr),
     File(PathBuf),
 }
 
@@ -2942,6 +2944,21 @@ impl FromStr for SerialConfigCli {
                 Some(path) => SerialConfigCli::Pipe(path.into()),
                 None => Err(
                     "invalid serial configuration: listen requires a value of tcp:addr or pipe",
+                )?,
+            },
+            "connect" => match first_value {
+                Some(path) => {
+                    if let Some(tcp) = path.strip_prefix("tcp:") {
+                        let addr = tcp
+                            .parse()
+                            .map_err(|err| format!("invalid tcp address: {err}"))?;
+                        SerialConfigCli::ConnectTcp(addr)
+                    } else {
+                        SerialConfigCli::ConnectPipe(path.into())
+                    }
+                }
+                None => Err(
+                    "invalid serial configuration: connect requires a value of tcp:addr or pipe",
                 )?,
             },
             _ => {
@@ -4453,6 +4470,20 @@ mod tests {
             _ => panic!("Expected Pipe variant"),
         }
 
+        match SerialConfigCli::from_str("connect=tcp:127.0.0.1:1234").unwrap() {
+            SerialConfigCli::ConnectTcp(addr) => {
+                assert_eq!(addr.to_string(), "127.0.0.1:1234");
+            }
+            _ => panic!("Expected ConnectTcp variant"),
+        }
+
+        match SerialConfigCli::from_str("connect=/path/to/pipe").unwrap() {
+            SerialConfigCli::ConnectPipe(path) => {
+                assert_eq!(path.to_str().unwrap(), "/path/to/pipe");
+            }
+            _ => panic!("Expected ConnectPipe variant"),
+        }
+
         // Test error cases
         assert!(SerialConfigCli::from_str("").is_err());
         assert!(SerialConfigCli::from_str("unknown").is_err());
@@ -4460,6 +4491,7 @@ mod tests {
         assert!(SerialConfigCli::from_str("listen").is_err());
         assert!(SerialConfigCli::from_str("listen=tcp:").is_err());
         assert!(SerialConfigCli::from_str("listen=tcp:invalid").is_err());
+        assert!(SerialConfigCli::from_str("connect").is_err());
     }
 
     #[test]
