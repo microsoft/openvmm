@@ -344,45 +344,470 @@ mod flag_alloc_tests {
     }
 }
 
-// -- Event and Action skeletons --------------------------------------------
+// -- Wire-adjacent request payloads ----------------------------------------
 //
-// The full [`Event`] and [`Action`] enums, along with `ClientCore` and
-// the [`ActionSink`] trait, arrive in follow-up commits. This first
-// commit lays down the crate structure and pins the load-bearing
-// design decisions (RequestId, ClientPhase without Rpc fields, no
-// mesh/pal_async/futures dependency) so the migration can proceed in
-// well-scoped steps against a stable set of top-level types.
+// Parallel to `vmbus_channel::bus`'s OpenData / GpadlRequest /
+// ModifyRequest, but without vmbus_channel's std baggage. The wrapper
+// converts field-for-field at the Event boundary.
 
-/// Placeholder for the input event type. Full enum arrives in a
-/// follow-up commit.
+/// Parameters supplied on [`Event::Connect`].
+#[derive(Copy, Clone, Debug)]
+pub struct ConnectParams {
+    /// VP that will service outgoing channel-manager messages.
+    pub target_message_vp: u32,
+    /// Monitor pages the client offers to the host, or `None` to skip
+    /// monitor-page support.
+    pub monitor_page: Option<MonitorPageGpas>,
+    /// Client identifier the host echoes back in `VersionResponse2`.
+    pub client_id: Guid,
+}
+
+/// Monitor-page GPAs supplied on [`ConnectParams`] or
+/// [`Event::ModifyConnection`]. Wire-equivalent to
+/// `vmcore::synic::MonitorPageGpas`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MonitorPageGpas {
+    /// The GPA of the parent-to-child (host → guest) monitor page.
+    pub parent_to_child: u64,
+    /// The GPA of the child-to-parent (guest → host) monitor page.
+    pub child_to_parent: u64,
+}
+
+/// Parameters supplied on [`Event::OpenChannel`]. Mirrors
+/// `vmbus_channel::bus::OpenData` field-for-field.
+#[derive(Copy, Clone, Debug)]
+pub struct OpenChannelParams {
+    /// Target VP for host-to-guest interrupts, or `None` to disable.
+    pub target_vp: Option<u32>,
+    /// Byte offset into the ring GPADL where the host-to-guest ring
+    /// starts.
+    pub ring_offset: u32,
+    /// The ring buffer's GPADL id.
+    pub ring_gpadl_id: vmbus_core::protocol::GpadlId,
+    /// Guest event flag the host signals on empty-to-nonempty
+    /// transition.
+    pub event_flag: u16,
+    /// Connection id for guest-to-host interrupts.
+    pub connection_id: u32,
+    /// The event flag on the caller-selected pal_event, if the caller
+    /// requested a redirected event on this channel. The wrapper owns
+    /// the mapping to a real Event handle; the core only tracks the
+    /// numeric flag id.
+    pub redirected_event_flag: Option<u16>,
+    /// Opaque per-channel user data.
+    pub user_data: vmbus_core::protocol::UserDefinedData,
+}
+
+/// Parameters supplied on [`Event::RestoreChannel`].
+#[derive(Copy, Clone, Debug)]
+pub struct RestoreChannelParams {
+    /// Redirected-event flag persisted in saved state.
+    pub redirected_event_flag: Option<u16>,
+    /// Connection id persisted in saved state.
+    pub connection_id: u32,
+}
+
+/// A GPADL description supplied on [`Event::EstablishGpadl`]. Mirrors
+/// `vmbus_channel::bus::GpadlRequest` with an owned buffer.
+#[derive(Clone, Debug)]
+pub struct GpadlRequest {
+    /// Fresh gpadl id the caller wants to associate with this GPADL.
+    pub id: vmbus_core::protocol::GpadlId,
+    /// Number of ranges in the GPADL.
+    pub count: u16,
+    /// The GPA range buffer (packed per the vmbus spec).
+    pub buf: alloc::vec::Vec<u64>,
+}
+
+/// A caller-initiated channel modification. Wire-equivalent to
+/// `vmbus_channel::bus::ModifyRequest`.
+#[derive(Copy, Clone, Debug)]
+pub enum ModifyRequest {
+    /// Change the target VP for host-to-guest interrupts.
+    TargetVp { target_vp: u32 },
+}
+
+/// Parameters supplied on [`Event::HvsockConnect`]. Wire-equivalent to
+/// `vmbus_core::HvsockConnectRequest`.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+pub struct HvsockConnectRequest {
+    /// Service id (hvsock connection endpoint).
+    pub service_id: Guid,
+    /// Endpoint id.
+    pub endpoint_id: Guid,
+    /// Silo id (`Guid::default()` when not in a silo).
+    pub silo_id: Guid,
+    /// Whether the client should be treated as silo-unaware on hosts
+    /// that don't support silo-aware hvsock.
+    pub hosted_silo_unaware: bool,
+}
+
+// -- Event: inputs to ClientCore::step -------------------------------------
+
+/// The sole input to `ClientCore::step`.
+///
+/// Every source of state change the core observes — host wire
+/// messages, caller-initiated requests, lifecycle hooks — arrives as
+/// an [`Event`]. Deserialisation of host wire bytes happens inside the
+/// core.
 #[non_exhaustive]
 #[derive(Debug)]
-pub enum Event {}
+pub enum Event<'a> {
+    // --- Host-originated ---
+    /// A raw vmbus channel-manager message payload arrived on SINT2.
+    HostMessage(&'a [u8]),
 
-/// Placeholder for the output action type. Full enum arrives in a
-/// follow-up commit.
+    // --- Caller-originated top-level requests ---
+    /// Post `InitiateContact[2]` and negotiate a version.
+    Connect {
+        request_id: RequestId,
+        params: ConnectParams,
+    },
+    /// Post `RequestOffers` after a successful connect.
+    RequestOffers { request_id: RequestId },
+    /// Post `Unload` and disconnect.
+    Unload { request_id: RequestId },
+    /// Post `ModifyConnection`, changing the monitor pages the host
+    /// uses for interrupt aggregation.
+    ModifyConnection {
+        request_id: RequestId,
+        monitor_page: MonitorPageGpas,
+    },
+    /// Post `TlConnectRequest[2]` and wait for `TlConnectResult`.
+    HvsockConnect {
+        request_id: RequestId,
+        request: HvsockConnectRequest,
+    },
+
+    // --- Caller-originated per-channel requests ---
+    /// Post `OpenChannel[2]` with the supplied [`OpenChannelParams`].
+    OpenChannel {
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        open: OpenChannelParams,
+    },
+    /// Restore an [`Opened`](ChannelPhase::Opened) channel from
+    /// saved state (no wire message; only updates local state).
+    RestoreChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+        params: RestoreChannelParams,
+    },
+    /// Post `CloseChannel` (fire-and-forget).
+    CloseChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+    /// Post `ModifyChannel` and wait for `ModifyChannelResponse`.
+    ModifyChannel {
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        request: ModifyRequest,
+    },
+    /// Drop caller-side interest in a channel (no wire message).
+    /// Emits [`Action::Complete`] once the underlying release
+    /// bookkeeping is done.
+    ReleaseChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+
+    // --- Caller-originated per-gpadl requests ---
+    /// Post `GpadlHeader` + `GpadlBody` messages and wait for
+    /// `GpadlCreated`.
+    EstablishGpadl {
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        gpadl_id: vmbus_core::protocol::GpadlId,
+        request: GpadlRequest,
+    },
+    /// Post `GpadlTeardown` and wait for `GpadlTorndown`.
+    TeardownGpadl {
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        gpadl_id: vmbus_core::protocol::GpadlId,
+    },
+
+    // --- Task-level lifecycle hooks ---
+    /// Enable request processing (drives the core out of the initial
+    /// paused state).
+    Start,
+    /// Pause new request processing while still draining outstanding
+    /// completions.
+    Stop,
+    /// Post `Pause` (V5+ pause/resume protocol).
+    Pause,
+    /// Post `Resume`.
+    Resume,
+    /// Reset all internal state (used only on shutdown paths).
+    Reset,
+    /// Backpressure hint from the wrapper: `true` means the outgoing
+    /// PostMessage retry loop is running and the core should stop
+    /// processing caller-initiated requests until it drains.
+    HostBusy { busy: bool },
+}
+
+// -- Action: outputs from ClientCore::step ---------------------------------
+
+/// A descriptor for a channel offer forwarded through
+/// [`Action::OfferReceived`].
+#[derive(Clone, Debug)]
+pub struct OfferDescriptor {
+    /// The raw `OfferChannel` wire message.
+    pub offer: vmbus_core::protocol::OfferChannel,
+    /// Connection id for guest-to-host interrupts on this channel.
+    pub connection_id: u32,
+}
+
+/// A completed request result payload delivered on
+/// [`Action::Complete`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CompletionResult {
+    /// Result of [`Event::Connect`].
+    Connect(Result<ConnectionSuccess, ConnectError>),
+    /// Result of [`Event::RequestOffers`].
+    RequestOffers(Result<(), ConnectError>),
+    /// Result of [`Event::Unload`].
+    Unload,
+    /// Result of [`Event::ModifyConnection`].
+    ModifyConnection(vmbus_core::protocol::ConnectionState),
+    /// Result of [`Event::HvsockConnect`]. `None` means the host
+    /// refused the connection.
+    HvsockConnect(Option<OfferDescriptor>),
+    /// Result of [`Event::OpenChannel`].
+    OpenChannel(Result<u32, i32>),
+    /// Result of [`Event::ModifyChannel`].
+    ModifyChannel(i32),
+    /// Result of [`Event::EstablishGpadl`].
+    EstablishGpadl(Result<(), ()>),
+    /// Result of [`Event::TeardownGpadl`].
+    TeardownGpadl,
+    /// Result of [`Event::ReleaseChannel`].
+    ReleaseChannel,
+}
+
+/// Successful [`Event::Connect`] result — the negotiated
+/// [`VersionInfo`] and whether offers were requested implicitly.
+#[derive(Copy, Clone, Debug)]
+pub struct ConnectionSuccess {
+    /// Negotiated version info.
+    pub version: VersionInfo,
+}
+
+/// Reasons a connect can fail.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConnectError {
+    /// The client was not in the `Disconnected` phase.
+    #[error("invalid client state for InitiateContact")]
+    InvalidState,
+    /// The host rejected all versions the client offered.
+    #[error("host does not support any of the client's protocol versions")]
+    VersionNotSupported,
+    /// The host accepted the version but failed the connection with
+    /// the enclosed [`vmbus_core::protocol::ConnectionState`] code.
+    #[error("host failed the connection with status {0:?}")]
+    FailedToConnect(vmbus_core::protocol::ConnectionState),
+}
+
+/// Observable per-channel transition delivered via
+/// [`Action::ChannelObservable`]. Used by the wrapper for its
+/// per-channel `Arc<AtomicU32>` connection-id bookkeeping and for
+/// forwarding to `revoke_send` on rescinds.
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+pub enum ChannelObservable {
+    /// A live connection id was assigned to the channel by
+    /// `OpenResult`.
+    ConnectionIdAssigned(u32),
+    /// The channel connection id was cleared by `CloseChannel` or
+    /// `RelIdReleased`.
+    ConnectionIdCleared,
+    /// The channel entered [`ChannelPhase::Opened`].
+    Opened,
+    /// The channel entered [`ChannelPhase::Offered`] (returned from
+    /// Opened after `CloseChannel`).
+    Closed,
+    /// The channel was revoked by the host.
+    Revoked,
+}
+
+/// The sole output from `ClientCore::step`.
+///
+/// Actions are streamed through an [`ActionSink`] in the order the
+/// core generates them; the wrapper is expected to observe them
+/// synchronously within a single `step` call.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Action {
-    /// An offer arrived from the host after connect. Placeholder
-    /// variant — the full offer payload shape lands in a follow-up
-    /// commit.
-    OfferReceived,
+    /// Post a wire-encoded vmbus channel-manager message to the host.
+    /// The wrapper handles buffering, retry, and (via
+    /// `Event::HostBusy`) backpressure.
+    PostMessage(alloc::vec::Vec<u8>),
+    /// Signal a guest-to-host event on `(connection_id,
+    /// event_flag)`.
+    SignalEvent { connection_id: u32, event_flag: u16 },
+    /// Free a previously-emitted event flag. The wrapper reclaims the
+    /// backing `pal_event::Event` handle.
+    FreeEventFlag(u16),
+    /// A caller-initiated request has completed.
+    Complete {
+        request_id: RequestId,
+        result: CompletionResult,
+    },
+    /// The host delivered an offer.
+    OfferReceived(OfferDescriptor),
+    /// The host rescinded a prior offer.
+    OfferRescinded {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+    /// A per-channel state observable transition.
+    ChannelObservable {
+        channel_id: vmbus_core::protocol::ChannelId,
+        event: ChannelObservable,
+    },
 }
 
-/// Placeholder for the top-level state machine. Full type + methods
-/// arrive in a follow-up commit.
-///
-/// The real `ClientCore` will hold [`Config`], [`ClientPhase`], and
-/// the per-channel/gpadl/hvsock/outgoing-message maps, and expose
-/// `step(event, sink)` for the wrapper to drive.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct ClientCore;
+// -- ActionSink ------------------------------------------------------------
 
 /// The sink through which [`Action`]s are emitted during a call to
-/// `ClientCore::step`. Full implementation arrives in a follow-up
-/// commit.
+/// `ClientCore::step` (in phase 4b).
+///
+/// Implementations are typically small structs that own the wrapper's
+/// mesh senders or in-guest queues, and dispatch each variant to the
+/// appropriate downstream target.
 pub trait ActionSink {
     fn emit(&mut self, action: Action);
+}
+
+// -- ClientCore skeleton ---------------------------------------------------
+
+/// The state-machine core of the VMBus client.
+///
+/// Constructed with [`Self::new`] and driven by the wrapper through
+/// repeated `step` calls. Deterministic and single-threaded
+/// on any runtime — the wrapper is responsible for serialising events
+/// (typically via its `select!` loop).
+///
+/// # Phase-4a state
+///
+/// This commit lands the crate's public API surface (event / action
+/// payload types, the [`Event`] and [`Action`] enums, [`ActionSink`]
+/// trait, and [`Self::new`] with the empty initial state). The
+/// `step` method arrives in phase 4b along with the message
+/// dispatch logic ported from `vmbus_client`'s `handle_*` methods.
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "phase-4a skeleton; fields are populated by handlers ported in phase 4b"
+)]
+pub struct ClientCore {
+    config: Config,
+    phase: ClientPhase,
+    channels: alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry>,
+    outstanding: alloc::collections::BTreeMap<RequestId, PendingRequest>,
+    hvsock_pending: alloc::collections::BTreeMap<Guid, RequestId>,
+    flag_allocator: FlagAllocator,
+    running: bool,
+    host_busy: bool,
+    /// Set when a `ModifyConnection` is outstanding, so a duplicate
+    /// request can be rejected.
+    modify_connection_request_id: Option<RequestId>,
+}
+
+/// Per-channel entry held in [`ClientCore::channels`].
+#[derive(Debug, Clone)]
+pub struct ChannelEntry {
+    /// Cached copy of the host's `OfferChannel` message.
+    pub offer: vmbus_core::protocol::OfferChannel,
+    /// Current per-channel state.
+    pub phase: ChannelPhase,
+    /// Live connection id, or 0 when the channel is offered/revoked.
+    pub connection_id: u32,
+    /// GPADLs currently associated with this channel.
+    pub gpadls: alloc::collections::BTreeMap<vmbus_core::protocol::GpadlId, GpadlPhase>,
+    /// `true` once the caller has released their side of the channel.
+    /// The core defers actually removing the entry from
+    /// [`ClientCore::channels`] until the host acknowledges with
+    /// `RelIdReleased`.
+    pub is_client_released: bool,
+    /// [`RequestId`] of a currently-outstanding `ModifyChannel`, if
+    /// any.
+    pub modify_request_id: Option<RequestId>,
+}
+
+/// A caller-initiated request the core is waiting for the host to
+/// complete. Recorded in `ClientCore` so
+/// [`Action::Complete`] can be routed back to the wrapper's Rpc.
+#[derive(Copy, Clone, Debug)]
+pub enum PendingRequest {
+    Connect,
+    RequestOffers,
+    Unload,
+    ModifyConnection,
+    HvsockConnect {
+        service_id: Guid,
+    },
+    OpenChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+    ModifyChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+    EstablishGpadl {
+        channel_id: vmbus_core::protocol::ChannelId,
+        gpadl_id: vmbus_core::protocol::GpadlId,
+    },
+    TeardownGpadl {
+        channel_id: vmbus_core::protocol::ChannelId,
+        gpadl_id: vmbus_core::protocol::GpadlId,
+    },
+    ReleaseChannel {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
+}
+
+impl ClientCore {
+    /// Construct a fresh [`ClientCore`] with the given [`Config`].
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            phase: ClientPhase::Disconnected,
+            channels: alloc::collections::BTreeMap::new(),
+            outstanding: alloc::collections::BTreeMap::new(),
+            hvsock_pending: alloc::collections::BTreeMap::new(),
+            flag_allocator: FlagAllocator::default(),
+            running: false,
+            host_busy: false,
+            modify_connection_request_id: None,
+        }
+    }
+
+    /// Returns a reference to the immutable configuration.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Returns the current [`ClientPhase`].
+    pub fn phase(&self) -> &ClientPhase {
+        &self.phase
+    }
+
+    /// Returns the current map of known channels.
+    pub fn channels(
+        &self,
+    ) -> &alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry> {
+        &self.channels
+    }
+
+    /// Whether the wrapper has signalled outgoing-message
+    /// backpressure via [`Event::HostBusy`].
+    pub fn host_busy(&self) -> bool {
+        self.host_busy
+    }
+
+    /// Whether request processing is enabled (i.e.
+    /// [`Event::Start`] has been observed and [`Event::Stop`] has
+    /// not).
+    pub fn running(&self) -> bool {
+        self.running
+    }
 }
