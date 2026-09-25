@@ -88,6 +88,10 @@ pub struct MicrovmCli {
     #[clap(long, requires = "restore_snapshot")]
     pub restore_entropy: bool,
 
+    /// Maximum time allowed for a microVM guest to complete post-restore repair.
+    #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
+    pub restore_gate_timeout_ms: u64,
+
     /// Capture a microVM snapshot to this directory when the guest writes PMIO 0x605.
     #[clap(long, value_name = "DIR", conflicts_with = "restore_snapshot")]
     pub snapshot_destination: Option<PathBuf>,
@@ -266,6 +270,10 @@ impl Options {
             anyhow::ensure!(
                 self.net.is_empty(),
                 "microVM restore takes network addressing from saved state; do not pass --net"
+            );
+            anyhow::ensure!(
+                self.microvm.restore_gate_timeout_ms != 0,
+                "microVM post-restore gate timeout must be nonzero"
             );
         }
         anyhow::ensure!(
@@ -752,6 +760,7 @@ mod tests {
                 "scratch:mem:1M",
             ])
             .unwrap();
+            assert_eq!(options.microvm.restore_gate_timeout_ms, 60_000);
             options.validate_microvm_options().unwrap();
         }
 
@@ -791,6 +800,18 @@ mod tests {
             ])
             .is_err()
         );
+
+        let zero_timeout = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-gate-timeout-ms",
+            "0",
+        ])
+        .unwrap();
+        assert!(zero_timeout.validate_microvm_options().is_err());
     }
 
     #[test]
