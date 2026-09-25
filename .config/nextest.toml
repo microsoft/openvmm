@@ -58,7 +58,22 @@ threads-required = 2
 slow-timeout = { period = "10m" }
 
 [[profile.ci.overrides]]
+# This test exhaustively models two writers racing a reader across wraparound
+# and takes over a minute on Windows. Keep the larger budget scoped to it.
+filter = 'package(atomic_ringbuf) and test(/^loom_tests::loom_multi_writer_wraparound$/)'
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.agent.overrides]]
+filter = 'package(atomic_ringbuf) and test(/^loom_tests::loom_multi_writer_wraparound$/)'
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
 # allow loom based tests more time, as they take a while
+filter = 'test(loom)'
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.agent.overrides]]
+# Keep the same exhaustive loom test budget as CI.
 filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
