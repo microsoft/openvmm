@@ -211,6 +211,13 @@ impl LxVolume {
         )
     }
 
+    pub fn supports_posix_unlink(&self) -> bool {
+        self.state
+            .fs_context
+            .compatibility_flags
+            .supports_posix_unlink_rename()
+    }
+
     pub fn set_attr(&self, path: &Path, attr: SetAttributes) -> lx::Result<()> {
         self.set_attr_helper(path, attr, false)?;
         Ok(())
@@ -275,6 +282,20 @@ impl LxVolume {
     pub fn mkdir(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<()> {
         self.mkdir_helper(path, options)?;
         Ok(())
+    }
+
+    pub fn open_metadata(&self, path: &Path) -> lx::Result<LxFile> {
+        assert!(path.is_relative());
+        let handle = self.open_file(path, util::MINIMUM_PERMISSIONS, Default::default())?;
+        let info = self.state.get_attributes_by_handle(&handle)?;
+        Ok(LxFile {
+            handle,
+            state: Arc::clone(&self.state),
+            enumerator: None,
+            access: util::MINIMUM_PERMISSIONS,
+            kill_priv: AtomicBool::new(true),
+            is_app_exec_alias: Mutex::new(info.is_app_execution_alias),
+        })
     }
 
     pub fn mkdir_stat(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<lx::Stat> {

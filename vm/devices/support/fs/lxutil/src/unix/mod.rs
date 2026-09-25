@@ -46,6 +46,10 @@ impl LxVolume {
         true
     }
 
+    pub fn supports_posix_unlink(&self) -> bool {
+        true
+    }
+
     pub fn lstat(&self, path: &Path) -> lx::Result<StatEx> {
         assert!(path.is_relative());
         let path = util::path_to_cstr(path)?;
@@ -89,6 +93,20 @@ impl LxVolume {
             fd,
             enumerator: None,
         })
+    }
+
+    pub fn open_metadata(&self, path: &Path) -> lx::Result<LxFile> {
+        // Open the root relative to its handle rather than resolving its pathname.
+        let path = if path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            path
+        };
+        self.open(
+            path,
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            None,
+        )
     }
 
     pub fn mkdir(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<()> {
