@@ -3,6 +3,8 @@
 
 //! Construct ACPI tables for a concrete VM topology
 
+mod microvm;
+
 // TODO: continue to remove these hardcoded deps
 use acpi::cedt::Cedt;
 use acpi::dsdt;
@@ -227,6 +229,8 @@ pub enum AcpiArchConfig {
         pm_base: u16,
         /// ACPI IRQ number.
         acpi_irq: u32,
+        /// Legacy IRQs that must be described as active-high, level-triggered.
+        level_triggered_irqs: &'static [u32],
         /// x86 IOMMU ACPI table configuration. Generates an IVRS (AMD) or
         /// DMAR (Intel VT-d) table when set. At most one x86 IOMMU type
         /// is active per VM.
@@ -585,6 +589,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             }
         }
 
+        microvm::extend_madt_level_triggered_irqs(&self.arch, &mut madt_extra);
         T::extend_madt(self.processor_topology, &mut madt_extra);
 
         let (apic_addr, flags) = match self.arch {
@@ -1473,6 +1478,8 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
 #[cfg(test)]
 mod test {
+    mod microvm;
+
     use super::*;
     use acpi_spec::madt::MadtParser;
     use acpi_spec::mcfg::parse_mcfg;
@@ -1514,6 +1521,7 @@ mod test {
                 with_psp: false,
                 pm_base: 1234,
                 acpi_irq: 2,
+                level_triggered_irqs: &[],
                 iommu: None,
             },
         }
