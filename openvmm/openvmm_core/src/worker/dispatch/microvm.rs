@@ -12,34 +12,46 @@ use crate::partition::HvlitePartition;
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use anyhow::Context;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
 use mesh::error::RemoteError;
+use mesh::rpc::Rpc;
 use mesh_worker::WorkerRpc;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
 use std::sync::Arc;
+use std::time::Duration;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioMmioInterruptMode;
 use virtio::resolve::ResolvedVirtioDevice;
 use vm_loader::InitialLoad;
 use vmcore::vm_task::VmTaskDriverSource;
+use vmm_core::partition_unit::StopGuard;
 
 /// MicroVM inputs taken from the [`VmWorkerParameters`].
-pub(super) struct MicrovmParameters {}
+pub(super) struct MicrovmParameters {
+    /// Snapshot boundary channels handed to the loaded VM.
+    pub(super) snapshot_boundary: SnapshotBoundary,
+}
 
 impl MicrovmParameters {
     /// Takes the microVM inputs out of the worker parameters and validates the
     /// machine configuration for the selected hypervisor.
     pub(super) fn take(parameters: &mut VmWorkerParameters) -> anyhow::Result<Self> {
+        let snapshot_boundary = SnapshotBoundary {
+            requests: parameters.snapshot_boundary_requests.take(),
+            ready: parameters.snapshot_ready.take(),
+            ..Default::default()
+        };
         openvmm_defs::microvm::validate_machine_config(
             &parameters.cfg,
             Some(parameters.hypervisor.id()),
         )?;
-        Ok(Self {})
+        Ok(Self { snapshot_boundary })
     }
 
     /// Prepares the kernel command line of a microVM cold boot, before the VM
@@ -50,6 +62,37 @@ impl MicrovmParameters {
         restored_from_snapshot: bool,
     ) -> anyhow::Result<()> {
         prepare_cold_boot_command_line(&mut vm.cfg, vm.partition.as_ref(), restored_from_snapshot)
+    }
+}
+
+/// A guest snapshot-boundary request, or the closure of the request channel.
+pub(super) type SnapshotBoundaryEvent = Result<MicrovmSnapshotBoundaryRequest, mesh::RecvError>;
+
+/// Guest-requested snapshot boundary state of a [`LoadedVm`].
+#[derive(Default)]
+pub(super) struct SnapshotBoundary {
+    /// Deferred snapshot PMIO requests awaiting an exact post-OUT boundary.
+    requests: Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
+    /// Notifies the controller after the worker establishes a boundary.
+    ready: Option<mesh::Sender<()>>,
+    /// Holds the vCPUs stopped while a boundary is active.
+    stop_guard: Option<StopGuard>,
+    /// Completes the guest's snapshot transaction when the boundary is released.
+    transaction_complete: Option<Rpc<(), ()>>,
+    /// Host wall time at the stopped capture boundary.
+    capture_wall_clock: Option<mesh::payload::Timestamp>,
+    /// Input-gate timeout of the active boundary.
+    input_gate_timeout: Option<Duration>,
+}
+
+impl SnapshotBoundary {
+    /// Receives the next boundary request. Never completes when there is no
+    /// request channel.
+    pub(super) async fn recv(&mut self) -> SnapshotBoundaryEvent {
+        match self.requests.as_mut() {
+            Some(requests) => requests.recv().await,
+            None => std::future::pending().await,
+        }
     }
 }
 
@@ -99,6 +142,238 @@ pub(super) fn load_linux_x86_mptable(
 }
 
 impl LoadedVm {
+    pub(super) async fn establish_snapshot_boundary(
+        &mut self,
+        request: MicrovmSnapshotBoundaryRequest,
+    ) -> bool {
+        if self.snapshot_boundary.stop_guard.is_some() {
+            tracelimit::warn_ratelimited!("dropping duplicate microVM snapshot boundary request");
+            request.release_write.send(());
+            request.transaction_complete.complete(());
+            return true;
+        }
+        let Some(snapshot_ready) = self.snapshot_boundary.ready.clone() else {
+            request.release_write.send(());
+            request.transaction_complete.complete(());
+            return true;
+        };
+
+        let input_gate = openvmm_defs::profile::ProfileSpan::start();
+        if let Err(error) = self
+            .state_units
+            .quiesce_input_for_save(request.input_gate_timeout)
+            .await
+        {
+            tracelimit::error_ratelimited!(
+                error = error.as_ref() as &dyn std::error::Error,
+                "failed to gate host input before snapshot boundary"
+            );
+            if let Err(resume_error) = self
+                .state_units
+                .resume_input_after_save(request.input_gate_timeout)
+                .await
+            {
+                tracelimit::error_ratelimited!(
+                    error = resume_error.as_ref() as &dyn std::error::Error,
+                    "host-input gate rollback is uncertain; terminating VM worker"
+                );
+                request.transaction_complete.complete(());
+                return false;
+            }
+            request.release_write.send(());
+            request.transaction_complete.complete(());
+            return true;
+        }
+        input_gate.complete("capture", "input_gate", Default::default());
+
+        let vp_stop_at_io_boundary = openvmm_defs::profile::ProfileSpan::start();
+        match self
+            .inner
+            .partition_unit
+            .temporarily_stop_vps_at_io_boundary(request.release_write, request.write_completed)
+            .await
+        {
+            Ok(stop_guard) => {
+                vp_stop_at_io_boundary.complete(
+                    "capture",
+                    "vp_stop_at_io_boundary",
+                    Default::default(),
+                );
+                self.snapshot_boundary.stop_guard = Some(stop_guard);
+                self.snapshot_boundary.transaction_complete = Some(request.transaction_complete);
+                self.snapshot_boundary.capture_wall_clock =
+                    Some(std::time::SystemTime::now().into());
+                self.snapshot_boundary.input_gate_timeout = Some(request.input_gate_timeout);
+                snapshot_ready.send(());
+                true
+            }
+            Err(error) => {
+                tracelimit::error_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to establish snapshot PMIO boundary; terminating VM worker"
+                );
+                request.transaction_complete.complete(());
+                false
+            }
+        }
+    }
+
+    pub(super) async fn release_snapshot_boundary(&mut self) -> anyhow::Result<()> {
+        let input_gate_timeout = self
+            .snapshot_boundary
+            .input_gate_timeout
+            .context("snapshot boundary is missing its input-gate timeout")?;
+        self.state_units
+            .resume_input_after_save(input_gate_timeout)
+            .await?;
+        let transaction_complete = self
+            .snapshot_boundary
+            .transaction_complete
+            .take()
+            .context("no active microVM snapshot boundary")?;
+        let stop_guard = self
+            .snapshot_boundary
+            .stop_guard
+            .take()
+            .context("snapshot boundary is missing its vCPU stop guard")?;
+        self.snapshot_boundary.capture_wall_clock = None;
+        self.snapshot_boundary.input_gate_timeout = None;
+        transaction_complete.complete(());
+        drop(stop_guard);
+        Ok(())
+    }
+
+    pub(super) async fn quiesce_for_snapshot(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<openvmm_defs::rpc::SnapshotSaveResponse, openvmm_defs::rpc::SnapshotQuiesceError>
+    {
+        use mesh::payload::message::ProtobufMessage;
+
+        if self.inner.machine_profile != MachineProfile::Microvm {
+            return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
+                RemoteError::new(anyhow::anyhow!(
+                    "guest-requested snapshot quiesce requires the microVM profile"
+                )),
+            ));
+        }
+        if !self.running {
+            return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
+                RemoteError::new(anyhow::anyhow!("VM is already stopped")),
+            ));
+        }
+
+        let quiesce = openvmm_defs::profile::ProfileSpan::start();
+        if let Err(error) = self.state_units.quiesce_for_save(timeout).await {
+            return Err(if error.has_uncertain_state() {
+                openvmm_defs::rpc::SnapshotQuiesceError::Uncertain(RemoteError::new(error))
+            } else {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+            });
+        }
+        quiesce.complete("capture", "quiesce", Default::default());
+        self.running = false;
+
+        let save_state = openvmm_defs::profile::ProfileSpan::start();
+        let saved_state = self.save().await.map_err(|error| {
+            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+        })?;
+        save_state.complete("capture", "save_state", Default::default());
+        let mapped_memory_flush = openvmm_defs::profile::ProfileSpan::start();
+        self.inner
+            .memory_manager
+            .flush_shared_file_backing()
+            .context("failed to flush mapped guest RAM")
+            .map_err(|error| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+            })?;
+        mapped_memory_flush.complete("capture", "mapped_memory_flush", Default::default());
+        let effective_command_line = match &self.inner.load_mode {
+            openvmm_defs::config::LoadMode::Linux {
+                cmdline,
+                boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
+                ..
+            } => cmdline.clone(),
+            _ => {
+                return Err(openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(
+                    RemoteError::new(anyhow::anyhow!(
+                        "microVM snapshot has no effective command line"
+                    )),
+                ));
+            }
+        };
+        let tsc_frequency_hz = self
+            .inner
+            .partition
+            .tsc_frequency_hz()
+            .map_err(|error| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+            })?
+            .ok_or_else(|| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
+                    anyhow::anyhow!("backend does not expose a guest TSC frequency"),
+                ))
+            })?;
+        let apic_frequency_hz = self
+            .inner
+            .partition
+            .apic_frequency_hz()
+            .map_err(|error| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+            })?
+            .ok_or_else(|| {
+                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
+                    anyhow::anyhow!("backend does not expose a local APIC frequency"),
+                ))
+            })?;
+        let capture_wall_clock = self.snapshot_boundary.capture_wall_clock.ok_or_else(|| {
+            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
+                anyhow::anyhow!("snapshot boundary has no wall-clock timestamp"),
+            ))
+        })?;
+        Ok(openvmm_defs::rpc::SnapshotSaveResponse {
+            state_unit_names: saved_state.inventory.clone(),
+            saved_state: ProtobufMessage::new(saved_state),
+            effective_command_line,
+            tsc_frequency_hz,
+            apic_frequency_hz,
+            capture_wall_clock,
+            cpu_contract: mesh::payload::encode(self.inner.partition.cpu_compatibility_contract()),
+        })
+    }
+
+    /// Resumes the VM after a rollback-safe snapshot failure and releases the
+    /// snapshot boundary.
+    pub(super) async fn resume_after_failed_snapshot(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        self.state_units.resume_after_failed_save(timeout).await?;
+        self.running = true;
+        self.release_snapshot_boundary().await?;
+        Ok(())
+    }
+
+    /// Handles an event of the snapshot boundary request channel. Returns
+    /// `false` when the VM worker must stop.
+    pub(super) async fn handle_snapshot_boundary(&mut self, event: SnapshotBoundaryEvent) -> bool {
+        match event {
+            Ok(request) => {
+                if !self.establish_snapshot_boundary(request).await {
+                    if self.running {
+                        self.state_units.stop().await;
+                        self.running = false;
+                    }
+                    return false;
+                }
+            }
+            Err(_) => {
+                self.snapshot_boundary.requests = None;
+            }
+        }
+        true
+    }
+
     /// Applies the microVM restrictions to a management RPC. Rejected RPCs are
     /// completed here; the others are returned for dispatch.
     pub(super) fn filter_vm_rpc(&self, message: VmRpc) -> Option<VmRpc> {

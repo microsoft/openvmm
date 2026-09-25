@@ -67,6 +67,11 @@ pub struct VmWorkerParameters {
     pub shared_memory_copy_on_write: bool,
     /// Snapshot generation handles that must outlive the restored VM.
     pub snapshot_restore_guards: Option<SnapshotRestoreGuards>,
+    /// Deferred microVM PMIO requests awaiting an exact post-OUT boundary.
+    pub snapshot_boundary_requests:
+        Option<mesh::Receiver<chipset_resources::microvm::MicrovmSnapshotBoundaryRequest>>,
+    /// Notifies the controller after the worker establishes the boundary.
+    pub snapshot_ready: Option<mesh::Sender<()>>,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,
     /// The VM RPC channel.
