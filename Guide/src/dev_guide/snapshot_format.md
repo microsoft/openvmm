@@ -67,15 +67,22 @@ absent. The destination must not already exist.
 
 Restore opens the snapshot directory once and resolves its artifacts relative
 to that handle. The directory must contain exactly `manifest.bin`, `state.bin`,
-and `memory.bin`, each a regular file. Windows uses read-only handles with
-`FILE_SHARE_READ` only, rejects reparse points, and records the memory file's
-`FILE_ID_INFO` and EOF. Linux uses `O_NOFOLLOW` directory and regular-file
-descriptors and records the memory file's device, inode, length, and
-modification time, so renaming or replacing the original path cannot
-substitute another generation. Linux file descriptors do not provide
-mandatory write exclusion; deployments that need authenticated or write-proof
-local artifacts must add a stronger mode such as a lease, fs-verity, or a
-verified artifact broker.
+and `memory.bin`, each a regular file. Guest RAM is a private copy-on-write
+mapping of the opened `memory.bin` handle, so guest writes never reach the
+snapshot and it can be restored repeatedly. Windows uses read-only handles with
+`FILE_SHARE_READ` only, rejects reparse points, compares `FILE_ID_INFO` and EOF
+before and after creating the private COW section, and keeps the directory and
+artifact guards in the VM worker until teardown. Linux keeps the exact
+`O_NOFOLLOW` directory and regular-file descriptors, and before handoff rejects
+a change of the device, inode, length, or modification time of the opened
+manifest, state, or memory file, so renaming or replacing the original path
+cannot substitute another generation. A change of their links, mode, or owner
+alone passes, which lets a restore open a snapshot before the capture's source,
+as it tears down, removes its RAM file's temporary name, the other link of an
+automatic `memory.bin`. Linux file descriptors do not provide mandatory write
+exclusion; deployments that need authenticated or write-proof local artifacts
+must add a stronger mode such as a lease, fs-verity, or a verified artifact
+broker.
 
 ## Code references
 
@@ -83,7 +90,7 @@ verified artifact broker.
 - Format validation, publication, restore-side access, and file-system helpers:
   `openvmm/openvmm_helpers/src/snapshot/`
 - Restore entry point: `prepare_snapshot_restore()` in
-  `openvmm/openvmm_entry/src/lib.rs`
+  `openvmm/openvmm_entry/src/snapshot_restore/prepare.rs`
 - File-backed memory: `SharedMemoryFd` type alias in
   `openvmm/openvmm_defs/src/worker.rs`
 
