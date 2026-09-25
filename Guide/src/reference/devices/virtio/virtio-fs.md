@@ -29,6 +29,7 @@ policy. Configure an active attachment with:
 ```bash
 openvmm --machine microvm \
   --mount /mnt/share,path/to/share,ro \
+  --mount-deny path/to/share/secrets \
   --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
 ```
 
@@ -53,6 +54,10 @@ For an active cold-boot attachment, the profile adds `virtfs_dir`,
 `virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line.
 The fixed transport is always discoverable. Active attachment policy and the
 canonical absolute host path become snapshot-authoritative.
+Repeat `--mount-deny` to hide existing host files or directories. OpenVMM
+canonicalizes each entry relative to the export and rejects paths outside the
+root, the root itself, overlapping entries, symlink/reparse components, and
+nested-mount crossings before opening the device.
 
 `SectionFs`, aggregate roots, alternate tags, PCI transport, DAX, and extra
 queues are not part of the microVM profile.
@@ -69,8 +74,8 @@ later host additions do not appear midway through that enumeration. New
 lookups and newly opened directories still observe the live host tree.
 
 Restoring a snapshot captured with an active attachment requires a fresh
-`--mount` argument and the exact same canonical host path, guest target, and
-mode. Identity validation remains independent: before any vCPU starts,
+`--mount` argument and the exact same denied-path set, canonical host path,
+guest target, and mode. Identity validation remains independent: before any vCPU starts,
 OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore.
@@ -108,6 +113,12 @@ Guest FUSE requests, paths, and saved aliases are untrusted. HostFs rejects
 absolute and parent-relative aliases, does not follow symbolic links or
 Windows reparse points while resolving saved objects, and enforces read-only
 mode before invoking a host mutation.
+
+Denied paths are enforced in the server namespace rather than by guest mount
+layout. Lookup and mutation operations reject denied prefixes, directory
+enumeration omits their names, and denied root object identities reject
+hard-link, junction, and bind-mount aliases. Mounting the same virtio-fs tag at
+another guest path does not change the policy.
 
 ```admonish warning
 The current cross-platform `LxVolume` interface does not provide fully
