@@ -82,8 +82,12 @@ impl ChipsetDevices {
         )
         .await?;
         let device = arc_builder.build(CloseableMutex::new(device));
+        let advances_time = device.lock().advances_time();
         let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
-        let builder = units.add(name).dependency_of(self.chipset_unit());
+        let mut builder = units.add(name).dependency_of(self.chipset_unit());
+        if advances_time {
+            builder = builder.advances_time();
+        }
         let unit = builder
             .spawn(driver_source.simple(), |recv| device_unit.run(recv))
             .context("name in use")?;
