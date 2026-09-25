@@ -257,6 +257,12 @@ guest transmit offset live in the device-private virtio payload, preserving
 their order across a new-process restore. Host input is gated before the vCPU
 snapshot boundary and resumed only if capture rolls back.
 
+If establishing the snapshot boundary returns an error after vCPU stopping
+begins, OpenVMM keeps host input gated and stops and tears down the VM instead
+of attempting a live rollback. This applies to both capture and the
+post-restore acknowledgement boundary. Teardown still depends on the affected
+backends responding; it does not provide a bounded shutdown deadline.
+
 For microVM virtio-fs, the manifest always records the fixed, guest-discoverable
 slot. A dormant slot has no host attachment or filesystem policy and carries
 explicit dormant device-private state. An active slot also records the stable
