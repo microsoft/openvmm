@@ -10308,6 +10308,7 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chipset_device",
  "fuse",
  "futures",
  "guestmem",

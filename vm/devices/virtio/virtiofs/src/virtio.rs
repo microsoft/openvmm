@@ -249,6 +249,10 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
+    fn supports_accelerated_doorbells(&self) -> bool {
+        crate::microvm::device::supports_accelerated_doorbells(self)
+    }
+
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         let offset = offset as usize;
         let config = self.config.as_bytes();
@@ -585,6 +589,7 @@ mod tests {
             device.traits().max_queues,
             1 + DEFAULT_NUM_REQUEST_QUEUES as u16
         );
+        assert!(device.supports_accelerated_doorbells());
     }
 
     #[async_test]

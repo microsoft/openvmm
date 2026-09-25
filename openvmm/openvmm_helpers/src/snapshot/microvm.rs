@@ -13,6 +13,8 @@ use sha2::Digest;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Capability version for the always-present dormant microVM virtio-fs slot.
+pub const MICROVM_FILESYSTEM_SLOT_VERSION: u32 = 1;
 /// Linux-direct MP-table boot layout with shared interrupt status.
 pub const MICROVM_BOOT_LAYOUT_VERSION: u32 = 2;
 /// Snapshot contract name for shared-status edge interrupts.
@@ -306,6 +308,9 @@ pub struct SnapshotMachineContract {
     /// Effective local APIC timer frequency.
     #[mesh(20)]
     pub apic_frequency_hz: Option<u64>,
+    /// Version of the reserved restore-attachable microVM virtio-fs slot.
+    #[mesh(22)]
+    pub microvm_filesystem_slot_version: u32,
     /// Virtio interrupt-delivery mode.
     #[mesh(24)]
     pub virtio_interrupt_mode: String,
@@ -378,6 +383,7 @@ pub fn microvm_machine_contract(
         &openvmm_defs::microvm::MicrovmNetworkConfig,
         SnapshotAttachment,
     )>,
+    filesystem_slot: bool,
     filesystem: Option<(
         &openvmm_defs::microvm::MicrovmFilesystemConfig,
         &Path,
@@ -542,7 +548,11 @@ pub fn microvm_machine_contract(
     } else {
         None
     };
-    if filesystem.is_some() {
+    anyhow::ensure!(
+        filesystem.is_none() || filesystem_slot,
+        "microVM filesystem policy requires the reserved virtio-fs slot"
+    );
+    if filesystem_slot {
         let discovery = format!(
             "virtio_mmio.device={:#x}@{:#x}:{}",
             openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
@@ -704,6 +714,11 @@ pub fn microvm_machine_contract(
         microvm_network,
         microvm_filesystem,
         apic_frequency_hz,
+        microvm_filesystem_slot_version: if filesystem_slot {
+            MICROVM_FILESYSTEM_SLOT_VERSION
+        } else {
+            0
+        },
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
         virtio_shared_status_page_size: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
@@ -758,6 +773,10 @@ pub fn validate_microvm_machine_contract(
         "snapshot microVM ABI version {} doesn't match expected {}",
         contract.microvm_abi_version,
         expected.microvm_abi_version,
+    );
+    anyhow::ensure!(
+        contract.microvm_filesystem_slot_version == expected.microvm_filesystem_slot_version,
+        "snapshot microVM filesystem slot capability doesn't match the requested machine"
     );
     anyhow::ensure!(
         contract.source_hypervisor == expected.source_hypervisor,
@@ -1053,11 +1072,21 @@ pub(super) fn validate_machine_contract_shape(
         .attachments
         .iter()
         .any(|attachment| attachment.stable_id == "fs:microvm0");
-    anyhow::ensure!(
-        has_filesystem_device == contract.microvm_filesystem.is_some()
-            && has_filesystem_attachment == contract.microvm_filesystem.is_some(),
-        "snapshot microVM filesystem device, policy, and attachment inventories disagree"
-    );
+    match contract.microvm_filesystem_slot_version {
+        0 => anyhow::ensure!(
+            has_filesystem_device == contract.microvm_filesystem.is_some()
+                && has_filesystem_attachment == contract.microvm_filesystem.is_some(),
+            "legacy snapshot microVM filesystem device, policy, and attachment inventories disagree"
+        ),
+        MICROVM_FILESYSTEM_SLOT_VERSION => anyhow::ensure!(
+            has_filesystem_device
+                && has_filesystem_attachment == contract.microvm_filesystem.is_some(),
+            "snapshot reserved microVM filesystem slot, policy, and attachment inventories disagree"
+        ),
+        version => anyhow::bail!(
+            "snapshot microVM filesystem slot capability version {version} is unsupported"
+        ),
+    }
 
     anyhow::ensure!(
         contract.attachments.len() <= MAX_ATTACHMENTS,
@@ -1187,6 +1216,7 @@ fn test_machine_contract() -> SnapshotMachineContract {
         clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
         microvm_network: None,
         microvm_filesystem: None,
+        microvm_filesystem_slot_version: 0,
         apic_frequency_hz: Some(1_000_000_000),
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
@@ -1241,6 +1271,7 @@ mod tests {
             MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             Some((&network, microvm_network_attachment(source_hypervisor))),
+            false,
             None,
             None,
             1,
@@ -1300,6 +1331,7 @@ mod tests {
             MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             None,
+            true,
             Some((
                 &filesystem,
                 Path::new(if cfg!(windows) {
@@ -1334,6 +1366,40 @@ mod tests {
         .unwrap()
     }
 
+    fn generated_dormant_filesystem_contract() -> SnapshotMachineContract {
+        microvm_machine_contract(
+            "whp",
+            MICROVM_BOOT_LAYOUT_VERSION,
+            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6"
+                .to_owned(),
+            None,
+            true,
+            None,
+            None,
+            1,
+            1024,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtiofs-3489665024",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            std::time::SystemTime::now().into(),
+            1_000_000_000,
+            Some(1_000_000_000),
+            vec![1, 2, 3],
+        )
+        .unwrap()
+    }
+
     fn generated_console_contract() -> SnapshotMachineContract {
         microvm_machine_contract(
             "whp",
@@ -1341,6 +1407,7 @@ mod tests {
             "earlycon=xe9 console=hvc1 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0002000:7"
                 .to_owned(),
             None,
+            false,
             None,
             Some(microvm_console_attachment()),
             1,
@@ -1456,6 +1523,29 @@ mod tests {
             assert_eq!(filesystem.entry_cache_timeout_ns, 0);
             assert_eq!(filesystem.attribute_cache_timeout_ns, 0);
         }
+    }
+
+    #[test]
+    fn generated_dormant_microvm_filesystem_contract_reserves_fixed_slot() {
+        let contract = generated_dormant_filesystem_contract();
+        assert_eq!(
+            contract.microvm_filesystem_slot_version,
+            MICROVM_FILESYSTEM_SLOT_VERSION
+        );
+        assert!(contract.microvm_filesystem.is_none());
+        assert!(contract.attachments.is_empty());
+        let filesystem = contract.devices.last().unwrap();
+        assert_eq!(filesystem.stable_id, "fs:microvm0");
+        assert_eq!(filesystem.state_unit_name, "virtiofs-3489665024");
+        assert_eq!(filesystem.ranges[0].start, 0xd000_1000);
+        assert_eq!(filesystem.irq, Some(6));
+    }
+
+    #[test]
+    fn dormant_microvm_filesystem_capability_requires_fixed_device() {
+        let mut contract = generated_dormant_filesystem_contract();
+        contract.devices.pop();
+        assert!(validate_machine_contract_shape(&contract, 1024, 1).is_err());
     }
 
     #[test]
