@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 mod inventory;
+pub mod quiesce;
 mod start;
 
 use futures::FutureExt;
@@ -222,7 +223,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
-    StartUncertain,
+    QuiesceUncertain,
 }
 
 #[derive(Debug)]
@@ -1015,6 +1016,7 @@ impl Ready {
 #[cfg(test)]
 mod tests {
     mod inventory;
+    mod quiesce;
     mod start;
 
     use super::StateUnit;
