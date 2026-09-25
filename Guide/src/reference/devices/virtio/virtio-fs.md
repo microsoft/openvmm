@@ -141,7 +141,8 @@ false success.
   `vm/devices/virtio/virtio_resources/src/lib.rs` and
   `vm/devices/virtio/virtio_resources/src/fs/microvm.rs`
 - microVM composition and restore attachment validation:
-  `openvmm/openvmm_entry/src/microvm/filesystem.rs`
+  `openvmm/openvmm_entry/src/microvm/filesystem.rs` and
+  `openvmm/openvmm_entry/src/ttrpc/microvm.rs`
 - Snapshot manifest and microVM filesystem contract:
   `openvmm/openvmm_helpers/src/snapshot.rs` and
   `openvmm/openvmm_helpers/src/snapshot/microvm.rs`
