@@ -796,6 +796,8 @@ configured to exit, drains previously accepted portb console output before the
 process exits. This includes the host stdout/stderr relay, not just the device's
 transmit buffer. Draining is bounded to five seconds; an output error or timeout
 is reported as a failure rather than a successful exit with truncated output.
+In RPC-server mode, a drain failure also fails pending `WaitVm` requests and
+terminates the server with an error instead of leaving it uninitialized.
 Snapshot capture still preserves pending console bytes in the snapshot.
 
 * `--crash-dump-path <PATH>`: when the guest triple-faults, write a
