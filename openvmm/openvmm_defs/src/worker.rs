@@ -24,6 +24,9 @@ pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
 
 pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 
+/// Complete event written before a restored VM can execute.
+pub const RESTORE_READY_EVENT_V1: &[u8] = b"OPENVMM_RESTORE_READY_V1\n";
+
 /// Exact snapshot-generation handles retained for a restored VM's lifetime.
 #[derive(MeshPayload)]
 pub struct SnapshotRestoreGuards {
@@ -64,6 +67,8 @@ pub struct VmWorkerParameters {
     pub shared_memory_copy_on_write: bool,
     /// Snapshot generation handles that must outlive the restored VM.
     pub snapshot_restore_guards: Option<SnapshotRestoreGuards>,
+    /// Single-use process-local sink for the restore readiness event.
+    pub restore_ready_sink: Option<std::fs::File>,
     /// The VM RPC channel.
     pub rpc: mesh::Receiver<VmRpc>,
     /// The notification channel.

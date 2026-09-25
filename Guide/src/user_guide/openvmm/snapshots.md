@@ -81,6 +81,18 @@ directory, so `file=...` should not be specified in `--memory` (the two options
 are mutually exclusive). Guest writes use a private copy-on-write mapping and
 do not modify the snapshot artifact.
 
+Orchestrators can add `--restore-ready-path <PATH>`, which requires
+`--restore-snapshot`. OpenVMM connects to an existing Unix domain socket on
+Linux or a `//./pipe/...` named pipe on Windows and writes
+`OPENVMM_RESTORE_READY_V1\n` after restore validation and state-unit startup,
+before releasing a restored vCPU. The event is single-use and is not
+serialized. A connection, write, or flush failure aborts startup and stops the
+started units. With `--paused`, the first successful `resume` publishes the
+event; if that resume fails, OpenVMM exits with an error rather than allowing
+a later resume to start the guest without the event. The peer must accept and
+read while resume is in progress; on Windows, flush completion waits until the
+named-pipe peer consumes the complete frame.
+
 ```admonish warning
 Version 3 does not contain or validate embedded checksums for `state.bin` or
 `memory.bin`. Restore still requires regular files, bounded manifest and state
