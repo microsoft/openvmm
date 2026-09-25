@@ -6,6 +6,7 @@
 use mesh::payload::Protobuf;
 use mesh::payload::Timestamp;
 
+pub mod format;
 pub mod publish;
 pub mod restore;
 
@@ -13,7 +14,7 @@ pub use publish::write_snapshot;
 pub use restore::read_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 3;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -40,6 +41,24 @@ pub struct SnapshotManifest {
     /// Architecture string ("x86_64" or "aarch64").
     #[mesh(7)]
     pub architecture: String,
+    /// Length of `state.bin` in bytes.
+    #[mesh(8)]
+    pub state_size_bytes: u64,
+    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3.
+    #[mesh(9)]
+    pub state_sha256: Vec<u8>,
+    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3.
+    #[mesh(10)]
+    pub memory_sha256: Vec<u8>,
+    /// Snapshot format magic.
+    #[mesh(12)]
+    pub format_magic: Vec<u8>,
+    /// Version of the serialized VM saved-state schema.
+    #[mesh(13)]
+    pub saved_state_schema_version: u32,
+    /// Fully qualified protobuf root type stored in `state.bin`.
+    #[mesh(14)]
+    pub saved_state_root_type: String,
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
@@ -54,13 +73,8 @@ pub fn validate_manifest(
     expected_vp_count: u32,
     expected_page_size: u32,
 ) -> anyhow::Result<()> {
-    if manifest.version != MANIFEST_VERSION {
-        anyhow::bail!(
-            "snapshot manifest version {} is not supported (expected {})",
-            manifest.version,
-            MANIFEST_VERSION,
-        );
-    }
+    format::validate_manifest_header(manifest)?;
+    format::validate_manifest_version(manifest)?;
 
     if manifest.architecture != expected_arch {
         anyhow::bail!(
@@ -102,7 +116,7 @@ mod tests {
     use super::*;
 
     /// Helper: build a test manifest with sensible defaults.
-    fn test_manifest() -> SnapshotManifest {
+    pub(super) fn test_manifest() -> SnapshotManifest {
         SnapshotManifest {
             version: MANIFEST_VERSION,
             created_at: Timestamp {
@@ -114,6 +128,7 @@ mod tests {
             vp_count: 2,
             page_size: 4096,
             architecture: "x86_64".to_string(),
+            ..Default::default()
         }
     }
 
@@ -136,6 +151,9 @@ mod tests {
         assert_eq!(read_manifest.memory_size_bytes, manifest.memory_size_bytes);
         assert_eq!(read_manifest.vp_count, manifest.vp_count);
         assert_eq!(read_manifest.architecture, manifest.architecture);
+        assert_eq!(read_manifest.state_size_bytes, state.len() as u64);
+        assert!(read_manifest.state_sha256.is_empty());
+        assert!(read_manifest.memory_sha256.is_empty());
         assert_eq!(read_state, state);
 
         // memory.bin should exist in the snapshot directory.

@@ -608,6 +608,7 @@ async fn snapshot_save_to_disk(
         vp_count: 2,
         page_size: 4096,
         architecture: "x86_64".to_string(),
+        ..Default::default()
     };
     openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
 
