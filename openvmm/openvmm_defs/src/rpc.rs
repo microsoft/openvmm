@@ -59,6 +59,8 @@ pub enum PulseSaveRestoreError {
     ResetNotSupported,
     #[error("pulse save+restore failed")]
     Other(#[source] RemoteError),
+    #[error("save and restore are unavailable for this machine profile")]
+    UnsupportedMachineProfile,
 }
 
 impl From<anyhow::Error> for PulseSaveRestoreError {
