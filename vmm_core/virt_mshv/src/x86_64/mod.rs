@@ -584,6 +584,10 @@ impl virt::Partition for MshvPartition {
         self.inner.finalize_memory()
     }
 
+    fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
+        virt::x86::CpuCompatibilityContract::new(self.inner.caps(), &self.inner.config.cpuid)
+    }
+
     fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = Error>> {

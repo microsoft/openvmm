@@ -4,12 +4,14 @@
 //! x86-specific state.
 
 pub mod apic_software_device;
+pub mod cpu_contract;
 pub mod snp;
 pub mod topology;
 pub mod vm;
 pub mod vp;
 
 use crate::state::StateElement;
+pub use cpu_contract::CpuCompatibilityContract;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;

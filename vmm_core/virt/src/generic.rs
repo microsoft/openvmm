@@ -531,6 +531,10 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
         Ok(())
     }
 
+    /// Returns the effective x86 CPU compatibility contract.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpu_compatibility_contract(&self) -> crate::x86::CpuCompatibilityContract;
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(

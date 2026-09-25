@@ -768,6 +768,10 @@ impl Partition for KvmPartition {
         virt::InitialVpStateSource::Registers
     }
 
+    fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
+        virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
         // TODO: Support resetting SNP launch state and rebuilding the protected
         // guest before advertising reset support.
