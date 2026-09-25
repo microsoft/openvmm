@@ -17,6 +17,10 @@ use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
+use membacking::FileMappingMode;
+use membacking::GuestMemoryBuilder;
+use membacking::Mappable;
+use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -42,6 +46,9 @@ use vmm_core::partition_unit::StopGuard;
 #[derive(MeshPayload, Default)]
 pub(super) struct MicrovmManifest {
     pub(super) sandbox_blocks: Vec<openvmm_defs::microvm::MicrovmSandboxBlockConfig>,
+    pub(super) memory_capacity: Option<u64>,
+    pub(super) snapshot_memory_ranges: Vec<MemoryRange>,
+    pub(super) restore_memory_ranges: Vec<MemoryRange>,
 }
 
 impl From<MicrovmConfig> for MicrovmManifest {
@@ -51,8 +58,16 @@ impl From<MicrovmConfig> for MicrovmManifest {
             filesystem: _,
             sandbox_blocks,
             filesystem_bootstrap: _,
+            memory_capacity,
+            snapshot_memory_ranges,
+            restore_memory_ranges,
         } = config;
-        Self { sandbox_blocks }
+        Self {
+            sandbox_blocks,
+            memory_capacity,
+            snapshot_memory_ranges,
+            restore_memory_ranges,
+        }
     }
 }
 
@@ -568,6 +583,106 @@ impl<'a> VirtioMmioSlots<'a> {
         })?;
         Ok(())
     }
+}
+
+/// Adds the split guest RAM backings of a microVM snapshot restore. The
+/// backed RAM ranges are removed from `ranges_by_node`, so the generic
+/// per-node backings skip them.
+pub(super) fn add_snapshot_restore_backing(
+    mut memory_builder: GuestMemoryBuilder,
+    cfg: &Manifest,
+    ranges_by_node: &mut [Vec<MemoryRange>],
+    nodes_with_ranges: usize,
+    existing_mappable: &mut Option<(Mappable, FileMappingMode)>,
+) -> anyhow::Result<GuestMemoryBuilder> {
+    if cfg.microvm.snapshot_memory_ranges.is_empty() {
+        return Ok(memory_builder);
+    }
+
+    anyhow::ensure!(
+        cfg.machine_profile == MachineProfile::Microvm && nodes_with_ranges == 1,
+        "snapshot RAM range restore requires a single-node microVM"
+    );
+    let active_ranges = ranges_by_node
+        .iter_mut()
+        .find(|ranges| !ranges.is_empty())
+        .expect("nodes_with_ranges is one");
+    let mut restored_ranges = cfg.microvm.snapshot_memory_ranges.clone();
+    restored_ranges.extend_from_slice(&cfg.microvm.restore_memory_ranges);
+    anyhow::ensure!(
+        coalesce_adjacent_ranges(&restored_ranges)? == *active_ranges,
+        "snapshot base and expansion ranges do not match the selected RAM layout"
+    );
+
+    let (mappable, file_mapping_mode) = existing_mappable
+        .take()
+        .context("snapshot RAM ranges require an existing memory backing")?;
+    let mem = cfg.numa.nodes[0]
+        .mem
+        .as_ref()
+        .context("snapshot RAM ranges require node 0 memory configuration")?;
+    let base_backing =
+        membacking::RamBackingRequest::new(cfg.microvm.snapshot_memory_ranges.clone())
+            .prefetch(mem.prefetch_memory)
+            .transparent_hugepages(mem.transparent_hugepages)
+            .host_numa_node(mem.host_numa_node)
+            .existing_mappable(mappable)
+            .file_mapping_mode(file_mapping_mode);
+    memory_builder = memory_builder.add_backing(base_backing);
+
+    if !cfg.microvm.restore_memory_ranges.is_empty() {
+        let expansion_backing =
+            membacking::RamBackingRequest::new(cfg.microvm.restore_memory_ranges.clone())
+                .prefetch(mem.prefetch_memory)
+                .private_memory(true)
+                .transparent_hugepages(mem.transparent_hugepages)
+                .host_numa_node(mem.host_numa_node);
+        memory_builder = memory_builder.add_backing(expansion_backing);
+    }
+    active_ranges.clear();
+    Ok(memory_builder)
+}
+
+fn coalesce_adjacent_ranges(ranges: &[MemoryRange]) -> anyhow::Result<Vec<MemoryRange>> {
+    let mut coalesced: Vec<MemoryRange> = Vec::with_capacity(ranges.len());
+    for &range in ranges {
+        anyhow::ensure!(!range.is_empty(), "snapshot RAM range is empty");
+        if let Some(previous) = coalesced.last_mut() {
+            anyhow::ensure!(
+                range.start() >= previous.end(),
+                "snapshot RAM ranges overlap or are out of order"
+            );
+            if range.start() == previous.end() {
+                *previous = MemoryRange::new(previous.start()..range.end());
+                continue;
+            }
+        }
+        coalesced.push(range);
+    }
+    Ok(coalesced)
+}
+
+pub(super) fn uses_lazy_memory_registration(
+    cfg: &Manifest,
+    shared_memory: Option<&SharedMemoryBacking>,
+) -> bool {
+    #[cfg(all(windows, feature = "virt_whp"))]
+    let has_vpci_resources = !cfg.vpci_resources.is_empty();
+    #[cfg(not(all(windows, feature = "virt_whp")))]
+    let has_vpci_resources = false;
+    let prefetch_memory = cfg
+        .numa
+        .nodes
+        .iter()
+        .any(|node| node.mem.as_ref().is_some_and(|mem| mem.prefetch_memory));
+
+    cfg!(all(windows, feature = "virt_whp", guest_arch = "x86_64"))
+        && cfg.machine_profile == MachineProfile::Microvm
+        && cfg.hypervisor.with_vtl2.is_none()
+        && cfg.microvm.restore_memory_ranges.is_empty()
+        && !has_vpci_resources
+        && !prefetch_memory
+        && shared_memory.is_some_and(SharedMemoryBacking::is_copy_on_write)
 }
 
 pub(super) fn uses_versioned_cpu_contract(machine_profile: MachineProfile) -> bool {
