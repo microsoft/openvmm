@@ -198,7 +198,9 @@ impl VmController {
                 .microvm
                 .network
                 .as_ref()
-                .zip(self.microvm.resources.network_attachment.clone());
+                .zip(self.microvm.resources.egress_policy.as_ref())
+                .zip(self.microvm.resources.network_attachment.clone())
+                .map(|((network, policy), attachment)| (network, policy, attachment));
             let filesystem = self
                 .microvm
                 .filesystem
