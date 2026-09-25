@@ -76,7 +76,13 @@ impl VirtioFsFile {
         size: u32,
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
-        let mut buffer = Vec::with_capacity(size as usize);
+        if size as usize > crate::MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(size as usize)
+            .map_err(|_| lx::Error::ENOMEM)?;
         let mut entry_count: u32 = 0;
         // Report the directory's guest-visible inode number so `.`/`..` agree
         // with the number reported by lookup/getattr.
