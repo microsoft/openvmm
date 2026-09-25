@@ -29,7 +29,13 @@ to be absent. Restore accepts versions 2 and 3.
 
 Reading a snapshot bounds `manifest.bin` to 1 MiB and `state.bin` to 256 MiB,
 validates the manifest format before it reads `state.bin`, and requires
-`state.bin` to have the length that the manifest records.
+`state.bin` and `memory.bin` to have the lengths that the manifest records.
+
+The default format is a local machine-state contract, not an authenticated
+container. All versions receive the same regular-file, no-follow/no-reparse,
+bounded decoding, exact-length, and inventory validation, but the on-disk
+format does not authenticate same-length payload changes. Export or transport
+layers must provide broader integrity and authentication outside this format.
 
 ## Device state (`state.bin`)
 
@@ -57,10 +63,24 @@ is the commit point; the parent directory is flushed afterwards. A failure
 before the commit removes the staging directory and leaves the destination
 absent. The destination must not already exist.
 
+## Restore
+
+Restore opens the snapshot directory once and resolves its artifacts relative
+to that handle. The directory must contain exactly `manifest.bin`, `state.bin`,
+and `memory.bin`, each a regular file. Windows uses read-only handles with
+`FILE_SHARE_READ` only, rejects reparse points, and records the memory file's
+`FILE_ID_INFO` and EOF. Linux uses `O_NOFOLLOW` directory and regular-file
+descriptors and records the memory file's device, inode, length, and
+modification and change times, so renaming or replacing the original path
+cannot substitute another generation. Linux file descriptors do not provide
+mandatory write exclusion; deployments that need authenticated or write-proof
+local artifacts must add a stronger mode such as a lease, fs-verity, or a
+verified artifact broker.
+
 ## Code references
 
 - Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`
-- Format validation, publication, and file-system helpers:
+- Format validation, publication, restore-side access, and file-system helpers:
   `openvmm/openvmm_helpers/src/snapshot/`
 - Restore entry point: `prepare_snapshot_restore()` in
   `openvmm/openvmm_entry/src/lib.rs`

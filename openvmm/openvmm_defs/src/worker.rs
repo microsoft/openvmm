@@ -24,6 +24,19 @@ pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
 
 pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
 
+/// Exact snapshot-generation handles retained for a restored VM's lifetime.
+#[derive(MeshPayload)]
+pub struct SnapshotRestoreGuards {
+    /// Open snapshot directory used for relative artifact access.
+    pub directory: std::fs::File,
+    /// Open manifest artifact.
+    pub manifest: std::fs::File,
+    /// Open saved-state artifact.
+    pub state: std::fs::File,
+    /// Open memory artifact backing the copy-on-write section.
+    pub memory: std::fs::File,
+}
+
 /// Complete saved state consumed by the VM worker.
 #[derive(Protobuf, SavedStateRoot)]
 #[mesh(package = "openvmm")]
