@@ -3,6 +3,8 @@
 
 //! Linux specific loader definitions and implementation.
 
+pub mod microvm;
+
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
