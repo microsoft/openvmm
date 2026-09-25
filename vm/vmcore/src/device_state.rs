@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::future::Future;
+use std::time::Duration;
 
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {
@@ -94,5 +95,22 @@ pub trait ChangeDeviceState {
         async move {
             drop(self);
         }
+    }
+
+    /// Advances guest-visible device time after snapshot restore.
+    fn advance_time(
+        &mut self,
+        _duration: Duration,
+    ) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
+    /// Returns whether [`Self::advance_time`] does any work for this device,
+    /// because it keeps guest-visible time of its own instead of deriving its
+    /// deadlines from VM time. Only such devices receive the advance after a
+    /// restore, so a device that implements [`Self::advance_time`] must
+    /// return `true`.
+    fn advances_time(&self) -> bool {
+        false
     }
 }
