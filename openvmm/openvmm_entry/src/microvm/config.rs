@@ -9,10 +9,14 @@ use super::console::ConsoleEndpoint;
 use super::console::effective_microvm_console;
 use super::console::microvm_console_socket_cleanup;
 use super::console::validate_microvm_console_attachment_namespace;
+use super::network::EffectiveMicrovmNetwork;
+use super::network::effective_microvm_network;
+use super::network::microvm_network_endpoint;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
 use crate::cli_args::SerialConfigCli;
+use crate::cli_args::VirtioBusCli;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::serial_io;
 use anyhow::Context;
@@ -23,6 +27,7 @@ use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use futures::AsyncReadExt;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
+use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
@@ -39,6 +44,7 @@ use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 
@@ -48,6 +54,8 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     opt: &'a Options,
     restore: &'a MicrovmRestore,
     active: bool,
+    network: Option<EffectiveMicrovmNetwork>,
+    gateway_dns: bool,
     console: Option<ConsoleEndpoint>,
     portb: Option<Resource<SerialBackendHandle>>,
     resources: MicrovmResources,
@@ -62,6 +70,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
             openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
         }
         opt.validate_microvm_options()?;
+        let network = if active {
+            effective_microvm_network(opt)?
+        } else {
+            None
+        };
+        // Without an egress policy, the guest may use the gateway's DNS proxy.
+        let gateway_dns = network.is_some();
 
         if active
             && (opt.com1.is_some()
@@ -100,6 +115,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
             opt,
             restore,
             active,
+            network,
+            gateway_dns,
             console,
             portb: None,
             resources,
@@ -314,6 +331,36 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
     }
 
+    /// Adds the fixed-slot virtio-net device.
+    pub(crate) fn add_virtio_devices(
+        &mut self,
+        add_virtio_device: &mut impl FnMut(VirtioBusCli, Resource<VirtioDeviceHandle>),
+        resources: &mut VmResources,
+    ) -> anyhow::Result<()> {
+        if let Some(network) = self.network.as_ref() {
+            let config = &network.config;
+            let endpoint = microvm_network_endpoint(config, resources)?;
+            add_virtio_device(
+                VirtioBusCli::Mmio,
+                virtio_resources::net::VirtioNetHandle {
+                    max_queues: Some(1),
+                    mac_address: config.guest_mac,
+                    endpoint,
+                    save_restore: true,
+                    static_ipv4: Some(StaticIpv4Config {
+                        guest_ipv4: config.guest_ipv4,
+                        prefix_length: config.prefix_length,
+                        gateway_ipv4: config.derived_gateway_ipv4,
+                        gateway_mac: config.gateway_mac,
+                    }),
+                    effective_features: Some(openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES),
+                }
+                .into_resource(),
+            );
+        }
+        Ok(())
+    }
+
     /// Builds the boot virtio-console device handle.
     pub(crate) fn virtio_console_handle(
         &self,
@@ -359,6 +406,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 ));
             }
         }
+        cfg.microvm.network = self.network.as_ref().map(|network| network.config.clone());
 
         let requested_hypervisor = opt
             .hypervisor
@@ -379,7 +427,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .virtio_devices
                 .iter()
                 .any(|(_, device)| device.id() == "virtio-console");
-            openvmm_defs::microvm::append_microvm_virtio_discovery(cmdline, has_console)?;
+            let network_irq = cfg
+                .microvm
+                .network
+                .as_ref()
+                .map(|_| openvmm_defs::microvm::microvm_virtio_net_irq(requested_hypervisor))
+                .transpose()?;
+            let network = cfg
+                .microvm
+                .network
+                .as_ref()
+                .zip(network_irq)
+                .map(|(network, irq)| (network, irq, self.gateway_dns));
+            openvmm_defs::microvm::append_microvm_virtio_discovery(cmdline, network, has_console)?;
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
 

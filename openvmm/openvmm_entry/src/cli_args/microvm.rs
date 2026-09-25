@@ -3,10 +3,12 @@
 
 //! Command-line options of the microVM machine profile.
 
+use super::EndpointConfigCli;
 use super::Options;
 use super::SerialConfigCli;
 use super::SmtConfigCli;
 use clap::ValueEnum;
+use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::microvm::MachineProfile;
 use std::path::PathBuf;
@@ -18,6 +20,13 @@ pub enum MachineProfileCli {
     Standard,
     /// The microVM fixed-topology shared-status machine.
     Microvm,
+}
+
+/// Required host-network implementation contract for a microVM NIC.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MicrovmNetworkProfileCli {
+    /// Use the cross-platform user-mode Consomme NAT implementation.
+    Portable,
 }
 
 impl From<MachineProfileCli> for MachineProfile {
@@ -39,11 +48,28 @@ pub struct MicrovmCli {
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
     pub snapshot_quiesce_timeout_ms: u64,
+
+    /// Required host-network implementation contract for microVM `--net`.
+    #[clap(long, value_enum, value_name = "PROFILE")]
+    pub network_profile: Option<MicrovmNetworkProfileCli>,
+}
+
+/// Parses a bare `<IPv4>/<prefix>` `--net` endpoint into the microVM network
+/// configuration.
+pub(super) fn parse_endpoint(network: &str) -> Result<EndpointConfigCli, String> {
+    network
+        .parse()
+        .map(EndpointConfigCli::Microvm)
+        .map_err(|error| format!("invalid microVM network: {error}"))
 }
 
 impl Options {
     pub(crate) fn validate_microvm_options(&self) -> anyhow::Result<()> {
         if self.machine != MachineProfileCli::Microvm {
+            anyhow::ensure!(
+                self.microvm.network_profile.is_none(),
+                "--network-profile requires a microVM machine"
+            );
             return Ok(());
         }
 
@@ -79,6 +105,16 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.snapshot_quiesce_timeout_ms != 0,
                 "microVM snapshot quiesce timeout must be nonzero"
+            );
+            anyhow::ensure!(
+                self.net.is_empty(),
+                "microVM snapshot capture does not yet support --net"
+            );
+        }
+        if self.restore_snapshot.is_some() {
+            anyhow::ensure!(
+                self.net.is_empty(),
+                "microVM restore takes network addressing from saved state; do not pass --net"
             );
         }
         anyhow::ensure!(
@@ -203,8 +239,27 @@ impl Options {
             "microVM does not expose legacy NIC, MANA, graphics, TPM, watchdog, IMC, battery, or VMGS devices"
         );
         anyhow::ensure!(
-            self.net.is_empty(),
-            "microVM does not expose a network device"
+            self.net.len() <= 1,
+            "microVM permits at most one virtio-net device"
+        );
+        anyhow::ensure!(
+            self.net.is_empty()
+                || self.microvm.network_profile == Some(MicrovmNetworkProfileCli::Portable),
+            "microVM --net requires --network-profile portable"
+        );
+        anyhow::ensure!(
+            self.microvm.network_profile.is_none() || !self.net.is_empty(),
+            "--network-profile portable requires --net"
+        );
+        anyhow::ensure!(
+            self.net.iter().all(|network| {
+                matches!(network.endpoint, EndpointConfigCli::Microvm(_))
+                    && network.vtl == DeviceVtl::Vtl0
+                    && network.max_queues.is_none()
+                    && !network.underhill
+                    && network.pcie_port.is_none()
+            }),
+            "microVM --net requires a bare IPv4/prefix and does not permit queue, VTL, Underhill, or PCIe modifiers"
         );
         anyhow::ensure!(
             self.cxl_test.is_empty()
@@ -371,6 +426,66 @@ mod tests {
     }
 
     #[test]
+    fn test_microvm_network_options() {
+        let network = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+        ])
+        .unwrap();
+        network.validate_microvm_options().unwrap();
+        assert!(matches!(
+            &network.net[0].endpoint,
+            EndpointConfigCli::Microvm(config) if config.prefix_length == 24
+        ));
+
+        for args in [
+            vec!["openvmm", "--machine", "microvm", "--net", "10.0.0.2/24"],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--network-profile",
+                "portable",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--net",
+                "10.0.1.2/24",
+                "--network-profile",
+                "portable",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--snapshot-destination",
+                "snapshot",
+            ],
+            vec!["openvmm", "--network-profile", "portable"],
+        ] {
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+        assert!(
+            Options::try_parse_from(["openvmm", "--machine", "microvm", "--net", "10.0.0.0/24"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn test_microvm_command_line_is_owned_and_bounded() {
         assert_eq!(
             build_microvm_command_line(&[], false).unwrap(),
@@ -386,7 +501,7 @@ mod tests {
         );
 
         let mut with_devices = build_microvm_command_line(&[], true).unwrap();
-        append_microvm_virtio_discovery(&mut with_devices, true).unwrap();
+        append_microvm_virtio_discovery(&mut with_devices, None, true).unwrap();
         assert_eq!(
             with_devices,
             format!("{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7")
