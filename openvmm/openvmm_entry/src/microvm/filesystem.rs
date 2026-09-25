@@ -226,18 +226,62 @@ pub(crate) fn validate_microvm_filesystem_private_storage(
     Ok(())
 }
 
+pub(crate) fn microvm_filesystem_from_snapshot(
+    saved: &openvmm_helpers::snapshot::microvm::SnapshotMicrovmFilesystem,
+) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemConfig> {
+    let access = match saved.access_mode.as_str() {
+        "ro" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+        "rw" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+        mode => anyhow::bail!("snapshot microVM filesystem access mode '{mode}' is unsupported"),
+    };
+    openvmm_defs::microvm::MicrovmFilesystemConfig::new(saved.guest_mount_target.clone(), access)
+        .context("snapshot microVM filesystem policy is invalid")
+}
+
 pub(super) fn effective_microvm_filesystem(
     requested: Option<&cli_args::microvm::MicrovmMountCli>,
     restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
 ) -> anyhow::Result<Option<EffectiveMicrovmFilesystem>> {
-    if restore.is_none() {
+    let Some(restore) = restore else {
         return requested.map(microvm_filesystem_from_mount).transpose();
-    }
+    };
+
+    let saved_attachment = restore
+        .attachments
+        .iter()
+        .find(|attachment| attachment.stable_id == MICROVM_FILESYSTEM_STABLE_ID);
     anyhow::ensure!(
-        requested.is_none(),
-        "snapshot does not support restore-time microVM filesystem attachment"
+        saved_attachment.is_some() == restore.microvm_filesystem.is_some(),
+        "snapshot microVM filesystem policy and attachment inventories disagree"
     );
-    Ok(None)
+    let Some(saved) = restore.microvm_filesystem.as_ref() else {
+        anyhow::ensure!(
+            requested.is_none(),
+            "snapshot does not support restore-time microVM filesystem attachment"
+        );
+        return Ok(None);
+    };
+    let requested = requested
+        .context("snapshot restore requires a fresh --mount attachment for fs:microvm0")?;
+    let config = microvm_filesystem_from_snapshot(saved)?;
+    anyhow::ensure!(
+        requested.guest_target == config.guest_mount_target && requested.access == config.access,
+        "restore-time mount target or access mode does not match the snapshot contract"
+    );
+    let effective = microvm_filesystem_from_mount(requested)?;
+    anyhow::ensure!(
+        !saved.canonical_host_path.is_empty(),
+        "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+    );
+    anyhow::ensure!(
+        effective.root_path == saved.canonical_host_path,
+        "restore-time filesystem canonical host path does not match the snapshot contract"
+    );
+    anyhow::ensure!(
+        Some(&effective.attachment) == saved_attachment,
+        "restore-time filesystem root identity does not match the snapshot attachment"
+    );
+    Ok(Some(effective))
 }
 
 #[cfg(test)]
@@ -246,7 +290,56 @@ mod tests {
     use crate::Options;
     use crate::microvm::network::tests::network_contract;
     use clap::Parser as _;
+    use openvmm_defs::microvm::build_microvm_command_line;
     use test_with_tracing::test;
+
+    fn filesystem_contract(
+        root: &Path,
+    ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
+        let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+            "/mnt/share".to_owned(),
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+        )
+        .unwrap();
+        let (root_path, attachment) = microvm_filesystem_attachment(root).unwrap();
+        let mut command_line = build_microvm_command_line(&[], false).unwrap();
+        openvmm_defs::microvm::append_microvm_virtio_discovery(
+            &mut command_line,
+            None,
+            Some(&filesystem),
+            false,
+        )
+        .unwrap();
+        openvmm_helpers::snapshot::microvm::microvm_machine_contract(
+            if cfg!(windows) { "whp" } else { "kvm" },
+            openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
+            command_line,
+            None,
+            Some((&filesystem, Path::new(&root_path), attachment)),
+            None,
+            1,
+            1024,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtiofs-3489665024",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            std::time::SystemTime::now().into(),
+            1_000_000_000,
+            Some(1_000_000_000),
+            vec![1, 2, 3],
+        )
+        .unwrap()
+    }
 
     fn restore_mount_options(root: &Path, mode: &str) -> Options {
         Options::try_parse_from([
@@ -288,6 +381,61 @@ mod tests {
         assert_eq!(
             filesystem.attachment.stable_id,
             MICROVM_FILESYSTEM_STABLE_ID
+        );
+    }
+
+    #[test]
+    fn filesystem_restore_requires_same_live_root_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let contract = filesystem_contract(root.path());
+        let options = restore_mount_options(root.path(), "ro");
+        let restored =
+            effective_microvm_filesystem(options.microvm.microvm_mount.as_ref(), Some(&contract))
+                .unwrap()
+                .unwrap();
+        assert_eq!(restored.config.guest_mount_target, "/mnt/share");
+        assert_eq!(restored.attachment, contract.attachments[0]);
+
+        let replacement = tempfile::tempdir().unwrap();
+        let replacement_options = restore_mount_options(replacement.path(), "ro");
+        assert!(
+            effective_microvm_filesystem(
+                replacement_options.microvm.microvm_mount.as_ref(),
+                Some(&contract)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn filesystem_restore_rejects_same_root_at_a_new_path() {
+        let parent = tempfile::tempdir().unwrap();
+        let original = parent.path().join("original");
+        let moved = parent.path().join("moved");
+        fs_err::create_dir(&original).unwrap();
+        let contract = filesystem_contract(&original);
+        fs_err::rename(&original, &moved).unwrap();
+
+        let options = restore_mount_options(&moved, "ro");
+        assert!(
+            effective_microvm_filesystem(options.microvm.microvm_mount.as_ref(), Some(&contract))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn filesystem_restore_rejects_missing_or_changed_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let contract = filesystem_contract(root.path());
+        assert!(effective_microvm_filesystem(None, Some(&contract)).is_err());
+
+        let changed_mode = restore_mount_options(root.path(), "rw");
+        assert!(
+            effective_microvm_filesystem(
+                changed_mode.microvm.microvm_mount.as_ref(),
+                Some(&contract),
+            )
+            .is_err()
         );
     }
 
