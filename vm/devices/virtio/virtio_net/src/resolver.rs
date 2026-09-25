@@ -38,6 +38,9 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             builder = builder.max_queues(max_queues);
         }
         builder = builder.save_restore_resource(&resource)?;
+        if let Some(egress_policy) = resource.egress_policy {
+            builder = builder.egress_policy(egress_policy);
+        }
 
         let endpoint = resolver
             .resolve(

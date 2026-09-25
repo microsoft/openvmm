@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod buffers;
+mod egress;
 mod quiesce;
 pub mod resolver;
 mod saved_state;
@@ -38,6 +39,8 @@ use net_backend::TxMetadata;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend_resources::egress::EgressDenied;
+use net_backend_resources::egress::EgressPolicy;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::wait::PolledWait;
 use std::future::pending;
@@ -233,6 +236,7 @@ struct Adapter {
     tx_fast_completions: bool,
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
+    egress_policy: Option<EgressPolicy>,
     save_restore: Option<saved_state::SaveRestoreConfig>,
 }
 
@@ -574,6 +578,7 @@ struct PendingTxPacket {
 
 pub struct NicBuilder {
     max_queue_pairs: u16,
+    egress_policy: Option<EgressPolicy>,
     save_restore: Option<saved_state::SaveRestoreConfig>,
 }
 
@@ -605,6 +610,7 @@ impl NicBuilder {
                 endpoint.endpoint_type()
             );
         }
+        let endpoint = self.configure_egress(endpoint)?;
 
         // TODO: Implement VIRTIO_NET_F_MQ and VIRTIO_NET_F_RSS logic based on mulitqueue support.
         // let multiqueue = endpoint.multiqueue_support();
@@ -619,6 +625,7 @@ impl NicBuilder {
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
             tx_offload_support,
+            egress_policy: self.egress_policy,
             save_restore: self.save_restore,
         });
 
@@ -656,6 +663,7 @@ impl Device {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             max_queue_pairs: !0,
+            egress_policy: None,
             save_restore: None,
         }
     }
@@ -714,6 +722,7 @@ impl Device {
             active_state,
             negotiated_features,
             negotiated_features_bank1,
+            egress_policy: self.adapter.egress_policy.clone(),
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -899,8 +908,12 @@ enum TxPacketError {
     Empty,
     #[error("too many segments")]
     TooManySegments,
+    #[error("packet length {0} exceeds the 65535-byte backend bound")]
+    TooLarge(u32),
     #[error("descriptor index {0} already in use")]
     DuplicateIndex(u16),
+    #[error("egress policy denied packet")]
+    EgressDenied(#[source] EgressDenied),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -917,6 +930,8 @@ struct Worker {
     negotiated_features: NetworkFeaturesBank0,
     #[inspect(skip)]
     negotiated_features_bank1: NetworkFeaturesBank1,
+    #[inspect(skip)]
+    egress_policy: Option<EgressPolicy>,
 }
 
 impl Worker {
@@ -1065,15 +1080,18 @@ impl Worker {
             .checked_sub(header_size())
             .and_then(|len| u32::try_from(len).ok())
             .ok_or(TxPacketError::Empty)?;
+        if packet_len > u16::MAX.into() {
+            return Err(TxPacketError::TooLarge(packet_len));
+        }
 
         // Read the virtio-net header + enough of the Ethernet frame to parse
         // the EtherType (and a potential VLAN tag).
-        const ETH_PEEK: usize = 18; // 14 standard + 4 for VLAN tag
-        let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
+        const PACKET_PEEK: usize = 98; // Ethernet + VLAN + max IPv4 + TCP header.
+        let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + PACKET_PEEK];
         let bytes_read = work
             .read(
                 self.active_state.pending_rx_packets.mem(),
-                &mut peek_buf[..header_size() + ETH_PEEK],
+                &mut peek_buf[..header_size() + PACKET_PEEK],
             )
             .map_err(TxPacketError::ReadHeader)?;
 
@@ -1085,6 +1103,7 @@ impl Worker {
         } else {
             &[]
         };
+        self.authorize_egress(packet_prefix, packet_len)?;
 
         let segments = &mut self.active_state.data.tx_segments;
         let seg_start = segments.len();

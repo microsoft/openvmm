@@ -1918,6 +1918,7 @@ async fn vm_config_from_command_line(
             max_queues: vport.max_queues,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
+            egress_policy: None,
             save_restore: false,
             static_ipv4: None,
             effective_features: None,
