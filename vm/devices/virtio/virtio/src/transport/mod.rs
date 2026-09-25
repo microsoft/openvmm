@@ -51,5 +51,6 @@ fn validate_queue_size(queue_index: u16, size: u16) -> io::Result<()> {
 }
 
 pub use mmio::VirtioMmioDevice;
+pub use mmio::interrupt::VirtioMmioInterruptMode;
 pub use pci::PciInterruptModel;
 pub use pci::VirtioPciDevice;
