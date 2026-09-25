@@ -20,6 +20,7 @@ use crate::cmos_rtc::periodic_timer_period;
 use crate::cmos_rtc::spec::CmosReg;
 use crate::cmos_rtc::spec::StatusRegA;
 use crate::cmos_rtc::spec::StatusRegB;
+use crate::cmos_rtc::spec::StatusRegC;
 use std::time::Duration;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -53,6 +54,15 @@ impl Fields {
         if state.transaction_read_mask.is_some() {
             return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                 "invalid RTC coherent transaction state"
+            )));
+        }
+
+        let status_c = StatusRegC::from(state.cmos[CmosReg::STATUS_C.0 as usize]);
+        if status_c.irq_combined()
+            != (status_c.irq_update() || status_c.irq_periodic() || status_c.irq_alarm())
+        {
+            return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                "inconsistent RTC status C interrupt flags"
             )));
         }
         if !CLOCK_TIME_MILLIS.contains(&state.clock_time_millis) {
