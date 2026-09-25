@@ -6,7 +6,8 @@
 //! Each `tx_avail` call writes at most one guest packet. When the TAP
 //! interface applies backpressure, the queue keeps the packet, and with it
 //! the ownership of its descriptors, until `poll_ready` writes it; `tx_poll`
-//! then completes it.
+//! then completes it. Packets that the run-scoped egress policy denies are
+//! completed without being written.
 
 use crate::TapQueue;
 use crate::VirtioNetHdr;
@@ -21,6 +22,7 @@ use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend::linearize;
 use net_backend::next_packet;
+use net_backend_resources::egress::EgressPolicy;
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -34,6 +36,7 @@ pub(crate) struct TxState {
     pub(crate) pending: Option<PendingTx>,
     pub(crate) ready: VecDeque<TxId>,
     pub(crate) error: Option<std::io::Error>,
+    egress_policy: Option<EgressPolicy>,
 }
 
 /// A packet accepted from the guest and not yet written to the TAP interface.
@@ -44,11 +47,12 @@ pub(crate) struct PendingTx {
 }
 
 impl TxState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(egress_policy: Option<EgressPolicy>) -> Self {
         Self {
             pending: None,
             ready: VecDeque::new(),
             error: None,
+            egress_policy,
         }
     }
 }
@@ -119,6 +123,12 @@ impl TapQueue {
         if metadata.flags.offload_tcp_segmentation() && metadata.flags.is_ipv6() {
             fixup_ipv6_payload_length(&mut packet, metadata.l2_len as usize);
         }
+        if let Some(policy) = &self.tx.egress_policy
+            && policy.authorize_frame(&packet, packet.len()).is_err()
+        {
+            return Ok((true, segment_count));
+        }
+
         let tap = self.tap.as_mut().context("TAP queue is unavailable")?;
         let header_bytes = header.as_bytes();
         let bufs = [

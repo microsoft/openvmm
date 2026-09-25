@@ -20,6 +20,8 @@ mod tap_tests {
     // configuration (ioctls for link-up, address, netmask).
     #![expect(unsafe_code)]
 
+    mod egress;
+
     use libtest_mimic::Arguments;
     use libtest_mimic::Trial;
     use net_backend::Endpoint;
@@ -639,6 +641,10 @@ mod tap_tests {
             async_trial("tap_get_queues", test_tap_get_queues),
             async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
+            async_trial(
+                "tap_endpoint_policy_forwards_on_link_arp",
+                egress::test_tap_endpoint_policy_forwards_on_link_arp,
+            ),
             async_trial(
                 "tap_tx_backpressure_preserves_ownership",
                 test_tap_tx_backpressure_preserves_ownership,
