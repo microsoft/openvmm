@@ -920,6 +920,17 @@ pub fn append_microvm_workload_identity(
     Ok(())
 }
 
+/// Appends the host-owned workload lifecycle to a microVM command line.
+pub fn append_microvm_lifecycle(cmdline: &mut String, managed: bool) -> anyhow::Result<()> {
+    let lifecycle = if managed { "managed" } else { "one-shot" };
+    write!(cmdline, " nvx_lifecycle={lifecycle}")?;
+    anyhow::ensure!(
+        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
+        "microVM kernel command line exceeds the 64-KiB ABI limit"
+    );
+    Ok(())
+}
+
 fn kernel_parameter_name_matches(token: &str, expected: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
@@ -991,6 +1002,7 @@ fn build_microvm_command_line_inner(
                 "nr_cpus=",
                 "nvx_workload_uid=",
                 "nvx_workload_gid=",
+                "nvx_lifecycle=",
             ]
             .iter()
             .any(|reserved| token.starts_with(reserved))

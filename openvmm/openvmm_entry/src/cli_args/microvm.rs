@@ -66,6 +66,15 @@ impl FromStr for MicrovmWorkloadIdentityCli {
     }
 }
 
+/// Guest workload lifecycle for a microVM.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MicrovmLifecycleCli {
+    /// Start one workload and destroy the VM when it exits.
+    OneShot,
+    /// Keep the VM resident and accept multiple control-session workloads.
+    Managed,
+}
+
 /// Protocol for a localhost-to-guest port forward.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MicrovmLoopbackForwardProtocol {
@@ -234,6 +243,10 @@ pub struct MicrovmCli {
     /// replaced when restoring a snapshot.
     #[clap(long, value_name = "UID:GID")]
     pub microvm_workload_identity: Option<MicrovmWorkloadIdentityCli>,
+
+    /// Select one-shot or managed microVM workload lifecycle.
+    #[clap(long, value_enum, value_name = "MODE")]
+    pub microvm_lifecycle: Option<MicrovmLifecycleCli>,
 
     /// Required host-network implementation contract for microVM `--net`.
     #[clap(long, value_enum, value_name = "PROFILE")]
@@ -453,12 +466,13 @@ impl Options {
                     && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
+                    && self.microvm.microvm_lifecycle.is_none()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -520,6 +534,10 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.microvm_workload_identity.is_none(),
                 "--microvm-workload-identity is fixed by the captured microVM command line"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_lifecycle.is_none(),
+                "--microvm-lifecycle is fixed by the captured microVM command line"
             );
             anyhow::ensure!(
                 self.net.is_empty(),
@@ -649,6 +667,23 @@ impl Options {
             anyhow::ensure!(
                 !self.microvm.microvm_control_auth_stdin,
                 "--microvm-control-auth-stdin requires --microvm-control-console"
+            );
+        }
+        if self.microvm.microvm_lifecycle == Some(MicrovmLifecycleCli::Managed) {
+            anyhow::ensure!(
+                self.microvm.microvm_workload_identity.is_some(),
+                "--microvm-lifecycle managed requires --microvm-workload-identity"
+            );
+            anyhow::ensure!(
+                self.microvm
+                    .microvm_control_console
+                    .as_ref()
+                    .is_some_and(|console| !matches!(console, SerialConfigCli::None)),
+                "--microvm-lifecycle managed requires a live --microvm-control-console"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_control_auth_stdin,
+                "--microvm-lifecycle managed requires --microvm-control-auth-stdin"
             );
         }
         anyhow::ensure!(
@@ -1961,6 +1996,37 @@ mod tests {
         ])
         .unwrap();
         assert!(restore.validate_microvm_options().is_err());
+    }
+
+    #[test]
+    fn test_managed_lifecycle_requires_authenticated_control() {
+        let missing_control = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--microvm-workload-identity",
+            "65534:65534",
+            "--microvm-lifecycle",
+            "managed",
+        ])
+        .unwrap();
+        assert!(missing_control.validate_microvm_options().is_err());
+
+        let disconnected_control = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--virtio-console",
+            "none",
+            "--microvm-control-console",
+            "none",
+            "--microvm-workload-identity",
+            "65534:65534",
+            "--microvm-lifecycle",
+            "managed",
+        ])
+        .unwrap();
+        assert!(disconnected_control.validate_microvm_options().is_err());
     }
 
     #[test]

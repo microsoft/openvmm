@@ -475,6 +475,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     self.console.is_some(),
                     self.control_console.is_some(),
                     opt.microvm.microvm_workload_identity,
+                    opt.microvm.microvm_lifecycle,
                 )?,
             )
         };
@@ -786,6 +787,7 @@ fn build_effective_microvm_command_line(
     has_console: bool,
     has_control_console: bool,
     workload_identity: Option<cli_args::microvm::MicrovmWorkloadIdentityCli>,
+    lifecycle: Option<cli_args::microvm::MicrovmLifecycleCli>,
 ) -> anyhow::Result<String> {
     let mut cmdline = if has_control_console {
         build_microvm_control_command_line(user_args, has_console)
@@ -798,6 +800,12 @@ fn build_effective_microvm_command_line(
             &mut cmdline,
             identity.uid,
             identity.gid,
+        )?;
+    }
+    if let Some(lifecycle) = lifecycle {
+        openvmm_defs::microvm::append_microvm_lifecycle(
+            &mut cmdline,
+            lifecycle == cli_args::microvm::MicrovmLifecycleCli::Managed,
         )?;
     }
     Ok(cmdline)
@@ -817,8 +825,12 @@ mod tests {
             "nvx_control_tty=hvc9".to_owned(),
             "virtio-mmio.device=0x1000@0xc0000000:1".to_owned(),
         ];
-        assert!(build_effective_microvm_command_line(&user_args, 1, true, false, None).is_ok());
-        assert!(build_effective_microvm_command_line(&user_args, 1, true, true, None).is_err());
+        assert!(
+            build_effective_microvm_command_line(&user_args, 1, true, false, None, None).is_ok()
+        );
+        assert!(
+            build_effective_microvm_command_line(&user_args, 1, true, true, None, None).is_err()
+        );
     }
 
     #[test]
@@ -828,7 +840,8 @@ mod tests {
             gid: 65_534,
         };
         let command_line =
-            build_effective_microvm_command_line(&[], 1, false, false, Some(identity)).unwrap();
+            build_effective_microvm_command_line(&[], 1, false, false, Some(identity), None)
+                .unwrap();
         assert!(command_line.contains("nvx_workload_uid=65534"));
         assert!(command_line.contains("nvx_workload_gid=65534"));
         assert!(
@@ -838,6 +851,35 @@ mod tests {
                 false,
                 false,
                 Some(identity),
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn workload_lifecycle_is_host_owned() {
+        let command_line = build_effective_microvm_command_line(
+            &[],
+            1,
+            true,
+            true,
+            Some(cli_args::microvm::MicrovmWorkloadIdentityCli {
+                uid: 65_534,
+                gid: 65_534,
+            }),
+            Some(cli_args::microvm::MicrovmLifecycleCli::Managed),
+        )
+        .unwrap();
+        assert!(command_line.contains("nvx_lifecycle=managed"));
+        assert!(
+            build_effective_microvm_command_line(
+                &["nvx_lifecycle=one-shot".to_owned()],
+                1,
+                true,
+                true,
+                None,
+                Some(cli_args::microvm::MicrovmLifecycleCli::Managed),
             )
             .is_err()
         );
