@@ -11,6 +11,7 @@ chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_resources.workspace = true
 power_resources.workspace = true
+serial_core.workspace = true
 vm_resource.workspace = true
 
 input_core.workspace = true
