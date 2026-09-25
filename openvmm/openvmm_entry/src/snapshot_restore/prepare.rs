@@ -81,6 +81,8 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         );
     }
 
+    snapshot.claim_for_restore()?;
+
     artifact_prepare.complete(
         "restore",
         "artifact_prepare",
