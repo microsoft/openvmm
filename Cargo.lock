@@ -10651,12 +10651,14 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "event-listener",
  "fuse",
  "futures",
  "guestmem",
  "inspect",
  "lx",
  "lxutil",
+ "mesh",
  "ntapi",
  "pal",
  "pal_async",

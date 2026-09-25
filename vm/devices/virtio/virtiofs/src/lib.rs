@@ -51,12 +51,29 @@ const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
 const MAX_GUEST_BUFFER_SIZE: usize = 1024 * 1024;
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+struct FuseNegotiation {
+    initialized: bool,
+    major: u32,
+    minor: u32,
+    capable: u32,
+    capable2: u32,
+    want: u32,
+    want2: u32,
+    max_readahead: u32,
+    max_write: u32,
+    max_background: u16,
+    congestion_threshold: u16,
+    time_gran: u32,
+}
+
 /// Shared mutable state behind a [`VirtioFs`] handle.
 struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
     mode: VirtioFsMode,
     microvm_profile: Option<MicroVmVirtioFsProfile>,
+    negotiation: RwLock<FuseNegotiation>,
 }
 
 /// Distinguishes a single-share device from a multi-share aggregate.
@@ -132,6 +149,24 @@ impl Fuse for VirtioFs {
         if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
+
+        // The session owns the wire handshake. Keep the complete negotiated
+        // contract here so device-private state can validate it before a
+        // restore ever starts guest execution.
+        *self.inner.negotiation.write() = FuseNegotiation {
+            initialized: true,
+            major: info.major(),
+            minor: info.minor(),
+            capable: info.capable(),
+            capable2: info.capable2(),
+            want: info.want,
+            want2: info.want2,
+            max_readahead: info.max_readahead,
+            max_write: info.max_write,
+            max_background: info.max_background,
+            congestion_threshold: info.congestion_threshold,
+            time_gran: info.time_gran,
+        };
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -268,7 +303,7 @@ impl Fuse for VirtioFs {
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
         let (new_inode, node_id) = inode_reservation.insert(new_inode)?;
-        let file = VirtioFsFile::new(file, new_inode);
+        let file = VirtioFsFile::new(file, new_inode, arg.flags);
         let fh = file_reservation.insert(file)?;
         Ok(CreateOut {
             entry: fuse_entry_out::new(
@@ -568,6 +603,7 @@ impl Fuse for VirtioFs {
         // To get the file system ready for re-mount, clean out any open files and leaked inodes.
         self.inner.files.write().clear();
         self.inner.inodes.write().clear();
+        *self.inner.negotiation.write() = FuseNegotiation::default();
     }
 }
 
@@ -633,6 +669,7 @@ impl VirtioFs {
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: None,
+                negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         })
     }
@@ -651,6 +688,7 @@ impl VirtioFs {
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
                 microvm_profile: None,
+                negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         }
     }
@@ -755,6 +793,12 @@ impl VirtioFs {
             committed: false,
             max_handles: microvm::fs::max_handles(self),
         })
+    }
+
+    /// Inserts a file object outside a FUSE request, as tests do.
+    #[cfg(test)]
+    fn insert_file(&self, file: VirtioFsFile) -> lx::Result<u64> {
+        self.reserve_file()?.insert(file)
     }
 
     /// Remove the file with the specified node ID.
