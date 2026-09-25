@@ -459,6 +459,7 @@ mod tests {
             true,
             Some(&filesystem),
             false,
+            false,
             &[],
         )
         .unwrap();
@@ -504,6 +505,7 @@ mod tests {
             None,
             true,
             None,
+            false,
             false,
             &[],
         )
