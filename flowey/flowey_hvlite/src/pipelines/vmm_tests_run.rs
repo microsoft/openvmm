@@ -787,6 +787,9 @@ impl ResolvedArtifactSelections {
             openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64::GLOBAL_UNIQUE_ID => {
                 self.build.openhcl_linux_direct = true;
             }
+            snp_igvm::SNP_LINUX_DIRECT_IGVM_X64::GLOBAL_UNIQUE_ID => {
+                self.build.snp_linux_direct_igvm = true;
+            }
 
             // Release IGVM files (downloaded, not built)
             openhcl_igvm::LATEST_RELEASE_STANDARD_X64::GLOBAL_UNIQUE_ID

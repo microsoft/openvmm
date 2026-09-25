@@ -6,7 +6,7 @@
 //!
 //! Each [`LinuxTestKernelVersion`] variant corresponds to its own
 //! per-kernel-version GitHub release artifact (e.g.
-//! `openvmm-test-linux-6.1.<arch>.<ver>.tar.gz`), so consumers can target
+//! `openvmm-test-linux-snp-guest.x86_64.<ver>.tar.gz`), so consumers can target
 //! different kernel versions independently. Each archive contains the
 //! primary kernel image (`vmlinux` on x86_64, `Image` on aarch64) and, on
 //! x86_64, an additional `bzImage`-format kernel — see
@@ -33,6 +33,8 @@ pub enum LinuxTestKernelVersion {
     /// `CONFIG_ARM_SMMU_V3`) that the incubator's VFIO device-assignment tests
     /// need to exercise device-BAR P2P DMA, which predate the 6.18 test kernel.
     CcaV15,
+    /// The x86_64-only SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+    SnpGuest,
 }
 
 impl LinuxTestKernelVersion {
@@ -43,16 +45,19 @@ impl LinuxTestKernelVersion {
             Self::Linux6_1 => "6.1",
             Self::Linux6_18 => "6.18",
             Self::CcaV15 => "cca-v15",
+            Self::SnpGuest => "snp-guest",
         }
     }
 
     /// Whether this kernel version is published for the given architecture.
     ///
-    /// Most versions ship for both architectures; `cca-v15` is aarch64-only.
+    /// Most versions ship for both architectures; `cca-v15` is aarch64-only
+    /// and `snp-guest` is x86_64-only.
     pub fn is_available_for(self, arch: CommonArch) -> bool {
         match self {
             Self::Linux6_1 | Self::Linux6_18 => true,
             Self::CcaV15 => matches!(arch, CommonArch::Aarch64),
+            Self::SnpGuest => matches!(arch, CommonArch::X86_64),
         }
     }
 }
@@ -101,6 +106,10 @@ pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
 pub const INCUBATOR_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
     LinuxTestKernelVersion::CcaV15;
 
+/// The x86_64 SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+pub const SNP_GUEST_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
+    LinuxTestKernelVersion::SnpGuest;
+
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.
     pub struct Config {
@@ -108,7 +117,8 @@ flowey_config! {
         pub version: Option<String>,
         /// Use locally downloaded openvmm-test-linux contents, keyed by
         /// (architecture, kernel version)
-        pub local_paths: BTreeMap<(CommonArch, LinuxTestKernelVersion), ConfigVar<PathBuf>>,
+        pub local_paths:
+            BTreeMap<CommonArch, BTreeMap<LinuxTestKernelVersion, ConfigVar<PathBuf>>>,
     }
 }
 
@@ -185,10 +195,13 @@ impl FlowNodeWithConfig for Node {
         if !local_paths.is_empty() {
             ctx.emit_rust_step("use local openvmm-test-linux", |ctx| {
                 let deps = deps.claim(ctx);
-                let local_paths: BTreeMap<_, _> = local_paths
-                    .into_iter()
-                    .map(|(key, var)| (key, var.claim(ctx)))
-                    .collect();
+                let mut paths = BTreeMap::new();
+                for (arch, versions) in local_paths {
+                    for (kver, var) in versions {
+                        paths.insert((arch, kver), var.claim(ctx));
+                    }
+                }
+                let local_paths = paths;
                 move |rt| {
                     let resolved_paths: BTreeMap<(CommonArch, LinuxTestKernelVersion), PathBuf> =
                         local_paths
@@ -268,5 +281,31 @@ impl FlowNodeWithConfig for Node {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_snp_kernel_path_survives_config_serialization() {
+        let config = Config {
+            version: None,
+            local_paths: BTreeMap::from([(
+                CommonArch::X86_64,
+                BTreeMap::from([(
+                    LinuxTestKernelVersion::SnpGuest,
+                    ReadVar::from_static(PathBuf::from("/tmp/snp-kernel")).into(),
+                )]),
+            )]),
+        };
+
+        let encoded = serde_json::to_string(&config).unwrap();
+        let decoded: Config = serde_json::from_str(&encoded).unwrap();
+        assert!(
+            decoded.local_paths[&CommonArch::X86_64]
+                .contains_key(&LinuxTestKernelVersion::SnpGuest)
+        );
     }
 }

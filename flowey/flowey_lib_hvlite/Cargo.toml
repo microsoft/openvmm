@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 flowey.workspace = true
 flowey_lib_common.workspace = true
+initrd_cpio.workspace = true
 
 powershell_builder.workspace = true
 igvmfilegen_config.workspace = true

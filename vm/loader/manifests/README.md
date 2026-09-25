@@ -3,7 +3,12 @@ resource file and run `igvmfilegen manifest` directly.
 
 ## SNP Linux-direct profile
 
-`snp-linux-direct.json` is a bring-up profile with these assumptions:
+Flowey builds `snp-linux-direct-pipette.json` for the `snp_linux_direct_x64`
+VMM test. It injects the statically linked Linux pipette into the shared test
+initrd from `openvmm-deps`, then runs it as PID 1 with `rdinit=/pipette`. The
+test also uses the SNP guest kernel from `openvmm-deps` and the in-tree
+`snp_bootshim`. The manual `snp-linux-direct.json` bring-up profile instead
+starts the initrd shell. These profiles have these assumptions:
 
 - x64 and one VTL0 SEV-SNP guest that boots Linux directly
 - a simple `processor_count`; the default profile uses one virtual processor,

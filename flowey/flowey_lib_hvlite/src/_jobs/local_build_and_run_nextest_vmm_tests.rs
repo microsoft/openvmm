@@ -99,6 +99,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_incubator::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
+        ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
@@ -162,6 +163,7 @@ impl SimpleFlowNode for Node {
                 || build.openhcl_standard_dev
                 || build.openhcl_cvm
                 || build.openhcl_linux_direct
+                || build.snp_linux_direct_igvm
                 || build.pipette_linux_musl_x64
                 || build.pipette_linux_musl_aarch64
                 || build.openvmm_vhost
@@ -259,6 +261,16 @@ impl SimpleFlowNode for Node {
                 }
             })
         });
+        let register_snp_linux_direct_igvm = if build.snp_linux_direct_igvm {
+            if !matches!(arch, CommonArch::X86_64) {
+                anyhow::bail!("SNP Linux-direct IGVM is only available for x86_64");
+            }
+            Some(ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
+                snp_linux_direct_igvm: v,
+            }))
+        } else {
+            None
+        };
 
         let register_openvmm = build.openvmm.then(|| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {
@@ -640,6 +652,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard_dev: register_openhcl_standard_dev,
             openhcl_cvm: register_openhcl_cvm,
             openhcl_linux_direct: register_openhcl_linux_direct,
+            snp_linux_direct_igvm: register_snp_linux_direct_igvm,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,

@@ -104,6 +104,16 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
     ])
 }
 
+pub fn linux_snp_mshv_self_hosted() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Linux".to_string(),
+        "X64".to_string(),
+        "SNP".to_string(),
+        "MSHV".to_string(),
+    ])
+}
+
 pub fn default_windows() -> GhRunner {
     windows_intel_v6_1es()
 }

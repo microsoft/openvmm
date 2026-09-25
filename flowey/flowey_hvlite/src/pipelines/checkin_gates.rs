@@ -813,6 +813,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-perf-runner"));
             let (pub_vmm_perf_musl, use_vmm_perf_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
+            let snp_igvm_artifact = matches!(arch, CommonArch::X86_64)
+                .then(|| pipeline.new_typed_artifact("x64-linux-snp-linux-direct-igvm"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -830,6 +832,11 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_vmm_tests_archive.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_nextest_vmm_tests_archive =
                         Some(use_vmm_tests_archive_musl.clone());
+                    let (_, use_snp_igvm) = snp_igvm_artifact.as_ref().unwrap();
+                    vmm_tests_artifacts_linux_x86.use_snp_linux_direct_igvm =
+                        Some(use_snp_igvm.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_snp_linux_direct_igvm =
+                        Some(use_snp_igvm.clone());
                     use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
                     use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
                     use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
@@ -1019,6 +1026,15 @@ impl IntoPipeline for CheckinGatesCli {
                         }
                     });
 
+            let job = if let Some((pub_snp_igvm, _)) = snp_igvm_artifact {
+                job.publish(pub_snp_igvm, |snp_linux_direct_igvm| {
+                    flowey_lib_hvlite::build_snp_linux_direct_igvm::Request {
+                        snp_linux_direct_igvm,
+                    }
+                })
+            } else {
+                job
+            };
             all_jobs.push(job.finish());
         }
 
@@ -1417,6 +1433,14 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
+        let vmm_tests_artifacts_linux_snp_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
+            .clone()
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!(
+                    "missing required linux-snp-mshv (musl) vmm_tests artifact: {missing}"
+                )
+            })?;
         let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
             .finish()
             .map_err(|missing| {
@@ -1699,6 +1723,23 @@ impl IntoPipeline for CheckinGatesCli {
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
                     hugetlb_2mb_overcommit_pages: None,
                     prepare_vhost_vsock: true,
+                }),
+            },
+            VmmTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                arch: FlowArch::X86_64,
+                gh_pool: gh_pools::linux_snp_mshv_self_hosted(),
+                ado_pool: None,
+                label: "x64-linux-amd-snp-mshv",
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_snp_mshv_x86,
+                incubator_profile: None,
+                nextest_filter_expr: "test(snp_linux_direct)".to_string(),
+                downloaded_artifacts: Vec::new(),
+                prep_steps_variants: Vec::new(),
+                external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
+                    hugetlb_2mb_overcommit_pages: None,
+                    prepare_vhost_vsock: false,
                 }),
             },
             VmmTestJobParams {

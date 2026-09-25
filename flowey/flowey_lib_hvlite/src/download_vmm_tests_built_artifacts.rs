@@ -44,6 +44,7 @@ impl SimpleFlowNode for Node {
                     openhcl_standard_dev,
                     openhcl_cvm,
                     openhcl_linux_direct,
+                    snp_linux_direct_igvm,
                     tmks,
                     tmk_vmm,
                     tmk_vmm_linux_musl,
@@ -208,6 +209,14 @@ impl SimpleFlowNode for Node {
                 format!("{arch_tag}-openhcl-igvm-test-linux-direct"),
                 run_id.clone(),
                 openhcl_linux_direct,
+            );
+        }
+        if let Some(snp_linux_direct_igvm) = snp_linux_direct_igvm {
+            download_artifact(
+                ctx,
+                "x64-linux-snp-linux-direct-igvm".into(),
+                run_id.clone(),
+                snp_linux_direct_igvm,
             );
         }
 

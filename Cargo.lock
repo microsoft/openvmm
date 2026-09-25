@@ -2378,6 +2378,7 @@ dependencies = [
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "initrd_cpio",
  "log",
  "opentmk_disk",
  "paste",

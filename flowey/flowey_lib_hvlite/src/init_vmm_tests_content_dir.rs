@@ -13,6 +13,7 @@ use crate::build_openvmm::OpenvmmOutput;
 use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_prep_steps::PrepStepsOutput;
+use crate::build_snp_linux_direct_igvm::SnpLinuxDirectIgvmOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
@@ -68,6 +69,7 @@ define_vmm_tests_built_artifacts!(
     openhcl_standard_dev => OpenhclIgvmOutput,
     openhcl_cvm => OpenhclIgvmOutput,
     openhcl_linux_direct => OpenhclIgvmOutput,
+    snp_linux_direct_igvm => SnpLinuxDirectIgvmOutput,
     tmks => TmksOutput,
     tmk_vmm => TmkVmmOutput,
     tmk_vmm_linux_musl => TmkVmmOutput,
@@ -285,6 +287,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard_dev,
             openhcl_cvm,
             openhcl_linux_direct,
+            snp_linux_direct_igvm,
             tmks,
             tmk_vmm,
             tmk_vmm_linux_musl,
@@ -324,6 +327,7 @@ impl SimpleFlowNode for Node {
                     pipette_linux_musl_aarch64,
                     guest_test_uefi,
                     openhcl_igvm_files,
+                    snp_linux_direct_igvm,
                     tmks,
                     tmk_vmm,
                     tmk_vmm_linux_musl,
@@ -620,6 +624,13 @@ impl SimpleFlowNode for Node {
                     };
                 }
 
+                if let Some(snp_linux_direct_igvm) = snp_linux_direct_igvm {
+                    let output = rt.read(snp_linux_direct_igvm);
+                    let x64_dir = test_content_dir.join("x64");
+                    fs_err::create_dir_all(&x64_dir)?;
+                    fs_err::copy(output.igvm_bin, x64_dir.join("snp-linux-direct.bin"))?;
+                }
+
                 if let Some(release_igvm_files) = release_igvm_files {
                     let latest_release_version = OpenhclReleaseVersion::latest();
 
@@ -758,6 +769,7 @@ pub mod vmm_tests_artifact_builders {
             // any machine
             guest_test_uefi => GuestTestUefiOutput,
             tmks => TmksOutput,
+            snp_linux_direct_igvm => SnpLinuxDirectIgvmOutput,
         )
     );
 
