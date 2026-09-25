@@ -480,7 +480,7 @@ async fn boot_shared_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
 #[openvmm_test(linux_direct_x64)]
 #[openvmm_test(linux_direct_aarch64)]
 async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    const RAM_BYTES: u64 = 1024 * 1024 * 1024;
+    const RAM_BYTES: u64 = 512 * 1024 * 1024;
 
     let required_pages = RAM_BYTES / petri::openvmm::HUGETLB_2MB_PAGE_SIZE;
     if !petri::openvmm::ensure_2mb_hugetlb_pages(required_pages)? {
