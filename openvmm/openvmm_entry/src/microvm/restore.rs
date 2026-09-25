@@ -7,6 +7,7 @@ use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
 use openvmm_helpers::snapshot::SnapshotManifest;
+use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
 use std::time::Duration;
@@ -88,8 +89,8 @@ pub(crate) fn prepare_restore(
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor and the effective command line.
-pub(crate) type ExpectedRestoreContract<'a> = (&'a str, &'a str);
+/// hypervisor, effective command line, and boot console attachment.
+pub(crate) type ExpectedRestoreContract<'a> = (&'a str, &'a str, Option<&'a SnapshotAttachment>);
 
 /// Clock and CPU state recorded at the capture boundary of a restored
 /// microVM: host downtime, TSC and APIC frequencies, and the CPU contract.
@@ -101,7 +102,7 @@ pub(crate) fn validate_restore_contract(
     manifest: &SnapshotManifest,
     expected_memory_size: u64,
     expected_vp_count: u32,
-    (expected_hypervisor, effective_command_line): ExpectedRestoreContract<'_>,
+    (expected_hypervisor, effective_command_line, console_attachment): ExpectedRestoreContract<'_>,
 ) -> anyhow::Result<RestoreTime> {
     let saved_contract = manifest
         .machine_contract
@@ -111,6 +112,7 @@ pub(crate) fn validate_restore_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
+        console_attachment.cloned(),
         expected_vp_count,
         expected_memory_size,
         saved_contract.state_unit_names.clone(),
