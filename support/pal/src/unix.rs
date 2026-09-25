@@ -8,6 +8,7 @@
 pub mod affinity;
 #[cfg(target_os = "linux")]
 pub mod fd_table;
+pub mod fs;
 pub mod pipe;
 pub mod process;
 pub mod pthread;
