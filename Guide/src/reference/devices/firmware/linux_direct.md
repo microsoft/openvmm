@@ -22,6 +22,14 @@ the protected-mode code directly into guest memory and relies on the kernel's
 built-in decompressor to run at boot time. All standard bzImage compression
 formats are supported since decompression is handled by the kernel itself.
 
+The x86-64 microVM profile uses the Linux zero-page protocol with an
+uncompressed ELF kernel, but selects an ACPI-free platform mode. OpenVMM places
+an Intel MP 1.4 floating pointer at `0x0`, its configuration table at `0x400`,
+the bootstrap GDT at `0x1000`, `boot_params` at `0x2000`, and the command line
+in the 64-KiB region starting at `0x20000`. The MP table describes contiguous
+APIC IDs, the ISA bus, the IOAPIC, and legacy IRQ routing. No RSDP, ACPI table,
+SMBIOS anchor, or SMBIOS structure table is imported.
+
 On AArch64, pass the uncompressed `Image` file (not `Image.gz`).
 
 ## x86_64 Boot Flow
@@ -32,12 +40,12 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
 2. An initrd (if provided) is placed after the kernel.
 3. A **zero page** is constructed containing the memory map, command line
    pointer, and initrd location.
-4. ACPI tables (MADT, FADT, DSDT, SRAT, etc.) are built by OpenVMM's ACPI
+4. For the standard profile, ACPI tables (MADT, FADT, DSDT, SRAT, etc.) are built by OpenVMM's ACPI
    builder and placed in low memory just above the boot metadata. The RSDP is
    placed at the fixed `0xE0000` and the kernel discovers it through its legacy
    firmware scan of `[0xE0000, 0x100000)`; the RSDP's XSDT pointer references
    the tables below it.
-5. **SMBIOS (DMI) tables** are synthesized. Because there is no firmware to
+5. For the standard profile, **SMBIOS (DMI) tables** are synthesized. Because there is no firmware to
    build them, OpenVMM constructs a SMBIOS 3.0 (64-bit) entry point (`_SM3_`)
    plus a minimal structure table (Type 0 BIOS, Type 1 System, Type 127
    end-of-table) itself. ("SMBIOS 3.0 (64-bit) Entry Point" is the spec's name
@@ -55,6 +63,11 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
 
 The DSDT includes whatever x86 chipset devices are configured (serial ports,
 IOAPIC, PCI bus, VMBus, virtio-mmio, RTC, etc.).
+
+For `--machine microvm`, steps 4 and 5 are replaced by the MP-table layout
+described above. The zero page leaves `acpi_rsdp_addr` zero, reserves the ISA
+hole in e820, and leaves the fixed 3-to-4-GiB MMIO aperture out of RAM. The loader enters the ELF kernel in long mode with
+`RSI=0x2000`, `CR3=0x4000`, and paging enabled.
 
 ## AArch64 Boot Flow
 
@@ -105,8 +118,8 @@ will result in an error.
 
 ## SMBIOS / DMI Identity
 
-On both architectures the synthesized SMBIOS tables expose a default identity,
-so `/sys/class/dmi/id/*` reads consistently regardless of boot path:
+For standard-profile direct boot on both architectures, synthesized SMBIOS
+tables expose a default identity:
 
 | sysfs file | Default value |
 |------------|---------------|
@@ -119,6 +132,8 @@ path, so a guest reports the same UUID whether booted via UEFI or direct boot.
 The SMBIOS UUID defaults to the all-zero GUID, which Linux treats as not
 present and therefore does not expose as `product_uuid`. Pass
 `--smbios type=1,uuid=<GUID>` (or `uuid=random`) to set it.
+
+The microVM MP-table mode exposes no SMBIOS data and rejects SMBIOS overrides.
 
 ## CLI Usage
 
