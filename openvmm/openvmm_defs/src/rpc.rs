@@ -20,6 +20,16 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
+    /// Quiesce the VM and return saved state while leaving it stopped.
+    ///
+    /// The quiesce has no deadline: the process that drives the VM bounds the
+    /// capture.
+    QuiesceForSnapshot(Rpc<(), Result<SnapshotSaveResponse, SnapshotQuiesceError>>),
+    /// Resume a VM after a snapshot failure that followed a complete quiesce,
+    /// before commit.
+    ResumeAfterFailedSnapshot(FailableRpc<(), ()>),
+    /// Release a post-OUT boundary without starting a snapshot transaction.
+    ReleaseSnapshotBoundary(FailableRpc<(), ()>),
     Resume(FailableRpc<(), bool>),
     Pause(Rpc<(), bool>),
     ClearHalt(Rpc<(), bool>),
@@ -55,6 +65,36 @@ pub enum VmRpc {
     DumpState(FailableRpc<File, ()>),
 }
 
+/// State returned after a successful snapshot quiesce.
+#[derive(Debug, MeshPayload)]
+pub struct SnapshotSaveResponse {
+    /// Encoded VM saved state.
+    pub saved_state: ProtobufMessage,
+    /// Complete state-unit inventory in stable registration order.
+    pub state_unit_names: Vec<String>,
+    /// Effective Linux direct command line loaded into the guest.
+    pub effective_command_line: String,
+    /// Effective guest TSC frequency.
+    pub tsc_frequency_hz: u64,
+    /// Effective local APIC timer frequency.
+    pub apic_frequency_hz: u64,
+    /// Host wall time at the stopped capture boundary.
+    pub capture_wall_clock: mesh::payload::Timestamp,
+    /// Canonical effective CPU compatibility contract.
+    pub cpu_contract: Vec<u8>,
+}
+
+/// Failure classification for a snapshot quiesce/save operation.
+#[derive(Debug, MeshPayload, thiserror::Error)]
+pub enum SnapshotQuiesceError {
+    /// The request was rejected before any state transition began.
+    #[error("snapshot quiesce request was rejected")]
+    Rejected(#[source] RemoteError),
+    /// The VM quiesced completely; the controller may request rollback.
+    #[error("snapshot failed after the VM quiesced")]
+    RollbackSafe(#[source] RemoteError),
+}
+
 #[derive(Debug, MeshPayload, thiserror::Error)]
 pub enum PulseSaveRestoreError {
     #[error("reset not supported")]
@@ -76,6 +116,9 @@ impl fmt::Debug for VmRpc {
         let s = match self {
             VmRpc::Reset(_) => "Reset",
             VmRpc::Save(_) => "Save",
+            VmRpc::QuiesceForSnapshot(_) => "QuiesceForSnapshot",
+            VmRpc::ResumeAfterFailedSnapshot(_) => "ResumeAfterFailedSnapshot",
+            VmRpc::ReleaseSnapshotBoundary(_) => "ReleaseSnapshotBoundary",
             VmRpc::Resume(_) => "Resume",
             VmRpc::Pause(_) => "Pause",
             VmRpc::ClearHalt(_) => "ClearHalt",
