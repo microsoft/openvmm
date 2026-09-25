@@ -239,7 +239,7 @@ impl FlowNode for Node {
                     // Make a converted path relative/portable if requested.
                     let make_portable_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
                         let path = if portable {
-                            if windows_target {
+                            if windows_via_wsl2 {
                                 let working_dir_trimmed =
                                     working_dir_win.as_ref().unwrap().trim_end_matches('\\');
                                 let path_win = path.display().to_string();
