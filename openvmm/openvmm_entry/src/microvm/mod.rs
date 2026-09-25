@@ -9,6 +9,7 @@ mod filesystem;
 mod launch;
 mod network;
 pub(crate) mod output;
+pub(crate) mod report;
 mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;
