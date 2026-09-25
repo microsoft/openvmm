@@ -35,6 +35,14 @@ struct ControlWord {
     #[bits(2)] select: u8,
 }
 
+impl PartialEq for ControlWord {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ControlWord {}
+
 #[rustfmt::skip]
 #[bitfield(u8)]
 struct StatusWord {
@@ -75,7 +83,7 @@ struct Timer {
     state: TimerState,
 }
 
-#[derive(Copy, Clone, Debug, Inspect)]
+#[derive(Copy, Clone, Debug, Inspect, PartialEq, Eq)]
 struct TimerState {
     ce: u16,         // "counting element", i.e. the counter
     cr: u16,         // count register, the new value
@@ -216,6 +224,30 @@ impl Timer {
         let mode = self.state.op_mode();
         let bcd = self.state.control.bcd();
         while ticks > 0 {
+            if self.state.state == CountState::Active
+                && self.state.ce == self.state.cr
+                && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
+            {
+                let reload = if bcd {
+                    u64::from(from_bcd(self.state.cr))
+                } else {
+                    u64::from(self.state.cr)
+                };
+                let period = if reload == 0 {
+                    if bcd { 10_000 } else { 0x1_0000 }
+                } else {
+                    reload
+                };
+                if ticks >= period {
+                    let out = self.state.out;
+                    self.set_out(!out);
+                    self.set_out(out);
+                    ticks %= period;
+                    if ticks == 0 {
+                        break;
+                    }
+                }
+            }
             match self.state.state {
                 CountState::Inactive | CountState::WaitingForGate => break,
                 CountState::Reloading => {
@@ -870,6 +902,20 @@ mod tests {
     use super::Timer;
     use super::to_bcd;
     use crate::pit::from_bcd;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    #[derive(Default)]
+    struct RecordingTarget(Mutex<Vec<bool>>);
+
+    impl LineSetTarget for RecordingTarget {
+        fn set_irq(&self, _vector: u32, high: bool) {
+            self.0.lock().push(high);
+        }
+    }
 
     #[test]
     fn test_bcd_comp() {
@@ -971,5 +1017,71 @@ mod tests {
     #[test]
     fn test_bcd() {
         test_output(true);
+    }
+
+    #[test]
+    fn elapsed_downtime_matches_incremental_pit_evaluation() {
+        for mode in [
+            Mode::TerminalCount,
+            Mode::RateGenerator,
+            Mode::SquareWave,
+            Mode::SoftwareStrobe,
+        ] {
+            let mut elapsed = Timer::new(true, None);
+            let mut incremental = Timer::new(true, None);
+            set_timer(&mut elapsed, mode, 100, false);
+            set_timer(&mut incremental, mode, 100, false);
+
+            elapsed.evaluate(350);
+            for _ in 0..350 {
+                incremental.evaluate(1);
+            }
+
+            assert_eq!(elapsed.state, incremental.state, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn elapsed_downtime_preserves_periodic_phase() {
+        let mut timer = Timer::new(true, None);
+        set_timer(&mut timer, Mode::RateGenerator, 100, false);
+
+        timer.evaluate(350);
+
+        assert_eq!(timer.state.ce, 51);
+        assert!(timer.state.out);
+        assert_eq!(timer.state.next_wakeup(), Some(50));
+    }
+
+    #[test]
+    fn long_elapsed_downtime_fast_forwards_periodic_pit() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            let mut elapsed = Timer::new(true, None);
+            let mut remainder = Timer::new(true, None);
+            set_timer(&mut elapsed, mode, 100, false);
+            set_timer(&mut remainder, mode, 100, false);
+            elapsed.evaluate(1);
+            remainder.evaluate(1);
+
+            elapsed.evaluate(u64::MAX);
+            remainder.evaluate(u64::MAX % 100);
+
+            assert_eq!(elapsed.state, remainder.state, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn long_elapsed_downtime_coalesces_periodic_irq0_edges() {
+        let target = Arc::new(RecordingTarget::default());
+        let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+        let mut timer = Timer::new(true, Some(interrupt));
+        set_timer(&mut timer, Mode::RateGenerator, 2, false);
+        timer.evaluate(1);
+        target.0.lock().clear();
+
+        timer.evaluate(u64::MAX - 1);
+
+        assert_eq!(*target.0.lock(), [false, true]);
+        assert!(timer.state.out);
     }
 }
