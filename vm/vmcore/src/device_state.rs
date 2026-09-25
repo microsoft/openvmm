@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::future::Future;
+use std::time::Duration;
 
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {
@@ -62,4 +63,12 @@ pub trait ChangeDeviceState {
     /// Callers must ensure that the device is in a stopped state before calling
     /// this method.
     fn reset(&mut self) -> impl Send + Future<Output = ()>;
+
+    /// Advances guest-visible device time after snapshot restore.
+    fn advance_time(
+        &mut self,
+        _duration: Duration,
+    ) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
 }

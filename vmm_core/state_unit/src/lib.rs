@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod advance_time;
 mod inventory;
 pub mod quiesce;
 mod start;
@@ -93,6 +94,9 @@ pub enum StateRequest {
     /// Restore state of a stopped unit.
     Restore(FailableRpc<SavedStateBlob, ()>),
 
+    /// Advance guest-visible time while stopped after snapshot restore.
+    AdvanceTime(FailableRpc<std::time::Duration, ()>),
+
     /// Inspect state.
     Inspect(inspect::Deferred),
 }
@@ -134,6 +138,12 @@ pub trait StateUnit: InspectMut {
     ///
     /// Must only be called while stopped.
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
+
+    /// Advance guest-visible time after restore. Most units derive their
+    /// deadlines from VM time and need no direct adjustment.
+    async fn advance_time(&mut self, _duration: std::time::Duration) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Runs a simple unit that only needs to respond to state requests.
@@ -185,6 +195,7 @@ impl StateRequest {
             | StateRequest::Stop(_)
             | StateRequest::QuiesceInput(_)
             | StateRequest::ResumeInput(_)
+            | StateRequest::AdvanceTime(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
             | StateRequest::Restore(_) => {
@@ -227,6 +238,10 @@ impl StateRequest {
                 rpc.handle_failable(async |buffer| unit.restore(buffer).await)
                     .await
             }
+            StateRequest::AdvanceTime(rpc) => {
+                rpc.handle_failable(async |duration| unit.advance_time(duration).await)
+                    .await
+            }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
@@ -248,6 +263,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    AdvancingTime,
     QuiesceUncertain,
 }
 
