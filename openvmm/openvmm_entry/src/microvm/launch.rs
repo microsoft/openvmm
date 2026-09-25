@@ -13,6 +13,7 @@ use anyhow::Context;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_defs::worker::SharedMemoryFd;
 use std::io;
 use std::path::Path;
@@ -25,6 +26,7 @@ pub(crate) struct MicrovmLaunch {
     active: bool,
     effective_command_line: Option<String>,
     resources: MicrovmResources,
+    network: Option<MicrovmNetworkConfig>,
     snapshot_destination: Option<PathBuf>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
     snapshot_memory_handle: Option<std::fs::File>,
@@ -112,6 +114,7 @@ impl MicrovmLaunch {
             active: opt.machine == MachineProfileCli::Microvm,
             effective_command_line,
             resources,
+            network: vm_config.microvm.network.clone(),
             snapshot_destination,
             snapshot_memory_file,
             snapshot_memory_handle,
@@ -169,12 +172,16 @@ impl MicrovmLaunch {
         if opt.machine != MachineProfileCli::Microvm {
             return Ok(None);
         }
+        let resources = &self.resources;
         Ok(Some((
             expected_hypervisor,
             self.effective_command_line
                 .as_deref()
                 .context("microVM restore requires an effective command line")?,
-            self.resources.console_attachment.as_ref(),
+            self.network
+                .as_ref()
+                .zip(resources.network_attachment.as_ref()),
+            resources.console_attachment.as_ref(),
         )))
     }
 
@@ -206,6 +213,7 @@ impl MicrovmLaunch {
             source_hypervisor,
             effective_command_line: self.effective_command_line,
             resources: self.resources,
+            network: self.network,
             snapshot_memory_file: self.snapshot_memory_file,
         }
     }

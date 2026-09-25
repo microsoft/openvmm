@@ -85,8 +85,15 @@ describes the source definitions.
   are bounded at 4 MiB; UDP bindings expire after five minutes; and at most
   256 DNS requests are pending at once. At most 128 TCP, 256 UDP, and 16 ICMP
   guest flows are active at once; excess flows are deterministically rejected
-  before a host socket is created. Snapshot capture does not yet support a
-  microVM NIC.
+  before a host socket is created.
+
+  Networked snapshots record the `portable` profile, drain accepted TX and
+  endpoint-ready RX at the capture boundary, rewind unused guest RX descriptors,
+  and recreate a fresh Consomme endpoint generation on restore.
+  Restore of a networked snapshot requires `--network-profile portable`. Native
+  sockets and NAT flow tables are not serialized. The capture
+  protocol does not retain pre-capture endpoint completions; restored guest
+  software must establish new host-side flows.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
@@ -100,7 +107,9 @@ describes the source definitions.
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
   KVM, MSHV, or WHP, and shared file-backed RAM. An attached virtio console
   saves accepted but undelivered input and the offset of a partially forwarded
-  guest transmit descriptor.
+  guest transmit descriptor. An attached microVM virtio-net device saves its
+  static identity, queue progress, drained packet ownership, and endpoint
+  generation.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm --memory 128M \
@@ -121,6 +130,10 @@ describes the source definitions.
   fails before any vCPU starts when a required attachment cannot be rebuilt.
   A listener peer may connect after restore; guest transmit descriptors remain
   pending while no peer is connected.
+
+  When the snapshot contains virtio-net, restore also requires
+  `--network-profile portable`; the snapshot's profile must match the supplied
+  portable configuration.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
