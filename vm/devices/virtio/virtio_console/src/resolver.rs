@@ -4,6 +4,7 @@
 //! Resource resolver for virtio-console devices.
 
 mod attachment;
+pub mod control;
 
 use crate::VirtioConsoleDevice;
 use async_trait::async_trait;
