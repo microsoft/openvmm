@@ -158,7 +158,9 @@ impl Default for GuestPowerActions {
 /// Decide what to do for a guest halt, given the per-event actions.
 fn action_for(reason: &HaltReason, actions: &GuestPowerActions) -> GuestPowerAction {
     match reason {
-        HaltReason::PowerOff | HaltReason::Hibernate => actions.shutdown,
+        HaltReason::PowerOff | HaltReason::PowerOffWithStatus { .. } | HaltReason::Hibernate => {
+            actions.shutdown
+        }
         HaltReason::Reset => actions.reset,
         HaltReason::TripleFault { .. } => actions.crash,
         HaltReason::Watchdog => actions.watchdog,
