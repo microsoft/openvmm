@@ -39,6 +39,9 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
         }
         builder = builder.enable_rx_gso(resource.enable_rx_gso);
         builder = builder.save_restore_resource(&resource)?;
+        if let Some(egress_policy) = resource.egress_policy {
+            builder = builder.egress_policy(egress_policy);
+        }
 
         let endpoint = resolver
             .resolve(
