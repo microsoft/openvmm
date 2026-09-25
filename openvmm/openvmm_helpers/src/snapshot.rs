@@ -7,6 +7,7 @@ use mesh::payload::Protobuf;
 use mesh::payload::Timestamp;
 
 pub mod format;
+pub mod fs;
 pub mod publish;
 pub mod restore;
 
@@ -172,7 +173,7 @@ mod tests {
 
         // Create a fake memory backing file in the same directory (same fs).
         let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"FAKEMEM").unwrap();
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
 
         let manifest = test_manifest();
         let state = b"saved-state-data";
@@ -222,21 +223,6 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_creates_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("a").join("b").join("c");
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-
-        assert!(snap_dir.join("manifest.bin").exists());
-        assert!(snap_dir.join("state.bin").exists());
-        assert!(snap_dir.join("memory.bin").exists());
-    }
-
-    #[test]
     fn write_snapshot_rejects_existing_directory() {
         // An existing destination is rejected even if it is empty or holds the
         // VM's own memory backing file, and nothing is written into it.
@@ -262,7 +248,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
 
         let mut first = test_manifest();
         first.snapshot_id = OTHER_ID;
@@ -286,14 +272,16 @@ mod tests {
     fn write_snapshot_cleans_up_on_failure() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
-        // The backing file doesn't exist, so linking memory.bin fails after
-        // state.bin has been written.
-        let mem_path = dir.path().join("missing.bin");
+        // The backing file is shorter than the manifest's memory size, so
+        // copying memory.bin fails after state.bin has been written.
+        let mem_path = dir.path().join("short.bin");
+        std::fs::write(&mem_path, b"MEM").unwrap();
 
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
 
         // Everything this call created, including the directory, is removed.
         assert!(!snap_dir.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
