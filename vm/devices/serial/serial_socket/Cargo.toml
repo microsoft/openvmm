@@ -17,6 +17,10 @@ pal_async.workspace = true
 futures.workspace = true
 socket2.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+pal.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 pal.workspace = true
 tracing.workspace = true
@@ -27,6 +31,7 @@ windows-sys.workspace = true
 [dev-dependencies]
 getrandom.workspace = true
 pal_async_test.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
