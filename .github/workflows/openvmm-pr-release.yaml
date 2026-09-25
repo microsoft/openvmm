@@ -27,11 +27,7 @@ concurrency:
 jobs:
   job0:
     name: quick check [fmt, clippy x64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
-    - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -295,7 +291,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -610,7 +606,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -746,7 +742,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -970,7 +966,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -1172,7 +1168,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -1369,7 +1365,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -1578,7 +1574,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -1817,7 +1813,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -2014,7 +2010,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -2252,7 +2248,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -2637,7 +2633,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -2857,7 +2853,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -3076,7 +3072,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -3295,7 +3291,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -3514,7 +3510,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -3733,7 +3729,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -3949,7 +3945,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -4186,7 +4182,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -4419,7 +4415,7 @@ jobs:
     - job3
     - job4
     - job6
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -4649,7 +4645,7 @@ jobs:
     needs:
     - job0
     - job10
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -4753,7 +4749,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -4889,7 +4885,7 @@ jobs:
     needs:
     - job0
     - job10
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5025,7 +5021,7 @@ jobs:
     - job0
     - job7
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5128,7 +5124,7 @@ jobs:
     - job0
     - job7
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5231,7 +5227,7 @@ jobs:
     - job0
     - job5
     - job6
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5494,7 +5490,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5728,7 +5724,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -5892,7 +5888,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -6111,7 +6107,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -6277,7 +6273,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash
@@ -6503,7 +6499,7 @@ jobs:
       id-token: write
     needs:
     - job0
-    if: contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm' && contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash

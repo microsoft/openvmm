@@ -29,6 +29,7 @@ permissions:
 
 jobs:
   dep-review:
+    if: github.repository == 'microsoft/openvmm'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout base branch (safe — our own code)
