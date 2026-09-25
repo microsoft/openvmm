@@ -76,6 +76,10 @@ pub const MICROVM_VIRTIO_NET_FEATURES: u64 = (1 << 5) | (1 << 32);
 pub const MICROVM_VIRTIO_FS_FEATURES: u64 = (1 << 28) | (1 << 29) | (1 << 32) | (1 << 33);
 /// MicroVM client console reconnect timeout.
 pub const MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS: u64 = 5_000;
+/// Resource identity of the microVM control virtio-console device.
+pub const MICROVM_VIRTIO_CONTROL_CONSOLE_ID: &str = "virtio-control-console";
+/// Host-owned kernel command-line token identifying the control tty.
+pub const MICROVM_CONTROL_TTY_COMMAND_LINE: &str = "nvx_control_tty=hvc2";
 /// MicroVM virtio MMIO reservations in stable device order.
 pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
@@ -591,13 +595,18 @@ pub fn append_microvm_virtio_discovery(
     filesystem_slot: bool,
     filesystem: Option<&MicrovmFilesystemConfig>,
     has_console: bool,
+    has_control_console: bool,
     blocks: &[MicrovmSandboxBlockConfig],
 ) -> anyhow::Result<()> {
     validate_microvm_sandbox_blocks(blocks)?;
     anyhow::ensure!(
-        !cmdline
-            .split_ascii_whitespace()
-            .any(|token| token.starts_with("virtio_mmio.device=")),
+        !cmdline.split_ascii_whitespace().any(|token| {
+            if has_control_console {
+                kernel_parameter_name_matches(token, "virtio_mmio.device")
+            } else {
+                token.starts_with("virtio_mmio.device=")
+            }
+        }),
         "microVM command line already contains virtio-mmio discovery"
     );
     anyhow::ensure!(
@@ -634,6 +643,16 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{:#x}:{}",
             block.role.mmio_base(),
             block.role.irq()
+        )?;
+    }
+    if has_control_console {
+        anyhow::ensure!(
+            has_console,
+            "microVM control console requires the boot virtio-console"
+        );
+        write!(
+            cmdline,
+            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
         )?;
     }
     if let Some((network, _, gateway_dns)) = network {
@@ -682,6 +701,11 @@ fn validate_microvm_command_line(
         .virtio_devices
         .iter()
         .any(|(_, device)| device.id() == "virtio-console");
+    let has_control_console = config
+        .virtio_devices
+        .iter()
+        .any(|(_, device)| device.id() == MICROVM_VIRTIO_CONTROL_CONSOLE_ID);
+    validate_microvm_control_console_command_line(&tokens, has_control_console)?;
     let block_count = config
         .virtio_devices
         .iter()
@@ -712,6 +736,10 @@ fn validate_microvm_command_line(
         block_count == config.microvm.sandbox_blocks.len(),
         "microVM sandbox block roles do not match the virtio-blk device inventory"
     );
+    anyhow::ensure!(
+        !has_control_console || has_console,
+        "microVM control console requires the boot console"
+    );
     let base_tokens = if has_console {
         MICROVM_CONSOLE_COMMAND_LINE
     } else {
@@ -734,10 +762,17 @@ fn validate_microvm_command_line(
         "virtfs_tag=",
         "virtfs_mode=",
     ] {
-        let count = tokens
-            .iter()
-            .filter(|token| token.starts_with(prefix))
-            .count();
+        let count = if prefix == "virtio_mmio.device=" && has_control_console {
+            tokens
+                .iter()
+                .filter(|token| kernel_parameter_name_matches(token, "virtio_mmio.device"))
+                .count()
+        } else {
+            tokens
+                .iter()
+                .filter(|token| token.starts_with(prefix))
+                .count()
+        };
         let expected = match prefix {
             "virtio_mmio.device=" => config.virtio_devices.len(),
             "virtnet_ip=" | "virtnet_mask=" | "virtnet_gw=" => usize::from(has_network),
@@ -795,6 +830,12 @@ fn validate_microvm_command_line(
             block.role.irq()
         )
     }));
+    if has_control_console {
+        expected_discovery.push(format!(
+            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ}"
+        ));
+        expected_discovery.push(MICROVM_CONTROL_TTY_COMMAND_LINE.to_owned());
+    }
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
             network
@@ -835,9 +876,88 @@ pub fn build_microvm_command_line(
     user_args: &[String],
     has_console: bool,
 ) -> anyhow::Result<String> {
+    build_microvm_command_line_inner(user_args, has_console, false)
+}
+
+/// Builds the microVM command line with control-console tokens reserved.
+pub fn build_microvm_control_command_line(
+    user_args: &[String],
+    has_console: bool,
+) -> anyhow::Result<String> {
+    build_microvm_command_line_inner(user_args, has_console, true)
+}
+
+/// Appends the host-owned processor capacity to a microVM command line.
+pub fn append_microvm_processor_limit(
+    cmdline: &mut String,
+    processor_count: u32,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        microvm_processor_count_supported(processor_count),
+        "microVM does not support {processor_count} vCPUs"
+    );
+    write!(cmdline, " nr_cpus={processor_count}")?;
+    anyhow::ensure!(
+        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
+        "microVM kernel command line exceeds the 64-KiB ABI limit"
+    );
+    Ok(())
+}
+
+fn kernel_parameter_name_matches(token: &str, expected: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    name.len() == expected.len()
+        && name
+            .bytes()
+            .zip(expected.bytes())
+            .all(|(actual, expected)| actual == expected || (actual == b'-' && expected == b'_'))
+}
+
+fn validate_microvm_control_console_command_line(
+    tokens: &[&str],
+    has_control_console: bool,
+) -> anyhow::Result<()> {
+    if !has_control_console {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !tokens.iter().any(|token| token.contains('"')) && !tokens.contains(&"--"),
+        "microVM control-console command line cannot contain quotes or the kernel argument delimiter"
+    );
+    anyhow::ensure!(
+        !tokens
+            .iter()
+            .any(|token| kernel_parameter_name_matches(token, "driver_async_probe")),
+        "microVM control-console command line cannot override driver probe ordering"
+    );
+    anyhow::ensure!(
+        tokens
+            .iter()
+            .filter(|token| kernel_parameter_name_matches(token, "nvx_control_tty"))
+            .count()
+            == 1,
+        "microVM command line must contain exactly one nvx_control_tty= token"
+    );
+    Ok(())
+}
+
+fn build_microvm_command_line_inner(
+    user_args: &[String],
+    has_console: bool,
+    reserve_control_console: bool,
+) -> anyhow::Result<String> {
     for arg in user_args {
         if arg.contains('\0') {
             anyhow::bail!("microVM kernel command line contains an embedded NUL");
+        }
+        if reserve_control_console
+            && (arg.contains('"') || arg.split_ascii_whitespace().any(|token| token == "--"))
+        {
+            anyhow::bail!(
+                "microVM control-console command line cannot contain quotes or the kernel argument delimiter"
+            );
         }
         if arg.split_ascii_whitespace().any(|token| {
             [
@@ -856,6 +976,10 @@ pub fn build_microvm_command_line(
             ]
             .iter()
             .any(|reserved| token.starts_with(reserved))
+                || (reserve_control_console
+                    && (kernel_parameter_name_matches(token, "nvx_control_tty")
+                        || kernel_parameter_name_matches(token, "driver_async_probe")
+                        || kernel_parameter_name_matches(token, "virtio_mmio.device")))
         }) {
             anyhow::bail!(
                 "microVM kernel command line cannot override profile-owned configuration"
@@ -877,23 +1001,6 @@ pub fn build_microvm_command_line(
         anyhow::bail!("microVM kernel command line exceeds the 64-KiB ABI limit");
     }
     Ok(cmdline)
-}
-
-/// Appends the host-owned processor capacity to a microVM command line.
-pub fn append_microvm_processor_limit(
-    cmdline: &mut String,
-    processor_count: u32,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        microvm_processor_count_supported(processor_count),
-        "microVM does not support {processor_count} vCPUs"
-    );
-    write!(cmdline, " nr_cpus={processor_count}")?;
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM kernel command line exceeds the 64-KiB ABI limit"
-    );
-    Ok(())
 }
 
 /// The guest-visible machine contract, independent of the hypervisor backend.
@@ -1165,6 +1272,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     let mut has_network = false;
     let mut has_filesystem = false;
     let mut has_console = false;
+    let mut has_control_console = false;
     let mut block_count = 0;
     for (bus, device) in &config.virtio_devices {
         anyhow::ensure!(
@@ -1184,10 +1292,20 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
                 !std::mem::replace(&mut has_console, true),
                 "microVM permits only one virtio-console device"
             ),
+            MICROVM_VIRTIO_CONTROL_CONSOLE_ID => {
+                anyhow::ensure!(
+                    !std::mem::replace(&mut has_control_console, true),
+                    "microVM permits only one control console"
+                );
+            }
             "virtio-blk" => block_count += 1,
             id => anyhow::bail!("microVM does not permit virtio device '{id}'"),
         }
     }
+    anyhow::ensure!(
+        !has_control_console || has_console,
+        "microVM control console requires the boot console"
+    );
     validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
     anyhow::ensure!(
         block_count == config.microvm.sandbox_blocks.len(),
@@ -1328,6 +1446,46 @@ mod tests {
     }
 
     #[test]
+    fn control_console_restrictions_preserve_existing_command_lines() {
+        let user_args = [
+            r#"note="left right""#.to_owned(),
+            "--".to_owned(),
+            "driver_async_probe=virtio_mmio".to_owned(),
+            "nvx_control_tty=hvc9".to_owned(),
+            "virtio-mmio.device=0x1000@0xc0000000:1".to_owned(),
+        ];
+        let cmdline = build_microvm_command_line(&user_args, true).unwrap();
+        let tokens = cmdline.split_ascii_whitespace().collect::<Vec<_>>();
+        validate_microvm_control_console_command_line(&tokens, false).unwrap();
+
+        let mut cmdline = cmdline;
+        append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, false, &[]).unwrap();
+
+        assert!(build_microvm_control_command_line(&user_args, true).is_err());
+    }
+
+    #[test]
+    fn control_console_rejects_ambiguous_or_overridden_discovery() {
+        for cmdline in [
+            r#"earlycon=xe9 console=hvc1 reboot=t panic=-1 note="left right" nvx_control_tty=hvc2"#,
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 -- nvx_control_tty=hvc2",
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 driver-async-probe=virtio_mmio nvx_control_tty=hvc2",
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1",
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 nvx_control_tty=hvc2 nvx-control-tty=hvc2",
+        ] {
+            let tokens = cmdline.split_ascii_whitespace().collect::<Vec<_>>();
+            assert!(validate_microvm_control_console_command_line(&tokens, true).is_err());
+        }
+
+        let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
+        cmdline.push_str(" virtio-mmio.device=0x1000@0xc0000000:1");
+        assert!(
+            append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, true, &[])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn microvm_snapshot_tier_command_line_token_is_host_owned() {
         assert!(
             build_microvm_command_line(&["nvx_snapshot_tier=platform".to_owned()], false).is_err()
@@ -1373,7 +1531,8 @@ mod tests {
         validate_microvm_sandbox_blocks(&blocks).unwrap();
 
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(&mut cmdline, None, false, None, false, &blocks).unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, false, None, false, false, &blocks)
+            .unwrap();
         assert_eq!(
             cmdline,
             format!(
@@ -1382,6 +1541,21 @@ mod tests {
                 virtio_mmio.device=0x1000@0xd0004000:12 \
                  virtio_mmio.device=0x1000@0xd0005000:9 \
                  virtio_mmio.device=0x1000@0xd0006000:11"
+            )
+        );
+    }
+
+    #[test]
+    fn microvm_control_console_slot_is_stable() {
+        let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
+        append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, true, &[]).unwrap();
+        assert_eq!(
+            cmdline,
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0002000:7 \
+                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 {MICROVM_CONTROL_TTY_COMMAND_LINE}"
             )
         );
     }
@@ -1414,6 +1588,7 @@ mod tests {
         }
         assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
     }
+
     #[test]
     fn microvm_sandbox_block_validation_rejects_invalid_layouts() {
         assert!(

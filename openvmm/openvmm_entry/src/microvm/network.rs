@@ -213,6 +213,7 @@ pub(crate) mod tests {
             false,
             None,
             false,
+            false,
             &[],
         )
         .unwrap();
