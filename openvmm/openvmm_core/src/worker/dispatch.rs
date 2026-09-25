@@ -84,6 +84,7 @@ use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
+use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::SavedState;
@@ -206,6 +207,7 @@ pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
 impl Manifest {
     fn from_config(config: Config) -> Self {
         Self {
+            machine_profile: config.machine_profile,
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
@@ -284,6 +286,7 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
+    machine_profile: MachineProfile,
 }
 
 async fn open_simple_disk(
@@ -931,6 +934,7 @@ struct LoadedVmInner {
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
+    machine_profile: MachineProfile,
     load_mode: LoadMode,
     igvm_file: Option<IgvmFile>,
     next_igvm_file: Option<IgvmFile>,
@@ -3255,6 +3259,7 @@ impl InitializedVm {
                 chipset_capabilities: cfg.chipset_capabilities,
                 dt_uarts,
                 firmware_event_send: cfg.firmware_event_send,
+                machine_profile: cfg.machine_profile,
                 load_mode: cfg.load_mode,
                 virtio_mmio_region,
                 virtio_mmio_irq,
@@ -4391,6 +4396,7 @@ impl LoadedVm {
         }
 
         let manifest = Manifest {
+            machine_profile: self.inner.machine_profile,
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO
