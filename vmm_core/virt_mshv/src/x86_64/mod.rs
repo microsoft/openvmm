@@ -130,7 +130,7 @@ impl virt::Hypervisor for LinuxMshv {
             x2apic,
             config.processor_topology.smt_enabled(),
         )?;
-        let create_args = tsc::with_features1(create_args, false);
+        let create_args = tsc::with_features1(create_args, config.versioned_cpu_contract);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
