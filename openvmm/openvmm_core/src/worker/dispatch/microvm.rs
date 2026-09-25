@@ -37,6 +37,8 @@ use vmm_core::partition_unit::StopGuard;
 pub(super) struct MicrovmParameters {
     /// Snapshot boundary channels handed to the loaded VM.
     pub(super) snapshot_boundary: SnapshotBoundary,
+    /// Whether this cold boot can publish a microVM snapshot.
+    snapshot_capture_enabled: bool,
 }
 
 impl MicrovmParameters {
@@ -48,11 +50,15 @@ impl MicrovmParameters {
             ready: parameters.snapshot_ready.take(),
             ..Default::default()
         };
+        let snapshot_capture_enabled = parameters.snapshot_capture_enabled;
         openvmm_defs::microvm::validate_machine_config(
             &parameters.cfg,
             Some(parameters.hypervisor.id()),
         )?;
-        Ok(Self { snapshot_boundary })
+        Ok(Self {
+            snapshot_boundary,
+            snapshot_capture_enabled,
+        })
     }
 
     /// Prepares the kernel command line of a microVM cold boot, before the VM
@@ -62,7 +68,12 @@ impl MicrovmParameters {
         vm: &mut InitializedVm,
         restored_from_snapshot: bool,
     ) -> anyhow::Result<()> {
-        prepare_cold_boot_command_line(&mut vm.cfg, vm.partition.as_ref(), restored_from_snapshot)
+        prepare_cold_boot_command_line(
+            &mut vm.cfg,
+            vm.partition.as_ref(),
+            restored_from_snapshot,
+            self.snapshot_capture_enabled,
+        )
     }
 }
 
@@ -516,6 +527,7 @@ fn prepare_cold_boot_command_line(
     cfg: &mut Manifest,
     partition: &dyn HvlitePartition,
     restored_from_snapshot: bool,
+    snapshot_capture_enabled: bool,
 ) -> anyhow::Result<()> {
     if restored_from_snapshot || cfg.machine_profile != MachineProfile::Microvm {
         return Ok(());
@@ -532,6 +544,22 @@ fn prepare_cold_boot_command_line(
     let Some(cmdline) = cmdline else {
         anyhow::bail!("microVM has no supported cold-boot command line");
     };
+    match partition
+        .tsc_frequency_hz()
+        .context("failed to query the backend guest TSC frequency")?
+    {
+        Some(frequency_hz) => {
+            crate::worker::vm_loaders::microvm::propagate_snapshot_tsc_frequency(
+                cmdline,
+                frequency_hz,
+                snapshot_capture_enabled,
+            )
+            .context("failed to propagate the guest TSC frequency")?;
+        }
+        None => tracing::warn!(
+            "backend does not expose a guest TSC frequency; preserving the microVM command line"
+        ),
+    }
     match partition
         .apic_frequency_hz()
         .context("failed to query the backend guest LAPIC frequency")?
@@ -552,6 +580,7 @@ fn prepare_cold_boot_command_line(
     _cfg: &mut Manifest,
     _partition: &dyn HvlitePartition,
     _restored_from_snapshot: bool,
+    _snapshot_capture_enabled: bool,
 ) -> anyhow::Result<()> {
     Ok(())
 }
