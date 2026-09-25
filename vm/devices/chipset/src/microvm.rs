@@ -61,6 +61,7 @@ pub struct MicrovmPortb {
     #[inspect(with = "VecDeque::len")]
     restore_entropy: VecDeque<u8>,
     restore_entropy_selected: bool,
+    input_gated: bool,
     #[inspect(skip)]
     rx_waker: Option<Waker>,
     #[inspect(skip)]
@@ -83,6 +84,7 @@ impl MicrovmPortb {
             generation_id_read_index: None,
             restore_entropy: restore_entropy.into(),
             restore_entropy_selected: false,
+            input_gated: false,
             rx_waker: None,
             tx_waker: None,
         }
@@ -156,6 +158,17 @@ impl MicrovmPortb {
 impl ChangeDeviceState for MicrovmPortb {
     fn start(&mut self) {}
 
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.input_gated = true;
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.input_gated = false;
+        self.wake_rx();
+        Ok(())
+    }
+
     async fn stop(&mut self) {
         // Drain every byte the endpoint accepts immediately. Any remaining
         // VMM-owned bytes are serialized and retried against the reconstructed
@@ -169,6 +182,7 @@ impl ChangeDeviceState for MicrovmPortb {
         self.restore_entropy.clear();
         self.generation_id_read_index = None;
         self.restore_entropy_selected = false;
+        self.input_gated = false;
     }
 }
 
@@ -197,7 +211,9 @@ impl PollDevice for MicrovmPortb {
                 Poll::Pending => return,
             }
         }
-        self.poll_rx(cx);
+        if !self.input_gated {
+            self.poll_rx(cx);
+        }
         let _ = self.poll_tx(cx);
     }
 }
@@ -219,13 +235,14 @@ impl PortIoIntercept for MicrovmPortb {
                     if self.restore_entropy.is_empty() {
                         self.restore_entropy_selected = false;
                     }
-                } else {
+                } else if !self.input_gated {
                     data[0] = self.rx_buffer.pop_front().unwrap_or(0);
                     self.wake_rx();
                 }
             }
             STATUS_PORT => {
-                data[0] = if self.generation_id_read_index.is_none()
+                data[0] = if !self.input_gated
+                    && self.generation_id_read_index.is_none()
                     && !self.restore_entropy_selected
                     && !self.rx_buffer.is_empty()
                 {
@@ -842,6 +859,38 @@ mod tests {
         );
         portb.poll_device(&mut Context::from_waker(Waker::noop()));
         assert_eq!(portb.rx_buffer, [0x5a]);
+    }
+
+    #[test]
+    fn portb_input_gate_blocks_rx_but_not_tx() {
+        let mut portb = MicrovmPortb::new(
+            Box::new(ConnectWithByte {
+                connected: true,
+                byte: Some(0x5a),
+            }),
+            TEST_GENERATION_ID,
+            Vec::new(),
+        );
+        portb.rx_buffer.push_back(0x44);
+        futures::executor::block_on(portb.quiesce_input()).unwrap();
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        portb.poll_device(&mut Context::from_waker(Waker::noop()));
+        let mut data = [0xff];
+        assert!(matches!(
+            portb.io_read(STATUS_PORT, &mut data),
+            IoResult::Ok
+        ));
+        assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
+        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
+        assert_eq!(data, [0]);
+        assert_eq!(portb.rx_buffer, [0x44]);
+        assert!(portb.tx_buffer.is_empty());
+
+        futures::executor::block_on(portb.resume_input()).unwrap();
+        portb.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(portb.rx_buffer, [0x44, 0x5a]);
+        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
+        assert_eq!(data, [0x44]);
     }
 
     #[test]

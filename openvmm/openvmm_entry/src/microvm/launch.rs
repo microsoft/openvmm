@@ -163,6 +163,13 @@ impl MicrovmLaunch {
         Ok(Some(shared_memory))
     }
 
+    /// Returns the time allowed for post-restore guest repair, if required.
+    pub(crate) fn restore_gate_timeout(&self, opt: &Options) -> Option<Duration> {
+        self.restore
+            .gate_required
+            .then_some(Duration::from_millis(opt.microvm.restore_gate_timeout_ms))
+    }
+
     /// Creates the channels that carry guest-requested snapshot boundaries from
     /// the VM worker to the VM controller.
     pub(crate) fn snapshot_channels(
