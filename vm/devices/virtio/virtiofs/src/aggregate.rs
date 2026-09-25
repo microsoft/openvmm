@@ -11,8 +11,6 @@
 //! the [`VirtioFs`] methods that operate on it; the core (direct-mode) file
 //! system lives in the crate root.
 
-use crate::ATTRIBUTE_TIMEOUT;
-use crate::ENTRY_TIMEOUT;
 use crate::VirtioFs;
 use crate::build_volume;
 use crate::inode::VirtioFsInode;
@@ -246,8 +244,8 @@ impl VirtioFs {
         let (_, node_id) = self.insert_inode(inode)?;
         Ok(fuse_entry_out::new(
             node_id,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
     }

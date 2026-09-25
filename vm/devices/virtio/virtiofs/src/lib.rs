@@ -9,6 +9,8 @@ mod file;
 mod inode;
 #[cfg(test)]
 mod integration_tests;
+mod microvm;
+pub use microvm::profile;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
@@ -30,6 +32,7 @@ use inode::DedupKey;
 use inode::VirtioFsInode;
 use inode::VirtioFsVolume;
 pub use lxutil::LxVolumeOptions;
+use microvm::profile::MicroVmVirtioFsProfile;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -38,7 +41,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-// TODO: Make these configurable.
 // FUSE likes to spam getattr a lot, so having a small timeout on the attributes avoids excessive
 // calls. It also means that a lookup/stat sequence can use the attributes returned by lookup
 // rather than having to call getattr.
@@ -56,6 +58,7 @@ struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
     mode: VirtioFsMode,
+    microvm_profile: Option<MicroVmVirtioFsProfile>,
 }
 
 /// Distinguishes a single-share device from a multi-share aggregate.
@@ -112,6 +115,8 @@ pub struct VirtioFs {
 
 impl Fuse for VirtioFs {
     fn init(&self, info: &mut SessionInfo) {
+        microvm::fs::configure_session(self, info);
+
         // Indicate we support both readdir and readdirplus.
         if info.capable() & FUSE_DO_READDIRPLUS != 0 {
             info.want |= FUSE_DO_READDIRPLUS;
@@ -146,7 +151,7 @@ impl Fuse for VirtioFs {
             inode.get_attr()?
         };
 
-        Ok(fuse_attr_out::new(ATTRIBUTE_TIMEOUT, attr))
+        Ok(fuse_attr_out::new(self.attribute_timeout(), attr))
     }
 
     fn get_statx(
@@ -173,7 +178,7 @@ impl Fuse for VirtioFs {
             inode.get_statx()?
         };
 
-        Ok(fuse_statx_out::new(ATTRIBUTE_TIMEOUT, flags, statx))
+        Ok(fuse_statx_out::new(self.attribute_timeout(), flags, statx))
     }
 
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
@@ -202,7 +207,7 @@ impl Fuse for VirtioFs {
             inode.set_attr(arg, request.uid())?
         };
 
-        Ok(fuse_attr_out::new(ATTRIBUTE_TIMEOUT, attr))
+        Ok(fuse_attr_out::new(self.attribute_timeout(), attr))
     }
 
     fn lookup(&self, request: &Request, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
@@ -232,12 +237,13 @@ impl Fuse for VirtioFs {
         let options = util::open_flags(flags)?;
         let inode = self.get_inode(request.node_id())?;
         self.check_open_readonly(&inode, options)?;
+        self.preflight_file_insert()?;
         let reservation = self.reserve_file()?;
         let file = inode.open(options)?;
         let fh = reservation.insert(file)?;
 
         // TODO: Optionally allow caching.
-        Ok(fuse_open_out::new(fh, FOPEN_DIRECT_IO))
+        Ok(fuse_open_out::new(fh, self.open_flags()))
     }
 
     fn create(
@@ -252,6 +258,9 @@ impl Fuse for VirtioFs {
         }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
+        let path = inode.child_path(name)?;
+        self.preflight_create_inode(&inode, name, &path)?;
+        self.preflight_file_insert()?;
         let inode_reservation = self.reserve_inode()?;
         let file_reservation = self.reserve_file()?;
         let (new_inode, attr, file) =
@@ -264,8 +273,13 @@ impl Fuse for VirtioFs {
         let file = VirtioFsFile::new(file, new_inode);
         let fh = file_reservation.insert(file)?;
         Ok(CreateOut {
-            entry: fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr),
-            open: fuse_open_out::new(fh, FOPEN_DIRECT_IO),
+            entry: fuse_entry_out::new(
+                node_id,
+                self.entry_timeout(),
+                self.attribute_timeout(),
+                attr,
+            ),
+            open: fuse_open_out::new(fh, self.open_flags()),
         })
     }
 
@@ -280,13 +294,15 @@ impl Fuse for VirtioFs {
         }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
+        let path = inode.child_path(name)?;
+        self.preflight_new_inode_path(&path)?;
         let reservation = self.reserve_inode()?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
         let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
     }
@@ -302,6 +318,8 @@ impl Fuse for VirtioFs {
         }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
+        let path = inode.child_path(name)?;
+        self.preflight_new_inode_path(&path)?;
         let reservation = self.reserve_inode()?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
@@ -309,8 +327,8 @@ impl Fuse for VirtioFs {
         let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
     }
@@ -324,6 +342,7 @@ impl Fuse for VirtioFs {
         if self.is_synthetic_root(request.node_id()) {
             return Err(lx::Error::EROFS);
         }
+        microvm::fs::check_symlink_allowed(self)?;
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let reservation = self.reserve_inode()?;
@@ -332,8 +351,8 @@ impl Fuse for VirtioFs {
         let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
     }
@@ -346,6 +365,7 @@ impl Fuse for VirtioFs {
         let target_inode = self.get_inode(target)?;
         self.check_writable(&inode)?;
         let alias = inode.child_path(name)?;
+        self.preflight_alias_add(&target_inode, &alias)?;
         let attr = inode.link(name, &target_inode)?;
         target_inode.add_alias(alias);
 
@@ -356,8 +376,8 @@ impl Fuse for VirtioFs {
         // Use the target inode as the reply, with refreshed attributes.
         Ok(fuse_entry_out::new(
             target,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
     }
@@ -451,6 +471,7 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         let old_path = inode.child_path(name)?;
         let new_path = new_inode.child_path(new_name)?;
+        self.preflight_rename_aliases(inode.volume_id(), &old_path, &new_path)?;
         inode.rename(name, &new_inode, new_name, flags)?;
         let mut inodes = self.inner.inodes.write();
         inodes.remove_alias_prefix(inode.volume_id(), &new_path);
@@ -615,6 +636,7 @@ impl VirtioFs {
                 inodes: RwLock::new(inodes),
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Direct,
+                microvm_profile: None,
             }),
         })
     }
@@ -632,19 +654,33 @@ impl VirtioFs {
                 inodes: RwLock::new(InodeMap::new(true)),
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
+                microvm_profile: None,
             }),
         }
     }
 
     fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
+        self.preflight_inode_insert(&new_inode)?;
         let (_, new_inode_nr) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             new_inode_nr,
-            ENTRY_TIMEOUT,
-            ATTRIBUTE_TIMEOUT,
+            self.entry_timeout(),
+            self.attribute_timeout(),
             attr,
         ))
+    }
+
+    fn attribute_timeout(&self) -> Duration {
+        microvm::fs::attribute_timeout(self)
+    }
+
+    fn entry_timeout(&self) -> Duration {
+        microvm::fs::entry_timeout(self)
+    }
+
+    fn open_flags(&self) -> u32 {
+        microvm::fs::open_flags(self)
     }
 
     /// Removes a file or directory.
@@ -665,10 +701,12 @@ impl VirtioFs {
 
     /// Retrieve the inode with the specified node ID.
     fn get_inode(&self, node_id: u64) -> lx::Result<Arc<VirtioFsInode>> {
-        self.inner.inodes.read().get(node_id).ok_or_else(|| {
+        let inode = self.inner.inodes.read().get(node_id).ok_or_else(|| {
             tracelimit::warn_ratelimited!(node_id, "request for unknown inode");
             lx::Error::EINVAL
-        })
+        })?;
+        inode.validate_confined()?;
+        Ok(inode)
     }
 
     /// Insert a new inode, and returns the assigned node ID as well as a reference to the inode.
@@ -677,7 +715,7 @@ impl VirtioFs {
     /// number, the existing inode is returned, not the passed in one.
     fn insert_inode(&self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         let mut inodes = self.inner.inodes.write();
-        inodes.insert(inode)
+        microvm::fs::insert_inode(self, &mut inodes, inode)
     }
 
     /// Reserve an inode ID before performing an operation that creates a host object.
@@ -692,6 +730,7 @@ impl VirtioFs {
             inodes: &self.inner.inodes,
             reservation,
             committed: false,
+            microvm: self.is_microvm(),
         })
     }
 
@@ -718,6 +757,7 @@ impl VirtioFs {
             files: &self.inner.files,
             reservation,
             committed: false,
+            max_handles: microvm::fs::max_handles(self),
         })
     }
 
@@ -731,11 +771,16 @@ struct InodeReservation<'a> {
     inodes: &'a RwLock<InodeMap>,
     reservation: HandleReservation,
     committed: bool,
+    /// Whether the microVM profile's inode and alias limits apply.
+    microvm: bool,
 }
 
 impl InodeReservation<'_> {
     fn insert(mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         let mut inodes = self.inodes.write();
+        if self.microvm {
+            inodes.preflight_microvm_insert(&inode)?;
+        }
         let result = inodes.insert_reserved(&self.reservation, inode)?;
         self.committed = true;
         Ok(result)
@@ -754,11 +799,19 @@ struct FileReservation<'a> {
     files: &'a RwLock<HandleMap<Arc<VirtioFsFile>>>,
     reservation: HandleReservation,
     committed: bool,
+    /// The most file handles that the map may hold, if bounded.
+    max_handles: Option<usize>,
 }
 
 impl FileReservation<'_> {
     fn insert(mut self, file: VirtioFsFile) -> lx::Result<u64> {
         let mut files = self.files.write();
+        if self
+            .max_handles
+            .is_some_and(|max_handles| files.values.len() >= max_handles)
+        {
+            return Err(lx::Error::ENOSPC);
+        }
         files
             .insert_reserved(&self.reservation, Arc::new(file))
             .map_err(|_| lx::Error::ENOSPC)?;

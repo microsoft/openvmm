@@ -186,6 +186,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                                     mount_options: String::new(),
                                     windows_options: None,
                                 },
+                                profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
                             }
                             .into_resource(),
                         )
