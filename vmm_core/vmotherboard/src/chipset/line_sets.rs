@@ -60,7 +60,9 @@ impl LineSets {
 struct LineSetUnit<'a>(&'a LineSet);
 
 impl StateUnit for LineSetUnit<'_> {
-    async fn start(&mut self) {}
+    async fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     async fn stop(&mut self) {}
 

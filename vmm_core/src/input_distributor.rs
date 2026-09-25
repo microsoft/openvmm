@@ -195,8 +195,9 @@ struct Inner {
 }
 
 impl StateUnit for Inner {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.running = true;
+        Ok(())
     }
 
     async fn stop(&mut self) {

@@ -144,7 +144,11 @@ pub async fn build_dynamic_vpci_device(
     };
 
     let pending_offer = pending_offer.context("missing deferred VPCI channel offer")?;
-    state_units.start_stopped_units().await;
+    if let Err(error) = state_units.start_stopped_units().await {
+        vpci_unit.remove().await;
+        pci_unit.remove().await;
+        return Err(error);
+    }
     if let Err(error) = pending_offer
         .offer_registered(&vpci_bus, driver_source, vmbus, state_units.is_running())
         .await

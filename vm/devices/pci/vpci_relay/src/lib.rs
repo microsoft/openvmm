@@ -500,7 +500,7 @@ impl VpciRelay {
             ready_to_remove: false,
         });
 
-        state_units.start_stopped_units().await;
+        state_units.start_stopped_units().await?;
         Ok(())
     }
 }

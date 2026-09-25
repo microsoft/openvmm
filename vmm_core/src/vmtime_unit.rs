@@ -17,8 +17,9 @@ use vmcore::vmtime::VmTimeKeeper;
 struct KeeperUnit<'a>(#[inspect(mut)] &'a mut VmTimeKeeper);
 
 impl StateUnit for KeeperUnit<'_> {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.0.start().await;
+        Ok(())
     }
 
     async fn stop(&mut self) {
