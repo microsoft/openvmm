@@ -35,10 +35,6 @@
 #![forbid(unsafe_code)]
 
 mod broker;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "saved state consumes the broker snapshot")
-)]
 pub(crate) mod control_session_broker;
 pub(crate) mod control_session_protocol;
 mod direct;
