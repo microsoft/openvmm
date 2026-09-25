@@ -1,18 +1,40 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tests for microVM filesystem limits.
+//! Tests for microVM filesystem persistence and limits.
 
 use super::profile::MICROVM_ATTACHMENT_ID;
+use super::profile::MICROVM_FUSE_MAJOR;
+use super::profile::MICROVM_FUSE_MAX_WRITE;
+use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
 use super::saved_state::MAX_ALIASES_PER_INODE;
+use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
+use super::state::encode_relative_path;
+use super::state::fuse_negotiation_from_session;
+use super::state::reopen_flags;
+use super::state::validate_microvm_state;
 use super::state::validate_relative_path;
+use crate::InodeMap;
 use crate::VirtioFs;
+use crate::file::VirtioFsFile;
+use crate::inode::VirtioFsInode;
+use crate::test_helpers::decode_dir_entries;
+use fuse::Fuse;
+use fuse::Session;
+use fuse::SessionInfoState;
+use fuse::SessionState;
+use fuse::protocol::FUSE_ASYNC_READ;
+use fuse::protocol::FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+use fuse::protocol::FUSE_INIT_EXT;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::fuse_dirent_align;
+use fuse::protocol::fuse_direntplus;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tempfile::tempdir;
 use test_with_tracing::test;
 
@@ -23,6 +45,78 @@ fn profile(root_path: &Path) -> MicroVmVirtioFsProfile {
         true,
     )
     .unwrap()
+}
+
+#[test]
+fn microvm_state_restores_against_the_same_attachment() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    let destination = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    assert!(destination.get_inode(FUSE_ROOT_ID).is_ok());
+}
+
+#[test]
+fn initialized_microvm_negotiation_restores() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session_state = SessionState {
+        initialized: true,
+        info: SessionInfoState {
+            major: MICROVM_FUSE_MAJOR,
+            minor: MICROVM_FUSE_MIN_MINOR,
+            capable: FUSE_ASYNC_READ,
+            want: FUSE_ASYNC_READ,
+            max_write: MICROVM_FUSE_MAX_WRITE,
+            time_gran: 1,
+            ..Default::default()
+        },
+    };
+    *source.inner.negotiation.write() = fuse_negotiation_from_session(session_state);
+    let state = source.save_microvm_state(&profile, session_state).unwrap();
+
+    let destination = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    assert_eq!(session.save_state(), session_state);
+    assert!(session.is_initialized());
+}
+
+#[test]
+fn malformed_allocation_state_is_rejected() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.next_node_id = FUSE_ROOT_ID;
+
+    assert!(validate_microvm_state(&state, &profile).is_err());
+}
+
+#[test]
+fn saved_request_size_mismatch_is_rejected() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.maximum_request_size = 0;
+
+    assert!(validate_microvm_state(&state, &profile).is_err());
 }
 
 #[test]
@@ -70,6 +164,546 @@ fn microvm_alias_limit_is_enforced_before_linking() {
         fs.preflight_alias_add(&inode, Path::new("alias-overflow"))
             .unwrap_err(),
         lx::Error::ENOSPC
+    );
+}
+
+/// Returns a microVM filesystem of `root_path` whose root holds the regular
+/// file `file`, which the guest has looked up, with the file's inode and node
+/// ID.
+fn microvm_with_a_tracked_file(root_path: &Path) -> (VirtioFs, Arc<VirtioFsInode>, u64) {
+    std::fs::write(root_path.join("file"), b"data").unwrap();
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let (file, _) = root.lookup_child(lx::LxStr::from_bytes(b"file")).unwrap();
+    let (file, node_id) = fs.insert_inode(file).unwrap();
+    (fs, file, node_id)
+}
+
+/// Returns an inode for a directory at `path` with the host inode number of
+/// `file`, as a host reports once it reuses the number of a removed file.
+fn directory_with_the_inode_number_of(file: &VirtioFsInode, path: &str) -> VirtioFsInode {
+    let mut stat = file.volume().lstat(file.clone_path()).unwrap();
+    stat.mode = lx::S_IFDIR | 0o755;
+    let directory = VirtioFsInode::with_attr(file.volume(), PathBuf::from(path), &stat);
+    assert!(directory.dedup_key() == file.dedup_key());
+    directory
+}
+
+/// Tracks regular files under dedup keys of their own, as lookups of other
+/// host files do, until `fs` tracks `MAX_INODES` inodes.
+fn track_inodes_up_to_the_limit(fs: &VirtioFs, file: &VirtioFsInode) {
+    let mut stat = file.volume().lstat(file.clone_path()).unwrap();
+    let mut inodes = fs.inner.inodes.write();
+    let mut inode_nr = u64::MAX;
+    while inodes.inodes_by_node_id.values.len() < MAX_INODES {
+        stat.inode_nr = inode_nr;
+        let filler = VirtioFsInode::with_attr(
+            file.volume(),
+            PathBuf::from(format!("filler-{inode_nr}")),
+            &stat,
+        );
+        if !inodes.inodes_by_key.contains_key(&filler.dedup_key()) {
+            inodes.insert(filler).unwrap();
+        }
+        inode_nr -= 1;
+    }
+}
+
+/// Returns the node ID that `inodes` deduplicates the host object of `inode`
+/// to, if any.
+fn deduplicated_node_id(inodes: &InodeMap, inode: &VirtioFsInode) -> Option<u64> {
+    inodes
+        .inodes_by_key
+        .get(&inode.dedup_key())
+        .map(|&(_, node_id)| node_id)
+}
+
+#[test]
+fn retyped_object_is_refused_at_the_inode_limit() {
+    // A host object of another file type under a tracked inode's dedup key,
+    // such as a directory that reuses the inode number of a removed file,
+    // takes a node of its own (see `InodeMap::dedup_entry`), at the tracked
+    // inode's path or another, so the inode limit applies to it.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        track_inodes_up_to_the_limit(&fs, &file);
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        assert_eq!(
+            fs.preflight_inode_insert(&directory).unwrap_err(),
+            lx::Error::ENOSPC
+        );
+        assert!(matches!(
+            fs.insert_inode(directory),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        let reservation = fs.reserve_inode().unwrap();
+        assert!(matches!(
+            reservation.insert(directory_with_the_inode_number_of(&file, path)),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        let inodes = fs.inner.inodes.read();
+        assert_eq!(inodes.inodes_by_node_id.values.len(), MAX_INODES);
+        assert_eq!(deduplicated_node_id(&inodes, &file), Some(node_id));
+    }
+}
+
+#[test]
+fn retyped_object_is_refused_without_a_free_node_id() {
+    // Such an object needs a free node ID too, and its refusal leaves the
+    // tracked inode under its dedup key.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = 0;
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        assert_eq!(
+            fs.preflight_inode_insert(&directory).unwrap_err(),
+            lx::Error::ENOSPC
+        );
+        assert!(matches!(
+            fs.insert_inode(directory),
+            Err(error) if error == lx::Error::ENOSPC
+        ));
+        assert_eq!(
+            deduplicated_node_id(&fs.inner.inodes.read(), &file),
+            Some(node_id)
+        );
+    }
+}
+
+#[test]
+fn retyped_object_is_not_bound_by_the_alias_limit_of_the_tracked_inode() {
+    // Such an object adds no alias to the tracked inode, so the tracked
+    // inode's full alias set does not refuse it.
+    for path in ["file", "other"] {
+        let temporary_directory = tempdir().unwrap();
+        let (fs, file, node_id) = microvm_with_a_tracked_file(temporary_directory.path());
+        for index in 1..MAX_ALIASES_PER_INODE {
+            file.add_alias(PathBuf::from(format!("alias-{index}")));
+        }
+
+        let directory = directory_with_the_inode_number_of(&file, path);
+        fs.preflight_inode_insert(&directory).unwrap();
+        let (directory, directory_node_id) = fs.insert_inode(directory).unwrap();
+        assert_ne!(directory_node_id, node_id);
+        assert_eq!(directory.aliases(), [PathBuf::from(path)]);
+        assert_eq!(file.aliases().len(), MAX_ALIASES_PER_INODE);
+        let inodes = fs.inner.inodes.read();
+        assert!(Arc::ptr_eq(&inodes.get(node_id).unwrap(), &file));
+        assert_eq!(
+            deduplicated_node_id(&inodes, &file),
+            Some(directory_node_id)
+        );
+    }
+}
+
+/// Returns a microVM filesystem of `root_path`, whose root holds the regular
+/// files `names`, with an open handle of the root.
+fn microvm_with_an_open_root(root_path: &Path, names: &[&str]) -> (VirtioFs, Arc<VirtioFsFile>) {
+    for name in names {
+        std::fs::write(root_path.join(name), name).unwrap();
+    }
+    let fs = VirtioFs::new_microvm(root_path, profile(root_path)).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let handle = fs.insert_file(root.open(lx::O_RDONLY).unwrap()).unwrap();
+    let directory = fs.get_file(handle).unwrap();
+    (fs, directory)
+}
+
+/// Each READDIRPLUS entry other than `.` and `..` hands the guest a lookup
+/// reference, which the guest can release only if it receives the entry. A
+/// READDIRPLUS that fails at an entry, here because the inode limit refuses
+/// the entry's node, must therefore return the entries that it has looked up,
+/// and fail only the next read, which starts at the failing entry. Once the
+/// guest forgets those entries, the listing goes on.
+#[test]
+fn readdirplus_stopped_by_the_inode_limit_returns_the_entries_it_looked_up() {
+    let temporary_directory = tempdir().unwrap();
+    let names = ["first", "second"];
+    let (fs, directory) = microvm_with_an_open_root(temporary_directory.path(), &names);
+    // Leave room for one more node.
+    track_inodes_up_to_the_limit(&fs, directory.inode());
+    let filler = *fs
+        .inner
+        .inodes
+        .read()
+        .inodes_by_node_id
+        .values
+        .keys()
+        .max()
+        .unwrap();
+    fs.forget(filler, 1);
+
+    let entries = decode_dir_entries(&directory.read_dir(&fs, 0, 4096, true).unwrap());
+    let children: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.name != "." && entry.name != "..")
+        .collect();
+    assert_eq!(children.len(), 1);
+    let child = children[0];
+    assert_ne!(child.node_id, 0);
+    let offset = entries.last().unwrap().offset;
+    assert_eq!(
+        directory.read_dir(&fs, offset, 4096, true).unwrap_err(),
+        lx::Error::ENOSPC
+    );
+
+    fs.forget(child.node_id, 1);
+    let rest = decode_dir_entries(&directory.read_dir(&fs, offset, 4096, true).unwrap());
+    let rest: Vec<_> = rest
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .filter(|name| *name != "." && *name != "..")
+        .collect();
+    let other = names.into_iter().find(|name| *name != child.name).unwrap();
+    assert_eq!(rest, [other]);
+}
+
+/// A READDIRPLUS that fails at a listed name that no longer reaches the
+/// listed object, here because a new file replaced it, must leave the guest
+/// every lookup reference that it took: once the guest forgets each entry that
+/// it received, only the root's node remains.
+#[test]
+fn readdirplus_of_a_replaced_entry_keeps_no_reference_the_guest_lacks() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let (fs, directory) = microvm_with_an_open_root(root_path, &["first", "second", "third"]);
+    // A plain READDIR lists the directory without looking its entries up.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    // Replace the last listed entry, which READDIRPLUS reaches after it looks
+    // the others up, with a file that exists alongside it until the rename,
+    // so that the host numbers the two differently.
+    let replaced = directory
+        .directory_entries()
+        .into_iter()
+        .map(|entry| entry.name)
+        .rfind(|name| name != b"." && name != b"..")
+        .unwrap();
+    let replaced = root_path.join(String::from_utf8(replaced).unwrap());
+    std::fs::write(root_path.join("replacement"), "replacement").unwrap();
+    std::fs::rename(root_path.join("replacement"), replaced).unwrap();
+
+    // Read on as the guest does, until the listing ends or fails, and forget
+    // each entry received.
+    let mut offset = 0;
+    while let Ok(reply) = directory.read_dir(&fs, offset, 4096, true) {
+        let entries = decode_dir_entries(&reply);
+        let Some(last) = entries.last() else {
+            break;
+        };
+        offset = last.offset;
+        for entry in entries {
+            if entry.node_id != 0 {
+                fs.forget(entry.node_id, 1);
+            }
+        }
+    }
+    assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+}
+
+/// Another guest process or the host may unlink entries of a directory while
+/// the guest lists it, a page at a time. READDIRPLUS looks each entry of the
+/// directory's snapshot up, which fails with ENOENT for an unlinked one, so it
+/// must skip the entry, which POSIX lets a listing omit, rather than fail:
+/// every later read would start at the entry and fail too, so the guest could
+/// never list the rest of the directory. Here the next read starts at an
+/// unlinked entry, and reaches another one later.
+#[test]
+fn readdirplus_skips_entries_unlinked_during_the_listing() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    // Enough files for several of the guest's 4 KiB pages.
+    let names: Vec<_> = (0..60).map(|index| format!("f{index:02}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let (fs, directory) = microvm_with_an_open_root(root_path, &names);
+
+    // Read the first page, and forget its entries, as the guest does.
+    let first_page = decode_dir_entries(&directory.read_dir(&fs, 0, 4096, true).unwrap());
+    let offset = first_page.last().unwrap().offset;
+    let mut listed = Vec::new();
+    for entry in first_page {
+        if entry.node_id != 0 {
+            fs.forget(entry.node_id, 1);
+        }
+        listed.push(entry.name);
+    }
+
+    // Unlink the first file that the next read reaches, and a later one.
+    let snapshot = directory.directory_entries();
+    let next = 1 + snapshot
+        .iter()
+        .position(|entry| entry.next_cookie == offset)
+        .unwrap();
+    let unlinked: Vec<_> = snapshot[next..]
+        .iter()
+        .map(|entry| String::from_utf8(entry.name.clone()).unwrap())
+        .filter(|name| name != "." && name != "..")
+        .step_by(5)
+        .take(2)
+        .collect();
+    assert_eq!(unlinked.len(), 2);
+    for name in &unlinked {
+        std::fs::remove_file(root_path.join(name)).unwrap();
+    }
+
+    listed.extend(crate::tests::read_directory(&fs, &directory, offset, 4096, true).into_keys());
+    listed.sort();
+    let mut expected: Vec<_> = [".", ".."]
+        .into_iter()
+        .chain(names)
+        .filter(|name| !unlinked.iter().any(|unlinked| unlinked == name))
+        .map(str::to_owned)
+        .collect();
+    expected.sort();
+    assert_eq!(listed, expected);
+    // The skipped entries hold no lookup reference.
+    assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+}
+
+/// An empty READDIRPLUS reply ends the guest's listing. A read that skips
+/// every entry left in the directory's snapshot, because each was unlinked,
+/// has reached the end of the directory, so it must return one. A read that
+/// skips some entries but stops at one that its buffer cannot hold has not,
+/// so it must fail, as a read that stops at its first entry does.
+#[test]
+fn readdirplus_ends_the_listing_only_after_skipping_every_entry_left() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    let unlinked = ["first", "second", "third"];
+    let long_name = "a-name-too-long-for-the-buffer";
+    let (fs, directory) =
+        microvm_with_an_open_root(root_path, &[&unlinked[..], &[long_name]].concat());
+    // List the directory without looking its entries up, and order its
+    // snapshot as a host may: the dots, the short names, then the long one.
+    directory.read_dir(&fs, 0, 4096, false).unwrap();
+    let mut entries = directory.directory_entries();
+    entries.sort_by_key(|entry| entry.name.len());
+    for (cookie, entry) in (1..).zip(&mut entries) {
+        entry.next_cookie = cookie;
+    }
+    directory
+        .restore_directory_snapshot(&fs.inner.directory_snapshot_budget.read(), true, entries)
+        .unwrap();
+    let after_dots = 2;
+    for name in unlinked {
+        std::fs::remove_file(root_path.join(name)).unwrap();
+    }
+
+    // A buffer that holds the entry of a short name, but not that of the long
+    // one.
+    let size = fuse_dirent_align(size_of::<fuse_direntplus>() + "second".len());
+    assert!(size < fuse_dirent_align(size_of::<fuse_direntplus>() + long_name.len()));
+    assert_eq!(
+        directory
+            .read_dir(&fs, after_dots, size as u32, true)
+            .unwrap_err(),
+        lx::Error::EINVAL
+    );
+
+    std::fs::remove_file(root_path.join(long_name)).unwrap();
+    assert!(
+        directory
+            .read_dir(&fs, after_dots, 4096, true)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn saved_negotiation_must_match_the_exact_microvm_policy() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session_state = SessionState {
+        initialized: true,
+        info: SessionInfoState {
+            major: MICROVM_FUSE_MAJOR,
+            minor: MICROVM_FUSE_MIN_MINOR,
+            capable: FUSE_ASYNC_READ | FUSE_INIT_EXT,
+            capable2: FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            want: FUSE_ASYNC_READ | FUSE_INIT_EXT,
+            want2: FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2,
+            max_write: MICROVM_FUSE_MAX_WRITE,
+            time_gran: 1,
+            ..Default::default()
+        },
+    };
+    *source.inner.negotiation.write() = fuse_negotiation_from_session(session_state);
+    let mut state = source.save_microvm_state(&profile, session_state).unwrap();
+
+    state.negotiation.want2 = 0;
+    assert!(validate_microvm_state(&state, &profile).is_err());
+    state.negotiation.want2 = FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
+    state.negotiation.max_background = 1;
+    assert!(validate_microvm_state(&state, &profile).is_err());
+}
+
+#[test]
+fn reopen_flags_preserve_safe_status_bits_and_reject_effects() {
+    const O_NONBLOCK: u32 = 0x800;
+    const O_DSYNC: u32 = 0x1000;
+    const O_CLOEXEC: u32 = 0x80000;
+    const O_TMPFILE: u32 = 0x410000;
+
+    let saved = lx::O_RDWR as u32
+        | lx::O_APPEND as u32
+        | O_NONBLOCK
+        | O_DSYNC
+        | O_CLOEXEC
+        | lx::O_CREAT as u32
+        | lx::O_EXCL as u32
+        | lx::O_TRUNC as u32;
+    let reopened = reopen_flags(saved).unwrap();
+    assert_eq!(
+        reopened,
+        saved & !(lx::O_CREAT as u32 | lx::O_EXCL as u32 | lx::O_TRUNC as u32)
+    );
+    assert!(reopen_flags(O_TMPFILE).is_err());
+    assert!(reopen_flags(0x80000000).is_err());
+}
+
+#[test]
+fn readonly_profile_rejects_a_writable_saved_handle() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    source
+        .insert_file(Arc::clone(&root).open(lx::O_RDONLY).unwrap())
+        .unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.handles[0].open_flags = lx::O_RDWR as u32 | lx::O_NOFOLLOW as u32;
+
+    assert!(validate_microvm_state(&state, &profile).is_err());
+}
+
+#[test]
+fn saved_parent_alias_is_rejected_before_reopen() {
+    let temporary_directory = tempdir().unwrap();
+    let profile = profile(temporary_directory.path());
+    let source = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let mut state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    state.inodes[0].relative_aliases = vec![b"..".to_vec()];
+    let destination = VirtioFs::new_microvm(temporary_directory.path(), profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+
+    assert!(
+        destination
+            .restore_microvm_state(&profile, state, &session)
+            .is_err()
+    );
+}
+
+#[test]
+fn directory_snapshot_survives_host_mutation_after_restore() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("alpha"), b"alpha").unwrap();
+    std::fs::write(root_path.join("beta"), b"beta").unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    let handle = source
+        .insert_file(Arc::clone(&root).open(lx::O_RDONLY).unwrap())
+        .unwrap();
+    let file = source.get_file(handle).unwrap();
+
+    let first_page = file.read_dir(&source, 0, 32, false).unwrap();
+    assert!(!first_page.is_empty());
+    let snapshot = file.directory_entries();
+    assert!(snapshot.len() > 1);
+    let continuation_offset = snapshot[0].next_cookie;
+    assert_ne!(continuation_offset, 0);
+    let expected_continuation = file
+        .read_dir(&source, continuation_offset, 4096, false)
+        .unwrap();
+    let state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+
+    std::fs::rename(root_path.join("beta"), root_path.join("00-beta")).unwrap();
+    std::fs::write(root_path.join("later"), b"later").unwrap();
+
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    let continuation = destination
+        .get_file(handle)
+        .unwrap()
+        .read_dir(&destination, continuation_offset, 4096, false)
+        .unwrap();
+    assert_eq!(continuation, expected_continuation);
+}
+
+#[test]
+fn hard_link_aliases_restore_and_reject_missing_or_replaced_names() {
+    let temporary_directory = tempdir().unwrap();
+    let root_path = temporary_directory.path();
+    std::fs::write(root_path.join("first"), b"data").unwrap();
+    std::fs::hard_link(root_path.join("first"), root_path.join("second")).unwrap();
+    let profile = profile(root_path);
+    let source = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let root = source.get_inode(FUSE_ROOT_ID).unwrap();
+    let (_, first_node_id) = source
+        .insert_inode(
+            root.lookup_child(lx::LxStr::from_bytes(b"first"))
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+    let (_, second_node_id) = source
+        .insert_inode(
+            root.lookup_child(lx::LxStr::from_bytes(b"second"))
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+    assert_eq!(first_node_id, second_node_id);
+
+    let missing_state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    let inode = missing_state
+        .inodes
+        .iter()
+        .find(|inode| inode.node_id == first_node_id)
+        .unwrap();
+    assert_eq!(
+        inode.relative_aliases,
+        vec![
+            encode_relative_path(Path::new("first")).unwrap(),
+            encode_relative_path(Path::new("second")).unwrap(),
+        ]
+    );
+    let replaced_state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+
+    std::fs::remove_file(root_path.join("second")).unwrap();
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    assert!(
+        destination
+            .restore_microvm_state(&profile, missing_state, &session)
+            .is_err()
+    );
+
+    std::fs::write(root_path.join("second"), b"replacement").unwrap();
+    let destination = VirtioFs::new_microvm(root_path, profile.clone()).unwrap();
+    let session = Session::new(destination.clone());
+    assert!(
+        destination
+            .restore_microvm_state(&profile, replaced_state, &session)
+            .is_err()
     );
 }
 

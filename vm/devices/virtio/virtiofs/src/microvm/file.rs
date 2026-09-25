@@ -1,0 +1,296 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! microVM directory enumeration and persisted directory snapshots.
+
+use super::saved_state::MAX_DIRECTORY_BYTES;
+use super::saved_state::MAX_DIRECTORY_ENTRIES;
+use super::saved_state::MAX_DIRECTORY_ENTRIES_PER_HANDLE;
+use super::saved_state::MAX_DIRECTORY_ENTRY_NAME_BYTES;
+use super::saved_state::MAX_DIRECTORY_SNAPSHOT_BYTES;
+use super::saved_state::SavedDirectoryEntry;
+use crate::VirtioFs;
+use crate::file::DirectorySnapshot;
+use crate::file::VirtioFsFile;
+use fuse::DirEntryWriter;
+use fuse::Fuse;
+use fuse::protocol::fuse_entry_out;
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+/// The directory snapshots that the handles of a microVM attachment hold, in
+/// total. A saved state holds at most [`MAX_DIRECTORY_ENTRIES`] entries and
+/// [`MAX_DIRECTORY_BYTES`] of names in the snapshots of all its handles, so a
+/// handle takes its snapshot's share of these bounds before it keeps the
+/// snapshot, and a save never finds more.
+#[derive(Default)]
+pub(crate) struct DirectorySnapshotBudget {
+    used: Mutex<DirectorySnapshotSize>,
+}
+
+/// The entries of directory snapshots, and the bytes of their names.
+#[derive(Default)]
+struct DirectorySnapshotSize {
+    entries: usize,
+    bytes: usize,
+}
+
+/// The share of a [`DirectorySnapshotBudget`] that a directory snapshot
+/// takes, which returns to the budget when the snapshot drops with its
+/// handle.
+pub(crate) struct DirectorySnapshotCharge {
+    budget: Arc<DirectorySnapshotBudget>,
+    size: DirectorySnapshotSize,
+}
+
+impl DirectorySnapshotBudget {
+    /// Charges a snapshot of `entries` to the budget, or fails with `ENOSPC`
+    /// when the snapshots would then exceed either bound.
+    pub(crate) fn charge(
+        self: &Arc<Self>,
+        entries: &[SavedDirectoryEntry],
+    ) -> lx::Result<DirectorySnapshotCharge> {
+        let size = DirectorySnapshotSize {
+            entries: entries.len(),
+            bytes: entries
+                .iter()
+                .try_fold(0usize, |bytes, entry| bytes.checked_add(entry.name.len()))
+                .ok_or(lx::Error::ENOSPC)?,
+        };
+        let mut used = self.used.lock();
+        let entries = used
+            .entries
+            .checked_add(size.entries)
+            .filter(|&entries| entries <= MAX_DIRECTORY_ENTRIES)
+            .ok_or(lx::Error::ENOSPC)?;
+        let bytes = used
+            .bytes
+            .checked_add(size.bytes)
+            .filter(|&bytes| bytes <= MAX_DIRECTORY_BYTES)
+            .ok_or(lx::Error::ENOSPC)?;
+        *used = DirectorySnapshotSize { entries, bytes };
+        Ok(DirectorySnapshotCharge {
+            budget: Arc::clone(self),
+            size,
+        })
+    }
+}
+
+impl Drop for DirectorySnapshotCharge {
+    fn drop(&mut self) {
+        let mut used = self.budget.used.lock();
+        used.entries -= self.size.entries;
+        used.bytes -= self.size.bytes;
+    }
+}
+
+impl VirtioFsFile {
+    pub(crate) fn read_dir_microvm(
+        &self,
+        fs: &VirtioFs,
+        offset: u64,
+        size: u32,
+        plus: bool,
+    ) -> lx::Result<Vec<u8>> {
+        if size as usize > crate::MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
+
+        let entries = {
+            let mut snapshot = self.directory_snapshot.write();
+            if !snapshot.built {
+                if offset != 0 {
+                    return Err(lx::Error::EINVAL);
+                }
+                let entries = self.build_microvm_directory_snapshot()?;
+                let charge = fs.inner.directory_snapshot_budget.read().charge(&entries)?;
+                *snapshot = DirectorySnapshot {
+                    built: true,
+                    entries,
+                    _charge: Some(charge),
+                };
+            }
+            snapshot.entries.clone()
+        };
+
+        let start = if offset == 0 {
+            0
+        } else {
+            entries
+                .iter()
+                .position(|entry| entry.next_cookie == offset)
+                .map(|index| index + 1)
+                .ok_or(lx::Error::EINVAL)?
+        };
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(size as usize)
+            .map_err(|_| lx::Error::ENOMEM)?;
+
+        let mut skipped = 0;
+        for entry in &entries[start..] {
+            let name = lx::LxStr::from_bytes(&entry.name);
+            if plus {
+                if entry.name == b"." || entry.name == b".." {
+                    if !buffer.dir_entry_plus(
+                        name,
+                        entry.next_cookie,
+                        fuse_entry_out::new_dot(entry.guest_inode_id, entry.kind << 12),
+                    ) {
+                        break;
+                    }
+                } else {
+                    match self.write_microvm_entry_plus(fs, &mut buffer, entry) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        // As in `read_dir_with`, skip an entry whose name is
+                        // gone, as after an unlink or a rename since the
+                        // snapshot listed it, or whose lookup the host refuses
+                        // with EACCES. Failing the read instead would fail
+                        // every later read too, since each starts at the
+                        // entry, so the guest could never list past it.
+                        Err(error) if error == lx::Error::ENOENT || error == lx::Error::EACCES => {
+                            skipped += 1;
+                        }
+                        // Each entry in the reply hands the guest a lookup
+                        // reference, which the guest can release only if it
+                        // receives the entry. So, as in `read_dir_with`, return
+                        // the entries read so far, and report the error only if
+                        // there are none; the guest's next read starts at the
+                        // failing entry.
+                        Err(error) if buffer.is_empty() => return Err(error),
+                        Err(_) => break,
+                    }
+                }
+            } else if !buffer.dir_entry(name, entry.guest_inode_id, entry.next_cookie, entry.kind) {
+                break;
+            }
+        }
+
+        // An empty reply ends the listing. A read that returns no entry
+        // without having skipped every entry left stopped at one that the
+        // guest's buffer cannot hold.
+        if buffer.is_empty() && entries[start..].len() > skipped {
+            return Err(lx::Error::EINVAL);
+        }
+        Ok(buffer)
+    }
+
+    /// Writes the readdirplus entry of `entry`, an entry of this directory's
+    /// snapshot other than `.` and `..`, to `buffer`, and returns whether it
+    /// fit.
+    ///
+    /// The entry's lookup takes the lookup reference that the entry hands to
+    /// the guest, so the reference is held only if the entry is written: an
+    /// entry that does not fit, or that fails, holds none.
+    fn write_microvm_entry_plus(
+        &self,
+        fs: &VirtioFs,
+        buffer: &mut Vec<u8>,
+        entry: &SavedDirectoryEntry,
+    ) -> lx::Result<bool> {
+        let name = lx::LxStr::from_bytes(&entry.name);
+        // This check must happen before lookup_helper, because a
+        // readdirplus lookup creates a guest lookup reference.
+        if !buffer.check_dir_entry_plus(name) {
+            return Ok(false);
+        }
+        let fuse_entry = fs.lookup_helper(&self.inode, name)?;
+        let node_id = fuse_entry.nodeid;
+        // The guest never receives an entry that fails, so release its
+        // reference.
+        if fuse_entry.attr.ino != entry.guest_inode_id
+            || !buffer.dir_entry_plus(name, entry.next_cookie, fuse_entry)
+        {
+            fs.forget(node_id, 1);
+            return Err(lx::Error::EIO);
+        }
+        Ok(true)
+    }
+
+    fn build_microvm_directory_snapshot(&self) -> lx::Result<Vec<SavedDirectoryEntry>> {
+        let stat = self.object_stat()?;
+        if stat.mode & lx::S_IFMT != lx::S_IFDIR {
+            return Err(lx::Error::ENOTDIR);
+        }
+
+        let self_inode_nr = self.inode.guest_inode_nr();
+        let mut total_bytes = 0usize;
+        let mut entries = Vec::new();
+        self.file.write().read_dir(0, |entry| {
+            if entries.len() == MAX_DIRECTORY_ENTRIES_PER_HANDLE {
+                return Err(lx::Error::E2BIG);
+            }
+            let name = entry.name.as_bytes();
+            if name.is_empty() || name.len() > MAX_DIRECTORY_ENTRY_NAME_BYTES {
+                return Err(lx::Error::EINVAL);
+            }
+            if name != b"." && name != b".." {
+                match self.inode.child_path(&entry.name) {
+                    Ok(_) => {}
+                    Err(error) if error == lx::Error::EACCES => return Ok(true),
+                    Err(error) => return Err(error),
+                }
+            }
+            total_bytes = total_bytes
+                .checked_add(name.len())
+                .ok_or(lx::Error::E2BIG)?;
+            if total_bytes > MAX_DIRECTORY_SNAPSHOT_BYTES {
+                return Err(lx::Error::E2BIG);
+            }
+            let next_cookie = u64::try_from(entries.len())
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or(lx::Error::E2BIG)?;
+            entries.try_reserve(1).map_err(|_| lx::Error::ENOMEM)?;
+            entries.push(SavedDirectoryEntry {
+                name: name.to_vec(),
+                next_cookie,
+                guest_inode_id: if name == b"." || name == b".." {
+                    self_inode_nr
+                } else {
+                    self.inode.guest_ino(entry.inode_nr)
+                },
+                kind: entry.file_type as u32,
+            });
+            Ok(true)
+        })?;
+        Self::validate_directory_entries(&entries)?;
+        Ok(entries)
+    }
+
+    pub(crate) fn validate_directory_entries(entries: &[SavedDirectoryEntry]) -> lx::Result<()> {
+        if entries.len() > MAX_DIRECTORY_ENTRIES_PER_HANDLE {
+            return Err(lx::Error::E2BIG);
+        }
+        let mut total_bytes = 0usize;
+        let mut previous_cookie = 0;
+        for (index, entry) in entries.iter().enumerate() {
+            let dot_entry = entry.name == b"." || entry.name == b"..";
+            if entry.name.is_empty()
+                || entry.name.len() > MAX_DIRECTORY_ENTRY_NAME_BYTES
+                || entry.kind > 15
+                || (!dot_entry
+                    && (entry.name.contains(&b'/')
+                        || entry.name.contains(&b'\0')
+                        || entry.name.contains(&b'\\')
+                        || entry.name.contains(&b':')))
+            {
+                return Err(lx::Error::EINVAL);
+            }
+            if (index == 0 && entry.next_cookie == 0)
+                || (index != 0 && entry.next_cookie <= previous_cookie)
+            {
+                return Err(lx::Error::EINVAL);
+            }
+            previous_cookie = entry.next_cookie;
+            total_bytes = total_bytes
+                .checked_add(entry.name.len())
+                .ok_or(lx::Error::E2BIG)?;
+            if total_bytes > MAX_DIRECTORY_SNAPSHOT_BYTES {
+                return Err(lx::Error::E2BIG);
+            }
+        }
+        Ok(())
+    }
+}
