@@ -15,7 +15,7 @@ use openvmm_defs::microvm::MachineProfile;
 pub enum MachineProfileCli {
     /// The standard OpenVMM machine.
     Standard,
-    /// The microVM fixed-topology machine.
+    /// The microVM fixed-topology shared-status machine.
     Microvm,
 }
 
