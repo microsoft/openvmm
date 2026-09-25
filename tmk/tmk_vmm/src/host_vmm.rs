@@ -47,6 +47,8 @@ impl RunContext<'_> {
                 nested_virt: false,
                 #[cfg(guest_arch = "aarch64")]
                 device_assignment_msi_iova_range: None,
+                user_mode_memory_faults: true,
+                lazy_memory_registration: false,
             })
             .context("failed to create proto partition")?;
 
