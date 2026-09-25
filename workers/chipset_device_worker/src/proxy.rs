@@ -267,7 +267,15 @@ impl PollDevice for ChipsetDeviceProxy {
 
 impl ChangeDeviceState for ChipsetDeviceProxy {
     fn start(&mut self) {
-        self.req_send.send(DeviceRequest::Start)
+        self.req_send
+            .send(DeviceRequest::Start(mesh::rpc::Rpc::detached(())))
+    }
+
+    async fn start_fallible(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(DeviceRequest::Start, ())
+            .await?;
+        Ok(())
     }
 
     async fn stop(&mut self) {
