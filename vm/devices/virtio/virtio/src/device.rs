@@ -29,6 +29,13 @@ pub trait VirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
 
+    /// Whether the transport should register accelerated queue doorbells.
+    /// Devices that opt out receive queue notifications through transport
+    /// emulation instead.
+    fn supports_accelerated_doorbells(&self) -> bool {
+        true
+    }
+
     /// The queue size for the given queue index.
     ///
     /// This is the initial value the transport advertises to the guest
@@ -161,6 +168,9 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
 
+    /// Whether the transport should register accelerated queue doorbells.
+    fn supports_accelerated_doorbells(&self) -> bool;
+
     /// The queue size for the given queue index.
     fn queue_size(&self, queue_index: u16) -> u16;
 
@@ -221,6 +231,10 @@ pub trait DynVirtioDevice: InspectMut + Send {
 impl<T: VirtioDevice> DynVirtioDevice for T {
     fn traits(&self) -> DeviceTraits {
         VirtioDevice::traits(self)
+    }
+
+    fn supports_accelerated_doorbells(&self) -> bool {
+        VirtioDevice::supports_accelerated_doorbells(self)
     }
 
     fn queue_size(&self, queue_index: u16) -> u16 {
