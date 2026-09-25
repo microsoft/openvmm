@@ -27,6 +27,20 @@ pub trait ChangeDeviceState {
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
 
+    /// Stops accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// The gate holds until [`Self::resume_input`]. Neither the guest's reset
+    /// of the device nor [`Self::reset`] releases it, so the device's input
+    /// stays gated for as long as its caller holds the gate.
+    fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    fn resume_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
     /// Pauses guest-request processing in a save-consistent state.
     ///
     /// After this returns, the device must not process additional guest requests
@@ -48,6 +62,8 @@ pub trait ChangeDeviceState {
     fn stop(&mut self) -> impl Send + Future<Output = ()>;
 
     /// Resets the device state to its initial state, for a fresh boot.
+    ///
+    /// A host-input gate that [`Self::quiesce_input`] closed stays closed.
     ///
     /// Callers must ensure that the device is in a stopped state before calling
     /// this method.
