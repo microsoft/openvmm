@@ -273,7 +273,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -638,7 +638,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -797,7 +797,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -1044,7 +1044,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -1269,7 +1269,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -1464,7 +1464,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -1708,7 +1708,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -1970,7 +1970,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -2165,7 +2165,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -2401,7 +2401,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -2809,7 +2809,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -3034,7 +3034,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -3258,7 +3258,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -3482,7 +3482,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -3707,7 +3707,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -3930,7 +3930,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -4147,7 +4147,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -4383,7 +4383,7 @@ jobs:
     - job10
     - job3
     - job4
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -4615,7 +4615,7 @@ jobs:
     - job3
     - job4
     - job6
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -4931,7 +4931,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -5155,7 +5155,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -5412,7 +5412,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -5574,7 +5574,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -5791,7 +5791,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -5955,7 +5955,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
@@ -6179,7 +6179,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false)
+    if: github.repository == 'microsoft/openvmm' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'needs-patina') && github.event.pull_request.draft == false))
     defaults:
       run:
         shell: bash
