@@ -64,3 +64,18 @@ pub fn file_to_shared_memory_fd(file: std::fs::File) -> anyhow::Result<SharedMem
         Ok(sparse_mmap::new_mappable_from_file(&file, true, false)?)
     }
 }
+
+/// Convert a read-only file into a writable private memory backing.
+pub fn file_to_copy_on_write_memory_fd(file: std::fs::File) -> anyhow::Result<SharedMemoryFd> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::OwnedFd;
+        Ok(OwnedFd::from(file))
+    }
+    #[cfg(windows)]
+    {
+        Ok(sparse_mmap::new_mappable_from_file_copy_on_write(
+            &file, false,
+        )?)
+    }
+}

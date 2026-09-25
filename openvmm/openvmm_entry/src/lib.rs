@@ -14,6 +14,7 @@ mod meshworker;
 mod pidfile;
 mod repl;
 mod serial_io;
+mod snapshot_restore;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
@@ -2648,54 +2649,6 @@ pub(crate) const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
     "aarch64"
 };
 
-/// Open a snapshot directory and validate it against the current VM config.
-/// Returns the shared memory fd (from memory.bin) and the saved device state.
-fn prepare_snapshot_restore(
-    snapshot_dir: &Path,
-    opt: &Options,
-) -> anyhow::Result<(
-    openvmm_defs::worker::SharedMemoryFd,
-    mesh::payload::message::ProtobufMessage,
-)> {
-    let (manifest, state_bytes) =
-        openvmm_helpers::snapshot::restore::read_snapshot(snapshot_dir, opt.memory_size())?;
-
-    // Validate manifest against current VM config.
-    openvmm_helpers::snapshot::validate_manifest(
-        &manifest,
-        GUEST_ARCH,
-        opt.memory_size(),
-        opt.processors,
-        system_page_size(),
-    )?;
-
-    // Open memory.bin (existing file, no create, no resize).
-    let memory_file = fs_err::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(snapshot_dir.join("memory.bin"))?;
-
-    // Validate file size matches expected memory size.
-    let file_size = memory_file.metadata()?.len();
-    if file_size != manifest.memory_size_bytes {
-        anyhow::bail!(
-            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
-            manifest.memory_size_bytes,
-        );
-    }
-
-    let shared_memory_fd =
-        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
-
-    // Reconstruct ProtobufMessage from the saved state bytes.
-    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
-    // back to ProtobufMessage.
-    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
-        .context("failed to decode saved state from snapshot")?;
-
-    Ok((shared_memory_fd, state_msg))
-}
-
 fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
     openvmm_defs::profile::initialize();
     #[cfg(windows)]
@@ -2805,6 +2758,7 @@ async fn run_control_inner(
     opt: Options,
 ) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
+    let mut restore = snapshot_restore::SnapshotRestore::open(&opt)?;
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
@@ -2929,8 +2883,8 @@ async fn run_control_inner(
     let vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
-            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+        let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
+            let (fd, state_msg) = restore.prepare(&opt)?;
             (Some(fd), Some(state_msg))
         } else {
             let shared_memory = opt
@@ -2944,6 +2898,7 @@ async fn run_control_inner(
                 .transpose()?;
             (shared_memory, None)
         };
+        let restore = restore.into_worker();
 
         let params = VmWorkerParameters {
             hypervisor: match &opt.hypervisor {
@@ -2953,13 +2908,17 @@ async fn run_control_inner(
             cfg: vm_config,
             saved_state,
             shared_memory,
+            shared_memory_copy_on_write: restore.shared_memory_copy_on_write,
+            snapshot_restore_guards: restore.guards,
             rpc: rpc_recv,
             notify: notify_send,
         };
+        let worker_launch = openvmm_defs::profile::ProfileSpan::start();
         vm_host
             .launch_worker(VM_WORKER, params)
             .await
-            .context("failed to launch vm worker")?
+            .context("failed to launch vm worker")
+            .inspect(|_| snapshot_restore::worker_launched(worker_launch))?
     };
 
     if opt.restore_snapshot.is_some() {

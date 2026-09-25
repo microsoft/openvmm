@@ -8,6 +8,7 @@ mod intel_vtd_wiring;
 mod ioapic_iommu_wiring;
 mod pcie_topology;
 mod pcie_wiring;
+mod restore;
 mod smmu_wiring;
 
 use crate::emuplat;
@@ -322,6 +323,8 @@ pub struct VmWorker {
     vm: LoadedVm,
     rpc: mesh::Receiver<VmRpc>,
     device_thread: JoinHandle<()>,
+    /// Restored snapshot handles, dropped when `run` returns after the device thread exits.
+    _snapshot_restore_guards: Option<openvmm_defs::worker::SnapshotRestoreGuards>,
 }
 
 impl Worker for VmWorker {
@@ -329,7 +332,9 @@ impl Worker for VmWorker {
     type State = RestartState;
     const ID: WorkerId<Self::Parameters> = VM_WORKER;
 
-    fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
+    fn new(mut parameters: Self::Parameters) -> anyhow::Result<Self> {
+        let worker_construct = openvmm_defs::profile::ProfileSpan::start();
+        let restore_params = restore::RestoreParameters::take(&mut parameters)?;
         let (device_thread, device_driver) = new_device_thread();
 
         let manifest = Manifest::from_config(parameters.cfg);
@@ -339,7 +344,7 @@ impl Worker for VmWorker {
 
         let shared_memory = parameters
             .shared_memory
-            .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
+            .map(|fd| restore_params.shared_memory_backing(fd));
 
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
@@ -357,10 +362,12 @@ impl Worker for VmWorker {
 
         LOADED_VM.store(&vm);
 
+        worker_construct.complete_milestone("startup", "worker_construct", Default::default());
         Ok(Self {
             vm,
             rpc: parameters.rpc,
             device_thread,
+            _snapshot_restore_guards: restore_params.guards,
         })
     }
 
@@ -397,6 +404,7 @@ impl Worker for VmWorker {
                 vm,
                 rpc,
                 device_thread,
+                _snapshot_restore_guards: None,
             })
         })
     }
@@ -1223,6 +1231,7 @@ impl InitializedVm {
         let device_assignment_msi_iova_range =
             resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
 
+        let partition_prototype = openvmm_defs::profile::ProfileSpan::start();
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
                 processor_topology: &processor_topology,
@@ -1234,6 +1243,7 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
             })
             .context("failed to create the prototype partition")?;
+        partition_prototype.complete("startup", "partition_prototype", Default::default());
 
         let physical_address_size = proto.max_physical_address_size();
 
@@ -1314,6 +1324,10 @@ impl InitializedVm {
         })
         .context("invalid memory configuration")?;
         let mem_layout = resolved_layout.memory_layout;
+        let guest_memory_counters = openvmm_defs::profile::ProfileCounters {
+            logical_bytes: Some(mem_layout.ram().iter().map(|range| range.range.len()).sum()),
+            ..Default::default()
+        };
         let resolved_pcie_root_complex_ranges = resolved_layout.pcie_root_complex_ranges;
         let virtio_mmio_region = resolved_layout.virtio_mmio_region;
         let chipset_mmio = resolved_layout.chipset_mmio;
@@ -1422,7 +1436,7 @@ impl InitializedVm {
                     "shared memory restore not supported with {nodes_with_ranges} memory nodes"
                 );
             }
-            Some(smb.into_mappable())
+            Some(smb.into_parts())
         } else {
             None
         };
@@ -1459,8 +1473,10 @@ impl InitializedVm {
             if mem.hugepages {
                 backing = backing.hugepages(mem.hugepage_size);
             }
-            if let Some(mappable) = existing_mappable.take() {
-                backing = backing.existing_mappable(mappable);
+            if let Some((mappable, file_mapping_mode)) = existing_mappable.take() {
+                backing = backing
+                    .existing_mappable(mappable)
+                    .file_mapping_mode(file_mapping_mode);
             }
 
             memory_builder = memory_builder.add_backing(backing);
@@ -1490,10 +1506,12 @@ impl InitializedVm {
             .end_of_layout()
             .max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
+        let cow_map_view = openvmm_defs::profile::ProfileSpan::start();
         let mut memory_manager = memory_builder
             .build(max_addr)
             .await
             .context("failed to build guest memory")?;
+        cow_map_view.complete("startup", "cow_map_view", guest_memory_counters);
 
         let gm = memory_manager
             .client()
@@ -1513,6 +1531,7 @@ impl InitializedVm {
             ));
         }
 
+        let partition_build = openvmm_defs::profile::ProfileSpan::start();
         let (partition, vps) = proto
             .build(virt::PartitionConfig {
                 mem_layout: &mem_layout,
@@ -1523,11 +1542,13 @@ impl InitializedVm {
                     .then(|| memory_manager.memory_fault_resolver()),
             })
             .context("failed to create the partition")?;
+        partition_build.complete("startup", "partition_build", Default::default());
 
         let vps = vps.into_iter().map(|vp| Box::new(vp) as _).collect();
 
         let partition = Arc::new(partition);
 
+        let gpa_registration = openvmm_defs::profile::ProfileSpan::start();
         memory_manager
             .attach_partition(
                 Vtl::Vtl0,
@@ -1549,7 +1570,9 @@ impl InitializedVm {
                 .await
                 .context("failed to attach memory to VTL2")?;
         }
+        gpa_registration.complete("startup", "gpa_registration", guest_memory_counters);
 
+        let partition_finalize = openvmm_defs::profile::ProfileSpan::start();
         let finalize_result = {
             let _span = tracing::info_span!("post-memory partition finalization").entered();
             let started = std::time::Instant::now();
@@ -1562,6 +1585,7 @@ impl InitializedVm {
             result
         };
         finalize_result.context("failed to finalize partition memory")?;
+        partition_finalize.complete("startup", "partition_finalize", Default::default());
 
         Ok(Self {
             partition,
@@ -4303,10 +4327,7 @@ impl LoadedVm {
 
     /// Restore state on the VM.
     async fn restore(&mut self, state: SavedState) -> anyhow::Result<()> {
-        // Saved state without an inventory is restored without the check.
-        if !state.inventory.is_empty() {
-            self.state_units.validate_inventory(&state.inventory)?;
-        }
+        restore::validate_inventory(&self.state_units, &state)?;
         self.state_units.restore(state.units).await?;
         Ok(())
     }
