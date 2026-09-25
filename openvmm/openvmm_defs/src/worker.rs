@@ -85,6 +85,8 @@ pub struct VmWorkerParameters {
     pub restore_cpu_contract: Option<Vec<u8>>,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,
+    /// Timeout for the microVM post-restore input gate, when required.
+    pub restore_gate_timeout: Option<std::time::Duration>,
     /// The VM RPC channel.
     pub rpc: mesh::Receiver<VmRpc>,
     /// The notification channel.
