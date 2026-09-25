@@ -377,10 +377,10 @@ pub struct NicConfig {
 }
 
 fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
-    // Some guest behaviors requires the nic interfaces to be enumerated in a
-    // particular order. vmbus channel offers are by default sorted using the
+    // Some guest behaviors require the NIC interfaces to be enumerated in a
+    // particular order. VMBus channel offers are by default sorted using the
     // instance id. `offer_order` will override the default sorting.
-    // Incorperating the vport index and MAC address for ease of search.
+    // Incorporate the vport index and MAC address for ease of search.
     Guid {
         data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1`
         data2: vport_index as u16,
