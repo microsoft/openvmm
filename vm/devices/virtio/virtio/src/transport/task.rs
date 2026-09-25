@@ -8,6 +8,9 @@
 //! The transports become thin MMIO/PCI forwarders that send RPCs to
 //! the task.
 
+pub(super) mod kick;
+pub(super) mod restore;
+
 use crate::DynVirtioDevice;
 use crate::QueueResources;
 use crate::queue::QueueState;
@@ -36,7 +39,7 @@ pub enum DeviceCommand {
     /// Guest writes status=0 — stop all queues, reset device.
     Disable(Rpc<(), ()>),
     /// ChangeDeviceState::stop() — stop queues, return states for resume.
-    Stop(Rpc<(), Vec<Option<QueueState>>>),
+    Stop(Rpc<(), restore::StopResult>),
     /// ChangeDeviceState::start() — restart queues with saved states.
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
@@ -55,6 +58,8 @@ pub enum DeviceCommand {
         data: [u8; 8],
         deferred: DeferredWrite,
     },
+    /// Queue notification, serialized with private-state activation.
+    Kick(kick::Kick),
     /// Inspect the device state.
     Inspect(inspect::Deferred),
 }
@@ -74,7 +79,7 @@ pub enum ConfigReadCompletion {
 
 /// Parameters for the Enable command.
 pub struct EnableParams {
-    pub queues: Vec<(u16, QueueResources)>,
+    pub queues: Vec<(u16, QueueResources, Option<QueueState>)>,
     pub features: VirtioDeviceFeatures,
 }
 
@@ -82,6 +87,8 @@ pub struct EnableParams {
 pub struct StartParams {
     pub queues: Vec<(u16, QueueResources, Option<QueueState>)>,
     pub features: VirtioDeviceFeatures,
+    pub device_state: restore::DeviceRestoreState,
+    pub active: bool,
 }
 
 /// Transport-side state machine tracking in-flight device operations.
@@ -129,7 +136,7 @@ impl TransportState {
     pub fn start_enable(
         &mut self,
         sender: &mesh::Sender<DeviceCommand>,
-        queues: Vec<(u16, QueueResources)>,
+        queues: Vec<(u16, QueueResources, Option<QueueState>)>,
         features: VirtioDeviceFeatures,
     ) {
         assert!(!self.is_busy());
@@ -186,14 +193,17 @@ impl TransportState {
 struct DeviceTask {
     device: Box<dyn DynVirtioDevice>,
     max_queues: u16,
+    restore: restore::RestoreStaging,
+    kicks: kick::KickState,
 }
 
 impl DeviceTask {
     async fn enable(&mut self, params: EnableParams) -> bool {
-        for (idx, resources) in params.queues {
+        let mut started =
+            kick::StartedQueues::new("driver-ok", &params.features, params.queues.len());
+        for (idx, resources, initial_state) in params.queues {
             if let Err(err) = self
-                .device
-                .start_queue(idx, resources, &params.features, None)
+                .start_queue(idx, resources, initial_state, &mut started)
                 .await
             {
                 tracelimit::error_ratelimited!(
@@ -202,30 +212,34 @@ impl DeviceTask {
                     "virtio device start_queue failed"
                 );
                 self.stop_all_queues().await;
+                self.discard_staged();
                 self.device.reset().await;
                 return false;
             }
         }
+        self.dispatch_pending_kicks(started);
         true
     }
 
     async fn disable(&mut self) {
         self.stop_all_queues().await;
+        self.discard_staged();
         self.device.reset().await;
     }
 
-    async fn stop(&mut self) -> Vec<Option<QueueState>> {
+    async fn stop(&mut self) -> restore::StopResult {
         let mut states = vec![None; self.max_queues as usize];
         for idx in 0..self.max_queues {
             states[idx as usize] = self.device.stop_queue(idx).await;
         }
-        states
+        self.stop_result(states)
     }
 
     async fn start(&mut self, params: StartParams) -> anyhow::Result<()> {
+        let mut started =
+            kick::StartedQueues::new("active-start", &params.features, params.queues.len());
         for (idx, resources, initial_state) in params.queues {
-            self.device
-                .start_queue(idx, resources, &params.features, initial_state)
+            self.start_queue(idx, resources, initial_state, &mut started)
                 .await
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(
@@ -236,17 +250,20 @@ impl DeviceTask {
                     err
                 })?;
         }
+        self.dispatch_pending_kicks(started);
         Ok(())
     }
 
     async fn reset(&mut self) {
         self.stop_all_queues().await;
+        self.discard_staged();
         self.device.reset().await;
     }
 
     async fn stop_all_queues(&mut self) {
         for idx in 0..self.max_queues {
             self.device.stop_queue(idx).await;
+            self.kicks.started[idx as usize] = false;
         }
     }
 }
@@ -256,15 +273,22 @@ pub async fn run_device_task(
     device: Box<dyn DynVirtioDevice>,
     mut recv: mesh::Receiver<DeviceCommand>,
 ) {
+    let traits = device.traits();
     let mut task = DeviceTask {
-        max_queues: device.traits().max_queues,
+        max_queues: traits.max_queues,
+        restore: restore::RestoreStaging::new(traits.device_id.0),
+        kicks: kick::KickState::new(traits.max_queues),
         device,
     };
 
     while let Some(cmd) = recv.next().await {
+        let Some(cmd) = task.restore_before_config(cmd) else {
+            continue;
+        };
         match cmd {
             DeviceCommand::Enable(rpc) => {
-                rpc.handle(async |params| task.enable(params).await).await;
+                rpc.handle(async |params| task.enable_with_restore(params).await)
+                    .await;
             }
             DeviceCommand::Disable(rpc) => {
                 rpc.handle(async |()| task.disable().await).await;
@@ -278,7 +302,7 @@ pub async fn run_device_task(
                 // but not propagated to the transport.
                 // TODO: update ChangeDeviceState to allow async start()
                 // so failures can be handled by the transport.
-                rpc.handle_failable(async |params| task.start(params).await)
+                rpc.handle_failable(async |params| task.start_with_restore(params).await)
                     .await;
             }
             DeviceCommand::Reset(rpc) => {
@@ -341,6 +365,7 @@ pub async fn run_device_task(
                 }
                 deferred.complete();
             }
+            DeviceCommand::Kick(kick) => task.kick(kick),
             DeviceCommand::Inspect(deferred) => {
                 deferred.inspect(&mut *task.device);
             }
