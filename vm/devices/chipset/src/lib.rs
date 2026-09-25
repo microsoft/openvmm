@@ -21,6 +21,7 @@ pub mod cmos_rtc;
 pub mod dma;
 pub mod i8042;
 pub mod ioapic;
+pub mod microvm;
 pub mod pic;
 pub mod pit;
 pub mod pm;
