@@ -64,8 +64,7 @@ fn tx_used_idx(harness: &TestHarness) -> u16 {
 async fn retain_keeps_output_whose_write_fails_for_the_next_peer(driver: DefaultDriver) {
     let mut harness = TestHarness::new_with_policy(&driver, VirtioConsoleDisconnectPolicy::Retain);
     harness.enable().await;
-    harness.post_tx_and_signal(0, b"before");
-    assert_eq!(harness.wait_for_tx_used().await, (0, 0));
+    harness.send_guest_bytes(0, b"before").await;
     assert_eq!(harness.handle.take_tx_data(), b"before");
 
     // The peer leaves before the worker notices, so the worker writes the
