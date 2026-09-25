@@ -52,4 +52,9 @@ pub enum PowerRequest {
         /// The VP that caused the triple fault.
         vp: u32,
     },
+    /// Power off the VM and return the guest-provided process status.
+    PowerOffWithStatus {
+        /// Guest-provided process status.
+        code: u8,
+    },
 }
