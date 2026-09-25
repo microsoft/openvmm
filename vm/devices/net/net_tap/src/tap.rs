@@ -6,6 +6,8 @@
 // UNSAFETY: Interacting with a union in bindgen-generated code and calling an ioctl.
 #![expect(unsafe_code)]
 
+mod async_write;
+
 use crate::VirtioNetHdr;
 use futures::AsyncRead;
 use linux_net_bindings::gen_if;
