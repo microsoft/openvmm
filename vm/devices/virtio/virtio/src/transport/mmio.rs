@@ -115,13 +115,38 @@ impl VirtioMmioDevice {
         mmio_gpa: u64,
         mmio_len: u64,
     ) -> std::io::Result<Self> {
+        Self::new_with_disabled_features(
+            device,
+            driver,
+            guest_memory,
+            interrupt,
+            doorbell_registration,
+            mmio_gpa,
+            mmio_len,
+            0,
+        )
+    }
+
+    /// Creates an MMIO transport after masking guest-visible device features.
+    pub fn new_with_disabled_features(
+        device: Box<dyn DynVirtioDevice>,
+        driver: &impl Spawn,
+        guest_memory: GuestMemory,
+        interrupt: LineInterrupt,
+        doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        mmio_gpa: u64,
+        mmio_len: u64,
+        disabled_features: u64,
+    ) -> std::io::Result<Self> {
         let traits = device.traits();
         let interrupt_state = Arc::new(Mutex::new(InterruptState {
             interrupt,
             status: 0,
         }));
 
-        let core = VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        let mut core =
+            VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        core.device_feature = core.device_feature.without_bits(disabled_features);
 
         Ok(Self {
             core,
