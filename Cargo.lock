@@ -10918,6 +10918,7 @@ dependencies = [
  "iced-x86",
  "input_core",
  "inspect",
+ "loader",
  "memory_range",
  "mesh",
  "pal_async",
