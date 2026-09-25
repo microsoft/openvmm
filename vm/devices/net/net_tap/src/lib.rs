@@ -33,6 +33,7 @@ use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
+use net_backend_resources::egress::EgressPolicy;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -123,6 +124,7 @@ pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
     enabled_rx_offloads: Option<RxOffloadSupport>,
     stale_offload_recovery: Arc<Mutex<StaleOffloadRecovery>>,
+    egress_policy: Option<EgressPolicy>,
 }
 
 impl TapEndpoint {
@@ -136,6 +138,7 @@ impl TapEndpoint {
             tap: Arc::new(Mutex::new(Some(tap))),
             enabled_rx_offloads: None,
             stale_offload_recovery: Arc::new(Mutex::new(StaleOffloadRecovery::all())),
+            egress_policy: None,
         })
     }
 }
@@ -189,7 +192,13 @@ impl Endpoint for TapEndpoint {
             self.tap.clone(),
             self.stale_offload_recovery.clone(),
             enabled_rx_offloads,
+            self.egress_policy.clone(),
         )?));
+        Ok(())
+    }
+
+    fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        self.egress_policy = Some(policy);
         Ok(())
     }
 
@@ -264,6 +273,7 @@ impl TapQueue {
         slot: Arc<Mutex<Option<tap::Tap>>>,
         stale_offload_recovery_slot: Arc<Mutex<StaleOffloadRecovery>>,
         enabled_rx_offloads: RxOffloadSupport,
+        egress_policy: Option<EgressPolicy>,
     ) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
@@ -280,7 +290,7 @@ impl TapQueue {
             enabled_rx_offloads,
             stale_offload_recovery,
             read_since_pending: false,
-            tx: tx::TxState::new(),
+            tx: tx::TxState::new(egress_policy),
             input_quiesced: false,
         })
     }
