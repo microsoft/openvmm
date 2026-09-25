@@ -2657,7 +2657,8 @@ fn prepare_snapshot_restore(
     openvmm_defs::worker::SharedMemoryFd,
     mesh::payload::message::ProtobufMessage,
 )> {
-    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+    let (manifest, state_bytes) =
+        openvmm_helpers::snapshot::restore::read_snapshot(snapshot_dir, opt.memory_size())?;
 
     // Validate manifest against current VM config.
     openvmm_helpers::snapshot::validate_manifest(

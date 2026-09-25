@@ -616,7 +616,8 @@ async fn snapshot_save_to_disk(
     assert!(snap_dir.join("manifest.bin").exists());
     assert!(snap_dir.join("state.bin").exists());
     assert!(snap_dir.join("memory.bin").exists());
-    let (read_manifest, read_state) = openvmm_helpers::snapshot::read_snapshot(&snap_dir)?;
+    let (read_manifest, read_state) =
+        openvmm_helpers::snapshot::restore::read_snapshot(&snap_dir, mem_size)?;
     assert_eq!(
         read_state, saved_state_bytes,
         "state roundtrip through disk should match"
