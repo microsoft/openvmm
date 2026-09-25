@@ -261,6 +261,19 @@ describes the source definitions.
   workload requests and requires a fixed workload identity plus a live,
   authenticated `--microvm-control-console`. Snapshot restore takes the
   captured lifecycle and rejects an override.
+* `--microvm-report <PATH>`: Atomically create one bounded local JSON outcome
+  report after the microVM controller and worker mesh finish teardown. The
+  report contains a schema version, opaque instance ID, backend category,
+  workload operation/category and numeric status, network-policy
+  applied/rejected state with rule counts, and explicit resource-release
+  booleans. Worker join failures produce a `teardown-failure` outcome and a
+  nonzero process status.
+
+  The destination must not exist and its parent must be a plain directory.
+  Reports never contain commands, environment values, paths, network
+  destinations, proxy details, workload output, credentials, or free-form
+  errors. OpenVMM writes the file only to the requested local destination and
+  does not upload it.
 * `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
   The manifest supplies the authoritative RAM size, topology, ABI,
   fixed device inventory, effective kernel command line, source backend, CPU
