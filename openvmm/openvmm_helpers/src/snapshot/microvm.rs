@@ -3,6 +3,7 @@
 
 //! microVM snapshot machine-contract types, construction, and validation.
 
+use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use super::format::SCRATCH_FILE_NAME;
 #[cfg(test)]
@@ -811,6 +812,18 @@ pub fn microvm_machine_contract(
     contract.set_cpu_compatibility_contract(cpu_contract);
     validate_machine_contract_shape(&contract, memory_size, processor_count)?;
     Ok(contract)
+}
+
+/// Returns whether restore must hold external device input until guest repair completes.
+pub fn requires_post_restore_gate(manifest: &SnapshotManifest) -> bool {
+    manifest.version == MANIFEST_VERSION
+        && manifest.machine_contract.as_ref().is_some_and(|contract| {
+            matches!(
+                contract.microvm_abi_version,
+                openvmm_defs::microvm::MICROVM_ABI_VERSION_2
+            )
+        })
+        && !manifest.snapshot_tier.is_empty()
 }
 
 pub(super) fn has_sandbox_blocks(manifest: &SnapshotManifest) -> bool {
