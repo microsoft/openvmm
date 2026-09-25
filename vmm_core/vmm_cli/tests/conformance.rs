@@ -11,7 +11,9 @@
 
 use vmm_cli::BracketRangeList;
 use vmm_cli::KeyValueArgs;
+use vmm_cli::KeyValueFields;
 use vmm_cli::KeyValueGroup;
+use vmm_cli::KeyValueOption;
 use vmm_cli::MemorySize;
 
 #[derive(KeyValueArgs, Debug, PartialEq)]
@@ -37,6 +39,47 @@ struct Basic {
     size: Option<MemorySize>,
     /// Bracket list value.
     vps: Option<BracketRangeList>,
+}
+
+#[test]
+fn option_metadata_includes_doc_comments() {
+    assert_eq!(
+        Basic::options(),
+        [
+            KeyValueOption {
+                key: "name",
+                help: "Required scalar.",
+            },
+            KeyValueOption {
+                key: "count",
+                help: "Optional scalar.",
+            },
+            KeyValueOption {
+                key: "level",
+                help: "Absent => `Default::default()`.",
+            },
+            KeyValueOption {
+                key: "retries",
+                help: "Absent => the given expression.",
+            },
+            KeyValueOption {
+                key: "fast",
+                help: "Plain boolean flag.",
+            },
+            KeyValueOption {
+                key: "verbose",
+                help: "Tri-state boolean flag.",
+            },
+            KeyValueOption {
+                key: "sz",
+                help: "Renamed key + `FromStr` newtype value.",
+            },
+            KeyValueOption {
+                key: "vps",
+                help: "Bracket list value.",
+            },
+        ]
+    );
 }
 
 #[test]
@@ -219,10 +262,13 @@ fn positional_head() {
 
 #[derive(KeyValueGroup, Debug, PartialEq)]
 enum Transport {
+    /// Connect over TCP.
     #[kv(key = "tcp")]
     Tcp(String),
+    /// Connect through a Unix socket.
     #[kv(key = "unix")]
     Unix(Option<String>),
+    /// Disable the transport.
     #[kv(key = "none")]
     None,
 }
@@ -236,6 +282,28 @@ struct WithGroup {
 
 #[test]
 fn group_selects_one_variant() {
+    assert_eq!(
+        WithGroup::options(),
+        [
+            KeyValueOption {
+                key: "id",
+                help: "",
+            },
+            KeyValueOption {
+                key: "tcp",
+                help: "Connect over TCP.",
+            },
+            KeyValueOption {
+                key: "unix",
+                help: "Connect through a Unix socket.",
+            },
+            KeyValueOption {
+                key: "none",
+                help: "Disable the transport.",
+            },
+        ]
+    );
+
     assert_eq!(
         "id=a,tcp=1.2.3.4".parse::<WithGroup>().unwrap().transport,
         Transport::Tcp("1.2.3.4".into())
@@ -273,8 +341,10 @@ fn group_required_and_exclusive() {
 
 #[derive(KeyValueArgs, Debug, PartialEq)]
 struct Shared {
+    /// Shared flag.
     #[kv(flag)]
     a: bool,
+    /// Shared value.
     b: Option<u32>,
 }
 
@@ -288,6 +358,25 @@ struct Outer {
 
 #[test]
 fn flatten_merges_struct_keys() {
+    assert_eq!(
+        Outer::options(),
+        [
+            KeyValueOption {
+                key: "name",
+                help: "",
+            },
+            KeyValueOption {
+                key: "a",
+                help: "Shared flag.",
+            },
+            KeyValueOption {
+                key: "b",
+                help: "Shared value.",
+            },
+            KeyValueOption { key: "c", help: "" },
+        ]
+    );
+
     let o: Outer = "name=x,a,b=1,c=2".parse().unwrap();
     assert_eq!(
         o,
@@ -310,5 +399,12 @@ fn flatten_merges_struct_keys() {
     assert_eq!(
         err.to_string(),
         "unknown option 'bogus'; expected one of: 'name', 'a', 'b', 'c'"
+    );
+    assert_eq!(
+        Outer::options()
+            .iter()
+            .map(|option| option.key)
+            .collect::<Vec<_>>(),
+        ["name", "a", "b", "c"]
     );
 }
