@@ -74,6 +74,12 @@ describes the source definitions.
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
   Guest-requested snapshot capture and new-process restore are available for
   blockless and fixed-block machines on Linux/KVM, Linux/MSHV, and Windows/WHP.
+
+  ```admonish warning title="microVM migration"
+  The canonical `microvm` spelling now selects the contract formerly exposed
+  as `microvm-v2`; the `microvm-v2` selector and the former ABI-v1 behavior are
+  removed. Snapshot ABI and boot layout remain numeric value 2.
+  ```
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
   at MMIO `0xd0000000`. KVM and MSHV use IRQ 10; WHP uses IRQ 5. Prefixes
   `/1` through `/30` are accepted. The first usable subnet address becomes
