@@ -3191,6 +3191,7 @@ impl InitializedVm {
             partition.clone().into_vm_partition(),
             PartitionUnitParams {
                 processor_topology: &processor_topology,
+                active_vp_count: None,
                 halt_vps,
                 halt_request_recv,
                 client_notify_send: halt_send,

@@ -3913,6 +3913,7 @@ async fn new_underhill_vm(
         WrappedPartition(partition.clone()),
         PartitionUnitParams {
             processor_topology: &processor_topology,
+            active_vp_count: None,
             halt_vps,
             halt_request_recv,
             client_notify_send: halt_notify_send,
