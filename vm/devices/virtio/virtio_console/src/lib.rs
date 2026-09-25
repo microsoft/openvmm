@@ -30,6 +30,8 @@
 //! forwarding them. Once `poll_connect` resolves, normal bidirectional
 //! forwarding resumes. When no guest receive buffer is available, the worker
 //! uses `poll_disconnect` to detect disconnects without reading.
+//! [`VirtioConsoleDevice::new_with_policy`] can instead retain pending guest
+//! TX descriptors until the backend reconnects.
 
 #![forbid(unsafe_code)]
 
@@ -60,6 +62,7 @@ use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -75,11 +78,7 @@ pub struct VirtioConsoleDevice {
 impl VirtioConsoleDevice {
     /// Create a new virtio console device backed by the given serial I/O.
     pub fn new(driver_source: &VmTaskDriverSource, io: Box<dyn SerialIo>) -> Self {
-        Self {
-            driver: driver_source.simple(),
-            config: VirtioConsoleConfig::default(),
-            worker: TaskControl::new(ConsoleWorker { io }),
-        }
+        Self::new_with_policy(driver_source, io, VirtioConsoleDisconnectPolicy::Discard)
     }
 }
 
@@ -191,10 +190,8 @@ impl VirtioDevice for VirtioConsoleDevice {
     async fn reset(&mut self) {}
 }
 
-#[derive(InspectMut)]
 struct ConsoleWorker {
-    #[inspect(mut)]
-    io: Box<dyn SerialIo>,
+    mode: direct::ConsoleWorkerMode,
 }
 
 #[derive(InspectMut)]
@@ -267,10 +264,15 @@ impl ConsoleWorker {
         state: &mut ConsoleWorkerState,
         check: &task_control::StopCheck<'_>,
     ) -> Result<(), WorkerError> {
-        let mut connected: bool = self.io.is_connected();
+        let direct::ConsoleWorkerMode::Direct {
+            io: serial_io,
+            disconnect_policy,
+        } = &mut self.mode;
+        let disconnect_policy = *disconnect_policy;
+        let mut connected: bool = serial_io.is_connected();
         let receiveq = &mut state.receiveq;
         let transmitq = &mut state.transmitq;
-        let mut io = parking_lot::Mutex::new(&mut self.io);
+        let mut io = parking_lot::Mutex::new(serial_io);
         let mem = &state.mem;
         let partial_transmit = &mut state.partial_transmit;
 
@@ -281,6 +283,9 @@ impl ConsoleWorker {
         loop {
             check.check()?;
             if !connected {
+                poll_fn(|cx| io.get_mut().poll_disconnect(cx))
+                    .await
+                    .map_err(WorkerError::Serial)?;
                 // Wait for the backend to connect, discarding any guest tx data
                 // in the meantime.
                 let wait_connect = async {
@@ -290,6 +295,9 @@ impl ConsoleWorker {
                     Ok::<_, WorkerError>(true)
                 };
                 let drain_tx = async {
+                    if disconnect_policy == VirtioConsoleDisconnectPolicy::Retain {
+                        return std::future::pending().await;
+                    }
                     let Some(transmitq) = transmitq.as_mut() else {
                         std::future::pending().await
                     };
@@ -333,8 +341,10 @@ impl ConsoleWorker {
                                 })
                                 .await
                                 {
+                                    Ok(0) => {
+                                        break 'tx Ok(false);
+                                    }
                                     Ok(written) => {
-                                        assert!(written > 0);
                                         written_this_chunk += written;
                                         *partial_transmit += written;
                                     }
