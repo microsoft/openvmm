@@ -9826,7 +9826,6 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
- "signal-hook",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",

@@ -36,7 +36,6 @@ use hvdef::hypercall::HvRegisterAssoc;
 use memory_range::MemoryRange;
 use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::VcpuFd;
-use pal::unix::pthread::Pthread;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
 use std::os::fd::AsRawFd;
@@ -661,11 +660,7 @@ impl virt::Partition for MshvPartition {
         if vp.needs_yield.request_yield() {
             let thread = vp.thread.read();
             if let Some(thread) = *thread {
-                if thread != Pthread::current() {
-                    thread
-                        .signal(libc::SIGRTMIN())
-                        .expect("thread cancel signal failed");
-                }
+                crate::run_vp::cancel(thread).expect("thread cancel signal failed");
             }
         }
     }
