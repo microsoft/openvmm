@@ -19,3 +19,11 @@ pub struct MicrovmPortbHandle {
 impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPortbHandle {
     const ID: &'static str = "microvm-portb";
 }
+
+/// microVM shutdown control port at `0x604`.
+#[derive(MeshPayload)]
+pub struct MicrovmShutdownHandle;
+
+impl ResourceId<ChipsetDeviceHandleKind> for MicrovmShutdownHandle {
+    const ID: &'static str = "microvm-shutdown";
+}
