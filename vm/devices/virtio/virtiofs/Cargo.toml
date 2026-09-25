@@ -18,6 +18,7 @@ fuse.workspace = true
 inspect.workspace = true
 lx.workspace = true
 lxutil.workspace = true
+mesh.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true

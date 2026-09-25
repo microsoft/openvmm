@@ -103,9 +103,9 @@ pub(crate) enum DedupKey {
 /// Implements inode callbacks for virtio-fs.
 pub struct VirtioFsInode {
     pub(crate) volume: Arc<VirtioFsVolume>,
-    path: RwLock<PathBuf>,
+    pub(crate) path: RwLock<PathBuf>,
     pub(crate) aliases: RwLock<BTreeSet<PathBuf>>,
-    lookup_count: AtomicU64,
+    pub(crate) lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
     file_type: lx::mode_t,
     /// This inode's number as reported to the guest: its namespaced inode
@@ -163,6 +163,19 @@ impl VirtioFsInode {
     /// number under the shared superblock. Fixed for the inode's lifetime.
     pub(crate) fn guest_inode_nr(&self) -> lx::ino_t {
         self.guest_inode_nr
+    }
+
+    pub(crate) fn lookup_count(&self) -> u64 {
+        self.lookup_count.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn volume(&self) -> Arc<VirtioFsVolume> {
+        Arc::clone(&self.volume)
+    }
+
+    pub(crate) fn object_stat(&self) -> lx::Result<lx::Stat> {
+        self.validate_confined()?;
+        self.volume.lstat(&*self.get_path())
     }
 
     /// Maps a raw host inode number from this inode's volume for guest use. For
@@ -269,7 +282,7 @@ impl VirtioFsInode {
     pub fn open(self: Arc<VirtioFsInode>, options: i32) -> lx::Result<VirtioFsFile> {
         self.validate_confined()?;
         let file = self.volume.open(&*self.get_path(), options, None)?;
-        Ok(VirtioFsFile::new(file, self))
+        Ok(VirtioFsFile::new(file, self, options as u32))
     }
 
     /// Creates a new file as a child of this inode, and opens it.
@@ -531,7 +544,7 @@ impl VirtioFsInode {
     }
 
     /// Locks the path and returns the value.
-    fn get_path(&self) -> parking_lot::RwLockReadGuard<'_, PathBuf> {
+    pub(crate) fn get_path(&self) -> parking_lot::RwLockReadGuard<'_, PathBuf> {
         self.path.read()
     }
 }
