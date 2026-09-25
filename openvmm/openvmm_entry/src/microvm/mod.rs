@@ -21,6 +21,7 @@ pub(crate) use restore::validate_restore_contract;
 
 use crate::storage_builder::microvm::MicrovmSandboxBlockSource;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
+use net_backend_resources::egress::EgressPolicy;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use std::path::PathBuf;
 
@@ -38,6 +39,8 @@ pub(crate) struct MicrovmResources {
     pub(crate) console_socket_cleanup: Option<MicrovmConsoleSocketCleanup>,
     /// Snapshot identity of the portable network attachment.
     pub(crate) network_attachment: Option<SnapshotAttachment>,
+    /// The bound run-scoped egress policy.
+    pub(crate) egress_policy: Option<EgressPolicy>,
     /// Snapshot identity of the live filesystem root.
     pub(crate) filesystem_attachment: Option<SnapshotAttachment>,
     /// Canonical host path of the live filesystem root.
