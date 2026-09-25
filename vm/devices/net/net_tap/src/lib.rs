@@ -6,6 +6,7 @@
 #![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 
+mod quiesce;
 pub mod resolver;
 pub mod tap;
 mod tx;
@@ -223,6 +224,8 @@ struct TapQueue {
     enabled_rx_offloads: RxOffloadSupport,
     stale_offload_recovery: StaleOffloadRecovery,
     read_since_pending: bool,
+    tx: tx::TxState,
+    input_quiesced: bool,
 }
 
 struct Inner {
@@ -277,16 +280,25 @@ impl TapQueue {
             enabled_rx_offloads,
             stale_offload_recovery,
             read_since_pending: false,
+            tx: tx::TxState::new(),
+            input_quiesced: false,
         })
     }
 }
 
+#[async_trait]
 impl Queue for TapQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
+        if self.poll_tx(cx).is_ready() {
+            return Poll::Ready(());
+        }
         if !self.inner.rx_ready.is_empty() {
             return Poll::Ready(());
         }
 
+        if self.input_quiesced {
+            return Poll::Pending;
+        }
         let tap = if let Some(tap) = self.tap.as_mut() {
             tap
         } else {
@@ -356,6 +368,9 @@ impl Queue for TapQueue {
     }
 
     fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
+        if self.input_quiesced {
+            return;
+        }
         self.inner.rx_free.extend(done);
     }
 
@@ -386,6 +401,18 @@ impl Queue for TapQueue {
         done: &mut [TxId],
     ) -> Result<usize, TxError> {
         self.poll_tx_done(done)
+    }
+
+    async fn quiesce(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+    ) -> anyhow::Result<net_backend::quiesce::QueueQuiesceResult> {
+        self.quiesce_queue().await
+    }
+
+    fn resume(&mut self) -> anyhow::Result<()> {
+        self.input_quiesced = false;
+        Ok(())
     }
 }
 
