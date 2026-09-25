@@ -108,6 +108,8 @@ impl VirtioTransportCore {
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     ) -> std::io::Result<Self> {
         let traits = device.traits();
+        let accelerated_doorbells = device.supports_accelerated_doorbells();
+        let doorbell_registration = doorbell_registration.filter(|_| accelerated_doorbells);
         let queues: Vec<QueueData> = (0..traits.max_queues)
             .map(|i| {
                 let size = device.queue_size(i);
