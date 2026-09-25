@@ -14,17 +14,87 @@ use guestmem::GuestMemory;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-// Suppress logs that contain these known error/warning messages.
-// These messages are the result of known issues with our UEFI firmware that do
-// not seem to affect the guest.
+enum SuppressionMatch {
+    Contains,
+    Exact,
+    SingleLinePrefix,
+    UnsupportedImage,
+}
+
+// Temporary noise suppression pending firmware investigation and fixes.
+// Keep new matches narrow so other statuses and failures remain visible.
 // TODO: Fix UEFI to resolve these errors/warnings
-const SUPPRESS_LOGS: [&str; 5] = [
-    "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
-    "that are linking different HashInstanceLib instances!",
-    "ConvertPages: failed to find range",
-    "ConvertPages: Incompatible memory types",
-    "ConvertPages: range",
+const SUPPRESS_LOGS: &[(&str, SuppressionMatch)] = &[
+    (
+        "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
+        SuppressionMatch::Contains,
+    ),
+    (
+        "that are linking different HashInstanceLib instances!",
+        SuppressionMatch::Contains,
+    ),
+    (
+        "ConvertPages: failed to find range",
+        SuppressionMatch::Contains,
+    ),
+    (
+        "ConvertPages: Incompatible memory types",
+        SuppressionMatch::Contains,
+    ),
+    ("ConvertPages: range", SuppressionMatch::Contains),
+    (
+        "InstallPermanentMemoryBuffer: - New Info=",
+        SuppressionMatch::SingleLinePrefix,
+    ),
+    (
+        "PeiDelayedDispatchOnEndOfPei Count of dispatch cycles is 0",
+        SuppressionMatch::Exact,
+    ),
+    (
+        "FPDT: WARNING: SEC Performance Data Hob not found, ResetEnd will be set to 0!",
+        SuppressionMatch::Exact,
+    ),
+    (
+        "OnVariablePolicyNotification: - Unable to locate variable policy protocol - Status=Not Found",
+        SuppressionMatch::Exact,
+    ),
+    (
+        "Error: Image at <address> start failed: Unsupported",
+        SuppressionMatch::UnsupportedImage,
+    ),
+    (
+        "MnpStart: MnpStartSnp failed, Already started.",
+        SuppressionMatch::Exact,
+    ),
+    (
+        "WARN [DE]: Failed to locate on-screen keyboard protocol (Not Found).",
+        SuppressionMatch::Exact,
+    ),
 ];
+
+fn suppression_pattern(message: &str) -> Option<&'static str> {
+    for &(pattern, ref match_kind) in SUPPRESS_LOGS {
+        let matches = match match_kind {
+            SuppressionMatch::Contains => message.contains(pattern),
+            SuppressionMatch::Exact => message == pattern,
+            SuppressionMatch::SingleLinePrefix => {
+                message.starts_with(pattern) && !message.contains(['\r', '\n'])
+            }
+            SuppressionMatch::UnsupportedImage => message
+                .strip_prefix("Error: Image at ")
+                .and_then(|rest| rest.strip_suffix(" start failed: Unsupported"))
+                .is_some_and(|address| {
+                    !address.is_empty()
+                        && address.len() <= 16
+                        && address.bytes().all(|c| c.is_ascii_hexdigit())
+                }),
+        };
+        if matches {
+            return Some(pattern);
+        }
+    }
+    None
+}
 
 /// Iterator over raw log entries from a buffer.
 ///
@@ -143,11 +213,9 @@ impl LogProcessor {
 
     /// Check if a log should be suppressed based on known patterns
     fn should_suppress(&mut self, log: &Log) -> bool {
-        for &pattern in &SUPPRESS_LOGS {
-            if log.message.contains(pattern) {
-                *self.suppressed_logs.entry(pattern).or_insert(0) += 1;
-                return true;
-            }
+        if let Some(pattern) = suppression_pattern(log.message_trimmed()) {
+            *self.suppressed_logs.entry(pattern).or_insert(0) += 1;
+            return true;
         }
         false
     }
@@ -212,5 +280,182 @@ impl LogProcessor {
 
         processor.log_summary();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::diagnostics::log::ALIGNMENT;
+    use test_with_tracing::test;
+    use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
+    use uefi_specs::hyperv::advanced_logger::DXE_PHASE;
+    use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
+    use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+    use uefi_specs::hyperv::debug_level::DEBUG_INFO;
+
+    const EXACT_MESSAGES: [&str; 5] = [
+        "PeiDelayedDispatchOnEndOfPei Count of dispatch cycles is 0",
+        "FPDT: WARNING: SEC Performance Data Hob not found, ResetEnd will be set to 0!",
+        "OnVariablePolicyNotification: - Unable to locate variable policy protocol - Status=Not Found",
+        "MnpStart: MnpStartSnp failed, Already started.",
+        "WARN [DE]: Failed to locate on-screen keyboard protocol (Not Found).",
+    ];
+
+    fn log(message: &str) -> Log {
+        Log {
+            debug_level: DEBUG_ERROR,
+            time_stamp: 0,
+            phase: DXE_PHASE,
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn approved_messages_are_suppressed_with_or_without_line_endings() {
+        let mut processor = LogProcessor::new();
+        for message in EXACT_MESSAGES.into_iter().chain([
+                "InstallPermanentMemoryBuffer: - New Info=44FE000, Buffer Offset=50, Current Offset=1000, Size=4194224, Discarded=5511",
+                "InstallPermanentMemoryBuffer: - New Info=123ABCD, Buffer Offset=50, Current Offset=1000, Size=4194224, Discarded=0",
+                "Error: Image at 0003FC79000 start failed: Unsupported",
+                "Error: Image at 0003FBD0000 start failed: Unsupported",
+                "Error: Image at abcdef0123456789 start failed: Unsupported",
+            ]) {
+                for ending in ["", "\n", "\r\n"] {
+                    assert!(
+                        processor.should_suppress(&log(&format!("{message}{ending}"))),
+                        "{message:?} with ending {ending:?}"
+                    );
+                }
+            }
+        assert_eq!(processor.suppressed_logs.len(), 7);
+    }
+
+    #[test]
+    fn channel_and_boot_failures_remain_visible() {
+        let mut processor = LogProcessor::new();
+        for guid in [
+            "0E0B6031-5213-4934-818B-38D90CED39DB",
+            "525074DC-8985-46E2-8057-A307DC18A502",
+            "57164F39-9115-4E78-AB55-382F3BD5422D",
+            "9527E630-D0AE-497B-ADCE-E80AB0175CAF",
+            "A9A0F4E7-5A45-4D96-B827-8A841E8C03E6",
+            "CFA8B69E-5B4A-4CC0-B98B-8BA1A1F3F95A",
+        ] {
+            let log = log(&format!(
+                "VmbusRootIsChannelAllowed: Channel not allowed during boot ({guid}).\n"
+            ));
+            assert!(processor.should_emit(&log, LogLevel::make_default()));
+        }
+        for message in ["[Bds] Unable to boot!\n", "Boot order is empty\n"] {
+            assert!(processor.should_emit(&log(message), LogLevel::make_default()));
+        }
+        assert!(processor.suppressed_logs.is_empty());
+    }
+
+    #[test]
+    fn similar_messages_and_other_statuses_remain_visible() {
+        let mut processor = LogProcessor::new();
+        for message in [
+            "PeiDelayedDispatchOnEndOfPei Count of dispatch cycles is 1",
+            "PeiDelayedDispatchOnEndOfPei Count of dispatch cycles is 01",
+            "OnVariablePolicyNotification: - Unable to locate variable policy protocol - Status=Device Error",
+            "MnpStart: MnpStartSnp failed, Device Error.",
+            "WARN [DE]: Failed to locate on-screen keyboard protocol (Device Error).",
+            "InstallPermanentMemoryBuffer: allocation failed",
+            "InstallPermanentMemoryBuffer: - New Info=123\nUnexpected failure",
+            "Error: Image at 0003FC79000 start failed: Security Violation",
+            "Error: Image at 0003FC79000 start failed: Unsupported operation",
+            "Error: Image at  start failed: Unsupported",
+            "Error: Image at not-an-address start failed: Unsupported",
+            "Error: Image at 12345678901234567 start failed: Unsupported",
+            "Error: Image at 123\n456 start failed: Unsupported",
+            "Error: Image at 0003FC79000 start failed: Unsupported\nUnexpected failure",
+        ] {
+            assert!(!processor.should_suppress(&log(message)), "{message}");
+        }
+        for message in EXACT_MESSAGES {
+            assert!(!processor.should_suppress(&log(&format!("Unexpected: {message}"))));
+            assert!(!processor.should_suppress(&log(&format!("{message}\nUnexpected failure"))));
+        }
+        assert!(processor.suppressed_logs.is_empty());
+    }
+
+    #[test]
+    fn existing_filters_and_suppression_counts_are_preserved() {
+        let mut processor = LogProcessor::new();
+        for pattern in [
+            "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
+            "that are linking different HashInstanceLib instances!",
+            "ConvertPages: failed to find range",
+            "ConvertPages: Incompatible memory types",
+            "ConvertPages: range",
+        ] {
+            for _ in 0..2 {
+                assert!(processor.should_suppress(&log(&format!("prefix {pattern} suffix\n"))));
+            }
+            assert_eq!(processor.suppressed_logs[pattern], 2);
+        }
+        for address in ["0003FC79000", "0003FBD0000"] {
+            assert!(processor.should_suppress(&log(&format!(
+                "Error: Image at {address} start failed: Unsupported"
+            ))));
+        }
+        assert_eq!(
+            processor.suppressed_logs["Error: Image at <address> start failed: Unsupported"],
+            2
+        );
+    }
+
+    #[test]
+    fn level_filtering_still_precedes_suppression() {
+        let mut processor = LogProcessor::new();
+        let mut log = log(EXACT_MESSAGES[0]);
+        log.debug_level = DEBUG_INFO;
+        assert!(!processor.should_emit(&log, LogLevel::make_default()));
+        assert!(processor.suppressed_logs.is_empty());
+        assert!(!processor.should_emit(&log, LogLevel::make_full()));
+        assert_eq!(processor.suppressed_logs[EXACT_MESSAGES[0]], 1);
+    }
+
+    fn append_entry(buffer: &mut Vec<u8>, message: &str) {
+        let header_size = size_of::<AdvancedLoggerMessageEntryV2>() as u16;
+        buffer.extend_from_slice(&SIG_ENTRY);
+        buffer.extend_from_slice(&[2, 0]);
+        buffer.extend_from_slice(&DEBUG_ERROR.to_le_bytes());
+        buffer.extend_from_slice(&0u64.to_le_bytes());
+        buffer.extend_from_slice(&DXE_PHASE.to_le_bytes());
+        buffer.extend_from_slice(&(message.len() as u16).to_le_bytes());
+        buffer.extend_from_slice(&header_size.to_le_bytes());
+        buffer.extend_from_slice(message.as_bytes());
+        buffer.resize(buffer.len().next_multiple_of(ALIGNMENT), 0);
+    }
+
+    #[test]
+    fn processing_filters_assembled_messages_and_preserves_boot_errors() {
+        let mut buffer = Vec::new();
+        append_entry(&mut buffer, "Error: Image at 0003FC79000");
+        append_entry(&mut buffer, " start failed: Unsupported\r\n");
+        append_entry(&mut buffer, "[Bds] Unable to boot!\n");
+        append_entry(
+            &mut buffer,
+            "MnpStart: MnpStartSnp failed, Already started.\n",
+        );
+        append_entry(&mut buffer, "Boot order is empty");
+        let mut emitted = Vec::new();
+        LogProcessor::process_buffer(&buffer, LogLevel::make_default(), |log| {
+            emitted.push(log.message_trimmed().to_owned());
+        })
+        .unwrap();
+        assert_eq!(emitted, ["[Bds] Unable to boot!", "Boot order is empty"]);
+
+        buffer.clear();
+        append_entry(&mut buffer, EXACT_MESSAGES[0]);
+        emitted.clear();
+        LogProcessor::process_buffer(&buffer, LogLevel::make_default(), |log| {
+            emitted.push(log.message_trimmed().to_owned());
+        })
+        .unwrap();
+        assert!(emitted.is_empty());
     }
 }
