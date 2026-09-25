@@ -11,6 +11,7 @@ mod cli_args;
 mod crash_dump;
 mod kvp;
 mod meshworker;
+mod microvm;
 mod pidfile;
 mod repl;
 mod serial_io;
@@ -40,6 +41,7 @@ use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
+use cli_args::microvm::MachineProfileCli;
 use crash_dump::spawn_dump_handler;
 use cxl_spec::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
@@ -232,7 +234,9 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 }
 
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
-    if opt.igvm.is_some() {
+    if opt.machine == MachineProfileCli::Microvm {
+        BaseChipsetType::Microvm
+    } else if opt.igvm.is_some() {
         match opt.igvm_personality {
             None => BaseChipsetType::HclHost,
             Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
@@ -322,6 +326,7 @@ async fn vm_config_from_command_line(
 ) -> anyhow::Result<(Config, VmResources)> {
     opt.validate_isolation_options()?;
     opt.validate_igvm_options()?;
+    let mut microvm = microvm::MicrovmConfigBuilder::new(opt)?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     let uefi = opt.effective_uefi()?;
@@ -420,11 +425,13 @@ async fn vm_config_from_command_line(
         opt.com4.as_ref().is_some_and(|c| c.debugger_mode),
     ];
 
+    microvm.setup_portb(&console_state, &serial_driver)?;
+
     let serial0_cfg = setup_serial(
         "com1",
         opt.com1
             .clone()
-            .map_or(SerialConfigCli::Console, |c| c.backend),
+            .map_or(microvm.default_com1_backend(), |c| c.backend),
         if cfg!(guest_arch = "x86_64") {
             "ttyS0"
         } else {
@@ -1334,7 +1341,12 @@ async fn vm_config_from_command_line(
         TpmVersionCli::V185 => TpmVersion::V185,
     });
 
-    if opt.restore_snapshot.is_some() {
+    microvm.add_chipset_devices(&mut chipset_devices)?;
+
+    if let Some(microvm_load_mode) = microvm.load_mode(arch)? {
+        load_mode = microvm_load_mode;
+        with_hv = false;
+    } else if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
@@ -1518,6 +1530,7 @@ async fn vm_config_from_command_line(
         };
     }
 
+    microvm.validate_vmgs()?;
     let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
         let disk = VmgsDisk {
             disk: disk_open(kind, false)
@@ -1537,6 +1550,7 @@ async fn vm_config_from_command_line(
     } else {
         VmgsResource::Ephemeral
     });
+    microvm.filter_vmgs(&mut vmgs);
 
     if with_get && with_hv {
         let has_vtl0_nvme = storage.has_vtl0_nvme();
@@ -2073,7 +2087,7 @@ async fn vm_config_from_command_line(
     pcie_devices.extend(vfio_pcie_devices);
 
     let mut cfg = Config {
-        machine_profile: Default::default(),
+        machine_profile: opt.machine.into(),
         microvm: Default::default(),
         chipset,
         load_mode,
@@ -2223,6 +2237,7 @@ async fn vm_config_from_command_line(
             device.port_name
         );
     }
+    microvm.finish(&mut cfg)?;
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
@@ -2919,6 +2934,9 @@ async fn run_control_inner(
         let params = VmWorkerParameters {
             hypervisor: match &opt.hypervisor {
                 Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+                None if opt.machine == MachineProfileCli::Microvm => {
+                    openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor()?
+                }
                 None => openvmm_helpers::hypervisor::choose_hypervisor()?,
             },
             cfg: vm_config,

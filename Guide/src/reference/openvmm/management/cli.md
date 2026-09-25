@@ -19,6 +19,40 @@ describes the source definitions.
   `MAJOR.MINOR.PATCH`. On Windows, the executable's `VERSIONINFO` uses the
   product version as `MAJOR.MINOR.PATCH.0`.
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
+* `--machine <PROFILE>`: Select the guest-visible machine contract. The
+  default is `standard`. `microvm` selects the ACPI-free x86-64 Linux direct
+  microVM, which
+  runs on KVM, MSHV, or WHP with exactly 1, 2, 4, or 8 vCPUs. On
+  Linux, auto-detection prefers MSHV when `/dev/mshv` is available and falls
+  back to KVM:
+
+  ```bash
+  openvmm --machine microvm --hypervisor kvm \
+    --kernel vmlinux --initrd initramfs.cpio.gz
+  openvmm --machine microvm --hypervisor mshv \
+    --kernel vmlinux --initrd initramfs.cpio.gz
+  openvmm --machine microvm --hypervisor whp \
+    --kernel vmlinux --initrd initramfs.cpio.gz
+  openvmm --machine microvm --processors 8 --hypervisor whp \
+    --kernel vmlinux --initrd initramfs.cpio.gz
+  ```
+
+  The kernel must be an uncompressed ELF64 image. The profile owns the base command line
+  (`earlycon=xe9 console=hvc0 reboot=t panic=-1`). It appends
+  `nr_cpus=<capacity>` from the validated processor topology. It reserves a 1-GiB
+  MMIO gap from 3 to 4 GiB and exposes only PIC/IOAPIC, PIT, a CMOS RTC
+  anchored to UTC,
+  the microVM portb console, and the shutdown port. User arguments cannot
+  override `earlycon=`, `console=`, or `nr_cpus=`. Firmware, ACPI, SMBIOS, PCI,
+  VMBus, UARTs, storage, networking, virtio, graphics, isolation, nested
+  virtualization, and other devices are rejected. Linux discovers contiguous
+  APIC IDs and the IOAPIC from Intel
+  MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
+  line starts at `0x20000`, and no ACPI or SMBIOS data is exposed. Host-driven
+  save/restore, pulse-save/restore, and worker restart remain unavailable.
+
+  `microvm` uses one socket and one die,
+  with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
   comma-separated key/value list:
