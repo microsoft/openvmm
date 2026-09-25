@@ -30,7 +30,7 @@ pub const RESTORE_READY_EVENT_V1: &[u8] = b"OPENVMM_RESTORE_READY_V1\n";
 /// Exact snapshot-generation handles retained for a restored VM's lifetime.
 #[derive(MeshPayload)]
 pub struct SnapshotRestoreGuards {
-    /// Open snapshot directory used for relative artifact access.
+    /// Open snapshot directory used for relative artifact access and resume claims.
     pub directory: std::fs::File,
     /// Open manifest artifact.
     pub manifest: std::fs::File,

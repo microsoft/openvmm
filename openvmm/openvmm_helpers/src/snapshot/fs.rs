@@ -837,6 +837,53 @@ impl OpenedSnapshotDirectory {
         }
     }
 
+    pub(super) fn create_new_file(&self, name: &str) -> std::io::Result<std::fs::File> {
+        #[cfg(target_os = "linux")]
+        {
+            use nix::fcntl::OFlag;
+            use nix::sys::stat::Mode;
+
+            nix::fcntl::openat(
+                &self.file,
+                name,
+                OFlag::O_WRONLY
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_CLOEXEC
+                    | OFlag::O_NOFOLLOW,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            )
+            .map(std::fs::File::from)
+            .map_err(nix_error)
+        }
+        #[cfg(windows)]
+        {
+            pal::windows::fs::relative::create_relative_new(&self.file, std::ffi::OsStr::new(name))
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.open(self.path.join(name))
+        }
+    }
+
+    pub(super) fn sync(&self) -> anyhow::Result<()> {
+        #[cfg(unix)]
+        {
+            self.file.sync_all().context("failed to flush directory")
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    }
+
     pub(super) fn display_path(&self, name: impl AsRef<Path>) -> PathBuf {
         self.path.join(name)
     }
