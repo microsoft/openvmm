@@ -2484,6 +2484,7 @@ dependencies = [
  "sha2",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "which 8.0.0",
 ]
