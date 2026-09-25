@@ -594,10 +594,11 @@ impl Drop for StopGuard {
 }
 
 impl StateUnit for PartitionUnitRunner {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.partition.thaw_time();
         self.unit_started = true;
         self.try_start();
+        Ok(())
     }
 
     async fn stop(&mut self) {
