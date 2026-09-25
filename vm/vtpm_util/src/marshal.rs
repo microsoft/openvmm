@@ -1,17 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Marshal selected TPM structures used by cvmutil.
+//! Marshal selected TPM structures used by `vtpm_util`.
 //! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf are a good source.
 
+#[cfg(feature = "experimental")]
 use crate::Tpm2bPublic;
+use std::io;
 use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
-use std::io;
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::IntoBytes;
 
 // Constants for sealed key data format (from Canonical Go secboot package)
+#[cfg(feature = "experimental")]
 pub const KEY_DATA_HEADER: u32 = 0x55534b24; // "USK$" magic bytes
+#[cfg(feature = "experimental")]
 pub const CURRENT_METADATA_VERSION: u32 = 2;
 
 // Table 187 -- TPMT_SENSITIVE Structure <I/O>
@@ -29,16 +32,16 @@ pub struct TpmtSensitive {
 
 /// Anti-Forensic Information Splitter data structure
 #[derive(Debug)]
+#[cfg(feature = "experimental")]
 pub struct AfSplitData {
     pub stripes: u32,
-    pub hash_alg: u16, // TPM hash algorithm ID is 2 bytes
-    pub size: u32,
     pub data: Vec<u8>,
 }
 
 /// TPM Key Data structure matching Go's tpmKeyData
 #[derive(Debug)]
 #[expect(dead_code)]
+#[cfg(feature = "experimental")]
 pub struct TpmKeyData {
     pub version: u32,
     pub key_private: Tpm2bBuffer, // Parsed TPM2B_PRIVATE
@@ -51,68 +54,74 @@ pub struct TpmKeyData {
 
 /// Sealed key import blob that matches TPM2B import format (TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SECRET)
 #[derive(Debug)]
+#[cfg(feature = "experimental")]
 pub struct SealedKeyImportBlob {
     pub object_public: Tpm2bPublic,
     pub duplicate: Tpm2bBuffer,
     pub in_sym_seed: Tpm2bBuffer,
 }
 
+#[cfg(feature = "experimental")]
 impl AfSplitData {
-    /// Create AF split data from payload using proper AFIS algorithm
-    pub fn create(payload: &[u8]) -> Self {
+    /// Split data using the AFIS algorithm.
+    pub fn create(payload: &[u8]) -> Result<Self, io::Error> {
         use sha2::{Digest, Sha256};
 
-        // Use Canonical's approach: target 128KB minimum size
-        let min_size = 128 * 1024; // 128KB like Canonical
-        let stripes = (min_size / payload.len()).max(1) + 1;
+        if payload.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot AF-split an empty payload",
+            ));
+        }
 
-        tracing::info!(
-            "AF split: payload {} bytes, {} stripes, target size ~{}KB",
-            payload.len(),
-            stripes,
-            (payload.len() * stripes) / 1024
-        );
+        const MIN_SPLIT_SIZE: usize = 128 * 1024;
+        let stripes = MIN_SPLIT_SIZE / payload.len() + 1;
+        let split_size = payload.len().checked_mul(stripes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "AF split data is too large")
+        })?;
+        let mut data = Vec::with_capacity(split_size);
+        let mut block = vec![0u8; payload.len()];
 
-        let block_size = payload.len();
-        let mut result = Vec::new();
-        let mut block = vec![0u8; block_size];
+        for _ in 0..stripes - 1 {
+            let mut random_block = vec![0u8; payload.len()];
+            getrandom::fill(&mut random_block)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            data.extend_from_slice(&random_block);
 
-        // Generate stripes-1 random blocks and XOR/hash them
-        for _i in 0..(stripes - 1) {
-            let mut random_block = vec![0u8; block_size];
-            getrandom::fill(&mut random_block).expect("Failed to generate random data");
-
-            result.extend_from_slice(&random_block);
-
-            // XOR with accumulated block
-            for j in 0..block_size {
-                block[j] ^= random_block[j];
+            for index in 0..payload.len() {
+                block[index] ^= random_block[index];
             }
 
-            // Diffuse the block using hash (same as in merge)
-            let mut hasher = Sha256::new();
-            hasher.update(&block);
-            let hash = hasher.finalize();
-
-            // Simple diffusion: XOR block with repeated hash
-            for j in 0..block_size {
-                block[j] ^= hash[j % 32];
+            let hash = Sha256::digest(&block);
+            for index in 0..payload.len() {
+                block[index] ^= hash[index % hash.len()];
             }
         }
 
-        // Final stripe: XOR the accumulated block with original data
-        let mut final_stripe = vec![0u8; block_size];
-        for i in 0..block_size {
-            final_stripe[i] = block[i] ^ payload[i];
+        for index in 0..payload.len() {
+            block[index] ^= payload[index];
         }
-        result.extend_from_slice(&final_stripe);
+        data.extend_from_slice(&block);
 
-        AfSplitData {
-            stripes: stripes as u32,
-            hash_alg: 8, // SHA256 hash algorithm ID
-            size: result.len() as u32,
-            data: result,
-        }
+        Ok(Self {
+            stripes: stripes.try_into().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Too many AF split stripes")
+            })?,
+            data,
+        })
+    }
+
+    /// Serialize the AF split data and its header.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, io::Error> {
+        let size: u32 = self.data.len().try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "AF split data is too large")
+        })?;
+        let mut output = Vec::with_capacity(12 + self.data.len());
+        output.extend_from_slice(&self.stripes.to_le_bytes());
+        output.extend_from_slice(&8u32.to_le_bytes());
+        output.extend_from_slice(&size.to_le_bytes());
+        output.extend_from_slice(&self.data);
+        Ok(output)
     }
 
     /// Parse AF split data from raw bytes using TPM2 binary format
@@ -127,6 +136,12 @@ impl AfSplitData {
             ));
         }
         let stripes = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        if stripes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid number of stripes",
+            ));
+        }
 
         // Read hash algorithm ID (4 bytes, LITTLE endian - we export as u32, not u16)
         if data.len() < 8 {
@@ -191,20 +206,8 @@ impl AfSplitData {
 
         Ok(AfSplitData {
             stripes,
-            hash_alg,
-            size,
             data: split_data,
         })
-    }
-
-    /// Serialize the AF split data to bytes in the format expected by Ubuntu secboot
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut af_data = Vec::new();
-        af_data.extend_from_slice(&self.stripes.to_le_bytes()); // 4 bytes: stripe count
-        af_data.extend_from_slice(&(self.hash_alg as u32).to_le_bytes()); // 4 bytes: hash algorithm ID
-        af_data.extend_from_slice(&self.size.to_le_bytes()); // 4 bytes: AF data length
-        af_data.extend_from_slice(&self.data);
-        af_data
     }
 
     /// Merge the AF split data to recover original data using proper AFIS algorithm
@@ -287,6 +290,7 @@ impl AfSplitData {
     }
 }
 
+#[cfg(feature = "experimental")]
 impl SealedKeyImportBlob {
     /// Create a SealedKeyImportBlob from raw bytes in TPM2B import format
     pub fn _from_bytes(data: &[u8]) -> Result<Self, io::Error> {
@@ -332,6 +336,7 @@ impl SealedKeyImportBlob {
     }
 }
 
+#[cfg(feature = "experimental")]
 impl TpmKeyData {
     /// Parse TPM key data from bytes
     pub fn from_bytes(mut data: &[u8]) -> Result<Self, io::Error> {
@@ -370,49 +375,12 @@ impl TpmKeyData {
         tracing::info!("Parsing sealed key data version: {}", version);
 
         match version {
-            0 => Self::parse_v0(data, version),
-            1 => Self::parse_v1(data, version),
             2 => Self::parse_v2(data, version),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Unsupported version: {}", version),
             )),
         }
-    }
-
-    fn parse_v0(_data: &[u8], version: u32) -> Result<Self, io::Error> {
-        // Version 0 format - direct marshaling without AF split
-        // This is a simplified parser - full implementation would need detailed parsing
-        tracing::info!("Parsing version 0 sealed key data");
-
-        Ok(TpmKeyData {
-            version,
-            key_private: Tpm2bBuffer::new_zeroed(), // Would parse TPM2B_PRIVATE
-            key_public: Tpm2bPublic::new_zeroed(),  // Would parse TPM2B_PUBLIC
-            auth_mode_hint: 0,
-            import_sym_seed: Tpm2bBuffer::new_zeroed(),
-            static_policy_data: None,
-            dynamic_policy_data: None,
-        })
-    }
-
-    fn parse_v1(data: &[u8], version: u32) -> Result<Self, io::Error> {
-        // Version 1 format - with AF split data
-        tracing::info!("Parsing version 1 sealed key data");
-
-        let af_split_data = AfSplitData::from_bytes(data)?;
-        let _merged_data = af_split_data.merge()?;
-
-        // Parse the merged data - simplified implementation
-        Ok(TpmKeyData {
-            version,
-            key_private: Tpm2bBuffer::new_zeroed(),
-            key_public: Tpm2bPublic::new_zeroed(),
-            auth_mode_hint: 0,
-            import_sym_seed: Tpm2bBuffer::new_zeroed(),
-            static_policy_data: None,
-            dynamic_policy_data: None,
-        })
     }
 
     fn parse_v2(data: &[u8], version: u32) -> Result<Self, io::Error> {
@@ -529,57 +497,87 @@ pub fn tpmt_sensitive_marshal(source: &TpmtSensitive) -> Result<Vec<u8>, io::Err
 
     // Marshal sensitive_type (TPMI_ALG_PUBLIC) - 2 bytes
     let sensitive_type_bytes = source.sensitive_type.as_bytes();
-    tracing::trace!(
-        "Marshaling sensitive_type: {} bytes = {:02X?}",
-        sensitive_type_bytes.len(),
-        sensitive_type_bytes
-    );
     buffer.extend_from_slice(sensitive_type_bytes);
 
     // Marshal auth_value (TPM2B_AUTH) - size + data
     let auth_value_bytes = source.auth_value.serialize();
-    tracing::trace!(
-        "Marshaling auth_value: {} bytes = {:02X?}",
-        auth_value_bytes.len(),
-        if auth_value_bytes.len() <= 8 {
-            &auth_value_bytes[..]
-        } else {
-            &auth_value_bytes[..8]
-        }
-    );
     buffer.extend_from_slice(&auth_value_bytes);
 
     // Marshal seed_value (TPM2B_DIGEST) - size + data
     let seed_value_bytes = source.seed_value.serialize();
-    tracing::trace!(
-        "Marshaling seed_value: {} bytes = {:02X?}",
-        seed_value_bytes.len(),
-        if seed_value_bytes.len() <= 8 {
-            &seed_value_bytes[..]
-        } else {
-            &seed_value_bytes[..8]
-        }
-    );
     buffer.extend_from_slice(&seed_value_bytes);
 
     // Marshal sensitive (TPMU_SENSITIVE_COMPOSITE) for RSA
-    // Based on C++ TPM2B_PRIVATE_KEY_RSA_Marshal, this should be:
-    // 1. uint16_t size (of the buffer data)
-    // 2. byte array data (the actual prime data)
     let sensitive_bytes = source.sensitive.serialize();
-    tracing::trace!(
-        "Marshaling sensitive: {} bytes = {:02X?}",
-        sensitive_bytes.len(),
-        if sensitive_bytes.len() <= 8 {
-            &sensitive_bytes[..]
-        } else {
-            &sensitive_bytes[..8]
-        }
-    );
-    let data_size = sensitive_bytes.len() as u16;
-    buffer.extend_from_slice(&data_size.to_be_bytes());
     buffer.extend_from_slice(&sensitive_bytes);
 
-    tracing::trace!("Total marshaled TPMT_SENSITIVE: {} bytes", buffer.len());
     Ok(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "experimental")]
+    use super::AfSplitData;
+    #[cfg(feature = "experimental")]
+    use super::KEY_DATA_HEADER;
+    #[cfg(feature = "experimental")]
+    use super::TpmKeyData;
+    use super::TpmtSensitive;
+    use super::tpmt_sensitive_marshal;
+    use test_with_tracing::test;
+    use tpm_protocol::tpm20proto::AlgIdEnum;
+    use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
+
+    #[test]
+    #[cfg(feature = "experimental")]
+    fn af_split_rejects_empty_payload() {
+        let error = AfSplitData::create(&[]).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    #[cfg(feature = "experimental")]
+    fn af_split_round_trips() {
+        let payload = b"AF split payload";
+        let encoded = AfSplitData::create(payload).unwrap().to_bytes().unwrap();
+        let decoded = AfSplitData::from_bytes(&encoded).unwrap();
+
+        assert_eq!(decoded.merge().unwrap(), payload);
+    }
+
+    #[test]
+    #[cfg(feature = "experimental")]
+    fn af_split_rejects_zero_stripes() {
+        let error = AfSplitData::from_bytes(&[0; 12]).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    #[cfg(feature = "experimental")]
+    fn tpm_key_data_rejects_unimplemented_versions() {
+        for version in [0u32, 1] {
+            let mut data = KEY_DATA_HEADER.to_be_bytes().to_vec();
+            data.extend_from_slice(&version.to_be_bytes());
+
+            let error = TpmKeyData::from_bytes(&data).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn tpmt_sensitive_has_one_size_prefix_per_buffer() {
+        let sensitive = TpmtSensitive {
+            sensitive_type: AlgIdEnum::RSA.into(),
+            auth_value: Tpm2bBuffer::new(&[]).unwrap(),
+            seed_value: Tpm2bBuffer::new(&[]).unwrap(),
+            sensitive: Tpm2bBuffer::new(&[1, 2, 3]).unwrap(),
+        };
+
+        assert_eq!(
+            tpmt_sensitive_marshal(&sensitive).unwrap(),
+            [0, 1, 0, 0, 0, 0, 0, 3, 1, 2, 3]
+        );
+    }
 }

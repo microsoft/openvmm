@@ -8,9 +8,13 @@ use parking_lot::Mutex;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use tpm_lib::TpmEngine;
+use tpm_protocol::tpm20proto::ResponseCode;
+use tpm_protocol::tpm20proto::SessionTagEnum;
 
 use crate::vtpm_helper::{TpmEngineHelper, create_tpm_engine_helper};
 
@@ -73,7 +77,7 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
 
     // Wrap TPM engine in Arc<Mutex> for thread safety
     let tpm_engine = Arc::new(Mutex::new(vtpm_engine_helper));
-    let nv_accessor = Arc::new(Mutex::new(nv_blob_accessor));
+    let vtpm_blob_path = Arc::new(PathBuf::from(vtpm_blob_path));
 
     // Start both data and control listeners
     let data_addr = format!("{}:{}", host, data_port);
@@ -118,7 +122,8 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
                 tracing::info!("New data connection from: {}", peer_addr);
 
                 let tpm_engine_clone = Arc::clone(&tpm_engine);
-                let nv_accessor_clone = Arc::clone(&nv_accessor);
+                let nv_blob_accessor = Arc::clone(&nv_blob_accessor);
+                let vtpm_blob_path = Arc::clone(&vtpm_blob_path);
                 let client_running = running.clone();
 
                 // Handle each connection in a separate thread
@@ -126,7 +131,8 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
                     if let Err(error) = handle_tpm_data_client(
                         stream,
                         tpm_engine_clone,
-                        nv_accessor_clone,
+                        nv_blob_accessor,
+                        vtpm_blob_path,
                         client_running,
                     ) {
                         tracing::debug!("TPM data client failed: {}", error);
@@ -174,10 +180,7 @@ fn parse_bind_address(bind_addr: &str) -> (String, u16) {
 }
 
 /// Handle the TPM simulator control socket
-fn handle_control_socket(
-    listener: TcpListener,
-    running: Arc<AtomicBool>,
-) {
+fn handle_control_socket(listener: TcpListener, running: Arc<AtomicBool>) {
     tracing::info!("Control socket handler started");
 
     while running.load(Ordering::SeqCst) {
@@ -206,10 +209,7 @@ fn handle_control_socket(
 }
 
 /// Handle a single control client connection
-fn handle_control_client(
-    stream: TcpStream,
-    running: Arc<AtomicBool>,
-) {
+fn handle_control_client(stream: TcpStream, running: Arc<AtomicBool>) {
     let peer_addr = stream
         .peer_addr()
         .unwrap_or_else(|_| "unknown".parse().unwrap());
@@ -410,7 +410,8 @@ enum IfaceCmd {
 fn handle_tpm_data_client(
     stream: TcpStream,
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
-    _nv_accessor: Arc<Mutex<impl std::any::Any + Send>>,
+    nv_blob_accessor: Arc<Mutex<Vec<u8>>>,
+    vtpm_blob_path: Arc<PathBuf>,
     running: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     use std::io::Write;
@@ -477,11 +478,13 @@ fn handle_tpm_data_client(
 
                 let resp = {
                     let mut engine = tpm_engine.lock();
-                    process_tpm_command(&mut engine, &cmd_buf).unwrap_or_else(|e| {
+                    let response = process_tpm_command(&mut engine, &cmd_buf).unwrap_or_else(|e| {
                         tracing::error!("Exec error: {}", e);
-                        // Minimal TPM error skeleton if desired; for now empty.
-                        vec![0u8; 0]
-                    })
+                        tpm_failure_response()
+                    });
+                    let nv_blob = nv_blob_accessor.lock();
+                    fs::write(vtpm_blob_path.as_ref(), nv_blob.as_slice())?;
+                    response
                 };
 
                 write_var_bytes(&mut writer, &resp)?;
@@ -572,6 +575,31 @@ fn write_var_bytes(writer: &mut BufWriter<&TcpStream>, data: &[u8]) -> std::io::
     writer.write_all(data)
 }
 
+fn tpm_failure_response() -> Vec<u8> {
+    let mut response = Vec::with_capacity(10);
+    response.extend_from_slice(&(SessionTagEnum::NoSessions as u16).to_be_bytes());
+    response.extend_from_slice(&10u32.to_be_bytes());
+    response.extend_from_slice(&(ResponseCode::Failure as u32).to_be_bytes());
+    response
+}
+
+fn tpm_response_size(response: &[u8]) -> Result<usize, &'static str> {
+    if response.len() < 10 {
+        return Err("TPM response buffer is too small for a header");
+    }
+
+    let response_size =
+        u32::from_be_bytes([response[2], response[3], response[4], response[5]]) as usize;
+    if response_size < 10 {
+        return Err("TPM returned an invalid response size");
+    }
+    if response_size > response.len() {
+        return Err("TPM response size exceeds the reply buffer");
+    }
+
+    Ok(response_size)
+}
+
 /// Process a TPM command using the TPM engine
 fn process_tpm_command(
     vtpm_engine_helper: &mut TpmEngineHelper,
@@ -595,33 +623,28 @@ fn process_tpm_command(
     tracing::trace!("Command (hex): {:02x?}", &command_buffer[..command.len()]);
 
     // Submit the command to the TPM engine
-    let result = vtpm_engine_helper
-        .tpm_engine
-        .execute_command(&mut command_buffer, &mut vtpm_engine_helper.reply_buffer);
+    let result = TpmEngine::execute_command(
+        &mut vtpm_engine_helper.tpm_engine,
+        &mut command_buffer,
+        &mut vtpm_engine_helper.reply_buffer,
+    );
 
     match result {
-        Ok(response_size) => {
+        Ok(()) => {
+            let response_size = tpm_response_size(&vtpm_engine_helper.reply_buffer)?;
             tracing::debug!(
                 "TPM command executed successfully, response size: {}",
                 response_size
             );
 
-            if response_size == 0 {
-                return Err("TPM returned zero-length response".into());
-            }
-
-            if response_size < 10 {
-                return Err("TPM returned fatal response".into());
-            }
-
             // response code are in bytes 6-9 of the response
-            let response_code =
-                u32::from_be_bytes(vtpm_engine_helper.reply_buffer[6..10].try_into().unwrap());
+            let response_code = u32::from_be_bytes([
+                vtpm_engine_helper.reply_buffer[6],
+                vtpm_engine_helper.reply_buffer[7],
+                vtpm_engine_helper.reply_buffer[8],
+                vtpm_engine_helper.reply_buffer[9],
+            ]);
             tracing::debug!("TPM response code: 0x{:08x}", response_code);
-
-            if response_size > 4096 {
-                return Err(format!("TPM response too large: {}", response_size).into());
-            }
 
             // Copy the response from the helper's reply buffer
             Ok(vtpm_engine_helper.reply_buffer[..response_size].to_vec())
@@ -630,5 +653,30 @@ fn process_tpm_command(
             tracing::error!("TPM engine command failed: {:?}", e);
             Err(format!("TPM command processing failed: {:?}", e).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn failure_response_has_valid_tpm_header() {
+        let response = tpm_failure_response();
+        assert_eq!(response, [0x80, 0x01, 0, 0, 0, 10, 0, 0, 1, 1]);
+        assert_eq!(tpm_response_size(&response), Ok(10));
+    }
+
+    #[test]
+    fn response_size_rejects_invalid_header_lengths() {
+        assert!(tpm_response_size(&[0; 9]).is_err());
+
+        let mut response = [0; 10];
+        response[2..6].copy_from_slice(&9u32.to_be_bytes());
+        assert!(tpm_response_size(&response).is_err());
+
+        response[2..6].copy_from_slice(&11u32.to_be_bytes());
+        assert!(tpm_response_size(&response).is_err());
     }
 }

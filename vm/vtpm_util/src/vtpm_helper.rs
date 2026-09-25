@@ -44,7 +44,7 @@ impl TpmEngine for CvmTpmEngine {
 }
 
 pub type TpmEngineHelper = tpm_lib::TpmEngineHelper<CvmTpmEngine>;
-pub(crate) struct TestPlatformCallbacks {
+struct TestPlatformCallbacks {
     blob: Vec<u8>,
     time: Instant,
     // Add shared access to the blob
@@ -52,7 +52,7 @@ pub(crate) struct TestPlatformCallbacks {
 }
 
 impl TestPlatformCallbacks {
-    pub(crate) fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+    fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
         let shared_blob = Arc::new(Mutex::new(Vec::new()));
         let callbacks = TestPlatformCallbacks {
             blob: vec![],

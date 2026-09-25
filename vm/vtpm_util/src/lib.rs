@@ -1,17 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The module includes the CvmUtil, which is a tool to create and manage vTPM blobs.
+//! The module includes `vtpm_util`, a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
-use tpm_lib as tpm_helper;
-use tpm_protocol::TPM_RSA_SRK_HANDLE;
-use tpm_protocol::tpm20proto::protocol::{
-    Tpm2bBuffer, Tpm2bPublic, TpmsRsaParams, TpmtPublic, TpmtRsaScheme, TpmtSymDefObject,
-};
-use tpm_protocol::tpm20proto::{AlgId, AlgIdEnum, TPM20_RH_OWNER, TpmaObjectBits};
 mod marshal;
 mod vtpm_helper;
+#[cfg(feature = "experimental")]
 mod vtpm_sock_server;
+
+use crate::vtpm_helper::TpmEngineHelper;
+use crate::vtpm_helper::create_tpm_engine_helper;
 use base64::Engine;
 use marshal::TpmtSensitive;
 use openssl::ec::EcGroup;
@@ -20,351 +18,64 @@ use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
 use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
+#[cfg(feature = "experimental")]
 use std::convert::TryInto;
+use std::fs;
+use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
-use std::{fs, fs::File, vec};
+use std::vec;
+use tpm_lib as tpm_helper;
+use tpm_protocol::TPM_RSA_SRK_HANDLE;
+use tpm_protocol::tpm20proto::AlgId;
+use tpm_protocol::tpm20proto::AlgIdEnum;
+use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
+use tpm_protocol::tpm20proto::TpmaObjectBits;
+use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
+use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
+use tpm_protocol::tpm20proto::protocol::TpmsRsaParams;
+use tpm_protocol::tpm20proto::protocol::TpmtPublic;
+use tpm_protocol::tpm20proto::protocol::TpmtRsaScheme;
+use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
 use zerocopy::FromZeros;
 
-use crate::vtpm_helper::{TpmEngineHelper, create_tpm_engine_helper};
-use clap::Parser;
+/// Creates a vTPM blob and writes it to `path`.
+pub fn create_vtpm_blob_file(path: &str) {
+    tracing::info!("Creating vTPM blob and saving to file: {}", path);
+    let (mut tpm_engine_helper, nv_blob_accessor) = create_tpm_engine_helper();
+    tpm_engine_helper
+        .initialize_tpm_engine()
+        .expect("failed to initialize TPM engine");
 
-#[derive(Parser, Debug)]
-#[clap(name = "cvmutil", about = "Tool to interact with vTPM blobs.")]
-struct CmdArgs {
-    /// Enable verbose logging (trace level)
-    #[arg(short = 'v', long = "verbose")]
-    verbose: bool,
+    let state = create_vtpm_blob(tpm_engine_helper, nv_blob_accessor);
+    tracing::info!("vTPM blob size: {}", state.len());
 
-    /// Creates a vTpm blob and stores to file. Example: ./cvmutil --createvtpmblob vTpm.blob
-    #[arg(
-        short = 'c',
-        long = "createvtpmblob",
-        value_name = "path-to-blob-file",
-        number_of_values = 1
-    )]
-    createvtpmblob: Option<String>,
-
-    /// Write the SRK public key in TPM2B format. Example: ./cvmutil --writeSrk vTpm.blob srk.pub
-    #[arg(
-        short = 'w',
-        long = "writeSrk",
-        value_names = &["path-to-vtpm-blob-file", "path-to-srk-out-file"],
-        long_help = "Write the SRK public key in TPM2B format.\n./cvmutil --writeSrk vTpm.blob srk.pub"
-    )]
-    write_srk: Option<Vec<String>>,
-
-    /// Write the SRK template to file in Ubuntu-compatible format. Example: ./cvmutil --writeSrkTemplate tpm2-srk.tmpl
-    #[arg(
-        long = "writeSrkTemplate",
-        value_name = "path-to-template-file",
-        long_help = "Write the SRK template to file in Ubuntu-compatible format.\n./cvmutil --writeSrkTemplate tpm2-srk.tmpl"
-    )]
-    write_srk_template: Option<String>,
-
-    /// Recreate SRK from vTPM blob to verify deterministic generation. Example: ./cvmutil --recreate-srk vTpm.blob
-    #[arg(
-        short = 'r',
-        long = "recreate-srk",
-        value_name = "path-to-vtpm-blob-file",
-        long_help = "Recreate SRK from vTPM blob to verify deterministic generation.\nThis will undefine the existing SRK and recreate it to verify the seeds produce the same key.\n./cvmutil --recreate-srk vTpm.blob"
-    )]
-    recreate_srk: Option<String>,
-
-    /// Print the TPM key name of the SRK public key file. Example: ./cvmutil --printKeyName srk.pub
-    #[arg(
-        short = 'p',
-        long = "printKeyName",
-        value_name = "path-to-srkPub",
-        long_help = "Print the TPM key name \n./cvmutil --printKeyName srk.pub"
-    )]
-    print_key_name: Option<String>,
-
-    /// Seal data to SRK public key. Example: ./cvmutil --seal srk.pub input.txt output.bin
-    #[arg(
-        long = "seal",
-        value_names = &["path-to-srk-pub", "input-file", "output-file"],
-        number_of_values = 3,
-        long_help = "Seal data to SRK public key for testing.\n./cvmutil --seal srk.pub input.txt output.bin"
-    )]
-    seal: Option<Vec<String>>,
-
-    /// Unseal data from sealed blob using vTPM. Example: ./cvmutil --unseal vtpm.blob sealed.bin output.txt
-    #[arg(
-        long = "unseal",
-        value_names = &["path-to-vtpm-blob", "sealed-file", "output-file"],
-        number_of_values = 3,
-        long_help = "Unseal data from sealed blob using vTPM for testing.\n./cvmutil --unseal vtpm.blob sealed.bin output.txt"
-    )]
-    unseal: Option<Vec<String>>,
-
-    /// Create random RSA/ECC key in Tpm2 import blob format:TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED
-    /// Example: ./cvmutil --createRandomKeyInTpm2ImportBlobFormat rsa rsa_pub.der rsa_priv_marshalled.tpm2b
-    #[arg(
-        short = 's',
-        long = "createRandomKeyInTpm2ImportBlobFormat",
-        value_names = &["algorithm", "publicKey", "output-file"],
-        long_help = "Create random RSA/ECC key in Tpm2 import blob format:TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED \n./cvmutil --createRandomKeyInTpm2ImportBlobFormat rsa rsa_pub.der rsa_priv_marshalled.tpm2b"
-    )]
-    create_random_key_in_tpm2_import_blob_format: Option<Vec<String>>,
-
-    /// Print info about public key in DER format. Example: ./cvmutil --printDER rsa_pub.der
-    #[arg(
-        short = 'd',
-        long = "printDER",
-        value_name = "path-to-pubKey-der",
-        long_help = "Print info about DER key \n./cvmutil --printDER rsa_pub.der"
-    )]
-    print_pub_key_der: Option<String>,
-
-    /// Print info about private key in TPM2B format: TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED
-    #[arg(
-        short = 't',
-        long = "printTPM2B",
-        value_name = "path-to-privKey-tpm2b",
-        long_help = "Print info about TPM2B import file: TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED. \n./cvmutil --printTPM2B marshalled_import_blob.tpm2b"
-    )]
-    print_priv_key_tpm2b: Option<String>,
-
-    /// Test importing public key in DER format and private key in TPM2B format. Make sure they form a keypair.
-    #[arg(
-        short = 'i',
-        long = "testTPM2BImportKeys",
-        value_names = &["path-to-pubKey-der", "path-to-privKey-tpm2b"],
-        long_help = "Import the public in DER and private in TPM2B format. Make sure they form a keypair. \n./cvmutil --testTPM2BImportKeys rsa_pub.der marshalled_import_blob.tpm2b"
-    )]
-    test_tpm2b_import_keys: Option<Vec<String>>,
-
-    /// Import a sealed key blob that matches the tpmKeyData structure into an existing vTPM. Example: ./cvmutil --tpmimport /boot/efi/device/fde/cloudimg-rootfs.sealed-key
-    #[arg(
-        long = "tpmimport",
-        value_names = &["path-to-vtpm-blob-file", "path-to-sealed-key-file"],
-        long_help = "Import a sealed key blob that matches the tpmKeyData structure into an existing vTPM blob.\nThis loads the vTPM blob, imports the sealed key object into the TPM's storage hierarchy, and saves the updated vTPM state.\n./cvmutil --tpmimport vtpm.blob /boot/efi/device/fde/cloudimg-rootfs.sealed-key"
-    )]
-    tpm_import: Option<Vec<String>>,
-
-    /// Export a TPM key as a sealed key blob compatible with Canonical's format
-    #[arg(
-        long = "tpmkeyexport",
-        value_names = &["path-to-vtpm-blob-file", "key-handle-or-persistent-handle", "path-to-sealed-key-output-file"],
-        long_help = "Export a TPM key from vTPM blob as a sealed key file compatible with Canonical's cloudimg-rootfs.sealed-key format.\nThis reads a key from the vTPM and exports it in the format expected by Ubuntu's sealed key system.\n./cvmutil --tpmkeyexport vtpm.blob 0x81000001 cloudimg-rootfs.sealed-key"
-    )]
-    tpm_key_export: Option<Vec<String>>,
-
-    /// Start a TPM socket server using a vTPM blob as backing state
-    #[arg(
-        long = "socket-server",
-        value_names = &["path-to-vtpm-blob-file", "host:port"],
-        number_of_values = 2,
-        long_help = "Start a TPM socket server using vTPM blob as backing state.\nProvides a socket-based TPM interface compatible with tpm2-tools and go-tpm2.\n./cvmutil --socket-server vtpm.blob localhost:2321"
-    )]
-    socket_server: Option<Vec<String>>,
+    fs::write(path, state).expect("failed to write vTPM state to blob file");
+    tracing::info!("vTPM blob created and saved to file: {}", path);
 }
 
-/// Main entry point for cvmutil.
-fn main() {
-    // Parse the command line arguments.
-    let args = CmdArgs::parse();
+/// Writes the SRK public key from a vTPM blob in TPM2B format.
+pub fn write_srk(vtpm_blob_path: &str, srk_out_path: &str) {
+    let vtpm_blob_content = fs::read(vtpm_blob_path).expect("failed to read vTPM blob file");
+    let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
 
-    // Initialize tracing subscriber for logging.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .log_internal_errors(true)
-        .with_max_level(if args.verbose {
-            tracing::Level::TRACE
-        } else {
-            tracing::Level::INFO
-        })
-        .init();
+    vtpm_engine_helper
+        .tpm_engine
+        .reset(Some(&vtpm_blob_content))
+        .expect("failed to restore TPM engine from blob");
+    vtpm_engine_helper
+        .initialize_tpm_engine()
+        .expect("failed to initialize TPM engine");
 
-    if let Some(path) = args.createvtpmblob {
-        // Create a vTPM instance.
-        tracing::info!("Creating vTPM blob and saving to file: {}", path);
-        let (mut tpm_engine_helper, nv_blob_accessor) = create_tpm_engine_helper();
-        let result = tpm_engine_helper.initialize_tpm_engine();
-        assert!(result.is_ok());
-
-        // Create vTPM in memory and save state to a file.
-        let state = create_vtpm_blob(tpm_engine_helper, nv_blob_accessor);
-        tracing::info!("vTPM blob size: {}", state.len());
-
-        // if the vtpm file exists, delet it and create a new one
-        if std::path::Path::new(&path).exists() {
-            tracing::info!(
-                "vTPM file already exists. Deleting the existing file and creating a new one."
-            );
-            fs::remove_file(&path).expect("failed to delete existing vtpm file");
-        }
-        fs::write(&path, state.as_slice()).expect("Failed to write vtpm state to blob file");
-        tracing::info!("vTPM blob created and saved to file: {}", path);
-    } else if let Some(paths) = args.write_srk {
-        if paths.len() == 2 {
-            let vtpm_blob_path = &paths[0];
-            // Read the vtpm file content.
-            let vtpm_blob_content =
-                fs::read(vtpm_blob_path).expect("failed to read vtpm blob file");
-            // Restore the TPM engine from the vTPM blob.
-            let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
-
-            let result = vtpm_engine_helper
-                .tpm_engine
-                .reset(Some(&vtpm_blob_content));
-            assert!(result.is_ok());
-
-            let result = vtpm_engine_helper.initialize_tpm_engine();
-            assert!(result.is_ok());
-            tracing::info!("TPM engine initialized from blob file.");
-
-            let srk_out_path = &paths[1];
-            tracing::info!(
-                "WriteSrk: blob file: {}, Srk out file: {}",
-                vtpm_blob_path,
-                srk_out_path
-            );
-            export_vtpm_srk_pub(vtpm_engine_helper, srk_out_path);
-        } else {
-            tracing::error!("Invalid number of arguments for --writeSrk. Expected 2 values.");
-        }
-    } else if let Some(vtpm_blob_path) = args.recreate_srk {
-        tracing::info!("Recreating SRK from vTPM blob: {}", vtpm_blob_path);
-        recreate_srk_test(&vtpm_blob_path);
-    } else if let Some(template_path) = args.write_srk_template {
-        tracing::info!("Writing SRK template to file: {}", template_path);
-        write_srk_template(&template_path);
-    } else if let Some(seal_args) = args.seal {
-        if seal_args.len() == 3 {
-            let srk_pub_path = &seal_args[0];
-            let input_file = &seal_args[1];
-            let output_file = &seal_args[2];
-            tracing::info!(
-                "Sealing data: {} -> {} using SRK: {}",
-                input_file,
-                output_file,
-                srk_pub_path
-            );
-            seal_data_to_srk(srk_pub_path, input_file, output_file);
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --seal. Expected 3 values: srk-pub-file input-file output-file"
-            );
-        }
-    } else if let Some(unseal_args) = args.unseal {
-        if unseal_args.len() == 3 {
-            let vtpm_blob_path = &unseal_args[0];
-            let sealed_file = &unseal_args[1];
-            let output_file = &unseal_args[2];
-            tracing::info!(
-                "Unsealing data: {} -> {} using vTPM: {}",
-                sealed_file,
-                output_file,
-                vtpm_blob_path
-            );
-            unseal_data_from_vtpm(vtpm_blob_path, sealed_file, output_file);
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --unseal. Expected 3 values: vtmp-blob-file sealed-file output-file"
-            );
-        }
-    } else if let Some(args) = args.create_random_key_in_tpm2_import_blob_format {
-        if args.len() == 3 {
-            let algorithm = &args[0];
-            let public_key_file = &args[1];
-            let private_key_tpm2b_file = &args[2];
-            create_random_key_in_tpm2_import_blob_format(
-                algorithm,
-                public_key_file,
-                private_key_tpm2b_file,
-            );
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --createRandomKeyInTpm2ImportBlobFormat. Expected 3 values."
-            );
-        }
-    } else if let Some(srkpub_path) = args.print_key_name {
-        print_vtpm_srk_pub_key_name(srkpub_path);
-    } else if let Some(pub_der_path) = args.print_pub_key_der {
-        print_pub_key_der(pub_der_path);
-    } else if let Some(priv_tpm2b_path) = args.print_priv_key_tpm2b {
-        print_tpm2bimport_content(priv_tpm2b_path);
-    } else if let Some(key_files) = args.test_tpm2b_import_keys {
-        if key_files.len() == 2 {
-            let public_key_file = &key_files[0];
-            let private_key_file = &key_files[1];
-            test_import_tpm2b_keys(public_key_file, private_key_file);
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --testTPM2BImportKeys. Expected 2 values."
-            );
-        }
-    } else if let Some(import_args) = args.tpm_import {
-        if import_args.len() == 2 {
-            let vtpm_blob_path = &import_args[0];
-            let sealed_key_path = &import_args[1];
-            tracing::info!(
-                "Importing sealed key {} into vTPM blob {}",
-                sealed_key_path,
-                vtpm_blob_path
-            );
-            import_sealed_key_blob_into_vtpm(vtpm_blob_path, sealed_key_path);
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --tpmimport. Expected 2 values: vtpm-blob-file sealed-key-file"
-            );
-        }
-    } else if let Some(export_args) = args.tpm_key_export {
-        if export_args.len() == 3 {
-            let vtpm_blob_path = &export_args[0];
-            let sealed_key_output_path = &export_args[1];
-
-            tracing::info!(
-                "Creating new key for sealed key export to: {}",
-                sealed_key_output_path
-            );
-            tracing::info!("Loading vTPM blob from: {}", vtpm_blob_path);
-            tracing::info!("Output sealed key file: {}", sealed_key_output_path);
-
-            // Read the vtpm file content.
-            let vtpm_blob_content =
-                fs::read(vtpm_blob_path).expect("failed to read vtpm blob file");
-            // Restore the TPM engine from the vTPM blob.
-            let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
-
-            let result = vtpm_engine_helper
-                .tpm_engine
-                .reset(Some(&vtpm_blob_content));
-            assert!(result.is_ok());
-
-            let result = vtpm_engine_helper.initialize_tpm_engine();
-            assert!(result.is_ok());
-            tracing::info!("TPM engine initialized from blob file.");
-
-            // Instead of exporting existing key, create new one
-            export_new_key_as_sealed_blob(&mut vtpm_engine_helper, sealed_key_output_path);
-        } else {
-            tracing::error!(
-                "Invalid number of arguments for --tpmkeyexport. Expected 3 values: vtpm-blob-file key-handle sealed-key-output-file"
-            );
-        }
-    } else if let Some(socket_args) = args.socket_server {
-        if socket_args.len() == 2 {
-            let vtpm_blob_path = &socket_args[0];
-            let bind_addr = &socket_args[1];
-            tracing::info!(
-                "Starting TPM socket server: {} -> {}",
-                vtpm_blob_path,
-                bind_addr
-            );
-            vtpm_sock_server::start_tpm_socket_server(vtpm_blob_path, bind_addr);
-        } else {
-            tracing::error!(
-                "Invalid arguments for --socket-server. Expected: vtpm-blob-file host:port"
-            );
-        }
-    } else {
-        tracing::error!("No command specified. Please re-run with --help for usage information.");
-    }
+    tracing::info!(
+        "write-srk: blob file: {}, SRK out file: {}",
+        vtpm_blob_path,
+        srk_out_path
+    );
+    export_vtpm_srk_pub(vtpm_engine_helper, srk_out_path);
 }
 
 /// Create vtpm and return its state as a byte vector.
@@ -514,7 +225,8 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
 /// 2. Undefine (remove) the persistent SRK
 /// 3. Recreate the SRK using the same seeds
 /// 4. Compare the old and new SRK to verify they match
-fn recreate_srk_test(vtpm_blob_path: &str) {
+#[cfg(feature = "experimental")]
+pub fn recreate_srk(vtpm_blob_path: &str) {
     tracing::info!("Starting SRK recreation test...");
 
     // Read the vTPM blob file
@@ -574,9 +286,9 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
     tracing::info!("Step 2: Undefining persistent SRK...");
 
     let result = tpm_engine_helper.evict_control(
-        TPM20_RH_OWNER, // auth_handle
-        TPM_RSA_SRK_HANDLE,              // object_handle (persistent handle to remove)
-        TPM_RSA_SRK_HANDLE,              // persistent_handle (same as object_handle for removal)
+        TPM20_RH_OWNER,     // auth_handle
+        TPM_RSA_SRK_HANDLE, // object_handle (persistent handle to remove)
+        TPM_RSA_SRK_HANDLE, // persistent_handle (same as object_handle for removal)
     );
 
     match result {
@@ -698,11 +410,8 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
 
     // Step 5: Make the new SRK persistent again (restore the blob to its original state)
     tracing::info!("Step 5: Making new SRK persistent...");
-    let result = tpm_engine_helper.evict_control(
-        TPM20_RH_OWNER,
-        new_object_handle,
-        TPM_RSA_SRK_HANDLE,
-    );
+    let result =
+        tpm_engine_helper.evict_control(TPM20_RH_OWNER, new_object_handle, TPM_RSA_SRK_HANDLE);
 
     match result {
         Ok(()) => {
@@ -756,7 +465,9 @@ fn recreate_srk_test(vtpm_blob_path: &str) {
 
 /// Write the SRK template to file in Ubuntu-compatible format.
 /// This creates the same template format that Ubuntu's canonical-encrypt-cloud-image expects.
-fn write_srk_template(template_path: &str) {
+/// Writes the SRK template in Ubuntu-compatible format.
+#[cfg(feature = "experimental")]
+pub fn write_srk_template(template_path: &str) {
     tracing::info!("Generating SRK template for Ubuntu compatibility...");
 
     // Get the SRK template using the same function used for TPM initialization
@@ -815,330 +526,9 @@ fn write_srk_template(template_path: &str) {
     tracing::info!("SRK template generation completed successfully.");
 }
 
-/// Seal data to SRK using TPM-standard format compatible with Ubuntu secboot.
-fn seal_data_to_srk(_srk_pub_path: &str, input_file: &str, output_file: &str) {
-    use marshal::{AfSplitData, CURRENT_METADATA_VERSION, KEY_DATA_HEADER};
-    use std::fs;
-
-    tracing::info!("Creating TPM-standard sealed key compatible with Ubuntu secboot");
-    tracing::info!("Reading input data from: {}", input_file);
-    let input_data = fs::read(input_file).expect("failed to read input file");
-    tracing::info!("Input data size: {} bytes", input_data.len());
-
-    // Create minimal TPM structures for a sealed data object
-    // We'll create a simple keyedobject that contains the sealed data
-
-    // 1. Create a minimal TPM2B_PRIVATE containing our data
-    let key_private = Tpm2bBuffer::new(&input_data).expect("input data too large for TPM2B buffer");
-
-    // 2. Create a minimal TPM2B_PUBLIC for the sealed object
-    // Use the SRK public key template but mark it as a data object
-    let srk_template = tpm_helper::srk_pub_template().expect("failed to create SRK template");
-    let mut sealed_template = srk_template;
-
-    // Modify to be a sealed data object instead of a key
-    sealed_template.object_attributes = TpmaObjectBits::new()
-        .with_user_with_auth(true)
-        .with_no_da(true)
-        .with_decrypt(true)
-        .into();
-
-    // Set unique field to indicate this contains sealed data
-    sealed_template.unique.buffer[0] = 0xDA; // "DATA" marker
-    sealed_template.unique.buffer[1] = 0x7A;
-    sealed_template.unique.buffer[2] = input_data.len() as u8;
-    sealed_template.unique.buffer[3] = (input_data.len() >> 8) as u8;
-
-    let key_public = Tpm2bPublic::new(sealed_template);
-
-    // 3. Create empty TPM2B_ENCRYPTED_SECRET
-    let import_sym_seed = Tpm2bBuffer::new_zeroed();
-
-    // 4. Set auth_mode_hint
-    let auth_mode_hint: u8 = 0;
-
-    tracing::info!("Created TPM structures:");
-    tracing::info!("  TPM2B_PRIVATE size: {} bytes", key_private.payload_size());
-    tracing::info!("  TPM2B_PUBLIC size: {} bytes", key_public.payload_size());
-    tracing::info!(
-        "  TPM2B_ENCRYPTED_SECRET size: {} bytes",
-        import_sym_seed.payload_size()
-    );
-
-    // 5. Marshal in the order expected by secboot: PRIVATE || PUBLIC || auth_mode_hint || ENCRYPTED_SECRET
-    let mut tpm_data = Vec::new();
-    tpm_data.extend_from_slice(&key_private.serialize());
-    tpm_data.extend_from_slice(&key_public.serialize());
-    tpm_data.push(auth_mode_hint);
-    tpm_data.extend_from_slice(&import_sym_seed.serialize());
-
-    tracing::info!("Marshaled TPM data: {} bytes", tpm_data.len());
-
-    // 6. Create AF split data using marshal.rs implementation
-    let af_split_data = AfSplitData::create(&tpm_data);
-
-    // 7. Create the final sealed key file
-    let mut sealed_blob = Vec::new();
-
-    // Header: "USK$" magic (big endian)
-    sealed_blob.extend_from_slice(&KEY_DATA_HEADER.to_be_bytes());
-
-    // Version: 2 (big endian)
-    sealed_blob.extend_from_slice(&CURRENT_METADATA_VERSION.to_be_bytes());
-
-    // AF Split data (using marshal.rs serialization)
-    sealed_blob.extend_from_slice(&af_split_data.to_bytes());
-
-    tracing::info!(
-        "Writing Ubuntu secboot compatible sealed key to: {} ({} bytes)",
-        output_file,
-        sealed_blob.len()
-    );
-    fs::write(output_file, sealed_blob).expect("failed to write sealed data file");
-
-    tracing::info!("TPM-standard sealing completed successfully");
-    tracing::info!("Test with: ./test-key --debug {}", output_file);
-}
-
-/// Unseal data from TPM-standard sealed blob using vTPM.
-fn unseal_data_from_vtpm(vtpm_blob_path: &str, sealed_file: &str, output_file: &str) {
-    use marshal::{CURRENT_METADATA_VERSION, KEY_DATA_HEADER};
-    use std::fs;
-
-    tracing::info!("Unsealing TPM-standard sealed key compatible with Ubuntu secboot");
-    tracing::info!("Reading sealed data from: {}", sealed_file);
-    let sealed_blob = fs::read(sealed_file).expect("failed to read sealed file");
-
-    // Parse the Ubuntu secboot format
-    if sealed_blob.len() < 8 {
-        // Magic(4) + Version(4) minimum
-        panic!("Sealed file too small for header");
-    }
-
-    // Parse header
-    let magic = u32::from_be_bytes([
-        sealed_blob[0],
-        sealed_blob[1],
-        sealed_blob[2],
-        sealed_blob[3],
-    ]);
-    if magic != KEY_DATA_HEADER {
-        panic!(
-            "Invalid sealed file format: expected USK$ magic, got 0x{:08x}",
-            magic
-        );
-    }
-
-    let version = u32::from_be_bytes([
-        sealed_blob[4],
-        sealed_blob[5],
-        sealed_blob[6],
-        sealed_blob[7],
-    ]);
-    if version != CURRENT_METADATA_VERSION {
-        panic!(
-            "Unsupported sealed file version: {} (expected version {})",
-            version, CURRENT_METADATA_VERSION
-        );
-    }
-
-    tracing::info!("Sealed key format validated: USK$ version {}", version);
-
-    // Use the marshal::AfSplitData::from_bytes() method to parse the AF split data
-    // The AF split data starts at offset 8 (after the header)
-    let af_split_data =
-        marshal::AfSplitData::from_bytes(&sealed_blob[8..]).expect("failed to parse AF split data");
-
-    tracing::info!(
-        "AF Split data parsed: {} stripes, hash_alg=0x{:04x}, size={} bytes",
-        af_split_data.stripes,
-        af_split_data.hash_alg,
-        af_split_data.size
-    );
-
-    // Merge the AF split data to recover the original TPM structures
-    tracing::info!("Merging AF split data to recover TPM structures...");
-    let merged_data = af_split_data
-        .merge()
-        .expect("failed to merge AF split data");
-    tracing::info!(
-        "AF split merge successful: recovered {} bytes",
-        merged_data.len()
-    );
-
-    // Debug: print first few bytes of merged data
-    if merged_data.len() >= 16 {
-        tracing::debug!("First 16 bytes of merged data: {:02x?}", &merged_data[..16]);
-    } else {
-        tracing::debug!(
-            "First {} bytes of merged data: {:02x?}",
-            merged_data.len(),
-            &merged_data
-        );
-    }
-
-    // Parse the merged TPM data: TPM2B_PRIVATE || TPM2B_PUBLIC || auth_mode_hint || TPM2B_ENCRYPTED_SECRET
-    let mut offset = 0;
-
-    // Parse TPM2B_PRIVATE
-    if merged_data.len() < offset + 2 {
-        panic!("Merged data too short for TPM2B_PRIVATE header");
-    }
-
-    // Check the size field of TPM2B_PRIVATE
-    let private_size = u16::from_be_bytes([merged_data[offset], merged_data[offset + 1]]);
-    tracing::debug!("TPM2B_PRIVATE size field: {} bytes", private_size);
-
-    if merged_data.len() < offset + 2 + private_size as usize {
-        panic!(
-            "Merged data too short for TPM2B_PRIVATE: need {} bytes, have {} bytes",
-            offset + 2 + private_size as usize,
-            merged_data.len()
-        );
-    }
-
-    let key_private = Tpm2bBuffer::deserialize(&merged_data[offset..]);
-    let key_private = match key_private {
-        Some(buffer) => buffer,
-        None => {
-            tracing::error!("Failed to deserialize TPM2B_PRIVATE");
-            tracing::error!(
-                "Data at offset {}: {:02x?}",
-                offset,
-                &merged_data[offset..offset.min(merged_data.len()).min(offset + 20)]
-            );
-            panic!("failed to deserialize TPM2B_PRIVATE");
-        }
-    };
-
-    offset += key_private.payload_size();
-    tracing::info!("Parsed TPM2B_PRIVATE: {} bytes", key_private.payload_size());
-
-    // Parse TPM2B_PUBLIC
-    if merged_data.len() < offset + 2 {
-        panic!("Merged data too short for TPM2B_PUBLIC header");
-    }
-
-    let public_size = u16::from_be_bytes([merged_data[offset], merged_data[offset + 1]]);
-    tracing::debug!("TPM2B_PUBLIC size field: {} bytes", public_size);
-
-    if merged_data.len() < offset + 2 + public_size as usize {
-        panic!(
-            "Merged data too short for TPM2B_PUBLIC: need {} bytes, have {} bytes",
-            offset + 2 + public_size as usize,
-            merged_data.len()
-        );
-    }
-
-    let key_public = Tpm2bPublic::deserialize(&merged_data[offset..]);
-    let key_public = match key_public {
-        Some(public) => public,
-        None => {
-            tracing::error!("Failed to deserialize TPM2B_PUBLIC");
-            tracing::error!(
-                "Data at offset {}: {:02x?}",
-                offset,
-                &merged_data[offset..offset.min(merged_data.len()).min(offset + 20)]
-            );
-            panic!("failed to deserialize TPM2B_PUBLIC");
-        }
-    };
-
-    offset += key_public.payload_size();
-    tracing::info!("Parsed TPM2B_PUBLIC: {} bytes", key_public.payload_size());
-
-    // Parse auth_mode_hint
-    if merged_data.len() < offset + 1 {
-        panic!("Merged data too short for auth_mode_hint");
-    }
-
-    let auth_mode_hint = merged_data[offset];
-    offset += 1;
-
-    tracing::info!("Parsed auth_mode_hint: {}", auth_mode_hint);
-
-    // Parse TPM2B_ENCRYPTED_SECRET
-    if merged_data.len() < offset + 2 {
-        panic!("Merged data too short for TPM2B_ENCRYPTED_SECRET");
-    }
-
-    let import_sym_seed = Tpm2bBuffer::deserialize(&merged_data[offset..]);
-    let import_sym_seed = match import_sym_seed {
-        Some(buffer) => buffer,
-        None => {
-            tracing::error!("Failed to deserialize TPM2B_ENCRYPTED_SECRET");
-            tracing::error!(
-                "Data at offset {}: {:02x?}",
-                offset,
-                &merged_data[offset..offset.min(merged_data.len()).min(offset + 20)]
-            );
-            panic!("failed to deserialize TPM2B_ENCRYPTED_SECRET");
-        }
-    };
-
-    tracing::info!(
-        "Parsed TPM2B_ENCRYPTED_SECRET: {} bytes",
-        import_sym_seed.payload_size()
-    );
-    tracing::info!("Successfully parsed all TPM structures from sealed key");
-
-    // Load vTPM blob and initialize TPM engine
-    tracing::info!("Loading vTPM blob from: {}", vtpm_blob_path);
-    let vtpm_blob_content = fs::read(vtpm_blob_path).expect("failed to read vTPM blob file");
-
-    let (mut tpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
-    let result = tpm_engine_helper.tpm_engine.reset(Some(&vtpm_blob_content));
-    if let Err(e) = result {
-        panic!("Failed to restore vTPM from blob: {:?}", e);
-    }
-
-    // Initialize the TPM engine (required after reset)
-    tracing::info!("Initializing TPM engine...");
-    let result = tpm_engine_helper.initialize_tpm_engine();
-    if let Err(e) = result {
-        panic!("Failed to initialize TPM engine: {:?}", e);
-    }
-
-    // The TPM2B_PRIVATE contains our original sealed data
-    // In our implementation, we stored the data directly in the TPM2B_PRIVATE buffer
-    let sealed_data_size = key_private.size.get() as usize;
-    if sealed_data_size == 0 {
-        panic!("No data found in sealed key");
-    }
-
-    let sealed_data = &key_private.buffer[0..sealed_data_size];
-
-    // Check if this looks like our sealed object by examining the unique field in the public key
-    let unique_marker = &key_public.public_area.unique.buffer[0..4];
-    if unique_marker[0] == 0xDA && unique_marker[1] == 0x7A {
-        // This is our sealed data format
-        let expected_data_size = (unique_marker[2] as usize) | ((unique_marker[3] as usize) << 8);
-        tracing::info!(
-            "Detected sealed data object, expected size: {} bytes",
-            expected_data_size
-        );
-
-        if sealed_data_size != expected_data_size {
-            tracing::warn!(
-                "Data size mismatch: stored {} bytes, expected {} bytes",
-                sealed_data_size,
-                expected_data_size
-            );
-        }
-    }
-
-    tracing::info!("Extracted original data: {} bytes", sealed_data.len());
-
-    // Write the unsealed data
-    tracing::info!("Writing unsealed data to: {}", output_file);
-    fs::write(output_file, sealed_data).expect("failed to write unsealed data file");
-
-    tracing::info!("TPM-standard unsealing completed successfully");
-    tracing::info!("Original data has been recovered from the sealed key");
-}
-
 /// Print the SRK public key name.
-fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
+/// Prints the TPM key name of an SRK public key file.
+pub fn print_key_name(srkpub_path: &str) {
     let mut srk_pub_file = fs::OpenOptions::new()
         .write(false)
         .read(true)
@@ -1192,10 +582,11 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
 }
 
 /// Create random RSA or ECC key. Export the public public key to a file and private key in TPM2B format.
-fn create_random_key_in_tpm2_import_blob_format(
+/// Creates a random key in TPM2 import blob format.
+pub fn create_random_key_in_tpm2_import_blob_format(
     algorithm: &str,
-    public_key_file: &String,
-    private_key_tpm2b_file: &String,
+    public_key_file: &str,
+    private_key_tpm2b_file: &str,
 ) {
     match algorithm.to_lowercase().as_str() {
         "rsa" => {
@@ -1339,7 +730,7 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
         2 + tpmt_sensitive.seed_value.size.get()
     );
     tracing::trace!(
-        "    - sensitive (RSA private exp): {} bytes (size + data)",
+        "    - sensitive (RSA private prime): {} bytes (size + data)",
         2 + tpmt_sensitive.sensitive.size.get()
     );
 
@@ -1368,7 +759,9 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
 }
 
 /// Print info about public key in DER format.
-fn print_pub_key_der(pub_key_der_path: String) {
+/// Prints information about a public key in DER format.
+#[cfg(feature = "experimental")]
+pub fn print_public_key_der(pub_key_der_path: &str) {
     let mut pub_key_file = fs::OpenOptions::new()
         .write(false)
         .read(true)
@@ -1407,7 +800,9 @@ fn print_sha256_hash(data: &[u8]) {
 
 /// Print info about private key in TPM2B format.
 /// Tpm2ImportFormat is TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SEED
-fn print_tpm2bimport_content(tpm2b_import_file_path: String) {
+/// Prints information about a private key in TPM2B import format.
+#[cfg(feature = "experimental")]
+pub fn print_tpm2b_import_content(tpm2b_import_file_path: &str) {
     let mut tpm2b_import_file = fs::OpenOptions::new()
         .write(false)
         .read(true)
@@ -1436,7 +831,9 @@ fn print_tpm2bimport_content(tpm2b_import_file_path: String) {
 }
 
 /// Test importing TPM2B format keys by reading and validating them
-fn test_import_tpm2b_keys(public_key_file: &str, private_key_file: &str) {
+/// Tests whether DER public and TPM2B private keys form a keypair.
+#[cfg(feature = "experimental")]
+pub fn test_tpm2b_import_keys(public_key_file: &str, private_key_file: &str) {
     tracing::info!("Testing TPM2B key import...");
     tracing::info!("Public key file: {}", public_key_file);
     tracing::info!("Private key file: {}", private_key_file);
@@ -1482,6 +879,7 @@ fn test_import_tpm2b_keys(public_key_file: &str, private_key_file: &str) {
 }
 
 /// Validate keys when public key is in DER format
+#[cfg(feature = "experimental")]
 fn validate_der_format_keys(rsa_public: &Rsa<openssl::pkey::Public>, private_key_file: &str) {
     // Read the private key file (TPM2B import format)
     let mut priv_key_file = fs::OpenOptions::new()
@@ -1580,7 +978,9 @@ fn validate_der_format_keys(rsa_public: &Rsa<openssl::pkey::Public>, private_key
 }
 
 /// Import a sealed key blob into an existing vTPM blob file
-fn import_sealed_key_blob_into_vtpm(vtpm_blob_path: &str, sealed_key_path: &str) {
+/// Imports a sealed key blob into an existing vTPM blob.
+#[cfg(feature = "experimental")]
+pub fn import_sealed_key_blob_into_vtpm(vtpm_blob_path: &str, sealed_key_path: &str) {
     tracing::info!("Loading vTPM blob from: {}", vtpm_blob_path);
     tracing::info!("Reading sealed key file: {}", sealed_key_path);
 
@@ -1794,66 +1194,30 @@ fn import_sealed_key_blob_into_vtpm(vtpm_blob_path: &str, sealed_key_path: &str)
     tracing::info!("Sealed key import into vTPM completed successfully");
 }
 
-/// Create Anti Forensic (AF) split data structure
-fn create_af_split_data(payload: &[u8]) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-
-    // Use Canonical's approach: target 128KB minimum size
-    let min_size = 128 * 1024; // 128KB like Canonical
-    let stripes = (min_size / payload.len()) + 1;
-
-    println!(
-        "AF split: payload {} bytes, {} stripes, target size ~{}KB",
-        payload.len(),
-        stripes,
-        (payload.len() * stripes) / 1024
+/// Export a newly generated key as a sealed key file (instead of exporting existing persistent key)
+/// Exports a newly generated TPM key as a sealed key blob.
+#[cfg(feature = "experimental")]
+pub fn export_tpm_key_as_sealed_blob(vtpm_blob_path: &str, sealed_key_output_path: &str) {
+    tracing::info!(
+        "Creating new key for sealed key export to: {}",
+        sealed_key_output_path
     );
+    tracing::info!("Loading vTPM blob from: {}", vtpm_blob_path);
 
-    let block_size = payload.len();
-    let mut result = Vec::new();
-    let mut block = vec![0u8; block_size];
+    let vtpm_blob_content = fs::read(vtpm_blob_path).expect("failed to read vTPM blob file");
+    let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
+    vtpm_engine_helper
+        .tpm_engine
+        .reset(Some(&vtpm_blob_content))
+        .expect("failed to restore TPM engine from blob");
+    vtpm_engine_helper
+        .initialize_tpm_engine()
+        .expect("failed to initialize TPM engine");
 
-    // Generate stripes-1 random blocks and XOR/hash them
-    for _i in 0..(stripes - 1) {
-        let mut random_block = vec![0u8; block_size];
-        getrandom::fill(&mut random_block).expect("Failed to generate random data");
-
-        result.extend_from_slice(&random_block);
-
-        // XOR with accumulated block
-        for j in 0..block_size {
-            block[j] ^= random_block[j];
-        }
-
-        // Diffuse the block using hash (simplified version)
-        let mut hasher = Sha256::new();
-        hasher.update(&block);
-        let hash = hasher.finalize();
-
-        // Simple diffusion: XOR block with repeated hash
-        for j in 0..block_size {
-            block[j] ^= hash[j % 32];
-        }
-    }
-
-    // Final stripe: XOR the accumulated block with original data
-    let mut final_stripe = vec![0u8; block_size];
-    for i in 0..block_size {
-        final_stripe[i] = block[i] ^ payload[i];
-    }
-    result.extend_from_slice(&final_stripe);
-
-    // Create AF split header: stripes(4) + hash_alg(4) + af_data_size(4) + data
-    let mut af_data = Vec::new();
-    af_data.extend_from_slice(&(stripes as u32).to_le_bytes()); // 4 bytes: stripe count
-    af_data.extend_from_slice(&8u32.to_le_bytes()); // 4 bytes: SHA256 hash algorithm ID
-    af_data.extend_from_slice(&(result.len() as u32).to_le_bytes()); // 4 bytes: AF data length (changed from u16)
-    af_data.extend_from_slice(&result);
-
-    af_data
+    export_new_key_as_sealed_blob(&mut vtpm_engine_helper, sealed_key_output_path);
 }
 
-/// Export a newly generated key as a sealed key file (instead of exporting existing persistent key)
+#[cfg(feature = "experimental")]
 fn export_new_key_as_sealed_blob(
     tpm_engine_helper: &mut TpmEngineHelper,
     sealed_key_output_path: &str,
@@ -1864,8 +1228,7 @@ fn export_new_key_as_sealed_blob(
     let key_template = create_exportable_rsa_key_template();
 
     // Generate the key pair in TPM under Owner hierarchy (like SRK)
-    let create_result =
-        tpm_engine_helper.create_primary(TPM20_RH_OWNER, key_template);
+    let create_result = tpm_engine_helper.create_primary(TPM20_RH_OWNER, key_template);
 
     let (key_handle, key_public) = match create_result {
         Ok(response) => (response.object_handle, response.out_public),
@@ -1907,11 +1270,17 @@ fn export_new_key_as_sealed_blob(
     }
 
     // Create the sealed key data with the new key public area and dummy private data
-    let sealed_key_data = create_sealed_key_blob_v2_with_real_data(
+    let sealed_key_data = match create_sealed_key_blob_v2_with_real_data(
         &dummy_private.unwrap(),
         &key_public,
         &import_seed,
-    );
+    ) {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!("Failed to create sealed key data: {}", error);
+            return;
+        }
+    };
 
     // Write the sealed key file
     match fs::write(sealed_key_output_path, &sealed_key_data) {
@@ -1935,6 +1304,7 @@ fn export_new_key_as_sealed_blob(
 }
 
 /// Create RSA key template optimized for export/import operations
+#[cfg(feature = "experimental")]
 fn create_exportable_rsa_key_template() -> TpmtPublic {
     use tpm_protocol::tpm20proto::protocol::*;
     use tpm_protocol::tpm20proto::*;
@@ -1980,11 +1350,12 @@ fn create_exportable_rsa_key_template() -> TpmtPublic {
 }
 
 /// Create sealed key blob with real TPM data structures
+#[cfg(feature = "experimental")]
 fn create_sealed_key_blob_v2_with_real_data(
     key_private: &Tpm2bBuffer,
     key_public: &Tpm2bPublic,
     import_seed: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, std::io::Error> {
     let mut sealed_data = Vec::new();
 
     // Header (4 bytes): 0x55534B24 ("USK$")
@@ -2026,23 +1397,28 @@ fn create_sealed_key_blob_v2_with_real_data(
     tracing::info!("  TPM2B_ENCRYPTED_SECRET: {} bytes", seed_serialized.len());
 
     // Apply AF split to the payload
-    let af_split_data = create_af_split_data(&payload);
+    let af_split_data = marshal::AfSplitData::create(&payload)?.to_bytes()?;
 
     // Append AF split data to sealed key
     sealed_data.extend_from_slice(&af_split_data);
 
-    sealed_data
+    Ok(sealed_data)
 }
 
-// cargo test -p cvmutil test_srk_template_generation
-// cargo test -p cvmutil test_platform_unique_value
+/// Starts a TPM socket server using a vTPM blob as backing state.
+#[cfg(feature = "experimental")]
+pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
+    vtpm_sock_server::start_tpm_socket_server(vtpm_blob_path, bind_addr);
+}
+
+// cargo test -p vtpm_util test_srk_template_generation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vtpm_helper::TestPlatformCallbacks;
     use std::fs;
 
     #[test]
+    #[cfg(feature = "experimental")]
     fn test_srk_template_generation() {
         // Create a temporary directory for testing
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2090,17 +1466,5 @@ mod tests {
             "SRK template test passed: {} bytes generated",
             template_data.len()
         );
-    }
-
-    #[test]
-    fn test_platform_unique_value() {
-        let (callbacks, _) = TestPlatformCallbacks::new();
-        // Access the method through the trait interface
-        use ms_tpm_20_ref::PlatformCallbacks;
-        let unique_value = callbacks.get_unique_value();
-
-        // Verify it returns empty array as expected for deterministic SRK generation
-        assert_eq!(unique_value, &[] as &[u8]);
-        println!("Platform unique value test passed: empty array as expected");
     }
 }

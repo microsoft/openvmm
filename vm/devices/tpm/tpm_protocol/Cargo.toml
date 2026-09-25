@@ -9,7 +9,6 @@ edition.workspace = true
 [dependencies]
 bitfield-struct.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 zerocopy.workspace = true
 
 [lints]
