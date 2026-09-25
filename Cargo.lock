@@ -6022,6 +6022,7 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
+ "libc",
  "memory_range",
  "mesh",
  "mesh_process",

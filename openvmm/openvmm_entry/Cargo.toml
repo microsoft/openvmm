@@ -101,6 +101,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 net_tap.workspace = true
 
 [target.'cfg(windows)'.dependencies]

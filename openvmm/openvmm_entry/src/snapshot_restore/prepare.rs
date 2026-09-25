@@ -26,7 +26,8 @@ pub(super) fn prepare_snapshot_restore(
     microvm: &microvm::MicrovmLaunch,
     expected_hypervisor: &str,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
-    let expected_microvm_contract = microvm.expected_restore_contract(opt, expected_hypervisor)?;
+    let expected_microvm_contract =
+        microvm.expected_restore_contract(opt, snapshot.manifest(), expected_hypervisor)?;
     prepare_snapshot_restore_for_config(
         snapshot,
         opt.memory_size(),

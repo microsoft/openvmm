@@ -6,17 +6,20 @@
 
 use super::ExpectedRestoreContract;
 use super::MicrovmResources;
+use super::MicrovmRestore;
 use super::validate_microvm_filesystem_private_storage;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::vm_controller::MicrovmController;
 use anyhow::Context;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
+use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_defs::worker::SharedMemoryFd;
+use openvmm_helpers::snapshot::SnapshotManifest;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -34,6 +37,7 @@ pub(crate) struct MicrovmLaunch {
     snapshot_destination: Option<PathBuf>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
     snapshot_memory_handle: Option<std::fs::File>,
+    restore: MicrovmRestore,
 }
 
 impl MicrovmLaunch {
@@ -43,6 +47,7 @@ impl MicrovmLaunch {
         opt: &Options,
         vm_config: &Config,
         resources: MicrovmResources,
+        restore: MicrovmRestore,
     ) -> anyhow::Result<Self> {
         let effective_command_line = match &vm_config.load_mode {
             LoadMode::Linux {
@@ -136,6 +141,7 @@ impl MicrovmLaunch {
             snapshot_destination,
             snapshot_memory_file,
             snapshot_memory_handle,
+            restore,
         })
     }
 
@@ -163,8 +169,8 @@ impl MicrovmLaunch {
         &mut self,
     ) -> (
         Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
-        Option<mesh::Sender<()>>,
-        Option<mesh::Receiver<()>>,
+        Option<mesh::Sender<MicrovmSnapshotScratchPolicy>>,
+        Option<mesh::Receiver<MicrovmSnapshotScratchPolicy>>,
     ) {
         let snapshot_boundary_requests = self.resources.snapshot_requests.take();
         let (snapshot_ready, snapshot_requests) = if snapshot_boundary_requests.is_some() {
@@ -185,11 +191,27 @@ impl MicrovmLaunch {
     pub(crate) fn expected_restore_contract<'a>(
         &'a self,
         opt: &Options,
+        manifest: &SnapshotManifest,
         expected_hypervisor: &'a str,
     ) -> anyhow::Result<Option<ExpectedRestoreContract<'a>>> {
         if opt.machine != MachineProfileCli::Microvm {
             return Ok(None);
         }
+        let scratch_policy = if manifest
+            .machine_contract
+            .as_ref()
+            .and_then(|contract| contract.microvm_sandbox_blocks.last())
+            .is_some_and(|block| {
+                block.artifact == openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME
+            }) {
+            MicrovmSnapshotScratchPolicy::Paired
+        } else {
+            MicrovmSnapshotScratchPolicy::Fresh
+        };
+        let sandbox_blocks = crate::storage_builder::microvm::snapshot_block_contract(
+            &self.resources.sandbox_block_sources,
+            scratch_policy,
+        )?;
         let resources = &self.resources;
         Ok(Some((
             expected_hypervisor,
@@ -205,6 +227,7 @@ impl MicrovmLaunch {
                 .zip(resources.filesystem_attachment.as_ref())
                 .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment)),
             resources.console_attachment.as_ref(),
+            sandbox_blocks,
         )))
     }
 
@@ -223,7 +246,7 @@ impl MicrovmLaunch {
         self,
         opt: &Options,
         source_hypervisor: String,
-        snapshot_requests: Option<mesh::Receiver<()>>,
+        snapshot_requests: Option<mesh::Receiver<MicrovmSnapshotScratchPolicy>>,
     ) -> MicrovmController {
         MicrovmController {
             active: self.active,
@@ -240,6 +263,7 @@ impl MicrovmLaunch {
             filesystem_slot: self.filesystem_slot,
             filesystem: self.filesystem,
             snapshot_memory_file: self.snapshot_memory_file,
+            _private_scratch_dir: self.restore.private_scratch_dir,
         }
     }
 }

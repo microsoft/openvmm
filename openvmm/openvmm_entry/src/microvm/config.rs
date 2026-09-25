@@ -292,7 +292,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 "--microvm-sandbox-block accepts only a plain VTL0 disk backend"
             );
             storage
-                .add_microvm_sandbox_block(block.role, &disk.kind, disk.read_only)
+                .add_microvm_sandbox_block(
+                    block.role,
+                    &disk.kind,
+                    disk.read_only,
+                    opt.microvm.snapshot_destination.is_some() || opt.restore_snapshot.is_some(),
+                )
                 .await?;
         }
         Ok(())
@@ -559,7 +564,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;
 
-        resources.microvm = std::mem::take(&mut self.resources);
+        let sandbox_block_sources = std::mem::take(&mut resources.microvm.sandbox_block_sources);
+        resources.microvm = MicrovmResources {
+            sandbox_block_sources,
+            ..std::mem::take(&mut self.resources)
+        };
         Ok(())
     }
 }

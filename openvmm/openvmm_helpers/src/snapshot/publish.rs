@@ -12,6 +12,7 @@ use super::format::MANIFEST_FILE_NAME;
 use super::format::MAX_MANIFEST_SIZE_BYTES;
 use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use super::format::MEMORY_FILE_NAME;
+use super::format::SCRATCH_FILE_NAME;
 use super::format::STATE_FILE_NAME;
 use super::format::validate_manifest_header;
 use super::format::validate_manifest_version;
@@ -22,12 +23,14 @@ use super::fs::create_hard_link_from_handle;
 use super::fs::create_private_directory;
 use super::fs::ensure_path_absent;
 use super::fs::hard_link_is_unsupported;
+use super::fs::open_file_with_length;
 use super::fs::open_regular_file;
 use super::fs::path_exists;
 use super::fs::rename_no_replace;
 use super::fs::snapshot_parent;
 use super::fs::sync_directory;
 use super::fs::validate_directory;
+use super::fs::verify_file_digest;
 use super::fs::verify_hard_link_identity;
 use super::fs::write_bytes;
 use super::microvm;
@@ -113,11 +116,29 @@ pub fn write_snapshot_from_memory_file(
     saved_state_bytes: &[u8],
     memory_file: &std::fs::File,
 ) -> Result<(), SnapshotWriteError> {
+    write_snapshot_from_memory_and_scratch_files(
+        dir,
+        manifest,
+        saved_state_bytes,
+        memory_file,
+        None,
+    )
+}
+
+/// Writes a snapshot with an optional scratch image paired to the VM state.
+pub fn write_snapshot_from_memory_and_scratch_files(
+    dir: &Path,
+    manifest: &SnapshotManifest,
+    saved_state_bytes: &[u8],
+    memory_file: &std::fs::File,
+    scratch_file: Option<&std::fs::File>,
+) -> Result<(), SnapshotWriteError> {
     write_snapshot_with_memory_publication(
         dir,
         manifest,
         saved_state_bytes,
         memory_file,
+        scratch_file,
         MemoryPublication::IndependentCopy,
     )
 }
@@ -131,17 +152,19 @@ pub fn write_snapshot_from_memory_file(
 /// source may resume. [`SnapshotWriteError::CleanupUncertain`] requires source
 /// termination because a private staging alias may remain. Unsupported hard
 /// links fall back to an independent sparse-aware copy.
-pub fn write_snapshot_from_owned_memory_file(
+pub fn write_snapshot_from_owned_memory_and_scratch_files(
     dir: &Path,
     manifest: &SnapshotManifest,
     saved_state_bytes: &[u8],
     memory_file: &std::fs::File,
+    scratch_file: Option<&std::fs::File>,
 ) -> Result<(), SnapshotWriteError> {
     write_snapshot_with_memory_publication(
         dir,
         manifest,
         saved_state_bytes,
         memory_file,
+        scratch_file,
         MemoryPublication::OwnedExactFile,
     )
 }
@@ -157,6 +180,7 @@ fn write_snapshot_with_memory_publication(
     manifest: &SnapshotManifest,
     saved_state_bytes: &[u8],
     memory_file: &std::fs::File,
+    scratch_file: Option<&std::fs::File>,
     memory_publication: MemoryPublication,
 ) -> Result<(), SnapshotWriteError> {
     let mut staging = stage_snapshot(
@@ -164,6 +188,7 @@ fn write_snapshot_with_memory_publication(
         manifest,
         saved_state_bytes,
         memory_file,
+        scratch_file,
         memory_publication,
     )?;
     let commit = openvmm_defs::profile::ProfileSpan::start();
@@ -189,6 +214,7 @@ fn stage_snapshot(
     manifest: &SnapshotManifest,
     saved_state_bytes: &[u8],
     memory_file: &std::fs::File,
+    scratch_file: Option<&std::fs::File>,
     memory_publication: MemoryPublication,
 ) -> Result<StagingDirectory, SnapshotWriteError> {
     validate_manifest_header(manifest)?;
@@ -247,10 +273,40 @@ fn stage_snapshot(
                 profile_path_counters(&memory_path, manifest.memory_size_bytes),
             );
         }
+        match (microvm::paired_scratch_block(manifest), scratch_file) {
+            (Some(scratch), Some(scratch_file)) => {
+                let scratch_path = staging.path().join(SCRATCH_FILE_NAME);
+                let scratch_publish = openvmm_defs::profile::ProfileSpan::start();
+                copy_exact(
+                    scratch_file,
+                    &scratch_path,
+                    scratch.length,
+                    "scratch backing file",
+                    "snapshot scratch",
+                )?;
+                verify_file_digest(
+                    &open_file_with_length(&scratch_path, scratch.length, SCRATCH_FILE_NAME)?,
+                    scratch.length,
+                    &scratch.identity,
+                    "scratch.img",
+                )?;
+                scratch_publish.complete(
+                    "capture",
+                    "publication_scratch",
+                    profile_path_counters(&scratch_path, scratch.length),
+                );
+            }
+            (Some(_), None) => anyhow::bail!("snapshot contract requires a paired scratch image"),
+            (None, Some(_)) => {
+                anyhow::bail!("snapshot contract does not declare a scratch image")
+            }
+            (None, None) => {}
+        }
+
         let mut published_manifest = manifest.clone();
         published_manifest.state_size_bytes = saved_state_bytes.len() as u64;
-        // Current local snapshots use strict structure and length checks
-        // without RAM-sized in-band hashing.
+        // Current local snapshots use strict structure, length, generation,
+        // and machine-contract checks without RAM-sized in-band hashing.
         published_manifest.state_sha256.clear();
         published_manifest.memory_sha256.clear();
 
@@ -500,12 +556,105 @@ fn publish_owned_memory_file(
 
 #[cfg(test)]
 mod tests {
+    use super::super::format::SHA256_SIZE;
+    use super::super::fs::file_sha256;
     use super::super::fs::initialize_snapshot_memory_backing_file;
+    use super::super::microvm::paired_scratch_manifest;
+    use super::super::restore::open_paired_scratch_file;
+    use super::super::restore::read_snapshot_manifest;
     use super::super::tests::test_manifest;
     use super::*;
     use std::io::Seek;
     use std::io::SeekFrom;
     use std::io::Write;
+
+    #[test]
+    fn paired_scratch_is_published_and_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        let scratch_path = dir.path().join("scratch.img");
+        let scratch = vec![0x5a_u8; 1024];
+        std::fs::write(&memory_path, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_path, &scratch).unwrap();
+        let memory_file = std::fs::File::open(memory_path).unwrap();
+        let scratch_file = std::fs::File::open(scratch_path).unwrap();
+        let manifest = paired_scratch_manifest(&scratch);
+
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &memory_file,
+            Some(&scratch_file),
+        )
+        .unwrap();
+
+        let read_manifest = read_snapshot_manifest(&snap_dir).unwrap();
+        let verified = open_paired_scratch_file(&snap_dir, &read_manifest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            file_sha256(&verified, 1024, SCRATCH_FILE_NAME).unwrap(),
+            manifest.machine_contract.unwrap().microvm_sandbox_blocks[1].identity
+        );
+        drop(verified);
+
+        let published = snap_dir.join(SCRATCH_FILE_NAME);
+        std::fs::write(&published, vec![0xa5_u8; 1024]).unwrap();
+        assert!(
+            open_paired_scratch_file(&snap_dir, &read_manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("digest mismatch")
+        );
+
+        std::fs::write(&published, vec![0_u8; 512]).unwrap();
+        assert!(
+            open_paired_scratch_file(&snap_dir, &read_manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("doesn't match manifest")
+        );
+
+        std::fs::remove_file(&published).unwrap();
+        let error = match read_snapshot_manifest(&snap_dir) {
+            Ok(_) => panic!("snapshot without scratch.img unexpectedly validated"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("incomplete"));
+    }
+
+    #[test]
+    fn paired_scratch_digest_mismatch_is_not_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        let scratch_path = dir.path().join("scratch.img");
+        let scratch = vec![0x5a_u8; 1024];
+        std::fs::write(&memory_path, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_path, &scratch).unwrap();
+        let memory_file = std::fs::File::open(memory_path).unwrap();
+        let scratch_file = std::fs::File::open(scratch_path).unwrap();
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks[1]
+            .identity = vec![0xff; SHA256_SIZE];
+
+        let error = write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &memory_file,
+            Some(&scratch_file),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("digest mismatch"));
+        assert!(!snap_dir.exists());
+    }
 
     #[test]
     fn write_snapshot_rejects_missing_parent() {
@@ -552,8 +701,14 @@ mod tests {
             .open(&memory_path)
             .unwrap();
 
-        write_snapshot_from_owned_memory_file(&snap_dir, &test_manifest(), b"state", &memory_file)
-            .unwrap();
+        write_snapshot_from_owned_memory_and_scratch_files(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &memory_file,
+            None,
+        )
+        .unwrap();
 
         let published = std::fs::File::open(snap_dir.join(MEMORY_FILE_NAME)).unwrap();
         verify_hard_link_identity(&memory_file, &published, 1024).unwrap();
@@ -575,8 +730,14 @@ mod tests {
         std::fs::rename(&memory_path, &moved_path).unwrap();
         std::fs::write(&memory_path, vec![0xa5_u8; 1024]).unwrap();
 
-        write_snapshot_from_owned_memory_file(&snap_dir, &test_manifest(), b"state", &memory_file)
-            .unwrap();
+        write_snapshot_from_owned_memory_and_scratch_files(
+            &snap_dir,
+            &test_manifest(),
+            b"state",
+            &memory_file,
+            None,
+        )
+        .unwrap();
 
         let published = std::fs::File::open(snap_dir.join(MEMORY_FILE_NAME)).unwrap();
         verify_hard_link_identity(&memory_file, &published, 1024).unwrap();
@@ -603,6 +764,7 @@ mod tests {
             &test_manifest(),
             b"state",
             &memory_file,
+            None,
             MemoryPublication::OwnedExactFile,
         )
         .unwrap();

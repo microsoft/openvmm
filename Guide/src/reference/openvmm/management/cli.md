@@ -145,9 +145,10 @@ describes the source definitions.
   `--snapshot-quiesce-timeout-ms <MILLISECONDS>` sets the bounded quiesce
   timeout and defaults to 5000. A request with no configured destination is
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
-  KVM, MSHV, or WHP, and shared file-backed RAM. An attached virtio console
-  saves accepted but undelivered input and the offset of a partially forwarded
-  guest transmit descriptor. An attached microVM virtio-net device saves its
+  KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must
+  be cached regular raw files with nonzero 512-byte-aligned geometry. An
+  attached virtio console saves accepted but undelivered input and the offset
+  of a partially forwarded guest transmit descriptor. An attached microVM virtio-net device saves its
   static identity, queue progress, drained packet ownership, and endpoint
   generation.
   The fixed microVM virtio-fs slot saves either an explicit dormant state or,
@@ -159,6 +160,12 @@ describes the source definitions.
     --kernel vmlinux --initrd initramfs.cpio.gz \
     --snapshot-destination snapshot
   ```
+
+  `/sbin/nvx-snapshot` requests a paired capture by default. When scratch is
+  mounted, it freezes the workload cgroup with a bounded wait, syncs, freezes
+  the scratch filesystem, and asks OpenVMM to drain queues and atomically
+  publish `scratch.img`. `/sbin/nvx-snapshot --fresh-scratch` is for a
+  pre-mount boundary and records that restore must supply a fresh scratch.
 * `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
   The manifest supplies the authoritative RAM size, topology, ABI,
   fixed device inventory, effective kernel command line, source backend, CPU
@@ -184,6 +191,13 @@ describes the source definitions.
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile must match the supplied
   portable configuration.
+
+  For sandbox-block snapshots, restore repeats each read-only
+  `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
+  must match the manifest. A paired snapshot supplies scratch internally from
+  a verified process-private copy of `scratch.img`; passing another scratch is
+  rejected. A fresh-scratch snapshot instead requires a writable scratch
+  argument with matching geometry.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \

@@ -5,13 +5,17 @@
 
 use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use crate::Options;
+use crate::cli_args;
+use crate::cli_args::DiskCliKind;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
+use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_helpers::snapshot::SnapshotManifest;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
+use openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
 use std::path::Path;
 use std::time::Duration;
@@ -37,16 +41,20 @@ fn calculate_snapshot_downtime(
 pub(crate) struct MicrovmRestore {
     /// The authoritative machine contract of the snapshot being restored.
     pub(crate) machine_contract: Option<SnapshotMachineContract>,
+    /// Private copy of a paired scratch image, kept alive for the VM lifetime.
+    pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
 }
 
 /// Validates a snapshot restore against the microVM profile and prepares the
 /// restore-time inputs of the microVM configuration.
 ///
-/// This may adjust `opt`: the snapshot selects the RAM size.
+/// This may adjust `opt`: the snapshot selects the RAM size, and a paired
+/// scratch image is replaced by a private copy.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
 ) -> anyhow::Result<MicrovmRestore> {
+    let mut private_scratch_dir = None;
     if let Some(contract) =
         restore_snapshot.and_then(|snapshot| snapshot.manifest().machine_contract.as_ref())
         && contract.machine_profile == "microvm"
@@ -61,6 +69,10 @@ pub(crate) fn prepare_restore(
         && let Some(snapshot) = restore_snapshot
     {
         let manifest = snapshot.manifest();
+        let snapshot_dir = opt
+            .restore_snapshot
+            .as_deref()
+            .expect("restore manifest requires a snapshot path");
         let contract = manifest
             .machine_contract
             .as_ref()
@@ -83,18 +95,84 @@ pub(crate) fn prepare_restore(
             "restore-time memory overrides are not allowed"
         );
         opt.memory.size = Some(vmm_cli::MemorySize(manifest.memory_size_bytes));
+        if !contract.microvm_sandbox_blocks.is_empty() {
+            let scratch = contract
+                .microvm_sandbox_blocks
+                .last()
+                .filter(|block| block.role == "scratch")
+                .context("microVM snapshot is missing its scratch contract")?;
+            if scratch.artifact == openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME {
+                anyhow::ensure!(
+                    !opt.microvm.microvm_sandbox_block.iter().any(|block| {
+                        block.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
+                    }),
+                    "paired snapshot restore supplies scratch.img; do not pass a scratch block"
+                );
+                let source = snapshot
+                    .open_paired_scratch_file()?
+                    .context("paired snapshot is missing scratch.img")?;
+                let parent = snapshot_dir
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                let temp_dir = tempfile::Builder::new()
+                    .prefix(".openvmm-private-scratch-")
+                    .tempdir_in(parent)
+                    .context("failed to create private restore scratch directory")?;
+                let private_path = temp_dir
+                    .path()
+                    .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                openvmm_helpers::snapshot::restore::copy_verified_file(
+                    &source,
+                    &private_path,
+                    scratch.length,
+                    &scratch.identity,
+                    openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME,
+                )?;
+                opt.microvm
+                    .microvm_sandbox_block
+                    .push(cli_args::microvm::MicrovmSandboxBlockCli {
+                        role: openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
+                        disk: cli_args::DiskCli {
+                            vtl: DeviceVtl::Vtl0,
+                            kind: DiskCliKind::File {
+                                path: private_path,
+                                create_with_len: None,
+                                direct: false,
+                            },
+                            read_only: false,
+                            is_dvd: false,
+                            underhill: None,
+                            pcie_port: None,
+                            controller: None,
+                            nsid: None,
+                            lun: None,
+                            relay: None,
+                        },
+                    });
+                private_scratch_dir = Some(temp_dir);
+            } else {
+                anyhow::ensure!(
+                    opt.microvm.microvm_sandbox_block.iter().any(|block| {
+                        block.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
+                    }),
+                    "fresh-scratch snapshot restore requires a scratch block"
+                );
+            }
+        }
         Some(contract.clone())
     } else {
         None
     };
     Ok(MicrovmRestore {
         machine_contract: restore_machine_contract,
+        private_scratch_dir,
     })
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor, effective command line, network, filesystem, and boot console
-/// attachment.
+/// hypervisor, effective command line, network, filesystem, boot console
+/// attachment, and sandbox blocks.
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
@@ -105,6 +183,7 @@ pub(crate) type ExpectedRestoreContract<'a> = (
         &'a SnapshotAttachment,
     )>,
     Option<&'a SnapshotAttachment>,
+    Vec<SnapshotMicrovmSandboxBlock>,
 );
 
 /// Clock and CPU state recorded at the capture boundary of a restored
@@ -123,6 +202,7 @@ pub(crate) fn validate_restore_contract(
         network,
         filesystem,
         console_attachment,
+        sandbox_blocks,
     ): ExpectedRestoreContract<'_>,
 ) -> anyhow::Result<RestoreTime> {
     let saved_contract = manifest
@@ -143,6 +223,7 @@ pub(crate) fn validate_restore_contract(
         filesystem_slot,
         filesystem,
         console_attachment.cloned(),
+        sandbox_blocks,
         expected_vp_count,
         expected_memory_size,
         saved_contract.state_unit_names.clone(),

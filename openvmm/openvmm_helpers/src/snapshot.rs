@@ -15,7 +15,7 @@ pub mod restore;
 pub use publish::write_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 3;
+pub const MANIFEST_VERSION: u32 = 4;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -45,10 +45,10 @@ pub struct SnapshotManifest {
     /// Length of `state.bin` in bytes.
     #[mesh(8)]
     pub state_size_bytes: u64,
-    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3.
+    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3 and v4.
     #[mesh(9)]
     pub state_sha256: Vec<u8>,
-    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3.
+    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3 and v4.
     #[mesh(10)]
     pub memory_sha256: Vec<u8>,
     /// Authoritative machine composition for versioned machine profiles.

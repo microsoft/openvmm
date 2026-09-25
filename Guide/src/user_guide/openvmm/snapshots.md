@@ -5,20 +5,23 @@ the complete state of a running VM and resume it later.
 
 ## Overview
 
-A snapshot captures three pieces of state:
+A snapshot captures three required pieces of state and may pair writable
+microVM scratch:
 
 - **Guest RAM** — the full contents of guest memory
 - **Device state** — the saved state of all emulated devices
 - **Manifest** — metadata describing the snapshot (architecture, memory size,
   VP count, page size, etc.)
+- **Scratch** — the exact microVM writable image when capture occurs after mount
 
-These are stored as three files in a snapshot directory:
+These are stored as three required files and one optional paired file:
 
 | File            | Contents                                    |
 |-----------------|---------------------------------------------|
 | `manifest.bin`  | Protobuf-encoded snapshot metadata          |
 | `state.bin`     | Serialized device state                     |
 | `memory.bin`    | Memory backing file                         |
+| `scratch.img`   | Paired microVM scratch, when declared       |
 
 ## Prerequisites
 
@@ -130,12 +133,14 @@ read while resume is in progress; on Windows, flush completion waits until the
 named-pipe peer consumes the complete frame.
 
 ```admonish warning
-Version 3 does not contain or validate embedded checksums for `state.bin` or
-`memory.bin`. Restore still requires regular files, bounded manifest and state
-decoding, and exact artifact lengths, but same-length payload changes are not
-detected. Protect snapshot directories with host access controls. Integrity or
-authentication for export and transport must be supplied outside the default
-snapshot format.
+Versions 3 and 4 do not contain or validate embedded checksums for
+`state.bin` or `memory.bin`. Restore still requires regular files, bounded
+manifest and state decoding, exact artifact lengths, and a compatible machine
+contract, but same-length payload changes are not detected. Paired
+`scratch.img` does have an exact length and SHA-256 identity because it must
+match captured guest filesystem state. Protect snapshot directories with host
+access controls. Integrity or authentication for export and transport must be
+supplied outside the default snapshot format.
 ```
 
 ```admonish note

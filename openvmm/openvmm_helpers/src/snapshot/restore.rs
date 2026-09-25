@@ -2,21 +2,27 @@
 // Licensed under the MIT License.
 
 //! Restore-side snapshot access: opening one published generation through a
-//! retained directory handle, and structural validation against its manifest.
+//! retained directory handle, structural validation against its manifest,
+//! and paired scratch verification.
 
 use super::SnapshotManifest;
 use super::format::MANIFEST_FILE_NAME;
 use super::format::MAX_MANIFEST_SIZE_BYTES;
 use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use super::format::MEMORY_FILE_NAME;
+use super::format::SCRATCH_FILE_NAME;
 use super::format::STATE_FILE_NAME;
 use super::format::validate_manifest_header;
 use super::format::validate_manifest_version;
 use super::fs::OpenedFileGeneration;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
+use super::fs::copy_exact;
+use super::fs::open_file_with_length;
 use super::fs::opened_file_generation;
 use super::fs::read_bounded_open_file;
+use super::fs::verify_file_digest;
+use super::microvm;
 use anyhow::Context;
 use std::collections::HashSet;
 use std::path::Path;
@@ -44,7 +50,7 @@ impl OpenedSnapshot {
         let state_file = directory.open_regular_file(STATE_FILE_NAME, "saved state")?;
         let memory_file = directory.open_regular_file(MEMORY_FILE_NAME, "snapshot memory")?;
         let manifest = decode_snapshot_manifest(&manifest_file)?;
-        validate_snapshot_directory(&directory)?;
+        validate_snapshot_directory(&directory, &manifest)?;
         anyhow::ensure!(
             manifest.state_size_bytes <= MAX_SAVED_STATE_SIZE_BYTES,
             "state.bin length in the manifest exceeds the maximum size of \
@@ -107,6 +113,11 @@ impl OpenedSnapshot {
                         .context("allocated byte count overflow")?,
                 ))
             })
+    }
+
+    /// Opens the paired scratch artifact relative to this snapshot generation.
+    pub fn open_paired_scratch_file(&self) -> anyhow::Result<Option<std::fs::File>> {
+        open_paired_scratch_file_in_directory(&self.directory, &self.manifest)
     }
 
     /// Duplicates the exact memory handle used to create a private mapping.
@@ -176,6 +187,13 @@ fn decode_snapshot_manifest(manifest_file: &std::fs::File) -> anyhow::Result<Sna
         mesh::payload::decode(&manifest_bytes).context("failed to decode snapshot manifest")?;
     validate_manifest_header(&manifest)?;
     validate_manifest_version(&manifest)?;
+    if let Some(contract) = &manifest.machine_contract {
+        microvm::validate_machine_contract_shape(
+            contract,
+            manifest.memory_size_bytes,
+            manifest.vp_count,
+        )?;
+    }
     Ok(manifest)
 }
 
@@ -200,7 +218,7 @@ pub fn read_snapshot(
 pub fn read_snapshot_manifest(dir: &Path) -> anyhow::Result<SnapshotManifest> {
     let directory = OpenedSnapshotDirectory::open(dir)?;
     let (manifest, _) = read_snapshot_manifest_from_directory(&directory)?;
-    validate_snapshot_directory(&directory)?;
+    validate_snapshot_directory(&directory, &manifest)?;
     Ok(manifest)
 }
 
@@ -231,7 +249,14 @@ pub fn read_snapshot_artifacts_with_memory(
     let directory = OpenedSnapshotDirectory::open(dir)?;
     validate_manifest_header(manifest)?;
     validate_manifest_version(manifest)?;
-    validate_snapshot_directory(&directory)?;
+    if let Some(contract) = &manifest.machine_contract {
+        microvm::validate_machine_contract_shape(
+            contract,
+            manifest.memory_size_bytes,
+            manifest.vp_count,
+        )?;
+    }
+    validate_snapshot_directory(&directory, manifest)?;
     anyhow::ensure!(
         manifest.state_size_bytes <= MAX_SAVED_STATE_SIZE_BYTES,
         "state.bin length in the manifest exceeds the maximum size of \
@@ -261,21 +286,76 @@ pub fn read_snapshot_artifacts_with_memory(
     Ok((state_bytes, memory_file))
 }
 
-fn validate_snapshot_directory(directory: &OpenedSnapshotDirectory) -> anyhow::Result<()> {
+/// Opens and verifies the scratch image paired to a snapshot, if present.
+pub fn open_paired_scratch_file(
+    dir: &Path,
+    manifest: &SnapshotManifest,
+) -> anyhow::Result<Option<std::fs::File>> {
+    let directory = OpenedSnapshotDirectory::open(dir)?;
+    open_paired_scratch_file_in_directory(&directory, manifest)
+}
+
+fn open_paired_scratch_file_in_directory(
+    directory: &OpenedSnapshotDirectory,
+    manifest: &SnapshotManifest,
+) -> anyhow::Result<Option<std::fs::File>> {
+    let Some(scratch) = microvm::paired_scratch_block(manifest) else {
+        return Ok(None);
+    };
+    let file =
+        directory.open_file_with_length(SCRATCH_FILE_NAME, scratch.length, SCRATCH_FILE_NAME)?;
+    verify_file_digest(&file, scratch.length, &scratch.identity, SCRATCH_FILE_NAME)?;
+    Ok(Some(file))
+}
+
+/// Copies a verified immutable artifact to a new private path.
+pub fn copy_verified_file(
+    source: &std::fs::File,
+    destination: &Path,
+    expected_length: u64,
+    expected_digest: &[u8],
+    description: &str,
+) -> anyhow::Result<()> {
+    verify_file_digest(source, expected_length, expected_digest, description)?;
+    copy_exact(
+        source,
+        destination,
+        expected_length,
+        description,
+        "private scratch copy",
+    )?;
+    let copy = open_file_with_length(destination, expected_length, "private scratch copy")?;
+    verify_file_digest(
+        &copy,
+        expected_length,
+        expected_digest,
+        "private scratch copy",
+    )
+}
+
+fn validate_snapshot_directory(
+    directory: &OpenedSnapshotDirectory,
+    manifest: &SnapshotManifest,
+) -> anyhow::Result<()> {
+    let has_scratch = microvm::paired_scratch_block(manifest).is_some();
     let mut entries = HashSet::new();
     for name in directory.entry_names()? {
         anyhow::ensure!(
-            name == MANIFEST_FILE_NAME || name == STATE_FILE_NAME || name == MEMORY_FILE_NAME,
+            name == MANIFEST_FILE_NAME
+                || name == STATE_FILE_NAME
+                || name == MEMORY_FILE_NAME
+                || (has_scratch && name == SCRATCH_FILE_NAME),
             "unexpected artifact in snapshot directory: {}",
             directory.display_path(&name).display(),
         );
         entries.insert(name);
     }
     anyhow::ensure!(
-        entries.len() == 3
+        entries.len() == 3 + usize::from(has_scratch)
             && entries.contains(std::ffi::OsStr::new(MANIFEST_FILE_NAME))
             && entries.contains(std::ffi::OsStr::new(STATE_FILE_NAME))
-            && entries.contains(std::ffi::OsStr::new(MEMORY_FILE_NAME)),
+            && entries.contains(std::ffi::OsStr::new(MEMORY_FILE_NAME))
+            && (!has_scratch || entries.contains(std::ffi::OsStr::new(SCRATCH_FILE_NAME))),
         "snapshot directory is incomplete"
     );
     Ok(())

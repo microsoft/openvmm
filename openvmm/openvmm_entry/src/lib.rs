@@ -2820,8 +2820,12 @@ async fn run_control_inner(
     let microvm_restore = microvm::prepare_restore(&mut opt, restore.snapshot())?;
     let (mut vm_config, mut resources) =
         vm_config_from_command_line(driver, mesh, &opt, &microvm_restore).await?;
-    let mut microvm =
-        microvm::MicrovmLaunch::new(&opt, &vm_config, std::mem::take(&mut resources.microvm))?;
+    let mut microvm = microvm::MicrovmLaunch::new(
+        &opt,
+        &vm_config,
+        std::mem::take(&mut resources.microvm),
+        microvm_restore,
+    )?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc.vnc {
