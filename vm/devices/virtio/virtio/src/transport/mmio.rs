@@ -401,6 +401,7 @@ mod saved_state {
         use crate::transport::saved_state::state::CommonQueueState;
         use crate::transport::saved_state::state::CommonSavedState;
         use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateBlob;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf)]
@@ -419,16 +420,18 @@ mod saved_state {
             pub queues: Vec<SavedQueueState>,
             #[mesh(3)]
             pub interrupt_status: u32,
+            #[mesh(4)]
+            pub device_state: Option<SavedStateBlob>,
         }
     }
 
     use super::*;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
-    impl SaveRestore for VirtioMmioDevice {
+    impl AsyncSaveRestore for VirtioMmioDevice {
         type SavedState = state::SavedState;
 
-        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
+        async fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
             Ok(state::SavedState {
                 common: self.core.save_common()?,
                 queues: (0..self.core.queues.len())
@@ -436,11 +439,12 @@ mod saved_state {
                         common: self.core.save_queue_common(i),
                     })
                     .collect(),
+                device_state: self.core.take_device_state()?,
                 interrupt_status: self.mmio.interrupt_state.lock().status,
             })
         }
 
-        fn restore(
+        async fn restore(
             &mut self,
             state: Self::SavedState,
         ) -> Result<(), vmcore::save_restore::RestoreError> {
@@ -448,6 +452,7 @@ mod saved_state {
             self.core.restore_common(
                 &mut self.mmio,
                 &state.common,
+                &state.device_state,
                 state.queues.into_iter().map(|sq| (sq.common, 0)),
                 saved_queue_count,
             )?;
@@ -459,7 +464,7 @@ mod saved_state {
                 is.interrupt.set_level(is.status != 0);
             }
 
-            Ok(())
+            self.core.restore_device_state(state.device_state).await
         }
     }
 }
