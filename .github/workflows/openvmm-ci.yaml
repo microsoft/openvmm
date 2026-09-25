@@ -147,7 +147,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -259,12 +259,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -272,7 +272,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -604,12 +604,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -617,7 +617,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -775,12 +775,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -788,7 +788,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1012,12 +1012,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1025,7 +1025,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1242,7 +1242,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1432,12 +1432,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1445,7 +1445,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1676,12 +1676,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -1689,7 +1689,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1943,7 +1943,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2138,7 +2138,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2146,7 +2146,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2374,7 +2374,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2382,7 +2382,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2640,7 +2640,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2781,7 +2781,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -2998,7 +2998,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3215,7 +3215,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3432,7 +3432,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3650,7 +3650,7 @@ jobs:
     - job3
     - job4
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -3857,7 +3857,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job25-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3867,7 +3867,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4083,7 +4083,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4327,7 +4327,7 @@ jobs:
     - job3
     - job4
     - job9
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4568,7 +4568,7 @@ jobs:
     - job3
     - job4
     - job6
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4790,14 +4790,14 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job29-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
     needs:
     - job10
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -4899,7 +4899,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5034,7 +5034,7 @@ jobs:
       id-token: write
     needs:
     - job10
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5169,7 +5169,7 @@ jobs:
     needs:
     - job7
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5271,7 +5271,7 @@ jobs:
     needs:
     - job7
     - job8
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5373,7 +5373,7 @@ jobs:
     needs:
     - job5
     - job6
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5502,7 +5502,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -5592,7 +5592,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -5802,12 +5802,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -5815,7 +5815,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -6064,7 +6064,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6226,7 +6226,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6443,7 +6443,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6607,7 +6607,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6826,12 +6826,12 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
+    - 1ES.ImageOverride=ubuntu2404-amd64
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
@@ -6839,7 +6839,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
