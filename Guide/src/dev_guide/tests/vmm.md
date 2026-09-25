@@ -178,6 +178,15 @@ To run a **specific test** (or set of tests), use `--filter` with a
 cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
 ```
 
+```admonish note
+Tests that use the `snp_linux_direct_x64` configuration need an x86_64 AMD
+SEV-SNP host where OpenVMM selects MSHV. Petri skips them on hosts that are not
+AMD or that do not use MSHV. Petri cannot detect whether SNP is enabled, so
+these tests fail on an AMD MSHV host without SNP. To build them, the pinned
+`openvmm-deps` release must include the SNP guest kernel. Use
+`--filter "test(snp_linux_direct)"` to run them.
+```
+
 ### Targeting a Platform
 
 By default, `vmm-tests-run` builds for the current host. Use `--target` to
