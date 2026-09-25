@@ -191,6 +191,159 @@ pub enum GpadlPhase {
     },
 }
 
+// -- Event flag allocation -------------------------------------------------
+
+/// Errors returned by [`FlagAllocator`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FlagAllocError {
+    /// The flag pool is exhausted ([`FlagAllocator::MAX_FLAGS`] flags
+    /// are already allocated).
+    #[error("out of event flags")]
+    Exhausted,
+    /// The requested flag is 0 (reserved for the channel-manager
+    /// signal) or out of range.
+    #[error("invalid event flag {0}")]
+    InvalidFlag(u16),
+    /// The requested flag is already allocated (raised by
+    /// [`FlagAllocator::reserve`] on a restore path).
+    #[error("event flag {0} already in use")]
+    AlreadyInUse(u16),
+}
+
+/// Manages the pool of synic event flags reserved for channel
+/// redirected-interrupt targets.
+///
+/// Flag ids `1..=2047` can be allocated (flag 0 is reserved for the
+/// channel-manager signal). Callers ask for the next free flag via
+/// [`Self::allocate`], or reserve a specific one via [`Self::reserve`]
+/// on the restore path.
+///
+/// The wrapper owns the concrete mapping from an allocated flag to a
+/// live `pal_event::Event` (on OpenHCL) or in-guest interrupt vector
+/// (on opentmk). This allocator only tracks which numeric flag ids are
+/// currently in use.
+#[derive(Debug, Default)]
+pub struct FlagAllocator {
+    /// One entry per allocated flag; `true` means the flag is
+    /// currently in use. Indexed by `flag_id - 1` (flag 0 is
+    /// reserved).
+    used: alloc::vec::Vec<bool>,
+}
+
+impl FlagAllocator {
+    /// The maximum number of concurrent event flags the synic
+    /// supports.
+    pub const MAX_FLAGS: u16 = 2047;
+
+    /// Allocate the next free flag.
+    pub fn allocate(&mut self) -> Result<u16, FlagAllocError> {
+        let i = if let Some(i) = self.used.iter().position(|&used| !used) {
+            i
+        } else if self.used.len() < Self::MAX_FLAGS as usize {
+            self.used.push(false);
+            self.used.len() - 1
+        } else {
+            return Err(FlagAllocError::Exhausted);
+        };
+        self.used[i] = true;
+        Ok((i + 1) as u16)
+    }
+
+    /// Reserve a specific flag (used on the restore path). Returns
+    /// [`FlagAllocError::AlreadyInUse`] if the flag is already
+    /// allocated, or [`FlagAllocError::InvalidFlag`] if the flag id
+    /// is 0 or exceeds [`Self::MAX_FLAGS`].
+    pub fn reserve(&mut self, flag: u16) -> Result<(), FlagAllocError> {
+        if flag == 0 || flag > Self::MAX_FLAGS {
+            return Err(FlagAllocError::InvalidFlag(flag));
+        }
+        let i = flag as usize - 1;
+        if self.used.len() <= i {
+            self.used.resize(i + 1, false);
+        }
+        if self.used[i] {
+            return Err(FlagAllocError::AlreadyInUse(flag));
+        }
+        self.used[i] = true;
+        Ok(())
+    }
+
+    /// Free a previously-allocated flag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `flag` is 0 or was not currently allocated. The
+    /// caller is expected to only free flags it received from
+    /// [`Self::allocate`] or [`Self::reserve`].
+    pub fn free(&mut self, flag: u16) {
+        assert!(flag != 0 && flag <= Self::MAX_FLAGS);
+        let i = flag as usize - 1;
+        assert!(i < self.used.len() && self.used[i]);
+        self.used[i] = false;
+    }
+
+    /// Returns the number of flags currently allocated.
+    pub fn used_count(&self) -> usize {
+        self.used.iter().filter(|&&u| u).count()
+    }
+}
+
+#[cfg(test)]
+mod flag_alloc_tests {
+    use super::*;
+
+    #[test]
+    fn allocate_starts_at_1() {
+        let mut a = FlagAllocator::default();
+        assert_eq!(a.allocate().unwrap(), 1);
+        assert_eq!(a.allocate().unwrap(), 2);
+    }
+
+    #[test]
+    fn free_reuses_slot() {
+        let mut a = FlagAllocator::default();
+        let a1 = a.allocate().unwrap();
+        let a2 = a.allocate().unwrap();
+        a.free(a1);
+        assert_eq!(a.allocate().unwrap(), a1);
+        assert_ne!(a2, a1);
+    }
+
+    #[test]
+    fn reserve_specific_then_allocate_skips_reserved() {
+        let mut a = FlagAllocator::default();
+        a.reserve(5).unwrap();
+        assert_eq!(a.allocate().unwrap(), 1);
+        assert_eq!(a.allocate().unwrap(), 2);
+        assert_eq!(a.allocate().unwrap(), 3);
+        assert_eq!(a.allocate().unwrap(), 4);
+        assert_eq!(a.allocate().unwrap(), 6);
+    }
+
+    #[test]
+    fn reserve_zero_is_invalid() {
+        let mut a = FlagAllocator::default();
+        assert_eq!(a.reserve(0), Err(FlagAllocError::InvalidFlag(0)));
+    }
+
+    #[test]
+    fn double_reserve_fails() {
+        let mut a = FlagAllocator::default();
+        a.reserve(3).unwrap();
+        assert_eq!(a.reserve(3), Err(FlagAllocError::AlreadyInUse(3)));
+    }
+
+    #[test]
+    fn exhaust_flags() {
+        let mut a = FlagAllocator::default();
+        for _ in 0..FlagAllocator::MAX_FLAGS {
+            a.allocate().unwrap();
+        }
+        assert_eq!(a.allocate(), Err(FlagAllocError::Exhausted));
+    }
+}
+
 // -- Event and Action skeletons --------------------------------------------
 //
 // The full [`Event`] and [`Action`] enums, along with `ClientCore` and
