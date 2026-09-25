@@ -161,6 +161,7 @@ pub(crate) mod tests {
             command_line,
             Some((&network, microvm_network_attachment())),
             None,
+            None,
             1,
             1024,
             [
