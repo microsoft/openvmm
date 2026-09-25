@@ -4,6 +4,7 @@
 //! Command-line options of the microVM machine profile.
 
 use super::Options;
+use super::SerialConfigCli;
 use super::SmtConfigCli;
 use clap::ValueEnum;
 use openvmm_defs::config::X2ApicConfig;
@@ -110,7 +111,27 @@ impl Options {
                 && self.vmbus_com2_serial.is_none()
                 && self.debugcon.is_none()
                 && !self.serial_tx_only,
-            "microVM exposes only the portb serial device"
+            "microVM exposes only portb and virtio-console serial devices"
+        );
+        anyhow::ensure!(
+            self.virtio_console_pcie_port.is_none(),
+            "microVM requires virtio-console on its fixed MMIO transport"
+        );
+        if let Some(console) = &self.virtio_console {
+            anyhow::ensure!(
+                matches!(
+                    console,
+                    SerialConfigCli::Pipe(_)
+                        | SerialConfigCli::Tcp(_)
+                        | SerialConfigCli::Console
+                        | SerialConfigCli::None
+                ),
+                "microVM virtio-console requires listen=..., console, or none"
+            );
+        }
+        anyhow::ensure!(
+            self.virtio_console.is_some() || self.virtio_console_pcie_port.is_none(),
+            "--virtio-console-pcie-port requires --virtio-console"
         );
         anyhow::ensure!(
             self.disk.is_empty()
@@ -130,10 +151,8 @@ impl Options {
                 && self.virtio_pmem.is_none()
                 && !self.virtio_rng
                 && self.virtio_vsock_path.is_none()
-                && self.virtio_net.is_empty()
-                && self.virtio_console.is_none()
-                && self.virtio_console_pcie_port.is_none(),
-            "microVM does not expose virtio devices"
+                && self.virtio_net.is_empty(),
+            "microVM does not expose additional virtio devices"
         );
         #[cfg(target_os = "linux")]
         anyhow::ensure!(
@@ -194,6 +213,8 @@ mod tests {
     use clap::Parser;
     use openvmm_defs::microvm::MICROVM_BASE_COMMAND_LINE;
     use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::MICROVM_CONSOLE_COMMAND_LINE;
+    use openvmm_defs::microvm::append_microvm_virtio_discovery;
     use openvmm_defs::microvm::build_microvm_command_line;
     use test_with_tracing::test;
 
@@ -254,19 +275,38 @@ mod tests {
     #[test]
     fn test_microvm_command_line_is_owned_and_bounded() {
         assert_eq!(
-            build_microvm_command_line(&[]).unwrap(),
+            build_microvm_command_line(&[], false).unwrap(),
             MICROVM_BASE_COMMAND_LINE
         );
         assert_eq!(
-            build_microvm_command_line(&["foo=bar".into()]).unwrap(),
+            build_microvm_command_line(&["foo=bar".into()], false).unwrap(),
             format!("{MICROVM_BASE_COMMAND_LINE} foo=bar")
         );
+        assert_eq!(
+            build_microvm_command_line(&[], true).unwrap(),
+            MICROVM_CONSOLE_COMMAND_LINE
+        );
 
-        for reserved in ["earlycon=uart", "console=ttyS0", "nr_cpus=1"] {
-            assert!(build_microvm_command_line(&[reserved.into()]).is_err());
+        let mut with_devices = build_microvm_command_line(&[], true).unwrap();
+        append_microvm_virtio_discovery(&mut with_devices, true).unwrap();
+        assert_eq!(
+            with_devices,
+            format!("{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7")
+        );
+
+        for reserved in [
+            "earlycon=uart",
+            "console=ttyS0",
+            "virtio_mmio.device=bad",
+            "nr_cpus=1",
+        ] {
+            assert!(build_microvm_command_line(&[reserved.into()], false).is_err());
         }
-        assert!(build_microvm_command_line(&["foo=bar\0baz".into()]).is_err());
-        assert!(build_microvm_command_line(&["x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE)]).is_err());
+        assert!(build_microvm_command_line(&["foo=bar\0baz".into()], false).is_err());
+        assert!(
+            build_microvm_command_line(&["x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE)], false)
+                .is_err()
+        );
     }
 
     #[test]
@@ -284,6 +324,15 @@ mod tests {
             .unwrap();
             valid_mshv.validate_microvm_options().unwrap();
         }
+        let valid_console = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--virtio-console",
+            "listen=tcp:127.0.0.1:5555",
+        ])
+        .unwrap();
+        valid_console.validate_microvm_options().unwrap();
 
         for args in [
             vec!["openvmm", "--machine", "microvm", "--uefi"],
@@ -296,6 +345,15 @@ mod tests {
                 "microvm",
                 "--virtio-console",
                 "stderr",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--virtio-console",
+                "listen=tcp:127.0.0.1:5555",
+                "--virtio-console-pcie-port",
+                "port0",
             ],
             vec!["openvmm", "--machine", "microvm", "--net", "consomme"],
             vec![
