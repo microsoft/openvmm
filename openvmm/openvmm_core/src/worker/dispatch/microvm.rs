@@ -15,6 +15,7 @@ use crate::worker::memory_layout::ChipsetMmioRanges;
 use anyhow::Context;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
+use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
@@ -109,7 +110,7 @@ pub(super) struct SnapshotBoundary {
     /// Deferred snapshot PMIO requests awaiting an exact post-OUT boundary.
     requests: Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
     /// Notifies the controller after the worker establishes a boundary.
-    ready: Option<mesh::Sender<()>>,
+    ready: Option<mesh::Sender<MicrovmSnapshotScratchPolicy>>,
     /// Holds the vCPUs stopped while a boundary is active.
     stop_guard: Option<StopGuard>,
     /// Completes the guest's snapshot transaction when the boundary is released.
@@ -234,7 +235,7 @@ impl LoadedVm {
                 self.snapshot_boundary.transaction_complete = Some(request.transaction_complete);
                 self.snapshot_boundary.capture_wall_clock =
                     Some(std::time::SystemTime::now().into());
-                snapshot_ready.send(());
+                snapshot_ready.send(request.scratch_policy);
                 true
             }
             Err(error) => {

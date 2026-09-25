@@ -211,19 +211,11 @@ impl Options {
                 !self.memory.hugepages,
                 "microVM snapshot capture does not support explicit hugepage backing"
             );
-            anyhow::ensure!(
-                self.microvm.microvm_sandbox_block.is_empty(),
-                "microVM snapshot capture does not yet support sandbox blocks"
-            );
         }
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
                 self.net.is_empty(),
                 "microVM restore takes network addressing from saved state; do not pass --net"
-            );
-            anyhow::ensure!(
-                self.microvm.microvm_sandbox_block.is_empty(),
-                "microVM restore does not yet support sandbox blocks"
             );
         }
         anyhow::ensure!(
@@ -530,15 +522,7 @@ mod tests {
         .unwrap();
         capture.validate_microvm_options().unwrap();
 
-        for extra in [
-            vec!["--memory", "size=1G,shared=off"],
-            vec![
-                "--microvm-sandbox-block",
-                "distro:mem:1M,ro",
-                "--microvm-sandbox-block",
-                "scratch:mem:1M",
-            ],
-        ] {
+        for extra in [vec!["--memory", "size=1G,shared=off"]] {
             let options = Options::try_parse_from(
                 [
                     "openvmm",
@@ -577,17 +561,6 @@ mod tests {
         .unwrap();
         assert_eq!(restore.memory, Default::default());
         restore.validate_microvm_options().unwrap();
-        let restore_blocks = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--restore-snapshot",
-            "snapshot",
-            "--microvm-sandbox-block",
-            "distro:mem:1M,ro",
-        ])
-        .unwrap();
-        assert!(restore_blocks.validate_microvm_options().is_err());
     }
 
     #[cfg(guest_arch = "x86_64")]
