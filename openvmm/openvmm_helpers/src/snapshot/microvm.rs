@@ -2984,6 +2984,7 @@ mod tests {
             false,
             None,
             true,
+            false,
             &[
                 openvmm_defs::microvm::MicrovmSandboxBlockConfig {
                     role: openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
