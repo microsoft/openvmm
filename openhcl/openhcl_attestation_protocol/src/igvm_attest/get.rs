@@ -7,6 +7,8 @@
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
+use serde::Deserialize;
+use serde::Serialize;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -38,7 +40,7 @@ pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
 /// Current IGVM Attest response header version.
 pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: IgvmAttestResponseVersion =
-    IgvmAttestResponseVersion::VERSION_2;
+    IgvmAttestResponseVersion::VERSION_3;
 
 open_enum! {
     /// IGVM Attest response header versions.
@@ -48,12 +50,14 @@ open_enum! {
         VERSION_1 = 1,
         /// Version 2
         VERSION_2 = 2,
+        /// Version 3: the version 2 binary header followed by a JSON envelope.
+        VERSION_3 = 3,
     }
 }
 
 /// Current IGVM Attest request header version.
 pub const IGVM_ATTEST_REQUEST_CURRENT_VERSION: IgvmAttestRequestVersion =
-    IgvmAttestRequestVersion::VERSION_2;
+    IgvmAttestRequestVersion::VERSION_3;
 
 open_enum! {
     /// IGVM Attest request header versions.
@@ -63,7 +67,174 @@ open_enum! {
         VERSION_1 = 1,
         /// Version 2
         VERSION_2 = 2,
+        /// Version 3: supports enveloped key-release and wrapped-key responses.
+        /// AK certificate requests must continue to use version 2.
+        VERSION_3 = 3,
     }
+}
+
+/// Schema version of the JSON envelope following a version 3 response header.
+pub const IGVM_ATTEST_RESPONSE_SCHEMA_VERSION: u32 = 1;
+
+/// Request types supported by the version 3 response envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IgvmAttestResponseRequestType {
+    /// An Azure Key Vault key-release response (JSON or JWT).
+    KeyRelease,
+    /// A CVM Provisioning Service wrapped-key response (JSON).
+    WrappedKey,
+}
+
+/// Version 3 response body. The existing 32-byte binary header, including
+/// `IgvmErrorInfo`, precedes this JSON and is included in its `data_size`.
+/// Consumers must validate the schema version and expected request type.
+#[derive(Debug, Serialize)]
+pub struct IgvmAttestResponseEnvelope<Extensions = IgvmAttestResponseExtensions> {
+    /// Must be [`IGVM_ATTEST_RESPONSE_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Identifies the format of the original response in `payload`.
+    pub request_type: IgvmAttestResponseRequestType,
+    /// Original response as a UTF-8 JSON or JWT string, not a nested envelope.
+    pub payload: String,
+    /// Required metadata object with request-specific optional fields.
+    pub extensions: Extensions,
+}
+
+impl<'de, E: Deserialize<'de>> Deserialize<'de> for IgvmAttestResponseEnvelope<E> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Fields<E> {
+            schema_version: u32,
+            request_type: IgvmAttestResponseRequestType,
+            payload: String,
+            extensions: E,
+        }
+
+        let fields = deserialize_object::<D, Fields<E>>(deserializer)?;
+        Ok(Self {
+            schema_version: fields.schema_version,
+            request_type: fields.request_type,
+            payload: fields.payload,
+            extensions: fields.extensions,
+        })
+    }
+}
+
+// Derived struct deserializers also accept sequences. Require an object while
+// retaining serde's duplicate-field checks, without passing through a Value.
+fn deserialize_object<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for ObjectVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(ObjectVisitor(std::marker::PhantomData))
+}
+
+/// Optional version 3 key-release metadata. This is untrusted host input, not
+/// authenticated evidence of the key-release policy.
+#[derive(Debug, Default, Serialize)]
+pub struct IgvmAttestResponseExtensions {
+    /// 64-character hexadecimal SHA-256 digest. Consumers must validate this with
+    /// [`decode_key_release_context_hash`] before using it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_release_context_hash: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for IgvmAttestResponseExtensions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Fields {
+            #[serde(default, deserialize_with = "deserialize_optional_context_hash")]
+            key_release_context_hash: Option<String>,
+        }
+
+        let fields = deserialize_object::<D, Fields>(deserializer)?;
+        Ok(Self {
+            key_release_context_hash: fields.key_release_context_hash,
+        })
+    }
+}
+
+/// Version 3 wrapped-key metadata. No extensions are currently recognized;
+/// all fields, including duplicate unknown fields, are ignored.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct IgvmAttestWrappedKeyResponseExtensions {}
+
+impl<'de> Deserialize<'de> for IgvmAttestWrappedKeyResponseExtensions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ExtensionsVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ExtensionsVisitor {
+            type Value = IgvmAttestWrappedKeyResponseExtensions;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an extensions object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(IgvmAttestWrappedKeyResponseExtensions {})
+            }
+        }
+
+        deserializer.deserialize_map(ExtensionsVisitor)
+    }
+}
+
+fn deserialize_optional_context_hash<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    // Missing is allowed; explicit null (or any other non-string value) is not.
+    String::deserialize(deserializer).map(Some)
+}
+
+/// A context hash was not a 64-character hexadecimal SHA-256 digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidKeyReleaseContextHash;
+
+impl std::fmt::Display for InvalidKeyReleaseContextHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("key-release context hash must contain exactly 64 hexadecimal characters")
+    }
+}
+
+impl std::error::Error for InvalidKeyReleaseContextHash {}
+
+/// Decode exactly 32 bytes from 64 ASCII hex characters. Accepts either case;
+/// rejects prefixes, whitespace, separators, and incorrectly sized values.
+pub fn decode_key_release_context_hash(
+    value: &str,
+) -> Result<[u8; 32], InvalidKeyReleaseContextHash> {
+    if value.len() != 64 {
+        return Err(InvalidKeyReleaseContextHash);
+    }
+    let mut hash = [0; 32];
+    hex::decode_to_slice(value, &mut hash).map_err(|_| InvalidKeyReleaseContextHash)?;
+    Ok(hash)
+}
+
+/// Encode a SHA-256 context hash as canonical lowercase hex for claims and KDF.
+pub fn encode_key_release_context_hash(hash: &[u8; 32]) -> String {
+    hex::encode(hash)
 }
 
 /// Request base structure (C-style)
@@ -263,9 +434,9 @@ pub struct IgvmSignal {
     _reserved: u32,
 }
 
-/// The common response header that comply with both V1 and V2 Igvm attest response
+/// The common response header shared by V1, V2, and V3 Igvm attest responses.
 #[repr(C)]
-#[derive(Default, Debug, IntoBytes, FromBytes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestCommonResponseHeader {
     /// Data size
     pub data_size: u32,
@@ -521,5 +692,16 @@ pub mod runtime_claims {
         pub vmgs_provisioner: Option<VmgsProvisioner>,
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
+        /// Host-provided SHA-256 digest of the key-release context, encoded as
+        /// 64 hexadecimal characters. This is an unverified claim, not
+        /// proof of policy authenticity. This configuration type intentionally
+        /// retains the string; consumers validate it with
+        /// [`super::decode_key_release_context_hash`].
+        /// Boot adoption and hardware KDF normalize the value to lowercase.
+        ///
+        /// Omitted when unavailable to preserve existing runtime-claims JSON
+        /// and the serialized VM configuration used for hardware key derivation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub key_release_context_hash: Option<String>,
     }
 }

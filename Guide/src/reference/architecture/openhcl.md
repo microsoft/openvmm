@@ -59,6 +59,8 @@ For more details on the internal components and selected OpenHCL device paths, s
 
 - [Processes and Components](./openhcl/processes.md)
 - [Timekeeping](./timekeeping.md)
+- [Attestation and VMGS Protection](./openhcl/attestation.md)
+	- [IGVM Attestation Protocol](./openhcl/attestation_protocol.md)
 - [VMBus Relay and Device Interception](./openhcl/vmbus.md)
 - [Storage Translation](./openhcl/storage_translation.md)
 - [Storage Configuration Model](./openhcl/storage_configuration.md)
