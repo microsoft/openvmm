@@ -4,15 +4,12 @@
 //! File-system helpers for snapshot artifacts, including their
 //! platform-specific implementations: private files and directories,
 //! no-replace renames and directory flushes, directory-relative artifact
-//! access, exact-file hard links, and sparse-aware clone and copy with
-//! allocation accounting.
+//! access and file generations, exact-file hard links, and sparse-aware clone
+//! and copy with allocation accounting.
 
 use anyhow::Context;
-#[cfg(windows)]
 use std::io::Read;
-#[cfg(windows)]
 use std::io::Seek;
-#[cfg(windows)]
 use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
@@ -659,6 +656,10 @@ pub(super) struct OpenedSnapshotDirectory {
 }
 
 impl OpenedSnapshotDirectory {
+    pub(super) fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::open_impl(path, false)
+    }
+
     pub(super) fn open_for_publication(path: &Path) -> anyhow::Result<Self> {
         Self::open_impl(path, true)
     }
@@ -708,7 +709,6 @@ impl OpenedSnapshotDirectory {
         })
     }
 
-    #[cfg(not(windows))]
     pub(super) fn open_regular_file(
         &self,
         name: &str,
@@ -775,8 +775,72 @@ impl OpenedSnapshotDirectory {
         Ok(file)
     }
 
+    pub(super) fn open_file_with_length(
+        &self,
+        name: &str,
+        expected_length: u64,
+        artifact_name: &str,
+    ) -> anyhow::Result<std::fs::File> {
+        let file = self.open_regular_file(name, artifact_name)?;
+        let length = opened_file_generation(&file, artifact_name)?.length();
+        anyhow::ensure!(
+            length == expected_length,
+            "{artifact_name} size ({length} bytes) doesn't match manifest ({expected_length} bytes)",
+        );
+        Ok(file)
+    }
+
+    pub(super) fn entry_names(&self) -> anyhow::Result<Vec<std::ffi::OsString>> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::OwnedFd;
+            use std::os::unix::ffi::OsStrExt;
+
+            let directory: OwnedFd = self
+                .file
+                .try_clone()
+                .context("failed to duplicate snapshot directory handle")?
+                .into();
+            let mut directory = nix::dir::Dir::from_fd(directory).map_err(nix_error)?;
+            let mut names = Vec::new();
+            for entry in directory.iter() {
+                let entry = entry.map_err(nix_error)?;
+                let name = std::ffi::OsStr::from_bytes(entry.file_name().to_bytes());
+                if name != "." && name != ".." {
+                    names.push(name.to_owned());
+                }
+            }
+            Ok(names)
+        }
+        #[cfg(windows)]
+        {
+            pal::windows::fs::relative::directory_entry_names(&self.file)
+                .context("failed to enumerate opened snapshot directory")
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            fs_err::read_dir(&self.path)
+                .with_context(|| {
+                    format!(
+                        "failed to enumerate snapshot directory {}",
+                        self.path.display()
+                    )
+                })?
+                .map(|entry| {
+                    entry
+                        .context("failed to inspect snapshot directory entry")
+                        .map(|entry| entry.file_name())
+                })
+                .collect()
+        }
+    }
+
     pub(super) fn display_path(&self, name: impl AsRef<Path>) -> PathBuf {
         self.path.join(name)
+    }
+
+    pub(super) fn into_file(self) -> std::fs::File {
+        self.file
     }
 }
 
@@ -854,6 +918,116 @@ fn reject_windows_reparse_point(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OpenedFileGeneration {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OpenedFileGeneration {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+    length: u64,
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OpenedFileGeneration {
+    length: u64,
+}
+
+impl OpenedFileGeneration {
+    pub(super) fn length(self) -> u64 {
+        self.length
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn opened_file_generation(
+    file: &std::fs::File,
+    description: &str,
+) -> anyhow::Result<OpenedFileGeneration> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect opened {description}"))?;
+    Ok(OpenedFileGeneration {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        length: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(windows)]
+pub(super) fn opened_file_generation(
+    file: &std::fs::File,
+    description: &str,
+) -> anyhow::Result<OpenedFileGeneration> {
+    let identity = pal::windows::fs::relative::file_identity(file)
+        .with_context(|| format!("failed to query {description} FILE_ID_INFO and EOF"))?;
+    Ok(OpenedFileGeneration {
+        volume_serial_number: identity.volume_serial_number,
+        file_id: identity.file_id,
+        length: identity.end_of_file,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(super) fn opened_file_generation(
+    file: &std::fs::File,
+    description: &str,
+) -> anyhow::Result<OpenedFileGeneration> {
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect opened {description}"))?;
+    Ok(OpenedFileGeneration {
+        length: metadata.len(),
+    })
+}
+
+pub(super) fn read_bounded_open_file(
+    file: &std::fs::File,
+    maximum_size: u64,
+    description: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let generation = opened_file_generation(file, description)?;
+    let length = generation.length();
+    anyhow::ensure!(
+        length <= maximum_size,
+        "{description} is {length} bytes, exceeding the maximum of {maximum_size} bytes",
+    );
+    let capacity = usize::try_from(length).context("artifact length does not fit in usize")?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut reader = file
+        .try_clone()
+        .with_context(|| format!("failed to duplicate {description} handle"))?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .with_context(|| format!("failed to rewind {description}"))?;
+    reader
+        .take(maximum_size + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {description}"))?;
+    anyhow::ensure!(
+        bytes.len() as u64 == length && opened_file_generation(file, description)? == generation,
+        "{description} changed while it was being read",
+    );
+    Ok(bytes)
+}
+
 #[cfg(unix)]
 pub(super) fn sync_directory(path: &Path) -> anyhow::Result<()> {
     fs_err::File::open(path)
@@ -873,8 +1047,6 @@ pub(super) fn sync_directory(_path: &Path) -> anyhow::Result<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use std::io::Seek;
-    use std::io::SeekFrom;
 
     #[test]
     fn sparse_copy_fallbacks_preserve_extents_and_clone_independence() {
