@@ -2248,6 +2248,7 @@ fn parse_nic_config(
                 mac_address,
                 endpoint,
                 enable_rx_gso: false,
+                egress_policy: None,
                 save_restore: false,
                 static_ipv4: None,
                 effective_features: None,
@@ -2801,6 +2802,7 @@ async fn build_virtio_device(
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,
                 endpoint,
+                egress_policy: None,
                 save_restore: false,
                 static_ipv4: None,
                 effective_features: None,
