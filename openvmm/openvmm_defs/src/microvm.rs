@@ -475,6 +475,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
                 ("ioapic", "generic-ioapic"),
                 ("microvm-portb", "microvm-portb"),
                 ("microvm-shutdown", "microvm-shutdown"),
+                ("microvm-snapshot-request", "microvm-snapshot-request"),
                 ("pic", "pic"),
                 ("pit", "pit"),
             ],
