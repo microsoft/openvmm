@@ -177,6 +177,7 @@ pub mod net {
 
 pub mod console {
     pub mod attachment;
+    pub mod control;
 
     use mesh::MeshPayload;
     use vm_resource::Resource;
