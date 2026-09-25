@@ -31,7 +31,6 @@ use hvdef::HvMessageType;
 use hvdef::HvPartitionPropertyCode;
 use hvdef::Vtl;
 use hvdef::hypercall::HvRegisterAssoc;
-use pal::unix::pthread::Pthread;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
 use virt::Hv1;
@@ -260,11 +259,7 @@ impl virt::Partition for MshvPartition {
         if vp.needs_yield.request_yield() {
             let thread = vp.thread.read();
             if let Some(thread) = *thread {
-                if thread != Pthread::current() {
-                    thread
-                        .signal(libc::SIGRTMIN())
-                        .expect("thread cancel signal failed");
-                }
+                crate::run_vp::cancel(thread).expect("thread cancel signal failed");
             }
         }
     }
