@@ -72,6 +72,8 @@ pub struct VmWorkerParameters {
         Option<mesh::Receiver<chipset_resources::microvm::MicrovmSnapshotBoundaryRequest>>,
     /// Notifies the controller after the worker establishes the boundary.
     pub snapshot_ready: Option<mesh::Sender<()>>,
+    /// Whether this cold boot can publish a microVM snapshot.
+    pub snapshot_capture_enabled: bool,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,
     /// The VM RPC channel.
