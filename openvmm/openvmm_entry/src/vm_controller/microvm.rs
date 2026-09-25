@@ -33,6 +33,8 @@ pub(crate) struct MicrovmController {
     pub(crate) resources: MicrovmResources,
     /// Static identity of the microVM virtio-net device.
     pub(crate) network: Option<openvmm_defs::microvm::MicrovmNetworkConfig>,
+    /// Guest-visible policy of the active microVM filesystem.
+    pub(crate) filesystem: Option<openvmm_defs::microvm::MicrovmFilesystemConfig>,
     /// Automatic RAM backing created for snapshot capture.
     pub(crate) snapshot_memory_file: Option<tempfile::NamedTempFile>,
 }
@@ -148,11 +150,19 @@ impl VmController {
                 .network
                 .as_ref()
                 .zip(self.microvm.resources.network_attachment.clone());
+            let filesystem = self
+                .microvm
+                .filesystem
+                .as_ref()
+                .zip(self.microvm.resources.filesystem_root_path.as_deref())
+                .zip(self.microvm.resources.filesystem_attachment.clone())
+                .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment));
             let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
                 command_line,
                 network,
+                filesystem,
                 self.microvm.resources.console_attachment.clone(),
                 self.processors,
                 self.memory,
