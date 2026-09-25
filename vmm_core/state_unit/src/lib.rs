@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod start;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -69,7 +71,7 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(Debug, MeshPayload)]
 pub enum StateRequest {
     /// Start asynchronous operations.
-    Start(Rpc<(), ()>),
+    Start(FailableRpc<(), ()>),
 
     /// Stop asynchronous operations.
     Stop(Rpc<(), ()>),
@@ -95,7 +97,7 @@ pub enum StateRequest {
 #[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
-    async fn start(&mut self);
+    async fn start(&mut self) -> anyhow::Result<()>;
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
@@ -189,7 +191,7 @@ impl StateRequest {
     /// Runs this state request against `unit`.
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
-            StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::Start(rpc) => rpc.handle_failable(async |()| unit.start().await).await,
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
             StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
             StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
@@ -218,6 +220,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
 }
 
 #[derive(Debug)]
@@ -462,26 +465,16 @@ impl StateUnits {
     /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
-    pub async fn start_stopped_units(&mut self) {
+    pub async fn start_stopped_units(&mut self) -> anyhow::Result<()> {
         if self.is_running() {
-            self.start().await;
+            self.start().await?;
         }
+        Ok(())
     }
 
     /// Starts all the state units.
-    pub async fn start(&mut self) {
-        self.run_op(
-            "start",
-            None,
-            State::Stopped,
-            State::Starting,
-            State::Running,
-            StateRequest::Start,
-            |_, _| Some(()),
-            |unit| &unit.dependencies,
-        )
-        .await;
-        self.running = true;
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        self.start_with_rollback().await
     }
 
     /// Stops all the state units.
@@ -1007,6 +1000,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod start;
+
     use super::StateUnit;
     use super::StateUnits;
     use crate::run_unit;
@@ -1037,7 +1032,9 @@ mod tests {
     struct SavedState(bool);
 
     impl StateUnit for TestUnit {
-        async fn start(&mut self) {}
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         async fn stop(&mut self) {}
 
@@ -1079,7 +1076,9 @@ mod tests {
     }
 
     impl StateUnit for TestUnitSetDep {
-        async fn start(&mut self) {}
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         async fn stop(&mut self) {}
 
@@ -1131,13 +1130,13 @@ mod tests {
             .add("b")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
 
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
         units.stop().await;
-        units.start().await;
+        units.start().await.unwrap();
 
         units.stop().await;
 
@@ -1184,7 +1183,7 @@ mod tests {
                 )
             })
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         let state = units.save().await.unwrap();
