@@ -18,9 +18,11 @@ fuse.workspace = true
 inspect.workspace = true
 lx.workspace = true
 lxutil.workspace = true
+mesh.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
+event-listener.workspace = true
 futures.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true
