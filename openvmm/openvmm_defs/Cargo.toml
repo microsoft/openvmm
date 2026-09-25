@@ -12,8 +12,10 @@ openvmm_pcat_locator.workspace = true
 
 # vmcore
 memory_range = { workspace = true, features = ["mesh"] }
+state_unit.workspace = true
 vm_resource.workspace = true
 vmgs_resources.workspace = true
+vmcore.workspace = true
 
 vmotherboard.workspace = true
 floppy_resources.workspace = true
