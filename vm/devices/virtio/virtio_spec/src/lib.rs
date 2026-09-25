@@ -85,6 +85,28 @@ impl VirtioDeviceFeatures {
         self.set_bank(index, val);
         self
     }
+
+    /// Clears every feature selected by `disabled`.
+    pub fn without_bits(self, disabled: u64) -> Self {
+        Self::from_bits(self.into_bits() & !disabled)
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_feature_mask_removes_packed_ring_only() {
+        let features = VirtioDeviceFeatures::new()
+            .with_version_1(true)
+            .with_access_platform(true)
+            .with_ring_packed(true)
+            .without_bits(1 << 34);
+        assert!(features.version_1());
+        assert!(features.access_platform());
+        assert!(!features.ring_packed());
+    }
 }
 
 #[bitfield(u8)]
