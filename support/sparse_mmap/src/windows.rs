@@ -5,6 +5,8 @@
 
 #![cfg(windows)]
 
+pub(crate) mod copy_on_write;
+
 use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
 use Memory::GetLargePageMinimum;
