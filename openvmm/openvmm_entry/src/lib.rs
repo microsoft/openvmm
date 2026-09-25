@@ -397,6 +397,19 @@ async fn vm_config_from_command_line(
             SerialConfigCli::Tcp(addr) => {
                 Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
+            SerialConfigCli::ConnectPipe(path) => Some(
+                serial_io::connect::connect_serial_with_timeout(
+                    &path,
+                    Duration::from_millis(
+                        openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS,
+                    ),
+                )
+                .context("failed to connect serial")?,
+            ),
+            SerialConfigCli::ConnectTcp(addr) => Some(serial_io::connect::connect_tcp_serial(
+                &addr,
+                Duration::from_millis(openvmm_defs::microvm::MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS),
+            )?),
             SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
                 let config =

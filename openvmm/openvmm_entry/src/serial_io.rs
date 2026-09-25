@@ -15,6 +15,8 @@ use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
 
+pub(crate) mod connect;
+
 #[cfg(unix)]
 pub fn anonymous_serial_pair(
     driver: &(impl Driver + ?Sized),

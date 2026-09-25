@@ -399,6 +399,8 @@ The `BACKEND` argument is the same for all serial devices:
   * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
+  * `connect=PATH`: Connect to an existing named pipe or Unix socket.
+  * `connect=tcp:IP:PORT`: Connect to an existing TCP listener.
 
 ## Guest power events
 

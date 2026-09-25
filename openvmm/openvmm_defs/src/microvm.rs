@@ -65,6 +65,8 @@ pub const MICROVM_VIRTIO_FS_IRQ: u32 = 6;
 pub const MICROVM_VIRTIO_NET_KVM_IRQ: u32 = 10;
 /// Fixed microVM virtio-net interrupt on WHP.
 pub const MICROVM_VIRTIO_NET_WHP_IRQ: u32 = 5;
+/// MicroVM client console reconnect timeout.
+pub const MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS: u64 = 5_000;
 /// MicroVM virtio MMIO reservations in stable device order.
 pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
