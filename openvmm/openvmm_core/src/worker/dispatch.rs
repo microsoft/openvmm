@@ -1252,6 +1252,9 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let device_assignment_msi_iova_range =
             resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
+        let lazy_memory_registration =
+            microvm::uses_lazy_memory_registration(&cfg, shared_memory.as_ref());
+        let user_mode_memory_faults = !lazy_memory_registration;
 
         let partition_prototype = openvmm_defs::profile::ProfileSpan::start();
         let proto = hypervisor
@@ -1263,8 +1266,8 @@ impl InitializedVm {
                 nested_virt: cfg.hypervisor.nested_virt,
                 #[cfg(guest_arch = "aarch64")]
                 device_assignment_msi_iova_range,
-                user_mode_memory_faults: true,
-                lazy_memory_registration: false,
+                user_mode_memory_faults,
+                lazy_memory_registration,
                 versioned_cpu_contract: microvm::uses_versioned_cpu_contract(cfg.machine_profile),
             })
             .context("failed to create the prototype partition")?;
@@ -1339,6 +1342,7 @@ impl InitializedVm {
         };
         let resolved_layout = resolve_memory_layout(MemoryLayoutInput {
             node_mem_sizes: &node_mem_sizes,
+            memory_capacity: cfg.microvm.memory_capacity,
             layout: cfg.layout.clone(),
             pcie_root_complexes: &cfg.pcie_root_complexes,
             virtio_mmio_count,
@@ -1475,6 +1479,13 @@ impl InitializedVm {
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
+        memory_builder = microvm::add_snapshot_restore_backing(
+            memory_builder,
+            &cfg,
+            &mut ranges_by_node,
+            nodes_with_ranges,
+            &mut existing_mappable,
+        )?;
 
         for (vnode, ranges) in ranges_by_node.into_iter().enumerate() {
             if ranges.is_empty() {

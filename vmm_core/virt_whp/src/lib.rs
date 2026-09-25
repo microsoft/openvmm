@@ -1621,7 +1621,7 @@ impl VtlPartition {
         // for ROM regions, resulting in an extra syscall and C++ exception for
         // each such exit. We know locally whether memory is supposed to be
         // mapped writable, so we can avoid this.
-        // Pure writable-COW restores leave these faults to WHP instead,
+        // Pure writable-COW microVM restores leave these faults to WHP instead,
         // avoiding one VP exit and populate call per first-touch page.
         // TODO-aarch64
         if cfg!(guest_arch = "x86_64") && config.user_mode_memory_faults {
