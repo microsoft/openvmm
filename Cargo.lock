@@ -8042,6 +8042,8 @@ dependencies = [
  "libc",
  "pal",
  "parking_lot",
+ "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "trycopy",
  "windows-sys 0.61.0",
