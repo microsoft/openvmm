@@ -74,6 +74,14 @@ pub struct VmWorkerParameters {
     pub snapshot_ready: Option<mesh::Sender<()>>,
     /// Whether this cold boot can publish a microVM snapshot.
     pub snapshot_capture_enabled: bool,
+    /// Host downtime to apply before starting a restored VM.
+    pub restore_downtime: Option<std::time::Duration>,
+    /// Saved effective TSC frequency required by restore.
+    pub restore_tsc_frequency_hz: Option<u64>,
+    /// Saved local APIC timer frequency required by restore.
+    pub restore_apic_frequency_hz: Option<u64>,
+    /// Saved canonical CPU contract required by restore.
+    pub restore_cpu_contract: Option<Vec<u8>>,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,
     /// The VM RPC channel.
