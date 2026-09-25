@@ -1,19 +1,62 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The direct forwarding mode of the console worker.
+//! Console worker modes and the direct forwarding mode.
 //!
-//! In direct mode the worker forwards data between the virtio queues and a
-//! [`SerialIo`] backend.
+//! The worker runs in a [`ConsoleWorkerMode`]: direct forwarding between the
+//! virtio queues and a [`SerialIo`] backend. In direct mode a
+//! [`VirtioConsoleDisconnectPolicy`] selects whether guest output is discarded
+//! or retained while the backend is disconnected.
 
 use crate::BUF_SIZE;
+use crate::ConsoleWorker;
+use crate::VirtioConsoleDevice;
 use crate::WorkerError;
+use crate::spec::VirtioConsoleConfig;
 use futures::AsyncRead;
 use guestmem::GuestMemory;
+use inspect::InspectMut;
 use serial_core::SerialIo;
 use std::future::poll_fn;
 use std::pin::Pin;
+use task_control::TaskControl;
 use virtio::VirtioQueue;
+use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
+use vmcore::vm_task::VmTaskDriverSource;
+
+pub(crate) enum ConsoleWorkerMode {
+    Direct {
+        io: Box<dyn SerialIo>,
+        disconnect_policy: VirtioConsoleDisconnectPolicy,
+    },
+}
+
+impl InspectMut for ConsoleWorker {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        let ConsoleWorkerMode::Direct { io, .. } = &mut self.mode;
+        req.respond().field("mode", "direct").field_mut("io", io);
+    }
+}
+
+impl VirtioConsoleDevice {
+    /// Create a console with explicit behavior while its backend is disconnected.
+    pub fn new_with_policy(
+        driver_source: &VmTaskDriverSource,
+        io: Box<dyn SerialIo>,
+        disconnect_policy: VirtioConsoleDisconnectPolicy,
+    ) -> Self {
+        Self {
+            driver: driver_source.simple(),
+            config: VirtioConsoleConfig::default(),
+            worker: TaskControl::new(ConsoleWorker {
+                mode: ConsoleWorkerMode::Direct {
+                    io,
+                    disconnect_policy,
+                },
+            }),
+        }
+    }
+}
 
 /// Receive half of the direct forwarding loop.
 ///

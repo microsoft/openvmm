@@ -3,6 +3,8 @@
 
 //! Resource resolver for virtio-console devices.
 
+mod attachment;
+
 use crate::VirtioConsoleDevice;
 use async_trait::async_trait;
 use serial_core::resources::ResolveSerialBackendParams;
@@ -33,6 +35,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioConsoleHandle> for VirtioCon
         resource: VirtioConsoleHandle,
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        attachment::validate_attachment(resource.attachment.as_ref())?;
         let io = resolver
             .resolve(
                 resource.backend,
@@ -43,7 +46,11 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioConsoleHandle> for VirtioCon
             )
             .await?;
 
-        let device = VirtioConsoleDevice::new(input.driver_source, io.0.into_io());
+        let device = VirtioConsoleDevice::new_with_policy(
+            input.driver_source,
+            io.0.into_io(),
+            resource.disconnect_policy,
+        );
 
         Ok(device.into())
     }

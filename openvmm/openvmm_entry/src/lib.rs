@@ -1968,7 +1968,13 @@ async fn vm_config_from_command_line(
 
     if let Some(backend) = virtio_console_backend {
         let resource: Resource<VirtioDeviceHandle> =
-            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+            virtio_resources::console::VirtioConsoleHandle {
+                backend,
+                disconnect_policy:
+                    virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy::Discard,
+                attachment: None,
+            }
+            .into_resource();
         if let Some(pcie_port) = &opt.virtio_console_pcie_port {
             pcie_devices.push(PcieDeviceConfig {
                 port_name: pcie_port.clone(),

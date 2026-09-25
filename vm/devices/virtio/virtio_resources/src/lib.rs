@@ -151,6 +151,8 @@ pub mod net {
 }
 
 pub mod console {
+    pub mod attachment;
+
     use mesh::MeshPayload;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
@@ -160,6 +162,8 @@ pub mod console {
     #[derive(MeshPayload)]
     pub struct VirtioConsoleHandle {
         pub backend: Resource<SerialBackendHandle>,
+        pub disconnect_policy: attachment::VirtioConsoleDisconnectPolicy,
+        pub attachment: Option<attachment::VirtioConsoleAttachment>,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioConsoleHandle {
