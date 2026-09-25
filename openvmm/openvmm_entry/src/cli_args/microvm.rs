@@ -9,6 +9,7 @@ use super::SmtConfigCli;
 use clap::ValueEnum;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::microvm::MachineProfile;
+use std::path::PathBuf;
 
 /// Guest-visible machine profile.
 #[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
@@ -26,6 +27,18 @@ impl From<MachineProfileCli> for MachineProfile {
             MachineProfileCli::Microvm => Self::Microvm,
         }
     }
+}
+
+/// Options of the microVM machine profile.
+#[derive(clap::Args)]
+pub struct MicrovmCli {
+    /// Capture a microVM snapshot to this directory when the guest writes PMIO 0x605.
+    #[clap(long, value_name = "DIR", conflicts_with = "restore_snapshot")]
+    pub snapshot_destination: Option<PathBuf>,
+
+    /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
+    #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
+    pub snapshot_quiesce_timeout_ms: u64,
 }
 
 impl Options {
@@ -54,6 +67,24 @@ impl Options {
                 && matches!(self.x2apic, X2ApicConfig::Auto),
             "microVM owns CPU topology and APIC configuration"
         );
+        if self.microvm.snapshot_destination.is_some() {
+            anyhow::ensure!(
+                !self.private_memory(),
+                "microVM snapshot capture requires shared file-backed RAM"
+            );
+            anyhow::ensure!(
+                !self.memory.hugepages,
+                "microVM snapshot capture does not support explicit hugepage backing"
+            );
+            anyhow::ensure!(
+                self.microvm.snapshot_quiesce_timeout_ms != 0,
+                "microVM snapshot quiesce timeout must be nonzero"
+            );
+            anyhow::ensure!(
+                self.virtio_console.is_none(),
+                "microVM snapshot capture does not yet support --virtio-console"
+            );
+        }
         anyhow::ensure!(
             self.restore_snapshot.is_none(),
             "microVM does not support snapshot restore"
@@ -270,6 +301,55 @@ mod tests {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
         }
+    }
+
+    #[test]
+    fn test_microvm_snapshot_capture_options() {
+        let capture = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--processors",
+            "2",
+            "--snapshot-destination",
+            "snapshot",
+        ])
+        .unwrap();
+        assert_eq!(capture.microvm.snapshot_quiesce_timeout_ms, 5000);
+        capture.validate_microvm_options().unwrap();
+
+        for extra in [
+            vec!["--snapshot-quiesce-timeout-ms", "0"],
+            vec!["--memory", "size=1G,shared=off"],
+            vec!["--virtio-console", "none"],
+        ] {
+            let options = Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--snapshot-destination",
+                    "snapshot",
+                ]
+                .into_iter()
+                .chain(extra),
+            )
+            .unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--snapshot-destination",
+                "snapshot",
+                "--restore-snapshot",
+                "snapshot",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
