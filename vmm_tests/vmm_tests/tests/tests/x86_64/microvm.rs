@@ -31,6 +31,8 @@ async fn phase_1_lifecycle(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     const RAW_MARKER: &[u8] = b"\0\r\n\x7f\xffLINUX-DIRECT-ECHO\n";
     const COMMAND_PING: u8 = 1;
     const COMMAND_ECHO: u8 = 2;
+    const COMMAND_SNAPSHOT: u8 = 3;
+    const COMMAND_STATE: u8 = 5;
     const COMMAND_SHUTDOWN: u8 = 6;
 
     let script = format!(
@@ -49,6 +51,7 @@ async fn phase_1_lifecycle(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                  fi\n\
              done\n\
          }}\n\
+         generation=0\n\
          {}\
          while :; do\n\
              command=$(next_byte)\n\
@@ -58,6 +61,19 @@ async fn phase_1_lifecycle(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                      ;;\n\
                  {COMMAND_ECHO})\n\
                      {}\
+                     ;;\n\
+                 {COMMAND_SNAPSHOT})\n\
+                     {}\
+                     printf '\\x00' | dd of=/dev/port bs=1 seek=1541 count=1 conv=notrunc 2>/dev/null\n\
+                     generation=$((generation + 1))\n\
+                     {}\
+                     ;;\n\
+                 {COMMAND_STATE})\n\
+                     if [ \"$generation\" = 1 ]; then\n\
+                         {}\
+                     else\n\
+                         {}\
+                     fi\n\
                      ;;\n\
                  {COMMAND_SHUTDOWN})\n\
                      status=$(next_byte)\n\
@@ -73,6 +89,10 @@ async fn phase_1_lifecycle(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
         portb_output(BOOT_MARKER)?,
         portb_output(b"PONG\n")?,
         portb_output(RAW_MARKER)?,
+        portb_output(b"SNAPSHOT-REQUESTED\n")?,
+        portb_output(b"SNAPSHOT-CONTINUED=1\n")?,
+        portb_output(b"STATE=1\n")?,
+        portb_output(b"STATE-INVALID\n")?,
         portb_output(b"UNKNOWN-COMMAND\n")?,
     );
     let config = config.with_microvm_machine(1);
@@ -130,6 +150,27 @@ async fn phase_1_lifecycle(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
         .until_cancelled(vm.backend().wait_for_microvm_portb_bytes(RAW_MARKER))
         .await
         .context("microVM raw binary echo was not observed")??;
+
+    vm.backend()
+        .write_microvm_portb_input(&[COMMAND_SNAPSHOT])
+        .await?;
+    CancelContext::new()
+        .with_timeout(TIMEOUT)
+        .until_cancelled(
+            vm.backend()
+                .wait_for_microvm_portb_output("SNAPSHOT-CONTINUED=1"),
+        )
+        .await
+        .context("microVM snapshot request without a destination did not continue")??;
+
+    vm.backend()
+        .write_microvm_portb_input(&[COMMAND_STATE])
+        .await?;
+    CancelContext::new()
+        .with_timeout(TIMEOUT)
+        .until_cancelled(vm.backend().wait_for_microvm_portb_output("STATE=1"))
+        .await
+        .context("microVM guest state did not persist after the snapshot request")??;
 
     vm.backend()
         .write_microvm_portb_input(&[COMMAND_SHUTDOWN, 37])
