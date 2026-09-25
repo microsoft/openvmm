@@ -14,6 +14,7 @@ use anyhow::Context;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_defs::worker::SharedMemoryFd;
 use std::io;
@@ -27,6 +28,7 @@ pub(crate) struct MicrovmLaunch {
     effective_command_line: Option<String>,
     resources: MicrovmResources,
     network: Option<MicrovmNetworkConfig>,
+    filesystem: Option<MicrovmFilesystemConfig>,
     snapshot_destination: Option<PathBuf>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
     snapshot_memory_handle: Option<std::fs::File>,
@@ -123,6 +125,7 @@ impl MicrovmLaunch {
             effective_command_line,
             resources,
             network: vm_config.microvm.network.clone(),
+            filesystem: vm_config.microvm.filesystem.clone(),
             snapshot_destination,
             snapshot_memory_file,
             snapshot_memory_handle,
@@ -189,6 +192,11 @@ impl MicrovmLaunch {
             self.network
                 .as_ref()
                 .zip(resources.network_attachment.as_ref()),
+            self.filesystem
+                .as_ref()
+                .zip(resources.filesystem_root_path.as_deref())
+                .zip(resources.filesystem_attachment.as_ref())
+                .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment)),
             resources.console_attachment.as_ref(),
         )))
     }
@@ -218,6 +226,7 @@ impl MicrovmLaunch {
             effective_command_line: self.effective_command_line,
             resources: self.resources,
             network: self.network,
+            filesystem: self.filesystem,
             snapshot_memory_file: self.snapshot_memory_file,
         }
     }
