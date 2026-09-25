@@ -4,7 +4,8 @@
 //! microVM profile of the virtio-fs resource.
 //!
 //! [`VirtioFsProfile`] selects the standard virtio-fs device or the microVM
-//! device, which serves an attached host folder.
+//! device, which serves either an attached host folder or a dormant slot
+//! backed by [`super::VirtioFsBackend::Dormant`].
 
 use mesh::MeshPayload;
 
@@ -15,5 +16,8 @@ pub enum VirtioFsProfile {
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
+    },
+    MicrovmDormant {
+        stable_id: String,
     },
 }
