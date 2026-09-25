@@ -798,6 +798,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu: Vec::new(),
+            pcie_ports_without_save_restore: Vec::new(),
         })
     }
 }

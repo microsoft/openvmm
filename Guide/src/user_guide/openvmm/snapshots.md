@@ -176,7 +176,7 @@ OpenVMM snapshots:
 | VMBus Keyboard / Mouse / Video | VMBus | Yes |
 | Guest Emulation Log | VMBus | Yes |
 | virtio-blk | Virtio (PCI/MMIO) | Yes |
-| virtio-net | Virtio (PCI/MMIO) | Yes |
+| virtio-net | Virtio (PCI/MMIO) | Static identity only |
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
 | virtio-console | Virtio (PCI/MMIO) | Yes |

@@ -37,6 +37,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
         if let Some(max_queues) = resource.max_queues {
             builder = builder.max_queues(max_queues);
         }
+        builder = builder.save_restore_resource(&resource)?;
 
         let endpoint = resolver
             .resolve(
