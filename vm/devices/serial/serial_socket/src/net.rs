@@ -200,11 +200,11 @@ impl AsyncWrite for SocketSerialBackend {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(buf.len()));
         };
-        let r = ready!(Pin::new(current).poll_write(cx, buf));
-        if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-            return Poll::Ready(Ok(buf.len()));
+        let result = ready!(Pin::new(current).poll_write(cx, buf));
+        if result.is_err() {
+            self.current = None;
         }
-        Poll::Ready(r)
+        Poll::Ready(result)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
