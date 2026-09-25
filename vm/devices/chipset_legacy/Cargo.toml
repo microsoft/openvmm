@@ -22,6 +22,7 @@ power_resources.workspace = true
 vmcore.workspace = true
 
 async-trait.workspace = true
+anyhow.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
