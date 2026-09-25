@@ -127,6 +127,22 @@ impl VirtioTransportCore {
         Ok(())
     }
 
+    /// Stops device-specific host input before a snapshot boundary.
+    pub async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.device_sender
+            .call_failable(DeviceCommand::QuiesceInput, ())
+            .await?;
+        Ok(())
+    }
+
+    /// Resumes device-specific host input after a failed snapshot.
+    pub async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.device_sender
+            .call_failable(DeviceCommand::ResumeInput, ())
+            .await?;
+        Ok(())
+    }
+
     /// Take the device-private state captured when the queues stopped.
     pub fn take_device_state(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
         self.restore
