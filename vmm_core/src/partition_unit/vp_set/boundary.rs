@@ -54,7 +54,7 @@ mod tests {
 
     fn vp_set(count: u32) -> (VpSet, Vec<VpRunner>) {
         let (halt, _halt_recv) = Halt::new();
-        let mut vps = VpSet::new([None, None, None], Arc::new(halt));
+        let mut vps = VpSet::new([None, None, None], Arc::new(halt), count as usize);
         let runners = (0..count)
             .map(|index| {
                 vps.add(TargetVpInfo {
