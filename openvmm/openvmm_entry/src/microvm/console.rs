@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! MicroVM virtio-console attachments.
+//! MicroVM virtio-console and control-console attachments.
 
+use crate::Options;
 use crate::cli_args::SerialConfigCli;
+use crate::serial_io;
 use anyhow::Context;
 #[cfg(unix)]
 use std::io;
@@ -19,7 +21,24 @@ pub(super) type ConsoleEndpoint = (
 );
 
 pub(crate) const MICROVM_CONSOLE_STABLE_ID: &str = "console:microvm-virtio0";
+pub(crate) const MICROVM_CONTROL_CONSOLE_STABLE_ID: &str = "console:microvm-control0";
 pub(crate) const MICROVM_CONSOLE_ATTACHMENT_KIND: &str = "virtio-console";
+pub(crate) const MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND: &str = "virtio-control-console";
+
+pub(super) fn microvm_console_attachments_share_endpoint(
+    left: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    right: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+) -> bool {
+    left.identity_kind == right.identity_kind
+        && if left.identity_kind == "named-pipe" {
+            std::str::from_utf8(&left.identity)
+                .ok()
+                .zip(std::str::from_utf8(&right.identity).ok())
+                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        } else {
+            left.identity == right.identity
+        }
+}
 
 pub(crate) struct MicrovmConsoleSocketCleanup {
     #[cfg(unix)]
@@ -324,6 +343,64 @@ pub(crate) fn microvm_console_attachment_from_cli(
     )
 }
 
+fn microvm_control_console_attachment_from_cli(
+    config: &SerialConfigCli,
+) -> anyhow::Result<(
+    SerialConfigCli,
+    virtio_resources::console::attachment::VirtioConsoleAttachment,
+    openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+)> {
+    anyhow::ensure!(
+        matches!(config, SerialConfigCli::Pipe(_) | SerialConfigCli::None),
+        "microVM control console requires listen=... or none"
+    );
+    let config = match config {
+        #[cfg(unix)]
+        SerialConfigCli::Pipe(path) => {
+            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::fs::PermissionsExt;
+
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                std::env::current_dir()
+                    .context("failed to resolve current directory for control endpoint")?
+                    .join(path)
+            };
+            let parent = absolute
+                .parent()
+                .context("microVM control endpoint has no parent directory")?;
+            let metadata = fs_err::symlink_metadata(parent).with_context(|| {
+                format!(
+                    "failed to inspect microVM control endpoint parent {}",
+                    parent.display()
+                )
+            })?;
+            anyhow::ensure!(
+                metadata.is_dir()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.uid() == pal::unix::effective_user_id()
+                    && metadata.permissions().mode() & 0o7777 == 0o700,
+                "microVM control endpoint parent must be a non-symlink directory owned by OpenVMM with mode 0700"
+            );
+            SerialConfigCli::Pipe(canonical_microvm_console_path(&absolute)?)
+        }
+        _ => config.clone(),
+    };
+    let (effective, attachment, mut snapshot) = microvm_console_attachment_from_cli_with_identity(
+        &config,
+        MICROVM_CONTROL_CONSOLE_STABLE_ID,
+        MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+    )?;
+    snapshot.reconnect_policy = match config {
+        SerialConfigCli::Pipe(_) => "broker-authenticated-listener",
+        SerialConfigCli::None => "broker-disconnected",
+        _ => unreachable!("control-console backend was validated"),
+    }
+    .to_owned();
+    Ok((effective, attachment, snapshot))
+}
+
 pub(crate) fn validate_microvm_console_attachment_namespace(
     attachment: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
     snapshot_dir: &Path,
@@ -371,17 +448,20 @@ pub(crate) fn validate_microvm_console_attachment_namespace(
     Ok(())
 }
 
-pub(crate) fn microvm_console_attachment_from_snapshot(
+fn microvm_console_attachment_from_snapshot_with_identity(
     attachment: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
     requested: Option<&SerialConfigCli>,
+    stable_id: &'static str,
+    attachment_kind: &'static str,
+    control_console: bool,
 ) -> anyhow::Result<(
     SerialConfigCli,
     virtio_resources::console::attachment::VirtioConsoleAttachment,
     openvmm_helpers::snapshot::microvm::SnapshotAttachment,
 )> {
     anyhow::ensure!(
-        attachment.stable_id == MICROVM_CONSOLE_STABLE_ID
-            && attachment.kind == MICROVM_CONSOLE_ATTACHMENT_KIND
+        attachment.stable_id == stable_id
+            && attachment.kind == attachment_kind
             && attachment.length == 0,
         "snapshot has an invalid microVM console attachment"
     );
@@ -393,11 +473,26 @@ pub(crate) fn microvm_console_attachment_from_snapshot(
             "snapshot requires an explicitly approved restore-time client attachment"
         );
     }
+    if control_console
+        && matches!(
+            attachment.reconnect_policy.as_str(),
+            "broker-authenticated-listener"
+        )
+    {
+        anyhow::ensure!(
+            requested.is_some(),
+            "snapshot requires an explicitly approved restore-time control attachment"
+        );
+    }
     let config = match (
         attachment.reconnect_policy.as_str(),
         attachment.identity_kind.as_str(),
     ) {
-        ("recreate-listener", "unix-socket" | "named-pipe") => {
+        ("recreate-listener", "unix-socket" | "named-pipe")
+        | ("broker-authenticated-listener", "unix-socket" | "named-pipe")
+            if !control_console
+                || attachment.reconnect_policy == "broker-authenticated-listener" =>
+        {
             SerialConfigCli::Pipe(PathBuf::from(identity))
         }
         ("recreate-listener", "tcp") => SerialConfigCli::Tcp(
@@ -405,7 +500,7 @@ pub(crate) fn microvm_console_attachment_from_snapshot(
                 .parse()
                 .context("snapshot microVM console TCP identity is invalid")?,
         ),
-        ("reconnect-client", "unix-socket" | "named-pipe") => {
+        ("reconnect-client", "unix-socket" | "named-pipe") if !control_console => {
             SerialConfigCli::ConnectPipe(PathBuf::from(identity))
         }
         ("reconnect-client", "tcp") => SerialConfigCli::ConnectTcp(
@@ -416,18 +511,31 @@ pub(crate) fn microvm_console_attachment_from_snapshot(
         ("require-inherited-attachment", "provider") => requested
             .cloned()
             .context("snapshot requires --virtio-console console as a replacement attachment")?,
-        ("discard-while-disconnected", "disconnected") => SerialConfigCli::None,
+        ("discard-while-disconnected", "disconnected")
+        | ("broker-disconnected", "disconnected")
+            if !control_console || attachment.reconnect_policy == "broker-disconnected" =>
+        {
+            SerialConfigCli::None
+        }
         (policy, kind) => anyhow::bail!(
             "snapshot microVM console policy '{policy}' and backend kind '{kind}' are unsupported"
         ),
     };
-    let reconstructed = microvm_console_attachment_from_cli(&config)?;
+    let reconstructed = if control_console {
+        microvm_control_console_attachment_from_cli(&config)?
+    } else {
+        microvm_console_attachment_from_cli(&config)?
+    };
     anyhow::ensure!(
         reconstructed.2 == *attachment,
         "snapshot microVM console identity is not canonical"
     );
     if let Some(requested) = requested {
-        let requested = microvm_console_attachment_from_cli(requested)?;
+        let requested = if control_console {
+            microvm_control_console_attachment_from_cli(requested)?
+        } else {
+            microvm_console_attachment_from_cli(requested)?
+        };
         anyhow::ensure!(
             requested.2 == *attachment,
             "restore-time virtio-console does not match the snapshot attachment"
@@ -435,6 +543,81 @@ pub(crate) fn microvm_console_attachment_from_snapshot(
     }
 
     Ok(reconstructed)
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the management RPC restores through it")
+)]
+pub(crate) fn microvm_console_attachment_from_snapshot(
+    attachment: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    requested: Option<&SerialConfigCli>,
+) -> anyhow::Result<(
+    SerialConfigCli,
+    virtio_resources::console::attachment::VirtioConsoleAttachment,
+    openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+)> {
+    microvm_console_attachment_from_snapshot_with_identity(
+        attachment,
+        requested,
+        MICROVM_CONSOLE_STABLE_ID,
+        MICROVM_CONSOLE_ATTACHMENT_KIND,
+        false,
+    )
+}
+
+fn effective_microvm_console_with_identity(
+    requested: Option<&SerialConfigCli>,
+    restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
+    stable_id: &'static str,
+    attachment_kind: &'static str,
+    control_console: bool,
+) -> anyhow::Result<
+    Option<(
+        SerialConfigCli,
+        virtio_resources::console::attachment::VirtioConsoleAttachment,
+        openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    )>,
+> {
+    let Some(restore) = restore else {
+        return requested
+            .map(|requested| {
+                if control_console {
+                    microvm_control_console_attachment_from_cli(requested)
+                } else {
+                    microvm_console_attachment_from_cli(requested)
+                }
+            })
+            .transpose();
+    };
+    let has_console = restore
+        .devices
+        .iter()
+        .any(|device| device.stable_id == stable_id);
+    let saved_attachment = restore
+        .attachments
+        .iter()
+        .find(|attachment| attachment.stable_id == stable_id);
+    anyhow::ensure!(
+        has_console == saved_attachment.is_some(),
+        "snapshot microVM console device and attachment inventories disagree"
+    );
+    let Some(saved_attachment) = saved_attachment else {
+        anyhow::ensure!(
+            requested.is_none(),
+            "a restore-time virtio-console cannot be added to a snapshot without one"
+        );
+        return Ok(None);
+    };
+    Ok(Some(
+        microvm_console_attachment_from_snapshot_with_identity(
+            saved_attachment,
+            requested,
+            stable_id,
+            attachment_kind,
+            control_console,
+        )?,
+    ))
 }
 
 pub(super) fn effective_microvm_console(
@@ -447,39 +630,93 @@ pub(super) fn effective_microvm_console(
         openvmm_helpers::snapshot::microvm::SnapshotAttachment,
     )>,
 > {
-    let Some(restore) = restore else {
-        return requested
-            .map(microvm_console_attachment_from_cli)
-            .transpose();
-    };
-    let has_console = restore
-        .devices
-        .iter()
-        .any(|device| device.stable_id == MICROVM_CONSOLE_STABLE_ID);
-    let saved_attachment = restore
-        .attachments
-        .iter()
-        .find(|attachment| attachment.stable_id == MICROVM_CONSOLE_STABLE_ID);
-    anyhow::ensure!(
-        has_console == saved_attachment.is_some(),
-        "snapshot microVM console device and attachment inventories disagree"
-    );
-    let Some(saved_attachment) = saved_attachment else {
-        anyhow::ensure!(
-            requested.is_none(),
-            "a restore-time virtio-console cannot be added to a snapshot without one"
-        );
-        return Ok(None);
-    };
-    Ok(Some(microvm_console_attachment_from_snapshot(
-        saved_attachment,
+    effective_microvm_console_with_identity(
         requested,
-    )?))
+        restore,
+        MICROVM_CONSOLE_STABLE_ID,
+        MICROVM_CONSOLE_ATTACHMENT_KIND,
+        false,
+    )
+}
+
+pub(super) fn effective_microvm_control_console(
+    requested: Option<&SerialConfigCli>,
+    restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
+) -> anyhow::Result<
+    Option<(
+        SerialConfigCli,
+        virtio_resources::console::attachment::VirtioConsoleAttachment,
+        openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    )>,
+> {
+    effective_microvm_console_with_identity(
+        requested,
+        restore,
+        MICROVM_CONTROL_CONSOLE_STABLE_ID,
+        MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+        true,
+    )
+}
+
+fn random_nonzero_bytes<const N: usize>(description: &'static str) -> anyhow::Result<[u8; N]> {
+    loop {
+        let mut bytes = [0; N];
+        getrandom::fill(&mut bytes).with_context(|| format!("failed to generate {description}"))?;
+        if bytes != [0; N] {
+            return Ok(bytes);
+        }
+    }
+}
+
+pub(super) fn microvm_control_broker_config(
+    opt: &Options,
+    endpoint: &SerialConfigCli,
+) -> anyhow::Result<virtio_resources::console::control::VirtioControlConsoleBrokerConfig> {
+    let capability = if matches!(endpoint, SerialConfigCli::None) {
+        random_nonzero_bytes("disconnected control-console capability")?
+    } else {
+        anyhow::ensure!(
+            opt.microvm.microvm_control_auth_stdin,
+            "live microVM control console requires --microvm-control-auth-stdin"
+        );
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            serial_io::microvm::read_control_capability_from_stdin()
+                .context("failed to read control-console authentication capability from stdin")?
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            anyhow::bail!("secure live microVM control consoles are unavailable on this platform")
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let expected_peer_identity =
+        serial_core::LocalPeerIdentity::UnixUid(pal::unix::effective_user_id());
+    #[cfg(windows)]
+    let expected_peer_identity = {
+        let sid = pal::windows::security::user_sid::current_process_user_sid()
+            .context("failed to resolve the OpenVMM process user SID")?;
+        let (bytes, length) = sid.to_fixed_bytes();
+        serial_core::LocalPeerIdentity::windows_sid(bytes, length)
+            .context("failed to encode the OpenVMM process user SID")?
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let expected_peer_identity = serial_core::LocalPeerIdentity::Unsupported;
+
+    Ok(
+        virtio_resources::console::control::VirtioControlConsoleBrokerConfig {
+            instance_id: random_nonzero_bytes("control-console instance ID")?,
+            capability,
+            expected_peer_identity,
+            auth_timeout_ms: opt.microvm.microvm_control_auth_timeout_ms,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
     use test_with_tracing::test;
     use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
 
@@ -522,6 +759,20 @@ mod tests {
             validate_microvm_console_attachment_namespace(&attachment, Path::new("snapshot"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn named_pipe_endpoint_identity_is_case_insensitive() {
+        let mut left = socket_attachment(Path::new("unused"));
+        left.identity_kind = "named-pipe".to_owned();
+        left.identity = b"//./pipe/openvmm-microvm-Control".to_vec();
+        let mut right = left.clone();
+        right.identity = b"//./pipe/openvmm-microvm-control".to_vec();
+        assert!(microvm_console_attachments_share_endpoint(&left, &right));
+
+        left.identity_kind = "unix-socket".to_owned();
+        right.identity_kind = "unix-socket".to_owned();
+        assert!(!microvm_console_attachments_share_endpoint(&left, &right));
     }
 
     #[test]
@@ -602,13 +853,69 @@ mod tests {
         assert_eq!(restored_snapshot, snapshot);
     }
 
+    #[test]
+    fn control_attachment_has_distinct_identity_and_rejects_tcp() {
+        let (_, resource, snapshot) =
+            microvm_control_console_attachment_from_cli(&SerialConfigCli::None).unwrap();
+        assert_eq!(resource.stable_id, MICROVM_CONTROL_CONSOLE_STABLE_ID);
+        assert_eq!(snapshot.stable_id, MICROVM_CONTROL_CONSOLE_STABLE_ID);
+        assert_eq!(snapshot.kind, MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND);
+        assert_ne!(
+            snapshot.stable_id,
+            microvm_console_attachment_from_cli(&SerialConfigCli::None)
+                .unwrap()
+                .2
+                .stable_id
+        );
+
+        let (_, restored_resource, restored_snapshot) =
+            microvm_console_attachment_from_snapshot_with_identity(
+                &snapshot,
+                None,
+                MICROVM_CONTROL_CONSOLE_STABLE_ID,
+                MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND,
+                true,
+            )
+            .unwrap();
+        assert_eq!(restored_resource.stable_id, resource.stable_id);
+        assert_eq!(restored_snapshot, snapshot);
+
+        assert!(
+            microvm_control_console_attachment_from_cli(&SerialConfigCli::Tcp(
+                "127.0.0.1:5555".parse().unwrap()
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn disconnected_control_console_uses_fresh_nonzero_runtime_secrets() {
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--virtio-console",
+            "none",
+            "--microvm-control-console",
+            "none",
+        ])
+        .unwrap();
+        let first = microvm_control_broker_config(&options, &SerialConfigCli::None).unwrap();
+        let second = microvm_control_broker_config(&options, &SerialConfigCli::None).unwrap();
+        assert_ne!(first.instance_id, [0; 16]);
+        assert_ne!(second.instance_id, [0; 16]);
+        assert_ne!(first.instance_id, second.instance_id);
+        assert_ne!(first.capability, [0; 32]);
+        assert_ne!(second.capability, [0; 32]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn restore_bind_does_not_unlink_existing_socket() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("console.sock");
         let _existing = unix_socket::UnixListener::bind(&path).unwrap();
-        assert!(crate::serial_io::connect::bind_serial_without_cleanup(&path).is_err());
+        assert!(serial_io::connect::bind_serial_without_cleanup(&path).is_err());
         assert!(fs_err::symlink_metadata(&path).is_ok());
     }
 
