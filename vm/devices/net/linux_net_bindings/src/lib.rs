@@ -44,6 +44,12 @@ ioctl_write_ptr_bad!(
     gen_if::ifreq
 );
 
+// #define TUNSETPERSIST _IOW('T', 203, int)
+ioctl_write_int_bad!(
+    tun_set_persist,
+    request_code_write!(b'T', 203, size_of::<c_int>())
+);
+
 // #define TUNSETOFFLOAD _IOW('T', 208, unsigned int)
 // Note: the kernel reads the offload flags directly from the ioctl arg,
 // not via copy_from_user, so we must pass the value, not a pointer.
