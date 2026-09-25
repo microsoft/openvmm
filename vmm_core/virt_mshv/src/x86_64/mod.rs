@@ -414,6 +414,7 @@ impl MshvPartitionInner {
             // MSHV does not reliably deliver TSC deadline events to direct-boot
             // guests. Fall back to the LAPIC count-mode clockevent.
             tsc_deadline: false,
+            kvm_clock: false,
             vtom: None,
             physical_address_width: self
                 .vmfd

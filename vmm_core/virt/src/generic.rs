@@ -535,6 +535,26 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     #[cfg(guest_arch = "x86_64")]
     fn cpu_compatibility_contract(&self) -> crate::x86::CpuCompatibilityContract;
 
+    /// Returns the effective guest TSC frequency when applicable.
+    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Requests the effective guest TSC frequency when supported.
+    fn set_tsc_frequency_hz(&self, _frequency_hz: u64) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Advances any backend-specific guest clock by snapshot downtime.
+    fn advance_snapshot_time(&self, _duration: std::time::Duration) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Returns the effective LAPIC interrupt clock frequency when available.
+    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
+
     /// Returns a trait object for initial page imports during the initial start
     /// flow.
     fn supports_initial_page_acceptance(
@@ -762,6 +782,14 @@ pub trait Processor: InspectMut {
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_>;
+
+    /// Advances the stopped VTL0 TSC by the specified number of guest cycles.
+    ///
+    /// Backends may override this to adjust a running counter's offset directly.
+    #[cfg(guest_arch = "x86_64")]
+    fn advance_tsc(&mut self, cycles: u64) -> anyhow::Result<()> {
+        crate::x86::tsc::advance_tsc(self, cycles)
+    }
 }
 
 /// A source for [`StopVp`].
