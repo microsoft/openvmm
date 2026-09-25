@@ -10401,6 +10401,7 @@ name = "virtio_blk"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-trait",
  "disk_backend",
  "disk_hook",
@@ -10410,6 +10411,7 @@ dependencies = [
  "inspect_counters",
  "pal_async",
  "pal_event",
+ "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",
