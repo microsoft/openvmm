@@ -645,6 +645,7 @@ dependencies = [
 name = "chipset_device_resources"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "guestmem",
