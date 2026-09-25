@@ -15,7 +15,7 @@ pub mod restore;
 pub use publish::write_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 4;
+pub const MANIFEST_VERSION: u32 = 5;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -45,10 +45,10 @@ pub struct SnapshotManifest {
     /// Length of `state.bin` in bytes.
     #[mesh(8)]
     pub state_size_bytes: u64,
-    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3 and v4.
+    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3 through v5.
     #[mesh(9)]
     pub state_sha256: Vec<u8>,
-    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3 and v4.
+    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3 through v5.
     #[mesh(10)]
     pub memory_sha256: Vec<u8>,
     /// Authoritative machine composition for versioned machine profiles.
@@ -63,6 +63,15 @@ pub struct SnapshotManifest {
     /// Fully qualified protobuf root type stored in `state.bin`.
     #[mesh(14)]
     pub saved_state_root_type: String,
+    /// Sandbox capture tier. Empty for blockless microVM snapshots.
+    #[mesh(15)]
+    pub snapshot_tier: String,
+    /// `clone` for reusable artifacts or `resume` for single-use artifacts.
+    #[mesh(16)]
+    pub restore_policy: String,
+    /// Bitmask of configuration sections consumed before capture.
+    #[mesh(17)]
+    pub consumed_config_sections: u32,
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.

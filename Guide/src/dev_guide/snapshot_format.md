@@ -23,22 +23,18 @@ The manifest is a protobuf message defined as
 in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
 crate's protobuf encoding.
 
-New snapshots use manifest version 4, which records a format magic, the
-saved-state schema version and protobuf root type, and the exact length of
-`state.bin`. The legacy `state_sha256` and `memory_sha256` protobuf tags remain
-reserved so version 2 manifests can be decoded; versions 3 and 4 require both
-fields to be absent. Restore accepts versions 2 through 4; only version 4 may
-contain microVM sandbox blocks.
-
-Reading a snapshot bounds `manifest.bin` to 1 MiB and `state.bin` to 256 MiB,
-validates the manifest format before it reads `state.bin`, and requires
-`state.bin` and `memory.bin` to have the lengths that the manifest records.
+New snapshots use manifest version 5. The legacy `state_sha256` and
+`memory_sha256` protobuf tags remain reserved so version 2 manifests can be
+decoded; versions 3 through 5 require both fields to be absent. Restore accepts
+versions 2 through 4 for compatibility. Tiered microVM snapshots require version
+5, which records capture tier, clone/resume policy, and consumed configuration
+sections.
 
 The default format is a local machine-state contract, not an authenticated
 container. All versions receive the same regular-file, no-follow/no-reparse,
 bounded decoding, exact-length, inventory, and machine-contract validation,
 but the on-disk format does not authenticate same-length payload changes.
-Version 4 records the SHA-256 and exact length of `scratch.img`, because guest
+Versions 4 and 5 record the SHA-256 and exact length of `scratch.img`, because guest
 RAM and a mounted writable filesystem must be restored as one exact pair.
 Export or transport layers must provide broader integrity and authentication
 outside this format.
@@ -72,23 +68,28 @@ fails after the automatic link exists, OpenVMM removes and durably flushes the
 private staging directory before allowing rollback; uncertain cleanup makes
 the source terminate instead of resume.
 
-## Restore
+Restore likewise opens the snapshot directory once and resolves its artifacts
+relative to that handle. Windows uses read-only handles with `FILE_SHARE_READ`
+only, rejects reparse points, compares `FILE_ID_INFO` and EOF before and after
+creating the private COW section, and keeps the directory and artifact guards
+in the VM worker until teardown. Linux keeps the exact `O_NOFOLLOW` directory
+and regular-file descriptors and rejects observable metadata changes before
+handoff, so renaming or replacing the original path cannot substitute another
+generation. Linux file descriptors do not provide mandatory write exclusion;
+deployments that need authenticated or write-proof local artifacts must add a
+stronger mode such as a lease, fs-verity, or a verified artifact broker.
 
-Restore opens the snapshot directory once and resolves its artifacts relative
-to that handle. The directory must contain exactly `manifest.bin`, `state.bin`,
-and `memory.bin`, plus `scratch.img` when the manifest declares a paired
-scratch, each a regular file. Guest RAM is a private copy-on-write
-mapping of the opened `memory.bin` handle, so guest writes never reach the
-snapshot and it can be restored repeatedly. Windows uses read-only handles with
-`FILE_SHARE_READ` only, rejects reparse points, compares `FILE_ID_INFO` and EOF
-before and after creating the private COW section, and keeps the directory and
-artifact guards in the VM worker until teardown. Linux keeps the exact
-`O_NOFOLLOW` directory and regular-file descriptors and rejects observable
-metadata changes before handoff, so renaming or replacing the original path
-cannot substitute another generation. Linux file descriptors do not provide
-mandatory write exclusion; deployments that need authenticated or write-proof
-local artifacts must add a stronger mode such as a lease, fs-verity, or a
-verified artifact broker.
+## Scratch (`scratch.img`)
+
+The microVM block contract records every fixed role, access mode, geometry, and
+immutable read-only layer digest. A paired capture copies the exact opened
+writable scratch handle into the same staging directory after device queues
+drain, verifies its SHA-256, and publishes it atomically with VM state. Restore
+verifies the artifact before worker construction and makes a private copy for
+each process, so repeated restores cannot mutate the snapshot.
+
+A pre-mount capture instead records the `fresh` scratch policy and geometry,
+contains no `scratch.img`, and requires a new matching scratch file on restore.
 
 ## Code references
 

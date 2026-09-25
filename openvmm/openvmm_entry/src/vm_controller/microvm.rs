@@ -24,6 +24,8 @@ pub(crate) struct MicrovmController {
         Option<mesh::Receiver<chipset_resources::microvm::MicrovmSnapshotScratchPolicy>>,
     /// Directory receiving a guest-requested snapshot.
     pub(crate) snapshot_destination: Option<PathBuf>,
+    /// Sandbox capture tier of a guest-requested snapshot.
+    pub(crate) snapshot_tier: Option<crate::cli_args::microvm::SnapshotTierCli>,
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     pub(crate) snapshot_quiesce_timeout: Duration,
     /// Hypervisor backend recorded in captured machine contracts.
@@ -87,6 +89,29 @@ impl VmController {
                             })),
                 "microVM snapshot requires either no blocks or at least one lower layer and scratch"
             );
+            if self.microvm.resources.sandbox_block_sources.is_empty() {
+                anyhow::ensure!(
+                    self.microvm.snapshot_tier.is_none(),
+                    "blockless microVM snapshot capture does not use a tier"
+                );
+            } else {
+                let tier = self
+                    .microvm
+                    .snapshot_tier
+                    .context("microVM sandbox snapshot capture requires a tier")?;
+                let paired_scratch = scratch_policy
+                    == chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired;
+                anyhow::ensure!(
+                    paired_scratch == tier.requires_paired_scratch(),
+                    "snapshot tier '{}' requires {} scratch capture",
+                    tier.manifest_name(),
+                    if tier.requires_paired_scratch() {
+                        "paired"
+                    } else {
+                        "fresh"
+                    }
+                );
+            }
             anyhow::ensure!(
                 fs_err::symlink_metadata(&destination)
                     .is_err_and(|error| { error.kind() == std::io::ErrorKind::NotFound }),
@@ -179,10 +204,18 @@ impl VmController {
                 .zip(self.microvm.resources.filesystem_root_path.as_deref())
                 .zip(self.microvm.resources.filesystem_attachment.clone())
                 .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment));
-            let blocks = crate::storage_builder::microvm::snapshot_block_contract(
+            let mut blocks = crate::storage_builder::microvm::snapshot_block_contract(
                 &self.microvm.resources.sandbox_block_sources,
                 scratch_policy,
             )?;
+            if self.microvm.snapshot_tier
+                == Some(crate::cli_args::microvm::SnapshotTierCli::Platform)
+            {
+                for block in blocks.iter_mut().filter(|block| block.read_only) {
+                    block.identity_kind = "unbound".to_owned();
+                    block.identity.clear();
+                }
+            }
             let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
@@ -217,6 +250,32 @@ impl VmController {
                     openvmm_helpers::snapshot::format::SAVED_STATE_SCHEMA_VERSION,
                 saved_state_root_type: openvmm_helpers::snapshot::format::SAVED_STATE_ROOT_TYPE
                     .to_owned(),
+                snapshot_tier: self
+                    .microvm
+                    .snapshot_tier
+                    .map(crate::cli_args::microvm::SnapshotTierCli::manifest_name)
+                    .unwrap_or_default()
+                    .to_owned(),
+                restore_policy: self
+                    .microvm
+                    .snapshot_tier
+                    .map(crate::cli_args::microvm::SnapshotTierCli::restore_policy)
+                    .unwrap_or_default()
+                    .to_owned(),
+                consumed_config_sections: match self.microvm.snapshot_tier {
+                    Some(crate::cli_args::microvm::SnapshotTierCli::Platform) => {
+                        openvmm_helpers::snapshot::format::SNAPSHOT_CONFIG_INVARIANTS
+                    }
+                    Some(
+                        crate::cli_args::microvm::SnapshotTierCli::WorkloadStart
+                        | crate::cli_args::microvm::SnapshotTierCli::InstanceCheckpoint,
+                    ) => {
+                        openvmm_helpers::snapshot::format::SNAPSHOT_CONFIG_INVARIANTS
+                            | openvmm_helpers::snapshot::format::SNAPSHOT_CONFIG_IMAGE_BINDING
+                            | openvmm_helpers::snapshot::format::SNAPSHOT_CONFIG_SANDBOX
+                    }
+                    None => 0,
+                },
             };
             let saved_state_bytes = mesh::payload::encode(response.saved_state);
             let memory_file = self

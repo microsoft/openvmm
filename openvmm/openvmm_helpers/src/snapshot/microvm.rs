@@ -7,6 +7,13 @@ use super::SnapshotManifest;
 use super::format::SCRATCH_FILE_NAME;
 #[cfg(test)]
 use super::format::SHA256_SIZE;
+use super::format::SNAPSHOT_CONFIG_ALL;
+use super::format::SNAPSHOT_CONFIG_INVARIANTS;
+use super::format::SNAPSHOT_RESTORE_POLICY_CLONE;
+use super::format::SNAPSHOT_RESTORE_POLICY_RESUME;
+use super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+use super::format::SNAPSHOT_TIER_PLATFORM;
+use super::format::SNAPSHOT_TIER_WORKLOAD_START;
 use super::format::validate_sha256;
 use super::format::verify_digest;
 use anyhow::Context;
@@ -925,7 +932,18 @@ pub fn validate_microvm_machine_contract(
         "snapshot filesystem policy doesn't match the requested machine"
     );
     anyhow::ensure!(
-        contract.microvm_sandbox_blocks == expected.microvm_sandbox_blocks,
+        {
+            let mut expected_blocks = expected.microvm_sandbox_blocks.clone();
+            if manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM {
+                for block in &mut expected_blocks {
+                    if block.read_only {
+                        block.identity_kind = "unbound".to_owned();
+                        block.identity.clear();
+                    }
+                }
+            }
+            contract.microvm_sandbox_blocks == expected_blocks
+        },
         "snapshot sandbox block topology or identity doesn't match the requested machine"
     );
     anyhow::ensure!(
@@ -1318,6 +1336,157 @@ pub(super) fn validate_machine_contract_shape(
     Ok(())
 }
 
+pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Result<()> {
+    let Some(contract) = manifest.machine_contract.as_ref() else {
+        anyhow::ensure!(
+            manifest.snapshot_tier.is_empty()
+                && manifest.restore_policy.is_empty()
+                && manifest.consumed_config_sections == 0,
+            "snapshot tier metadata requires a microVM machine contract"
+        );
+        return Ok(());
+    };
+    if contract.microvm_sandbox_blocks.is_empty() {
+        anyhow::ensure!(
+            manifest.snapshot_tier.is_empty()
+                && manifest.restore_policy.is_empty()
+                && manifest.consumed_config_sections == 0,
+            "snapshot tier metadata requires microVM sandbox blocks"
+        );
+        return Ok(());
+    }
+
+    let paired_scratch = paired_scratch_block(manifest).is_some();
+    let expected_consumed_sections = match manifest.snapshot_tier.as_str() {
+        SNAPSHOT_TIER_PLATFORM => SNAPSHOT_CONFIG_INVARIANTS,
+        SNAPSHOT_TIER_WORKLOAD_START | SNAPSHOT_TIER_INSTANCE_CHECKPOINT => SNAPSHOT_CONFIG_ALL,
+        _ => 0,
+    };
+    let valid = manifest.consumed_config_sections == expected_consumed_sections
+        && matches!(
+            (
+                manifest.snapshot_tier.as_str(),
+                manifest.restore_policy.as_str(),
+                paired_scratch,
+            ),
+            (SNAPSHOT_TIER_PLATFORM, SNAPSHOT_RESTORE_POLICY_CLONE, false)
+                | (
+                    SNAPSHOT_TIER_WORKLOAD_START,
+                    SNAPSHOT_RESTORE_POLICY_CLONE,
+                    true
+                )
+                | (
+                    SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+                    SNAPSHOT_RESTORE_POLICY_RESUME,
+                    true
+                )
+        );
+    anyhow::ensure!(
+        valid,
+        "snapshot tier '{}', restore policy '{}', and scratch policy are not a canonical microVM combination",
+        manifest.snapshot_tier,
+        manifest.restore_policy,
+    );
+    let expected_tier_token = format!("nvx_snapshot_tier={}", manifest.snapshot_tier);
+    let tier_tokens = contract
+        .effective_command_line
+        .split_ascii_whitespace()
+        .filter(|token| token.starts_with("nvx_snapshot_tier="))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        tier_tokens == [expected_tier_token.as_str()],
+        "snapshot tier '{}' does not match its saved host policy",
+        manifest.snapshot_tier,
+    );
+    let layers_are_unbound = contract
+        .microvm_sandbox_blocks
+        .iter()
+        .filter(|block| block.read_only)
+        .all(|block| block.identity_kind == "unbound" && block.identity.is_empty());
+    anyhow::ensure!(
+        layers_are_unbound == (manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM),
+        "snapshot layer identity binding does not match tier '{}'",
+        manifest.snapshot_tier,
+    );
+    if manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM {
+        let expected_tsc_frequency = format!("tsc_early_khz={}", contract.tsc_frequency_hz / 1000);
+        let tsc_frequency_tokens = contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| token.starts_with("tsc_early_khz="))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            tsc_frequency_tokens == [expected_tsc_frequency.as_str()],
+            "platform snapshot command line TSC frequency does not match its machine contract"
+        );
+        let apic_frequency_tokens = contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| token.starts_with("lapic_timer_hz="))
+            .collect::<Vec<_>>();
+        if !apic_frequency_tokens.is_empty() {
+            let expected = contract
+                .apic_frequency_hz
+                .map(|frequency| format!("lapic_timer_hz={frequency}"));
+            anyhow::ensure!(
+                expected
+                    .as_deref()
+                    .is_some_and(|expected| apic_frequency_tokens == [expected]),
+                "platform snapshot command line LAPIC frequency does not match its machine contract"
+            );
+        }
+        let processor_limit_tokens = contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| token.starts_with("nr_cpus="))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            processor_limit_tokens.len() <= 1,
+            "platform snapshot command line contains duplicate processor capacity"
+        );
+        if let Some(processor_limit) = processor_limit_tokens.first() {
+            let expected = format!("nr_cpus={}", contract.topology.apic_ids.len());
+            anyhow::ensure!(
+                **processor_limit == expected,
+                "platform snapshot command line processor capacity does not match its machine contract"
+            );
+        }
+        anyhow::ensure!(
+            contract
+                .effective_command_line
+                .split_ascii_whitespace()
+                .all(platform_command_line_token_is_invariant),
+            "platform snapshot command line contains tenant or unsupported configuration"
+        );
+    }
+    Ok(())
+}
+
+fn platform_command_line_token_is_invariant(token: &str) -> bool {
+    matches!(
+        token,
+        "earlycon=xe9"
+            | "console=hvc0"
+            | "console=hvc1"
+            | "reboot=t"
+            | "panic=-1"
+            | "nvx_sandbox=1"
+            | "nvx_config=0xd0010000,65536"
+            | "nvx_snapshot_tier=platform"
+    ) || token.starts_with("tsc_early_khz=")
+        || token.starts_with("nr_cpus=")
+        || token.starts_with("lapic_timer_hz=")
+        || [
+            "virtio_mmio.device=",
+            "virtnet_ip=",
+            "virtnet_mask=",
+            "virtnet_gw=",
+            "virtnet_dns=",
+        ]
+        .iter()
+        .any(|prefix| token.starts_with(prefix))
+}
+
 fn ensure_unique<T>(values: &[T], description: &str) -> anyhow::Result<()>
 where
     T: Eq + std::hash::Hash,
@@ -1359,8 +1528,11 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
             physical_block_size: 4096,
         },
     ];
-    contract.set_effective_command_line("console=hvc0".to_owned());
+    contract.set_effective_command_line("console=hvc0 nvx_snapshot_tier=workload-start".to_owned());
     manifest.machine_contract = Some(contract);
+    manifest.snapshot_tier = SNAPSHOT_TIER_WORKLOAD_START.to_owned();
+    manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
+    manifest.consumed_config_sections = SNAPSHOT_CONFIG_ALL;
     manifest
 }
 
@@ -1447,6 +1619,7 @@ mod tests {
     use super::super::format::LEGACY_SNAPSHOT_FORMAT_MAGIC;
     use super::super::format::PREVIOUS_MANIFEST_VERSION;
     use super::super::format::PREVIOUS_SNAPSHOT_FORMAT_MAGIC;
+    use super::super::format::validate_manifest_version;
     use super::super::tests::test_manifest;
     use super::super::validate_manifest;
     use super::*;
@@ -1950,6 +2123,57 @@ mod tests {
     }
 
     #[test]
+    fn platform_snapshot_checks_apic_frequency_parameter() {
+        for (parameter, frequency, valid) in [
+            ("", Some(1_000_000_000), true),
+            ("lapic_timer_hz=1000000000", Some(1_000_000_000), true),
+            ("lapic_timer_hz=200000000", Some(1_000_000_000), false),
+            ("lapic_timer_hz=1000000000", None, false),
+            (
+                "lapic_timer_hz=1000000000 lapic_timer_hz=1000000000",
+                Some(1_000_000_000),
+                false,
+            ),
+        ] {
+            let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+            manifest.snapshot_tier = SNAPSHOT_TIER_PLATFORM.to_owned();
+            manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
+            manifest.consumed_config_sections = SNAPSHOT_CONFIG_INVARIANTS;
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            for block in contract
+                .microvm_sandbox_blocks
+                .iter_mut()
+                .filter(|block| block.read_only)
+            {
+                block.identity_kind = "unbound".to_owned();
+                block.identity.clear();
+            }
+            let scratch = contract.microvm_sandbox_blocks.last_mut().unwrap();
+            scratch.identity_kind = "fresh".to_owned();
+            scratch.identity.clear();
+            scratch.artifact.clear();
+            contract.apic_frequency_hz = frequency;
+            contract.set_effective_command_line(format!(
+                "console=hvc0 nvx_snapshot_tier=platform tsc_early_khz=1000000 {parameter}"
+            ));
+            let result = validate_manifest_version(&manifest);
+            if valid {
+                result.unwrap();
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("LAPIC frequency does not match")
+                );
+            }
+        }
+        assert!(platform_command_line_token_is_invariant(
+            "lapic_timer_hz=200000000"
+        ));
+    }
+
+    #[test]
     fn validate_microvm_machine_contract_rejects_unsupported_boot_layout() {
         let mut manifest = test_manifest();
         let expected = test_machine_contract();
@@ -2098,6 +2322,204 @@ mod tests {
         assert!(err.to_string().contains("overlap in GPA space"));
     }
 
+    fn canonical_worker_platform_command_line(
+        tsc_frequency_hz: u64,
+        processor_count: u32,
+    ) -> String {
+        let mut command_line = openvmm_defs::microvm::build_microvm_command_line(
+            &[
+                "nvx_sandbox=1".to_owned(),
+                "nvx_config=0xd0010000,65536".to_owned(),
+            ],
+            true,
+        )
+        .unwrap();
+        openvmm_defs::microvm::append_microvm_processor_limit(&mut command_line, processor_count)
+            .unwrap();
+        command_line.push_str(&format!(
+            " nvx_snapshot_tier=platform tsc_early_khz={}",
+            tsc_frequency_hz / 1000
+        ));
+        openvmm_defs::microvm::append_microvm_virtio_discovery(
+            &mut command_line,
+            None,
+            false,
+            None,
+            true,
+            &[
+                openvmm_defs::microvm::MicrovmSandboxBlockConfig {
+                    role: openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
+                    read_only: true,
+                },
+                openvmm_defs::microvm::MicrovmSandboxBlockConfig {
+                    role: openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
+                    read_only: false,
+                },
+            ],
+        )
+        .unwrap();
+        command_line
+    }
+
+    fn make_platform_snapshot(manifest: &mut SnapshotManifest) {
+        manifest.snapshot_tier = SNAPSHOT_TIER_PLATFORM.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
+        manifest.consumed_config_sections = SNAPSHOT_CONFIG_INVARIANTS;
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        for block in contract
+            .microvm_sandbox_blocks
+            .iter_mut()
+            .filter(|block| block.read_only)
+        {
+            block.identity_kind = "unbound".to_owned();
+            block.identity.clear();
+        }
+        let scratch = contract.microvm_sandbox_blocks.last_mut().unwrap();
+        scratch.identity_kind = "fresh".to_owned();
+        scratch.identity.clear();
+        scratch.artifact.clear();
+        let processor_count = u32::try_from(contract.topology.apic_ids.len()).unwrap();
+        contract.set_effective_command_line(canonical_worker_platform_command_line(
+            contract.tsc_frequency_hz,
+            processor_count,
+        ));
+    }
+
+    #[test]
+    fn abi_v2_snapshot_tier_contract_is_canonical() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        validate_manifest_version(&manifest).unwrap();
+
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest.consumed_config_sections = SNAPSHOT_CONFIG_ALL;
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        validate_manifest_version(&manifest).unwrap();
+
+        manifest.snapshot_tier = SNAPSHOT_TIER_WORKLOAD_START.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
+        assert!(validate_manifest_version(&manifest).is_err());
+
+        manifest.snapshot_tier = SNAPSHOT_TIER_PLATFORM.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
+        manifest.consumed_config_sections = SNAPSHOT_CONFIG_INVARIANTS;
+        assert!(validate_manifest_version(&manifest).is_err());
+
+        make_platform_snapshot(&mut manifest);
+        validate_manifest_version(&manifest).unwrap();
+    }
+
+    #[test]
+    fn platform_snapshot_rejects_tenant_command_line() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(contract.effective_command_line.replace(
+            "nvx_snapshot_tier=platform",
+            "nvx_snapshot_tier=platform nvx_entrypoint=/tenant",
+        ));
+
+        assert!(
+            validate_manifest_version(&manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("contains tenant or unsupported configuration")
+        );
+
+        make_platform_snapshot(&mut manifest);
+        validate_manifest_version(&manifest).unwrap();
+
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(
+            contract
+                .effective_command_line
+                .replace("nvx_config=0xd0010000,65536", "nvx_config=tenant-data"),
+        );
+        assert!(
+            validate_manifest_version(&manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("contains tenant or unsupported configuration")
+        );
+    }
+
+    #[test]
+    fn platform_snapshot_rejects_mismatched_processor_limit() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(
+            contract
+                .effective_command_line
+                .replace("nr_cpus=2", "nr_cpus=1"),
+        );
+
+        assert!(
+            validate_manifest_version(&manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("processor capacity")
+        );
+    }
+
+    #[test]
+    fn platform_snapshot_rejects_invalid_tsc_frequency_tokens() {
+        let scratch = vec![0x5a; 512];
+        for invalid in [
+            "",
+            "tsc_early_khz=999999",
+            "tsc_early_khz=1000000 tsc_early_khz=1000000",
+        ] {
+            let mut manifest = paired_scratch_manifest(&scratch);
+            make_platform_snapshot(&mut manifest);
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            contract.set_effective_command_line(
+                contract
+                    .effective_command_line
+                    .replace("tsc_early_khz=1000000", invalid),
+            );
+
+            assert!(
+                validate_manifest_version(&manifest)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("TSC frequency does not match")
+            );
+        }
+    }
+
+    #[test]
+    fn platform_snapshot_accepts_worker_effective_canonical_command_line() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+
+        assert_eq!(
+            manifest
+                .machine_contract
+                .as_ref()
+                .unwrap()
+                .effective_command_line,
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 \
+                  nvx_sandbox=1 nvx_config=0xd0010000,65536 nr_cpus=2 \
+                 nvx_snapshot_tier=platform \
+                 tsc_early_khz=1000000 \
+                 virtio_mmio.device=0x1000@0xd0002000:7 \
+                 virtio_mmio.device=0x1000@0xd0003000:4 \
+                 virtio_mmio.device=0x1000@0xd0006000:11"
+        );
+        validate_manifest_version(&manifest).unwrap();
+    }
+
     #[test]
     fn legacy_formats_reject_abi_v2_blocks() {
         let scratch = vec![0x5a_u8; 1024];
@@ -2108,6 +2530,9 @@ mod tests {
             let mut manifest = paired_scratch_manifest(&scratch);
             manifest.version = version;
             manifest.format_magic = magic.to_vec();
+            manifest.snapshot_tier.clear();
+            manifest.restore_policy.clear();
+            manifest.consumed_config_sections = 0;
             if version == LEGACY_MANIFEST_VERSION {
                 manifest.state_sha256 = vec![0; SHA256_SIZE];
                 manifest.memory_sha256 = vec![0; SHA256_SIZE];

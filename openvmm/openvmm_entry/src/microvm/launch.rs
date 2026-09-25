@@ -253,6 +253,7 @@ impl MicrovmLaunch {
             snapshot_memory_handle: self.snapshot_memory_handle,
             snapshot_requests,
             snapshot_destination: self.snapshot_destination,
+            snapshot_tier: opt.microvm.snapshot_tier,
             snapshot_quiesce_timeout: Duration::from_millis(
                 opt.microvm.snapshot_quiesce_timeout_ms,
             ),

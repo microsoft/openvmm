@@ -553,6 +553,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .zip(network_irq)
                 .map(|(network, irq)| (network, irq, self.gateway_dns));
+            if let Some(snapshot_tier) = opt.microvm.snapshot_tier {
+                anyhow::ensure!(
+                    !cmdline
+                        .split_ascii_whitespace()
+                        .any(|token| token.starts_with("nvx_snapshot_tier=")),
+                    "nvx_snapshot_tier is reserved for the host snapshot policy"
+                );
+                if !cmdline.is_empty() {
+                    cmdline.push(' ');
+                }
+                cmdline.push_str("nvx_snapshot_tier=");
+                cmdline.push_str(snapshot_tier.manifest_name());
+            }
             openvmm_defs::microvm::append_microvm_virtio_discovery(
                 cmdline,
                 network,
