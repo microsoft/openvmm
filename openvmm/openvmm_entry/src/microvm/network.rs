@@ -168,6 +168,7 @@ pub(crate) mod tests {
             Vec::new(),
             1,
             1024,
+            None,
             [
                 "partition",
                 "vmtime",
