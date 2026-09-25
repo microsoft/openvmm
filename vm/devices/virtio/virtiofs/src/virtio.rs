@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::microvm::MAX_FUSE_REQUEST_BYTES;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use anyhow::Context as _;
@@ -50,9 +51,9 @@ const MAX_REQUEST_QUEUES: u32 = 8;
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout)]
-struct VirtioFsDeviceConfig {
-    tag: [u8; 36],
-    num_request_queues: u32,
+pub(crate) struct VirtioFsDeviceConfig {
+    pub(crate) tag: [u8; 36],
+    pub(crate) num_request_queues: u32,
 }
 
 /// A virtio-fs PCI device.
@@ -61,7 +62,7 @@ pub struct VirtioFsDevice {
     task_name: Box<str>,
     driver: VmTaskDriver,
     #[inspect(skip)]
-    config: VirtioFsDeviceConfig,
+    pub(crate) config: VirtioFsDeviceConfig,
     #[inspect(skip)]
     fs: Arc<fuse::Session>,
     #[inspect(skip)]
@@ -72,6 +73,8 @@ pub struct VirtioFsDevice {
     #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
     num_request_queues: u32,
+    #[inspect(skip)]
+    pub(crate) microvm_attachment_id: Option<String>,
 }
 
 impl VirtioFsDevice {
@@ -142,6 +145,7 @@ impl VirtioFsDevice {
             shared_memory_region: None,
             notify_corruption,
             num_request_queues,
+            microvm_attachment_id: None,
         }
     }
 }
@@ -150,10 +154,7 @@ impl VirtioDevice for VirtioFsDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::FS,
-            device_features: VirtioDeviceFeatures::new()
-                .with_ring_event_idx(true)
-                .with_ring_indirect_desc(true)
-                .with_ring_packed(true),
+            device_features: crate::microvm::device::device_features(self),
             max_queues: 1 + self.num_request_queues as u16,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -166,15 +167,11 @@ impl VirtioDevice for VirtioFsDevice {
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         let offset = offset as usize;
         let config = self.config.as_bytes();
-        if offset < config.len() {
-            u32::from_le_bytes(
-                config[offset..offset + 4]
-                    .try_into()
-                    .expect("Incorrect length"),
-            )
-        } else {
-            0
-        }
+        config
+            .get(offset..offset.saturating_add(4))
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_le_bytes)
+            .unwrap_or(0)
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
@@ -185,6 +182,7 @@ impl VirtioDevice for VirtioFsDevice {
         &mut self,
         region: &Arc<dyn MappedMemoryRegion>,
     ) -> anyhow::Result<()> {
+        crate::microvm::device::validate_shared_memory(self)?;
         self.shared_memory_region = Some(region.clone());
         Ok(())
     }
@@ -196,6 +194,7 @@ impl VirtioDevice for VirtioFsDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        crate::microvm::device::validate_queue_features(self, features)?;
         let mut tc = TaskControl::new(VirtioFsWorker {
             fs: self.fs.clone(),
             shared_memory_region: self.shared_memory_region.clone(),
@@ -309,6 +308,17 @@ fn process_virtiofs_request(
     mem: &GuestMemory,
     work: &VirtioQueueCallbackWork,
 ) -> u32 {
+    let readable_len = work.get_payload_length(false) as usize;
+    if readable_len > MAX_FUSE_REQUEST_BYTES {
+        tracelimit::error_ratelimited!(
+            readable_len,
+            max_request_bytes = MAX_FUSE_REQUEST_BYTES,
+            "virtio-fs request exceeds the fixed maximum size"
+        );
+        (worker.notify_corruption)();
+        return 0;
+    }
+
     // Parse the request.
     let reader = VirtioPayloadReader::new(mem, work);
     let request = match fuse::Request::new(reader) {
