@@ -3007,6 +3007,7 @@ async fn run_control_inner(
             restore_apic_frequency_hz: restore.apic_frequency_hz,
             restore_cpu_contract: restore.cpu_contract,
             restore_ready_sink,
+            restore_gate_timeout: microvm.restore_gate_timeout(&opt),
             rpc: rpc_recv,
             notify: notify_send,
         };

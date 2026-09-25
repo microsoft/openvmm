@@ -203,6 +203,18 @@ describes the source definitions.
   openvmm --machine microvm --hypervisor kvm \
     --restore-snapshot snapshot --restore-entropy
   ```
+* `--restore-ready-path <PATH>`: Connect to an existing Unix domain socket on
+  Linux or a `//./pipe/...` named pipe on Windows and write exactly
+  `OPENVMM_RESTORE_READY_V1\n` once all restored state, required attachments,
+  and execution-owned workers are ready. Ungated restores flush the event
+  before releasing the restored vCPU. Gated microVM restores flush it after the
+  guest acknowledges post-restore repair and external input is re-enabled,
+  while the restored vCPU remains stopped.
+  It is valid only with `--restore-snapshot` and is process-local; it is not
+  saved in the snapshot. A connection, write, or flush failure aborts startup
+  and stops the VM. The peer must accept and read the event while startup is
+  in progress; Windows flush completion waits for the named-pipe peer to
+  consume the complete frame.
 * `--restore-entropy`: Make a fresh `OPENVMM_ENTROPY_V1` packet available on
   the private portb restore channel. The guest must consume the packet and
   explicitly reseed its RNG. Restoring cloned RNG state without this option is
@@ -213,6 +225,8 @@ describes the source definitions.
   repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
   On restore, it is the first 16 bytes of the fresh entropy packet, allowing
   the guest repair path to update clone identity without additional port I/O.
+* `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
+  gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
