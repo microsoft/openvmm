@@ -450,7 +450,7 @@ impl PortIoIntercept for MicrovmSnapshotRequest {
         IoResult::Ok
     }
 
-    fn io_write(&mut self, io_port: u16, _data: &[u8]) -> IoResult {
+    fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
         use mesh::rpc::RpcSend;
 
         if io_port != SNAPSHOT_PORT {
@@ -464,11 +464,17 @@ impl PortIoIntercept for MicrovmSnapshotRequest {
             return IoResult::Ok;
         }
         if let Some(notify) = &self.notify {
+            let scratch_policy = if data.first().copied().unwrap_or(0) == 0 {
+                chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+            } else {
+                chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired
+            };
             let (deferred_write, token) = defer_write();
             let (release_write, release_recv) = mesh::oneshot();
             let (write_completed, write_completed_recv) = mesh::oneshot();
             let transaction_complete = notify.call(
                 |transaction_complete| chipset_resources::microvm::MicrovmSnapshotBoundaryRequest {
+                    scratch_policy,
                     release_write,
                     write_completed: write_completed_recv,
                     input_gate_timeout: self.input_gate_timeout,
@@ -750,6 +756,10 @@ mod tests {
             IoResult::Ok
         ));
         let mut first = recv.try_recv().unwrap();
+        assert_eq!(
+            first.scratch_policy,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired
+        );
         assert!(recv.try_recv().is_err());
         assert!(
             deferred_write
@@ -781,7 +791,10 @@ mod tests {
             snapshot.io_write(SNAPSHOT_PORT, &[]),
             IoResult::Defer(_)
         ));
-        recv.try_recv().unwrap();
+        assert_eq!(
+            recv.try_recv().unwrap().scratch_policy,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+        );
     }
 
     #[test]
@@ -812,7 +825,10 @@ mod tests {
             snapshot.io_write(SNAPSHOT_PORT, &[0]),
             IoResult::Defer(_)
         ));
-        recv.try_recv().unwrap();
+        assert_eq!(
+            recv.try_recv().unwrap().scratch_policy,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+        );
     }
 
     #[test]
@@ -841,7 +857,10 @@ mod tests {
             Pin::new(&mut first.write_completed).poll(&mut cx),
             Poll::Ready(Ok(()))
         ));
-        recv.try_recv().unwrap();
+        assert_eq!(
+            recv.try_recv().unwrap().scratch_policy,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired
+        );
     }
 
     #[test]
@@ -869,7 +888,10 @@ mod tests {
             Pin::new(&mut first.write_completed).poll(&mut cx),
             Poll::Ready(Err(_))
         ));
-        recv.try_recv().unwrap();
+        assert_eq!(
+            recv.try_recv().unwrap().scratch_policy,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+        );
     }
 
     #[test]
@@ -948,7 +970,10 @@ mod tests {
                 snapshot.io_write(SNAPSHOT_PORT, &[0]),
                 IoResult::Defer(_)
             ));
-            recv.try_recv().unwrap();
+            assert_eq!(
+                recv.try_recv().unwrap().scratch_policy,
+                chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+            );
         }
     }
 
@@ -986,7 +1011,10 @@ mod tests {
                 snapshot.io_write(SNAPSHOT_PORT, &[0]),
                 IoResult::Defer(_)
             ));
-            recv.try_recv().unwrap();
+            assert_eq!(
+                recv.try_recv().unwrap().scratch_policy,
+                chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
+            );
         }
     }
 }

@@ -9,9 +9,20 @@ use vm_resource::ResourceId;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 
+/// Scratch handling requested at a microVM snapshot boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, MeshPayload)]
+pub enum MicrovmSnapshotScratchPolicy {
+    /// Scratch is unmounted and restore must attach a fresh image.
+    Fresh,
+    /// Scratch is mounted and must be paired with VM state.
+    Paired,
+}
+
 /// Worker-local request used to establish the exact post-OUT snapshot boundary.
 #[derive(MeshPayload)]
 pub struct MicrovmSnapshotBoundaryRequest {
+    /// Whether capture must pair the current scratch image.
+    pub scratch_policy: MicrovmSnapshotScratchPolicy,
     /// Signals the device after all vCPUs have stopped.
     pub release_write: mesh::OneshotSender<()>,
     /// Completes after the deferred PMIO write has completed.

@@ -20,7 +20,8 @@ pub(crate) struct MicrovmController {
     /// Exact open handle of the file backing guest RAM for snapshot capture.
     pub(crate) snapshot_memory_handle: Option<std::fs::File>,
     /// Guest-requested snapshot boundaries released by the VM worker.
-    pub(crate) snapshot_requests: Option<mesh::Receiver<()>>,
+    pub(crate) snapshot_requests:
+        Option<mesh::Receiver<chipset_resources::microvm::MicrovmSnapshotScratchPolicy>>,
     /// Directory receiving a guest-requested snapshot.
     pub(crate) snapshot_destination: Option<PathBuf>,
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
@@ -39,6 +40,8 @@ pub(crate) struct MicrovmController {
     pub(crate) filesystem: Option<openvmm_defs::microvm::MicrovmFilesystemConfig>,
     /// Automatic RAM backing created for snapshot capture.
     pub(crate) snapshot_memory_file: Option<tempfile::NamedTempFile>,
+    /// Private copy of a paired scratch image, kept alive for the VM lifetime.
+    pub(crate) _private_scratch_dir: Option<tempfile::TempDir>,
 }
 
 pub(super) enum GuestSnapshotAction {
@@ -47,7 +50,10 @@ pub(super) enum GuestSnapshotAction {
 }
 
 impl VmController {
-    pub(super) async fn handle_guest_snapshot_request(&mut self) -> GuestSnapshotAction {
+    pub(super) async fn handle_guest_snapshot_request(
+        &mut self,
+        scratch_policy: chipset_resources::microvm::MicrovmSnapshotScratchPolicy,
+    ) -> GuestSnapshotAction {
         let Some(destination) = self.microvm.snapshot_destination.clone() else {
             tracelimit::warn_ratelimited!(
                 "ignoring microVM snapshot request because no destination is configured"
@@ -66,6 +72,20 @@ impl VmController {
                     "kvm" | "mshv" | "whp"
                 ),
                 "microVM snapshot source backend must be KVM, MSHV, or WHP"
+            );
+            anyhow::ensure!(
+                self.microvm.resources.sandbox_block_sources.is_empty()
+                    || (self.microvm.resources.sandbox_block_sources.len() >= 2
+                        && self
+                            .microvm
+                            .resources
+                            .sandbox_block_sources
+                            .last()
+                            .is_some_and(|source| {
+                                source.role
+                                    == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
+                            })),
+                "microVM snapshot requires either no blocks or at least one lower layer and scratch"
             );
             anyhow::ensure!(
                 fs_err::symlink_metadata(&destination)
@@ -159,6 +179,10 @@ impl VmController {
                 .zip(self.microvm.resources.filesystem_root_path.as_deref())
                 .zip(self.microvm.resources.filesystem_attachment.clone())
                 .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment));
+            let blocks = crate::storage_builder::microvm::snapshot_block_contract(
+                &self.microvm.resources.sandbox_block_sources,
+                scratch_policy,
+            )?;
             let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
@@ -167,6 +191,7 @@ impl VmController {
                 self.microvm.filesystem_slot,
                 filesystem,
                 self.microvm.resources.console_attachment.clone(),
+                blocks,
                 self.processors,
                 self.memory,
                 response.state_unit_names,
@@ -211,20 +236,37 @@ impl VmController {
                     ..Default::default()
                 },
             );
+            let scratch_file = (!self.microvm.resources.sandbox_block_sources.is_empty()
+                && scratch_policy
+                    == chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired)
+                .then(|| {
+                    self.microvm
+                        .resources
+                        .sandbox_block_sources
+                        .iter()
+                        .find(|source| {
+                            source.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
+                        })
+                        .map(|source| &source.file)
+                        .context("paired snapshot lost its scratch backing handle")
+                })
+                .transpose()?;
             let publication = openvmm_defs::profile::ProfileSpan::start();
             let write_result = if self.microvm.snapshot_memory_file.is_some() {
-                openvmm_helpers::snapshot::publish::write_snapshot_from_owned_memory_file(
+                openvmm_helpers::snapshot::publish::write_snapshot_from_owned_memory_and_scratch_files(
                     &destination,
                     &manifest,
                     &saved_state_bytes,
                     memory_file,
+                    scratch_file,
                 )
             } else {
-                openvmm_helpers::snapshot::publish::write_snapshot_from_memory_file(
+                openvmm_helpers::snapshot::publish::write_snapshot_from_memory_and_scratch_files(
                     &destination,
                     &manifest,
                     &saved_state_bytes,
                     memory_file,
+                    scratch_file,
                 )
             };
             if write_result.is_ok() {
