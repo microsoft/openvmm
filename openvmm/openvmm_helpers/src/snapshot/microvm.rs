@@ -355,6 +355,9 @@ pub struct SnapshotMachineContract {
     /// Version of the reserved restore-attachable microVM virtio-fs slot.
     #[mesh(22)]
     pub microvm_filesystem_slot_version: u32,
+    /// Virtual processors online at boot, or zero when restore activation is disabled.
+    #[mesh(23)]
+    pub boot_online_vp_count: u32,
     /// Virtio interrupt-delivery mode.
     #[mesh(24)]
     pub virtio_interrupt_mode: String,
@@ -392,6 +395,66 @@ fn microvm_snapshot_topology(processor_count: u32) -> anyhow::Result<SnapshotPro
         threads_per_core: 1,
         apic_ids: (0..processor_count).collect(),
     })
+}
+
+fn microvm_boot_online_vp_count(
+    vp_capacity: u32,
+    effective_command_line: &str,
+) -> anyhow::Result<u32> {
+    let mut boot_online_vp_count = None;
+    for token in effective_command_line.split_ascii_whitespace() {
+        let Some(value) = token.strip_prefix("maxcpus=") else {
+            continue;
+        };
+        anyhow::ensure!(
+            boot_online_vp_count.is_none(),
+            "microVM command line contains multiple maxcpus values"
+        );
+        let count = value
+            .parse::<u32>()
+            .context("microVM maxcpus value is invalid")?;
+        anyhow::ensure!(
+            openvmm_defs::microvm::microvm_processor_count_supported(count),
+            "microVM does not support a boot-online count of {count}"
+        );
+        anyhow::ensure!(
+            count <= vp_capacity,
+            "microVM boot-online count {count} exceeds VP capacity {vp_capacity}"
+        );
+        boot_online_vp_count = Some(count);
+    }
+    Ok(boot_online_vp_count.unwrap_or(0))
+}
+
+/// Validates a restore-time online VP target against an opt-in snapshot contract.
+pub fn validate_restore_online_vp_count(
+    manifest: &SnapshotManifest,
+    restore_online_vp_count: u32,
+) -> anyhow::Result<()> {
+    let contract = manifest
+        .machine_contract
+        .as_ref()
+        .context("snapshot is missing the authoritative machine contract")?;
+    validate_supported_microvm_contract(contract)?;
+    anyhow::ensure!(
+        contract.boot_online_vp_count != 0,
+        "snapshot does not declare restore-time VP activation support"
+    );
+    anyhow::ensure!(
+        openvmm_defs::microvm::microvm_processor_count_supported(restore_online_vp_count),
+        "restore-online VP count {restore_online_vp_count} is not supported"
+    );
+    anyhow::ensure!(
+        restore_online_vp_count >= contract.boot_online_vp_count,
+        "restore-online VP count {restore_online_vp_count} is below boot-online count {}",
+        contract.boot_online_vp_count
+    );
+    anyhow::ensure!(
+        restore_online_vp_count <= manifest.vp_count,
+        "restore-online VP count {restore_online_vp_count} exceeds VP capacity {}",
+        manifest.vp_count
+    );
+    Ok(())
 }
 
 fn canonical_microvm_memory_ranges(memory_size: u64) -> anyhow::Result<Vec<SnapshotMemoryRange>> {
@@ -448,6 +511,9 @@ pub fn microvm_machine_contract(
         "microVM snapshots require the KVM, MSHV, or WHP hypervisor"
     );
     let topology = microvm_snapshot_topology(processor_count)?;
+    let boot_online_vp_count =
+        microvm_boot_online_vp_count(processor_count, &effective_command_line)?;
+
     let memory_ranges = canonical_microvm_memory_ranges(memory_size)?;
 
     let device = |stable_id: &str,
@@ -804,6 +870,7 @@ pub fn microvm_machine_contract(
         } else {
             0
         },
+        boot_online_vp_count,
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
         virtio_shared_status_page_size: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
@@ -923,6 +990,11 @@ pub fn validate_microvm_machine_contract(
     anyhow::ensure!(
         contract.topology == expected.topology,
         "snapshot processor topology doesn't match the requested machine"
+    );
+    anyhow::ensure!(
+        contract.boot_online_vp_count == 0
+            || contract.boot_online_vp_count == expected.boot_online_vp_count,
+        "snapshot boot-online VP count doesn't match the requested machine"
     );
     anyhow::ensure!(
         contract.devices == expected.devices,
@@ -1090,6 +1162,13 @@ pub(super) fn validate_machine_contract_shape(
         *topology == microvm_snapshot_topology(vp_count)?,
         "snapshot processor topology is not canonical for the microVM"
     );
+    if contract.boot_online_vp_count != 0 {
+        anyhow::ensure!(
+            contract.boot_online_vp_count
+                == microvm_boot_online_vp_count(vp_count, &contract.effective_command_line,)?,
+            "snapshot boot-online VP count does not match the effective command line"
+        );
+    }
 
     if let Some(network) = &contract.microvm_network {
         anyhow::ensure!(
@@ -1464,6 +1543,32 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
                 "platform snapshot command line processor capacity does not match its machine contract"
             );
         }
+        // Like the capacity, the boot-online count of the restore-time VP
+        // activation opt-in is the same for every clone. The shape check runs
+        // later, so accept only the canonical token of a valid recorded count.
+        let boot_online_tokens = contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| token.starts_with("maxcpus="))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            boot_online_tokens.len() <= 1,
+            "platform snapshot command line contains duplicate boot-online processor counts"
+        );
+        if contract.boot_online_vp_count == 0 {
+            anyhow::ensure!(
+                boot_online_tokens.is_empty(),
+                "platform snapshot command line boot-online processor count does not match its machine contract"
+            );
+        } else {
+            let expected = format!("maxcpus={}", contract.boot_online_vp_count);
+            anyhow::ensure!(
+                boot_online_tokens == [expected.as_str()],
+                "platform snapshot command line boot-online processor count does not match its machine contract"
+            );
+            microvm_boot_online_vp_count(manifest.vp_count, &contract.effective_command_line)
+                .context("platform snapshot boot-online processor count is invalid")?;
+        }
         anyhow::ensure!(
             contract
                 .effective_command_line
@@ -1488,6 +1593,7 @@ fn platform_command_line_token_is_invariant(token: &str) -> bool {
             | "nvx_snapshot_tier=platform"
     ) || token.starts_with("tsc_early_khz=")
         || token.starts_with("nr_cpus=")
+        || token.starts_with("maxcpus=")
         || token.starts_with("lapic_timer_hz=")
         || [
             "virtio_mmio.device=",
@@ -1614,9 +1720,10 @@ fn test_machine_contract() -> SnapshotMachineContract {
         clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
         microvm_network: None,
         microvm_filesystem: None,
+        apic_frequency_hz: Some(1_000_000_000),
         microvm_sandbox_blocks: Vec::new(),
         microvm_filesystem_slot_version: 0,
-        apic_frequency_hz: Some(1_000_000_000),
+        boot_online_vp_count: 0,
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
         virtio_shared_status_page_size: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
@@ -1636,6 +1743,42 @@ mod tests {
     use super::super::tests::test_manifest;
     use super::super::validate_manifest;
     use super::*;
+
+    #[test]
+    fn restore_online_vp_count_is_bounded_by_template() {
+        assert_eq!(
+            microvm_boot_online_vp_count(8, "console=hvc0 maxcpus=1").unwrap(),
+            1
+        );
+        assert_eq!(microvm_boot_online_vp_count(8, "console=hvc0").unwrap(), 0);
+        assert!(microvm_boot_online_vp_count(8, "maxcpus=3").is_err());
+
+        let mut manifest = test_manifest();
+        manifest.vp_count = 8;
+        let mut contract = test_machine_contract();
+        contract.boot_online_vp_count = 2;
+        manifest.machine_contract = Some(contract);
+
+        for target in [2, 4, 8] {
+            validate_restore_online_vp_count(&manifest, target).unwrap();
+        }
+        for target in [1, 3, 16] {
+            assert!(validate_restore_online_vp_count(&manifest, target).is_err());
+        }
+
+        manifest.vp_count = 4;
+        let error = validate_restore_online_vp_count(&manifest, 8).unwrap_err();
+        assert!(error.to_string().contains("exceeds VP capacity 4"));
+        manifest.vp_count = 8;
+
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .boot_online_vp_count = 0;
+        let error = validate_restore_online_vp_count(&manifest, 8).unwrap_err();
+        assert!(error.to_string().contains("does not declare"));
+    }
 
     fn microvm_console_attachment() -> SnapshotAttachment {
         SnapshotAttachment {
@@ -2339,14 +2482,23 @@ mod tests {
         tsc_frequency_hz: u64,
         processor_count: u32,
     ) -> String {
-        let mut command_line = openvmm_defs::microvm::build_microvm_command_line(
-            &[
-                "nvx_sandbox=1".to_owned(),
-                "nvx_config=0xd0010000,65536".to_owned(),
-            ],
-            true,
-        )
-        .unwrap();
+        worker_platform_command_line(tsc_frequency_hz, processor_count, &[])
+    }
+
+    /// Returns the worker's effective platform command line with the caller's
+    /// `user_args`, such as `--cmdline maxcpus=1`, after the sandbox tokens.
+    fn worker_platform_command_line(
+        tsc_frequency_hz: u64,
+        processor_count: u32,
+        user_args: &[&str],
+    ) -> String {
+        let mut args = vec![
+            "nvx_sandbox=1".to_owned(),
+            "nvx_config=0xd0010000,65536".to_owned(),
+        ];
+        args.extend(user_args.iter().map(|arg| (*arg).to_owned()));
+        let mut command_line =
+            openvmm_defs::microvm::build_microvm_command_line(&args, true).unwrap();
         openvmm_defs::microvm::append_microvm_processor_limit(&mut command_line, processor_count)
             .unwrap();
         command_line.push_str(&format!(
@@ -2482,6 +2634,102 @@ mod tests {
                 .to_string()
                 .contains("processor capacity")
         );
+    }
+
+    /// Returns a platform snapshot with `capacity` VPs whose capture booted
+    /// with `maxcpus={boot_online}`, as the capture records it.
+    fn platform_snapshot_with_boot_online(capacity: u32, boot_online: u32) -> SnapshotManifest {
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        manifest.vp_count = capacity;
+        manifest.machine_contract.as_mut().unwrap().topology =
+            microvm_snapshot_topology(capacity).unwrap();
+        make_platform_snapshot(&mut manifest);
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(worker_platform_command_line(
+            contract.tsc_frequency_hz,
+            capacity,
+            &[&format!("maxcpus={boot_online}")],
+        ));
+        contract.boot_online_vp_count = boot_online;
+        manifest
+    }
+
+    #[test]
+    fn platform_snapshot_accepts_restore_time_vp_activation() {
+        assert!(platform_command_line_token_is_invariant("maxcpus=1"));
+        let manifest = platform_snapshot_with_boot_online(4, 1);
+        let contract = manifest.machine_contract.as_ref().unwrap();
+        assert!(
+            contract
+                .effective_command_line
+                .split_ascii_whitespace()
+                .any(|token| token == "nr_cpus=4")
+        );
+        validate_manifest_version(&manifest).unwrap();
+        validate_machine_contract_shape(contract, manifest.memory_size_bytes, manifest.vp_count)
+            .unwrap();
+        assert_eq!(contract.boot_online_vp_count, 1);
+
+        for target in [1, 2, 4] {
+            validate_restore_online_vp_count(&manifest, target).unwrap();
+        }
+        for (target, expected) in [
+            (0, "is not supported"),
+            (3, "is not supported"),
+            (8, "exceeds VP capacity 4"),
+        ] {
+            let error = validate_restore_online_vp_count(&manifest, target).unwrap_err();
+            assert!(error.to_string().contains(expected), "{target}: {error:#}");
+        }
+
+        // A platform capture without the opt-in still refuses a target.
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        manifest.vp_count = 4;
+        manifest.machine_contract.as_mut().unwrap().topology =
+            microvm_snapshot_topology(4).unwrap();
+        make_platform_snapshot(&mut manifest);
+        validate_manifest_version(&manifest).unwrap();
+        let error = validate_restore_online_vp_count(&manifest, 4).unwrap_err();
+        assert!(error.to_string().contains("does not declare"), "{error:#}");
+    }
+
+    #[test]
+    fn platform_snapshot_rejects_noncanonical_boot_online_count() {
+        const MISMATCH: &str = "boot-online processor count does not match its machine contract";
+        let cases: [(&[&str], u32, &str); 8] = [
+            (
+                &["maxcpus=1", "maxcpus=1"],
+                1,
+                "duplicate boot-online processor counts",
+            ),
+            (&["maxcpus=01"], 1, MISMATCH),
+            (&["maxcpus=+1"], 1, MISMATCH),
+            (&["maxcpus=2"], 1, MISMATCH),
+            (&["maxcpus=1"], 0, MISMATCH),
+            (&[], 1, MISMATCH),
+            (
+                &["maxcpus=3"],
+                3,
+                "does not support a boot-online count of 3",
+            ),
+            (
+                &["maxcpus=8"],
+                8,
+                "boot-online count 8 exceeds VP capacity 4",
+            ),
+        ];
+        for (user_args, boot_online, expected) in cases {
+            let mut manifest = platform_snapshot_with_boot_online(4, 1);
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            contract.set_effective_command_line(worker_platform_command_line(
+                contract.tsc_frequency_hz,
+                4,
+                user_args,
+            ));
+            contract.boot_online_vp_count = boot_online;
+            let error = format!("{:#}", validate_manifest_version(&manifest).unwrap_err());
+            assert!(error.contains(expected), "{user_args:?}: {error}");
+        }
     }
 
     #[test]
