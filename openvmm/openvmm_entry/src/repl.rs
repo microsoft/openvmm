@@ -68,6 +68,8 @@ use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 
+mod headless;
+
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
     let (radix, prefix_len) = if s.starts_with("0x") || s.starts_with("0X") {
         (16, 2)
@@ -526,7 +528,8 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
+                let terminal =
+                    headless::enable_raw_mode(&stdin).expect("failed to enable raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -546,8 +549,7 @@ pub(crate) async fn run_repl(
                     }
                 }
 
-                crossterm::terminal::disable_raw_mode()
-                    .expect("failed to disable raw console mode");
+                headless::disable_raw_mode(terminal).expect("failed to disable raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");
