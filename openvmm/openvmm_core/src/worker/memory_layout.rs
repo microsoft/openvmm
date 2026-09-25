@@ -16,6 +16,8 @@
 //! VTL2 chipset MMIO. Callers express sizing intent; the resolver places
 //! everything and derives the effective MMIO gaps for [`MemoryLayout`].
 
+mod microvm;
+
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
