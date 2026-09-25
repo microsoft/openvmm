@@ -152,6 +152,11 @@ use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
 pub fn openvmm_main() {
+    #[cfg(target_os = "linux")]
+    if let Err(error) = pal::unix::fd_table::expand_fd_table() {
+        eprintln!("warning: failed to expand the file descriptor table: {error}");
+    }
+
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
