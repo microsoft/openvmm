@@ -83,7 +83,8 @@ cargo run -- \
 
 `--restore-snapshot` verifies and opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two options
-are mutually exclusive).
+are mutually exclusive). Guest writes use a private copy-on-write mapping and
+do not modify the snapshot artifact.
 
 ```admonish warning
 Version 3 does not contain or validate embedded checksums for `state.bin` or
@@ -98,13 +99,6 @@ Pass the same boot flags and files that were used at save time (for example
 `--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
 not run the firmware or kernel loader, but they are used if the restored VM is
 later reset.
-
-```admonish warning
-`memory.bin` is used in place as the restored VM's memory, so running the
-restored VM modifies the snapshot. A snapshot can be restored only once;
-restoring it again would combine modified memory with the original device
-state.
-```
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -208,10 +202,8 @@ immediately with a clear error if any active device does not support it.
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
-- After restoring, `memory.bin` in the snapshot directory becomes the live
-  guest RAM backing file and will be modified as the VM runs. To restore
-  from the same snapshot multiple times, copy the snapshot directory before
-  each restore.
+- Restores use private copy-on-write RAM, so a snapshot can be restored
+  repeatedly without copying it or modifying `memory.bin`.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore
