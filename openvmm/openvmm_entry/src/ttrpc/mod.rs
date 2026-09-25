@@ -517,7 +517,7 @@ impl VmService {
                     break false;
                 }
                 Action::ControllerEvent(Some(event)) => {
-                    if let Some(code) = self.handle_controller_event(event) {
+                    if let Some(code) = self.handle_controller_event(event)? {
                         // Like the CLI exit path, do not wait for parked VM
                         // workers or in-flight RPCs to finish teardown.
                         return Ok(code);
@@ -2018,21 +2018,23 @@ impl VmService {
         }
     }
 
-    fn handle_controller_event(&mut self, event: VmControllerEvent) -> Option<i32> {
-        match event {
+    fn handle_controller_event(&mut self, event: VmControllerEvent) -> anyhow::Result<Option<i32>> {
+        Ok(match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
                 self.lifecycle = VmLifecycle::Halted(reason);
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
+                None
             }
-            VmControllerEvent::ExitRequested { code } => {
-                tracing::info!(code, "exiting on guest power event");
-                return Some(code);
-            }
-            VmControllerEvent::ExitFailed { error } => {
-                tracing::error!(error = %error, "guest-requested exit failed in server mode");
+            event @ (VmControllerEvent::ExitRequested { .. }
+            | VmControllerEvent::ExitFailed { .. }) => {
+                return microvm::handle_exit_event(
+                    event,
+                    &mut self.lifecycle,
+                    &mut self.wait_vm_response,
+                );
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -2053,14 +2055,15 @@ impl VmService {
                 self.vm.take();
                 self.vm_controller.take();
                 self.lifecycle = VmLifecycle::Uninitialized;
+                None
             }
             VmControllerEvent::VncWorkerStopped { error } => {
                 if let Some(err) = &error {
                     tracing::error!(error = %err, "VNC worker stopped unexpectedly");
                 }
+                None
             }
-        }
-        None
+        })
     }
 
     fn add_pcie_device(
