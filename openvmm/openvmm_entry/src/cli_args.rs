@@ -256,6 +256,11 @@ Examples:
     )]
     pub restore_snapshot: Option<PathBuf>,
 
+    /// Write OPENVMM_RESTORE_READY_V1 to this Unix socket or Windows named pipe
+    /// after restore startup completes and before guest execution begins.
+    #[clap(long, value_name = "PATH", requires = "restore_snapshot")]
+    pub restore_ready_path: Option<PathBuf>,
+
     /// use private anonymous memory for guest RAM
     #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot", "numa"])]
     pub deprecated_private_memory: bool,
