@@ -30,6 +30,7 @@ use vmm_core_defs::HaltReason;
 mod microvm;
 
 pub(crate) use microvm::MicrovmController;
+pub(crate) use microvm::MicrovmTeardownError;
 pub(crate) use microvm::MicrovmTeardownStatus;
 
 /// Inspection target: host-side workers or the paravisor.
