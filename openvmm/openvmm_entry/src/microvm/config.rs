@@ -12,6 +12,7 @@ use super::console::validate_microvm_console_attachment_namespace;
 use super::filesystem::EffectiveMicrovmFilesystem;
 use super::filesystem::MICROVM_FILESYSTEM_STABLE_ID;
 use super::filesystem::effective_microvm_filesystem;
+use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_network_endpoint;
@@ -59,6 +60,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     restore: &'a MicrovmRestore,
     active: bool,
     network: Option<EffectiveMicrovmNetwork>,
+    filesystem_slot: bool,
     filesystem: Option<EffectiveMicrovmFilesystem>,
     gateway_dns: bool,
     console: Option<ConsoleEndpoint>,
@@ -79,6 +81,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
             effective_microvm_network(opt, restore_machine_contract)?
         } else {
             None
+        };
+        let filesystem_slot = if active {
+            restore_machine_contract
+                .map(microvm_filesystem_slot_from_snapshot)
+                .transpose()?
+                .unwrap_or(true)
+        } else {
+            false
         };
         let filesystem = if active {
             effective_microvm_filesystem(
@@ -145,6 +155,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             restore,
             active,
             network,
+            filesystem_slot,
             filesystem,
             gateway_dns,
             console,
@@ -389,20 +400,33 @@ impl<'a> MicrovmConfigBuilder<'a> {
             );
         }
 
-        if let Some(filesystem) = &self.filesystem {
-            add_virtio_device(
-                VirtioBusCli::Mmio,
-                virtio_resources::fs::VirtioFsHandle {
-                    tag: "microvm".to_owned(),
-                    fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+        if self.filesystem_slot {
+            let (fs, profile) = if let Some(filesystem) = &self.filesystem {
+                (
+                    virtio_resources::fs::VirtioFsBackend::HostFs {
                         root_path: filesystem.root_path.clone(),
                         mount_options: String::new(),
                     },
-                    profile: virtio_resources::fs::microvm::VirtioFsProfile::Microvm {
+                    virtio_resources::fs::microvm::VirtioFsProfile::Microvm {
                         stable_id: MICROVM_FILESYSTEM_STABLE_ID.to_owned(),
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                     },
+                )
+            } else {
+                (
+                    virtio_resources::fs::VirtioFsBackend::Dormant,
+                    virtio_resources::fs::microvm::VirtioFsProfile::MicrovmDormant {
+                        stable_id: MICROVM_FILESYSTEM_STABLE_ID.to_owned(),
+                    },
+                )
+            };
+            add_virtio_device(
+                VirtioBusCli::Mmio,
+                virtio_resources::fs::VirtioFsHandle {
+                    tag: "microvm".to_owned(),
+                    fs,
+                    profile,
                 }
                 .into_resource(),
             );
@@ -456,10 +480,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
             }
         }
         cfg.microvm.network = self.network.as_ref().map(|network| network.config.clone());
-        cfg.microvm.filesystem = self
+        let microvm_filesystem = self
             .filesystem
             .as_ref()
             .map(|filesystem| filesystem.config.clone());
+        cfg.microvm.filesystem_bootstrap = restore_machine_contract
+            .map(|contract| contract.microvm_filesystem.is_some())
+            .unwrap_or_else(|| microvm_filesystem.is_some());
+        cfg.microvm.filesystem = microvm_filesystem;
 
         let requested_hypervisor = opt
             .hypervisor
@@ -495,6 +523,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             openvmm_defs::microvm::append_microvm_virtio_discovery(
                 cmdline,
                 network,
+                self.filesystem_slot,
                 cfg.microvm.filesystem.as_ref(),
                 has_console,
             )?;

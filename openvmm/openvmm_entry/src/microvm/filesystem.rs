@@ -238,6 +238,28 @@ pub(crate) fn microvm_filesystem_from_snapshot(
         .context("snapshot microVM filesystem policy is invalid")
 }
 
+pub(crate) fn microvm_filesystem_slot_from_snapshot(
+    contract: &openvmm_helpers::snapshot::microvm::SnapshotMachineContract,
+) -> anyhow::Result<bool> {
+    let has_device = contract
+        .devices
+        .iter()
+        .any(|device| device.stable_id == MICROVM_FILESYSTEM_STABLE_ID);
+    match contract.microvm_filesystem_slot_version {
+        0 => Ok(has_device),
+        openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION => {
+            anyhow::ensure!(
+                has_device,
+                "snapshot advertises a restore-attachable microVM filesystem slot but omits its fixed device"
+            );
+            Ok(true)
+        }
+        version => anyhow::bail!(
+            "snapshot microVM filesystem slot capability version {version} is unsupported"
+        ),
+    }
+}
+
 pub(super) fn effective_microvm_filesystem(
     requested: Option<&cli_args::microvm::MicrovmMountCli>,
     restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
@@ -246,20 +268,28 @@ pub(super) fn effective_microvm_filesystem(
         return requested.map(microvm_filesystem_from_mount).transpose();
     };
 
+    let has_device = microvm_filesystem_slot_from_snapshot(restore)?;
     let saved_attachment = restore
         .attachments
         .iter()
         .find(|attachment| attachment.stable_id == MICROVM_FILESYSTEM_STABLE_ID);
     anyhow::ensure!(
-        saved_attachment.is_some() == restore.microvm_filesystem.is_some(),
-        "snapshot microVM filesystem policy and attachment inventories disagree"
+        saved_attachment.is_some() == restore.microvm_filesystem.is_some()
+            && (restore.microvm_filesystem_slot_version
+                == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION
+                || has_device == restore.microvm_filesystem.is_some()),
+        "snapshot microVM filesystem slot, policy, and attachment inventories disagree"
     );
     let Some(saved) = restore.microvm_filesystem.as_ref() else {
+        let Some(requested) = requested else {
+            return Ok(None);
+        };
         anyhow::ensure!(
-            requested.is_none(),
+            restore.microvm_filesystem_slot_version
+                == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
             "snapshot does not support restore-time microVM filesystem attachment"
         );
-        return Ok(None);
+        return microvm_filesystem_from_mount(requested).map(Some);
     };
     let requested = requested
         .context("snapshot restore requires a fresh --mount attachment for fs:microvm0")?;
@@ -306,6 +336,7 @@ mod tests {
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
+            true,
             Some(&filesystem),
             false,
         )
@@ -315,7 +346,51 @@ mod tests {
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             None,
+            true,
             Some((&filesystem, Path::new(&root_path), attachment)),
+            None,
+            1,
+            1024,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtiofs-3489665024",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            std::time::SystemTime::now().into(),
+            1_000_000_000,
+            Some(1_000_000_000),
+            vec![1, 2, 3],
+        )
+        .unwrap()
+    }
+
+    fn dormant_filesystem_contract() -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract
+    {
+        let mut command_line = build_microvm_command_line(&[], false).unwrap();
+        openvmm_defs::microvm::append_microvm_virtio_discovery(
+            &mut command_line,
+            None,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        openvmm_helpers::snapshot::microvm::microvm_machine_contract(
+            if cfg!(windows) { "whp" } else { "kvm" },
+            openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
+            command_line,
+            None,
+            true,
+            None,
             None,
             1,
             1024,
@@ -436,6 +511,36 @@ mod tests {
                 Some(&contract),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn filesystem_restore_without_mount_preserves_dormant_slot() {
+        let contract = dormant_filesystem_contract();
+        assert!(
+            effective_microvm_filesystem(None, Some(&contract))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn filesystem_restore_attaches_mount_to_dormant_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let contract = dormant_filesystem_contract();
+        let options = restore_mount_options(root.path(), "rw");
+        let filesystem =
+            effective_microvm_filesystem(options.microvm.microvm_mount.as_ref(), Some(&contract))
+                .unwrap()
+                .unwrap();
+        assert_eq!(filesystem.config.guest_mount_target, "/mnt/share");
+        assert_eq!(
+            filesystem.config.access,
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
+        );
+        assert_eq!(
+            filesystem.root_path,
+            fs_err::canonicalize(root.path()).unwrap().to_str().unwrap()
         );
     }
 
