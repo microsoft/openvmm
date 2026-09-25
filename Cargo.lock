@@ -6386,6 +6386,7 @@ dependencies = [
  "openvmm_defs",
  "pal",
  "pal_async",
+ "sha2",
  "sparse_mmap",
  "tempfile",
  "thiserror 2.0.16",
