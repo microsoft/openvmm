@@ -5,7 +5,9 @@
 //! and preparation of the copy-on-write guest RAM and saved state it restores.
 
 use crate::Options;
+use crate::microvm;
 use anyhow::Context;
+use std::time::Duration;
 
 /// An opened snapshot generation, validated against the VM configuration and
 /// prepared for the VM worker.
@@ -13,6 +15,7 @@ pub(crate) struct PreparedSnapshotRestore {
     pub(crate) shared_memory: openvmm_defs::worker::SharedMemoryFd,
     pub(crate) guards: openvmm_defs::worker::SnapshotRestoreGuards,
     pub(crate) saved_state: mesh::payload::message::ProtobufMessage,
+    pub(crate) restore_time: Option<(Duration, u64, Option<u64>, Vec<u8>)>,
 }
 
 /// Validate an opened snapshot generation against the current VM config.
@@ -20,14 +23,23 @@ pub(crate) struct PreparedSnapshotRestore {
 pub(super) fn prepare_snapshot_restore(
     snapshot: openvmm_helpers::snapshot::restore::OpenedSnapshot,
     opt: &Options,
+    microvm: &microvm::MicrovmLaunch,
+    expected_hypervisor: &str,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
-    prepare_snapshot_restore_for_config(snapshot, opt.memory_size(), opt.processors)
+    let expected_microvm_contract = microvm.expected_restore_contract(opt, expected_hypervisor)?;
+    prepare_snapshot_restore_for_config(
+        snapshot,
+        opt.memory_size(),
+        opt.processors,
+        expected_microvm_contract,
+    )
 }
 
 pub(crate) fn prepare_snapshot_restore_for_config(
     snapshot: openvmm_helpers::snapshot::restore::OpenedSnapshot,
     expected_memory_size: u64,
     expected_vp_count: u32,
+    expected_microvm_contract: Option<microvm::ExpectedRestoreContract<'_>>,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
     let artifact_prepare = openvmm_defs::profile::ProfileSpan::start();
     let manifest = snapshot.manifest();
@@ -39,10 +51,34 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         expected_vp_count,
         crate::system_page_size(),
     )?;
+    let restore_time = expected_microvm_contract
+        .map(|contract| {
+            microvm::validate_restore_contract(
+                manifest,
+                expected_memory_size,
+                expected_vp_count,
+                contract,
+            )
+        })
+        .transpose()?;
 
+    // The manifest and state.bin inventories describe the same machine boundary.
+    // Require them to agree before worker and partition construction.
     let state_msg: mesh::payload::message::ProtobufMessage =
         mesh::payload::decode(snapshot.state_bytes())
             .context("failed to decode saved state from snapshot")?;
+    if let Some(contract) = &manifest.machine_contract {
+        let inventory_msg: mesh::payload::message::ProtobufMessage =
+            mesh::payload::decode(snapshot.state_bytes())
+                .context("failed to decode saved state inventory from snapshot")?;
+        let saved_state: openvmm_defs::worker::SavedState = inventory_msg
+            .parse()
+            .context("failed to parse saved state inventory from snapshot")?;
+        anyhow::ensure!(
+            saved_state.inventory == contract.state_unit_names,
+            "snapshot manifest state-unit inventory does not match state.bin"
+        );
+    }
 
     artifact_prepare.complete(
         "restore",
@@ -75,5 +111,6 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         shared_memory,
         guards,
         saved_state: state_msg,
+        restore_time,
     })
 }
