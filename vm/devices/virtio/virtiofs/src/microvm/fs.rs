@@ -378,6 +378,7 @@ impl VirtioFs {
             handles,
             attachment_root_identity: profile.root_identity().to_vec(),
             maximum_request_size: MAX_FUSE_REQUEST_BYTES as u32,
+            dormant: false,
         })
     }
 
