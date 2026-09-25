@@ -4,6 +4,9 @@
 //! microVM snapshot machine-contract types, construction, and validation.
 
 use super::SnapshotManifest;
+use super::format::SCRATCH_FILE_NAME;
+#[cfg(test)]
+use super::format::SHA256_SIZE;
 use super::format::validate_sha256;
 use super::format::verify_digest;
 use anyhow::Context;
@@ -210,6 +213,36 @@ pub struct SnapshotMicrovmFilesystem {
     pub canonical_host_path: String,
 }
 
+/// Authoritative identity and snapshot policy for a microVM sandbox block.
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+pub struct SnapshotMicrovmSandboxBlock {
+    /// Stable role (`distro`, `runtime`, `custom`, or `scratch`).
+    #[mesh(1)]
+    pub role: String,
+    /// Whether the guest sees the device as read-only.
+    #[mesh(2)]
+    pub read_only: bool,
+    /// Logical device length in bytes.
+    #[mesh(3)]
+    pub length: u64,
+    /// Kind of immutable identity carried in `identity`.
+    #[mesh(4)]
+    pub identity_kind: String,
+    /// Immutable layer identity or paired-scratch digest.
+    #[mesh(5)]
+    pub identity: Vec<u8>,
+    /// Fixed snapshot-relative artifact name; empty for external layers.
+    #[mesh(6)]
+    pub artifact: String,
+    /// Guest-visible logical block size in bytes.
+    #[mesh(7)]
+    pub logical_block_size: u32,
+    /// Guest-visible physical block size in bytes.
+    #[mesh(8)]
+    pub physical_block_size: u32,
+}
+
 impl SnapshotMicrovmFilesystem {
     fn new(
         config: &openvmm_defs::microvm::MicrovmFilesystemConfig,
@@ -308,6 +341,9 @@ pub struct SnapshotMachineContract {
     /// Effective local APIC timer frequency.
     #[mesh(20)]
     pub apic_frequency_hz: Option<u64>,
+    /// Fixed-role sandbox blocks in guest-visible order.
+    #[mesh(21)]
+    pub microvm_sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
     /// Version of the reserved restore-attachable microVM virtio-fs slot.
     #[mesh(22)]
     pub microvm_filesystem_slot_version: u32,
@@ -390,6 +426,7 @@ pub fn microvm_machine_contract(
         SnapshotAttachment,
     )>,
     console_attachment: Option<SnapshotAttachment>,
+    sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
     processor_count: u32,
     memory_size: u64,
     state_unit_names: Vec<String>,
@@ -693,6 +730,45 @@ pub fn microvm_machine_contract(
         attachments.push(attachment);
     }
 
+    for block in &sandbox_blocks {
+        let role = match block.role.as_str() {
+            "distro" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
+            "runtime" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Runtime,
+            "custom" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Custom,
+            "scratch" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
+            role => anyhow::bail!("snapshot sandbox block role '{role}' is unsupported"),
+        };
+        let discovery = format!(
+            "virtio_mmio.device={:#x}@{:#x}:{}",
+            openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+            role.mmio_base(),
+            role.irq(),
+        );
+        anyhow::ensure!(
+            effective_command_line
+                .split_ascii_whitespace()
+                .any(|token| token == discovery),
+            "microVM sandbox block '{}' is missing from the effective command line",
+            block.role
+        );
+        let features = openvmm_defs::microvm::microvm_sandbox_block_features(role);
+        devices.push(SnapshotDevice {
+            stable_id: format!("blk:sandbox:{}", role.as_str()),
+            state_unit_name: format!("virtio-blk-{}", role.mmio_base()),
+            kind: "virtio-blk".to_owned(),
+            order: devices.len() as u32,
+            ranges: vec![mmio(
+                role.mmio_base(),
+                openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+            )],
+            irq: Some(role.irq()),
+            transport: "virtio-mmio".to_owned(),
+            feature_banks: vec![features as u32, (features >> 32) as u32],
+            queue_count: 1,
+            queue_max_sizes: vec![256],
+        });
+    }
+
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
         microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
@@ -714,6 +790,7 @@ pub fn microvm_machine_contract(
         microvm_network,
         microvm_filesystem,
         apic_frequency_hz,
+        microvm_sandbox_blocks: sandbox_blocks,
         microvm_filesystem_slot_version: if filesystem_slot {
             MICROVM_FILESYSTEM_SLOT_VERSION
         } else {
@@ -727,6 +804,23 @@ pub fn microvm_machine_contract(
     contract.set_cpu_compatibility_contract(cpu_contract);
     validate_machine_contract_shape(&contract, memory_size, processor_count)?;
     Ok(contract)
+}
+
+pub(super) fn has_sandbox_blocks(manifest: &SnapshotManifest) -> bool {
+    manifest
+        .machine_contract
+        .as_ref()
+        .is_some_and(|contract| !contract.microvm_sandbox_blocks.is_empty())
+}
+pub(super) fn paired_scratch_block(
+    manifest: &SnapshotManifest,
+) -> Option<&SnapshotMicrovmSandboxBlock> {
+    manifest
+        .machine_contract
+        .as_ref()?
+        .microvm_sandbox_blocks
+        .iter()
+        .find(|block| block.artifact == SCRATCH_FILE_NAME)
 }
 
 /// Rejects a snapshot contract that does not use the supported persisted microVM identities.
@@ -829,6 +923,10 @@ pub fn validate_microvm_machine_contract(
     anyhow::ensure!(
         contract.microvm_filesystem == expected.microvm_filesystem,
         "snapshot filesystem policy doesn't match the requested machine"
+    );
+    anyhow::ensure!(
+        contract.microvm_sandbox_blocks == expected.microvm_sandbox_blocks,
+        "snapshot sandbox block topology or identity doesn't match the requested machine"
     );
     anyhow::ensure!(
         contract.tsc_frequency_hz == expected.tsc_frequency_hz
@@ -961,64 +1059,6 @@ pub(super) fn validate_machine_contract_shape(
         *topology == microvm_snapshot_topology(vp_count)?,
         "snapshot processor topology is not canonical for the microVM"
     );
-    anyhow::ensure!(
-        contract.devices.len() <= MAX_DEVICES,
-        "snapshot device inventory is too large"
-    );
-    let mut device_ids = HashSet::new();
-    for (index, device) in contract.devices.iter().enumerate() {
-        anyhow::ensure!(
-            device.order == index as u32,
-            "snapshot device order is not canonical"
-        );
-        anyhow::ensure!(
-            !device.stable_id.is_empty() && device_ids.insert(device.stable_id.as_str()),
-            "snapshot contains an empty or duplicate device ID"
-        );
-        anyhow::ensure!(
-            !device.state_unit_name.is_empty(),
-            "snapshot device '{}' has no state-unit name",
-            device.stable_id,
-        );
-        anyhow::ensure!(
-            device.ranges.len() <= MAX_DEVICE_RANGES,
-            "snapshot device '{}' has too many address ranges",
-            device.stable_id,
-        );
-        for range in &device.ranges {
-            anyhow::ensure!(
-                matches!(range.address_space.as_str(), "pmio" | "mmio") && range.length != 0,
-                "snapshot device '{}' has an invalid address range",
-                device.stable_id,
-            );
-            range.start.checked_add(range.length).with_context(|| {
-                format!("snapshot device '{}' range overflows", device.stable_id)
-            })?;
-        }
-        anyhow::ensure!(
-            device.queue_count as usize == device.queue_max_sizes.len(),
-            "snapshot device '{}' queue inventory is inconsistent",
-            device.stable_id,
-        );
-    }
-
-    anyhow::ensure!(
-        !contract.state_unit_names.is_empty() && contract.state_unit_names.len() <= MAX_STATE_UNITS,
-        "snapshot state-unit inventory size is invalid"
-    );
-    ensure_unique(&contract.state_unit_names, "state-unit name")?;
-    let state_units = contract
-        .state_unit_names
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    for device in &contract.devices {
-        anyhow::ensure!(
-            state_units.contains(device.state_unit_name.as_str()),
-            "snapshot device '{}' references an unknown state unit",
-            device.stable_id,
-        );
-    }
 
     if let Some(network) = &contract.microvm_network {
         anyhow::ensure!(
@@ -1088,6 +1128,145 @@ pub(super) fn validate_machine_contract_shape(
         ),
     }
 
+    if !contract.microvm_sandbox_blocks.is_empty() {
+        anyhow::ensure!(
+            contract.microvm_sandbox_blocks.len() >= 2
+                && contract.microvm_sandbox_blocks.len() <= 4,
+            "microVM snapshot must contain one to three layers and scratch"
+        );
+        let mut previous_role = None;
+        for block in &contract.microvm_sandbox_blocks {
+            let role = match block.role.as_str() {
+                "distro" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
+                "runtime" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Runtime,
+                "custom" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Custom,
+                "scratch" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
+                role => anyhow::bail!("snapshot sandbox block role '{role}' is unsupported"),
+            };
+            anyhow::ensure!(
+                previous_role.is_none_or(|previous| previous < role),
+                "snapshot sandbox block roles are duplicated or out of order"
+            );
+            previous_role = Some(role);
+            anyhow::ensure!(
+                block.read_only == role.is_read_only(),
+                "snapshot sandbox block '{}' has an invalid access mode",
+                block.role
+            );
+            anyhow::ensure!(
+                block.length != 0 && block.length % 512 == 0,
+                "snapshot sandbox block '{}' has invalid geometry",
+                block.role
+            );
+            anyhow::ensure!(
+                block.logical_block_size >= 512
+                    && block.logical_block_size.is_power_of_two()
+                    && block.physical_block_size >= block.logical_block_size
+                    && block.physical_block_size.is_power_of_two()
+                    && block.length % u64::from(block.logical_block_size) == 0,
+                "snapshot sandbox block '{}' has invalid block geometry",
+                block.role
+            );
+            if role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch {
+                anyhow::ensure!(
+                    block.artifact.is_empty() || block.artifact == SCRATCH_FILE_NAME,
+                    "snapshot scratch artifact name is invalid"
+                );
+                if block.artifact.is_empty() {
+                    anyhow::ensure!(
+                        block.identity_kind == "fresh" && block.identity.is_empty(),
+                        "snapshot fresh scratch policy is invalid"
+                    );
+                } else {
+                    anyhow::ensure!(
+                        block.identity_kind == "sha256",
+                        "snapshot paired scratch has an unsupported identity kind"
+                    );
+                    validate_sha256(&block.identity, "scratch block")?;
+                }
+            } else {
+                anyhow::ensure!(
+                    block.artifact.is_empty()
+                        && matches!(block.identity_kind.as_str(), "sha256" | "unbound"),
+                    "snapshot read-only layer '{}' has an invalid identity policy",
+                    block.role
+                );
+                if block.identity_kind == "sha256" {
+                    validate_sha256(&block.identity, &format!("{} block", block.role))?;
+                } else {
+                    anyhow::ensure!(
+                        block.identity.is_empty(),
+                        "snapshot unbound layer '{}' carries an identity",
+                        block.role
+                    );
+                }
+            }
+        }
+        anyhow::ensure!(
+            previous_role == Some(openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch),
+            "microVM snapshot is missing its scratch role"
+        );
+    }
+
+    anyhow::ensure!(
+        contract.devices.len() <= MAX_DEVICES,
+        "snapshot device inventory is too large"
+    );
+    let mut device_ids = HashSet::new();
+    for (index, device) in contract.devices.iter().enumerate() {
+        anyhow::ensure!(
+            device.order == index as u32,
+            "snapshot device order is not canonical"
+        );
+        anyhow::ensure!(
+            !device.stable_id.is_empty() && device_ids.insert(device.stable_id.as_str()),
+            "snapshot contains an empty or duplicate device ID"
+        );
+        anyhow::ensure!(
+            !device.state_unit_name.is_empty(),
+            "snapshot device '{}' has no state-unit name",
+            device.stable_id,
+        );
+        anyhow::ensure!(
+            device.ranges.len() <= MAX_DEVICE_RANGES,
+            "snapshot device '{}' has too many address ranges",
+            device.stable_id,
+        );
+        for range in &device.ranges {
+            anyhow::ensure!(
+                matches!(range.address_space.as_str(), "pmio" | "mmio") && range.length != 0,
+                "snapshot device '{}' has an invalid address range",
+                device.stable_id,
+            );
+            range.start.checked_add(range.length).with_context(|| {
+                format!("snapshot device '{}' range overflows", device.stable_id)
+            })?;
+        }
+        anyhow::ensure!(
+            device.queue_count as usize == device.queue_max_sizes.len(),
+            "snapshot device '{}' queue inventory is inconsistent",
+            device.stable_id,
+        );
+    }
+
+    anyhow::ensure!(
+        !contract.state_unit_names.is_empty() && contract.state_unit_names.len() <= MAX_STATE_UNITS,
+        "snapshot state-unit inventory size is invalid"
+    );
+    ensure_unique(&contract.state_unit_names, "state-unit name")?;
+    let state_units = contract
+        .state_unit_names
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    for device in &contract.devices {
+        anyhow::ensure!(
+            state_units.contains(device.state_unit_name.as_str()),
+            "snapshot device '{}' references an unknown state unit",
+            device.stable_id,
+        );
+    }
+
     anyhow::ensure!(
         contract.attachments.len() <= MAX_ATTACHMENTS,
         "snapshot attachment inventory is too large"
@@ -1149,6 +1328,40 @@ where
         "snapshot contains a duplicate {description}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+const TEST_DISTRO_IDENTITY_BYTE: u8 = 0x11;
+
+#[cfg(test)]
+pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
+    let mut manifest = super::tests::test_manifest();
+    let mut contract = test_machine_contract();
+    contract.microvm_sandbox_blocks = vec![
+        SnapshotMicrovmSandboxBlock {
+            role: "distro".to_owned(),
+            read_only: true,
+            length: 512,
+            identity_kind: "sha256".to_owned(),
+            identity: vec![TEST_DISTRO_IDENTITY_BYTE; SHA256_SIZE],
+            artifact: String::new(),
+            logical_block_size: 512,
+            physical_block_size: 4096,
+        },
+        SnapshotMicrovmSandboxBlock {
+            role: "scratch".to_owned(),
+            read_only: false,
+            length: scratch.len() as u64,
+            identity_kind: "sha256".to_owned(),
+            identity: sha2::Sha256::digest(scratch).to_vec(),
+            artifact: SCRATCH_FILE_NAME.to_owned(),
+            logical_block_size: 512,
+            physical_block_size: 4096,
+        },
+    ];
+    contract.set_effective_command_line("console=hvc0".to_owned());
+    manifest.machine_contract = Some(contract);
+    manifest
 }
 
 #[cfg(test)]
@@ -1216,6 +1429,7 @@ fn test_machine_contract() -> SnapshotMachineContract {
         clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
         microvm_network: None,
         microvm_filesystem: None,
+        microvm_sandbox_blocks: Vec::new(),
         microvm_filesystem_slot_version: 0,
         apic_frequency_hz: Some(1_000_000_000),
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
@@ -1229,7 +1443,12 @@ fn test_machine_contract() -> SnapshotMachineContract {
 
 #[cfg(test)]
 mod tests {
+    use super::super::format::LEGACY_MANIFEST_VERSION;
+    use super::super::format::LEGACY_SNAPSHOT_FORMAT_MAGIC;
+    use super::super::format::PREVIOUS_MANIFEST_VERSION;
+    use super::super::format::PREVIOUS_SNAPSHOT_FORMAT_MAGIC;
     use super::super::tests::test_manifest;
+    use super::super::validate_manifest;
     use super::*;
 
     fn microvm_console_attachment() -> SnapshotAttachment {
@@ -1274,6 +1493,7 @@ mod tests {
             false,
             None,
             None,
+            Vec::new(),
             1,
             1024,
             [
@@ -1342,6 +1562,7 @@ mod tests {
                 microvm_filesystem_attachment(source_hypervisor),
             )),
             None,
+            Vec::new(),
             1,
             1024,
             [
@@ -1376,6 +1597,7 @@ mod tests {
             true,
             None,
             None,
+            Vec::new(),
             1,
             1024,
             [
@@ -1410,6 +1632,7 @@ mod tests {
             false,
             None,
             Some(microvm_console_attachment()),
+            Vec::new(),
             1,
             1024,
             [
@@ -1873,5 +2096,48 @@ mod tests {
         manifest.machine_contract = Some(contract.clone());
         let err = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
         assert!(err.to_string().contains("overlap in GPA space"));
+    }
+
+    #[test]
+    fn legacy_formats_reject_abi_v2_blocks() {
+        let scratch = vec![0x5a_u8; 1024];
+        for (version, magic) in [
+            (LEGACY_MANIFEST_VERSION, LEGACY_SNAPSHOT_FORMAT_MAGIC),
+            (PREVIOUS_MANIFEST_VERSION, PREVIOUS_SNAPSHOT_FORMAT_MAGIC),
+        ] {
+            let mut manifest = paired_scratch_manifest(&scratch);
+            manifest.version = version;
+            manifest.format_magic = magic.to_vec();
+            if version == LEGACY_MANIFEST_VERSION {
+                manifest.state_sha256 = vec![0; SHA256_SIZE];
+                manifest.memory_sha256 = vec![0; SHA256_SIZE];
+            }
+            let error = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot contain microVM sandbox blocks")
+            );
+        }
+    }
+
+    #[test]
+    fn abi_v2_contract_rejects_scratch_without_a_lower_layer() {
+        let scratch = vec![0x5a_u8; 1024];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks
+            .remove(0);
+        let contract = manifest.machine_contract.clone().unwrap();
+
+        let error = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("one to three layers and scratch")
+        );
     }
 }
