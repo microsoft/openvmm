@@ -34,6 +34,44 @@ pub enum MicrovmNetworkProfileCli {
     Portable,
 }
 
+/// Capture tier for a microVM sandbox snapshot.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum SnapshotTierCli {
+    /// Fleet-wide clone point before image or sandbox configuration is consumed.
+    Platform,
+    /// Tenant-scoped reusable clone point at the workload handoff.
+    WorkloadStart,
+    /// Single-use continuation of one stopped instance.
+    InstanceCheckpoint,
+}
+
+impl SnapshotTierCli {
+    pub(crate) fn manifest_name(self) -> &'static str {
+        match self {
+            Self::Platform => openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
+            Self::WorkloadStart => openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START,
+            Self::InstanceCheckpoint => {
+                openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT
+            }
+        }
+    }
+
+    pub(crate) fn restore_policy(self) -> &'static str {
+        match self {
+            Self::Platform | Self::WorkloadStart => {
+                openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_CLONE
+            }
+            Self::InstanceCheckpoint => {
+                openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME
+            }
+        }
+    }
+
+    pub(crate) fn requires_paired_scratch(self) -> bool {
+        !matches!(self, Self::Platform)
+    }
+}
+
 impl From<MachineProfileCli> for MachineProfile {
     fn from(value: MachineProfileCli) -> Self {
         match value {
@@ -49,6 +87,15 @@ pub struct MicrovmCli {
     /// Capture a microVM snapshot to this directory when the guest writes PMIO 0x605.
     #[clap(long, value_name = "DIR", conflicts_with = "restore_snapshot")]
     pub snapshot_destination: Option<PathBuf>,
+
+    /// Sandbox capture tier. Required for microVM snapshot capture with sandbox blocks.
+    #[clap(
+        long,
+        value_enum,
+        value_name = "TIER",
+        requires = "snapshot_destination"
+    )]
+    pub snapshot_tier: Option<SnapshotTierCli>,
 
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
@@ -204,6 +251,11 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.snapshot_quiesce_timeout_ms != 0,
                 "microVM snapshot quiesce timeout must be nonzero"
+            );
+            anyhow::ensure!(
+                self.microvm.snapshot_tier.is_some()
+                    != self.microvm.microvm_sandbox_block.is_empty(),
+                "--snapshot-tier is required exactly for microVM snapshot capture with sandbox blocks"
             );
         }
         if self.restore_snapshot.is_some() {
@@ -676,6 +728,65 @@ mod tests {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
         }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_snapshot_tier_is_explicit() {
+        for tier in ["platform", "workload-start", "instance-checkpoint"] {
+            let options = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--snapshot-destination",
+                "snapshot",
+                "--snapshot-tier",
+                tier,
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ])
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+        }
+
+        let missing = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        assert!(missing.validate_microvm_options().is_err());
+
+        let blockless = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--processors",
+            "2",
+            "--snapshot-destination",
+            "snapshot",
+        ])
+        .unwrap();
+        blockless.validate_microvm_options().unwrap();
+
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--snapshot-tier",
+                "platform",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
