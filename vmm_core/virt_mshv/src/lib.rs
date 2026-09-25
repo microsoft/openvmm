@@ -475,6 +475,67 @@ impl MshvPartitionInner {
     }
 }
 
+impl MshvPartition {
+    /// Creates a virtual IOMMU in this partition.
+    pub fn create_virtual_iommu(
+        &self,
+        virt_iommu_id: u32,
+        base_gpa_page: u64,
+        interrupts: hvdef::hypercall::VirtIommuInterrupts,
+        feature_set: hvdef::hypercall::VirtIommuFeatureSet,
+    ) -> Result<(), MshvError> {
+        use mshv_bindings::mshv_root_hvcall;
+
+        let input = hvdef::hypercall::CreateVirtualIommu {
+            partition_id: 0,
+            virt_iommu_id,
+            interrupts,
+            reserved: 0,
+            base_gpa_page,
+            feature_set,
+        };
+        let mut args = mshv_root_hvcall {
+            code: hvdef::HypercallCode::HvCallCreateVirtualIommu.0,
+            in_sz: size_of::<hvdef::hypercall::CreateVirtualIommu>() as u16,
+            in_ptr: std::ptr::addr_of!(input) as u64,
+            ..Default::default()
+        };
+        self.inner.vmfd.hvcall(&mut args)
+    }
+
+    /// Updates an assigned device's virtual IOMMU binding.
+    pub fn set_device_virtual_iommu(
+        &self,
+        logical_device_id: u64,
+        virt_iommu_id: u32,
+        stream_id: u32,
+        enabled: bool,
+    ) -> Result<(), MshvError> {
+        use mshv_bindings::mshv_root_hvcall;
+
+        let input = hvdef::hypercall::SetLogicalDeviceProperty {
+            partition_id: 0,
+            logical_device_id,
+            property_code: hvdef::hypercall::HV_LOGICAL_DEVICE_PROPERTY_VIRTUAL_IOMMU,
+            reserved: 0,
+            property_value: hvdef::hypercall::LogicalDevicePropertyVirtualIommu {
+                flags: enabled as u64,
+                virt_iommu_id,
+                stream_id,
+            },
+            property_value_padding: [0; 16],
+        };
+
+        let mut args = mshv_root_hvcall {
+            code: hvdef::HypercallCode::HvCallSetLogicalDeviceProperty.0,
+            in_sz: size_of::<hvdef::hypercall::SetLogicalDeviceProperty>() as u16,
+            in_ptr: std::ptr::addr_of!(input) as u64,
+            ..Default::default()
+        };
+        self.inner.vmfd.hvcall(&mut args)
+    }
+}
+
 /// Binds a virtual processor to the current thread.
 pub struct MshvProcessorBinder {
     partition: Arc<MshvPartitionInner>,

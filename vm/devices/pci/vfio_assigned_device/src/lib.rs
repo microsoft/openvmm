@@ -20,6 +20,7 @@ pub mod resolver;
 
 use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -33,6 +34,7 @@ use guestmem::MemoryMapper;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use pal_async::timer::PolledTimer;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::msix::MsixEmulator;
@@ -47,12 +49,49 @@ use std::ops::Range;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 use vfio_assigned_device_resources::BarAddressConfig;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
+
+const ATS_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const ATS_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+// PCI_ATS_CTRL_ENABLE is bit 15 of the 16-bit ATS Control register, which is
+// the upper word of the dword at capability offset + 4.
+const ATS_CONTROL_ENABLE: u32 = 0x8000_0000;
+const SRIOV_CAPABILITY_SIZE: u16 = 0x40;
+
+#[derive(Clone, Copy, Debug, Default)]
+enum AtsResumeState {
+    #[default]
+    None,
+    Enabled,
+    Unknown,
+}
+
+fn retry_until_timeout<T, E>(
+    timeout: Duration,
+    interval: Duration,
+    mut operation: impl FnMut() -> Result<T, E>,
+) -> Result<T, E> {
+    let start = Instant::now();
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout {
+                    return Err(err);
+                }
+                std::thread::sleep(interval.min(timeout - elapsed));
+            }
+        }
+    }
+}
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
@@ -100,6 +139,13 @@ struct ConfigPatch {
     /// Replacement bits for the masked positions.
     #[inspect(hex)]
     value: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, Inspect)]
+struct DirectCapabilityMediation {
+    direct: bool,
+    pasid: bool,
+    ats: bool,
 }
 
 /// MSI-X emulation state, discovered from the physical device's capabilities.
@@ -220,20 +266,38 @@ pub(crate) struct VfioAssignedPciDevice {
         with = "|m| inspect::iter_by_key(m.iter().map(|(k, v)| (format!(\"{k:#06x}\"), v)))"
     )]
     config_patches: BTreeMap<u16, ConfigPatch>,
+    #[inspect(with = "|r| r.as_ref().map(|r| format!(\"{:#x}-{:#x}\", r.start, r.end))")]
+    managed_sriov_range: Option<Range<u16>>,
 
-    /// Accelerated (iommufd-nested) SMMU stream, present only for a device
-    /// behind an accel-capable SMMU. Owns the StreamID derived from the guest
-    /// RequesterID seen on routed config-space writes, and every host object
-    /// keyed by it. Declared before `binding` so these references are released
-    /// before the manager is notified of device removal.
+    // Must drop before `binding` notifies the manager to detach the device.
     accel_stream: Option<iommufd_nesting::AccelStream>,
+
+    #[inspect(hex)]
+    managed_pasid_control_offset: Option<u16>,
+    #[inspect(hex)]
+    managed_ats_control_offset: Option<u16>,
+    #[inspect(hex)]
+    ats_control_offset: Option<u16>,
+    #[inspect(hex)]
+    managed_pcie_device_control_offset: Option<u16>,
+    #[inspect(hex)]
+    managed_af_control_offset: Option<u16>,
+    kernel_owned_ats: bool,
+    #[inspect(debug)]
+    ats_resume_state: AtsResumeState,
+    #[inspect(skip)]
+    retry_timer: PolledTimer,
+
+    // Must drop before `binding` so final teardown disables ATS first.
+    #[inspect(skip)]
+    _ats_drop_guard: Option<AtsDropGuard>,
 
     /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
     /// (cdev) fds alive and cleans up on drop.
     binding: manager::VfioBinding,
 }
 
-#[derive(Inspect)]
+#[derive(Clone, Inspect)]
 struct VfioPciDevice {
     /// The VFIO device, used for config space, BAR MMIO, and MSI-X mapping.
     ///
@@ -276,6 +340,95 @@ impl ConfigSpaceRead for VfioPciDevice {
     }
 }
 
+struct AtsDropGuard {
+    pci_id: String,
+    vfio_device: VfioPciDevice,
+    control_offset: u16,
+}
+
+impl Drop for AtsDropGuard {
+    fn drop(&mut self) {
+        if let Err(err) = retry_until_timeout(ATS_RETRY_TIMEOUT, ATS_RETRY_INTERVAL, || {
+            set_ats_enabled(&self.vfio_device, Some(self.control_offset), false)
+        }) {
+            tracing::error!(
+                pci_id = self.pci_id.as_str(),
+                error = err.as_ref() as &dyn std::error::Error,
+                "ATS disable failed during final device teardown; relying on kernel quarantine"
+            );
+        }
+    }
+}
+
+fn ats_enabled(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::Result<bool> {
+    Ok(read_ats_control(device, control_offset)? & ATS_CONTROL_ENABLE != 0)
+}
+
+fn read_ats_control(device: &VfioPciDevice, control_offset: Option<u16>) -> anyhow::Result<u32> {
+    let Some(offset) = control_offset else {
+        return Ok(0);
+    };
+
+    let mut control = 0;
+    device.read_config(
+        offset,
+        ByteEnabledDwordRead::with_all_bytes_enabled(&mut control),
+    )?;
+    Ok(control)
+}
+
+fn set_ats_enabled(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    set_ats_control(device, control_offset, enabled, None)
+}
+
+fn set_guest_ats_control(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+    guest_write: ByteEnabledDwordWrite,
+) -> anyhow::Result<()> {
+    set_ats_control(device, control_offset, enabled, Some(guest_write))
+}
+
+fn set_ats_control(
+    device: &VfioPciDevice,
+    control_offset: Option<u16>,
+    enabled: bool,
+    guest_write: Option<ByteEnabledDwordWrite>,
+) -> anyhow::Result<()> {
+    let Some(offset) = control_offset else {
+        return Ok(());
+    };
+
+    let value = read_ats_control(device, control_offset)?;
+    let value = merge_ats_control(value, enabled, guest_write);
+    device.write_config(
+        offset,
+        ByteEnabledDwordWrite::new(value, PciConfigByteEnable::HIGH_WORD),
+    )?;
+    anyhow::ensure!(
+        ats_enabled(device, control_offset)? == enabled,
+        "ATS control readback did not match requested state"
+    );
+    Ok(())
+}
+
+fn merge_ats_control(
+    mut value: u32,
+    enabled: bool,
+    guest_write: Option<ByteEnabledDwordWrite>,
+) -> u32 {
+    if let Some(guest_write) = guest_write {
+        let mask = guest_write.valid_mask() & 0xffff_0000;
+        value = (value & !mask) | (guest_write.extract() & mask);
+    }
+    (value & !ATS_CONTROL_ENABLE) | if enabled { ATS_CONTROL_ENABLE } else { 0 }
+}
+
 impl VfioPciDevice {
     fn write_config(&self, offset: u16, value: ByteEnabledDwordWrite) -> anyhow::Result<()> {
         let (byte_offset, len) = value.byte_enable().to_byte_offset_len();
@@ -310,6 +463,7 @@ impl VfioAssignedPciDevice {
         msi_target: &MsiTarget,
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         let vfio_device = binding
             .group()
@@ -324,8 +478,9 @@ impl VfioAssignedPciDevice {
             msi_target,
             memory_mapper,
             bar_addresses,
-            // Legacy group/type1 path never does nested S1 (rejected earlier).
             None,
+            DirectCapabilityMediation::default(),
+            retry_timer,
         )
         .await
     }
@@ -340,6 +495,8 @@ impl VfioAssignedPciDevice {
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
+        direct_capabilities: DirectCapabilityMediation,
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         Self::from_device(
             device,
@@ -350,6 +507,8 @@ impl VfioAssignedPciDevice {
             memory_mapper,
             bar_addresses,
             accel_stream,
+            direct_capabilities,
+            retry_timer,
         )
         .await
     }
@@ -363,6 +522,8 @@ impl VfioAssignedPciDevice {
         memory_mapper: &dyn MemoryMapper,
         bar_addresses: [BarAddressConfig; 6],
         accel_stream: Option<iommufd_nesting::AccelStream>,
+        direct_capabilities: DirectCapabilityMediation,
+        retry_timer: PolledTimer,
     ) -> anyhow::Result<Self> {
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
@@ -440,12 +601,18 @@ impl VfioAssignedPciDevice {
         // single pass. This discovers MSI-X (for emulation) and PM (for
         // BAR unmap on D-state transitions), and builds the config patch
         // table that hides capabilities the guest shouldn't see.
-        let caps = discover_capabilities(&vfio_device, msi_target);
+        let caps = discover_capabilities_with_policy(&vfio_device, msi_target, direct_capabilities);
         let msix = caps.msix;
         let pm_csr_offset = caps.pm_csr_offset;
         let pcie_flr_control_offset = caps.pcie_flr_control_offset;
         let af_flr_control_offset = caps.af_flr_control_offset;
         let config_patches = caps.config_patches;
+        let managed_sriov_range = caps.managed_sriov_range;
+        let managed_pasid_control_offset = caps.managed_pasid_control_offset;
+        let managed_ats_control_offset = caps.managed_ats_control_offset;
+        let ats_control_offset = caps.ats_control_offset;
+        let managed_pcie_device_control_offset = caps.managed_pcie_device_control_offset;
+        let managed_af_control_offset = caps.managed_af_control_offset;
 
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
@@ -581,6 +748,21 @@ impl VfioAssignedPciDevice {
         let bars = apply_bar_addresses(&pci_id, &bar_flags, &bar_masks, &bar_addresses)?;
         let bar_reset_defaults = bars;
 
+        let kernel_owned_ats = direct_capabilities.direct && direct_capabilities.ats;
+        let ats_drop_guard = if kernel_owned_ats {
+            let control_offset = ats_control_offset
+                .context("direct ATS requested but the ATS capability was not discovered")?;
+            set_ats_enabled(&vfio_device, Some(control_offset), false)
+                .context("failed to disable ATS before assigning the device")?;
+            Some(AtsDropGuard {
+                pci_id: pci_id.clone(),
+                vfio_device: vfio_device.clone(),
+                control_offset,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             pci_id,
             vfio_device,
@@ -600,7 +782,17 @@ impl VfioAssignedPciDevice {
             supports_reset,
             bar_direct_maps,
             config_patches,
+            managed_sriov_range,
             accel_stream,
+            managed_pasid_control_offset,
+            managed_ats_control_offset,
+            ats_control_offset,
+            managed_pcie_device_control_offset,
+            managed_af_control_offset,
+            kernel_owned_ats,
+            ats_resume_state: AtsResumeState::None,
+            retry_timer,
+            _ats_drop_guard: ats_drop_guard,
             binding,
         })
     }
@@ -613,6 +805,73 @@ impl VfioAssignedPciDevice {
                 "VFIO config space read failed"
             );
             value.set(!0);
+        }
+    }
+
+    fn ats_enabled(&self) -> anyhow::Result<bool> {
+        ats_enabled(&self.vfio_device, self.ats_control_offset)
+    }
+
+    fn set_ats_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        set_ats_enabled(&self.vfio_device, self.ats_control_offset, enabled)
+    }
+
+    fn set_ats_enabled_retry(&self, enabled: bool, transition: &str) -> anyhow::Result<()> {
+        retry_until_timeout(ATS_RETRY_TIMEOUT, ATS_RETRY_INTERVAL, || {
+            self.set_ats_enabled(enabled)
+        })
+        .with_context(|| {
+            format!(
+                "failed to set ATS {} during {transition}",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        })
+    }
+
+    async fn ats_enabled_retry_async(&mut self, transition: &str) -> anyhow::Result<bool> {
+        let start = Instant::now();
+        loop {
+            match self.ats_enabled() {
+                Ok(value) => return Ok(value),
+                Err(err) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= ATS_RETRY_TIMEOUT {
+                        return Err(err).with_context(|| {
+                            format!("failed to read ATS state during {transition}")
+                        });
+                    }
+                    self.retry_timer
+                        .sleep(ATS_RETRY_INTERVAL.min(ATS_RETRY_TIMEOUT - elapsed))
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn set_ats_enabled_retry_async(
+        &mut self,
+        enabled: bool,
+        transition: &str,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        loop {
+            match self.set_ats_enabled(enabled) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= ATS_RETRY_TIMEOUT {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "failed to set ATS {} during {transition}",
+                                if enabled { "enabled" } else { "disabled" }
+                            )
+                        });
+                    }
+                    self.retry_timer
+                        .sleep(ATS_RETRY_INTERVAL.min(ATS_RETRY_TIMEOUT - elapsed))
+                        .await;
+                }
+            }
         }
     }
 
@@ -1021,6 +1280,12 @@ struct DiscoveredCapabilities {
     af_flr_control_offset: Option<u16>,
     /// Config space patch table for filtering capabilities from the guest.
     config_patches: BTreeMap<u16, ConfigPatch>,
+    managed_sriov_range: Option<Range<u16>>,
+    managed_pasid_control_offset: Option<u16>,
+    managed_ats_control_offset: Option<u16>,
+    ats_control_offset: Option<u16>,
+    managed_pcie_device_control_offset: Option<u16>,
+    managed_af_control_offset: Option<u16>,
 }
 
 /// Walk both the standard (0x34+) and extended (0x100+) PCI capability chains
@@ -1032,9 +1297,18 @@ struct DiscoveredCapabilities {
 ///
 /// Extended cap chain: builds patches to hide SR-IOV, ARI, Resizable BAR
 /// from the guest.
+#[cfg(test)]
 fn discover_capabilities(
     config: &dyn ConfigSpaceRead,
     msi_target: &MsiTarget,
+) -> DiscoveredCapabilities {
+    discover_capabilities_with_policy(config, msi_target, DirectCapabilityMediation::default())
+}
+
+fn discover_capabilities_with_policy(
+    config: &dyn ConfigSpaceRead,
+    msi_target: &MsiTarget,
+    direct_capabilities: DirectCapabilityMediation,
 ) -> DiscoveredCapabilities {
     let mut result = DiscoveredCapabilities {
         msix: None,
@@ -1042,6 +1316,12 @@ fn discover_capabilities(
         pcie_flr_control_offset: None,
         af_flr_control_offset: None,
         config_patches: BTreeMap::new(),
+        managed_sriov_range: None,
+        managed_pasid_control_offset: None,
+        managed_ats_control_offset: None,
+        ats_control_offset: None,
+        managed_pcie_device_control_offset: None,
+        managed_af_control_offset: None,
     };
 
     // Clear multi-function bit so the device appears as single-function.
@@ -1174,26 +1454,58 @@ fn discover_capabilities(
             {
                 break;
             }
+            let device_caps_offset =
+                cap_ptr + pci_express::PciExpressCapabilityHeader::DEVICE_CAPS.0;
+            let device_control_offset =
+                cap_ptr + pci_express::PciExpressCapabilityHeader::DEVICE_CTL_STS.0;
             if pci_express::DeviceCapabilities::from_bits(device_capabilities)
                 .function_level_reset()
             {
-                result.pcie_flr_control_offset =
-                    Some(cap_ptr + pci_express::PciExpressCapabilityHeader::DEVICE_CTL_STS.0);
+                result.pcie_flr_control_offset = Some(device_control_offset);
+            }
+            if direct_capabilities.direct && direct_capabilities.ats {
+                result.managed_pcie_device_control_offset = Some(device_control_offset);
+                result.config_patches.insert(
+                    device_caps_offset,
+                    ConfigPatch {
+                        mask: 1 << 28,
+                        value: 0,
+                    },
+                );
             }
         } else if cap_id == caps::CapabilityId::ADVANCED_FEATURES.0
             && result.af_flr_control_offset.is_none()
         {
             let header = advanced_features::Header::from_bits(header);
+            let control_offset = cap_ptr + advanced_features::CapabilityRegister::CONTROL_STATUS.0;
             if advanced_features::Capabilities::from_bits(header.capabilities())
                 .function_level_reset()
             {
-                result.af_flr_control_offset =
-                    Some(cap_ptr + advanced_features::CapabilityRegister::CONTROL_STATUS.0);
+                result.af_flr_control_offset = Some(control_offset);
+            }
+            if direct_capabilities.direct && direct_capabilities.ats {
+                result.managed_af_control_offset = Some(control_offset);
+                result.config_patches.insert(
+                    cap_ptr,
+                    ConfigPatch {
+                        mask: 0x0000_00ff,
+                        value: 0,
+                    },
+                );
             }
         }
 
         cap_ptr = next_ptr;
     }
+
+    let mut device_vendor = 0;
+    let is_gb200_pf = config
+        .read_config(
+            HeaderType00::DEVICE_VENDOR.0,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut device_vendor),
+        )
+        .is_ok()
+        && device_vendor == 0x2941_10de;
 
     // --- Extended capability chain (offsets 0x100+) ---
 
@@ -1245,9 +1557,26 @@ fn discover_capabilities(
             );
 
             match cap_id {
-                caps::ExtendedCapabilityId::SRIOV
-                | caps::ExtendedCapabilityId::ARI
-                | caps::ExtendedCapabilityId::REBAR => {
+                caps::ExtendedCapabilityId::SRIOV => {
+                    result.managed_sriov_range =
+                        Some(offset..offset.saturating_add(SRIOV_CAPABILITY_SIZE));
+                    // The GB200 PF driver requires read-only SR-IOV discovery.
+                    if !is_gb200_pf {
+                        tracing::info!(
+                            ?cap_id,
+                            offset = format_args!("{offset:#x}"),
+                            "filtering extended capability from guest view"
+                        );
+                        result.config_patches.insert(
+                            offset,
+                            ConfigPatch {
+                                mask: 0x0000_FFFF,
+                                value: 0,
+                            },
+                        );
+                    }
+                }
+                caps::ExtendedCapabilityId::ARI | caps::ExtendedCapabilityId::REBAR => {
                     tracing::info!(
                         ?cap_id,
                         offset = format_args!("{offset:#x}"),
@@ -1260,6 +1589,43 @@ fn discover_capabilities(
                             value: 0,
                         },
                     );
+                }
+                caps::ExtendedCapabilityId::ATS if direct_capabilities.direct => {
+                    let control_offset = offset + 4;
+                    result.managed_ats_control_offset = Some(control_offset);
+                    if !direct_capabilities.ats {
+                        result.config_patches.insert(
+                            offset,
+                            ConfigPatch {
+                                mask: 0x0000_FFFF,
+                                value: 0,
+                            },
+                        );
+                    } else {
+                        result.ats_control_offset = Some(control_offset);
+                    }
+                    // VFIO commits the ordered kernel ATS transition before readback changes.
+                }
+                caps::ExtendedCapabilityId::PASID if direct_capabilities.direct => {
+                    let control_offset = offset + 4;
+                    result.managed_pasid_control_offset = Some(control_offset);
+                    if direct_capabilities.pasid {
+                        result.config_patches.insert(
+                            control_offset,
+                            ConfigPatch {
+                                mask: 0x0001_0000,
+                                value: 0x0001_0000,
+                            },
+                        );
+                    } else {
+                        result.config_patches.insert(
+                            offset,
+                            ConfigPatch {
+                                mask: 0x0000_FFFF,
+                                value: 0,
+                            },
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -1331,9 +1697,56 @@ fn write_msix_emulator(emulator: &mut MsixEmulator, offset: u64, data: &[u8]) {
 }
 
 impl ChangeDeviceState for VfioAssignedPciDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        match self.ats_resume_state {
+            AtsResumeState::None => return,
+            AtsResumeState::Enabled => {}
+            AtsResumeState::Unknown => {
+                panic!(
+                    "cannot resume VFIO device {} after ATS state became unknown during stop",
+                    self.pci_id
+                );
+            }
+        }
 
-    async fn stop(&mut self) {}
+        if let Err(err) = self.set_ats_enabled_retry(true, "VM resume") {
+            panic!(
+                "cannot resume VFIO device {} after ATS replay failure: {err:#}",
+                self.pci_id
+            );
+        }
+
+        self.ats_resume_state = AtsResumeState::None;
+    }
+
+    async fn stop(&mut self) {
+        match self.ats_enabled_retry_async("VM stop").await {
+            Ok(false) => self.ats_resume_state = AtsResumeState::None,
+            Ok(true) => {
+                self.ats_resume_state = AtsResumeState::Enabled;
+                if let Err(err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
+                    panic!(
+                        "cannot stop VFIO device {} after ATS disable failure: {err:#}",
+                        self.pci_id
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::error!(
+                    pci_id = self.pci_id.as_str(),
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "ATS state read failed; continuing device stop for kernel quarantine"
+                );
+                self.ats_resume_state = AtsResumeState::Unknown;
+                if let Err(disable_err) = self.set_ats_enabled_retry_async(false, "VM stop").await {
+                    panic!(
+                        "cannot stop VFIO device {} after ATS state read and disable failures: {disable_err:#}",
+                        self.pci_id
+                    );
+                }
+            }
+        }
+    }
 
     async fn reset(&mut self) {
         // Tear down MSI-X irqfd routes before resetting state.
@@ -1343,6 +1756,26 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
 
         self.mmio_enabled = false;
         self.update_bar_mappings();
+
+        let ats_disabled = if self.kernel_owned_ats {
+            match self.set_ats_enabled_retry_async(false, "VM reset").await {
+                Ok(()) => {
+                    self.ats_resume_state = AtsResumeState::None;
+                    true
+                }
+                Err(err) => {
+                    self.ats_resume_state = AtsResumeState::Unknown;
+                    tracing::error!(
+                        pci_id = self.pci_id.as_str(),
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "ATS disable failed; VFIO device reset will be skipped"
+                    );
+                    false
+                }
+            }
+        } else {
+            true
+        };
 
         // Destructure to ensure every field is explicitly considered for reset.
         let Self {
@@ -1363,9 +1796,19 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _,       // immutable device geometry
             ref mut msix,
             supports_reset,
-            config_patches: _, // immutable — built at init
-            binding: _,        // lifetime handle — no reset needed
+            config_patches: _,
+            managed_sriov_range: _,
+            managed_pasid_control_offset: _,
+            managed_ats_control_offset: _,
+            ats_control_offset: _,
+            managed_pcie_device_control_offset: _,
+            managed_af_control_offset: _,
+            kernel_owned_ats: _,
+            ats_resume_state: _,
+            retry_timer: _,
+            _ats_drop_guard: _,
             ref mut accel_stream,
+            binding: _,
         } = *self;
 
         // The reset clears the captured BDF, so the StreamID derived from it
@@ -1388,7 +1831,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         *bars = bar_reset_defaults;
 
         // Reset the physical device via VFIO so it starts in a clean state.
-        if supports_reset {
+        if supports_reset && ats_disabled {
             match vfio_device.device.reset() {
                 Ok(()) => *in_d0 = true,
                 Err(error) => {
@@ -1581,6 +2024,14 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     let power_state = value.extract() & 0x3; // bits [1:0] = PowerState
                     let new_in_d0 = power_state == 0;
                     let old_in_d0 = self.in_d0;
+                    if self.kernel_owned_ats && !new_in_d0 {
+                        tracing::warn!(
+                            pci_id = self.pci_id.as_str(),
+                            power_state,
+                            "ignored guest D-state transition while direct ATS is configured"
+                        );
+                        return IoResult::Ok;
+                    }
                     if new_in_d0 {
                         // Entering D0: forward first, then remap BARs.
                         // If the write fails, leave BARs unmapped to
@@ -1661,12 +2112,89 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 // Skip write_phys_config for MSI-X control register.
                 return IoResult::Ok;
             }
+            _ if is_managed_capability_write(
+                offset,
+                self.managed_pasid_control_offset,
+                self.managed_af_control_offset,
+            ) =>
+            {
+                tracing::trace!(
+                    pci_id = self.pci_id.as_str(),
+                    offset = format_args!("{offset:#x}"),
+                    value = format_args!("{:#010x}", value.extract()),
+                    "ignored guest write to kernel-owned PCI capability"
+                );
+                return IoResult::Ok;
+            }
+            _ if Some(offset) == self.managed_ats_control_offset => {
+                if let Some(enabled) = requested_ats_state(value) {
+                    if !self.kernel_owned_ats {
+                        tracing::trace!(
+                            pci_id = self.pci_id.as_str(),
+                            enabled,
+                            "ignored guest ATS transition because direct ATS is disabled"
+                        );
+                    } else if let Err(err) = set_guest_ats_control(
+                        &self.vfio_device,
+                        self.ats_control_offset,
+                        enabled,
+                        value,
+                    ) {
+                        tracing::error!(
+                            pci_id = self.pci_id.as_str(),
+                            error = err.as_ref() as &dyn std::error::Error,
+                            enabled,
+                            "guest ATS transition failed"
+                        );
+                        return IoResult::Err(IoError::NoResponse);
+                    }
+                }
+                return IoResult::Ok;
+            }
+            _ if self
+                .managed_sriov_range
+                .as_ref()
+                .is_some_and(|range| range.contains(&offset)) =>
+            {
+                tracing::trace!(
+                    pci_id = self.pci_id.as_str(),
+                    offset = format_args!("{offset:#x}"),
+                    "ignored guest write to read-only SR-IOV capability"
+                );
+                return IoResult::Ok;
+            }
+            _ if Some(offset) == self.managed_pcie_device_control_offset => {
+                self.write_phys_config(offset, without_flr_request(value));
+                return IoResult::Ok;
+            }
             // All other registers: pass through to physical device.
             _ => self.write_phys_config(offset, value),
         }
 
         IoResult::Ok
     }
+}
+
+fn is_managed_capability_write(
+    offset: u16,
+    pasid_control_offset: Option<u16>,
+    af_control_offset: Option<u16>,
+) -> bool {
+    Some(offset) == pasid_control_offset || Some(offset) == af_control_offset
+}
+
+fn requested_ats_state(value: ByteEnabledDwordWrite) -> Option<bool> {
+    (value.valid_mask() & ATS_CONTROL_ENABLE != 0)
+        .then(|| value.extract() & ATS_CONTROL_ENABLE != 0)
+}
+
+fn without_flr_request(value: ByteEnabledDwordWrite) -> ByteEnabledDwordWrite {
+    const PCI_EXPRESS_DEVICE_CONTROL_FLR_BIT_MASK: u32 = 1 << 15;
+
+    ByteEnabledDwordWrite::new(
+        value.extract() & !PCI_EXPRESS_DEVICE_CONTROL_FLR_BIT_MASK,
+        value.byte_enable(),
+    )
 }
 
 impl MmioIntercept for VfioAssignedPciDevice {
@@ -1786,6 +2314,30 @@ mod tests {
     use super::*;
     use pci_core::msi::MsiTarget;
     use test_with_tracing::test;
+
+    #[test]
+    fn retry_until_timeout_succeeds_after_transient_failures() {
+        let mut attempts = 0;
+        let result = retry_until_timeout(Duration::from_secs(1), Duration::ZERO, || {
+            attempts += 1;
+            (attempts == 3).then_some(42).ok_or(attempts)
+        });
+
+        assert_eq!(result, Ok(42));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retry_until_timeout_returns_last_error_at_deadline() {
+        let mut attempts = 0;
+        let result: Result<(), _> = retry_until_timeout(Duration::ZERO, Duration::ZERO, || {
+            attempts += 1;
+            Err(attempts)
+        });
+
+        assert_eq!(result, Err(1));
+        assert_eq!(attempts, 1);
+    }
 
     #[test]
     fn apply_explicit_32_bit_bar_address() {
@@ -2148,22 +2700,36 @@ mod tests {
     // --- Extended capability patch tests ---
 
     #[test]
-    fn extended_caps_sriov_filtered() {
+    fn extended_caps_sriov_visible_for_gb200() {
         let mut cfg = MockConfigSpace::new(0x200);
-        // No standard caps
+        cfg.write_u32(HeaderType00::DEVICE_VENDOR.0, 0x2941_10de);
         cfg.write_u32(0x34, 0x00);
-        // Extended cap at 0x100: SR-IOV (0x10), version=1, next=0
         cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x10, 1, 0));
 
         let msi = MsiTarget::disconnected();
         let caps = discover_capabilities(&cfg, &msi);
 
-        let patch = caps
-            .config_patches
-            .get(&0x100)
-            .expect("SR-IOV should be patched");
-        assert_eq!(patch.mask, 0x0000_FFFF);
-        assert_eq!(patch.value, 0);
+        assert!(
+            !caps.config_patches.contains_key(&0x100),
+            "SR-IOV must remain visible for the GB200 PF driver"
+        );
+        assert_eq!(caps.managed_sriov_range, Some(0x100..0x140));
+    }
+
+    #[test]
+    fn extended_caps_sriov_hidden_for_non_gb200() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(HeaderType00::DEVICE_VENDOR.0, 0x2942_10de);
+        cfg.write_u32(0x34, 0x00);
+        cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x10, 1, 0));
+
+        let caps = discover_capabilities(&cfg, &MsiTarget::disconnected());
+
+        assert!(
+            caps.config_patches.contains_key(&0x100),
+            "SR-IOV must remain hidden for other VFIO devices"
+        );
+        assert_eq!(caps.managed_sriov_range, Some(0x100..0x140));
     }
 
     #[test]
@@ -2186,6 +2752,164 @@ mod tests {
             caps.config_patches.contains_key(&0x200),
             "REBAR should be patched"
         );
+    }
+
+    #[test]
+    fn direct_capabilities_are_hidden_or_kernel_owned() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(0x34, 0);
+        cfg.write_u32(
+            0x100,
+            MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::ATS.0, 1, 0x120),
+        );
+        // ATS Capability queue depth and ATS Control STU are both 0x1f;
+        // PCI_ATS_CTRL_ENABLE (0x8000) remains clear.
+        cfg.write_u32(0x104, 0x001f_001f);
+        cfg.write_u32(
+            0x120,
+            MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::PASID.0, 1, 0),
+        );
+        cfg.write_u32(0x124, 0x0006_0000);
+        let msi = MsiTarget::disconnected();
+
+        let pasid_only = discover_capabilities_with_policy(
+            &cfg,
+            &msi,
+            DirectCapabilityMediation {
+                direct: true,
+                pasid: true,
+                ats: false,
+            },
+        );
+        assert_eq!(pasid_only.managed_ats_control_offset, Some(0x104));
+        assert_eq!(pasid_only.ats_control_offset, None);
+        assert_eq!(pasid_only.managed_pasid_control_offset, Some(0x124));
+        assert_eq!(pasid_only.config_patches[&0x100].mask, 0x0000_ffff);
+        assert_eq!(pasid_only.config_patches[&0x100].value, 0);
+        assert_eq!(pasid_only.config_patches[&0x124].mask, 0x0001_0000);
+        assert_eq!(pasid_only.config_patches[&0x124].value, 0x0001_0000);
+
+        let pasid_ats = discover_capabilities_with_policy(
+            &cfg,
+            &msi,
+            DirectCapabilityMediation {
+                direct: true,
+                pasid: true,
+                ats: true,
+            },
+        );
+        assert_eq!(pasid_ats.managed_ats_control_offset, Some(0x104));
+        assert_eq!(pasid_ats.ats_control_offset, Some(0x104));
+        assert!(!pasid_ats.config_patches.contains_key(&0x100));
+        assert!(!pasid_ats.config_patches.contains_key(&0x104));
+        assert_eq!(pasid_ats.config_patches[&0x124].mask, 0x0001_0000);
+        assert_eq!(pasid_ats.config_patches[&0x124].value, 0x0001_0000);
+    }
+
+    #[test]
+    fn ats_enable_mask_matches_pci_control_register() {
+        assert_eq!(ATS_CONTROL_ENABLE >> 16, 0x8000);
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                ATS_CONTROL_ENABLE,
+                PciConfigByteEnable::HIGH_WORD,
+            )),
+            Some(true)
+        );
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                0,
+                PciConfigByteEnable::HIGH_WORD,
+            )),
+            Some(false)
+        );
+        assert_eq!(
+            requested_ats_state(ByteEnabledDwordWrite::new(
+                u32::MAX,
+                PciConfigByteEnable::LOW_WORD,
+            )),
+            None
+        );
+        assert_eq!(
+            merge_ats_control(
+                0x001f_0000,
+                true,
+                Some(ByteEnabledDwordWrite::new(
+                    0x8005_0000,
+                    PciConfigByteEnable::HIGH_WORD,
+                )),
+            ),
+            0x8005_0000
+        );
+        assert_eq!(merge_ats_control(0x801f_0000, false, None), 0x001f_0000);
+    }
+
+    #[test]
+    fn non_direct_capabilities_remain_passthrough() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(0x34, 0);
+        cfg.write_u32(
+            0x100,
+            MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::ATS.0, 1, 0x120),
+        );
+        cfg.write_u32(
+            0x120,
+            MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::PASID.0, 1, 0),
+        );
+        let msi = MsiTarget::disconnected();
+
+        let discovered = discover_capabilities(&cfg, &msi);
+        assert_eq!(discovered.managed_ats_control_offset, None);
+        assert_eq!(discovered.ats_control_offset, None);
+        assert_eq!(discovered.managed_pasid_control_offset, None);
+        assert!(!discovered.config_patches.contains_key(&0x100));
+        assert!(!discovered.config_patches.contains_key(&0x104));
+        assert!(!discovered.config_patches.contains_key(&0x120));
+        assert!(!discovered.config_patches.contains_key(&0x124));
+    }
+
+    #[test]
+    fn kernel_owned_capability_writes_are_intercepted() {
+        assert!(is_managed_capability_write(0x124, Some(0x124), Some(0x64)));
+        assert!(is_managed_capability_write(0x64, Some(0x124), Some(0x64)));
+        assert!(!is_managed_capability_write(0x104, Some(0x124), Some(0x64)));
+    }
+
+    #[test]
+    fn kernel_owned_ats_hides_flr_and_strips_requests() {
+        let mut cfg = MockConfigSpace::new(0x200);
+        cfg.write_u32(0x34, 0x40);
+        cfg.write_u32(
+            0x40,
+            MockConfigSpace::cap_header(caps::CapabilityId::PCI_EXPRESS.0, 0x60),
+        );
+        cfg.write_u32(0x44, 1 << 28);
+        cfg.write_u32(
+            0x60,
+            MockConfigSpace::cap_header(caps::CapabilityId::ADVANCED_FEATURES.0, 0),
+        );
+        let msi = MsiTarget::disconnected();
+        let discovered = discover_capabilities_with_policy(
+            &cfg,
+            &msi,
+            DirectCapabilityMediation {
+                direct: true,
+                pasid: true,
+                ats: true,
+            },
+        );
+
+        assert_eq!(discovered.managed_pcie_device_control_offset, Some(0x48));
+        assert_eq!(discovered.managed_af_control_offset, Some(0x64));
+        assert_eq!(discovered.config_patches[&0x44].mask, 1 << 28);
+        assert_eq!(discovered.config_patches[&0x44].value, 0);
+        assert_eq!(discovered.config_patches[&0x60].mask, 0xff);
+        assert_eq!(discovered.config_patches[&0x60].value, 0);
+
+        let filtered =
+            without_flr_request(ByteEnabledDwordWrite::with_all_bytes_enabled(0xffff_ffff));
+        assert_eq!(filtered.extract(), 0xffff_7fff);
+        assert_eq!(filtered.byte_enable(), PciConfigByteEnable::FULL);
     }
 
     // --- Malformed capability chains ---

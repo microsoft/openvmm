@@ -29,6 +29,8 @@ pub const IORT_NODE_COHERENT: u32 = 0x00000001;
 pub const IORT_MEMORY_ACCESS_COHERENCY: u8 = 1 << 0;
 pub const IORT_MEMORY_ACCESS_ATTRIBUTES: u8 = 1 << 1;
 pub const IORT_ID_SINGLE_MAPPING: u32 = 1 << 0;
+/// Root complex supports ATS.
+pub const IORT_ATS_SUPPORTED: u32 = 1 << 0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
@@ -122,7 +124,12 @@ impl IortPciRootComplex {
     /// Create a PCI Root Complex node. The `length` field in the header
     /// includes space for `mapping_count` trailing `IortIdMapping` entries,
     /// which must be appended separately after serializing this struct.
-    pub fn new(identifier: u32, pci_segment_number: u16, mapping_count: u32) -> Self {
+    pub fn new(
+        identifier: u32,
+        pci_segment_number: u16,
+        mapping_count: u32,
+        ats_supported: bool,
+    ) -> Self {
         let mut header = IortNodeHeader::new::<Self>(
             IORT_NODE_TYPE_PCI_ROOT_COMPLEX,
             IORT_PCI_ROOT_COMPLEX_REVISION,
@@ -136,7 +143,11 @@ impl IortPciRootComplex {
         Self {
             header,
             memory_properties: IortMemoryAccessProperties::coherent(),
-            ats_attribute: 0.into(),
+            ats_attribute: if ats_supported {
+                IORT_ATS_SUPPORTED.into()
+            } else {
+                0.into()
+            },
             pci_segment_number: u32::from(pci_segment_number).into(),
             memory_address_limit: 64,
             reserved: [0; 3],

@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use membacking::DmaMapperClient;
 use pal_async::task::Spawn as _;
+use pal_async::timer::PolledTimer;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use std::sync::Arc;
@@ -101,11 +102,25 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.dma_target.msi_target(),
             memory_mapper,
             bar_addresses,
+            PolledTimer::new(&input.driver_source.simple()),
         )
         .await?;
 
         Ok(device.into())
     }
+}
+
+fn direct_hwpt_flags(pasid: bool, ats: bool) -> anyhow::Result<u32> {
+    anyhow::ensure!(!ats || pasid, "direct ATS requires PASID/SSID support");
+    Ok(if pasid {
+        vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+    } else {
+        0
+    } | if ats {
+        vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS
+    } else {
+        0
+    })
 }
 
 /// Resource resolver for [`VfioCdevDeviceHandle`] (cdev + iommufd path).
@@ -165,13 +180,29 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             iommufd,
             iommu_id,
             bar_addresses,
+            direct_iommu,
+            direct_pasid,
+            direct_ats,
         } = resource;
 
-        // Inspect the device's passthrough disposition. A software/emulated
-        // IOMMU cannot program the host IOMMU, so reject. A hardware-nestable
-        // IOMMU hands us an opaque handle we downcast to the SMMU nesting
-        // context and wire up below; a plain (allowed) target needs no
-        // nesting.
+        let direct_vm_fd = if direct_iommu {
+            #[cfg(target_os = "linux")]
+            {
+                let vm_fd = input
+                    .direct_iommu_vm_fd
+                    .context("direct VFIO cdev attach requires a hypervisor backend VM fd")?
+                    .try_clone_to_owned()
+                    .context("failed to dup hypervisor VM fd for direct iommufd attach")?;
+                Some(std::fs::File::from(vm_fd))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                anyhow::bail!("direct VFIO cdev attach is only supported on Linux")
+            }
+        } else {
+            None
+        };
+
         let nesting_ctx: Option<smmu::SmmuNestingContext> = match input.dma_target.passthrough() {
             pci_core::dma::DmaPassthrough::SoftwareBlocked => {
                 anyhow::bail!(
@@ -180,6 +211,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 );
             }
             pci_core::dma::DmaPassthrough::Allowed => None,
+            pci_core::dma::DmaPassthrough::HardwareNestable(_) if direct_iommu => None,
             pci_core::dma::DmaPassthrough::HardwareNestable(handle) => Some(
                 handle
                     .downcast_ref::<smmu::SmmuNestingContext>()
@@ -188,11 +220,15 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             ),
         };
 
-        // The manager shares one vIOMMU per emulated SMMU, matched by the
-        // identity (`Arc::ptr_eq`) of the SMMU's shared state. Hand it the
-        // `Arc` directly; `None` signals the plain identity-DMA path (no
-        // nesting).
         let vsmmu = nesting_ctx.as_ref().map(|ctx| ctx.shared.clone());
+
+        tracing::info!(
+            pci_id,
+            iommu_id,
+            direct = direct_iommu,
+            needs_nesting = nesting_ctx.is_some(),
+            "opening VFIO cdev device with iommufd"
+        );
 
         tracing::info!(
             pci_id,
@@ -209,6 +245,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 iommufd,
                 iommu_id,
                 vsmmu,
+                direct_vm_fd,
+                direct_hwpt_flags: direct_hwpt_flags(direct_pasid, direct_ats)?,
             })
             .await
             .context("VFIO cdev manager failed")?;
@@ -263,9 +301,35 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             memory_mapper,
             bar_addresses,
             accel_stream,
+            crate::DirectCapabilityMediation {
+                direct: direct_iommu,
+                pasid: direct_pasid,
+                ats: direct_ats,
+            },
+            PolledTimer::new(&input.driver_source.simple()),
         )
         .await?;
 
         Ok(assigned.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_capabilities_map_to_exact_uapi_flags() {
+        assert_eq!(direct_hwpt_flags(false, false).unwrap(), 0);
+        assert_eq!(
+            direct_hwpt_flags(true, false).unwrap(),
+            vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+        );
+        assert_eq!(
+            direct_hwpt_flags(true, true).unwrap(),
+            vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_PASID
+                | vfio_sys::iommufd::IOMMU_HWPT_DIRECT_FLAG_ATS
+        );
+        assert!(direct_hwpt_flags(false, true).is_err());
     }
 }

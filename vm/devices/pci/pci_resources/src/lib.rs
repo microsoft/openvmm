@@ -11,6 +11,8 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use guestmem::DoorbellRegistration;
 use guestmem::MemoryMapper;
 use pci_core::dma::DmaTarget;
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -41,4 +43,7 @@ pub struct ResolvePciDeviceHandleParams<'a> {
     pub doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     /// An object with which to register shared memory regions.
     pub shared_mem_mapper: Option<&'a dyn MemoryMapper>,
+    /// Hypervisor VM fd for direct iommufd attach.
+    #[cfg(target_os = "linux")]
+    pub direct_iommu_vm_fd: Option<BorrowedFd<'a>>,
 }

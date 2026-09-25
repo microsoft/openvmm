@@ -14,7 +14,7 @@ gdb = ["openvmm_core/gdb", "dep:debug_worker"]
 tpm = ["dep:tpm_device"]
 
 # Enable building with /dev/mshv support.
-virt_mshv = ["dep:virt_mshv"]
+virt_mshv = ["openvmm_core/virt_mshv", "dep:virt_mshv"]
 
 # Enable building with KVM support.
 virt_kvm = ["dep:virt_kvm"]

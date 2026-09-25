@@ -767,6 +767,8 @@ open_enum! {
         HvCallPinGpaPageRanges = 0x0112,
         HvCallUnpinGpaPageRanges = 0x0113,
         HvCallQuerySparseGpaPageHostVisibility = 0x011C,
+        HvCallCreateVirtualIommu = 0x0124,
+        HvCallSetLogicalDeviceProperty = 0x0128,
 
         // Extended hypercalls.
         HvExtCallQueryCapabilities = 0x8001,
@@ -1326,6 +1328,21 @@ pub mod hypercall {
     use core::ops::RangeInclusive;
     use zerocopy::Unalign;
 
+    /// Computes the Hyper-V logical device ID for a PCI device.
+    ///
+    /// This is the identity used by the root IOMMU direct-attach ABI.
+    pub const fn pci_logical_device_id(
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Option<u64> {
+        if device >= 32 || function >= 8 {
+            return None;
+        }
+        Some((segment as u64) << 16 | (bus as u64) << 8 | (device as u64) << 3 | function as u64)
+    }
+
     /// The hypercall input value.
     #[bitfield(u64)]
     pub struct Control {
@@ -1452,6 +1469,150 @@ pub mod hypercall {
         pub message: Unalign<HvMessage>,
         pub padding2: u32,
     }
+
+    /// Virtual IOMMU advertises a generic feature set.
+    pub const HV_VIRT_IOMMU_GENERIC: u32 = 0;
+    /// Virtual IOMMU mirrors the capabilities of a physical IOMMU.
+    pub const HV_VIRT_IOMMU_PHYSICAL: u32 = 1;
+    /// Logical device property code selecting the virtual IOMMU binding.
+    pub const HV_LOGICAL_DEVICE_PROPERTY_VIRTUAL_IOMMU: u32 = 8;
+
+    /// Generic vSMMU IDR0 with ATS disabled.
+    pub const HV_VIRT_IOMMU_DEFAULT_IDR0: u32 = 0x0D08_101A;
+    /// IDR0.ATS capability bit.
+    pub const HV_VIRT_IOMMU_IDR0_ATS: u32 = 1 << 10;
+    /// IDR1 with EventQs=9 and CmdQs=9; the caller adds SID/SSID sizes.
+    pub const HV_VIRT_IOMMU_IDR1_QUEUE_FIELDS: u32 = 0x0129_0000;
+    /// Guest requester IDs are full 16-bit PCI BDFs.
+    pub const HV_VIRT_IOMMU_SID_BITS: u8 = 16;
+    /// PCI PASID supports at most 20 bits.
+    pub const HV_VIRT_IOMMU_MAX_SSID_BITS: u8 = 20;
+    /// Generic IDR3 with BBML disabled.
+    pub const HV_VIRT_IOMMU_DEFAULT_IDR3: u32 = 0;
+    /// Generic IDR5: OAS=5 (48-bit output), 4K/16K/64K granules.
+    pub const HV_VIRT_IOMMU_DEFAULT_IDR5: u32 = 0x0000_0075;
+
+    /// Feature set supplied to [`CreateVirtualIommu`].
+    ///
+    /// The register fields match the Hyper-V ABI; IIDR/AIDR remain zero.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, Default, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VirtIommuFeatureSet {
+        pub feature_type: u32,
+        /// Alignment padding before the physical-IOMMU `u64` union member.
+        pub reserved: u32,
+        pub idr0: u32,
+        pub idr1: u32,
+        pub idr2: u32,
+        pub idr3: u32,
+        pub idr4: u32,
+        pub idr5: u32,
+        pub iidr: u32,
+        pub aidr: u32,
+    }
+
+    impl VirtIommuFeatureSet {
+        /// Build a validated caller-supplied generic SMMUv3 feature set.
+        pub fn generic_smmuv3(ats: bool, ssid_bits: u8, oas_bits: u8) -> Option<Self> {
+            if ssid_bits > HV_VIRT_IOMMU_MAX_SSID_BITS {
+                return None;
+            }
+            let oas = match oas_bits {
+                32 => 0,
+                36 => 1,
+                40 => 2,
+                42 => 3,
+                44 => 4,
+                48 => 5,
+                52 => 6,
+                _ => return None,
+            };
+            Some(Self {
+                feature_type: HV_VIRT_IOMMU_GENERIC,
+                idr0: HV_VIRT_IOMMU_DEFAULT_IDR0 | if ats { HV_VIRT_IOMMU_IDR0_ATS } else { 0 },
+                idr1: HV_VIRT_IOMMU_IDR1_QUEUE_FIELDS
+                    | u32::from(HV_VIRT_IOMMU_SID_BITS)
+                    | (u32::from(ssid_bits) << 6),
+                idr3: HV_VIRT_IOMMU_DEFAULT_IDR3,
+                idr5: (HV_VIRT_IOMMU_DEFAULT_IDR5 & !0x7) | oas,
+                ..Self::default()
+            })
+        }
+
+        /// Mirror capabilities from the physical IOMMU at `base_gpa_page`.
+        pub fn physical(base_gpa_page: u64) -> Self {
+            Self {
+                feature_type: HV_VIRT_IOMMU_PHYSICAL,
+                idr0: base_gpa_page as u32,
+                idr1: (base_gpa_page >> 32) as u32,
+                ..Self::default()
+            }
+        }
+    }
+
+    /// Interrupt vectors reserved for a virtual IOMMU.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VirtIommuInterrupts {
+        pub global_error: u32,
+        pub event_queue: u32,
+        pub sync: u32,
+        pub page_request: u32,
+    }
+
+    /// Input for `HvCallCreateVirtualIommu`.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct CreateVirtualIommu {
+        pub partition_id: u64,
+        pub virt_iommu_id: u32,
+        pub interrupts: VirtIommuInterrupts,
+        /// Reserved field following the 16-byte interrupt union.
+        pub reserved: u32,
+        pub base_gpa_page: u64,
+        pub feature_set: VirtIommuFeatureSet,
+    }
+
+    const _: () = assert!(size_of::<VirtIommuFeatureSet>() == 40);
+    const _: () = assert!(core::mem::offset_of!(VirtIommuFeatureSet, idr0) == 8);
+    const _: () = assert!(core::mem::offset_of!(VirtIommuFeatureSet, idr3) == 20);
+    const _: () = assert!(size_of::<CreateVirtualIommu>() == 80);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, interrupts) == 12);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, reserved) == 28);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, base_gpa_page) == 32);
+    const _: () = assert!(core::mem::offset_of!(CreateVirtualIommu, feature_set) == 40);
+
+    /// Virtual IOMMU binding payload for `HvCallSetLogicalDeviceProperty`.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct LogicalDevicePropertyVirtualIommu {
+        /// Bit 0 enables the binding; the ABI flags union is eight bytes.
+        pub flags: u64,
+        pub virt_iommu_id: u32,
+        pub stream_id: u32,
+    }
+
+    /// Input for `HvCallSetLogicalDeviceProperty`.
+    ///
+    /// Includes 16 bytes of padding for the ABI's 32-byte property union.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct SetLogicalDeviceProperty {
+        pub partition_id: u64,
+        pub logical_device_id: u64,
+        pub property_code: u32,
+        pub reserved: u32,
+        pub property_value: LogicalDevicePropertyVirtualIommu,
+        pub property_value_padding: [u8; 16],
+    }
+
+    const _: () = assert!(size_of::<LogicalDevicePropertyVirtualIommu>() == 16);
+    const _: () =
+        assert!(core::mem::offset_of!(LogicalDevicePropertyVirtualIommu, virt_iommu_id) == 8);
+    const _: () =
+        assert!(core::mem::offset_of!(LogicalDevicePropertyVirtualIommu, stream_id) == 12);
+    const _: () = assert!(size_of::<SetLogicalDeviceProperty>() == 56);
+    const _: () = assert!(core::mem::offset_of!(SetLogicalDeviceProperty, property_value) == 24);
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -4497,4 +4658,40 @@ pub struct HvX64InterruptControllerState {
     pub apic_counter_value: u32,
     pub apic_divide_configuration: u32,
     pub apic_remote_read: u32,
+}
+
+#[cfg(test)]
+mod gb200_viommu_tests {
+    use super::hypercall::*;
+
+    #[test]
+    fn pci_logical_device_identity_is_checked() {
+        assert_eq!(pci_logical_device_id(0x0008, 0x06, 0x00, 0), Some(0x8_0600));
+        assert_eq!(pci_logical_device_id(0x0001, 0x7f, 0x1f, 7), Some(0x1_7fff));
+        assert_eq!(pci_logical_device_id(0, 0, 32, 0), None);
+        assert_eq!(pci_logical_device_id(0, 0, 0, 8), None);
+    }
+
+    #[test]
+    fn generic_viommu_pasid_only_preserves_ssid_and_ats_is_opt_in() {
+        let off = VirtIommuFeatureSet::generic_smmuv3(false, 14, 48).unwrap();
+        assert_eq!(off.idr0 & HV_VIRT_IOMMU_IDR0_ATS, 0);
+        assert_eq!(off.idr1 & 0x3f, u32::from(HV_VIRT_IOMMU_SID_BITS));
+        assert_eq!((off.idr1 >> 6) & 0x1f, 14);
+        assert_eq!(off.idr3, HV_VIRT_IOMMU_DEFAULT_IDR3);
+
+        let on = VirtIommuFeatureSet::generic_smmuv3(true, 14, 48).unwrap();
+        assert_ne!(on.idr0 & HV_VIRT_IOMMU_IDR0_ATS, 0);
+        assert_eq!((on.idr1 >> 6) & 0x1f, 14);
+        assert!(VirtIommuFeatureSet::generic_smmuv3(true, 21, 48).is_none());
+        assert!(VirtIommuFeatureSet::generic_smmuv3(false, 0, 50).is_none());
+    }
+
+    #[test]
+    fn physical_viommu_preserves_full_page_number() {
+        let feature = VirtIommuFeatureSet::physical(0x1234_5678_9abc_def0);
+        assert_eq!(feature.feature_type, HV_VIRT_IOMMU_PHYSICAL);
+        assert_eq!(feature.idr0, 0x9abc_def0);
+        assert_eq!(feature.idr1, 0x1234_5678);
+    }
 }

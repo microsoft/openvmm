@@ -660,7 +660,7 @@ options:
 
     /// configure SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable).
     ///
-    /// Syntax: `rc=<name>[,accel][,oas=auto|N]`.
+    /// Syntax: `rc=<name>[,accel][,ats][,ssid-bits=N][,oas=auto|N]`.
     #[cfg(guest_arch = "aarch64")]
     #[clap(long, value_name = "SMMU_CONFIG")]
     pub smmu: Vec<SmmuCli>,
@@ -1327,13 +1327,13 @@ live topology after switch downstream ports are enumerated.
 
 Examples:
     # The device behind switch downstream port sw1-downstream-0 is a generic
-    # initiator for NUMA node 1
-    --pcie-generic-initiator port=sw1-downstream-0,node=1
+    # initiator for NUMA node 1 with a coherent-memory aperture
+    --pcie-generic-initiator port=sw1-downstream-0,node=1,memory_base=0x8000000000,memory_length=0x2e41f00000
 
     # Also works for a root port name
     --pcie-generic-initiator port=rp0,node=2
 
-Syntax: port=<port_name>,node=<node>
+Syntax: port=<port_name>,node=<node>[,memory_base=<addr>,memory_length=<size>]
 "#)]
     #[clap(
         long = "pcie-generic-initiator",
@@ -1407,6 +1407,29 @@ Syntax: id=<name>
     #[cfg(target_os = "linux")]
     #[clap(long, conflicts_with("pcat"))]
     pub iommu: Vec<IommuCli>,
+
+    /// Enable direct VIOMMU/VDEVICE/HWPT attach for an iommufd context
+    #[clap(long_help = r#"
+Enable direct VIOMMU/VDEVICE/HWPT attach for a declared --iommu context.
+
+This only applies to VFIO cdev devices that reference the same iommufd context
+with --vfio ...,iommu=<id>. Legacy VFIO group/container devices are unaffected.
+
+Requires an aarch64 MSHV backend and a kernel with the direct iommufd UAPI.
+
+Examples:
+    --iommu id=iommu0 --direct-iommu iommu=iommu0 \
+      --smmu rc=rc0,accel,ssid-bits=14 \
+      --vfio host=0008:06:00.0,port=rp0,iommu=iommu0
+
+Add `ats` only when endpoint ATS is explicitly required and has passed the
+platform safety gate.
+
+Syntax: iommu=<name>
+"#)]
+    #[cfg(target_os = "linux")]
+    #[clap(long, conflicts_with("pcat"))]
+    pub direct_iommu: Vec<DirectIommuCli>,
 }
 
 impl Options {
@@ -3526,14 +3549,58 @@ impl FromStr for GenericPcieSwitchCli {
 }
 
 /// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
-#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PcieGenericInitiatorCli {
     /// Name of the PCIe port (root port or switch downstream port) behind
     /// which the generic-initiator device resides.
-    #[kv(key = "port")]
     pub port_name: String,
     /// NUMA node the device is a generic initiator for.
     pub node: u32,
+    /// Base GPA of the device's coherent-memory aperture.
+    pub memory_base: Option<u64>,
+    /// Length of the device's coherent-memory aperture.
+    pub memory_length: Option<u64>,
+}
+
+struct PcieGenericInitiatorAddress(u64);
+
+impl FromStr for PcieGenericInitiatorAddress {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("0x") || s.starts_with("0X") {
+            Ok(Self(parse_address(s)?))
+        } else {
+            Ok(Self(s.parse()?))
+        }
+    }
+}
+
+#[derive(vmm_cli::KeyValueArgs)]
+struct PcieGenericInitiatorArgs {
+    #[kv(key = "port")]
+    port_name: String,
+    node: u32,
+    memory_base: Option<PcieGenericInitiatorAddress>,
+    memory_length: Option<PcieGenericInitiatorAddress>,
+}
+
+impl FromStr for PcieGenericInitiatorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let args: PcieGenericInitiatorArgs = s.parse()?;
+        if args.memory_base.is_some() != args.memory_length.is_some() {
+            anyhow::bail!("memory_base and memory_length must be specified together");
+        }
+
+        Ok(PcieGenericInitiatorCli {
+            port_name: args.port_name,
+            node: args.node,
+            memory_base: args.memory_base.map(|value| value.0),
+            memory_length: args.memory_length.map(|value| value.0),
+        })
+    }
 }
 
 /// CLI configuration for a PCIe remote device.
@@ -3649,19 +3716,65 @@ impl FromStr for VfioDeviceCli {
 
 /// CLI configuration for an SMMUv3 instance.
 ///
-/// Syntax: `rc=<name>[,accel][,oas=auto|N]`. `oas` defaults to `auto`.
+/// Syntax: `rc=<name>[,accel][,ats][,ssid-bits=N][,oas=auto|N]`.
+/// ATS is off and `ssid-bits` is zero by default.
 #[cfg(guest_arch = "aarch64")]
-#[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+#[derive(Clone, Debug)]
 pub struct SmmuCli {
     /// Name of the PCIe root complex this SMMU covers.
-    #[kv(key = "rc")]
     pub rc_name: String,
-    /// Enable HW-accelerated nested translation (iommufd).
-    #[kv(flag)]
+    /// Use the Hyper-V-owned guest SMMUv3 path.
     pub accel: bool,
+    /// Advertise and enable endpoint ATS for DIRECT devices.
+    pub ats: bool,
+    /// SMMUv3 substream/PASID width.
+    pub ssid_bits: u8,
     /// Output address size policy.
-    #[kv(default)]
     pub oas: SmmuOasCli,
+}
+
+#[cfg(guest_arch = "aarch64")]
+#[derive(vmm_cli::KeyValueArgs)]
+struct SmmuArgs {
+    #[kv(key = "rc")]
+    rc_name: String,
+    #[kv(flag)]
+    accel: bool,
+    #[kv(flag)]
+    ats: bool,
+    #[kv(key = "ssid-bits", default)]
+    ssid_bits: u8,
+    #[kv(default)]
+    oas: SmmuOasCli,
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl FromStr for SmmuCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let args: SmmuArgs = s.parse()?;
+        anyhow::ensure!(
+            args.ssid_bits <= 20,
+            "--smmu: ssid-bits must be between 0 and 20"
+        );
+        anyhow::ensure!(
+            args.ssid_bits == 0 || args.accel,
+            "--smmu: nonzero ssid-bits requires accel"
+        );
+        anyhow::ensure!(!args.ats || args.accel, "--smmu: ats requires accel");
+        anyhow::ensure!(
+            !args.ats || args.ssid_bits != 0,
+            "--smmu: ats requires nonzero ssid-bits"
+        );
+        Ok(Self {
+            rc_name: args.rc_name,
+            accel: args.accel,
+            ats: args.ats,
+            ssid_bits: args.ssid_bits,
+            oas: args.oas,
+        })
+    }
 }
 
 /// Output address size (OAS) policy parsed from `--smmu`.
@@ -3697,6 +3810,15 @@ impl FromStr for SmmuOasCli {
 pub struct IommuCli {
     /// Unique identifier for this iommufd context.
     pub id: String,
+}
+
+/// Direct iommufd configuration: `iommu=<name>`.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+pub struct DirectIommuCli {
+    /// The `--iommu id=<name>` context to run in direct mode.
+    #[kv(key = "iommu")]
+    pub iommu_id: String,
 }
 
 /// Read a environment variable that may / may-not have a target-specific
@@ -4977,6 +5099,8 @@ mod tests {
             PcieGenericInitiatorCli {
                 port_name: "rp0".to_string(),
                 node: 1,
+                memory_base: None,
+                memory_length: None,
             }
         );
 
@@ -4986,6 +5110,21 @@ mod tests {
             PcieGenericInitiatorCli {
                 port_name: "sw0-downstream-1".to_string(),
                 node: 2,
+                memory_base: None,
+                memory_length: None,
+            }
+        );
+
+        assert_eq!(
+            PcieGenericInitiatorCli::from_str(
+                "port=rp0,node=1,memory_base=0x8000000000,memory_length=198674743296"
+            )
+            .unwrap(),
+            PcieGenericInitiatorCli {
+                port_name: "rp0".to_string(),
+                node: 1,
+                memory_base: Some(0x8000000000),
+                memory_length: Some(198674743296),
             }
         );
 
@@ -4996,6 +5135,9 @@ mod tests {
         assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(
+            PcieGenericInitiatorCli::from_str("port=rp0,node=1,memory_base=0x8000000000").is_err()
+        );
         assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=1,extra").is_err());
     }
 
@@ -6009,6 +6151,16 @@ mod tests {
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_direct_iommu_cli_parse() {
+        let c = DirectIommuCli::from_str("iommu=iommu0").unwrap();
+        assert_eq!(c.iommu_id, "iommu0");
+        assert!(DirectIommuCli::from_str("id=iommu0").is_err());
+        assert!(DirectIommuCli::from_str("iommu0").is_err());
+        assert!(DirectIommuCli::from_str("iommu=").is_err());
+    }
+
     #[test]
     fn test_nvme_controller_cli_pcie() {
         let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
@@ -6297,13 +6449,29 @@ mod tests {
         let s = SmmuCli::from_str("rc=pcie0").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(!s.accel);
+        assert!(!s.ats);
+        assert_eq!(s.ssid_bits, 0);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
 
         // accel flag.
         let s = SmmuCli::from_str("rc=pcie0,accel").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(s.accel);
+        assert!(!s.ats);
+        assert_eq!(s.ssid_bits, 0);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+
+        // PASID/SVA-only mode uses an SSID width without ATS.
+        let s = SmmuCli::from_str("rc=pcie0,accel,ssid-bits=14").unwrap();
+        assert!(s.accel);
+        assert!(!s.ats);
+        assert_eq!(s.ssid_bits, 14);
+
+        // ATS is an additional explicit opt-in.
+        let s = SmmuCli::from_str("rc=pcie0,accel,ats,ssid-bits=14").unwrap();
+        assert!(s.accel);
+        assert!(s.ats);
+        assert_eq!(s.ssid_bits, 14);
 
         // Explicit oas=auto.
         let s = SmmuCli::from_str("rc=pcie0,oas=auto").unwrap();
@@ -6331,6 +6499,13 @@ mod tests {
 
         // Non-numeric oas value.
         assert!(SmmuCli::from_str("rc=pcie0,oas=big").is_err());
+
+        // Invalid PASID/ATS combinations.
+        assert!(SmmuCli::from_str("rc=pcie0,ssid-bits=14").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,ats,ssid-bits=14").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,accel,ats").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,accel,ats,ssid-bits=0").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,accel,ssid-bits=21").is_err());
 
         // Unknown key.
         assert!(SmmuCli::from_str("rc=pcie0,foo=bar").is_err());

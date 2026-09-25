@@ -33,6 +33,8 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use pal::unix::pthread::Pthread;
 use pci_core::msi::SignalMsi;
+use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use virt::Hv1;
 use virt::PartitionConfig;
@@ -76,8 +78,13 @@ impl virt::Hypervisor for LinuxMshv {
         }
 
         let create_args = mshv_bindings::mshv_create_partition_v2 {
-            pt_flags: 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
+            pt_flags: (1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES)
+                | (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
             pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+            // ARM64 does not consume the x86 feature banks. Pass both as zero
+            // to avoid legacy all-disabled defaults.
+            pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
+            pt_cpu_fbanks: [0; mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as usize],
             ..Default::default()
         };
 
@@ -253,6 +260,11 @@ impl virt::Partition for MshvPartition {
 
     fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
         Some(Arc::new(crate::irqfd::MshvIrqFd::new(self.inner.clone())))
+    }
+
+    fn direct_iommu_vm_fd(&self) -> Option<BorrowedFd<'_>> {
+        // SAFETY: `self.inner.vmfd` owns the fd and outlives the returned borrow.
+        Some(unsafe { BorrowedFd::borrow_raw(self.inner.vmfd.as_raw_fd()) })
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
