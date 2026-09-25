@@ -175,7 +175,7 @@ pub trait AsyncProtobufSaveRestore: Send {
 }
 
 /// An opaque saved state blob, encoded as a protobuf message.
-#[derive(Debug, Protobuf)]
+#[derive(Clone, Debug, Protobuf)]
 #[mesh(transparent)]
 pub struct SavedStateBlob(ProtobufAny);
 
@@ -396,5 +396,12 @@ mod tests {
             ));
             assert_eq!(device.0, 7);
         });
+    }
+
+    #[test]
+    fn cloned_saved_state_blob_parses() {
+        let state = SavedStateBlob::new(NoSavedState);
+        state.clone().parse::<NoSavedState>().unwrap();
+        state.parse::<NoSavedState>().unwrap();
     }
 }
