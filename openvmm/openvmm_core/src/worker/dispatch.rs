@@ -1261,6 +1261,7 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
                 user_mode_memory_faults: true,
                 lazy_memory_registration: false,
+                versioned_cpu_contract: microvm::uses_versioned_cpu_contract(cfg.machine_profile),
             })
             .context("failed to create the prototype partition")?;
         partition_prototype.complete("startup", "partition_prototype", Default::default());

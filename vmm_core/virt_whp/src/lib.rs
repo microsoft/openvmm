@@ -128,6 +128,9 @@ struct WhpPartitionInner {
     cpuid: virt::CpuidLeafSet,
     #[cfg(guest_arch = "x86_64")]
     #[inspect(flatten)]
+    cpuid_topology: cpu_contract::CpuidTopology,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(flatten)]
     clock: tsc::PartitionClock,
     vtl0_alias_map_offset: Option<u64>,
     monitor_page: MonitorPage,
@@ -1366,6 +1369,8 @@ impl WhpPartitionInner {
             #[cfg(guest_arch = "x86_64")]
             cpuid,
             #[cfg(guest_arch = "x86_64")]
+            cpuid_topology: cpu_contract::CpuidTopology::new(proto_config.processor_topology),
+            #[cfg(guest_arch = "x86_64")]
             clock: tsc::PartitionClock::new(tsc_frequency),
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
@@ -1524,6 +1529,11 @@ impl VtlPartition {
                 config.processor_topology.vp_count(),
             ))
             .for_op("set processor count")?;
+
+        #[cfg(guest_arch = "x86_64")]
+        if config.versioned_cpu_contract {
+            cpu_contract::configure_versioned_contract(&mut whp_config, &mut extended_exits)?;
+        }
 
         #[cfg(guest_arch = "x86_64")]
         if nested_virt {

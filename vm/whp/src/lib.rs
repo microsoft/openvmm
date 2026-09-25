@@ -166,6 +166,8 @@ pub struct SyntheticProcessorFeatures {
 pub struct WHvError(NonZeroI32);
 
 impl WHvError {
+    pub const ERROR_NOT_SUPPORTED: Self = Self(NonZeroI32::new(0x8007_0032_u32 as i32).unwrap());
+
     pub const WHV_E_UNKNOWN_CAPABILITY: Self =
         Self(NonZeroI32::new(api::WHV_E_UNKNOWN_CAPABILITY).unwrap());
 

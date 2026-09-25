@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
+mod cpu_contract;
 mod regs;
 pub(crate) mod snp;
 mod tsc;
@@ -190,7 +191,7 @@ impl virt::Hypervisor for Kvm {
             .filter_map(|entry| {
                 // Filter out KVM CPUID entries.
                 if entry.function & 0xf0000000 == 0x40000000 {
-                    return None;
+                    return cpu_contract::hypervisor_leaf(&entry, config.versioned_cpu_contract);
                 }
                 let mut leaf =
                     CpuidLeaf::new(entry.function, [entry.eax, entry.ebx, entry.ecx, entry.edx]);
@@ -201,6 +202,8 @@ impl virt::Hypervisor for Kvm {
                 Some(leaf)
             })
             .collect::<Vec<_>>();
+
+        cpuid_entries.extend(cpu_contract::hypervisor_bit(config.versioned_cpu_contract));
 
         // When nested virt is disabled, strip the virtualization
         // CPUID bit for the host's vendor.
@@ -259,6 +262,8 @@ impl virt::Hypervisor for Kvm {
         cpuid_entries.push(
             CpuidLeaf::new(CpuidFunction::SgxEnumeration.0, [0; 4]).indexed(2), // SGX enumeration is subleaf 2
         );
+
+        cpuid_entries.push(cpu_contract::hide_cet_ss());
 
         if let Some(hv_config) = &config.hv_config {
             if hv_config.vtl2.is_some() {

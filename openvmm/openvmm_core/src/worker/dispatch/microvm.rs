@@ -498,6 +498,10 @@ impl VirtioMmioSlots {
     }
 }
 
+pub(super) fn uses_versioned_cpu_contract(machine_profile: MachineProfile) -> bool {
+    machine_profile == MachineProfile::Microvm
+}
+
 /// Returns the number of virtio-mmio slots that the memory layout allocates.
 /// MicroVM devices use fixed slots in the low MMIO aperture instead.
 pub(super) fn virtio_mmio_count(

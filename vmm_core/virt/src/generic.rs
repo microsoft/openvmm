@@ -362,6 +362,8 @@ pub struct ProtoPartitionConfig<'a> {
     /// Whether supported backends should register large guest-memory ranges
     /// incrementally as the guest accesses them.
     pub lazy_memory_registration: bool,
+    /// Build the reproducible CPU/clock contract used by a versioned machine profile.
+    pub versioned_cpu_contract: bool,
 }
 
 /// Partition creation configuration.
