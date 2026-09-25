@@ -2206,6 +2206,7 @@ impl InitializedVm {
 
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
+            #[cfg(guest_arch = "x86_64")]
             let legacy_pci_config_io =
                 openvmm_defs::config::legacy_pci_config_io_enabled(&cfg.pcie_root_complexes);
             let mut pcie_host_bridges = Vec::new();
