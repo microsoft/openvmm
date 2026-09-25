@@ -62,7 +62,12 @@ openvmm --machine microvm --kernel vmlinux --initrd initramfs.cpio.gz \
   --microvm-sandbox-block scratch:file:scratch.img
 ```
 
-Snapshot capture and restore do not yet support sandbox blocks.
+Capture and restore support cached regular raw files. Capture records
+the role, access mode, exact geometry, and SHA-256 of every read-only layer. A
+normal snapshot request pairs the writable scratch as `scratch.img`; restore
+accepts the read-only layer arguments again and creates a private scratch copy
+from that artifact. A pre-mount request may select fresh-scratch policy instead,
+in which case restore requires a new writable scratch file of matching size.
 
 ### microVM deterministic SMP
 
