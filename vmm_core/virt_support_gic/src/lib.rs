@@ -850,10 +850,14 @@ mod gicd {
                     // GICv3
                     3 << 4
                 }
-                GicdRegister::TYPER => GicdTyper::new()
-                    .with_it_lines_number(31)
-                    .with_id_bits(5)
-                    .into(),
+                GicdRegister::TYPER => {
+                    let it_lines_number = ((self.max_spi_intid + 1).div_ceil(32) - 1) as u8;
+                    let id_bits = (32 - self.max_spi_intid.leading_zeros()) as u8;
+                    GicdTyper::new()
+                        .with_it_lines_number(it_lines_number)
+                        .with_id_bits(id_bits)
+                        .into()
+                }
                 GicdRegister::IIDR => 0,
                 GicdRegister::TYPER2 => GicdTyper2::new().into(),
                 GicdRegister::CTLR => {
