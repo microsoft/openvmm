@@ -1174,11 +1174,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             );
         }
 
-        if self.boot_device_type.requires_vpci_boot() {
+        if self.boot_device_type.requires_uefi_vpci_boot() {
             self.config
                 .firmware
                 .uefi_config_mut()
-                .expect("vpci boot requires uefi")
+                .expect("UEFI vPCI boot support requires UEFI firmware")
                 .enable_vpci_boot = true;
         }
 
@@ -3385,6 +3385,13 @@ impl BootDeviceType {
         )
     }
 
+    /// Whether UEFI must enable its vPCI boot support.
+    ///
+    /// The firmware also uses this flag to enable NVMe boot from emulated PCIe.
+    fn requires_uefi_vpci_boot(&self) -> bool {
+        self.requires_vpci_boot() || matches!(self, BootDeviceType::PcieNvme)
+    }
+
     fn requires_vmbus(&self) -> bool {
         match self {
             BootDeviceType::None
@@ -4593,6 +4600,7 @@ impl<T: PetriVmmBackend> PetriGuestPaths for PetriVmBuilder<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BootDeviceType;
     use crate::Drive;
     use crate::VmbusStorageController;
     use crate::VmbusStorageType;
@@ -4785,6 +4793,13 @@ mod tests {
             assert_eq!(error.to_string(), "original test failure");
             assert_eq!(inspect_attachment_count(&log_source), 1);
         }
+    }
+
+    #[test]
+    fn pcie_nvme_requires_uefi_vpci_boot_without_using_vpci() {
+        assert!(BootDeviceType::PcieNvme.requires_uefi_vpci_boot());
+        assert!(!BootDeviceType::PcieNvme.requires_vpci_boot());
+        assert!(!BootDeviceType::PcieVirtioBlk.requires_uefi_vpci_boot());
     }
 
     #[test]
