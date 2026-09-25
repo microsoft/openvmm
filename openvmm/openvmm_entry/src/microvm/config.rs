@@ -438,6 +438,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     enable_rx_gso: false,
                     mac_address: config.guest_mac,
                     endpoint,
+                    egress_policy: None,
                     save_restore: true,
                     static_ipv4: Some(StaticIpv4Config {
                         guest_ipv4: config.guest_ipv4,
