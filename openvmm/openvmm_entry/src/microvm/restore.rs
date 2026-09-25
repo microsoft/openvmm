@@ -36,10 +36,20 @@ fn calculate_snapshot_downtime(
     Ok(downtime)
 }
 
-fn microvm_restore_packet(entropy: &[u8; 64]) -> Vec<u8> {
-    let mut packet = b"OPENVMM_ENTROPY_V1\0".to_vec();
+fn microvm_restore_packet(
+    entropy: &[u8; 64],
+    restore_online_vp_count: Option<u32>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut packet = if let Some(count) = restore_online_vp_count {
+        let count = u8::try_from(count).context("restore-online VP count does not fit in u8")?;
+        let mut packet = b"OPENVMM_ENTROPY_V2\0".to_vec();
+        packet.push(count);
+        packet
+    } else {
+        b"OPENVMM_ENTROPY_V1\0".to_vec()
+    };
     packet.extend(entropy);
-    packet
+    Ok(packet)
 }
 
 fn microvm_generation_id(entropy: &[u8; 64]) -> [u8; 16] {
@@ -54,12 +64,14 @@ pub(crate) fn fresh_microvm_generation_id() -> anyhow::Result<[u8; 16]> {
     Ok(generation_id)
 }
 
-pub(crate) fn fresh_microvm_restore_packet() -> anyhow::Result<([u8; 16], Vec<u8>)> {
+pub(crate) fn fresh_microvm_restore_packet(
+    restore_online_vp_count: Option<u32>,
+) -> anyhow::Result<([u8; 16], Vec<u8>)> {
     let generation_id_create = openvmm_defs::profile::ProfileSpan::start();
     let mut entropy = [0_u8; 64];
     getrandom::fill(&mut entropy).context("failed to generate restore entropy")?;
     let generation_id = microvm_generation_id(&entropy);
-    let packet = microvm_restore_packet(&entropy);
+    let packet = microvm_restore_packet(&entropy, restore_online_vp_count)?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
     Ok((generation_id, packet))
 }
@@ -115,6 +127,13 @@ pub(crate) fn prepare_restore(
             "snapshot machine profile does not match the requested microVM machine"
         );
         openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
+        if let Some(restore_processors) = opt.microvm.restore_processors {
+            openvmm_helpers::snapshot::microvm::validate_restore_online_vp_count(
+                manifest,
+                restore_processors,
+            )?;
+            restore_gate_required = true;
+        }
         anyhow::ensure!(
             opt.cmdline.is_empty(),
             "restore-time command-line overrides are not allowed"
@@ -197,7 +216,7 @@ pub(crate) fn prepare_restore(
     } else {
         None
     };
-    if restore_gate_required {
+    if restore_gate_required || opt.microvm.restore_processors.is_some() {
         opt.microvm.restore_entropy = true;
     }
     if restore_machine_contract.is_some() && !opt.microvm.restore_entropy {
@@ -331,11 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn restore_packet_preserves_entropy() {
+    fn restore_packet_versions_preserve_entropy_and_online_target() {
         let entropy = [0x5a; 64];
         assert_eq!(microvm_generation_id(&entropy), [0x5a; 16]);
-        let v1 = microvm_restore_packet(&entropy);
+        let v1 = microvm_restore_packet(&entropy, None).unwrap();
         assert_eq!(&v1[..19], b"OPENVMM_ENTROPY_V1\0");
         assert_eq!(&v1[19..], &entropy);
+
+        let v2 = microvm_restore_packet(&entropy, Some(8)).unwrap();
+        assert_eq!(&v2[..19], b"OPENVMM_ENTROPY_V2\0");
+        assert_eq!(v2[19], 8);
+        assert_eq!(&v2[20..], &entropy);
     }
 }

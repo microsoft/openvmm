@@ -40,8 +40,10 @@ const SNAPSHOT_PORT: u16 = 0x605;
 const RESTORE_ENTROPY_SELECT: u8 = 0xa5;
 const GENERATION_ID_SELECT: u8 = 0xa6;
 const GENERATION_ID_SIZE: usize = 16;
+const RESTORE_PROCESSOR_TARGET_PACKET_HEADER: &[u8] = b"OPENVMM_ENTROPY_V2\0";
 const STATUS_INPUT_AVAILABLE: u8 = 1 << 0;
 const STATUS_RESTORE_PACKET_AVAILABLE: u8 = 1 << 1;
+const STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE: u8 = 1 << 2;
 const STATUS_GENERATION_ID_AVAILABLE: u8 = 1 << 5;
 const BUFFER_MAX: usize = 1024 * 1024;
 
@@ -61,6 +63,7 @@ pub struct MicrovmPortb {
     #[inspect(with = "VecDeque::len")]
     restore_entropy: VecDeque<u8>,
     restore_entropy_selected: bool,
+    restore_processor_target_available: bool,
     input_gated: bool,
     #[inspect(skip)]
     rx_waker: Option<Waker>,
@@ -75,6 +78,8 @@ impl MicrovmPortb {
         generation_id: [u8; GENERATION_ID_SIZE],
         restore_entropy: Vec<u8>,
     ) -> Self {
+        let restore_processor_target_available =
+            restore_entropy.starts_with(RESTORE_PROCESSOR_TARGET_PACKET_HEADER);
         Self {
             io_region: ("microvm-portb", DATA_PORT..=STATUS_PORT),
             io,
@@ -84,6 +89,7 @@ impl MicrovmPortb {
             generation_id_read_index: None,
             restore_entropy: restore_entropy.into(),
             restore_entropy_selected: false,
+            restore_processor_target_available,
             input_gated: false,
             rx_waker: None,
             tx_waker: None,
@@ -182,6 +188,7 @@ impl ChangeDeviceState for MicrovmPortb {
         self.restore_entropy.clear();
         self.generation_id_read_index = None;
         self.restore_entropy_selected = false;
+        self.restore_processor_target_available = false;
         self.input_gated = false;
     }
 }
@@ -234,6 +241,7 @@ impl PortIoIntercept for MicrovmPortb {
                     data[0] = self.restore_entropy.pop_front().unwrap_or(0);
                     if self.restore_entropy.is_empty() {
                         self.restore_entropy_selected = false;
+                        self.restore_processor_target_available = false;
                     }
                 } else if !self.input_gated {
                     data[0] = self.rx_buffer.pop_front().unwrap_or(0);
@@ -252,6 +260,9 @@ impl PortIoIntercept for MicrovmPortb {
                 };
                 if !self.restore_entropy.is_empty() {
                     data[0] |= STATUS_RESTORE_PACKET_AVAILABLE;
+                }
+                if self.restore_processor_target_available {
+                    data[0] |= STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE;
                 }
                 data[0] |= STATUS_GENERATION_ID_AVAILABLE;
             }
@@ -845,6 +856,38 @@ mod tests {
                 assert_eq!(data, [expected]);
             }
         }
+    }
+
+    #[test]
+    fn processor_target_restore_packet_has_distinct_status() {
+        let packet = [RESTORE_PROCESSOR_TARGET_PACKET_HEADER, &[2]].concat();
+        let mut portb =
+            MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, packet.clone());
+        let mut data = [0];
+
+        assert!(matches!(
+            portb.io_read(STATUS_PORT, &mut data),
+            IoResult::Ok
+        ));
+        assert_eq!(
+            data,
+            [STATUS_RESTORE_PACKET_AVAILABLE
+                | STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE
+                | STATUS_GENERATION_ID_AVAILABLE]
+        );
+        assert!(matches!(
+            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
+            IoResult::Ok
+        ));
+        for expected in packet {
+            assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
+            assert_eq!(data, [expected]);
+        }
+        assert!(matches!(
+            portb.io_read(STATUS_PORT, &mut data),
+            IoResult::Ok
+        ));
+        assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
     }
 
     #[test]

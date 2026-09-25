@@ -156,6 +156,48 @@ the ID from the first 16 bytes of the fresh entropy packet, so the guest can
 reject an unchanged clone identity, reseed Linux, refresh runtime identifiers,
 and acknowledge the input gate without another PMIO transfer.
 
+A microVM template may opt into restore-time vCPU activation by booting with an
+explicit canonical `maxcpus=1`, `2`, `4`, or `8` value below or equal to its
+configured VP capacity. The snapshot records that boot-online count while its
+topology, APIC IDs, and saved VP inventory remain fixed at capacity.
+`--restore-processors <COUNT>` requests the contiguous online prefix
+`0..COUNT-1` and must satisfy `boot-online <= COUNT <= capacity`. The guest
+onlines and verifies that prefix before acknowledging the restore gate.
+On MSHV, an explicit target instantiates and binds only that VP prefix; saving
+such a reduced-prefix runtime is unsupported. MSHV restores without an explicit
+target, and all KVM and WHP restores, instantiate the full VP capacity.
+Versioned MSHV CPU contracts do not expose `IA32_TSC_ADJUST` because snapshot
+state cannot preserve that register independently of `IA32_TSC`; this prevents
+host-side TSC correction from appearing as per-VP firmware adjustment skew.
+KVM advances snapshot downtime through each VP's TSC offset rather than an
+`IA32_TSC` write. KVM's synchronization heuristic can discard sub-second
+counter writes, leaving `kvm-clock` ahead of the TSC and triggering Linux's
+clocksource watchdog. Relative offset updates preserve per-VP synchronization
+without adding host read/write latency. KVM snapshot resume requires
+`KVM_VCPU_TSC_CTRL` / `KVM_VCPU_TSC_OFFSET` support; unavailable offset access
+fails restore explicitly instead of falling back to imprecise counter writes.
+All backends read back the adjusted TSC before resume and reject a discarded
+or incomplete downtime adjustment.
+After restoring counters and advancing snapshot time, MSHV and WHP freeze
+partition time and align every VP's TSC to the BSP's advanced counter before
+any VP runs. The first VP run thaws time. Setting counters while time is
+running would introduce inter-VP skew from host scheduling delays, which can
+make Linux reject the TSC clocksource during CPU activation.
+For restored WHP partitions with multiple VPs, RDTSC, RDTSCP, and
+`IA32_TSC` reads additionally use one partition-reference-time epoch anchored
+to the advanced BSP counter. This clock has 100-nanosecond resolution and
+keeps unmodified guest counters synchronized after time resumes; equal
+frozen WHP register values alone do not guarantee equal live counters.
+RDTSCP retains the guest's TSC_AUX value, and timestamp access restrictions
+remain enforced. Explicit guest writes to `IA32_TSC`, or changes to
+`IA32_TSC_ADJUST`, retain native WHP counter and deadline-timer semantics on
+the affected VP. Reset restores the original intercept configuration.
+Ordinary boots, single-VP partitions, and configurations exposing nested
+virtualization to the guest retain their native counter path.
+Snapshots without the explicit capture-time `maxcpus` opt-in, including legacy
+snapshots, reject a restore target. This is not a post-readiness hotplug API and
+cannot add VPs absent from the saved topology.
+
 ```admonish warning
 Versions 3 through 5 do not contain or validate embedded checksums for
 `state.bin` or `memory.bin`. Restore still requires regular files, bounded

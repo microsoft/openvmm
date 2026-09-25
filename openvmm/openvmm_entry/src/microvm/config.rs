@@ -315,7 +315,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         };
         let opt = self.opt;
         let (generation_id, restore_entropy) = if opt.microvm.restore_entropy {
-            fresh_microvm_restore_packet()?
+            fresh_microvm_restore_packet(opt.microvm.restore_processors)?
         } else {
             (fresh_microvm_generation_id()?, Vec::new())
         };
