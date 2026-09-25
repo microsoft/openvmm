@@ -22,6 +22,7 @@ mod dhcpv6;
 mod dns;
 mod dns_resolver;
 mod icmp;
+pub mod limits;
 mod local_addr_map;
 mod ndp;
 mod tcp;
@@ -669,6 +670,15 @@ pub enum DropReason {
     /// The send buffer is invalid.
     #[error("send buffer full")]
     SendBufferFull,
+    /// The active TCP flow limit was reached before a host socket was created.
+    #[error("active TCP flow limit reached")]
+    TcpConnectionLimit,
+    /// The active UDP flow limit was reached before a host socket was bound.
+    #[error("active UDP flow limit reached")]
+    UdpConnectionLimit,
+    /// The active ICMP flow limit was reached before a host socket was opened.
+    #[error("active ICMP flow limit reached")]
+    IcmpConnectionLimit,
     /// There was an IO error.
     #[error("io error")]
     Io(#[source] std::io::Error),
