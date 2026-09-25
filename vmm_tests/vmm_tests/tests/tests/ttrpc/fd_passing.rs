@@ -288,5 +288,6 @@ fn create_vm_request(
             ..Default::default()
         }),
         log_id: String::new(),
+        microvm_snapshot: None,
     }
 }
