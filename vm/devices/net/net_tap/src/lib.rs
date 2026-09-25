@@ -28,6 +28,7 @@ use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
+use net_backend_resources::egress::EgressPolicy;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -109,6 +110,7 @@ pub use vnet_hdr::*;
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
+    egress_policy: Option<EgressPolicy>,
 }
 
 impl TapEndpoint {
@@ -135,6 +137,7 @@ impl TapEndpoint {
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
+            egress_policy: None,
         })
     }
 }
@@ -163,7 +166,13 @@ impl Endpoint for TapEndpoint {
         queues.push(Box::new(TapQueue::new(
             config.driver.as_ref(),
             self.tap.clone(),
+            self.egress_policy.clone(),
         )?));
+        Ok(())
+    }
+
+    fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        self.egress_policy = Some(policy);
         Ok(())
     }
 
@@ -218,7 +227,11 @@ impl Drop for TapQueue {
 }
 
 impl TapQueue {
-    fn new(driver: &dyn Driver, slot: Arc<Mutex<Option<tap::Tap>>>) -> anyhow::Result<Self> {
+    fn new(
+        driver: &dyn Driver,
+        slot: Arc<Mutex<Option<tap::Tap>>>,
+        egress_policy: Option<EgressPolicy>,
+    ) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
         Ok(Self {
@@ -229,7 +242,7 @@ impl TapQueue {
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; 65535 + size_of::<VirtioNetHdr>()].into_boxed_slice(),
-            tx: tx::TxState::new(),
+            tx: tx::TxState::new(egress_policy),
             input_quiesced: false,
         })
     }
