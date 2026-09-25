@@ -13,6 +13,37 @@ use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveRestore;
 
 #[test]
+fn restore_rejects_inconsistent_status_c_before_mutating_state() {
+    use vmcore::save_restore::{ProtobufSaveRestore, SavedStateBlob};
+
+    for status_c in [0x10, 0x80] {
+        let (_pool, _keeper, _, mut rtc) = new_test_rtc();
+        let before = SaveRestore::save(&mut rtc).unwrap();
+        let mut invalid = SaveRestore::save(&mut rtc).unwrap();
+        invalid.cmos[CmosReg::STATUS_C.0 as usize] = status_c;
+
+        let error =
+            ProtobufSaveRestore::restore(&mut rtc, SavedStateBlob::new(invalid)).unwrap_err();
+        match error {
+            vmcore::save_restore::RestoreError::InvalidSavedState(error) => {
+                assert_eq!(
+                    error.to_string(),
+                    "inconsistent RTC status C interrupt flags"
+                )
+            }
+            error => panic!("unexpected restore error: {error}"),
+        }
+
+        let after = SaveRestore::save(&mut rtc).unwrap();
+        assert_eq!(after.addr, before.addr);
+        assert_eq!(after.cmos, before.cmos);
+        assert_eq!(after.clock_time_millis, before.clock_time_millis);
+        assert_eq!(after.transaction_read_mask, before.transaction_read_mask);
+        assert_eq!(after.time_valid, before.time_valid);
+    }
+}
+
+#[test]
 fn restore_preserves_guest_epoch_and_advances_downtime() {
     let (mut pool, _vm_time_keeper, clock, mut rtc) = new_test_rtc();
     clock.tick(Duration::from_secs(10));
