@@ -1096,9 +1096,17 @@ impl KvmProcessor<'_> {
     /// window.
     fn deliver_pic_interrupt(&mut self, dev: &impl CpuIo) -> Result<(), KvmRunVpError> {
         if let Some(vector) = dev.acknowledge_pic_interrupt() {
-            self.runner
-                .inject_extint_interrupt(vector)
-                .map_err(KvmRunVpError::ExtintInterrupt)?;
+            if self.partition.caps.nested_virt {
+                // Let KVM decide whether the interrupt must first exit a nested
+                // guest. A queued interrupt is missing from the saved state,
+                // but KVM partitions cannot save nested state either.
+                self.runner.queue_extint_interrupt(vector)
+            } else {
+                // Keep the interrupt in the saved VP state until the guest
+                // takes it.
+                self.runner.inject_extint_interrupt(vector)
+            }
+            .map_err(KvmRunVpError::ExtintInterrupt)?;
         }
         Ok(())
     }
@@ -1581,6 +1589,10 @@ impl<'p> Processor for KvmProcessor<'p> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
+        // The VP state may have changed while the VP was stopped (e.g., by a
+        // restore), so the interrupt window that KVM last reported is stale.
+        self.runner.invalidate_interrupt_window();
+
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -1604,7 +1616,11 @@ impl<'p> Processor for KvmProcessor<'p> {
                 self.inner
                     .request_interrupt_window
                     .store(false, Ordering::Relaxed);
-                if self.runner.check_or_request_interrupt_window() {
+                if self
+                    .runner
+                    .check_or_request_interrupt_window()
+                    .map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?
+                {
                     self.deliver_pic_interrupt(dev)
                         .map_err(|e| dev.fatal_error(e.into()))?;
                 }
