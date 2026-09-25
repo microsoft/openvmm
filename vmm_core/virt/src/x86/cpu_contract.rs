@@ -66,6 +66,8 @@ pub struct CpuCompatibilityContract {
     pub tsc_aux: bool,
     #[mesh(14)]
     pub physical_address_width: u32,
+    #[mesh(15)]
+    pub tsc_deadline: bool,
 }
 
 impl CpuCompatibilityContract {
@@ -107,6 +109,7 @@ impl CpuCompatibilityContract {
             sgx: caps.sgx,
             tsc_aux: caps.tsc_aux,
             physical_address_width: u32::from(caps.physical_address_width),
+            tsc_deadline: caps.tsc_deadline,
         }
     }
 }
