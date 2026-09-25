@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod inventory;
 mod start;
 
 use futures::FutureExt;
@@ -1013,6 +1014,7 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod inventory;
     mod start;
 
     use super::StateUnit;
