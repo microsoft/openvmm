@@ -212,7 +212,8 @@ describes the source definitions.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
-  in that parent when no memory backing file was supplied, quiesces the VM,
+  in that parent when no memory backing file was supplied, delivers the portb
+  console output that the guest wrote before its request, quiesces the VM,
   writes and flushes a sibling staging directory, and atomically renames it to
   `DIR`. After a successful commit, the source VM terminates without executing
   the instruction after the snapshot `out`.
@@ -221,7 +222,9 @@ describes the source definitions.
   through the commit: the process that launches OpenVMM bounds it by ending
   OpenVMM. If a device fails to stop its host input, OpenVMM resumes host input
   and the guest continues without a snapshot, unless resuming fails too, which
-  ends the VM. A request with no configured destination is
+  ends the VM. Delivering portb output waits for a connected peer to read it;
+  output accepted while no portb peer is connected is saved in the snapshot and
+  written by the restored VM. A request with no configured destination is
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
   KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must
   be cached regular raw files with nonzero 512-byte-aligned geometry. An
@@ -847,7 +850,11 @@ configured to exit, drains previously accepted portb console output before the
 process exits. This includes the host stdout/stderr relay, not just the device's
 transmit buffer. Draining is bounded to five seconds; an output error or timeout
 is reported as a failure rather than a successful exit with truncated output.
-Snapshot capture still preserves pending console bytes in the snapshot.
+In RPC-server mode, a drain failure also fails pending `WaitVm` requests and
+terminates the server with an error instead of leaving it uninitialized.
+A guest-requested snapshot capture instead flushes accepted portb output to its
+endpoint before quiescing, without closing it because the capture can still roll
+back; see `--snapshot-destination`.
 
 * `--crash-dump-path <PATH>`: when the guest triple-faults, write a
   WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
