@@ -146,18 +146,34 @@ validation error and refuse to start.
 
 ## Device configuration on restore
 
-The snapshot only stores device *state*, not device *configuration*. All
-device flags (e.g. `--disk`, `--nic`, `--serial`, `--virtio-blk`, etc.)
-must be specified on the restore command line exactly as they were when
-the snapshot was saved — they are not read from the snapshot.
+For standard-machine snapshots, device flags must still be supplied on restore
+and must reproduce the saved machine. For microVM snapshots, the manifest is
+authoritative for RAM, topology, ABI, fixed devices, placement,
+features, interrupts, and the effective Linux direct command line. Restore-time
+guest-visible overrides are rejected.
 
-The snapshot manifest validates that `--memory`, `--processors`,
-architecture, and page size match the values recorded at save time. However,
-it does **not** record the list of CLI device flags. Instead, device
-configuration compatibility is enforced at the state-unit level: each
-emulated device saves its state under a unique name (e.g. `"pit"`,
-`"vmbus"`, `"ide"`), and restore matches saved-state entries to the
-currently instantiated devices by name.
+The CPU contract records the effective CPUID/XSTATE surface and TSC frequency.
+Restore recreates and validates that rate before any vCPU runs. KVM snapshots
+likewise require the destination to reproduce their saved backend CPU and
+clock contract.
+
+For a microVM boot configured with `--snapshot-destination`, OpenVMM adds
+the backend TSC frequency to the effective kernel command line so the captured
+guest clock matches this contract. Ordinary boots that cannot publish a
+snapshot retain the guest's normal TSC discovery path.
+
+All cold microVM boots also receive `lapic_timer_hz=<Hz>` when the backend
+reports its LAPIC clock frequency. The NVX kernel uses this authoritative rate
+instead of verifying a counting LAPIC against scheduling-sensitive emulated
+PIT interrupts. TSC-deadline timers are unchanged. The parameter is canonicalized
+before device discovery and `--`; conflicting, duplicate, malformed, or
+out-of-range values are rejected.
+
+Every snapshot records a complete state-unit inventory. Each emulated device
+saves state under a unique name (for example `"pit"`, `"vmbus"`, or `"ide"`),
+and restore requires the saved and current inventories to match exactly. A
+microVM manifest additionally records and validates the exact device inventory
+and order.
 
 The rules are:
 
@@ -165,24 +181,20 @@ The rules are:
 |---|---|
 | Device set matches exactly | Restore succeeds |
 | Snapshot contains a device not in current config | **Restore fails** — unknown unit name |
-| Current config has a device not in snapshot | Restore succeeds — device starts in its default/initial state |
+| Current config has a device not in snapshot | **Restore fails** — inventory mismatch |
 
 In practice this means:
 
 - You must pass the **same device flags** on restore as you did on save.
   Removing a device that was present at save time will cause restore to
   fail.
-- Adding a *new* device that was not present at save time is technically
-  allowed — the new device will start in its power-on default state.
-  This is not tested and the device may not be functional, since the
-  guest OS will not have enumerated or initialised it during boot.
-  The supported path is to use the same device flags on save and restore.
+- Adding a new device that was not present at save time fails inventory
+  validation rather than starting an unenumerated device in its default state.
 
 ```admonish warning
-There is no single error message that tells you "your device configuration
-changed". Instead you will see errors like `restore failed: unknown unit
-name` when saved-state entries cannot be matched. If you see this, compare
-your restore command line with the one used at save time.
+Inventory errors identify the saved and current state-unit lists. Compare the
+restore configuration with the capture configuration when restoring a standard
+machine.
 ```
 
 ## Device save/restore support
@@ -244,6 +256,7 @@ immediately with a clear error if any active device does not support it.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore
-- `--memory` and `--processors` must be specified on restore and match the
-  snapshot manifest values. A future version may read these from the snapshot
-  automatically.
+- Standard-machine restore still requires matching `--memory` and
+  `--processors`. MicroVM restore reads them authoritatively from the manifest
+  and rejects overrides. Persisted microVM ABI and boot-layout value 2 are
+  supported.
