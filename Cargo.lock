@@ -10562,6 +10562,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "net_backend_resources",
+ "serial_core",
  "unix_socket",
  "vm_resource",
 ]
