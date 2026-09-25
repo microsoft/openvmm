@@ -53,15 +53,18 @@ pub fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
 ) -> Result<KeyReleaseResponse, KeyReleaseError> {
-    parse_response_with_context(response, rsa_modulus_size, None)
+    parse_response_requiring_context(response, rsa_modulus_size, false)
 }
 
-/// Validate an existing binding before interpreting the service payload. A
-/// malformed payload must not hide a context mismatch and enable HW fallback.
-pub(crate) fn parse_response_with_context(
+/// Require a context hash when a cached binding exists, and validate any supplied
+/// hash before interpreting the service payload. Missing or malformed metadata
+/// must not be hidden by an invalid payload and enable hardware fallback.
+/// A valid hash may differ from the cached one; it is only a candidate for
+/// adoption after successful key unwrap and VMGS initialization.
+pub(crate) fn parse_response_requiring_context(
     response: &[u8],
     rsa_modulus_size: usize,
-    expected_context: Option<[u8; 32]>,
+    require_context: bool,
 ) -> Result<KeyReleaseResponse, KeyReleaseError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseExtensions;
@@ -89,9 +92,9 @@ pub(crate) fn parse_response_with_context(
         .map(decode_key_release_context_hash)
         .transpose()
         .map_err(|err| KeyReleaseError::ParseHeader(CommonError::InvalidContextHash(err)))?;
-    if expected_context.is_some() && expected_context != key_release_context_hash {
+    if require_context && key_release_context_hash.is_none() {
         return Err(KeyReleaseError::ParseHeader(
-            CommonError::ResponseContextMismatch,
+            CommonError::MissingRequiredResponseContext,
         ));
     }
 
@@ -237,44 +240,42 @@ mod tests {
     }
 
     #[test]
-    fn context_binding_is_checked_before_invalid_service_payload() {
+    fn required_context_is_checked_before_invalid_service_payload() {
         use crate::igvm_attest::tests::frame_response;
         use crate::igvm_attest::tests::v3_response;
 
-        for context_hash in [None, Some([2; 32])] {
-            let response = v3_response(
-                IgvmAttestResponseRequestType::KeyRelease,
-                "x",
-                context_hash,
-                IgvmErrorInfo::default(),
-            );
-            assert!(matches!(
-                parse_response_with_context(&response, 256, Some([1; 32])),
-                Err(KeyReleaseError::ParseHeader(
-                    CommonError::ResponseContextMismatch
-                ))
-            ));
-        }
+        let response = v3_response(
+            IgvmAttestResponseRequestType::KeyRelease,
+            "x",
+            None,
+            IgvmErrorInfo::default(),
+        );
+        assert!(matches!(
+            parse_response_requiring_context(&response, 256, true),
+            Err(KeyReleaseError::ParseHeader(
+                CommonError::MissingRequiredResponseContext
+            ))
+        ));
         for version in [
             IgvmAttestResponseVersion::VERSION_1,
             IgvmAttestResponseVersion::VERSION_2,
         ] {
             let response = frame_response(version, b"x", IgvmErrorInfo::default());
             assert!(matches!(
-                parse_response_with_context(&response, 256, Some([1; 32])),
+                parse_response_requiring_context(&response, 256, true),
                 Err(KeyReleaseError::ParseHeader(
-                    CommonError::ResponseContextMismatch
+                    CommonError::MissingRequiredResponseContext
                 ))
             ));
         }
         let response = v3_response(
             IgvmAttestResponseRequestType::KeyRelease,
             "x",
-            Some([1; 32]),
+            Some([2; 32]),
             IgvmErrorInfo::default(),
         );
         assert!(matches!(
-            parse_response_with_context(&response, 256, Some([1; 32])),
+            parse_response_requiring_context(&response, 256, true),
             Err(KeyReleaseError::PayloadSizeTooSmall)
         ));
     }
@@ -301,10 +302,10 @@ mod tests {
                 envelope.as_bytes(),
                 IgvmErrorInfo::default(),
             );
-            for expected_context in [None, Some([1; 32])] {
+            for require_context in [false, true] {
                 assert!(
                     matches!(
-                        parse_response_with_context(&response, 256, expected_context),
+                        parse_response_requiring_context(&response, 256, require_context),
                         Err(KeyReleaseError::ParseHeader(
                             CommonError::InvalidResponseEnvelope(_)
                                 | CommonError::InvalidContextHash(_)

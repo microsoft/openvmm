@@ -325,6 +325,28 @@ impl HyperVVM {
         Ok(())
     }
 
+    /// Cold-start a stopped VM, excluding events from its previous boot.
+    pub async fn start_after_shutdown(&mut self) -> anyhow::Result<()> {
+        self.check_state(VmState::Off).await?;
+        self.last_start_time = Some(Timestamp::now());
+        self.start().await
+    }
+
+    /// Wait for a reported shutdown to finish before accessing the VMGS offline.
+    pub async fn wait_for_stopped(&self) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut timer = PolledTimer::new(&self.driver);
+        loop {
+            match self.state().await? {
+                VmState::Off => return Ok(()),
+                VmState::Stopping if Instant::now() < deadline => {
+                    timer.sleep(Duration::from_millis(100)).await;
+                }
+                state => anyhow::bail!("VM must be Off for offline VMGS access, got {state:?}"),
+            }
+        }
+    }
+
     /// Attempt to gracefully shut down the VM
     pub async fn stop(&self) -> anyhow::Result<()> {
         self.check_shutdown_ic().await?;

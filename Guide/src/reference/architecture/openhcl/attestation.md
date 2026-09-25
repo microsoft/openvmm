@@ -95,16 +95,17 @@ the wire representation and normalization rules.
    the HMAC. OpenHCL puts that hint in the new request's runtime claims as
    `key-release-context-hash`. It does not use a caller-supplied configuration
    snapshot as the source of the binding.
-3. A successful key-release response must match a present cached hash. A
-   changed or omitted required hash, including a legacy response without
-   one, is rejected **before parsing the inner JSON/JWT or unwrapping its
-   key**, so malformed inner key material cannot conceal a mismatch and
-   enable fallback.
-4. With no existing hash, a valid response may supply one. Only successful
-   key release and key unwrap allow that hash into the egress sealing
-   configuration. After VMGS unlock succeeds, the adopted value is exposed
-   to later runtime claims. A response arriving after report creation cannot
-   retroactively bind that report.
+3. A successful key-release response may supply a new valid hash, including
+   when the key-release policy changes. If a cached hash exists, the response
+   must supply a hash, but it need not equal the cached value. An omitted
+   required hash, including a legacy response without one, or malformed hash
+   is rejected before parsing the inner JSON/JWT or unwrapping its key.
+4. The response hash is a candidate until key release and key unwrap succeed.
+   OpenHCL uses the candidate for egress key derivation and, when hardware
+   sealing succeeds, writes it into the replacement V4 protector. After VMGS
+   initialization succeeds, the adopted value is exposed to later runtime
+   claims. The next boot reads the persisted hash for its request. A response
+   arriving after report creation cannot retroactively bind that report.
 5. When hardware sealing succeeds, the new protector uses V4 if a context
    hash is present, or V3 if it is absent. A successful V2 response or V3
    response that omits the hash can therefore produce a V3 protector when
@@ -166,9 +167,12 @@ Only successful HMAC verification makes the cached hash eligible for
 adoption through hardware recovery. Recovery without successful SKR reseals
 the recovered DEK using the authenticated stored context. If SKR succeeds
 while another required service is unavailable, recovery uses the stored
-ingress context to unseal and the released context for egress sealing. This
-can upgrade an unbound legacy protector to V4; it does not permit changing
-an already-required hash.
+ingress context to unseal and the released context for egress sealing. For
+example, a protector bound to A is authenticated and unsealed using A, then
+the recovered DEK is sealed using B from the successful release. This also
+allows an unbound legacy protector to be upgraded to V4. A failed release or
+key unwrap does not adopt its candidate hash; eligible hardware recovery
+continues to use the authenticated stored context.
 
 ## Hardware protector formats
 
@@ -226,12 +230,13 @@ With `Hash` policy, an OpenHCL update that changes the measurement prevents
 unsealing a protector created by the previous image. Stateful operation must
 obtain the required keys through SKR to unlock VMGS and create a replacement
 hardware protector. The stored V4 context hash is still read before SKR:
-measurement changes do not clear the requirement for a matching response
-hash.
+measurement changes do not clear the requirement for a response hash. A
+successful release may provide a different hash for the replacement
+protector.
 
-```admonish warning title="Rollover, replay, and binary rollback"
-There is no context-hash rollover protocol: changing or removing an existing
-required hash is rejected. This binding adds no anti-replay mechanism or
+```admonish warning title="Replay and binary rollback"
+Successful SKR can update a context hash, but cannot remove a required hash.
+This binding adds no anti-replay mechanism or
 monotonic freshness counter; an HMAC alone does not prevent replay of old
 valid state. Deleting a protector is not an authenticated reset procedure.
 
