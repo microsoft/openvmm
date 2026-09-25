@@ -1121,6 +1121,8 @@ impl VmService {
 
         let mut config = Config {
             // TODO: devices, other stuff
+            machine_profile: openvmm_defs::microvm::MachineProfile::Standard,
+            microvm: Default::default(),
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],

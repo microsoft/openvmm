@@ -66,6 +66,10 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    /// The versioned guest-visible machine contract.
+    pub machine_profile: crate::microvm::MachineProfile,
+    /// Configuration specific to the microVM machine profile.
+    pub microvm: crate::microvm::MicrovmConfig,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;

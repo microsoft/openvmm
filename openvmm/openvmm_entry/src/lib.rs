@@ -2073,6 +2073,8 @@ async fn vm_config_from_command_line(
     pcie_devices.extend(vfio_pcie_devices);
 
     let mut cfg = Config {
+        machine_profile: Default::default(),
+        microvm: Default::default(),
         chipset,
         load_mode,
         floppy_disks,

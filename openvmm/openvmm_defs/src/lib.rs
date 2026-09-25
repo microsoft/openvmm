@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod entrypoint;
+pub mod microvm;
 pub mod profile;
 pub mod rpc;
 pub mod worker;
