@@ -13,6 +13,7 @@ use pal::windows::pipe::PipeExt;
 use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
 use pal_async::windows::pipe::ListeningPipe;
+use serial_core::LocalPeerIdentity;
 use serial_core::SerialIo;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_core::resources::ResolvedSerialBackend;
@@ -44,6 +45,8 @@ pub struct WindowsPipeSerialBackend {
     #[inspect(skip)]
     driver: Box<dyn Driver>,
     state: PipeState,
+    #[inspect(skip)]
+    peer_identity: Option<LocalPeerIdentity>,
 }
 
 enum PipeState {
@@ -89,17 +92,28 @@ impl ResolveResource<SerialBackendHandle, OpenWindowsPipeSerialConfig>
 
 impl WindowsPipeSerialBackend {
     pub fn new(driver: Box<dyn Driver>, config: OpenWindowsPipeSerialConfig) -> io::Result<Self> {
-        let state = if let Some(file) = config.pipe {
+        let (state, peer_identity) = if let Some(file) = config.pipe {
             if file.is_pipe_connected()? {
-                PipeState::Connected(PolledPipe::new(&driver, file)?)
+                let peer_identity = Some(named_pipe_peer_identity(&file)?);
+                (
+                    PipeState::Connected(PolledPipe::new(&driver, file)?),
+                    peer_identity,
+                )
             } else {
-                PipeState::Listening(ListeningPipe::new(&driver, file)?)
+                (
+                    PipeState::Listening(ListeningPipe::new(&driver, file)?),
+                    None,
+                )
             }
         } else {
-            PipeState::Done
+            (PipeState::Done, None)
         };
 
-        Ok(Self { driver, state })
+        Ok(Self {
+            driver,
+            state,
+            peer_identity,
+        })
     }
 
     pub fn into_config(self) -> OpenWindowsPipeSerialConfig {
@@ -116,6 +130,7 @@ impl WindowsPipeSerialBackend {
             return Ok(());
         }
         if let PipeState::Connected(pipe) = std::mem::replace(&mut self.state, PipeState::Done) {
+            self.peer_identity = None;
             let pipe = pipe.into_inner();
             match pipe.disconnect_pipe() {
                 Ok(()) => {}
@@ -148,8 +163,10 @@ impl SerialIo for WindowsPipeSerialBackend {
             PipeState::Done => Poll::Pending,
             PipeState::Listening(accept) => {
                 let file = ready!(accept.poll_unpin(cx));
+                let file = file?;
+                self.peer_identity = Some(named_pipe_peer_identity(&file)?);
                 self.state = PipeState::Done;
-                self.state = PipeState::Connected(PolledPipe::new(&self.driver, file?)?);
+                self.state = PipeState::Connected(PolledPipe::new(&self.driver, file)?);
                 Poll::Ready(Ok(()))
             }
             PipeState::Connected(_) => Poll::Ready(Ok(())),
@@ -171,6 +188,21 @@ impl SerialIo for WindowsPipeSerialBackend {
             }
         }
     }
+
+    fn disconnect_current(&mut self) -> io::Result<()> {
+        self.disconnect()
+    }
+
+    fn local_peer_identity(&self) -> io::Result<Option<LocalPeerIdentity>> {
+        Ok(self.peer_identity.clone())
+    }
+}
+
+fn named_pipe_peer_identity(pipe: &File) -> io::Result<LocalPeerIdentity> {
+    let process_id = pal::windows::pipe::peer::client_process_id(pipe)?;
+    let sid = pal::windows::security::user_sid::process_user_sid(process_id)?;
+    let (bytes, length) = sid.to_fixed_bytes();
+    LocalPeerIdentity::windows_sid(bytes, length)
 }
 
 impl AsyncRead for WindowsPipeSerialBackend {
@@ -244,5 +276,20 @@ impl AsyncWrite for WindowsPipeSerialBackend {
                 Poll::Ready(r)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_pipe_reports_the_current_process_identity() {
+        let (server, _client) = pal::windows::pipe::bidirectional_pair(false).unwrap();
+        let actual = named_pipe_peer_identity(&server).unwrap();
+        let sid = pal::windows::security::user_sid::current_process_user_sid().unwrap();
+        let (bytes, length) = sid.to_fixed_bytes();
+        let expected = LocalPeerIdentity::windows_sid(bytes, length).unwrap();
+        assert_eq!(actual, expected);
     }
 }
