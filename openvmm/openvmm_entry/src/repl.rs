@@ -884,6 +884,7 @@ pub(crate) async fn run_repl(
                         tracing::info!(reason = reason.as_str(), "guest halted");
                     }
                     VmControllerEvent::ExitRequested { code } => break code,
+                    VmControllerEvent::ExitFailed { error } => return Err(anyhow::anyhow!(error)),
                 }
                 continue;
             }
