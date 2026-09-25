@@ -8,6 +8,8 @@ use net_backend::tests::Bufs;
 use pal_async::DefaultDriver;
 use test_with_tracing::test;
 
+mod egress;
+
 #[pal_async::async_test]
 async fn receive_gso_metadata(driver: DefaultDriver) {
     for ipv6 in [false, true] {
