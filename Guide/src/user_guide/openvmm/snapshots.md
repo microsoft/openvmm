@@ -151,7 +151,10 @@ OpenVMM stops at that exact post-write boundary, completes the deferred write
 while the vCPU is stopped, and then releases device input before resuming the
 vCPU. Until then, the guest's virtio-fs requests wait on their virtqueues, so
 repair must not wait for a virtio-fs reply. The acknowledgement is bounded by
-`--restore-gate-timeout-ms` (60000 milliseconds by default). Platform manifests
+`--restore-gate-timeout-ms` (60000 milliseconds by default). A control-console
+host can connect while input is gated, but OpenVMM reads its authentication
+only after the release, so its `--microvm-control-auth-timeout-ms` deadline
+starts over when the gate releases. Platform manifests
 leave read-only layer identities unbound, while later tiers require exact image
 identities. An instance-checkpoint restore attempt atomically creates
 `resume.claim`; subsequent restores are rejected. The claim is committed after
