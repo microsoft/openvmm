@@ -209,6 +209,8 @@ message DevicesConfig {
     repeated WindowsPCIDevice windows_device = 4;
     repeated VirtioFs virtiofs_config = 5;
     VirtioConsoleConfig virtio_console = 6;
+    reserved 7;
+    reserved "virtio_blk";
 }
 
 // An endpoint PCIe device function. Attached behind a port in the topology
@@ -618,6 +620,7 @@ message VMConfig {
         STANDARD = 0;
         // Deterministic SMP-capable microVM ABI.
         MICROVM = 2;
+        reserved 1, 3, 4;
     }
 
     // Action for the VMM to take when the guest triggers a power event.
@@ -651,6 +654,8 @@ message VMConfig {
         UEFI uefi = 6;
         IgvmBoot igvm = 18;
     }
+    reserved 14;
+    reserved "pvh_boot";
     WindowsOptions windows_options = 7;
     // Field 8 was previously map<string, string> extra_data.
     reserved 8;
@@ -665,28 +670,29 @@ message VMConfig {
     // Actions to take on guest power events. Each unset action uses its
     // default.
     GuestPowerActions guest_power_actions = 12;
-
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
     // selected; note that PCAT boot honors only the system UUID and serial
     // number. IGVM boot does not support these overrides.
     SMBIOSConfig smbios_config = 13;
 
-    optional string crash_dump_path = 14;
+    // Tag 14 is retained for microVM PVH boot compatibility.
+    optional string crash_dump_path = 16;
     // Host iommufd contexts to create with the VM. Linux only; a non-empty
     // list on other hosts is an error. Contexts remain available until VM
     // teardown, including when unused or after their last device is removed,
     // so AddPcieDevice can reference them. No runtime context add/remove.
     repeated IommufdConfig iommufds = 15;
     // Run without VMBus. Incompatible with VMBus devices and HVSocket.
-    // Upstream assigns field 16, which this fork uses for machine_profile.
+    // Upstream uses field 16, which this fork assigns to crash_dump_path.
     bool disable_vmbus = 20;
     // Do not expose Hyper-V (HV#1) enlightenments. Requires disable_vmbus.
     // Unsupported for x86_64 UEFI boot.
-    bool disable_hv = 17;
+    // Upstream uses field 17, which this fork assigns to machine_profile.
+    bool disable_hv = 21;
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
     // Machine selection is independent from hypervisor selection.
-    MachineProfile machine_profile = 16;
+    MachineProfile machine_profile = 17;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -942,13 +948,14 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
-    bool read_only = 3;
     // Absolute guest target for the microVM fixed HostFs device.
     // Must be empty for a standard-machine virtio-fs device.
-    string guest_mount_target = 4;
+    string guest_mount_target = 3;
     // Enable the microVM common read-write contract. False selects read-only.
     // Must be false for a standard-machine virtio-fs device.
-    bool read_write = 5;
+    bool read_write = 4;
+    // Standard-machine access flag. Tags 3 and 4 retain microVM wire compatibility.
+    bool read_only = 5;
 }
 
 message VirtioConsoleConfig {
