@@ -402,7 +402,7 @@ jobs:
     - job0
     - job1
     - job2
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'microsoft/openvmm'
     defaults:
       run:
         shell: bash
