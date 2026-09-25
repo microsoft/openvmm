@@ -88,6 +88,15 @@ impl<'a> MicrovmConfigBuilder<'a> {
         } else {
             None
         };
+        if let Some(filesystem) = &filesystem
+            && opt.microvm.snapshot_destination.is_some()
+        {
+            tracing::warn!(
+                stable_id = MICROVM_FILESYSTEM_STABLE_ID,
+                access_mode = filesystem.config.access.as_str(),
+                "microVM snapshot excludes live host filesystem contents; restore revalidates the external directory and may fail after host changes"
+            );
+        }
         // Without an egress policy, the guest may use the gateway's DNS proxy.
         let gateway_dns = network.is_some();
 
@@ -122,6 +131,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
+            filesystem_attachment: filesystem
+                .as_ref()
+                .map(|filesystem| filesystem.attachment.clone()),
             filesystem_root_path: filesystem
                 .as_ref()
                 .map(|filesystem| PathBuf::from(&filesystem.root_path)),
