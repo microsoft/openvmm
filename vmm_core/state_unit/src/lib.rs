@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod inventory;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -1007,6 +1009,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod inventory;
+
     use super::StateUnit;
     use super::StateUnits;
     use crate::run_unit;
