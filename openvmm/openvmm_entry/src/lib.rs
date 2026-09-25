@@ -2944,6 +2944,7 @@ async fn run_control_inner(
             snapshot_restore_guards: restore.guards,
             snapshot_boundary_requests: None,
             snapshot_ready: None,
+            snapshot_capture_enabled: false,
             restore_ready_sink,
             rpc: rpc_recv,
             notify: notify_send,
