@@ -1710,6 +1710,12 @@ pub struct SyntheticMsrs {
     #[mesh(5)]
     #[inspect(iter_by_index)]
     pub sint: [u64; 16],
+    /// KVM wall-clock GPA/configuration MSR.
+    #[mesh(6)]
+    pub kvm_wall_clock: u64,
+    /// KVM system-time GPA/configuration MSR.
+    #[mesh(7)]
+    pub kvm_system_time: u64,
 }
 
 impl HvRegisterState<HvX64RegisterName, 20> for SyntheticMsrs {
@@ -1765,16 +1771,21 @@ impl HvRegisterState<HvX64RegisterName, 20> for SyntheticMsrs {
 
 impl StateElement<X86PartitionCapabilities, X86VpInfo> for SyntheticMsrs {
     fn is_present(caps: &X86PartitionCapabilities) -> bool {
-        caps.hv1
+        caps.hv1 || caps.kvm_clock
     }
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
+        if !_caps.hv1 {
+            return Self::default();
+        }
         Self {
             vp_assist_page: 0,
             scontrol: 1,
             siefp: 0,
             simp: 0,
             sint: [0x10000; 16],
+            kvm_wall_clock: 0,
+            kvm_system_time: 0,
         }
     }
 }
