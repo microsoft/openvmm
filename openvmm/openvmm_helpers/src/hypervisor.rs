@@ -7,6 +7,8 @@
 use hypervisor_resources::HypervisorKind;
 use vm_resource::Resource;
 
+pub mod microvm;
+
 /// Returns a [`Resource<HypervisorKind>`] for the first available hypervisor
 /// backend.
 ///
