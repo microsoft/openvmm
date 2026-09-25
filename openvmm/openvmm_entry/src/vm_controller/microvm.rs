@@ -228,6 +228,7 @@ impl VmController {
                 self.microvm.filesystem_slot,
                 filesystem,
                 self.microvm.resources.console_attachment.clone(),
+                None,
                 blocks,
                 self.processors,
                 self.memory,

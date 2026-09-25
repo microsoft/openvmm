@@ -373,6 +373,7 @@ pub(crate) fn validate_restore_contract(
         filesystem_slot,
         filesystem,
         console_attachment.cloned(),
+        None,
         sandbox_blocks,
         expected_vp_count,
         expected_memory_size,
