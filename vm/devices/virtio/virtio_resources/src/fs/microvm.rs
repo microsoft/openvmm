@@ -16,6 +16,7 @@ pub enum VirtioFsProfile {
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
+        denied_paths: Vec<String>,
     },
     MicrovmDormant {
         stable_id: String,

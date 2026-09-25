@@ -6,6 +6,7 @@
 #[cfg(windows)]
 use anyhow::Context as _;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Stable device-private attachment identifier for the microVM share.
@@ -83,6 +84,9 @@ pub enum MicroVmProfileError {
     /// The supplied host attachment does not match the resource identity.
     #[error("microVM virtio-fs host root identity does not match the attachment")]
     RootIdentityMismatch,
+    /// The denied-path list was not canonical.
+    #[error("microVM virtio-fs denied paths are invalid")]
+    InvalidDeniedPaths,
 }
 
 /// Immutable profile settings for the microVM virtio-fs device.
@@ -95,6 +99,7 @@ pub struct MicroVmVirtioFsProfile {
     stable_id: String,
     root_identity: Vec<u8>,
     access_mode: MicroVmAccessMode,
+    denied_paths: Vec<PathBuf>,
 }
 
 impl MicroVmVirtioFsProfile {
@@ -105,6 +110,7 @@ impl MicroVmVirtioFsProfile {
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
+        denied_paths: Vec<String>,
     ) -> Result<Self, MicroVmProfileError> {
         if stable_id != MICROVM_ATTACHMENT_ID {
             return Err(MicroVmProfileError::InvalidStableId);
@@ -112,6 +118,7 @@ impl MicroVmVirtioFsProfile {
         if root_identity.is_empty() || root_identity.len() > MAX_ROOT_IDENTITY_SIZE {
             return Err(MicroVmProfileError::InvalidRootIdentity);
         }
+        let denied_paths = Self::parse_denied_paths(denied_paths)?;
         Ok(Self {
             stable_id,
             root_identity,
@@ -120,6 +127,7 @@ impl MicroVmVirtioFsProfile {
             } else {
                 MicroVmAccessMode::ReadWrite
             },
+            denied_paths,
         })
     }
 
@@ -212,9 +220,52 @@ impl MicroVmVirtioFsProfile {
         matches!(self.access_mode, MicroVmAccessMode::ReadOnly)
     }
 
+    /// Returns canonical host-relative paths hidden from the guest.
+    pub fn denied_paths(&self) -> &[PathBuf] {
+        &self.denied_paths
+    }
+
     /// Returns the entry-cache lifetime required by the ABI.
     pub const fn entry_cache_timeout(&self) -> Duration {
         Duration::ZERO
+    }
+
+    fn parse_denied_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, MicroVmProfileError> {
+        if paths.len() > 128 {
+            return Err(MicroVmProfileError::InvalidDeniedPaths);
+        }
+        let mut parsed = Vec::with_capacity(paths.len());
+        for path in paths {
+            if path.is_empty()
+                || path.len() > 4096
+                || path.starts_with('/')
+                || path.ends_with('/')
+                || path.chars().any(|character| {
+                    character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
+                })
+            {
+                return Err(MicroVmProfileError::InvalidDeniedPaths);
+            }
+            let mut relative = PathBuf::new();
+            for component in path.split('/') {
+                if component.is_empty() || matches!(component, "." | "..") {
+                    return Err(MicroVmProfileError::InvalidDeniedPaths);
+                }
+                relative.push(component);
+            }
+            parsed.push(relative);
+        }
+        let mut canonical = parsed.clone();
+        canonical.sort_unstable();
+        if canonical != parsed {
+            return Err(MicroVmProfileError::InvalidDeniedPaths);
+        }
+        for pair in parsed.windows(2) {
+            if pair[1].starts_with(&pair[0]) {
+                return Err(MicroVmProfileError::InvalidDeniedPaths);
+            }
+        }
+        Ok(parsed)
     }
 
     /// Returns the attribute-cache lifetime required by the ABI.
@@ -309,12 +360,14 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             root_identity,
             true,
+            vec!["secrets".to_owned()],
         )
         .unwrap();
         assert_eq!(profile.attachment_id(), "fs:microvm0");
         assert_eq!(profile.mount_tag(), "microvm");
         assert_eq!(profile.request_queues(), 1);
         assert!(profile.is_readonly());
+        assert_eq!(profile.denied_paths(), &[PathBuf::from("secrets")]);
         assert_eq!(profile.entry_cache_timeout(), Duration::ZERO);
         assert_eq!(profile.attribute_cache_timeout(), Duration::ZERO);
         assert!(profile.direct_io());
@@ -335,6 +388,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             b"not-a-root-identity".to_vec(),
             false,
+            Vec::new(),
         )
         .unwrap();
 
@@ -343,5 +397,27 @@ mod tests {
                 .validate_root_path(temporary_directory.path())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn profile_rejects_noncanonical_or_overlapping_denied_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = microvm_root_identity(root.path()).unwrap();
+        for denied_paths in [
+            vec!["nested/path".to_owned(), "alpha".to_owned()],
+            vec!["secrets".to_owned(), "secrets/nested".to_owned()],
+            vec!["../outside".to_owned()],
+            vec!["alternate:name".to_owned()],
+        ] {
+            assert!(
+                MicroVmVirtioFsProfile::from_attachment(
+                    MICROVM_ATTACHMENT_ID.to_owned(),
+                    identity.clone(),
+                    true,
+                    denied_paths,
+                )
+                .is_err()
+            );
+        }
     }
 }
