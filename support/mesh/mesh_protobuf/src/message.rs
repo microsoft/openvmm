@@ -143,6 +143,11 @@ impl ProtobufAny {
         self.value.parse()
     }
 
+    /// Returns the encoded message payload length without decoding it.
+    pub fn value_len(&self) -> usize {
+        self.value.0.len()
+    }
+
     /// Returns `true` if this message is an encoding of `T`.
     pub fn is_message<T: DescribedProtobuf>(&self) -> bool {
         &T::TYPE_URL == self.type_url.as_str()
@@ -204,6 +209,7 @@ mod tests {
         assert!(any.is_message::<Message>());
         assert!(!any.is_message::<Other>());
         assert_eq!(any.parse::<Message>().unwrap(), msg);
+        assert_eq!(any.clone().parse::<Message>().unwrap(), msg);
         println!("{:?}", any.parse::<Other>().unwrap_err());
     }
 }
