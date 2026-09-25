@@ -8,6 +8,9 @@ mod egress;
 mod quiesce;
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use consomme::ChecksumState;
@@ -36,6 +39,7 @@ use net_backend::TxSegment;
 use net_backend_resources::consomme::ConsommeRequest;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
+use net_backend_resources::egress::EgressPolicy;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -113,6 +117,7 @@ struct EndpointState {
     recv: Option<mesh::Receiver<ConsommeMessage>>,
     port_recv: Option<mesh::Receiver<ConsommeRequest>>,
     port_forwards: Vec<PortForwardConfig>,
+    egress_policy: Option<EgressPolicy>,
 }
 
 impl ConsommeEndpoint {
@@ -123,6 +128,7 @@ impl ConsommeEndpoint {
                 recv: None,
                 port_recv: None,
                 port_forwards: Vec::new(),
+                egress_policy: None,
             }))),
         }
     }
@@ -135,6 +141,7 @@ impl ConsommeEndpoint {
                 recv: None,
                 port_recv: None,
                 port_forwards: ports,
+                egress_policy: None,
             }))),
         }
     }
@@ -149,6 +156,7 @@ impl ConsommeEndpoint {
                     recv: Some(recv),
                     port_recv: None,
                     port_forwards: Vec::new(),
+                    egress_policy: None,
                 }))),
             },
             ConsommeControl { send },
@@ -168,6 +176,7 @@ impl ConsommeEndpoint {
                 recv: None,
                 port_recv: Some(port_recv),
                 port_forwards: ports,
+                egress_policy: None,
             }))),
         }
     }
@@ -418,6 +427,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         bind_result?;
         queues.push(queue);
         Ok(())
+    }
+
+    fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
+        self.install_egress_policy(policy)
     }
 
     async fn stop(&mut self) {
