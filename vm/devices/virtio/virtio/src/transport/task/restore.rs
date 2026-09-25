@@ -15,6 +15,7 @@ use super::EnableParams;
 use super::StartParams;
 use crate::queue::QueueState;
 use chipset_device::io::IoError;
+use mesh::rpc::FailableRpc;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -213,5 +214,17 @@ impl DeviceTask {
             }
             cmd => Some(cmd),
         }
+    }
+
+    /// Handles `DeviceCommand::QuiesceInput`.
+    pub(super) async fn quiesce_input(&mut self, rpc: FailableRpc<(), ()>) {
+        rpc.handle_failable(async |()| self.device.quiesce_input().await)
+            .await;
+    }
+
+    /// Handles `DeviceCommand::ResumeInput`.
+    pub(super) async fn resume_input(&mut self, rpc: FailableRpc<(), ()>) {
+        rpc.handle_failable(async |()| self.device.resume_input().await)
+            .await;
     }
 }
