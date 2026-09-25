@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod addressing;
+
 use crate::ConsommeEndpoint;
 use crate::IpProtocol;
 use crate::PortForwardConfig;
@@ -29,6 +31,10 @@ pub enum ResolveConsommeError {
     Consomme(consomme::Error),
     #[error(transparent)]
     InvalidCidr(consomme::InvalidCidr),
+    #[error(transparent)]
+    InvalidStaticIpv4(consomme::static_ipv4::InvalidStaticIpv4),
+    #[error("Consomme CIDR and exact static IPv4 configuration are mutually exclusive")]
+    ConflictingIpv4Configuration,
     #[error("failed to create socket for port forward ({details})")]
     SocketCreation {
         #[source]
@@ -48,6 +54,7 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
     ) -> Result<Self::Output, Self::Error> {
         let mut state = ConsommeParams::new().map_err(ResolveConsommeError::Consomme)?;
         state.client_mac.0 = input.mac_address.to_bytes();
+        addressing::configure(&mut state, &resource)?;
         if let Some(cidr) = &resource.cidr {
             state
                 .set_cidr(cidr)
