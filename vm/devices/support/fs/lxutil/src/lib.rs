@@ -2017,10 +2017,16 @@ mod tests {
 
     #[test]
     fn xattr() {
+        fn names(bytes: &[u8]) -> Vec<&[u8]> {
+            let mut names: Vec<_> = bytes.split_inclusive(|&byte| byte == 0).collect();
+            names.sort_unstable();
+            names
+        }
+
         let env = TestEnv::new();
         env.create_file("testfile", "test");
 
-        // No attributes to start with.
+        // A new file may already carry host-managed attributes such as security.selinux.
         let err = env
             .volume
             .get_xattr("testfile", "user.test", None)
@@ -2029,7 +2035,13 @@ mod tests {
         assert_eq!(err.value(), lx::ENODATA);
 
         let size = env.volume.list_xattr("testfile", None).unwrap();
-        assert_eq!(size, 0);
+        let mut inherited = vec![0u8; size];
+        assert_eq!(
+            env.volume
+                .list_xattr("testfile", Some(&mut inherited))
+                .unwrap(),
+            size
+        );
 
         let err = env
             .volume
@@ -2046,7 +2058,7 @@ mod tests {
         let size = env.volume.get_xattr("testfile", "user.test", None).unwrap();
 
         assert_eq!(size, 3);
-        let mut buffer = [0u8; 1024];
+        let mut buffer = vec![0u8; inherited.len() + 1024];
         let size = env
             .volume
             .get_xattr("testfile", "user.test", Some(&mut buffer))
@@ -2068,15 +2080,17 @@ mod tests {
         assert_eq!(size, 0);
 
         // List the attributes.
+        let mut expected = inherited.clone();
+        expected.extend_from_slice(b"user.test\0user.empty\0");
         let size = env.volume.list_xattr("testfile", None).unwrap();
-        assert_eq!(size, 21);
+        assert_eq!(size, expected.len());
         let size = env
             .volume
             .list_xattr("testfile", Some(&mut buffer))
             .unwrap();
 
-        assert_eq!(size, 21);
-        assert_eq!(&buffer[..21], b"user.test\0user.empty\0");
+        assert_eq!(size, expected.len());
+        assert_eq!(names(&buffer[..size]), names(&expected));
 
         // Remove an attribute.
         env.volume.remove_xattr("testfile", "user.empty").unwrap();
@@ -2092,8 +2106,10 @@ mod tests {
             .list_xattr("testfile", Some(&mut buffer))
             .unwrap();
 
-        assert_eq!(size, 10);
-        assert_eq!(&buffer[..10], b"user.test\0");
+        let mut expected = inherited;
+        expected.extend_from_slice(b"user.test\0");
+        assert_eq!(size, expected.len());
+        assert_eq!(names(&buffer[..size]), names(&expected));
 
         // Test flags.
         let err = env
