@@ -810,7 +810,6 @@ pub fn build_microvm_command_line(
                 "earlycon=",
                 "console=",
                 "virtio_mmio.device=",
-                "nr_cpus=",
                 "virtnet_ip=",
                 "virtnet_mask=",
                 "virtnet_gw=",
@@ -818,6 +817,8 @@ pub fn build_microvm_command_line(
                 "virtfs_dir=",
                 "virtfs_tag=",
                 "virtfs_mode=",
+                "nvx_snapshot_tier=",
+                "nr_cpus=",
             ]
             .iter()
             .any(|reserved| token.starts_with(reserved))
@@ -1263,6 +1264,13 @@ mod tests {
                 ),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn microvm_snapshot_tier_command_line_token_is_host_owned() {
+        assert!(
+            build_microvm_command_line(&["nvx_snapshot_tier=platform".to_owned()], false).is_err()
         );
     }
 
