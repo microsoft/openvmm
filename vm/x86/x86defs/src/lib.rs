@@ -209,6 +209,7 @@ pub struct MiscEnable {
 }
 
 pub const X86X_MSR_TSC: u32 = 0x10;
+pub const X86X_MSR_TSC_DEADLINE: u32 = 0x6e0;
 pub const X86X_IA32_MSR_PLATFORM_ID: u32 = 0x17;
 pub const X86X_MSR_APIC_BASE: u32 = 0x1b;
 pub const X86X_MSR_EBL_CR_POWERON: u32 = 0x2a;

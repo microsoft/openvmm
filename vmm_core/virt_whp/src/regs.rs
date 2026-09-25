@@ -75,6 +75,7 @@ mod x86_64 {
                 HvX64RegisterName::Cr8 => whp::abi::WHvX64RegisterCr8,
                 HvX64RegisterName::Xfem => whp::abi::WHvX64RegisterXCr0,
                 HvX64RegisterName::Tsc => whp::abi::WHvX64RegisterTsc,
+                HvX64RegisterName::TscDeadline => whp::abi::WHvX64RegisterTscDeadline,
                 HvX64RegisterName::Efer => whp::abi::WHvX64RegisterEfer,
 
                 HvX64RegisterName::ApicBase => whp::abi::WHvX64RegisterApicBase,
