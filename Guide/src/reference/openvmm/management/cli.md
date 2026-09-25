@@ -254,6 +254,13 @@ describes the source definitions.
   unavailable. Workload requests cannot replace this identity. Snapshot
   restore takes the captured identity from the authoritative command line and
   rejects an override.
+* `--microvm-lifecycle <one-shot|managed>`: Select the host-owned workload
+  lifecycle written into the initial microVM command line. `one-shot` starts
+  one workload and expects the guest to terminate the VM when it completes.
+  `managed` keeps the guest supervisor resident for multiple sequential
+  workload requests and requires a fixed workload identity plus a live,
+  authenticated `--microvm-control-console`. Snapshot restore takes the
+  captured lifecycle and rejects an override.
 * `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
   The manifest supplies the authoritative RAM size, topology, ABI,
   fixed device inventory, effective kernel command line, source backend, CPU
