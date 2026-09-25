@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::VirtioFs;
 use crate::microvm::MAX_FUSE_REQUEST_BYTES;
+use crate::profile::MicroVmVirtioFsProfile;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use anyhow::Context as _;
@@ -10,6 +12,7 @@ use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
+use parking_lot::Mutex;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
@@ -23,8 +26,12 @@ use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::device::saved_state::DeviceStateValidator;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::Immutable;
@@ -64,9 +71,9 @@ pub struct VirtioFsDevice {
     #[inspect(skip)]
     pub(crate) config: VirtioFsDeviceConfig,
     #[inspect(skip)]
-    fs: Arc<fuse::Session>,
+    pub(crate) fs: Arc<fuse::Session>,
     #[inspect(skip)]
-    workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
+    pub(crate) workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
     shmem_size: u64,
     #[inspect(skip)]
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
@@ -75,6 +82,80 @@ pub struct VirtioFsDevice {
     num_request_queues: u32,
     #[inspect(skip)]
     pub(crate) microvm_attachment_id: Option<String>,
+    #[inspect(skip)]
+    pub(crate) microvm_profile: Option<MicroVmVirtioFsProfile>,
+    #[inspect(skip)]
+    pub(crate) stateful_fs: Option<VirtioFs>,
+    #[inspect(skip)]
+    pub(crate) admission: Arc<RequestAdmission>,
+    #[inspect(skip)]
+    pub(crate) save_error: Option<anyhow::Error>,
+}
+
+struct AdmissionState {
+    accepting: bool,
+    in_flight: u32,
+}
+
+pub(crate) struct RequestAdmission {
+    state: Mutex<AdmissionState>,
+}
+
+struct RequestGuard {
+    admission: Arc<RequestAdmission>,
+}
+
+impl RequestAdmission {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(AdmissionState {
+                accepting: true,
+                in_flight: 0,
+            }),
+        }
+    }
+
+    fn accept(self: &Arc<Self>) -> Option<RequestGuard> {
+        let mut state = self.state.lock();
+        if !state.accepting {
+            return None;
+        }
+        state.in_flight = state.in_flight.checked_add(1)?;
+        Some(RequestGuard {
+            admission: Arc::clone(self),
+        })
+    }
+
+    pub(crate) fn quiesce(&self) {
+        let mut state = self.state.lock();
+        state.accepting = false;
+    }
+
+    pub(crate) fn resume(&self) {
+        let mut state = self.state.lock();
+        state.accepting = true;
+    }
+
+    pub(crate) fn verify_drained(&self) -> anyhow::Result<()> {
+        let state = self.state.lock();
+        anyhow::ensure!(
+            !state.accepting,
+            "virtio-fs save was not preceded by input quiesce"
+        );
+        anyhow::ensure!(
+            state.in_flight == 0,
+            "virtio-fs has {} unrepresented in-flight request(s)",
+            state.in_flight
+        );
+        Ok(())
+    }
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        let mut state = self.admission.state.lock();
+        state.in_flight = state.in_flight.saturating_sub(1);
+    }
 }
 
 impl VirtioFsDevice {
@@ -146,6 +227,10 @@ impl VirtioFsDevice {
             notify_corruption,
             num_request_queues,
             microvm_attachment_id: None,
+            microvm_profile: None,
+            stateful_fs: None,
+            admission: Arc::new(RequestAdmission::new()),
+            save_error: None,
         }
     }
 }
@@ -200,6 +285,7 @@ impl VirtioDevice for VirtioFsDevice {
             shared_memory_region: self.shared_memory_region.clone(),
             shared_memory_size: self.shmem_size,
             notify_corruption: self.notify_corruption.clone(),
+            admission: Arc::clone(&self.admission),
         });
 
         let queue_event = PolledWait::new(&self.driver, resources.event)
@@ -232,6 +318,7 @@ impl VirtioDevice for VirtioFsDevice {
                     shared_memory_region: None,
                     shared_memory_size: 0,
                     notify_corruption: self.notify_corruption.clone(),
+                    admission: Arc::clone(&self.admission),
                 })
             });
         }
@@ -251,6 +338,7 @@ impl VirtioDevice for VirtioFsDevice {
 
     async fn reset(&mut self) {
         self.workers.clear();
+        crate::microvm::device::reset(self);
         if let Some(region) = &self.shared_memory_region {
             if let Err(e) = region.unmap(0, self.shmem_size as usize) {
                 tracing::error!(
@@ -262,16 +350,43 @@ impl VirtioDevice for VirtioFsDevice {
         self.shared_memory_region = None;
         self.fs.destroy();
     }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        crate::microvm::device::quiesce_input(self);
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        crate::microvm::device::resume_input(self);
+        Ok(())
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        crate::microvm::device::supports_save_restore(self)
+    }
+
+    fn save_device(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        crate::microvm::device::save_device(self)
+    }
+
+    fn restore_device(&mut self, state: Option<SavedStateBlob>) -> Result<(), RestoreError> {
+        crate::microvm::device::restore_device(self, state)
+    }
+
+    fn device_state_validator(&self) -> DeviceStateValidator {
+        crate::microvm::device::device_state_validator(self)
+    }
 }
 
-struct VirtioFsWorker {
+pub(crate) struct VirtioFsWorker {
     fs: Arc<fuse::Session>,
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
+    admission: Arc<RequestAdmission>,
 }
 
-struct VirtioFsQueue {
+pub(crate) struct VirtioFsQueue {
     queue: VirtioQueue,
     mem: GuestMemory,
 }
@@ -283,11 +398,17 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
         state: &mut VirtioFsQueue,
     ) -> Result<(), Cancelled> {
         loop {
+            // Admission must precede queue.next(): after save closes the
+            // gate, an unowned descriptor must remain on the virtqueue rather
+            // than being dequeued and falsely completed with an empty reply.
+            let Some(request_guard) = self.admission.accept() else {
+                break;
+            };
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    let bytes = process_virtiofs_request(self, &state.mem, &work);
+                    let bytes = process_virtiofs_request(self, &state.mem, &work, request_guard);
                     state.queue.complete(work, bytes);
                 }
                 Err(err) => {
@@ -307,6 +428,7 @@ fn process_virtiofs_request(
     worker: &VirtioFsWorker,
     mem: &GuestMemory,
     work: &VirtioQueueCallbackWork,
+    _request_guard: RequestGuard,
 ) -> u32 {
     let readable_len = work.get_payload_length(false) as usize;
     if readable_len > MAX_FUSE_REQUEST_BYTES {
@@ -435,6 +557,7 @@ mod tests {
     use crate::VirtioFs;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use test_with_tracing::test;
     use vmcore::vm_task::SingleDriverBackend;
 
     fn make_device(
@@ -489,5 +612,17 @@ mod tests {
         assert_eq!(device.num_request_queues, 3);
         assert_eq!(device.config.num_request_queues, 3);
         assert_eq!(device.traits().max_queues, 4);
+    }
+
+    #[test]
+    fn closed_admission_rejects_new_work_until_all_requests_drain() {
+        let admission = Arc::new(RequestAdmission::new());
+        let request = admission.accept().unwrap();
+        admission.quiesce();
+        assert!(admission.accept().is_none());
+        assert!(admission.verify_drained().is_err());
+
+        drop(request);
+        admission.verify_drained().unwrap();
     }
 }

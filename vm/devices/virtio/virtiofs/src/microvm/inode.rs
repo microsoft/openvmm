@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! microVM path confinement.
+//! microVM path confinement and persisted inode reconstruction.
 
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::relative_path_encoded_len;
@@ -9,10 +9,12 @@ use super::state::validate_relative_path;
 use crate::inode::VirtioFsInode;
 use crate::inode::VirtioFsVolume;
 use lxutil::LxVolume;
+use std::collections::BTreeSet;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 impl VirtioFsVolume {
     pub(crate) fn new_with_strict_paths(
@@ -35,6 +37,30 @@ impl VirtioFsVolume {
 }
 
 impl VirtioFsInode {
+    /// Rebuilds an inode after a saved attachment identity has been
+    /// independently revalidated.
+    pub(crate) fn from_saved(
+        volume: Arc<VirtioFsVolume>,
+        aliases: Vec<PathBuf>,
+        lookup_count: u64,
+        stat: &lx::Stat,
+    ) -> lx::Result<Self> {
+        let Some(path) = aliases.first().cloned() else {
+            return Err(lx::Error::EINVAL);
+        };
+        if lookup_count == 0 {
+            return Err(lx::Error::EINVAL);
+        }
+        let mut inode = Self::with_attr(volume, path, stat);
+        inode.lookup_count = AtomicU64::new(lookup_count);
+        let aliases: BTreeSet<_> = aliases.into_iter().collect();
+        if aliases.is_empty() {
+            return Err(lx::Error::EINVAL);
+        }
+        *inode.aliases.write() = aliases;
+        Ok(inode)
+    }
+
     /// Checks that a microVM path is relative and has no symlink component.
     ///
     /// LxVolume intentionally does not promise this property for arbitrary

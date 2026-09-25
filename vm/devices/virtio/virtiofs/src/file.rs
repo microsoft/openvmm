@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::inode::VirtioFsInode;
+use crate::microvm::saved_state::SavedDirectoryEntry;
 use crate::util;
 use fuse::DirEntryWriter;
 use fuse::protocol::fuse_attr;
@@ -12,24 +13,69 @@ use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+#[derive(Default)]
+pub(crate) struct DirectorySnapshot {
+    pub(crate) built: bool,
+    pub(crate) entries: Vec<SavedDirectoryEntry>,
+}
+
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {
-    file: RwLock<LxFile>,
-    inode: Arc<VirtioFsInode>,
+    pub(crate) file: RwLock<LxFile>,
+    pub(crate) inode: Arc<VirtioFsInode>,
+    open_flags: u32,
+    pub(crate) directory_snapshot: RwLock<DirectorySnapshot>,
 }
 
 impl VirtioFsFile {
     /// Create a new file.
-    pub fn new(file: LxFile, inode: Arc<VirtioFsInode>) -> Self {
+    pub fn new(file: LxFile, inode: Arc<VirtioFsInode>, open_flags: u32) -> Self {
         Self {
             file: RwLock::new(file),
             inode,
+            open_flags,
+            directory_snapshot: RwLock::new(DirectorySnapshot::default()),
         }
     }
 
     /// The inode backing this open file.
     pub fn inode(&self) -> &VirtioFsInode {
         &self.inode
+    }
+
+    pub(crate) fn open_flags(&self) -> u32 {
+        self.open_flags
+    }
+
+    pub(crate) fn directory_entries(&self) -> Vec<SavedDirectoryEntry> {
+        self.directory_snapshot.read().entries.clone()
+    }
+
+    pub(crate) fn directory_snapshot_built(&self) -> bool {
+        self.directory_snapshot.read().built
+    }
+
+    pub(crate) fn object_stat(&self) -> lx::Result<lx::Stat> {
+        self.file.read().fstat().map(Into::into)
+    }
+
+    pub(crate) fn restore_directory_snapshot(
+        &self,
+        built: bool,
+        entries: Vec<SavedDirectoryEntry>,
+    ) -> lx::Result<()> {
+        Self::validate_directory_entries(&entries)?;
+        if !built && !entries.is_empty() {
+            return Err(lx::Error::EINVAL);
+        }
+        if built {
+            let stat = self.object_stat()?;
+            if stat.mode & lx::S_IFMT != lx::S_IFDIR {
+                return Err(lx::Error::ENOTDIR);
+            }
+        }
+        *self.directory_snapshot.write() = DirectorySnapshot { built, entries };
+        Ok(())
     }
 
     /// Gets the attributes of the open file.
@@ -76,6 +122,9 @@ impl VirtioFsFile {
         size: u32,
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
+        if fs.is_microvm() {
+            return self.read_dir_microvm(fs, offset, size, plus);
+        }
         if size as usize > crate::MAX_GUEST_BUFFER_SIZE {
             return Err(lx::Error::E2BIG);
         }
@@ -125,7 +174,8 @@ impl VirtioFsFile {
                     }
                 };
 
-                Ok(buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry))
+                let written = buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry);
+                Ok(written)
             } else {
                 // Use the current file's inode number for . and .. entries.
                 // On Windows inode_nr is 0 for these; on Linux it may be
@@ -144,12 +194,13 @@ impl VirtioFsFile {
                     self.inode.guest_ino(entry.inode_nr)
                 };
 
-                Ok(buffer.dir_entry(
+                let written = buffer.dir_entry(
                     &entry.name,
                     inode_nr,
                     entry.offset as u64,
                     entry.file_type as u32,
-                ))
+                );
+                Ok(written)
             }
         })?;
 
