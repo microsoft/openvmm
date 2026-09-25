@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod amd_iommu_wiring;
+mod clock;
 mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
@@ -359,6 +360,7 @@ impl Worker for VmWorker {
             manifest,
             shared_memory,
         ))?;
+        restore::validate_restore_cpu_contract(vm.partition.as_ref(), restore_params.cpu_contract)?;
         let saved_state = parameters
             .saved_state
             .map(|m| m.parse())
@@ -3293,11 +3295,11 @@ impl InitializedVm {
         };
 
         if let Some(saved_state) = saved_state {
-            let saved_state_restore = this.begin_snapshot_restore();
+            let saved_state_restore = this.begin_snapshot_restore(&saved_state)?;
             this.restore(saved_state)
                 .await
                 .context("loadedvm restore failed")?;
-            this.finish_snapshot_restore(saved_state_restore).await;
+            this.finish_snapshot_restore(saved_state_restore).await?;
         } else {
             // Assign PCI bus numbers/BARs before building firmware so that the
             // ACPI tables (specifically the SRAT generic-initiator entries) can

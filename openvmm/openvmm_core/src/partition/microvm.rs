@@ -18,6 +18,12 @@ pub trait MicrovmPartition: Send + Sync {
     /// Returns the effective guest TSC frequency.
     fn tsc_frequency_hz(&self) -> anyhow::Result<Option<u64>>;
 
+    /// Requests the effective guest TSC frequency.
+    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> anyhow::Result<()>;
+
+    /// Advances backend-specific guest clock state after snapshot downtime.
+    fn advance_snapshot_time(&self, duration: std::time::Duration) -> anyhow::Result<()>;
+
     /// Returns the LAPIC interrupt clock frequency when available.
     fn apic_frequency_hz(&self) -> anyhow::Result<Option<u64>>;
 }
@@ -33,6 +39,16 @@ where
 
     fn tsc_frequency_hz(&self) -> anyhow::Result<Option<u64>> {
         Ok(Partition::tsc_frequency_hz(self)?)
+    }
+
+    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> anyhow::Result<()> {
+        Partition::set_tsc_frequency_hz(self, frequency_hz)?;
+        Ok(())
+    }
+
+    fn advance_snapshot_time(&self, duration: std::time::Duration) -> anyhow::Result<()> {
+        Partition::advance_snapshot_time(self, duration)?;
+        Ok(())
     }
 
     fn apic_frequency_hz(&self) -> anyhow::Result<Option<u64>> {

@@ -394,6 +394,11 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.access_state(vtl)
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    fn advance_tsc(&mut self, cycles: u64) -> anyhow::Result<()> {
+        self.0.advance_tsc(cycles)
+    }
+
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         self.0.vtl_inspectable(vtl)
     }
