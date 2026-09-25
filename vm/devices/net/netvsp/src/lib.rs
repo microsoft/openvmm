@@ -1115,6 +1115,7 @@ const RX_RESERVED_CONTROL_BUFFERS: u32 = 16;
 /// A network adapter.
 pub struct Nic {
     instance_id: Guid,
+    offer_order: Option<u64>,
     resources: DeviceResources,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     coordinator_send: Option<mpsc::Sender<CoordinatorMessage>>,
@@ -1124,6 +1125,7 @@ pub struct Nic {
 
 pub struct NicBuilder {
     virtual_function: Option<Box<dyn VirtualFunction>>,
+    offer_order: Option<u64>,
     limit_ring_buffer: bool,
     max_queues: u16,
     get_guest_os_id: Option<Box<dyn Fn() -> HvGuestOsId + Send + Sync>>,
@@ -1142,6 +1144,16 @@ impl NicBuilder {
 
     pub fn virtual_function(mut self, virtual_function: Box<dyn VirtualFunction>) -> Self {
         self.virtual_function = Some(virtual_function);
+        self
+    }
+
+    /// Sets the VMBus offer order for this NIC. Lower values sort first among
+    /// pending offers with the same interface ID; instance IDs break ties.
+    ///
+    /// The default is `None`, which sorts as `u64::MAX` and results in instance-ID
+    /// ordering.
+    pub fn offer_order(mut self, offer_order: u64) -> Self {
+        self.offer_order = Some(offer_order);
         self
     }
 
@@ -1235,6 +1247,7 @@ impl NicBuilder {
 
         Nic {
             instance_id,
+            offer_order: self.offer_order,
             resources: Default::default(),
             coordinator,
             coordinator_send: None,
@@ -1280,6 +1293,7 @@ impl Nic {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             virtual_function: None,
+            offer_order: None,
             limit_ring_buffer: false,
             max_queues: !0,
             get_guest_os_id: None,
@@ -1311,6 +1325,7 @@ impl VmbusDevice for Nic {
                 data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0xe],
             },
             subchannel_index: 0,
+            offer_order: self.offer_order,
             mnf_interrupt_latency: Some(Duration::from_micros(100)),
             ..Default::default()
         }

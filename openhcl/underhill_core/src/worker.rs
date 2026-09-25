@@ -377,6 +377,33 @@ pub struct NicConfig {
     pub max_sub_channels: Option<u16>,
 }
 
+fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
+    // Some guest behaviors require the NIC interfaces to be enumerated in a
+    // particular order. VMBus channel offers are by default sorted using the
+    // instance id. `offer_order` will override the default sorting.
+    // Incorporate the vport index and MAC address for ease of search.
+    Guid {
+        data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1`
+        data2: vport_index as u16,
+        data3: 1 << 12, // type 1 GUID
+        data4: [
+            0x20,
+            0,
+            mac_address[0],
+            mac_address[1],
+            mac_address[2],
+            mac_address[3],
+            mac_address[4],
+            mac_address[5],
+        ], // variant 2
+    }
+}
+
+// Order NetVSP channel offers first by the adapter index, then by vport index.
+fn netvsp_vmbus_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
+    (u64::from(base_adapter_index) << 32) | vport_index as u64
+}
+
 impl Worker for UnderhillVmWorker {
     type Parameters = UnderhillWorkerParameters;
     type State = RestartState;
@@ -895,6 +922,11 @@ impl UhVmNetworkSettings {
         let ready_ports = Arc::new(futures::lock::Mutex::new(
             (0..endpoints.len()).map(|_| false).collect::<Vec<bool>>(),
         ));
+        let minimum_adapter_index = endpoints
+            .iter()
+            .map(|endpoint| endpoint.adapter_index)
+            .min()
+            .unwrap_or_default();
         let vf_manager = Arc::new(vf_manager);
         for (
             i,
@@ -905,19 +937,8 @@ impl UhVmNetworkSettings {
             },
         ) in endpoints.into_iter().enumerate()
         {
-            let vmbus_instance_id = {
-                let m = mac_address.to_bytes();
-                // Some guest behaviors requires the nic interfaces to be enumerated in a
-                // particular order. vmbus channel offers are by default sorted using the
-                // instance id. Leverage that to sort the network offers based on the
-                // vport index.
-                Guid {
-                    data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1` for ease of search.
-                    data2: i as u16,
-                    data3: 1 << 12, // type 1 GUID
-                    data4: [0x20, 0, m[0], m[1], m[2], m[3], m[4], m[5]], // variant 2
-                }
-            };
+            let vmbus_instance_id = netvsp_vmbus_instance_id(i, mac_address.to_bytes());
+            let offer_order = netvsp_vmbus_offer_order(minimum_adapter_index, i);
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
@@ -925,6 +946,7 @@ impl UhVmNetworkSettings {
             };
 
             let mut nic_builder = netvsp::Nic::builder()
+                .offer_order(offer_order)
                 .limit_ring_buffer(true)
                 .get_guest_os_id(Box::new(get_guest_os_id))
                 .max_queues(nic_max_sub_channels);
