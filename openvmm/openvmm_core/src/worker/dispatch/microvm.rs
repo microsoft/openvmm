@@ -433,6 +433,10 @@ fn virtio_mmio_config(
     chipset_mmio: ChipsetMmioRanges,
 ) -> anyhow::Result<(u64, u64, u32, u64, VirtioMmioInterruptMode)> {
     let (start, irq) = match id {
+        "virtio-net" => (
+            openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
+            openvmm_defs::microvm::microvm_virtio_net_irq(None)?,
+        ),
         "virtio-console" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
@@ -447,8 +451,10 @@ fn virtio_mmio_config(
                 .is_some_and(|end| end <= chipset_mmio.low.end()),
         "microVM virtio slot for '{id}' is outside the fixed low-MMIO aperture"
     );
-    // The fixed slots expose split rings only.
-    let disabled_features = 1 << 34;
+    let disabled_features = match id {
+        "virtio-net" => !openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
+        _ => 1 << 34,
+    };
     let interrupt_mode = VirtioMmioInterruptMode::SharedStatus {
         status_gpa: openvmm_defs::microvm::microvm_virtio_status_gpa(start)
             .context("microVM slot has no shared-status word")?,
