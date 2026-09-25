@@ -4,13 +4,18 @@
 //! Resource resolver for microVM chipset devices.
 
 use super::MicrovmPortb;
+use super::MicrovmShutdown;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::microvm::MicrovmPortbHandle;
+use chipset_resources::microvm::MicrovmShutdownHandle;
+use power_resources::PowerRequestHandleKind;
 use serial_core::resources::ResolveSerialBackendParams;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
+use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
@@ -52,5 +57,34 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for Micro
             .await
             .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
         Ok(MicrovmPortb::new(io.0.into_io()).into())
+    }
+}
+
+/// Resolver for the microVM shutdown port.
+pub struct MicrovmShutdownResolver;
+
+declare_static_async_resolver! {
+    MicrovmShutdownResolver,
+    (ChipsetDeviceHandleKind, MicrovmShutdownHandle),
+}
+
+#[async_trait]
+impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmShutdownHandle>
+    for MicrovmShutdownResolver
+{
+    type Output = ResolvedChipsetDevice;
+    type Error = ResolveMicrovmPortbError;
+
+    async fn resolve(
+        &self,
+        resolver: &ResourceResolver,
+        _resource: MicrovmShutdownHandle,
+        _input: ResolveChipsetDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let power_request = resolver
+            .resolve::<PowerRequestHandleKind, _>(PlatformResource.into_resource(), ())
+            .await
+            .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
+        Ok(MicrovmShutdown::new(power_request).into())
     }
 }
