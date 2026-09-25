@@ -7,6 +7,8 @@
 
 pub mod affinity;
 pub mod credentials;
+#[cfg(target_os = "linux")]
+pub mod fd_table;
 pub mod fs;
 pub mod pipe;
 pub mod process;
