@@ -17,10 +17,12 @@ use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
+use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh_worker::WorkerRpc;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
@@ -32,6 +34,26 @@ use virtio::resolve::ResolvedVirtioDevice;
 use vm_loader::InitialLoad;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmm_core::partition_unit::StopGuard;
+
+/// The microVM part of the worker [`Manifest`]: the subset of
+/// [`MicrovmConfig`] that the worker consumes after validating the
+/// configuration.
+#[derive(MeshPayload, Default)]
+pub(super) struct MicrovmManifest {
+    pub(super) sandbox_blocks: Vec<openvmm_defs::microvm::MicrovmSandboxBlockConfig>,
+}
+
+impl From<MicrovmConfig> for MicrovmManifest {
+    fn from(config: MicrovmConfig) -> Self {
+        let MicrovmConfig {
+            network: _,
+            filesystem: _,
+            sandbox_blocks,
+            filesystem_bootstrap: _,
+        } = config;
+        Self { sandbox_blocks }
+    }
+}
 
 /// MicroVM inputs taken from the [`VmWorkerParameters`].
 pub(super) struct MicrovmParameters {
@@ -430,6 +452,8 @@ impl LoadedVm {
 
 fn virtio_mmio_config(
     id: &str,
+    sandbox_blocks: &[openvmm_defs::microvm::MicrovmSandboxBlockConfig],
+    sandbox_block_index: &mut usize,
     chipset_mmio: ChipsetMmioRanges,
 ) -> anyhow::Result<(u64, u64, u32, u64, VirtioMmioInterruptMode)> {
     let (start, irq) = match id {
@@ -445,6 +469,13 @@ fn virtio_mmio_config(
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
         ),
+        "virtio-blk" => {
+            let block = sandbox_blocks
+                .get(*sandbox_block_index)
+                .context("microVM virtio-blk device has no sandbox role")?;
+            *sandbox_block_index += 1;
+            (block.role.mmio_base(), block.role.irq())
+        }
         _ => anyhow::bail!("unsupported microVM virtio device '{id}' reached worker construction"),
     };
     let len = openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN;
@@ -458,6 +489,13 @@ fn virtio_mmio_config(
     let disabled_features = match id {
         "virtio-net" => !openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
         "virtiofs" => !openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES,
+        "virtio-blk" => {
+            let block = sandbox_blocks
+                .iter()
+                .find(|block| block.role.mmio_base() == start)
+                .context("microVM block slot has no role")?;
+            !openvmm_defs::microvm::microvm_sandbox_block_features(block.role)
+        }
         _ => 1 << 34,
     };
     let interrupt_mode = VirtioMmioInterruptMode::SharedStatus {
@@ -469,13 +507,22 @@ fn virtio_mmio_config(
 
 /// Assigns the fixed virtio-mmio slots of the microVM profile to devices, in
 /// device order.
-pub(super) struct VirtioMmioSlots {
+pub(super) struct VirtioMmioSlots<'a> {
+    sandbox_blocks: &'a [openvmm_defs::microvm::MicrovmSandboxBlockConfig],
+    sandbox_block_index: usize,
     chipset_mmio: ChipsetMmioRanges,
 }
 
-impl VirtioMmioSlots {
-    pub(super) fn new(chipset_mmio: ChipsetMmioRanges) -> Self {
-        Self { chipset_mmio }
+impl<'a> VirtioMmioSlots<'a> {
+    pub(super) fn new(
+        sandbox_blocks: &'a [openvmm_defs::microvm::MicrovmSandboxBlockConfig],
+        chipset_mmio: ChipsetMmioRanges,
+    ) -> Self {
+        Self {
+            sandbox_blocks,
+            sandbox_block_index: 0,
+            chipset_mmio,
+        }
     }
 
     /// Adds a virtio-mmio device at its fixed microVM slot.
@@ -488,8 +535,12 @@ impl VirtioMmioSlots {
         id: &str,
         device: ResolvedVirtioDevice,
     ) -> anyhow::Result<()> {
-        let (mmio_start, mmio_len, irq, disabled_features, interrupt_mode) =
-            virtio_mmio_config(id, self.chipset_mmio)?;
+        let (mmio_start, mmio_len, irq, disabled_features, interrupt_mode) = virtio_mmio_config(
+            id,
+            self.sandbox_blocks,
+            &mut self.sandbox_block_index,
+            self.chipset_mmio,
+        )?;
         let id = format!("{id}-{mmio_start}");
         let gm = gm.clone();
         chipset_builder.arc_mutex_device(id).try_add(|services| {
