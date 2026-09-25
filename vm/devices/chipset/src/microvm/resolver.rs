@@ -1,0 +1,56 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Resource resolver for microVM chipset devices.
+
+use super::MicrovmPortb;
+use async_trait::async_trait;
+use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+use chipset_device_resources::ResolvedChipsetDevice;
+use chipset_resources::microvm::MicrovmPortbHandle;
+use serial_core::resources::ResolveSerialBackendParams;
+use thiserror::Error;
+use vm_resource::AsyncResolveResource;
+use vm_resource::ResolveError;
+use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+
+/// Resolver for the microVM portb console.
+pub struct MicrovmPortbResolver;
+
+declare_static_async_resolver! {
+    MicrovmPortbResolver,
+    (ChipsetDeviceHandleKind, MicrovmPortbHandle),
+}
+
+#[derive(Debug, Error)]
+pub enum ResolveMicrovmPortbError {
+    #[error("failed to resolve microVM portb backend")]
+    ResolveBackend(#[source] ResolveError),
+}
+
+#[async_trait]
+impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for MicrovmPortbResolver {
+    type Output = ResolvedChipsetDevice;
+    type Error = ResolveMicrovmPortbError;
+
+    async fn resolve(
+        &self,
+        resolver: &ResourceResolver,
+        resource: MicrovmPortbHandle,
+        input: ResolveChipsetDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let io = resolver
+            .resolve(
+                resource.io,
+                ResolveSerialBackendParams {
+                    driver: Box::new(input.task_driver_source.simple()),
+                    _async_trait_workaround: &(),
+                },
+            )
+            .await
+            .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
+        Ok(MicrovmPortb::new(io.0.into_io()).into())
+    }
+}
