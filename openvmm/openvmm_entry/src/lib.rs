@@ -3130,7 +3130,7 @@ async fn run_control_inner(
         processors: opt.processors,
         log_file: opt.log_file.clone(),
         crash_dump_path: opt.crash_dump_path.clone(),
-        microvm: microvm.into_controller(source_hypervisor, snapshot_requests),
+        microvm: microvm.into_controller(&opt, source_hypervisor, snapshot_requests),
         guest_power_actions: vm_controller::GuestPowerActions {
             shutdown: opt.guest_shutdown_action,
             reset: opt.guest_reset_action,
