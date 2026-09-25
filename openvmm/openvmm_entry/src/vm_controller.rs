@@ -496,6 +496,7 @@ impl VmController {
             vp_count: self.processors,
             page_size: crate::system_page_size(),
             architecture: crate::GUEST_ARCH.to_string(),
+            ..Default::default()
         };
 
         // Write snapshot directory.
