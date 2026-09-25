@@ -23,6 +23,7 @@ use openvmm_helpers::snapshot::SnapshotManifest;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// MicroVM state derived from the VM configuration before the VM worker is
 /// launched.
@@ -160,6 +161,13 @@ impl MicrovmLaunch {
             .context("failed to duplicate snapshot RAM handle for worker")?;
         let shared_memory = openvmm_helpers::shared_memory::file_to_shared_memory_fd(file)?;
         Ok(Some(shared_memory))
+    }
+
+    /// Returns the time allowed for post-restore guest repair, if required.
+    pub(crate) fn restore_gate_timeout(&self, opt: &Options) -> Option<Duration> {
+        self.restore
+            .gate_required
+            .then_some(Duration::from_millis(opt.microvm.restore_gate_timeout_ms))
     }
 
     /// Creates the channels that carry guest-requested snapshot boundaries from
