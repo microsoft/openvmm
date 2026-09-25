@@ -154,8 +154,10 @@ Key unsupported categories:
   such as the microVM NIC; ordinary virtio-net resources remain
   disabled.
   The transport stores an opaque typed device-private payload in addition to
-  common queue state. Devices with unsupported host-side session state
-  (`virtio-9p`, `virtiofs`) leave save/restore disabled.
+  common queue state. Devices with unsupported host-side session state, such
+  as `virtio-9p`, leave save/restore disabled. `virtiofs` enables typed
+  device-private state only for the constrained microVM HostFs profile;
+  ordinary, aggregate, and SectionFs resources remain disabled.
 - **Some VMBus devices** — `GuestCrashDevice`, `GuestEmulationDevice`,
   `VmbusSerialHost`, `Vmbfs` return `None` from
   `supports_save_restore()`.

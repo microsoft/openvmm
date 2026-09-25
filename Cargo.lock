@@ -10334,6 +10334,7 @@ dependencies = [
  "inspect",
  "lx",
  "lxutil",
+ "mesh",
  "ntapi",
  "pal",
  "pal_async",
