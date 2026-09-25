@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! MicroVM snapshot capture handling of the VM controller.
+//! MicroVM snapshot capture, guest exit, and teardown handling of the VM controller.
 
 use super::VmController;
+use super::VmControllerEvent;
 use crate::microvm::MicrovmResources;
 use anyhow::Context;
 use mesh::rpc::RpcSend;
@@ -48,12 +49,74 @@ pub(crate) struct MicrovmController {
     pub(crate) _private_scratch_dir: Option<tempfile::TempDir>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MicrovmTeardownStatus {
+    pub(crate) vm_worker_stopped: bool,
+    pub(crate) auxiliary_workers_stopped: bool,
+}
+
+impl MicrovmTeardownStatus {
+    pub(crate) fn complete(self) -> bool {
+        self.vm_worker_stopped && self.auxiliary_workers_stopped
+    }
+
+    /// Fails a run whose workers did not stop cleanly when `enforce` is set.
+    pub(crate) fn enforce(self, enforce: bool, result: anyhow::Result<i32>) -> anyhow::Result<i32> {
+        if enforce && !self.complete() {
+            let teardown_error = MicrovmTeardownError(self);
+            return match result {
+                Ok(_) => Err(teardown_error.into()),
+                Err(error) => Err(error.context(teardown_error)),
+            };
+        }
+        result
+    }
+}
+
+#[derive(Debug)]
+#[expect(dead_code, reason = "the microVM outcome report reads the status")]
+pub(crate) struct MicrovmTeardownError(pub(crate) MicrovmTeardownStatus);
+
+impl std::fmt::Display for MicrovmTeardownError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("one or more microVM workers failed to stop cleanly")
+    }
+}
+
+impl std::error::Error for MicrovmTeardownError {}
+
 pub(super) enum GuestSnapshotAction {
     Continue,
     Terminate { exit_code: i32 },
 }
 
+async fn guest_exit_event(
+    code: i32,
+    drain: Option<crate::microvm::output::MicrovmOutputDrain>,
+) -> VmControllerEvent {
+    if let Some(drain) = drain
+        && let Err(error) = drain.drain().await
+    {
+        tracing::error!(
+            error = error.as_ref() as &dyn std::error::Error,
+            "failed to drain microVM console output before exit"
+        );
+        return VmControllerEvent::ExitFailed {
+            error: format!("failed to drain microVM console output: {error:#}"),
+        };
+    }
+    VmControllerEvent::ExitRequested { code }
+}
+
 impl VmController {
+    pub(super) async fn request_exit(
+        &mut self,
+        code: i32,
+        events: &mesh::Sender<VmControllerEvent>,
+    ) {
+        events.send(guest_exit_event(code, self.microvm.resources.output_drain.take()).await);
+    }
+
     pub(super) async fn handle_guest_snapshot_request(
         &mut self,
         scratch_policy: chipset_resources::microvm::MicrovmSnapshotScratchPolicy,
@@ -458,5 +521,41 @@ impl VmController {
                 GuestSnapshotAction::Terminate { exit_code: 1 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::microvm::output::MicrovmOutputDrain;
+    use futures::executor::block_on;
+    use test_with_tracing::test;
+
+    #[test]
+    fn successful_drain_preserves_guest_exit_status() {
+        block_on(async {
+            for code in [0, 37] {
+                let (drain, mut requests) = MicrovmOutputDrain::new(None);
+                let (event, ()) = futures::join!(guest_exit_event(code, Some(drain)), async {
+                    requests.recv().await.unwrap().complete(Ok(()));
+                });
+                assert!(matches!(
+                    event,
+                    VmControllerEvent::ExitRequested { code: actual } if actual == code
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn failed_drain_requests_process_exit_not_worker_stopped() {
+        let (drain, requests) = MicrovmOutputDrain::new(None);
+        drop(requests);
+        let event = block_on(guest_exit_event(0, Some(drain)));
+        assert!(matches!(
+            event,
+            VmControllerEvent::ExitFailed { error }
+                if error.contains("failed to drain microVM console output")
+        ));
     }
 }

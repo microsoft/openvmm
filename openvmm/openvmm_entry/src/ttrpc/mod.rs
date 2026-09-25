@@ -1369,10 +1369,11 @@ impl VmService {
         };
 
         // Spawn the controller task.
-        let controller_task = self.driver.spawn(
-            "vm-controller",
-            controller.run(vm_controller_recv, event_send, notify_recv),
-        );
+        let controller_task = self.driver.spawn("vm-controller", async move {
+            let _ = controller
+                .run(vm_controller_recv, event_send, notify_recv)
+                .await;
+        });
 
         self.vm_controller = Some(vm_controller_send);
         self.vm_controller_events = Some(event_recv);
@@ -1491,6 +1492,9 @@ impl VmService {
                 // occur in ttrpc/grpc mode; log rather than exiting the server
                 // out from under its clients.
                 tracing::warn!(code, "unexpected exit request in server mode");
+            }
+            VmControllerEvent::ExitFailed { error } => {
+                tracing::error!(error = %error, "guest-requested exit failed in server mode");
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {

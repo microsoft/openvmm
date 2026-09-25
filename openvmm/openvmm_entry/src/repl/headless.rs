@@ -53,6 +53,7 @@ fn controller_exit(event: VmControllerEvent) -> anyhow::Result<Option<i32>> {
             Ok(None)
         }
         VmControllerEvent::ExitRequested { code } => Ok(Some(code)),
+        VmControllerEvent::ExitFailed { error } => Err(anyhow::anyhow!(error)),
     }
 }
 
@@ -76,6 +77,7 @@ pub(super) fn disable_raw_mode(enabled: bool) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::controller_exit;
     use crate::repl::ReplResources;
     use crate::repl::launch::ReplLaunch;
     use crate::repl::run_repl;
@@ -83,6 +85,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use std::pin::pin;
+    use test_with_tracing::test;
 
     #[async_test]
     async fn headless_repl_waits_for_controller_without_stdin(driver: DefaultDriver) {
@@ -109,5 +112,20 @@ mod tests {
         assert!(futures::poll!(repl.as_mut()).is_pending());
         events.send(VmControllerEvent::ExitRequested { code: 23 });
         assert_eq!(repl.await.unwrap(), 23);
+    }
+
+    #[test]
+    fn repl_propagates_exit_failures_and_preserves_requested_statuses() {
+        let error = controller_exit(VmControllerEvent::ExitFailed {
+            error: "console output drain timed out".to_owned(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("console output drain timed out"));
+        for code in [0, 37] {
+            assert_eq!(
+                controller_exit(VmControllerEvent::ExitRequested { code }).unwrap(),
+                Some(code)
+            );
+        }
     }
 }
