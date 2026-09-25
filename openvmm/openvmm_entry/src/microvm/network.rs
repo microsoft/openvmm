@@ -227,6 +227,7 @@ pub(crate) mod tests {
             false,
             None,
             None,
+            None,
             Vec::new(),
             1,
             1024,
