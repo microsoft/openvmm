@@ -55,6 +55,7 @@ async fn reconnects_after_client_close(driver: DefaultDriver) {
     drop(client);
     assert!(backend.write(b"lost connection").await.is_err());
     assert!(!backend.is_connected());
+    backend.disconnect_current().unwrap();
 
     let _replacement = connect_client(&mut backend, &path).await;
 }
