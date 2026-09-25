@@ -124,17 +124,16 @@ impl SimpleFlowNode for Node {
                 fs_err::create_dir(&test_log_dir)?;
                 env.insert("TEST_OUTPUT_PATH".into(), converted_log_dir);
 
-                if temp_dir.exists() {
-                    fs_err::remove_dir_all(&temp_dir)?;
-                };
-                fs_err::create_dir(&temp_dir)?;
-
-                if matches!(rt.platform().kind(), FlowPlatformKind::Windows) || windows_via_wsl2 {
-                    env.insert("TEMP".into(), converted_temp_dir.clone());
-                    env.insert("TMP".into(), converted_temp_dir.clone());
-                    env.insert("SystemTemp".into(), converted_temp_dir);
-                } else {
-                    env.insert("TMPDIR".into(), converted_temp_dir);
+                let temp_env_vars =
+                    temp_env_vars(rt.backend(), rt.platform().kind(), windows_via_wsl2);
+                if !temp_env_vars.is_empty() {
+                    if temp_dir.exists() {
+                        fs_err::remove_dir_all(&temp_dir)?;
+                    };
+                    fs_err::create_dir(&temp_dir)?;
+                    for name in temp_env_vars {
+                        env.insert((*name).into(), converted_temp_dir.clone());
+                    }
                 }
 
                 if let Some(disk_image_dir) = converted_disk_image_dir {
@@ -168,5 +167,52 @@ impl SimpleFlowNode for Node {
         });
 
         Ok(())
+    }
+}
+
+fn temp_env_vars(
+    backend: FlowBackend,
+    platform: FlowPlatformKind,
+    windows_via_wsl2: bool,
+) -> &'static [&'static str] {
+    // Native local runs must not inherit the checkout's potentially long path:
+    // temporary Unix socket names have a much smaller limit than file paths.
+    // CI still needs its scratch disk, and Windows-via-WSL needs Windows paths.
+    if matches!(backend, FlowBackend::Local) && !windows_via_wsl2 {
+        &[]
+    } else if matches!(platform, FlowPlatformKind::Windows) || windows_via_wsl2 {
+        &["TEMP", "TMP", "SystemTemp"]
+    } else {
+        &["TMPDIR"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn native_local_runs_preserve_caller_temp_directories() {
+        for platform in [FlowPlatformKind::Windows, FlowPlatformKind::Unix] {
+            assert!(temp_env_vars(FlowBackend::Local, platform, false).is_empty());
+        }
+    }
+
+    #[test]
+    fn ci_and_cross_windows_runs_keep_content_disk_temp_directories() {
+        let windows = &["TEMP", "TMP", "SystemTemp"];
+        assert_eq!(
+            temp_env_vars(FlowBackend::Ado, FlowPlatformKind::Windows, false),
+            windows
+        );
+        assert_eq!(
+            temp_env_vars(FlowBackend::Local, FlowPlatformKind::Unix, true),
+            windows
+        );
+        assert_eq!(
+            temp_env_vars(FlowBackend::Ado, FlowPlatformKind::Unix, false),
+            &["TMPDIR"]
+        );
     }
 }

@@ -134,6 +134,13 @@ To run a **specific test** (or set of tests), use `--filter` with a
 cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
 ```
 
+`--dir` selects the artifact and log directory. Native local runs preserve
+your existing temporary-directory settings instead of placing temporary
+sockets under a potentially long checkout path. Keep any custom temporary
+directory short enough for Unix socket names. CI and Windows-from-WSL2 runs
+still place temporary files on the test-content disk, preserving scratch-disk
+placement and Windows filesystem access.
+
 ### Targeting a Platform
 
 By default, `vmm-tests-run` builds for the current host. Use `--target` to
