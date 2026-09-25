@@ -16,6 +16,7 @@ vm_resource.workspace = true
 inspect.workspace = true
 
 async-trait.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true

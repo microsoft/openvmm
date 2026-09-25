@@ -1,15 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Snapshot quiesce transactions: bounded quiesce of every unit for save, and
-//! restart after a failed save.
+//! Snapshot quiesce transactions: gating host input around the snapshot
+//! vCPU boundary, bounded quiesce of every unit for save, and restart after a
+//! failed save.
 
 use super::State;
 use super::StateRequest;
 use super::StateUnits;
 use super::state_change;
+use anyhow::Context as _;
 use futures::future::join_all;
 use mesh::CancelContext;
+use mesh::rpc::FailableRpc;
 use std::time::Duration;
 use std::time::Instant;
 use thiserror::Error;
@@ -32,6 +35,58 @@ impl QuiesceForSaveError {
 }
 
 impl StateUnits {
+    /// Stops host-input producers before establishing a snapshot vCPU boundary.
+    pub async fn quiesce_input_for_save(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.run_input_op("quiesce_input", timeout, StateRequest::QuiesceInput)
+            .await
+    }
+
+    /// Resumes host-input producers before releasing a failed snapshot boundary.
+    pub async fn resume_input_after_save(&self, timeout: Duration) -> anyhow::Result<()> {
+        self.run_input_op("resume_input", timeout, StateRequest::ResumeInput)
+            .await
+    }
+
+    async fn run_input_op(
+        &self,
+        operation: &'static str,
+        timeout: Duration,
+        request: impl Copy + FnOnce(FailableRpc<(), ()>) -> StateRequest,
+    ) -> anyhow::Result<()> {
+        let operations = {
+            let inner = self.inner.lock();
+            inner
+                .units
+                .values()
+                .map(|unit| {
+                    let name = unit.name.clone();
+                    let operation = state_change(name.clone(), unit, request, Some(()));
+                    async move { (name, operation.await) }
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut context = CancelContext::new().with_timeout(timeout);
+        let results = context
+            .until_cancelled(join_all(operations))
+            .await
+            .with_context(|| format!("{operation} timed out"))?;
+        let mut failures = Vec::new();
+        for (name, result) in results {
+            match result {
+                Ok(Some(Ok(()))) => {}
+                Ok(Some(Err(error))) => failures.push(format!("{name}: {error}")),
+                Ok(None) => failures.push(format!("{name}: request was not sent")),
+                Err(error) => failures.push(format!("{name}: {error}")),
+            }
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "{operation} failed: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+
     /// Stops all units in reverse dependency order within `timeout`.
     ///
     /// A timeout or communication failure after a stop request is sent leaves
