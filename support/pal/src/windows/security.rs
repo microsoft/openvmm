@@ -3,6 +3,7 @@
 
 //! Windows security API wrappers.
 
+pub mod user_sid;
 use std::ffi::c_void;
 use std::fmt::Debug;
 use std::io::ErrorKind;
