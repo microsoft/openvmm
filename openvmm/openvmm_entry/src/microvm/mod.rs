@@ -19,6 +19,7 @@ pub(crate) use restore::MicrovmRestore;
 pub(crate) use restore::prepare_restore;
 pub(crate) use restore::validate_restore_contract;
 
+use crate::storage_builder::microvm::MicrovmSandboxBlockSource;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use std::path::PathBuf;
@@ -29,6 +30,8 @@ use std::path::PathBuf;
 pub(crate) struct MicrovmResources {
     /// Guest-requested snapshot boundaries from the snapshot-request port.
     pub(crate) snapshot_requests: Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
+    /// Snapshot sources of the fixed-role sandbox blocks, in role order.
+    pub(crate) sandbox_block_sources: Vec<MicrovmSandboxBlockSource>,
     /// Snapshot identity of the boot virtio-console endpoint.
     pub(crate) console_attachment: Option<SnapshotAttachment>,
     /// Removes the boot console Unix socket on teardown.
