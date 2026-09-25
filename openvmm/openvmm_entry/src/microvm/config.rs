@@ -27,6 +27,7 @@ use super::restore::fresh_microvm_restore_packet;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
+use crate::cli_args;
 use crate::cli_args::SerialConfigCli;
 use crate::cli_args::VirtioBusCli;
 use crate::cli_args::microvm::MachineProfileCli;
@@ -473,6 +474,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     opt.processors,
                     self.console.is_some(),
                     self.control_console.is_some(),
+                    opt.microvm.microvm_workload_identity,
                 )?,
             )
         };
@@ -783,6 +785,7 @@ fn build_effective_microvm_command_line(
     processor_count: u32,
     has_console: bool,
     has_control_console: bool,
+    workload_identity: Option<cli_args::microvm::MicrovmWorkloadIdentityCli>,
 ) -> anyhow::Result<String> {
     let mut cmdline = if has_control_console {
         build_microvm_control_command_line(user_args, has_console)
@@ -790,6 +793,13 @@ fn build_effective_microvm_command_line(
         build_microvm_command_line(user_args, has_console)
     }?;
     openvmm_defs::microvm::append_microvm_processor_limit(&mut cmdline, processor_count)?;
+    if let Some(identity) = workload_identity {
+        openvmm_defs::microvm::append_microvm_workload_identity(
+            &mut cmdline,
+            identity.uid,
+            identity.gid,
+        )?;
+    }
     Ok(cmdline)
 }
 
@@ -807,7 +817,29 @@ mod tests {
             "nvx_control_tty=hvc9".to_owned(),
             "virtio-mmio.device=0x1000@0xc0000000:1".to_owned(),
         ];
-        assert!(build_effective_microvm_command_line(&user_args, 1, true, false).is_ok());
-        assert!(build_effective_microvm_command_line(&user_args, 1, true, true).is_err());
+        assert!(build_effective_microvm_command_line(&user_args, 1, true, false, None).is_ok());
+        assert!(build_effective_microvm_command_line(&user_args, 1, true, true, None).is_err());
+    }
+
+    #[test]
+    fn workload_identity_is_host_owned_and_fixed() {
+        let identity = cli_args::microvm::MicrovmWorkloadIdentityCli {
+            uid: 65_534,
+            gid: 65_534,
+        };
+        let command_line =
+            build_effective_microvm_command_line(&[], 1, false, false, Some(identity)).unwrap();
+        assert!(command_line.contains("nvx_workload_uid=65534"));
+        assert!(command_line.contains("nvx_workload_gid=65534"));
+        assert!(
+            build_effective_microvm_command_line(
+                &["nvx_workload_uid=1".to_owned()],
+                1,
+                false,
+                false,
+                Some(identity),
+            )
+            .is_err()
+        );
     }
 }
