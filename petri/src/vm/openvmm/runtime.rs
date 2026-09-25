@@ -813,6 +813,10 @@ impl PetriVmInner {
                     tracing::warn!("Reset not supported, could not test save + restore.");
                     break;
                 }
+                Err(RpcError::Call(PulseSaveRestoreError::UnsupportedMachineProfile)) => {
+                    tracing::warn!("Save + restore is unavailable for this machine profile.");
+                    break;
+                }
                 Err(RpcError::Call(PulseSaveRestoreError::Other(err))) => {
                     return Err(anyhow::Error::from(err))
                         .context(format!("Save + restore {i} failed."));
