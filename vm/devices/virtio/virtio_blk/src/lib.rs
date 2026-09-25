@@ -168,60 +168,66 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
         stop: &mut StopTask<'_>,
         state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            // Set once the queue can no longer produce work, because the guest
-            // violated the queue protocol. Fetching stops, but in-flight IOs
-            // keep draining so their descriptors are still completed; the
-            // worker exits once they are done.
-            let mut queue_done = false;
+        // Set once the queue can no longer produce work, because the guest
+        // violated the queue protocol. Fetching stops, but in-flight IOs
+        // keep draining so their descriptors are still completed; the
+        // worker exits once they are done.
+        let mut queue_done = false;
 
-            while !(queue_done && self.ios.is_empty()) {
-                enum Event {
-                    NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    Completed(IoCompletion),
+        while !(queue_done && self.ios.is_empty()) {
+            enum Event {
+                NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
+                Completed(IoCompletion),
+            }
+
+            let event = poll_fn(|cx| {
+                // Check cancellation first so a continuously ready queue
+                // cannot starve a save/restore or teardown stop request.
+                if Pin::new(&mut *stop).poll(cx).is_ready() {
+                    return Poll::Ready(None);
                 }
 
-                let event = poll_fn(|cx| {
-                    // Poll for completed IOs first to free up slots.
-                    if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
-                        return Poll::Ready(Event::Completed(completion));
+                // Poll for completed IOs first to free up slots.
+                if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
+                    return Poll::Ready(Some(Event::Completed(completion)));
+                }
+                // Accept new work if under the depth limit.
+                if !queue_done && self.ios.len() < MAX_IO_DEPTH {
+                    if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
+                        let item = item.expect("virtio queue stream never ends");
+                        return Poll::Ready(Some(Event::NewWork(item)));
                     }
-                    // Accept new work if under the depth limit.
-                    if !queue_done && self.ios.len() < MAX_IO_DEPTH {
-                        if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
-                            let item = item.expect("virtio queue stream never ends");
-                            return Poll::Ready(Event::NewWork(item));
-                        }
-                    }
-                    Poll::Pending
-                })
-                .await;
+                }
+                Poll::Pending
+            })
+            .await
+            .ok_or(task_control::Cancelled)?;
 
-                match event {
-                    Event::NewWork(Ok(work)) => {
-                        let disk = self.disk.clone();
-                        let mem = state.memory.clone();
-                        let read_only = self.read_only;
-                        self.ios.push(Box::pin(async move {
-                            process_request(&disk, &mem, read_only, work).await
-                        }));
-                    }
-                    Event::NewWork(Err(err)) => {
-                        // The queue is retired: the rejected chain is never
-                        // consumed, so retrying would fail identically forever.
-                        tracelimit::error_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            "error reading from virtio queue, stopping worker"
-                        );
-                        queue_done = true;
-                    }
-                    Event::Completed(completion) => {
-                        self.finish_io(&mut state.queue, completion);
-                    }
+            match event {
+                Event::NewWork(Ok(work)) => {
+                    let disk = self.disk.clone();
+                    let mem = state.memory.clone();
+                    let read_only = self.read_only;
+                    self.ios.push(Box::pin(async move {
+                        process_request(&disk, &mem, read_only, work).await
+                    }));
+                }
+                Event::NewWork(Err(err)) => {
+                    // The queue is retired: the rejected chain is never
+                    // consumed, so retrying would fail identically forever.
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "error reading from virtio queue, stopping worker"
+                    );
+                    queue_done = true;
+                }
+                Event::Completed(completion) => {
+                    self.finish_io(&mut state.queue, completion);
                 }
             }
-        })
-        .await
+        }
+
+        Ok(())
     }
 }
 

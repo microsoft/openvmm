@@ -26,6 +26,11 @@ use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Waker;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
@@ -218,7 +223,7 @@ impl TestHarness {
     ///   desc 2 (writable): 1-byte status
     ///
     /// Returns the head descriptor index.
-    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) {
+    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let data_gpa = self.alloc_data(data.len() as u32);
         let status_gpa = self.alloc_data(1);
@@ -281,6 +286,7 @@ impl TestHarness {
             &mut self.avail_idx,
         );
         self.queue_event.signal();
+        status_gpa
     }
 
     /// Build a flush request descriptor chain.
@@ -531,6 +537,107 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
     disklayer_ram::ram_disk(size, read_only).unwrap()
 }
 
+#[derive(Inspect)]
+struct BlockingWriteDisk {
+    #[inspect(skip)]
+    storage: Mutex<Vec<u8>>,
+    #[inspect(skip)]
+    write_calls: Arc<AtomicUsize>,
+    #[inspect(skip)]
+    write_started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    #[inspect(skip)]
+    release_write: Mutex<Option<async_channel::Receiver<()>>>,
+}
+
+impl DiskIo for BlockingWriteDisk {
+    fn disk_type(&self) -> &str {
+        "blocking-write-test"
+    }
+
+    fn sector_count(&self) -> u64 {
+        self.storage.lock().len() as u64 / 512
+    }
+
+    fn sector_size(&self) -> u32 {
+        512
+    }
+
+    fn disk_id(&self) -> Option<[u8; 16]> {
+        None
+    }
+
+    fn physical_sector_size(&self) -> u32 {
+        512
+    }
+
+    fn is_fua_respected(&self) -> bool {
+        false
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        let offset = sector as usize * 512;
+        let end = offset + buffers.len();
+        let storage = self.storage.lock();
+        if end > storage.len() {
+            return Err(DiskError::IllegalBlock);
+        }
+        buffers.writer().write(&storage[offset..end])?;
+        Ok(())
+    }
+
+    async fn write_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        sector: u64,
+        _fua: bool,
+    ) -> Result<(), DiskError> {
+        self.write_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(started) = self.write_started.lock().take() {
+            started.send(()).unwrap();
+        }
+        let release = self
+            .release_write
+            .lock()
+            .take()
+            .expect("blocking write release receiver is present");
+        release.recv().await.unwrap();
+
+        let offset = sector as usize * 512;
+        let end = offset + buffers.len();
+        let mut storage = self.storage.lock();
+        if end > storage.len() {
+            return Err(DiskError::IllegalBlock);
+        }
+        buffers.reader().read(&mut storage[offset..end])?;
+        Ok(())
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+        disk_backend::UnmapBehavior::Ignored
+    }
+}
+
 /// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
 async fn with_timeout<F: Future>(
     driver: &DefaultDriver,
@@ -543,6 +650,53 @@ async fn with_timeout<F: Future>(
         Either::Left((output, _)) => output,
         Either::Right(_) => panic!("{msg}"),
     }
+}
+
+#[async_test]
+async fn stop_drains_one_accepted_write_exactly_once(driver: DefaultDriver) {
+    let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-drain");
+    let write_calls = Arc::new(AtomicUsize::new(0));
+    let (write_started, write_started_recv) = std::sync::mpsc::channel();
+    let (release_write, release_write_recv) = async_channel::bounded(1);
+    let disk = Disk::new(BlockingWriteDisk {
+        storage: Mutex::new(vec![0_u8; 64 * 1024]),
+        write_calls: write_calls.clone(),
+        write_started: Mutex::new(Some(write_started)),
+        release_write: Mutex::new(Some(release_write_recv)),
+    })
+    .unwrap();
+    let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false);
+    harness.enable().await;
+
+    let status_gpa = harness.post_write_request(0, 0, &[0xa5; 512]);
+    write_started_recv
+        .recv_timeout(Duration::from_secs(5))
+        .expect("virtio-blk worker did not accept the write");
+
+    let stopped = {
+        let mut stop = pin!(harness.device.stop_queue(0));
+        assert!(
+            stop.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending(),
+            "stop completed before the accepted write was released"
+        );
+        release_write.send(()).await.unwrap();
+        with_timeout(
+            &driver,
+            Duration::from_secs(5),
+            "virtio-blk stop did not drain its accepted write",
+            stop,
+        )
+        .await
+    };
+    assert!(stopped.is_some());
+
+    let (used_id, used_len) = harness.wait_for_used().await;
+    assert_eq!((used_id, used_len), (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+    assert_eq!(write_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.used_idx, 1);
 }
 
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
