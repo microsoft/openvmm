@@ -185,7 +185,7 @@ target, and all KVM and WHP restores, instantiate the full VP capacity.
 Platform snapshots support the same opt-in. Their command line may carry one
 `maxcpus=` token, which must be the canonical form of the recorded
 boot-online count, so each clone of one platform capture can bring its own
-prefix online.
+prefix online, as each clone can expand its RAM with `--restore-memory`.
 Versioned MSHV CPU contracts do not expose `IA32_TSC_ADJUST` because snapshot
 state cannot preserve that register independently of `IA32_TSC`; this prevents
 host-side TSC correction from appearing as per-VP firmware adjustment skew.
