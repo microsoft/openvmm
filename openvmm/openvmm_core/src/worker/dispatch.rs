@@ -3834,6 +3834,18 @@ impl LoadedVm {
                 (a, b, c).race().await
             };
 
+            let event = match event {
+                Event::VmRpc(Ok(message)) => match self.filter_vm_rpc(message) {
+                    Some(message) => Event::VmRpc(Ok(message)),
+                    None => continue,
+                },
+                Event::WorkerRpc(Ok(message)) => match self.filter_worker_rpc(message) {
+                    Some(message) => Event::WorkerRpc(Ok(message)),
+                    None => continue,
+                },
+                event => event,
+            };
+
             match event {
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {

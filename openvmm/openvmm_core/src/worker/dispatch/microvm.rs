@@ -4,11 +4,17 @@
 //! Worker construction and lifecycle support for the microVM profile.
 
 use super::InitializedVm;
+use super::LoadedVm;
 use super::LoadedVmInner;
 use super::Manifest;
+use super::RestartState;
 use crate::partition::HvlitePartition;
 use anyhow::Context;
+use mesh::error::RemoteError;
+use mesh_worker::WorkerRpc;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
 use vm_loader::InitialLoad;
 
@@ -75,6 +81,44 @@ pub(super) fn load_linux_x86_mptable(
         &openvmm_defs::microvm::MICROVM_LEVEL_TRIGGERED_IRQS,
         &[],
     )?)
+}
+
+impl LoadedVm {
+    /// Applies the microVM restrictions to a management RPC. Rejected RPCs are
+    /// completed here; the others are returned for dispatch.
+    pub(super) fn filter_vm_rpc(&self, message: VmRpc) -> Option<VmRpc> {
+        if self.inner.machine_profile != MachineProfile::Microvm {
+            return Some(message);
+        }
+        match message {
+            VmRpc::Save(rpc) => {
+                rpc.handle_failable_sync(|()| anyhow::bail!("save is unavailable for microVM"));
+                None
+            }
+            VmRpc::PulseSaveRestore(rpc) => {
+                rpc.complete(Err(PulseSaveRestoreError::UnsupportedMachineProfile));
+                None
+            }
+            message => Some(message),
+        }
+    }
+
+    /// Rejects worker RPCs that the microVM profile does not support. Rejected
+    /// RPCs are completed here; the others are returned for dispatch.
+    pub(super) fn filter_worker_rpc(
+        &self,
+        message: WorkerRpc<RestartState>,
+    ) -> Option<WorkerRpc<RestartState>> {
+        match message {
+            WorkerRpc::Restart(rpc) if self.inner.machine_profile == MachineProfile::Microvm => {
+                rpc.complete(Err(RemoteError::new(anyhow::anyhow!(
+                    "worker restart is unavailable for microVM"
+                ))));
+                None
+            }
+            message => Some(message),
+        }
+    }
 }
 
 pub(super) fn level_triggered_irqs(machine_profile: MachineProfile) -> &'static [u32] {
