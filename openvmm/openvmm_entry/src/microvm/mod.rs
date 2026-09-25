@@ -13,11 +13,26 @@ pub(crate) mod report;
 mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;
+#[cfg(test)]
+pub(crate) use console::MICROVM_CONSOLE_ATTACHMENT_KIND;
+#[cfg(test)]
+pub(crate) use console::MICROVM_CONSOLE_STABLE_ID;
+pub(crate) use console::MICROVM_CONTROL_CONSOLE_ATTACHMENT_KIND;
+pub(crate) use console::MICROVM_CONTROL_CONSOLE_STABLE_ID;
 pub(crate) use console::MicrovmConsoleSocketCleanup;
+pub(crate) use console::microvm_console_attachment_from_cli;
+pub(crate) use console::microvm_console_attachment_from_snapshot;
+pub(crate) use console::microvm_console_socket_cleanup;
+pub(crate) use console::validate_microvm_console_attachment_namespace;
+pub(crate) use filesystem::microvm_filesystem_attachment;
+pub(crate) use filesystem::microvm_filesystem_from_snapshot;
+pub(crate) use filesystem::microvm_filesystem_slot_from_snapshot;
 pub(crate) use filesystem::validate_microvm_filesystem_private_storage;
 pub(crate) use launch::MicrovmLaunch;
 pub(crate) use restore::ExpectedRestoreContract;
 pub(crate) use restore::MicrovmRestore;
+pub(crate) use restore::fresh_microvm_generation_id;
+pub(crate) use restore::fresh_microvm_restore_packet;
 pub(crate) use restore::prepare_restore;
 pub(crate) use restore::validate_restore_contract;
 
