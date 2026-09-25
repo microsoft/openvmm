@@ -9,6 +9,7 @@
 
 use super::DeviceTask;
 use crate::queue::QueueState;
+use mesh::rpc::FailableRpc;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 
@@ -50,5 +51,17 @@ impl DeviceTask {
                 .collect(),
             device_state: self.device.save_device(),
         }
+    }
+
+    /// Handles `DeviceCommand::QuiesceInput`.
+    pub(super) async fn quiesce_input(&mut self, rpc: FailableRpc<(), ()>) {
+        rpc.handle_failable(async |()| self.device.quiesce_input().await)
+            .await;
+    }
+
+    /// Handles `DeviceCommand::ResumeInput`.
+    pub(super) async fn resume_input(&mut self, rpc: FailableRpc<(), ()>) {
+        rpc.handle_failable(async |()| self.device.resume_input().await)
+            .await;
     }
 }
