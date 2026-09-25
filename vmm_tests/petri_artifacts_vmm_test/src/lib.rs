@@ -206,6 +206,22 @@ pub mod artifacts {
         }
     }
 
+    /// SNP Linux-direct IGVM artifacts.
+    pub mod snp_igvm {
+        use petri_artifacts_common::tags::IsLoadable;
+        use petri_artifacts_common::tags::MachineArch;
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// SNP Linux-direct IGVM for x86_64.
+            SNP_LINUX_DIRECT_IGVM_X64,
+        }
+
+        impl IsLoadable for SNP_LINUX_DIRECT_IGVM_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+    }
+
     /// OpenHCL IGVM artifacts
     pub mod openhcl_igvm {
         use petri_artifacts_common::tags::IsLoadable;

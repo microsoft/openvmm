@@ -204,6 +204,8 @@ pub enum TestRequirement {
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
     Vendor(Vendor),
+    /// Hypervisor backend that OpenVMM must select on the host.
+    OpenVmmHypervisor(OpenVmmHypervisor),
     /// Isolation requirement.
     Isolation(IsolationType),
     /// Requires a named capability advertised by the execution environment or
@@ -254,6 +256,9 @@ impl TestRequirement {
         match self {
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
+            TestRequirement::OpenVmmHypervisor(hypervisor) => {
+                context.openvmm_hypervisor == Some(*hypervisor)
+            }
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
@@ -378,5 +383,15 @@ mod tests {
         assert!(!requirement(VmmType::OpenVmm).is_satisfied(&mshv));
         assert!(requirement(VmmType::HyperV).is_satisfied(&mshv));
         assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+    }
+
+    #[test]
+    fn openvmm_hypervisor_requirement_matches_the_selected_backend() {
+        let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv);
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        let mut without_hypervisor = host_context(OpenVmmHypervisor::Mshv);
+        without_hypervisor.openvmm_hypervisor = None;
+        assert!(!requirement.is_satisfied(&without_hypervisor));
     }
 }

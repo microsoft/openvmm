@@ -136,6 +136,29 @@ impl PetriVmConfigOpenVmm {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
         }
 
+        if matches!(firmware, Firmware::SnpLinuxDirect { .. }) {
+            anyhow::ensure!(
+                arch == MachineArch::X86_64
+                    && proc_topology.vp_count == 1
+                    && proc_topology.vps_per_socket == Some(1)
+                    && memory.startup_bytes == 160 * SIZE_1_MB
+                    && memory.numa_mem_sizes.is_none(),
+                "SNP Linux-direct IGVM requires x86_64, 1 VP, 1 VP per socket, and one 160 MiB memory node"
+            );
+            anyhow::ensure!(
+                properties.no_vmbus
+                    && !properties.no_hv
+                    && properties.enable_serial
+                    && properties.use_virtio_vsock
+                    && tpm_config.is_none()
+                    && !ipmi_enabled
+                    && vmbus_storage_controllers.is_empty()
+                    && pcie_nvme_drives.is_empty()
+                    && pcie_virtio_blk_drives.is_empty(),
+                "SNP Linux-direct IGVM requires virtio-vsock with no VMBus, attached disks, or TPM"
+            );
+        }
+
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
 
         let PetriVmResources {
@@ -172,6 +195,9 @@ impl PetriVmConfigOpenVmm {
             match firmware {
                 Firmware::LinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
+                }
+                Firmware::SnpLinuxDirect { .. } => {
+                    vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
                 }
                 Firmware::OpenhclLinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HclHost
@@ -675,6 +701,7 @@ impl PetriVmConfigOpenVmm {
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
+                    Some(IsolationType::Snp) => Some(openvmm_defs::config::IsolationType::Snp),
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
@@ -820,7 +847,9 @@ impl PetriVmConfigSetupCore<'_> {
         let mut serial_tasks = Vec::new();
 
         let serial0_log_file = logger.log_file(match self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => "linux",
+            Firmware::LinuxDirect { .. }
+            | Firmware::SnpLinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. } => "linux",
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => "pcat",
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
         })?;
@@ -849,7 +878,11 @@ impl PetriVmConfigSetupCore<'_> {
             None
         };
 
-        if self.firmware.is_linux_direct() && self.pipette_rdinit_param.is_none() {
+        if matches!(
+            self.firmware,
+            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. }
+        ) && self.pipette_rdinit_param.is_none()
+        {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
             // agent so we can send shell commands to launch pipette.
             let (serial1_host, serial1) = self.create_serial_stream()?;
@@ -898,6 +931,14 @@ impl PetriVmConfigSetupCore<'_> {
         };
 
         Ok(match (self.arch, &self.firmware) {
+            (MachineArch::X86_64, Firmware::SnpLinuxDirect { igvm_path }) => LoadMode::Igvm {
+                file: File::open(igvm_path.clone())
+                    .context("failed to open SNP Linux-direct IGVM")?
+                    .into(),
+                cmdline: String::new(),
+                vtl2_base_address: Vtl2BaseAddressType::File,
+                com_serial: None,
+            },
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
                     MachineArch::X86_64 => "console=ttyS0",
@@ -1260,6 +1301,7 @@ impl PetriVmConfigSetupCore<'_> {
                 ))
             }
             Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::SnpLinuxDirect { .. }
             | Firmware::LinuxDirect { .. }
             | Firmware::Uefi { .. }
             | Firmware::OpenhclUefi { .. } => None,

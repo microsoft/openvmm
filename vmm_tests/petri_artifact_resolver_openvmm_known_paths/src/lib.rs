@@ -74,6 +74,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
+            _ if id == snp_igvm::SNP_LINUX_DIRECT_IGVM_X64 => snp_linux_direct_igvm_path(),
 
             _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
             _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
@@ -235,6 +236,7 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
+        _ if id == snp_igvm::SNP_LINUX_DIRECT_IGVM_X64 => Some("x64/snp-linux-direct.bin"),
         _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
         _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
         _ if id == loadable::UEFI_FIRMWARE_X64 => {
@@ -642,6 +644,18 @@ fn linux_direct_x64_test_bzimage_path() -> anyhow::Result<PathBuf> {
         resolve_bundle_name(loadable::LINUX_DIRECT_TEST_BZIMAGE_X64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test bzImage",
+        },
+    )
+}
+
+fn snp_linux_direct_igvm_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
+    get_path(
+        "target/vmm_tests",
+        resolve_bundle_name(SNP_LINUX_DIRECT_IGVM_X64.erase()).unwrap(),
+        MissingCommand::Custom {
+            description: "SNP Linux-direct IGVM",
+            cmd: "cargo xflowey vmm-tests-run --filter 'test(openvmm_snp_linux_direct_x64_boot)'",
         },
     )
 }

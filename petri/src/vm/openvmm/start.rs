@@ -69,6 +69,7 @@ impl PetriVmConfigOpenVmm {
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
         let supports_save_restore = !resources.properties.is_openhcl
+            && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci

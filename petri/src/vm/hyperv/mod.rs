@@ -178,6 +178,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        anyhow::ensure!(
+            !matches!(config.firmware, Firmware::SnpLinuxDirect { .. }),
+            "SNP Linux-direct IGVM is unsupported by the Hyper-V backend"
+        );
         let PetriVmResources {
             driver,
             log_source,
