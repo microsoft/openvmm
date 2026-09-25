@@ -13,20 +13,29 @@ disklayer_vhdx.workspace = true
 get_resources.workspace = true
 hypervisor_resources.workspace = true
 openvmm_defs.workspace = true
+pal.workspace = true
 vm_resource.workspace = true
 
 mesh.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["dir", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 disk_vhdmp.workspace = true
 sparse_mmap.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = ["Win32_Storage_FileSystem"]
 
 [dev-dependencies]
 tempfile.workspace = true

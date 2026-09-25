@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Snapshot format identifiers and manifest format validation: format magic
-//! and supported versions, saved-state schema, and size limits.
+//! and supported versions, saved-state schema, artifact names, and size limits.
 
 use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
@@ -17,6 +17,9 @@ pub const SAVED_STATE_SCHEMA_VERSION: u32 = 1;
 /// Protobuf root type stored in `state.bin`.
 pub const SAVED_STATE_ROOT_TYPE: &str = "openvmm.SavedState";
 
+pub(super) const MANIFEST_FILE_NAME: &str = "manifest.bin";
+pub(super) const STATE_FILE_NAME: &str = "state.bin";
+pub(super) const MEMORY_FILE_NAME: &str = "memory.bin";
 pub(super) const MAX_MANIFEST_SIZE_BYTES: u64 = 1024 * 1024;
 pub(super) const MAX_SAVED_STATE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const SHA256_SIZE: usize = 32;
