@@ -35,6 +35,10 @@ pub enum Error {
     Efi(#[source] guestmem::GuestMemoryError),
     #[error("failed to finalize SNP VMSA")]
     SnpVmsa(#[source] anyhow::Error),
+    #[error("Linux kernel command line contains an embedded NUL")]
+    CommandLineNul(#[source] std::ffi::NulError),
+    #[error("MP-table Linux direct boot does not support isolation")]
+    MpTableIsolation,
 }
 
 struct Aarch64EfiInfo {
@@ -191,7 +195,7 @@ pub fn load_linux_x86(
         size: initrd_size,
     });
 
-    let cmdline = CString::new(cfg.cmdline).unwrap();
+    let cmdline = CString::new(cfg.cmdline).map_err(Error::CommandLineNul)?;
     let snp = match cfg.isolation {
         KernelIsolationConfig::None => None,
         KernelIsolationConfig::Snp(snp) => Some(snp),

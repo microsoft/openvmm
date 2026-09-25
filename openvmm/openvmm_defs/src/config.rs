@@ -125,6 +125,8 @@ pub enum LinuxDirectBootMode {
     /// an EFI system table so the kernel enters its ACPI code path. On x86,
     /// ACPI tables are always provided via the zero page.
     Acpi,
+    /// Intel MP 1.4 tables for ACPI-free x86-64 microVM discovery.
+    MpTable,
 }
 
 /// Isolation-specific settings for Linux direct boot.
