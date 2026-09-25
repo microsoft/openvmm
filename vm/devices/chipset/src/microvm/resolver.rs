@@ -65,6 +65,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for Micro
             resource.generation_id,
             resource.restore_entropy,
         )
+        .with_output_drain(resource.output_drain)
         .into())
     }
 }

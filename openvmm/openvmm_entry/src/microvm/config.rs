@@ -19,6 +19,9 @@ use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_network_endpoint;
+use super::output::MicrovmOutputDrain;
+use super::output::OutputCompletion;
+use super::output::spawn_output;
 use super::restore::fresh_microvm_generation_id;
 use super::restore::fresh_microvm_restore_packet;
 use crate::ConsoleState;
@@ -35,8 +38,6 @@ use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use futures::AsyncReadExt;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
 use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
@@ -48,7 +49,6 @@ use pal_async::DefaultDriver;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
 use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
 use virtio_resources::console::attachment::VirtioConsoleReconnectPolicy;
@@ -73,10 +73,10 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     filesystem: Option<EffectiveMicrovmFilesystem>,
     gateway_dns: bool,
     console: Option<ConsoleEndpoint>,
-    portb: Option<Resource<SerialBackendHandle>>,
     control_console: Option<ConsoleEndpoint>,
     control_broker_config: Option<VirtioControlConsoleBrokerConfig>,
     control_console_backend: Option<Resource<SerialBackendHandle>>,
+    portb: Option<(Resource<SerialBackendHandle>, OutputCompletion)>,
     resources: MicrovmResources,
 }
 
@@ -310,13 +310,16 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         ),
                     )?)
                 }
-                SerialConfigCli::Console => Some(setup_host_console(
-                    "virtio-console",
-                    SerialConfigCli::Console,
-                    "hvc1",
-                    console_state,
-                    serial_driver,
-                )?),
+                SerialConfigCli::Console => {
+                    let (backend, _) = setup_host_console(
+                        "virtio-console",
+                        SerialConfigCli::Console,
+                        "hvc1",
+                        console_state,
+                        serial_driver,
+                    )?;
+                    Some(backend)
+                }
                 SerialConfigCli::None => Some(DisconnectedSerialBackendHandle.into_resource()),
                 _ => unreachable!("microVM console backend was validated as an attachment"),
             }
@@ -384,10 +387,12 @@ impl<'a> MicrovmConfigBuilder<'a> {
         &mut self,
         chipset_devices: &mut Vec<ChipsetDeviceHandle>,
     ) -> anyhow::Result<()> {
-        let Some(io) = self.portb.take() else {
+        let Some((io, output_completion)) = self.portb.take() else {
             return Ok(());
         };
         let opt = self.opt;
+        let (drain, output_drain) = MicrovmOutputDrain::new(Some(output_completion));
+        self.resources.output_drain = Some(drain);
         let (generation_id, restore_entropy) =
             if opt.microvm.restore_entropy || self.restore.memory_target_requested {
                 fresh_microvm_restore_packet(
@@ -404,6 +409,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 io,
                 generation_id,
                 restore_entropy,
+                output_drain: Some(output_drain),
             }
             .into_resource(),
         });
@@ -741,14 +747,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
 }
 
 /// Connects a portb or boot virtio-console endpoint to the host console or
-/// stderr, returning its backend.
+/// stderr, returning its backend and output-relay completion.
 fn setup_host_console(
     name: &str,
     backend: SerialConfigCli,
     device: &'static str,
     console_state: &RefCell<Option<ConsoleState<'static>>>,
     serial_driver: &DefaultDriver,
-) -> anyhow::Result<Resource<SerialBackendHandle>> {
+) -> anyhow::Result<(Resource<SerialBackendHandle>, OutputCompletion)> {
     Ok(match backend {
         SerialConfigCli::Console => {
             if let Some(console_state) = console_state.borrow().as_ref() {
@@ -760,31 +766,16 @@ fn setup_host_console(
                 device,
                 input: Box::new(serial_write),
             });
-            spawn_output(name, serial_read, term::raw_stdout())?;
-            config
+            let completed = spawn_output(name, serial_read, term::raw_stdout())?;
+            (config, completed)
         }
         SerialConfigCli::Stderr => {
             let (config, serial) = serial_io::anonymous_serial_pair(serial_driver)?;
-            spawn_output(name, serial, term::raw_stderr())?;
-            config
+            let completed = spawn_output(name, serial, term::raw_stderr())?;
+            (config, completed)
         }
         _ => unreachable!("microVM host consoles use the console or stderr"),
     })
-}
-
-/// Relays `input` to `output` on a dedicated thread.
-fn spawn_output(
-    name: &str,
-    input: impl futures::AsyncRead + Send + Unpin + 'static,
-    output: impl std::io::Write + Send + 'static,
-) -> anyhow::Result<()> {
-    thread::Builder::new()
-        .name(name.to_owned())
-        .spawn(move || {
-            let _ = block_on(futures::io::copy(input, &mut AllowStdIo::new(output)));
-        })
-        .with_context(|| format!("failed to spawn the {name} output relay"))?;
-    Ok(())
 }
 
 fn build_effective_microvm_command_line(
