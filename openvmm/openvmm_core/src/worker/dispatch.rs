@@ -11,6 +11,7 @@ mod pcie_topology;
 mod pcie_wiring;
 mod restore;
 mod smmu_wiring;
+mod snapshot_rpc;
 
 use crate::emuplat;
 use crate::partition::BindHvliteVp;

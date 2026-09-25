@@ -8,6 +8,7 @@ use super::LoadedVm;
 use super::LoadedVmInner;
 use super::Manifest;
 use super::RestartState;
+use super::snapshot_rpc;
 use crate::partition::HvlitePartition;
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use anyhow::Context;
@@ -146,6 +147,9 @@ impl LoadedVm {
         &mut self,
         request: MicrovmSnapshotBoundaryRequest,
     ) -> bool {
+        let Some(request) = snapshot_rpc::filter_boundary_request(request) else {
+            return true;
+        };
         if self.snapshot_boundary.stop_guard.is_some() {
             tracelimit::warn_ratelimited!("dropping duplicate microVM snapshot boundary request");
             request.release_write.send(());
@@ -374,9 +378,11 @@ impl LoadedVm {
         true
     }
 
-    /// Applies the microVM restrictions to a management RPC. Rejected RPCs are
-    /// completed here; the others are returned for dispatch.
+    /// Applies the snapshot-boundary and microVM restrictions to a management
+    /// RPC. Rejected RPCs are completed here; the others are returned for
+    /// dispatch.
     pub(super) fn filter_vm_rpc(&self, message: VmRpc) -> Option<VmRpc> {
+        let message = snapshot_rpc::filter(message, self.snapshot_boundary.stop_guard.is_some())?;
         if self.inner.machine_profile != MachineProfile::Microvm {
             return Some(message);
         }

@@ -5867,6 +5867,7 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "cfg-if",
+ "chipset",
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker",

@@ -10,6 +10,7 @@ rust-version.workspace = true
 gdb = ["vmm_core/gdb"]
 
 [dev-dependencies]
+chipset.workspace = true
 test_with_tracing.workspace = true
 
 [dependencies]
