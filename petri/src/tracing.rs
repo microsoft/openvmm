@@ -374,7 +374,27 @@ pub async fn log_task(
     reader: impl AsyncRead + Unpin + Send + 'static,
     name: &str,
 ) -> anyhow::Result<()> {
+    log_task_inner(log_file, reader, name, None).await
+}
+
+/// Logs lines from `reader` and forwards their raw bytes to `output`.
+pub async fn log_task_with_output(
+    log_file: PetriLogFile,
+    reader: impl AsyncRead + Unpin + Send + 'static,
+    name: &str,
+    output: mesh::Sender<Vec<u8>>,
+) -> anyhow::Result<()> {
+    log_task_inner(log_file, reader, name, Some(output)).await
+}
+
+async fn log_task_inner(
+    log_file: PetriLogFile,
+    reader: impl AsyncRead + Unpin + Send + 'static,
+    name: &str,
+    output: Option<mesh::Sender<Vec<u8>>>,
+) -> anyhow::Result<()> {
     const MAX_LINE_LENGTH: usize = 4096;
+
     tracing::info!("connected to {name}");
     let mut buf = Vec::with_capacity(MAX_LINE_LENGTH);
     let mut reader = BufReader::new(reader);
@@ -394,6 +414,10 @@ pub async fn log_task(
                 return Err(e.into());
             }
             _ => {}
+        }
+
+        if let Some(output) = &output {
+            output.send(buf.clone());
         }
 
         let string_buf = String::from_utf8_lossy(&buf);

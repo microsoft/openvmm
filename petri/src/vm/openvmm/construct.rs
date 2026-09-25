@@ -117,6 +117,7 @@ impl PetriVmConfigOpenVmm {
         let PetriVmConfig {
             name: _,
             arch,
+            machine_profile,
             host_log_levels,
             firmware,
             hibernation_enabled,
@@ -130,6 +131,8 @@ impl PetriVmConfigOpenVmm {
             pcie_virtio_blk_drives,
             physical_nvme_devices,
         } = petri_vm_config;
+
+        super::microvm::validate_profile(machine_profile, arch, &firmware)?;
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
@@ -165,10 +168,14 @@ impl PetriVmConfigOpenVmm {
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
             no_hv: properties.no_hv,
+            machine_profile,
         };
 
         let mut chipset = VmManifestBuilder::new(
             match firmware {
+                _ if super::microvm::is_enabled(machine_profile) => {
+                    vm_manifest_builder::BaseChipsetType::Microvm
+                }
                 Firmware::LinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
                 }
@@ -188,14 +195,9 @@ impl PetriVmConfigOpenVmm {
 
         let mut load_mode = setup.load_firmware()?;
 
-        // If using pipette-as-init, replace the initrd with the pre-built
-        // one that has pipette injected. run_core() guarantees that
-        // prebuilt_initrd is set when uses_pipette_as_init is true.
-        if properties.uses_pipette_as_init {
+        // Replace the initrd when the builder supplied a modified copy.
+        if let Some(prebuilt) = prebuilt_initrd.as_ref() {
             if let LoadMode::Linux { initrd, .. } = &mut load_mode {
-                let prebuilt = prebuilt_initrd
-                    .as_ref()
-                    .expect("uses_pipette_as_init requires prebuilt_initrd");
                 let file = std::fs::File::open(prebuilt.path.as_ref()).with_context(|| {
                     format!(
                         "failed to open prebuilt initrd at {}",
@@ -206,6 +208,13 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        super::microvm::configure_load_mode(
+            machine_profile,
+            &mut load_mode,
+            proc_topology.vp_count,
+        )?;
+
+        let mut microvm_serial = None;
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
             if !properties.enable_serial {
                 // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
@@ -215,7 +224,9 @@ impl PetriVmConfigOpenVmm {
                     emulated_serial_config,
                     serial_tasks,
                     linux_direct_serial_agent,
+                    microvm,
                 } = setup.configure_serial(log_source)?;
+                microvm_serial = microvm;
                 (
                     emulated_serial_config,
                     serial_tasks,
@@ -356,7 +367,7 @@ impl PetriVmConfigOpenVmm {
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
-        if properties.enable_serial {
+        if properties.enable_serial && super::microvm::configures_standard_serial(machine_profile) {
             chipset = chipset.with_serial(emulated_serial_config);
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
@@ -593,7 +604,7 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
-        let vmgs = if firmware.is_openhcl() {
+        let vmgs = if firmware.is_openhcl() || !super::microvm::has_vmgs(machine_profile) {
             None
         } else {
             Some(memdiff_vmgs(&vmgs).await?)
@@ -606,6 +617,12 @@ impl PetriVmConfigOpenVmm {
             isa_dma_controller,
             capabilities,
         } = chipset;
+
+        let microvm = super::microvm::attach_chipset_devices(
+            machine_profile,
+            &mut chipset_devices,
+            microvm_serial,
+        );
 
         // Add the TPM
         if let Some(tpm) = setup.config_tpm().await? {
@@ -651,10 +668,13 @@ impl PetriVmConfigOpenVmm {
 
         let config = Config {
             // Firmware
-            machine_profile: Default::default(),
+            machine_profile,
             microvm: Default::default(),
             load_mode,
-            firmware_event_send: Some(firmware_event_send),
+            firmware_event_send: super::microvm::firmware_event_send(
+                machine_profile,
+                firmware_event_send,
+            ),
 
             // CPU and RAM
             numa,
@@ -670,7 +690,7 @@ impl PetriVmConfigOpenVmm {
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
-                with_hv: !properties.no_hv,
+                with_hv: super::microvm::hypervisor_enabled(machine_profile, !properties.no_hv),
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
@@ -679,7 +699,7 @@ impl PetriVmConfigOpenVmm {
                 },
                 nested_virt: false,
             },
-            vmbus: if properties.no_vmbus {
+            vmbus: if properties.no_vmbus || super::microvm::vmbus_disabled(machine_profile) {
                 None
             } else {
                 Some(VmbusConfig {
@@ -725,6 +745,8 @@ impl PetriVmConfigOpenVmm {
             rtc_delta_milliseconds: 0,
         };
 
+        super::microvm::validate_config(&config)?;
+
         // Make the pipette connection listener.
         let path = format!("{vsock_path_string}_{PIPETTE_PORT}");
         let pipette_listener = PolledSocket::new(
@@ -761,6 +783,7 @@ impl PetriVmConfigOpenVmm {
                 pipette_listener,
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
+                microvm,
                 tcp_pipette_port: None,
                 driver: driver.clone(),
                 output_dir: log_source.output_dir().to_owned(),
@@ -802,12 +825,14 @@ struct PetriVmConfigSetupCore<'a> {
     use_virtio_vsock: bool,
     no_vmbus: bool,
     no_hv: bool,
+    machine_profile: openvmm_defs::microvm::MachineProfile,
 }
 
-struct SerialData {
-    emulated_serial_config: [Option<Resource<SerialBackendHandle>>; 4],
-    serial_tasks: Vec<Task<anyhow::Result<()>>>,
-    linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
+pub(super) struct SerialData {
+    pub(super) emulated_serial_config: [Option<Resource<SerialBackendHandle>>; 4],
+    pub(super) serial_tasks: Vec<Task<anyhow::Result<()>>>,
+    pub(super) linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
+    pub(super) microvm: Option<super::microvm::PortbSerial>,
 }
 
 enum VideoDevice {
@@ -828,6 +853,15 @@ impl PetriVmConfigSetupCore<'_> {
         let (serial0_host, serial0) = self
             .create_serial_stream()
             .context("failed to create serial0 stream")?;
+        if super::microvm::is_enabled(self.machine_profile) {
+            return super::microvm::configure_serial(
+                self.driver,
+                serial0_log_file,
+                serial0_host,
+                serial0,
+            );
+        }
+
         let (serial0_read, serial0_write) = serial0_host.split();
         let serial0_task = self.driver.spawn(
             "serial0-console",
@@ -860,12 +894,14 @@ impl PetriVmConfigSetupCore<'_> {
                 emulated_serial_config: [serial0, serial1, serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: Some(linux_direct_serial_agent),
+                microvm: None,
             })
         } else {
             Ok(SerialData {
                 emulated_serial_config: [serial0, None, serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: None,
+                microvm: None,
             })
         }
     }
@@ -906,9 +942,14 @@ impl PetriVmConfigSetupCore<'_> {
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
                     .into();
-                let initrd = File::open(initrd.clone())
-                    .context("Failed to open initrd")?
-                    .into();
+                let initrd = initrd
+                    .as_ref()
+                    .map(|initrd| {
+                        File::open(initrd.clone())
+                            .context("Failed to open initrd")
+                            .map(Into::into)
+                    })
+                    .transpose()?;
 
                 let init = self
                     .pipette_rdinit_param
@@ -920,12 +961,17 @@ impl PetriVmConfigSetupCore<'_> {
                 } else {
                     String::new()
                 };
-
                 let cmdline = format!("{serial_args}panic=-1 rdinit={init} {vsock_blacklist}");
+                let cmdline = super::microvm::linux_command_line(
+                    self.machine_profile,
+                    cmdline,
+                    init,
+                    vsock_blacklist,
+                );
 
                 LoadMode::Linux {
                     kernel,
-                    initrd: Some(initrd),
+                    initrd,
                     cmdline,
                     enable_serial: self.enable_serial,
                     isolation: openvmm_defs::config::LinuxIsolationConfig::None,
