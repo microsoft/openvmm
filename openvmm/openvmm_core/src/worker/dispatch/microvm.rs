@@ -9,14 +9,22 @@ use super::LoadedVmInner;
 use super::Manifest;
 use super::RestartState;
 use crate::partition::HvlitePartition;
+use crate::worker::memory_layout::ChipsetMmioRanges;
 use anyhow::Context;
+use chipset_device_resources::IRQ_LINE_SET;
+use guestmem::GuestMemory;
+use hvdef::Vtl;
 use mesh::error::RemoteError;
 use mesh_worker::WorkerRpc;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
+use std::sync::Arc;
+use virtio::VirtioMmioDevice;
+use virtio::resolve::ResolvedVirtioDevice;
 use vm_loader::InitialLoad;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// MicroVM inputs taken from the [`VmWorkerParameters`].
 pub(super) struct MicrovmParameters {}
@@ -118,6 +126,84 @@ impl LoadedVm {
             }
             message => Some(message),
         }
+    }
+}
+
+fn virtio_mmio_config(
+    id: &str,
+    chipset_mmio: ChipsetMmioRanges,
+) -> anyhow::Result<(u64, u64, u32, u64)> {
+    let (start, irq) = match id {
+        "virtio-console" => (
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
+        ),
+        _ => anyhow::bail!("unsupported microVM virtio device '{id}' reached worker construction"),
+    };
+    let len = openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN;
+    anyhow::ensure!(
+        start >= chipset_mmio.low.start()
+            && start
+                .checked_add(len)
+                .is_some_and(|end| end <= chipset_mmio.low.end()),
+        "microVM virtio slot for '{id}' is outside the fixed low-MMIO aperture"
+    );
+    // The fixed slots expose split rings only.
+    let disabled_features = 1 << 34;
+    Ok((start, len, irq, disabled_features))
+}
+
+/// Assigns the fixed virtio-mmio slots of the microVM profile to devices, in
+/// device order.
+pub(super) struct VirtioMmioSlots {
+    chipset_mmio: ChipsetMmioRanges,
+}
+
+impl VirtioMmioSlots {
+    pub(super) fn new(chipset_mmio: ChipsetMmioRanges) -> Self {
+        Self { chipset_mmio }
+    }
+
+    /// Adds a virtio-mmio device at its fixed microVM slot.
+    pub(super) fn add_device(
+        &mut self,
+        chipset_builder: &vmotherboard::ChipsetBuilder<'_>,
+        driver_source: &VmTaskDriverSource,
+        gm: &GuestMemory,
+        partition: &Arc<dyn HvlitePartition>,
+        id: &str,
+        device: ResolvedVirtioDevice,
+    ) -> anyhow::Result<()> {
+        let (mmio_start, mmio_len, irq, disabled_features) =
+            virtio_mmio_config(id, self.chipset_mmio)?;
+        let id = format!("{id}-{mmio_start}");
+        let gm = gm.clone();
+        chipset_builder.arc_mutex_device(id).try_add(|services| {
+            VirtioMmioDevice::new_with_disabled_features(
+                device.0,
+                &driver_source.simple(),
+                gm,
+                services.new_line(IRQ_LINE_SET, "interrupt", irq),
+                partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                mmio_start,
+                mmio_len,
+                disabled_features,
+            )
+        })?;
+        Ok(())
+    }
+}
+
+/// Returns the number of virtio-mmio slots that the memory layout allocates.
+/// MicroVM devices use fixed slots in the low MMIO aperture instead.
+pub(super) fn virtio_mmio_count(
+    machine_profile: MachineProfile,
+    virtio_mmio_count: usize,
+) -> usize {
+    if machine_profile == MachineProfile::Microvm {
+        0
+    } else {
+        virtio_mmio_count
     }
 }
 
