@@ -77,6 +77,12 @@ pub enum StateRequest {
     /// Stop asynchronous operations.
     Stop(Rpc<(), ()>),
 
+    /// Stop accepting new host input before a snapshot vCPU boundary.
+    QuiesceInput(FailableRpc<(), ()>),
+
+    /// Resume host input after a failed snapshot transaction.
+    ResumeInput(FailableRpc<(), ()>),
+
     /// Reset a stopped unit to initial state.
     Reset(FailableRpc<(), ()>),
 
@@ -102,6 +108,16 @@ pub trait StateUnit: InspectMut {
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
+
+    /// Stops accepting new host input while preserving runtime state.
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Reset to initial state.
     ///
@@ -166,6 +182,8 @@ impl StateRequest {
 
             StateRequest::Start(_)
             | StateRequest::Stop(_)
+            | StateRequest::QuiesceInput(_)
+            | StateRequest::ResumeInput(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
             | StateRequest::Restore(_) => {
@@ -194,6 +212,14 @@ impl StateRequest {
         match self {
             StateRequest::Start(rpc) => rpc.handle_failable(async |()| unit.start().await).await,
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::QuiesceInput(rpc) => {
+                rpc.handle_failable(async |()| unit.quiesce_input().await)
+                    .await
+            }
+            StateRequest::ResumeInput(rpc) => {
+                rpc.handle_failable(async |()| unit.resume_input().await)
+                    .await
+            }
             StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
             StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
             StateRequest::Restore(rpc) => {

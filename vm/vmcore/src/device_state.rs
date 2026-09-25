@@ -27,6 +27,16 @@ pub trait ChangeDeviceState {
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
 
+    /// Stops accepting new host input before a snapshot vCPU boundary.
+    fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    fn resume_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
     /// Stops a device's asynchronous work.
     ///
     /// After this returns, the device must not process any additional work. It
