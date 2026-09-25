@@ -595,6 +595,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .virtio_devices
                 .iter()
                 .any(|(_, device)| device.id() == "virtio-console");
+            let has_control_console = cfg.virtio_devices.iter().any(|(_, device)| {
+                device.id() == openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID
+            });
             let network_irq = cfg
                 .microvm
                 .network
@@ -626,6 +629,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 self.filesystem_slot,
                 cfg.microvm.filesystem.as_ref(),
                 has_console,
+                has_control_console,
                 &cfg.microvm.sandbox_blocks,
             )?;
         }
