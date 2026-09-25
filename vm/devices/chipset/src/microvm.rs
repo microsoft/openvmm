@@ -13,6 +13,8 @@ use chipset_device::poll_device::PollDevice;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::InspectMut;
+use power_resources::PowerRequest;
+use power_resources::PowerRequestClient;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
 use std::io;
@@ -23,6 +25,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -30,6 +33,7 @@ use vmcore::save_restore::SavedStateRoot;
 
 const DATA_PORT: u16 = 0xe9;
 const STATUS_PORT: u16 = 0xea;
+const SHUTDOWN_PORT: u16 = 0x604;
 const STATUS_INPUT_AVAILABLE: u8 = 1 << 0;
 const BUFFER_MAX: usize = 1024 * 1024;
 
@@ -259,6 +263,74 @@ pub struct MicrovmPortbSavedState {
     pub tx_buffer: Vec<u8>,
 }
 
+/// microVM process-status shutdown port.
+#[derive(InspectMut)]
+pub struct MicrovmShutdown {
+    #[inspect(skip)]
+    io_region: (&'static str, RangeInclusive<u16>),
+    #[inspect(skip)]
+    power_request: PowerRequestClient,
+}
+
+impl MicrovmShutdown {
+    /// Creates the shutdown device.
+    pub fn new(power_request: PowerRequestClient) -> Self {
+        Self {
+            io_region: ("microvm-shutdown", SHUTDOWN_PORT..=SHUTDOWN_PORT),
+            power_request,
+        }
+    }
+}
+
+impl ChangeDeviceState for MicrovmShutdown {
+    fn start(&mut self) {}
+    async fn stop(&mut self) {}
+    async fn reset(&mut self) {}
+}
+
+impl ChipsetDevice for MicrovmShutdown {
+    fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+        Some(self)
+    }
+}
+
+impl PortIoIntercept for MicrovmShutdown {
+    fn io_read(&mut self, io_port: u16, data: &mut [u8]) -> IoResult {
+        if io_port != SHUTDOWN_PORT {
+            return IoResult::Err(IoError::InvalidRegister);
+        }
+        data.fill(0xff);
+        IoResult::Ok
+    }
+
+    fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
+        if io_port != SHUTDOWN_PORT {
+            return IoResult::Err(IoError::InvalidRegister);
+        }
+        self.power_request
+            .power_request(PowerRequest::PowerOffWithStatus {
+                code: data.first().copied().unwrap_or(0),
+            });
+        IoResult::Ok
+    }
+
+    fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u16>)] {
+        std::slice::from_ref(&self.io_region)
+    }
+}
+
+impl SaveRestore for MicrovmShutdown {
+    type SavedState = NoSavedState;
+
+    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        Ok(NoSavedState)
+    }
+
+    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +519,30 @@ mod tests {
         }));
         portb.poll_device(&mut Context::from_waker(Waker::noop()));
         assert_eq!(portb.rx_buffer, [0x5a]);
+    }
+
+    #[test]
+    fn lifecycle_ports_preserve_status_and_remain_nonblocking() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let mut shutdown =
+            MicrovmShutdown::new((move |request| captured.lock().push(request)).into());
+        assert!(matches!(
+            shutdown.io_write(SHUTDOWN_PORT, &[37, 99]),
+            IoResult::Ok
+        ));
+        assert_eq!(
+            *requests.lock(),
+            [PowerRequest::PowerOffWithStatus { code: 37 }]
+        );
+        requests.lock().clear();
+        assert!(matches!(
+            shutdown.io_write(SHUTDOWN_PORT, &[0x25]),
+            IoResult::Ok
+        ));
+        assert_eq!(
+            *requests.lock(),
+            [PowerRequest::PowerOffWithStatus { code: 0x25 }]
+        );
     }
 }
