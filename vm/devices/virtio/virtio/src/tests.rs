@@ -6,6 +6,8 @@
 #![expect(unsafe_code)]
 #![cfg(test)]
 
+mod saved_state;
+
 use crate::DeviceTraits;
 use crate::DynVirtioDevice;
 use crate::PciInterruptModel;
@@ -4785,9 +4787,11 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     dev.stop().await;
 
     // Save state.
-    let saved = dev.save().expect("save should succeed");
+    let mut saved = dev.save().expect("save should succeed");
     assert_eq!(saved.queues.len(), 1);
     assert!(saved.queues[0].common.enable);
+    saved_state::check_restored_queue_validation(&mut saved, guest.queue_features(), &mem);
+    drop(dev);
 
     // Create a new device and restore into it.
     let interrupt2 = LineInterrupt::detached();

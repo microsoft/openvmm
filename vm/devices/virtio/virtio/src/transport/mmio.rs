@@ -359,6 +359,10 @@ impl ChangeDeviceState for VirtioMmioDevice {
         self.core.start(&mut self.mmio);
     }
 
+    async fn start_fallible(&mut self) -> anyhow::Result<()> {
+        self.core.start_fallible(&mut self.mmio).await
+    }
+
     async fn stop(&mut self) {
         self.core.stop(&mut self.mmio).await;
     }
@@ -392,6 +396,7 @@ mod saved_state {
         use crate::transport::saved_state::state::CommonQueueState;
         use crate::transport::saved_state::state::CommonSavedState;
         use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateBlob;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf)]
@@ -410,6 +415,8 @@ mod saved_state {
             pub queues: Vec<SavedQueueState>,
             #[mesh(3)]
             pub interrupt_status: u32,
+            #[mesh(4)]
+            pub device_state: Option<SavedStateBlob>,
         }
     }
 
@@ -427,6 +434,7 @@ mod saved_state {
                         common: self.core.save_queue_common(i),
                     })
                     .collect(),
+                device_state: self.core.take_device_state()?,
                 interrupt_status: self.mmio.interrupt_state.lock().status,
             })
         }
@@ -439,6 +447,7 @@ mod saved_state {
             self.core.restore_common(
                 &mut self.mmio,
                 &state.common,
+                state.device_state,
                 state.queues.into_iter().map(|sq| (sq.common, 0)),
                 saved_queue_count,
             )?;
