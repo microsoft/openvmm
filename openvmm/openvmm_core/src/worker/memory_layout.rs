@@ -121,6 +121,10 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// memory-less nodes (e.g. device-only NUMA nodes). The request
     /// order is the vnode assignment order.
     pub node_mem_sizes: &'a [u64],
+    /// Optional single-node RAM capacity used for restore-time expansion.
+    /// The layout reserves this full amount while publishing only
+    /// `node_mem_sizes[0]` as guest-visible RAM.
+    pub memory_capacity: Option<u64>,
     /// Chipset MMIO sizing from the manifest builder.
     pub layout: vmm_core_defs::LayoutConfig,
     /// PCIe root complex address-space intents. These are resolved by this
@@ -158,6 +162,7 @@ pub(super) fn resolve_memory_layout(
     input: MemoryLayoutInput<'_>,
 ) -> anyhow::Result<ResolvedMemoryLayout> {
     validate_node_mem_sizes(input.node_mem_sizes)?;
+    microvm::validate_memory_capacity(input.node_mem_sizes, input.memory_capacity)?;
 
     let mut ram_ranges_by_node = vec![Vec::new(); input.node_mem_sizes.len()];
     let mut pcie_root_complex_ranges = input
@@ -382,6 +387,7 @@ pub(super) fn resolve_memory_layout(
         if ram_size == 0 {
             continue;
         }
+        let ram_size = microvm::layout_ram_size(vnode, ram_size, input.memory_capacity);
         let ram_alignment = if ram_size < GB { TWO_MB } else { GB };
         builder.ram(format!("ram{vnode}"), ram_ranges, ram_size, ram_alignment);
     }
@@ -482,6 +488,7 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
+    let ram_ranges_by_node = microvm::active_ram_ranges(ram_ranges_by_node, input.node_mem_sizes);
     let ram = ram_ranges_by_node
         .into_iter()
         .enumerate()
@@ -643,6 +650,7 @@ mod tests {
     ) -> MemoryLayoutInput<'_> {
         MemoryLayoutInput {
             node_mem_sizes,
+            memory_capacity: None,
             layout: DEFAULT_LAYOUT,
             pcie_root_complexes: &[],
             virtio_mmio_count: 0,
