@@ -60,6 +60,9 @@ impl ParsedVirtioFs {
         );
 
         let backend = match fs {
+            VirtioFsBackend::Dormant => {
+                anyhow::bail!("standard virtio-fs requires an active backend")
+            }
             VirtioFsBackend::HostFs {
                 root_path,
                 mount_options,
