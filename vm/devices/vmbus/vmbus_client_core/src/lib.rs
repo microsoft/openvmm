@@ -36,6 +36,8 @@
 #![no_std]
 #![expect(missing_docs)]
 
+extern crate alloc;
+
 use guid::Guid;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol::FeatureFlags;
@@ -126,6 +128,67 @@ impl ClientPhase {
             Self::Disconnected | Self::Connecting { .. } => None,
         }
     }
+}
+
+// -- Per-channel and per-gpadl state ---------------------------------------
+
+/// Per-channel protocol state.
+///
+/// Mirrors `vmbus_client`'s internal `ChannelState` minus the runtime
+/// handles that used to sit on the variants (`FailableRpc` for
+/// `Opening`, `pal_event::Event` for the redirected-event mapping).
+/// The wrapper tracks pending open completions through the `request_id`
+/// carried on `Opening`, and owns the mapping from `redirected_event_flag`
+/// to a live `pal_event::Event`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelPhase {
+    /// The channel has been offered to the client by the host.
+    Offered,
+    /// The client has posted `OpenChannel[2]` and is waiting for
+    /// `OpenResult`.
+    Opening {
+        /// Corresponds to the caller-side `OpenChannel` [`Event`] so
+        /// the wrapper can complete the pending open when
+        /// `OpenResult` arrives.
+        request_id: RequestId,
+        /// The wrapper-allocated redirected-event flag, if any. The
+        /// wrapper owns the mapping from this flag to the concrete
+        /// `pal_event::Event` on OpenHCL, or an in-guest interrupt on
+        /// opentmk.
+        redirected_event_flag: Option<u16>,
+    },
+    /// The channel has been restored from saved state but not yet
+    /// claimed by a live open.
+    Restored,
+    /// The channel has been successfully opened.
+    Opened {
+        /// The wrapper-allocated redirected-event flag, if any (see
+        /// [`Self::Opening`]).
+        redirected_event_flag: Option<u16>,
+    },
+    /// The channel has been revoked by the host.
+    Revoked,
+}
+
+/// Per-GPADL protocol state.
+///
+/// Mirrors `vmbus_client`'s internal `GpadlState`, again with runtime
+/// handles replaced by [`RequestId`]s so the wrapper can route
+/// completions back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpadlPhase {
+    /// The client has posted `GpadlHeader` + `GpadlBody` messages and
+    /// is waiting for `GpadlCreated`.
+    Offered { request_id: RequestId },
+    /// The host has acknowledged the GPADL with `GpadlCreated`.
+    Created,
+    /// The client has posted `GpadlTeardown` and is waiting for
+    /// `GpadlTorndown`. `request_ids` is non-empty because multiple
+    /// callers can race to tear down the same GPADL; each gets its
+    /// own completion when the single `GpadlTorndown` arrives.
+    TearingDown {
+        request_ids: alloc::vec::Vec<RequestId>,
+    },
 }
 
 // -- Event and Action skeletons --------------------------------------------
