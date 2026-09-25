@@ -17,6 +17,8 @@
 //! clock source alone, so that the guest's time catches up with the pause.
 
 use super::Rtc;
+use super::RtcMode;
+use super::RtcState;
 use super::spec::CmosReg;
 use super::spec::StatusRegA;
 use anyhow::Context;
@@ -25,7 +27,10 @@ use local_clock::InspectableLocalClock;
 use local_clock::LocalClockTime;
 use std::ops::RangeInclusive;
 use std::time::Duration;
+use vmcore::line_interrupt::LineInterrupt;
 use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeSource;
+use vmcore::vmtime::VmTimerPeriodic;
 
 /// The guest-visible UTC times, in milliseconds from the Unix epoch, that a
 /// restore or an advance sets: the times that the guest can write to the
@@ -95,6 +100,35 @@ impl HeldClock {
 }
 
 impl Rtc {
+    /// Creates a CMOS RTC with an injectable, fallible UTC clock source.
+    pub fn new_with_mode_and_utc_clock(
+        real_time_source: Box<dyn UtcClockSource>,
+        interrupt: LineInterrupt,
+        vmtime_source: &VmTimeSource,
+        century_reg_idx: u8,
+        initial_cmos: Option<[u8; 256]>,
+        enlightened_interrupts: bool,
+        mode: RtcMode,
+    ) -> Self {
+        Rtc {
+            century_reg: CmosReg(century_reg_idx),
+            initial_cmos,
+            enlightened_interrupts,
+            mode,
+
+            real_time_source,
+            interrupt,
+            vmtime_alarm: vmtime_source.access("rtc-alarm"),
+            vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
+            vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
+
+            last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+            held: None,
+
+            state: RtcState::with_mode(initial_cmos, mode),
+        }
+    }
+
     /// Returns the guest-visible UTC time: the held time while the RTC is
     /// stopped, and its clock source's time otherwise.
     pub(super) fn utc_time(&mut self) -> Result<LocalClockTime, UtcClockSourceError> {
