@@ -488,11 +488,11 @@ mod tests {
             ));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
 
             let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(matches!(file.dedup_key(), DedupKey::Ino(..)));
-            let (old, old_id) = inodes.insert(file);
+            let (old, old_id) = inodes.insert(file).unwrap();
 
             let mut replacement_stat = volume.lstat(PathBuf::from("replacement")).unwrap();
             replacement_stat.inode_nr = old.inode_nr();
@@ -503,7 +503,7 @@ mod tests {
                 PathBuf::from("replacement"),
                 &replacement_stat,
             );
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
 
             assert_ne!(current_id, old_id);
             assert!(lx::s_isdir(current.file_type()));
@@ -529,19 +529,19 @@ mod tests {
             let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
             let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(matches!(file.dedup_key(), DedupKey::Path(..)));
-            let (old, old_id) = inodes.insert(file);
+            let (old, old_id) = inodes.insert(file).unwrap();
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, old_id);
+            assert_eq!(inodes.insert(same).unwrap().1, old_id);
 
             std::fs::remove_file(tmp.path().join("entry")).unwrap();
             std::fs::create_dir(tmp.path().join("entry")).unwrap();
             std::fs::write(tmp.path().join("entry").join("child"), b"child").unwrap();
             let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(lx::s_isdir(attr.mode));
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
             let (_, child_attr) = current.lookup_child("child".as_ref()).unwrap();
             assert!(lx::s_isreg(child_attr.mode));
             assert_ne!(current_id, old_id);
@@ -554,7 +554,7 @@ mod tests {
             inodes.remove(old_id);
             assert!(inodes.get(current_id).is_some());
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, current_id);
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
     }
 
@@ -566,15 +566,15 @@ mod tests {
             let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
             let (directory, _) = root.lookup_child("entry".as_ref()).unwrap();
-            let (old, old_id) = inodes.insert(directory);
+            let (old, old_id) = inodes.insert(directory).unwrap();
 
             std::fs::remove_dir(tmp.path().join("entry")).unwrap();
             std::fs::write(tmp.path().join("entry"), b"file").unwrap();
             let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(lx::s_isreg(attr.mode));
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
             assert_ne!(current_id, old_id);
             assert_eq!(
                 current.lookup_child("child".as_ref()).err().unwrap(),
@@ -584,7 +584,7 @@ mod tests {
             inodes.remove(old_id);
             assert!(inodes.get(current_id).is_some());
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, current_id);
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
     }
 }
