@@ -18,6 +18,8 @@
 //       anything else on this file though.
 #![warn(missing_docs)]
 
+pub mod microvm;
+
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
@@ -149,6 +151,10 @@ pub struct NumaDistanceCli {
     long_version = openvmm_build_info::get().long_version(),
 )]
 pub struct Options {
+    /// guest machine profile
+    #[clap(long, value_enum, default_value = "standard")]
+    pub machine: microvm::MachineProfileCli,
+
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
