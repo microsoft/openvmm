@@ -15,8 +15,8 @@ use std::time::Instant;
 impl StateUnits {
     /// Starts all stopped units in dependency order.
     ///
-    /// Fails without starting any unit if one is in a terminal state. A unit
-    /// does not start if one of its dependencies
+    /// Fails without starting any unit if one is in a terminal state, as after
+    /// an uncertain quiesce. A unit does not start if one of its dependencies
     /// did not start. If a unit's task does not answer its start request, the
     /// units that did start are stopped again, and the unit is left in a
     /// terminal state that fails later starts.
@@ -101,7 +101,7 @@ impl StateUnits {
                         failures.push(format!("{name}: a dependency did not start"));
                     }
                     StartResult::Uncertain(error) => {
-                        unit.state = State::StartUncertain;
+                        unit.state = State::QuiesceUncertain;
                         failures.push(format!("{name}: {error:#}"));
                     }
                 }
