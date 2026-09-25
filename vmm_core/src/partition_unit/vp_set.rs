@@ -3,6 +3,9 @@
 
 //! Virtual processor state management.
 
+#[cfg(guest_arch = "x86_64")]
+mod tsc;
+
 use super::HaltReason;
 use super::HaltReasonReceiver;
 use super::InternalHaltReason;
@@ -77,6 +80,10 @@ trait ControlVp: ProtobufSaveRestore {
 
     /// Scrub per-VP state for a VTL.
     fn scrub(&mut self, vtl: Vtl) -> anyhow::Result<()>;
+
+    /// Advances the stopped vCPU TSC after snapshot downtime.
+    #[cfg(guest_arch = "x86_64")]
+    fn advance_tsc(&mut self, advance: tsc::TscAdvance) -> anyhow::Result<()>;
 
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp;
@@ -173,6 +180,11 @@ where
                 })
             }
         }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn advance_tsc(&mut self, advance: tsc::TscAdvance) -> anyhow::Result<()> {
+        advance.apply(self.vp)
     }
 
     fn inspect_vp(
@@ -1101,6 +1113,8 @@ enum StateEvent {
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
+    #[cfg(guest_arch = "x86_64")]
+    AdvanceTsc(mesh::rpc::FailableRpc<tsc::TscAdvance, ()>),
     #[cfg(feature = "dump")]
     GetDumpVpState(Rpc<Vtl, anyhow::Result<hyperv_dump::VpState>>),
     #[cfg(feature = "gdb")]
@@ -1347,6 +1361,8 @@ impl RunnerInner {
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
+            #[cfg(guest_arch = "x86_64")]
+            StateEvent::AdvanceTsc(rpc) => rpc.handle_failable_sync(|tsc| vp.advance_tsc(tsc)),
             #[cfg(feature = "dump")]
             StateEvent::GetDumpVpState(rpc) => rpc.handle_sync(|vtl| vp.get_dump_vp_state(vtl)),
             #[cfg(feature = "gdb")]
