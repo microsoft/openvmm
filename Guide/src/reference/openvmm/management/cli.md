@@ -38,13 +38,19 @@ describes the source definitions.
   ```
 
   The kernel must be an uncompressed ELF64 image. The profile owns the base command line
-  (`earlycon=xe9 console=hvc0 reboot=t panic=-1`). It appends
+  (`earlycon=xe9 console=hvc0 reboot=t panic=-1`) and switches the primary
+  console to `hvc1` when `--virtio-console` is present. It appends
   `nr_cpus=<capacity>` from the validated processor topology. It reserves a 1-GiB
   MMIO gap from 3 to 4 GiB and exposes only PIC/IOAPIC, PIT, a CMOS RTC
   anchored to UTC,
-  the microVM portb console, and the shutdown port. User arguments cannot
-  override `earlycon=`, `console=`, or `nr_cpus=`. Firmware, ACPI, SMBIOS, PCI,
-  VMBus, UARTs, storage, networking, virtio, graphics, isolation, nested
+  the microVM portb console, the shutdown port, and the optional fixed virtio
+  devices described below. User arguments cannot override `earlycon=`,
+  `console=`, `virtio_mmio.device=`, or `nr_cpus=`.
+
+  One optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
+  IRQ 7 as the boot/log console (`hvc1`) and uses split rings. Firmware, ACPI,
+  SMBIOS, PCI,
+  VMBus, UARTs, storage, networking, graphics, isolation, nested
   virtualization, and other devices are rejected. Linux discovers contiguous
   APIC IDs and the IOAPIC from Intel
   MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
@@ -339,8 +345,14 @@ Serial devices can be configured to appear as different devices inside the guest
   dropped bytes with its own retransmission. Debugger mode is chosen
   independently per COM port, so one port can talk to WinDbg while another
   behaves normally.
-* `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
-  `/dev/hvc0` inside the guest).
+* `--virtio-console <BACKEND>`: Expose a virtio console device. It normally
+  appears as `/dev/hvc0`. Under `--machine microvm`, it occupies fixed MMIO
+  `0xd0002000`, IRQ 7, and is selected as `/dev/hvc1`; the raw portb path
+  remains available as `hvc0` for early output and recovery. A microVM accepts
+  `listen=PATH`, `listen=tcp:IP:PORT`, `console`, or `none`. A listener
+  retains guest output until a client connects. `console` moves portb output
+  to stderr while the terminal is attached to `hvc1`, and `none` discards
+  guest output.
 
 The `BACKEND` argument is the same for all serial devices:
 

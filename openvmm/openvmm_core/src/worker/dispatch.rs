@@ -1299,6 +1299,7 @@ impl InitializedVm {
             .iter()
             .filter(|(bus, _)| matches!(bus, VirtioBus::Mmio))
             .count();
+        let virtio_mmio_count = microvm::virtio_mmio_count(cfg.machine_profile, virtio_mmio_count);
 
         // On aarch64 Linux direct boot, start RAM at 1 GiB to avoid the low GPA
         // region (128 MiB–129 MiB) that iommufd reserves for the host MSI
@@ -3073,6 +3074,7 @@ impl InitializedVm {
         // allocation indexed by the order of VirtioBus::Mmio devices.
         let mut pci_device_number = 10;
         let mut virtio_mmio_index = 0;
+        let mut microvm_virtio_slots = microvm::VirtioMmioSlots::new(chipset_mmio);
 
         // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
         // configure the line as level-triggered in the MADT (necessary for
@@ -3097,6 +3099,16 @@ impl InitializedVm {
                 )
                 .await?;
             match bus {
+                VirtioBus::Mmio if cfg.machine_profile == MachineProfile::Microvm => {
+                    microvm_virtio_slots.add_device(
+                        &chipset_builder,
+                        &driver_source,
+                        &gm,
+                        &partition,
+                        &id,
+                        device,
+                    )?;
+                }
                 VirtioBus::Mmio => {
                     let mmio_start = virtio_mmio_region.start() + virtio_mmio_index as u64 * 0x1000;
                     virtio_mmio_index += 1;

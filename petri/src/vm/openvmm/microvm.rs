@@ -95,7 +95,7 @@ pub(super) fn configure_load_mode(
         unreachable!("microVM firmware was validated as LinuxDirect");
     };
     let mut configured =
-        openvmm_defs::microvm::build_microvm_command_line(&[std::mem::take(cmdline)])?;
+        openvmm_defs::microvm::build_microvm_command_line(&[std::mem::take(cmdline)], false)?;
     openvmm_defs::microvm::append_microvm_processor_limit(&mut configured, processor_count)?;
     *cmdline = configured;
     *enable_serial = false;
