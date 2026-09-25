@@ -2696,6 +2696,7 @@ fn prepare_snapshot_restore(
 }
 
 fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
+    openvmm_defs::profile::initialize();
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
