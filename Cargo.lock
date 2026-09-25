@@ -9174,7 +9174,6 @@ dependencies = [
  "user_driver_emulated_mock",
  "vmgs",
  "vmgs_format",
- "x86defs",
  "zerocopy",
 ]
 
