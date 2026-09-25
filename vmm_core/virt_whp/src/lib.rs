@@ -22,6 +22,7 @@ mod vtl2;
 cfg_select! {
     guest_arch = "x86_64" => {
         mod apic;
+        mod cpu_contract;
         mod emu;
         use x86defs::cpuid::Vendor;
         type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
@@ -1175,6 +1176,8 @@ impl WhpPartitionInner {
                         .map(|(f, v)| virt::CpuidLeaf::new(f.0, [v.eax, v.ebx, v.ecx, v.edx])),
                     );
                     hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
+                } else {
+                    cpuid.push(cpu_contract::mask_gpa_pinning_enlightenment());
                 }
             }
 
