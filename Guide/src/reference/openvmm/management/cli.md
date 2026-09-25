@@ -72,8 +72,9 @@ describes the source definitions.
   `--snapshot-quiesce-timeout-ms <MILLISECONDS>` sets the bounded quiesce
   timeout and defaults to 5000. A request with no configured destination is
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
-  KVM, MSHV, or WHP, and shared file-backed RAM. It does not yet support
-  `--virtio-console`.
+  KVM, MSHV, or WHP, and shared file-backed RAM. An attached virtio console
+  saves accepted but undelivered input and the offset of a partially forwarded
+  guest transmit descriptor.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm --memory 128M \
@@ -87,7 +88,13 @@ describes the source definitions.
   `--memory`, processor, device, and topology overrides are not accepted.
   Repeat the snapshot's exact `--processors` count; a mismatch is rejected
   before any VP starts. Restore requires the same backend kind as capture.
-  It does not yet support `--virtio-console`.
+
+  When the snapshot contains a virtio console, its attachment policy comes
+  from the manifest. OpenVMM recreates listeners, reconnects required clients,
+  or requires an inherited replacement before creating the partition. Restore
+  fails before any vCPU starts when a required attachment cannot be rebuilt.
+  A listener peer may connect after restore; guest transmit descriptors remain
+  pending while no peer is connected.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
@@ -382,11 +389,27 @@ Serial devices can be configured to appear as different devices inside the guest
 * `--virtio-console <BACKEND>`: Expose a virtio console device. It normally
   appears as `/dev/hvc0`. Under `--machine microvm`, it occupies fixed MMIO
   `0xd0002000`, IRQ 7, and is selected as `/dev/hvc1`; the raw portb path
-  remains available as `hvc0` for early output and recovery. A microVM accepts
-  `listen=PATH`, `listen=tcp:IP:PORT`, `console`, or `none`. A listener
-  retains guest output until a client connects. `console` moves portb output
-  to stderr while the terminal is attached to `hvc1`, and `none` discards
-  guest output.
+  remains available as `hvc0` for early output and recovery.
+
+  A microVM accepts these explicit attachment policies:
+
+  * `listen=PATH` or `listen=tcp:IP:PORT`: save the canonical endpoint and
+    recreate the optional listener on restore. Unix sockets must be beside the
+    snapshot directory. Windows pipes use the
+    `//./pipe/openvmm-microvm-<NAME>` namespace. TCP ports must be nonzero.
+    TCP addresses must be loopback addresses.
+  * `connect=PATH` or `connect=tcp:IP:PORT`: require a client connection before
+    vCPUs start. Cold boot and restore use a five-second timeout. The
+    restore command must explicitly resupply the matching client attachment.
+  * `console`: require the restore caller to supply the same inherited terminal
+    attachment. Portb recovery output moves to stderr while the terminal is
+    attached to `hvc1`.
+  * `none`: keep the device present and explicitly discard guest TX while
+    disconnected.
+
+  A generic byte stream guarantees no replay up to OpenVMM's backend write
+  boundary; it cannot prove that the remote application consumed bytes without
+  its own acknowledgment protocol.
 
 The `BACKEND` argument is the same for all serial devices:
 
@@ -397,8 +420,8 @@ The `BACKEND` argument is the same for all serial devices:
       up to listen on the given path. Serial input and output is relayed to this
       pipe/socket.
   * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
-      connections on the given IP address and port. Typically IP will be
-      127.0.0.1, to restrict connections to the current host.
+      connections on the given IP address and port. A microVM requires a
+      loopback IP such as `127.0.0.1` or `::1`.
   * `connect=PATH`: Connect to an existing named pipe or Unix socket.
   * `connect=tcp:IP:PORT`: Connect to an existing TCP listener.
 

@@ -80,16 +80,6 @@ impl Options {
                 self.microvm.snapshot_quiesce_timeout_ms != 0,
                 "microVM snapshot quiesce timeout must be nonzero"
             );
-            anyhow::ensure!(
-                self.virtio_console.is_none(),
-                "microVM snapshot capture does not yet support --virtio-console"
-            );
-        }
-        if self.restore_snapshot.is_some() {
-            anyhow::ensure!(
-                self.virtio_console.is_none(),
-                "microVM snapshot restore does not yet support --virtio-console"
-            );
         }
         anyhow::ensure!(
             self.uefi.is_none() && !self.pcat && self.igvm.is_none() && !self.device_tree,
@@ -156,10 +146,12 @@ impl Options {
                     console,
                     SerialConfigCli::Pipe(_)
                         | SerialConfigCli::Tcp(_)
+                        | SerialConfigCli::ConnectPipe(_)
+                        | SerialConfigCli::ConnectTcp(_)
                         | SerialConfigCli::Console
                         | SerialConfigCli::None
                 ),
-                "microVM virtio-console requires listen=..., console, or none"
+                "microVM virtio-console requires listen=..., connect=..., console, or none"
             );
         }
         anyhow::ensure!(
@@ -323,7 +315,6 @@ mod tests {
         for extra in [
             vec!["--snapshot-quiesce-timeout-ms", "0"],
             vec!["--memory", "size=1G,shared=off"],
-            vec!["--virtio-console", "none"],
         ] {
             let options = Options::try_parse_from(
                 [
@@ -363,17 +354,6 @@ mod tests {
         .unwrap();
         assert_eq!(restore.memory, Default::default());
         restore.validate_microvm_options().unwrap();
-        let restore_with_console = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--restore-snapshot",
-            "snapshot",
-            "--virtio-console",
-            "none",
-        ])
-        .unwrap();
-        assert!(restore_with_console.validate_microvm_options().is_err());
         for override_arg in ["--kernel", "--initrd"] {
             assert!(
                 Options::try_parse_from([
