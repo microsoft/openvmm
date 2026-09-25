@@ -10633,6 +10633,7 @@ dependencies = [
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",
