@@ -208,11 +208,15 @@ impl AsyncWrite for SocketSerialBackend {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(buf.len()));
         };
-        let r = ready!(Pin::new(current).poll_write(cx, buf));
-        if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-            return Poll::Ready(Ok(buf.len()));
+        let result = ready!(Pin::new(current).poll_write(cx, buf));
+        if result.is_err() {
+            // Return the error, even for a broken pipe, rather than report the
+            // bytes as written: a frontend that keeps guest output for the
+            // next client, such as a retaining virtio-console or the microVM
+            // portb console, keeps only what a write fails to send.
+            self.current = None;
         }
-        Poll::Ready(r)
+        Poll::Ready(result)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -300,5 +304,29 @@ mod tests {
         assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
 
         let _replacement = connect_peer(&mut backend, address).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[async_test]
+    async fn write_to_closed_unix_peer_fails_and_accepts_replacement(driver: DefaultDriver) {
+        use futures::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serial");
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut backend =
+            SocketSerialBackend::new(Box::new(driver), OpenSocketSerialConfig::from(listener))
+                .unwrap();
+        let peer = UnixStream::connect(&path).unwrap();
+        poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
+        drop(peer);
+
+        let err = backend.write(b"output").await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert!(!backend.is_connected());
+
+        let _replacement = UnixStream::connect(&path).unwrap();
+        poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
+        assert!(backend.is_connected());
     }
 }
