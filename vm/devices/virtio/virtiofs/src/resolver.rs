@@ -44,7 +44,11 @@ enum ParsedVirtioFsBackend {
 
 impl ParsedVirtioFs {
     fn parse(resource: VirtioFsHandle) -> anyhow::Result<Self> {
-        let VirtioFsHandle { tag, fs } = resource;
+        let VirtioFsHandle {
+            tag,
+            fs,
+            profile: _,
+        } = resource;
         anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
         anyhow::ensure!(
             !tag.contains('\0'),
@@ -151,6 +155,9 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
         resource: VirtioFsHandle,
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        if let Some(device) = crate::microvm::resolver::resolve(&resource, input.driver_source)? {
+            return Ok(device.into());
+        }
         let ParsedVirtioFs { tag, backend } = ParsedVirtioFs::parse(resource)?;
         let device = match backend {
             ParsedVirtioFsBackend::HostFs {
@@ -313,6 +320,7 @@ mod tests {
     use virtio_resources::fs::VirtioFsBackend;
     use virtio_resources::fs::VirtioFsHandle;
     use virtio_resources::fs::VirtioFsWindowsOptions;
+    use virtio_resources::fs::microvm::VirtioFsProfile;
 
     fn host_fs(tag: &str, root_path: &str, mount_options: &str) -> VirtioFsHandle {
         VirtioFsHandle {
@@ -322,6 +330,7 @@ mod tests {
                 mount_options: mount_options.to_owned(),
                 windows_options: None,
             },
+            profile: VirtioFsProfile::Standard,
         }
     }
 
@@ -418,6 +427,7 @@ mod tests {
             fs: VirtioFsBackend::SectionFs {
                 root_path: "root".to_owned(),
             },
+            profile: VirtioFsProfile::Standard,
         };
         let error = ParsedVirtioFs::parse(resource).err().unwrap();
         assert_eq!(

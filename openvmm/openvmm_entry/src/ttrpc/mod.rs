@@ -3168,6 +3168,7 @@ fn build_virtio_fs(
             mount_options,
             windows_options,
         },
+        profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
     })
 }
 
