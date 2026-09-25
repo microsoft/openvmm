@@ -4,7 +4,7 @@
 //! Snapshot restore support for the VM worker: the restore inputs taken from
 //! the worker parameters, the restore state kept by [`LoadedVm`], the steps
 //! around applying the saved state, and the post-restore start sequence
-//! (readiness event and VP release).
+//! (input gate, readiness event, and VP release).
 
 use super::LoadedVm;
 use super::clock;
@@ -19,9 +19,14 @@ use openvmm_defs::worker::SavedState;
 use openvmm_defs::worker::SharedMemoryFd;
 use openvmm_defs::worker::SnapshotRestoreGuards;
 use openvmm_defs::worker::VmWorkerParameters;
+use pal_async::driver::Driver;
+use pal_async::timer::Instant;
+use pal_async::timer::PolledTimer;
 use state_unit::StateUnits;
 use std::fs::File;
+use std::future::Future;
 use std::io::Write as _;
+use std::time::Duration;
 use vmm_core::partition_unit::StopGuard;
 
 /// Snapshot-restore inputs taken from the [`VmWorkerParameters`].
@@ -42,6 +47,7 @@ impl RestoreParameters {
     pub(super) fn take(parameters: &mut VmWorkerParameters) -> anyhow::Result<Self> {
         let guards = parameters.snapshot_restore_guards.take();
         let ready_sink = parameters.restore_ready_sink.take();
+        let gate_timeout = parameters.restore_gate_timeout.take();
         let restore_time = clock::restore_time_contract(
             parameters.restore_downtime,
             parameters.restore_tsc_frequency_hz,
@@ -58,6 +64,7 @@ impl RestoreParameters {
             state: SnapshotRestore {
                 time: restore_time,
                 ready_sink,
+                gate_timeout,
                 ..Default::default()
             },
             cpu_contract,
@@ -83,6 +90,30 @@ pub(super) struct SnapshotRestore {
     start_guard: Option<StopGuard>,
     /// Single-use sink for the restore readiness event.
     ready_sink: Option<File>,
+    /// Timeout for the post-restore input gate, when required.
+    pub(super) gate_timeout: Option<Duration>,
+    /// Deadline for the guest to acknowledge the post-restore input gate.
+    pub(super) gate_deadline: Option<Instant>,
+    /// Profile span covering the post-restore input gate.
+    pub(super) gate_profile: Option<ProfileSpan>,
+    /// Whether host input is gated by the post-restore input gate.
+    pub(super) input_gated: bool,
+}
+
+impl SnapshotRestore {
+    /// Returns a future that completes when the armed post-restore input gate
+    /// expires, and never completes while the gate is not armed.
+    pub(super) fn gate_expired(&self, driver: &impl Driver) -> impl Future<Output = ()> {
+        let deadline = self.gate_deadline;
+        async move {
+            match deadline {
+                Some(deadline) => {
+                    PolledTimer::new(driver).sleep_until(deadline).await;
+                }
+                None => std::future::pending().await,
+            }
+        }
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -168,9 +199,16 @@ impl LoadedVm {
     }
 
     /// Starts the state units for [`LoadedVm::resume`], sequencing the
-    /// restore readiness event and the release of the restored VPs around the
-    /// start.
+    /// post-restore input gate, the restore readiness event, and the release
+    /// of the restored VPs around the start.
     pub(super) async fn start_state_units(&mut self) -> anyhow::Result<()> {
+        if let Some(timeout) = self.snapshot_restore.gate_timeout {
+            self.state_units
+                .quiesce_input_for_save(timeout)
+                .await
+                .context("failed to establish post-restore input gate")?;
+            self.snapshot_restore.input_gated = true;
+        }
         let device_start = ProfileSpan::start();
         self.state_units
             .start()
@@ -204,7 +242,21 @@ impl LoadedVm {
                 return Err(error).context("failed to publish restore readiness event");
             }
         }
+        if let Some(timeout) = self.snapshot_restore.gate_timeout {
+            self.snapshot_restore.gate_deadline = Some(Instant::now().saturating_add(timeout));
+            self.snapshot_restore.gate_profile = Some(ProfileSpan::start());
+        }
         self.snapshot_restore.start_guard.take();
         Ok(())
+    }
+
+    /// Stops the VM after the guest failed to acknowledge the post-restore
+    /// input gate in time.
+    pub(super) async fn handle_restore_gate_timeout(&mut self) {
+        tracing::error!("post-restore input gate acknowledgement timed out");
+        if self.running {
+            self.state_units.stop().await;
+            self.running = false;
+        }
     }
 }
