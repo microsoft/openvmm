@@ -87,6 +87,12 @@ impl LxVolume {
         self.inner.supports_stable_file_id()
     }
 
+    /// Indicates whether an unlinked file's name can be reused while handles
+    /// to the file remain open.
+    pub fn supports_posix_unlink(&self) -> bool {
+        self.inner.supports_posix_unlink()
+    }
+
     /// Retrieves the attributes of a file. Symlinks are not followed.
     pub fn lstat(&self, path: impl AsRef<Path>) -> lx::Result<lx::Stat> {
         self.inner.lstat(path.as_ref()).map(|x| x.into())
@@ -240,6 +246,17 @@ impl LxVolume {
     ) -> lx::Result<LxFile> {
         Ok(LxFile {
             inner: self.inner.open(path.as_ref(), flags, options)?,
+        })
+    }
+
+    /// Opens a file for metadata queries without requiring data access.
+    ///
+    /// Symlinks are not followed. The handle continues to identify the same
+    /// file after it is renamed or unlinked. On Windows it shares read, write,
+    /// and delete access; on Linux it uses `O_PATH`.
+    pub fn open_metadata(&self, path: impl AsRef<Path>) -> lx::Result<LxFile> {
+        Ok(LxFile {
+            inner: self.inner.open_metadata(path.as_ref())?,
         })
     }
 
@@ -528,7 +545,7 @@ impl LxVolume {
 
 /// A platform-independent abstraction that allows you to treat a file as if it has Unix semantics.
 ///
-/// `LxFile` instances are created by using `LxVolume::open`.
+/// `LxFile` instances are created by using `LxVolume::open` or `LxVolume::open_metadata`.
 pub struct LxFile {
     inner: sys::LxFile,
 }
@@ -1193,6 +1210,59 @@ mod tests {
         let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
         assert_eq!(stat, fstat);
+    }
+
+    #[test]
+    fn open_metadata() {
+        let env = TestEnv::new();
+        env.create_file("testfile", "test");
+        let file = env.volume.open_metadata("testfile").unwrap();
+        let stat = env.volume.lstat("testfile").unwrap();
+        assert_eq!(stat, file.fstat().unwrap().into());
+        assert!(file.pread(&mut [0; 4], 0).is_err());
+
+        let root = env.volume.open_metadata("").unwrap();
+        assert_eq!(env.volume.lstat("").unwrap(), root.fstat().unwrap().into());
+        assert_eq!(
+            env.volume.open_metadata("missing").err().unwrap(),
+            lx::Error::ENOENT
+        );
+    }
+
+    #[test]
+    fn open_metadata_preserves_deleted_directory() {
+        let env = TestEnv::new();
+        env.volume
+            .mkdir("deleted", LxCreateOptions::new(0o755, 0, 0))
+            .unwrap();
+        let file = env.volume.open_metadata("deleted").unwrap();
+        let original = file.fstat().unwrap();
+
+        env.volume.unlink("deleted", lx::AT_REMOVEDIR).unwrap();
+        for recreate in [false, true] {
+            if recreate {
+                env.volume
+                    .mkdir("deleted", LxCreateOptions::new(0o755, 0, 0))
+                    .unwrap();
+            }
+            let stat = file.fstat().unwrap();
+            assert_eq!(stat.inode_id, original.inode_id);
+            assert_eq!(stat.mode, original.mode);
+            assert_eq!(stat.link_count, 0);
+        }
+    }
+
+    #[test]
+    fn open_metadata_does_not_follow_symlinks() {
+        let env = TestEnv::new();
+        env.create_file("target", "test");
+        env.volume
+            .symlink("link", "target", LxCreateOptions::new(0o777, 0, 0))
+            .unwrap();
+        let file = env.volume.open_metadata("link").unwrap();
+        let stat = file.fstat().unwrap();
+        assert_eq!(u32::from(stat.mode) & lx::S_IFMT, lx::S_IFLNK);
+        assert_eq!(env.volume.lstat("link").unwrap(), stat.into());
     }
 
     #[test]
