@@ -19,6 +19,9 @@ use mesh::MeshPayload;
 use std::fmt::Write as _;
 use vmotherboard::options::BaseChipsetManifest;
 
+/// The persisted microVM ABI version.
+pub const MICROVM_ABI_VERSION_2: u32 = 2;
+
 /// Returns whether a processor count is valid for the microVM.
 pub const fn microvm_processor_count_supported(processor_count: u32) -> bool {
     matches!(processor_count, 1 | 2 | 4 | 8)

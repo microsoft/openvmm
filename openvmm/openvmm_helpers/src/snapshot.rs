@@ -8,6 +8,7 @@ use mesh::payload::Timestamp;
 
 pub mod format;
 pub mod fs;
+pub mod microvm;
 pub mod publish;
 pub mod restore;
 
@@ -50,6 +51,9 @@ pub struct SnapshotManifest {
     /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3.
     #[mesh(10)]
     pub memory_sha256: Vec<u8>,
+    /// Authoritative machine composition for versioned machine profiles.
+    #[mesh(11)]
+    pub machine_contract: Option<microvm::SnapshotMachineContract>,
     /// Snapshot format magic.
     #[mesh(12)]
     pub format_magic: Vec<u8>,

@@ -7,6 +7,7 @@
 use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use mesh::payload::Timestamp;
+use sha2::Digest;
 
 /// Magic identifying the OpenVMM snapshot manifest format.
 pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V3\0";
@@ -46,11 +47,34 @@ impl Default for SnapshotManifest {
             state_size_bytes: 0,
             state_sha256: Vec::new(),
             memory_sha256: Vec::new(),
+            machine_contract: None,
             format_magic: SNAPSHOT_FORMAT_MAGIC.to_vec(),
             saved_state_schema_version: SAVED_STATE_SCHEMA_VERSION,
             saved_state_root_type: SAVED_STATE_ROOT_TYPE.to_owned(),
         }
     }
+}
+
+pub(super) fn validate_sha256(digest: &[u8], description: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        digest.len() == SHA256_SIZE,
+        "{description} SHA-256 digest has invalid length {}",
+        digest.len(),
+    );
+    Ok(())
+}
+
+pub(super) fn verify_digest(
+    bytes: &[u8],
+    expected: &[u8],
+    description: &str,
+) -> anyhow::Result<()> {
+    let actual: [u8; 32] = sha2::Sha256::digest(bytes).into();
+    anyhow::ensure!(
+        actual.as_slice() == expected,
+        "{description} SHA-256 digest mismatch",
+    );
+    Ok(())
 }
 
 pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::Result<()> {
