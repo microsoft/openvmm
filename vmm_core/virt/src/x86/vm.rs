@@ -119,7 +119,7 @@ impl HvRegisterState<HvX64RegisterName, 1> for ReferenceTime {
 
 impl StateElement<X86PartitionCapabilities, X86VpInfo> for ReferenceTime {
     fn is_present(caps: &X86PartitionCapabilities) -> bool {
-        caps.hv1
+        caps.hv1 || caps.kvm_clock
     }
 
     fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
