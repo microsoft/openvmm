@@ -282,6 +282,9 @@ pub mod ged {
     /// the `test_igvm_agent_rpc_server`, where the Hyper-V boot
     /// sequence (including `initial_reboot`) generates extra IGVM
     /// attest requests before the test code runs.
+    ///
+    /// Stateful V3 context checks retain the last successfully issued hash
+    /// per VM across boots. Legacy V1/V2 requests do not require context.
     #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.
@@ -325,10 +328,10 @@ pub mod ged {
         /// Config for testing key release failure without the
         /// `skip_hw_unsealing` signal.
         ///
-        /// When the agent responds with a plain failure (no skip
-        /// signal), the attestation code falls back to hardware
-        /// unsealing using the hardware key protector saved on the
-        /// previous successful boot.  The VM should boot normally.
+        /// The first V3 release succeeds without a request context. Every
+        /// subsequent V3 release must echo that response's context, then
+        /// fails without the skip signal, requiring hardware unsealing.
+        /// A context assertion failure permanently sets the skip signal.
         KeyReleaseFailure,
         /// Config for testing a host/agent-requested TPM state refresh.
         ///
@@ -338,5 +341,13 @@ pub mod ged {
         /// boot.  AK cert requests are served so the guest has a valid
         /// AK to read across boots.
         StateRefresh,
+        /// Existing SNP/TDX stateful guest tests: require the previously issued
+        /// context on every V3 release and return a different canonical hash.
+        /// The first request must omit context. Assertion failures are sticky
+        /// and prohibit hardware unsealing. Legacy requests succeed unchanged.
+        KeyReleaseContextRefresh,
+        /// `ctx_v2`: three V2 wrapped-key and key-release responses; requests
+        /// must omit the context hash on every boot.
+        KeyReleaseV2,
     }
 }

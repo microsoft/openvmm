@@ -64,8 +64,8 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
 }
 
 impl RequestVmgsEncryptionKeysError {
-    /// A context failure must not be converted into hardware recovery: doing so
-    /// could bypass a policy change. Ordinary SKR outages retain that fallback.
+    /// Missing required context, malformed metadata, and invalid framing must not
+    /// be converted into hardware recovery. Ordinary SKR outages retain fallback.
     pub(crate) fn is_context_failure(&self) -> bool {
         match self {
             Self::InvalidCachedContextHash(_) => true,
@@ -156,6 +156,29 @@ struct WrappedKeyVmgsEncryptionKeys {
     rsa_aes_key_wrap_384_used: bool,
 }
 
+impl WrappedKeyVmgsEncryptionKeys {
+    fn into_unwrapped_keys(
+        self,
+        transfer_key: &RsaKeyPair,
+        key_derivation_svn: Option<tee_call::KeyDerivationSvn>,
+    ) -> Result<VmgsEncryptionKeys, Pkcs11RsaAesKeyUnwrapError> {
+        // Context presence and format were checked before the inner payload.
+        // Do not propagate a new hash unless every stage of key unwrap succeeds.
+        let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(
+            transfer_key,
+            &self.rsa_aes_wrapped_key,
+            self.rsa_aes_key_wrap_384_used,
+        )?;
+
+        Ok(VmgsEncryptionKeys {
+            ingress_rsa_kek: Some(ingress_rsa_kek),
+            wrapped_des_key: self.wrapped_des_key,
+            key_derivation_svn,
+            key_release_context_hash: self.key_release_context_hash,
+        })
+    }
+}
+
 /// The return values of [`request_vmgs_encryption_keys`].
 #[derive(Default)]
 pub struct VmgsEncryptionKeys {
@@ -234,32 +257,13 @@ pub async fn request_vmgs_encryption_keys(
         &result.report,
         agent_data,
         vmgs_encrypted,
-        cached_context_hash,
+        cached_context_hash.is_some(),
     )
     .await
     {
-        Ok(WrappedKeyVmgsEncryptionKeys {
-            rsa_aes_wrapped_key,
-            wrapped_des_key,
-            rsa_aes_key_wrap_384_used,
-            key_release_context_hash,
-        }) => {
-            // Context was validated before parsing the inner key payload, so
-            // malformed key material cannot mask a terminal context failure.
-            let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(
-                &transfer_key,
-                &rsa_aes_wrapped_key,
-                rsa_aes_key_wrap_384_used,
-            )
-            .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
-
-            Ok(VmgsEncryptionKeys {
-                ingress_rsa_kek: Some(ingress_rsa_kek),
-                wrapped_des_key,
-                key_derivation_svn: result.key_derivation_svn,
-                key_release_context_hash,
-            })
-        }
+        Ok(keys) => keys
+            .into_unwrapped_keys(&transfer_key, result.key_derivation_svn)
+            .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false)),
         Err(
             wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
                 igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
@@ -325,7 +329,7 @@ async fn make_igvm_attest_requests(
     attestation_report: &[u8],
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     vmgs_encrypted: bool,
-    expected_context: Option<[u8; 32]>,
+    require_context: bool,
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // When VMGS is encrypted, empty `agent_data` from VMGS implies that the data required by the
     // KeyRelease request needs to come from the WrappedKey response.
@@ -438,10 +442,10 @@ async fn make_igvm_attest_requests(
         }
     };
 
-    match igvm_attest::key_release::parse_response_with_context(
+    match igvm_attest::key_release::parse_response_requiring_context(
         &response.response,
         transfer_key.modulus_size(),
-        expected_context,
+        require_context,
     ) {
         Ok(igvm_attest::key_release::KeyReleaseResponse {
             wrapped_key: rsa_aes_wrapped_key,
@@ -505,8 +509,9 @@ mod tests {
         responses.push(v3_frame(&vec![b' '; KEY_RELEASE_RESPONSE_BUFFER_SIZE]));
 
         for response in responses {
-            let error = igvm_attest::key_release::parse_response_with_context(&response, 256, None)
-                .unwrap_err();
+            let error =
+                igvm_attest::key_release::parse_response_requiring_context(&response, 256, false)
+                    .unwrap_err();
             assert!(
                 RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
                     .is_context_failure()
@@ -536,7 +541,7 @@ mod tests {
             br#"{"schema_version":1,"request_type":"wrapped_key","payload":"","extensions":{}}"#,
         );
         let error =
-            igvm_attest::key_release::parse_response_with_context(&wrong_key_type, 256, None)
+            igvm_attest::key_release::parse_response_requiring_context(&wrong_key_type, 256, false)
                 .unwrap_err();
         assert!(
             RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
@@ -562,8 +567,9 @@ mod tests {
         let response = v3_frame(
             br#"{"schema_version":1,"request_type":"key_release","payload":"","extensions":{"key_release_context_hash":"bad"}}"#,
         );
-        let error = igvm_attest::key_release::parse_response_with_context(&response, 256, None)
-            .unwrap_err();
+        let error =
+            igvm_attest::key_release::parse_response_requiring_context(&response, 256, false)
+                .unwrap_err();
         assert!(matches!(
             error,
             igvm_attest::key_release::KeyReleaseError::ParseHeader(
@@ -577,12 +583,12 @@ mod tests {
     }
 
     #[test]
-    fn context_mismatch_is_terminal_before_invalid_inner_payload() {
+    fn missing_context_is_terminal_but_changed_context_reaches_inner_payload() {
         use openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash;
 
         for actual_context in [None, Some([2; 32])] {
-            // Neither a missing/changed hash nor an invalid short inner payload
-            // may allow hardware fallback when a context is already required.
+            // A missing hash is terminal. A changed valid hash reaches payload
+            // parsing, whose failure must not be misclassified as a context error.
             let extensions = match actual_context.as_ref() {
                 Some(hash) => serde_json::json!({
                     "key_release_context_hash": encode_key_release_context_hash(hash)
@@ -596,21 +602,26 @@ mod tests {
                 "extensions": extensions,
             });
             let response = v3_frame(&serde_json::to_vec(&envelope).unwrap());
-            let error = igvm_attest::key_release::parse_response_with_context(
-                &response,
-                256,
-                Some([1; 32]),
-            )
-            .unwrap_err();
-            assert!(matches!(
-                error,
-                igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                    igvm_attest::Error::ResponseContextMismatch
-                )
-            ));
-            assert!(
+            let error =
+                igvm_attest::key_release::parse_response_requiring_context(&response, 256, true)
+                    .unwrap_err();
+            if actual_context.is_none() {
+                assert!(matches!(
+                    error,
+                    igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                        igvm_attest::Error::MissingRequiredResponseContext
+                    )
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall
+                ));
+            }
+            assert_eq!(
                 RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
-                    .is_context_failure()
+                    .is_context_failure(),
+                actual_context.is_none()
             );
         }
     }
@@ -638,6 +649,71 @@ mod tests {
                     .is_context_failure()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn candidate_context_is_not_returned_when_key_unwrap_fails() {
+        use crate::igvm_attest::tests::v3_response;
+        use openhcl_attestation_protocol::igvm_attest::akv::AkvKeyReleaseKeyBlob;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestType;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
+
+        let transfer_key = RsaKeyPair::generate(2048).unwrap();
+        let aes_key = [0x55; 32];
+        let wrapped_aes_key = transfer_key
+            .oaep_encrypt(&aes_key, HashAlgorithm::Sha384)
+            .unwrap();
+        let invalid_der = crypto::aes_kwp::AesKeyWrap::new(&aes_key)
+            .unwrap()
+            .wrapper()
+            .unwrap()
+            .wrap(&[0; 512])
+            .unwrap();
+        // Each blob passes payload parsing, then fails at a different unwrap
+        // stage. None may produce VmgsEncryptionKeys carrying candidate B.
+        let blobs = [
+            vec![0; 520],
+            [wrapped_aes_key.clone(), vec![0; 264]].concat(),
+            [wrapped_aes_key, invalid_der].concat(),
+        ];
+        for (stage, ciphertext) in blobs.into_iter().enumerate() {
+            let payload = serde_json::to_string(&AkvKeyReleaseKeyBlob { ciphertext }).unwrap();
+            let response = v3_response(
+                IgvmAttestResponseRequestType::KeyRelease,
+                &payload,
+                Some([0xb2; 32]),
+                IgvmErrorInfo {
+                    igvm_signal: IgvmSignal::new().with_rsa_aes_key_wrap_384_used(true),
+                    ..Default::default()
+                },
+            );
+            let parsed = igvm_attest::key_release::parse_response_requiring_context(
+                &response,
+                transfer_key.modulus_size(),
+                true,
+            )
+            .unwrap();
+            assert_eq!(parsed.key_release_context_hash, Some([0xb2; 32]));
+            let keys = WrappedKeyVmgsEncryptionKeys {
+                key_release_context_hash: parsed.key_release_context_hash,
+                rsa_aes_wrapped_key: parsed.wrapped_key,
+                wrapped_des_key: None,
+                rsa_aes_key_wrap_384_used: parsed.rsa_aes_key_wrap_384_used,
+            };
+            let error = keys
+                .into_unwrapped_keys(&transfer_key, None)
+                .err()
+                .expect("failed unwrap must not return a new context");
+            assert!(matches!(
+                (stage, &error),
+                (0, Pkcs11RsaAesKeyUnwrapError::RsaUnwrap(_))
+                    | (1, Pkcs11RsaAesKeyUnwrapError::AesUnwrap(_))
+                    | (2, Pkcs11RsaAesKeyUnwrapError::ParsePkcs8Der(_))
+            ));
+            assert!(
+                !RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(error).is_context_failure()
+            );
         }
     }
 

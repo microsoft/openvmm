@@ -138,9 +138,9 @@ metadata count toward the response limit, so a service payload that fits
 without an envelope may exceed the limit when enveloped. Oversized responses
 are rejected.
 
-Malformed framing, invalid UTF-8, invalid envelopes, and invalid or mismatched
-Key Release context hashes fail closed. They are not reparsed as legacy
-responses and do not trigger hardware fallback. These protocol/context
+Malformed framing, invalid UTF-8, invalid envelopes, malformed Key Release
+context hashes, and missing required hashes fail closed. They are not reparsed
+as legacy responses and do not trigger hardware fallback. These protocol/context
 failures are distinct from explicit service errors and transport outages,
 which retain the existing retry and hardware-recovery behavior. Inner
 service-payload or unwrap failures do not adopt a new hash and retain their

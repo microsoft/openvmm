@@ -83,8 +83,8 @@ pub enum Error {
     },
     #[error("invalid key-release context hash")]
     InvalidContextHash(#[source] InvalidKeyReleaseContextHash),
-    #[error("key-release response context differs from the existing binding")]
-    ResponseContextMismatch,
+    #[error("key-release response is missing the required context hash")]
+    MissingRequiredResponseContext,
     #[error(
         "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
@@ -493,7 +493,7 @@ fn runtime_claims_to_bytes(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseExtensions;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseExtensions;
@@ -530,7 +530,7 @@ mod tests {
         [header.as_slice(), payload].concat()
     }
 
-    pub(super) fn v3_response(
+    pub(crate) fn v3_response(
         request_type: IgvmAttestResponseRequestType,
         payload: &str,
         context_hash: Option<[u8; 32]>,
@@ -648,7 +648,7 @@ mod tests {
             );
             let expected = std::array::from_fn(|i| i as u8);
             let parsed =
-                key_release::parse_response_with_context(&response, 256, Some(expected)).unwrap();
+                key_release::parse_response_requiring_context(&response, 256, true).unwrap();
             assert_eq!(parsed.key_release_context_hash, Some(expected));
             assert_eq!(parsed.wrapped_key, vec![42; 520]);
         }
