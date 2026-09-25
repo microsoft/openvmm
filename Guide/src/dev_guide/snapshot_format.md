@@ -39,6 +39,12 @@ RAM and a mounted writable filesystem must be restored as one exact pair.
 Export or transport layers must provide broader integrity and authentication
 outside this format.
 
+The optional microVM network contract stores a versioned SHA-256 digest of its
+bound egress policy. Encoding version 2 includes the static prefix, guest MAC,
+and canonical ARP next-hop set in addition to the policy rules. An absent
+encoding-version field denotes version 1, allowing network snapshots produced
+before endpoint next-hop binding to retain their original digest semantics.
+
 ## Device state (`state.bin`)
 
 The device state contains every device's saved state, collected via the
