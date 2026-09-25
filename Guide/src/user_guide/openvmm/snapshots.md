@@ -78,7 +78,8 @@ cargo run -- \
 
 `--restore-snapshot` verifies and opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two options
-are mutually exclusive).
+are mutually exclusive). Guest writes use a private copy-on-write mapping and
+do not modify the snapshot artifact.
 
 ```admonish warning
 Version 3 does not contain or validate embedded checksums for `state.bin` or
@@ -190,10 +191,8 @@ immediately with a clear error if any active device does not support it.
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
-- After restoring, `memory.bin` in the snapshot directory becomes the live
-  guest RAM backing file and will be modified as the VM runs. To restore
-  from the same snapshot multiple times, copy the snapshot directory before
-  each restore.
+- Restores use private copy-on-write RAM, so a snapshot can be restored
+  repeatedly without copying it or modifying `memory.bin`.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore
