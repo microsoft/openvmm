@@ -40,7 +40,6 @@ guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 guest_emulation_device = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true
-x86defs.workspace = true
 
 [lints]
 workspace = true

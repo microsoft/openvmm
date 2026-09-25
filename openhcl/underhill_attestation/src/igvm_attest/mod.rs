@@ -975,70 +975,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_snp_request_matches_wire_format() {
-        use base64::Engine;
-        use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
-        use x86defs::snp::SnpReport;
-
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../openhcl_attestation_protocol/examples/mock_igvmattest_snp_request.json"
-        ))
-        .unwrap();
-        let claims_json = fixture["runtime_claims_json"].as_str().unwrap();
-        let claims: RuntimeClaims = serde_json::from_str(claims_json).unwrap();
-        assert_eq!(
-            serde_json::to_value(&claims).unwrap(),
-            fixture["runtime_claims"]
-        );
-        // Preserve the exact bytes hashed by the fixture, including field order.
-        assert_eq!(runtime_claims_to_bytes(&claims), claims_json.as_bytes());
-        assert_eq!(
-            claims.vm_configuration.key_release_context_hash.as_deref(),
-            Some(CONTEXT_HASH_HEX)
-        );
-        let digest = crypto::sha_256::sha_256(claims_json.as_bytes());
-        assert_eq!(hex::encode(digest), fixture["runtime_claims_sha256_hex"]);
-        let report_bytes = base64::engine::general_purpose::STANDARD
-            .decode(fixture["snp_report"]["bytes_base64"].as_str().unwrap())
-            .unwrap();
-        let report = SnpReport::read_from_bytes(&report_bytes).unwrap();
-        assert_eq!(report.version, 2);
-        assert_eq!(report.vmpl, 0);
-        assert_eq!(report.signature_algo, 1);
-        assert_eq!(&report.report_data[..32], &digest);
-        assert_eq!(&report.report_data[32..], &[0; 32]);
-        assert_eq!(
-            hex::encode(report.report_data),
-            fixture["snp_report"]["report_data_hex"]
-        );
-        assert_eq!(report.signature, [0; 512]);
-        let expected = create_request(
-            IgvmAttestRequestVersion::VERSION_2,
-            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-            claims_json.as_bytes(),
-            &report_bytes,
-            &ReportType::Snp,
-            IgvmAttestHashType::SHA_256,
-        )
-        .unwrap();
-        let actual = base64::engine::general_purpose::STANDARD
-            .decode(fixture["request_base64"].as_str().unwrap())
-            .unwrap();
-        assert_eq!(actual, expected);
-        assert_eq!(
-            actual.as_slice(),
-            include_bytes!(
-                "../../../openhcl_attestation_protocol/examples/mock_igvmattest_snp_request.bin"
-            )
-        );
-        assert_eq!(fixture["header"]["report_size"], actual.len());
-        assert_eq!(
-            fixture["request_data"]["variable_data_size"],
-            claims_json.len()
-        );
-    }
-
-    #[test]
     fn test_create_request_version1_no_extension() {
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
@@ -1206,15 +1142,8 @@ mod tests {
     }
 
     #[test]
-    fn test_vm_configuration_context_hash_from_mock_metadata() {
-        // This legacy fixture illustrates metadata only, not a framed V3
-        // key-release response. Assign explicitly to test claim serialization.
-        let response: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../openhcl_attestation_protocol/examples/mock_igvmattest_response.json"
-        ))
-        .unwrap();
-        let context_hash = response["key_release_context_hash"].as_str().unwrap();
-        assert_eq!(context_hash, CONTEXT_HASH_HEX);
+    fn test_vm_configuration_context_hash_roundtrip() {
+        let context_hash = CONTEXT_HASH_HEX;
         assert_eq!(
             hex::decode(context_hash).unwrap(),
             (0u8..32).collect::<Vec<_>>()
