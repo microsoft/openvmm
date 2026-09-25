@@ -7,6 +7,7 @@
 //! serial IO backend, and real virtio queues — then drive requests through the
 //! descriptor rings just as a guest driver would.
 
+mod broker;
 mod direct;
 mod harness;
 mod saved_state;

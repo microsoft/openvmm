@@ -103,6 +103,7 @@ vm_resource::register_static_resolvers! {
 
     // Virtio devices
     virtio_blk::resolver::VirtioBlkResolver,
+    virtio_console::resolver::control::VirtioControlConsoleResolver,
     virtio_console::resolver::VirtioConsoleResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtiofs::resolver::VirtioFsResolver,
