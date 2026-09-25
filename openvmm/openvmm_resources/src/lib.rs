@@ -20,6 +20,7 @@ vm_resource::register_static_resolvers! {
     chipset_legacy::i440bx_host_pci_bridge::resolver::I440BxHostPciBridgeResolver,
     chipset::pit::resolver::PitResolver,
     chipset::microvm::resolver::MicrovmPortbResolver,
+    chipset::microvm::resolver::MicrovmShutdownResolver,
     chipset::pic::resolver::PicResolver,
     chipset::ioapic::resolver::GenericIoApicResolver,
     chipset::pm::resolver::HyperVPowerManagementResolver,
