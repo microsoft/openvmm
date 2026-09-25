@@ -21,8 +21,9 @@ impl StateUnits {
     /// does not start if one of its dependencies did not start. If a unit's
     /// task does not answer its start request, the units that did start are
     /// stopped again, and the unit is left in a terminal state: while it is in
-    /// that state, later starts, resets, saves, and restores fail, and a stop
-    /// stops it, since it may be running, but leaves it in that state.
+    /// that state, later starts, resets, saves, restores, and time advances
+    /// fail, and a stop stops it, since it may be running, but leaves it in
+    /// that state.
     ///
     /// The units that did start are stopped again in reverse dependency order.
     /// A started unit that a unit that is not stopped depends on, such as a
