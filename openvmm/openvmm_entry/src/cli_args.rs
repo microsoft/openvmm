@@ -3012,6 +3012,7 @@ pub enum EndpointConfigCli {
     Tap {
         name: String,
     },
+    Microvm(openvmm_defs::microvm::MicrovmNetworkConfig),
 }
 
 /// Parsed host port forwarding configuration from the CLI.
@@ -3132,6 +3133,7 @@ impl FromStr for EndpointConfigCli {
             ["tap", name] => EndpointConfigCli::Tap {
                 name: (*name).to_owned(),
             },
+            [network] if network.contains('/') => microvm::parse_endpoint(network)?,
             _ => return Err("invalid network backend".into()),
         };
 
