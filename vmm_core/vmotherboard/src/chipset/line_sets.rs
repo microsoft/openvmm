@@ -38,6 +38,7 @@ impl LineSets {
             let set = Arc::new(LineSet::new());
             let unit = units
                 .add(format!("lines/{}", id.name()))
+                .lifetime(state_unit::UnitLifetime::Derived)
                 .spawn(driver.simple(), {
                     let set = set.clone();
                     async move |mut recv| {

@@ -19,6 +19,7 @@ use super::backing::arc_mutex::pci::WeakMutexPcieRciepEntry;
 use super::backing::arc_mutex::services::ArcMutexChipsetServices;
 use super::backing::arc_mutex::state_unit::ArcMutexChipsetDeviceUnit;
 pub use super::backing::arc_mutex::state_unit::DynamicDeviceUnit;
+use super::contract::DynamicDeviceContract;
 use crate::BusId;
 use crate::BusIdPci;
 use crate::BusIdPcieDownstreamPort;
@@ -39,6 +40,7 @@ use parking_lot::Mutex;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use state_unit::UnitHandle;
+use state_unit::UnitLifetime;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -86,11 +88,16 @@ impl ChipsetDevices {
     }
 
     /// Adds a dynamically managed device to the chipset at runtime.
+    ///
+    /// The device's state unit records a [dynamic](UnitLifetime::Dynamic)
+    /// contract: `contract`'s identity and kind, and the PCI identity that the
+    /// device reports, so that a restore can re-create it.
     pub async fn add_dyn_device<T: VmmChipsetDevice>(
         &self,
         driver_source: &VmTaskDriverSource,
         units: &StateUnits,
         name: impl Into<Arc<str>>,
+        contract: DynamicDeviceContract,
         f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
     ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>)> {
         let name = name.into();
@@ -104,8 +111,22 @@ impl ChipsetDevices {
         )
         .await?;
         let device = arc_builder.build(CloseableMutex::new(device));
+        let pci_identity = device
+            .lock()
+            .supports_pci()
+            .map(super::contract::pci_identity)
+            .unwrap_or_default();
         let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
-        let builder = units.add(name).dependency_of(self.chipset_unit());
+        let DynamicDeviceContract { stable_id, kind } = contract;
+        let mut builder = units
+            .add(name)
+            .dependency_of(self.chipset_unit())
+            .lifetime(UnitLifetime::Dynamic)
+            .kind(kind)
+            .descriptors(pci_identity);
+        if let Some(stable_id) = stable_id {
+            builder = builder.stable_id(stable_id);
+        }
         let driver = driver_source.simple();
         let unit = builder
             .spawn(driver.clone(), |recv| device_unit.run(recv))
@@ -159,7 +180,11 @@ impl<'a> ChipsetBuilder<'a> {
         fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
     ) -> Self {
         let (send, chipset_recv) = mesh::channel();
-        let chipset_unit = units.add("chipset").build(send).unwrap();
+        let chipset_unit = units
+            .add("chipset")
+            .lifetime(UnitLifetime::Derived)
+            .build(send)
+            .unwrap();
 
         Self {
             inner: Mutex::new(ChipsetBuilderInner {

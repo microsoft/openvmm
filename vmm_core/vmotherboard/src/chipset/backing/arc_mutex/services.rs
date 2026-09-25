@@ -12,6 +12,8 @@ use crate::BusIdPcieDownstreamPort;
 use crate::BusIdPcieEnumerator;
 use crate::ChipsetBuilder;
 use crate::VmmChipsetDevice;
+use crate::chipset::contract::pci_identity;
+use crate::chipset::contract::region_descriptor;
 use crate::chipset::io_ranges::IoRanges;
 use crate::chipset::line_sets::LineSetTargetDevice;
 use chipset_device::ChipsetDevice;
@@ -21,6 +23,8 @@ use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
+use state_unit::UnitDescriptor;
+use state_unit::UnitLifetime;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -42,6 +46,13 @@ pub struct ArcMutexChipsetServices<'a, 'b> {
     static_pio: Vec<Box<dyn ControlPortIoIntercept>>,
 
     omit_saved_state: bool,
+
+    /// The guest-visible properties that the device's registrations declare,
+    /// which its state unit's contract records.
+    descriptors: Vec<UnitDescriptor>,
+    stable_id: Option<String>,
+    kind: String,
+    lifetime: UnitLifetime,
 }
 
 #[derive(Debug, Error)]
@@ -84,7 +95,19 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
                 .supports_line_interrupt_target()
                 .map(|d| d.valid_lines().to_vec());
 
-            let mut builder = self.builder.units.add(dev_name.clone());
+            let mut builder = self
+                .builder
+                .units
+                .add(dev_name.clone())
+                .kind(self.kind)
+                .lifetime(self.lifetime)
+                .descriptors(self.descriptors);
+            if let Some(stable_id) = self.stable_id {
+                builder = builder.stable_id(stable_id);
+            }
+            if let Some(pci) = device.supports_pci() {
+                builder = builder.descriptors(pci_identity(pci));
+            }
             // Before stopping the device, the chipset interface must stop
             // running so that it stops issuing MMIO/PIO requests.
             if device.supports_mmio().is_some()
@@ -170,11 +193,34 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
             static_pio: Vec::new(),
 
             omit_saved_state: false,
+
+            descriptors: Vec::new(),
+            stable_id: None,
+            kind: String::new(),
+            lifetime: UnitLifetime::Static,
         }
     }
 
     pub fn omit_saved_state(&mut self) {
         self.omit_saved_state = true
+    }
+
+    /// Sets the guest-visible identity that the device's state unit records,
+    /// such as the PCIe port that it occupies. Defaults to the device's name.
+    pub fn set_stable_id(&mut self, stable_id: String) {
+        self.stable_id = Some(stable_id);
+    }
+
+    /// Sets what the device's state unit records the device to be, such as
+    /// its resource kind.
+    pub fn set_kind(&mut self, kind: String) {
+        self.kind = kind;
+    }
+
+    /// Sets how the device became part of the VM, which its state unit
+    /// records. Defaults to [`UnitLifetime::Static`].
+    pub fn set_lifetime(&mut self, lifetime: UnitLifetime) {
+        self.lifetime = lifetime;
     }
 
     pub fn register_vmtime(&self) -> &VmTimeSource {
@@ -200,6 +246,8 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_mmio(&mut self, label: &str, range: RangeInclusive<u64>) {
+        self.descriptors
+            .push(region_descriptor("mmio", label, &range));
         let mut region = self
             .register_mmio()
             .new_io_region(label, range.end() - range.start() + 1);
@@ -208,6 +256,8 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_pio(&mut self, label: &str, range: RangeInclusive<u16>) {
+        self.descriptors
+            .push(region_descriptor("pio", label, &range));
         let mut region = self
             .register_pio()
             .new_io_region(label, range.end() - range.start() + 1);
@@ -216,6 +266,11 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_pci(&mut self, bus_id: BusIdPci, bdf: (u8, u8, u8)) {
+        let (bus, device, function) = bdf;
+        self.descriptors.push(UnitDescriptor::new(
+            "pci.bdf",
+            format!("{}/{bus:02x}:{device:02x}.{function}", bus_id.name),
+        ));
         self.builder.register_weak_mutex_pci_device(
             bus_id,
             bdf,
@@ -225,6 +280,8 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_pcie(&mut self, bus_id: BusIdPcieDownstreamPort) {
+        self.descriptors
+            .push(UnitDescriptor::new("pcie.port", bus_id.name.as_ref()));
         self.builder.register_weak_mutex_pcie_device(
             bus_id,
             self.dev_name.clone(),
@@ -233,6 +290,10 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
     }
 
     pub fn register_static_pcie_rciep(&mut self, enumerator_id: BusIdPcieEnumerator, devfn: u8) {
+        self.descriptors.push(UnitDescriptor::new(
+            "pcie.rciep",
+            format!("{}/{devfn:#x}", enumerator_id.name),
+        ));
         self.builder.register_weak_mutex_pcie_rciep(
             enumerator_id,
             devfn,
@@ -249,6 +310,10 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
                 .line_set(self.builder.driver_source, self.builder.units, id.clone());
         match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
             Ok(line) => {
+                self.descriptors.push(UnitDescriptor::new(
+                    "line",
+                    format!("{}/{vector}", id.name()),
+                ));
                 self.line_set_dependencies.push(id);
                 line
             }
@@ -267,6 +332,15 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
         source_range: RangeInclusive<u32>,
         target_start: u32,
     ) {
+        self.descriptors.push(UnitDescriptor::new(
+            "line.target",
+            format!(
+                "{}/{}-{}@{target_start}",
+                id.name(),
+                source_range.start(),
+                source_range.end()
+            ),
+        ));
         self.line_set_targets.push((id, source_range, target_start));
     }
 }

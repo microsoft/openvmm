@@ -62,7 +62,6 @@ use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
-use mesh::payload::Protobuf;
 use mesh::payload::message::ProtobufMessage;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
@@ -92,6 +91,7 @@ use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::SavedState;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_pcat_locator::RomFileLocation;
@@ -106,7 +106,6 @@ use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
-use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::collections::VecDeque;
@@ -144,7 +143,6 @@ use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
 use vmbus_server::VmbusServer;
 use vmbus_server::hvsock::HvsockRelay;
-use vmcore::save_restore::SavedStateRoot;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vmtime::VmTime;
@@ -274,11 +272,29 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
 }
 
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "openvmm")]
-pub struct SavedState {
-    #[mesh(1)]
-    pub units: Vec<SavedStateUnit>,
+/// Checks that the state units satisfy the inventory of a saved-state
+/// envelope, and that it records every unit whose state the envelope holds.
+///
+/// Saved state from before the VM worker recorded an inventory has none, and
+/// restores without the check. A recorded hot-plugged unit that the VM lacks
+/// fails the check.
+fn check_inventory(state_units: &StateUnits, state: &SavedState) -> anyhow::Result<()> {
+    if state.inventory.is_empty() {
+        return Ok(());
+    }
+    let plan = state_units
+        .check_inventory(&state.inventory, &state.units)
+        .context("saved state does not match the VM's state units")?;
+    anyhow::ensure!(
+        plan.recreate.is_empty(),
+        "saved state records hot-plugged state units that the VM lacks: {}",
+        plan.recreate
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
 }
 
 async fn open_simple_disk(
@@ -1820,6 +1836,7 @@ impl InitializedVm {
 
         let vmtime = state_units
             .add("vmtime")
+            .lifetime(state_unit::UnitLifetime::Derived)
             .spawn(driver_source.simple(), {
                 |recv| {
                     let mut vmtime = vmtime_keeper;
@@ -1841,6 +1858,7 @@ impl InitializedVm {
 
         let input_distributor = state_units
             .add("input")
+            .lifetime(state_unit::UnitLifetime::Derived)
             .spawn(driver_source.simple(), async |mut recv| {
                 input_distributor.run(&mut recv).await;
                 input_distributor
@@ -4039,10 +4057,15 @@ impl LoadedVm {
                             );
 
                             let mapper = self.inner.memory_manager.device_memory_mapper();
+                            let contract = vmotherboard::DynamicDeviceContract {
+                                stable_id: Some(vmotherboard::pcie_port_stable_id(&port_name)),
+                                kind: resource.id().to_owned(),
+                            };
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
                                 format!("pcie-hotplug:{}", port_name),
+                                contract,
                                 async |register_mmio| {
                                     self.inner.resolver
                                         .resolve(
@@ -4359,17 +4382,19 @@ impl LoadedVm {
         }
     }
 
-    /// Saves the VM's processor, partition, and device state.
+    /// Saves the VM's processor, partition, and device state, with the
+    /// contract of every state unit from the same snapshot of the units.
     ///
     /// TODO: virtio & vmbus unsupported.
     async fn save(&mut self) -> anyhow::Result<SavedState> {
-        Ok(SavedState {
-            units: self.state_units.save().await?,
-        })
+        let (units, inventory) = self.state_units.save_with_inventory().await?;
+        Ok(SavedState { units, inventory })
     }
 
-    /// Restore state on the VM.
+    /// Restore state on the VM, once its state units satisfy the saved
+    /// inventory.
     async fn restore(&mut self, state: SavedState) -> anyhow::Result<()> {
+        check_inventory(&self.state_units, &state)?;
         self.state_units.restore(state.units).await?;
         Ok(())
     }

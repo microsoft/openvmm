@@ -103,35 +103,46 @@ the snapshot was saved — they are not read from the snapshot.
 The snapshot manifest validates that `--memory`, `--processors`,
 architecture, and page size match the values recorded at save time. However,
 it does **not** record the list of CLI device flags. Instead, device
-configuration compatibility is enforced at the state-unit level: each
+configuration compatibility is enforced at the state-unit level. Each
 emulated device saves its state under a unique name (e.g. `"pit"`,
-`"vmbus"`, `"ide"`), and restore matches saved-state entries to the
-currently instantiated devices by name.
+`"vmbus"`, `"ide"`), and the snapshot records the contract of every state
+unit, including the units that have no saved state. A unit's contract adds
+what the guest sees of it to its name: a stable identity, such as the PCIe
+port of its device; its kind, such as its device's resource kind; whether the
+VM's configuration created it (static), it was added while the VM ran
+(dynamic), or it is VMM infrastructure such as VM time (derived); and
+descriptors, such as the address ranges and interrupt lines that it decodes
+and the PCI IDs that it reports. Restore requires the restored VM's state
+units to match the recorded contracts exactly, whatever order either VM
+registered them in, before it applies any saved state.
 
 The rules are:
 
 | Scenario | Result |
 |---|---|
 | Device set matches exactly | Restore succeeds |
-| Snapshot contains a device not in current config | **Restore fails** — unknown unit name |
-| Current config has a device not in snapshot | Restore succeeds — device starts in its default/initial state |
+| Snapshot contains a device not in current config | **Restore fails** — inventory mismatch, missing |
+| Current config has a device not in snapshot | **Restore fails** — inventory mismatch, unexpected |
+| A device's contract changed, such as its addresses or PCI IDs | **Restore fails** — inventory mismatch, changed |
 
 In practice this means:
 
 - You must pass the **same device flags** on restore as you did on save.
   Removing a device that was present at save time will cause restore to
   fail.
-- Adding a *new* device that was not present at save time is technically
-  allowed — the new device will start in its power-on default state.
-  This is not tested and the device may not be functional, since the
-  guest OS will not have enumerated or initialised it during boot.
-  The supported path is to use the same device flags on save and restore.
+- Adding a new device that was not present at save time fails inventory
+  validation rather than starting an unenumerated device in its default
+  state.
+
+A snapshot saved by an OpenVMM that did not record contracts has none, and
+restores as before: saved-state entries match the current devices by name,
+a device not in the current config fails the restore with `unknown unit
+name`, and a device not in the snapshot starts in its default state.
 
 ```admonish warning
-There is no single error message that tells you "your device configuration
-changed". Instead you will see errors like `restore failed: unknown unit
-name` when saved-state entries cannot be matched. If you see this, compare
-your restore command line with the one used at save time.
+Inventory errors list the missing, unexpected, and changed state units, each
+with its contract. If you see one, compare your restore command line with
+the one used at save time.
 ```
 
 ## Device save/restore support

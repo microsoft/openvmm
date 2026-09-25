@@ -114,6 +114,28 @@ where
         self
     }
 
+    /// Sets the guest-visible identity that the device's state unit records
+    /// in its [contract](state_unit::UnitContract), such as the PCIe port that
+    /// it occupies. Defaults to the device's name.
+    pub fn stable_id(mut self, stable_id: impl Into<String>) -> Self {
+        self.services.set_stable_id(stable_id.into());
+        self
+    }
+
+    /// Sets what the device's state unit records the device to be, such as its
+    /// resource kind.
+    pub fn kind(mut self, kind: impl Into<String>) -> Self {
+        self.services.set_kind(kind.into());
+        self
+    }
+
+    /// Sets how the device became part of the VM, which its state unit
+    /// records. Defaults to [`UnitLifetime::Static`](state_unit::UnitLifetime::Static).
+    pub fn lifetime(mut self, lifetime: state_unit::UnitLifetime) -> Self {
+        self.services.set_lifetime(lifetime);
+        self
+    }
+
     /// For PCI devices: place the device at the following PCI address
     pub fn with_pci_addr(mut self, bus: u8, device: u8, function: u8) -> Self {
         self.pci_addr = Some((bus, device, function));
