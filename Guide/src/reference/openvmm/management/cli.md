@@ -120,8 +120,13 @@ describes the source definitions.
   canonical directory is identified by its device and inode numbers on Linux,
   or by its volume and file ID on Windows, and the device refuses the
   attachment if the path no longer names that directory when it opens the
-  root. The guest memory backing file must be outside the exported root.
-  Snapshot capture does not yet support `--mount`, and restore rejects it.
+  root. The guest memory backing file, the snapshot destination, and the
+  restore snapshot must be outside the exported root.
+
+  Filesystem snapshots contain guest-visible FUSE and queue state, not host
+  directory contents or native handles. Restore requires `--mount` again with
+  the exact canonical host path, guest target, and access mode; the live root
+  and every saved object identity are also revalidated before vCPUs start.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
@@ -137,7 +142,9 @@ describes the source definitions.
   saves accepted but undelivered input and the offset of a partially forwarded
   guest transmit descriptor. An attached microVM virtio-net device saves its
   static identity, queue progress, drained packet ownership, and endpoint
-  generation.
+  generation. An attached microVM virtio-fs device saves its negotiated FUSE
+  policy, namespace and handle identifiers, aliases, and directory cookies.
+  The host tree remains external live state.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm --memory 128M \
@@ -158,6 +165,12 @@ describes the source definitions.
   fails before any vCPU starts when a required attachment cannot be rebuilt.
   A listener peer may connect after restore; guest transmit descriptors remain
   pending while no peer is connected.
+
+  When the snapshot contains a virtio-fs attachment, restore requires a fresh
+  `--mount`. The argument must reproduce the manifest's exact canonical host
+  path, guest target, and `ro`/`rw` mode while also supplying a live root with
+  the same saved identity. A snapshot without the filesystem rejects
+  `--mount`.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile must match the supplied
