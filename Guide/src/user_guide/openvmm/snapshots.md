@@ -26,11 +26,10 @@ Snapshots require **file-backed guest memory**. Pass `file=<PATH>` in the
 `--memory` option when launching the VM so that guest RAM is written to a
 file on disk rather than held in anonymous memory.
 
-```admonish warning
-The memory backing file and the snapshot directory must be on the **same
-filesystem**. OpenVMM creates a hard link from the backing file to
-`memory.bin` inside the snapshot directory, which does not work across
-filesystem boundaries.
+```admonish note
+OpenVMM copies the memory backing file into `memory.bin`, using file cloning
+when the filesystem supports it, so the backing file and the snapshot directory
+can be on different filesystems.
 ```
 
 ## Saving a snapshot
@@ -52,12 +51,14 @@ specifying the output directory:
 save-snapshot path/to/snapshot-dir
 ```
 
-OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
-into the specified directory.
+OpenVMM writes and flushes `manifest.bin`, `state.bin`, and a copy of guest
+RAM in `memory.bin` in a uniquely named sibling staging directory, and then
+atomically renames the completed directory to the specified path. The
+destination must not already exist. The rename is the commit point: if saving
+fails before it, nothing is published at the destination.
 
 ```admonish warning
-After saving, the VM remains **paused** and resume is blocked. Resuming
-would mutate guest RAM through `memory.bin`, corrupting the snapshot.
+After saving, the VM remains **paused** and the REPL blocks resume.
 Use `shutdown` to exit OpenVMM after saving.
 ```
 
