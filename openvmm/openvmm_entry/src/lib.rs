@@ -2899,6 +2899,7 @@ async fn run_control_inner(
             (shared_memory, None)
         };
         let restore = restore.into_worker();
+        let restore_ready_sink = snapshot_restore::restore_ready_sink(&opt)?;
 
         let params = VmWorkerParameters {
             hypervisor: match &opt.hypervisor {
@@ -2910,6 +2911,7 @@ async fn run_control_inner(
             shared_memory,
             shared_memory_copy_on_write: restore.shared_memory_copy_on_write,
             snapshot_restore_guards: restore.guards,
+            restore_ready_sink,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -3002,6 +3004,7 @@ async fn run_control_inner(
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
+            launch: repl::launch::ReplLaunch::from_options(&opt),
         },
     )
     .await;

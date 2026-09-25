@@ -8,6 +8,9 @@
 //! generation is validated against the VM configuration and its RAM is mapped
 //! copy-on-write ([`SnapshotRestore::prepare`]). Its open artifact handles then
 //! move to the worker, which keeps the generation pinned until VM teardown.
+//! The `--restore-ready-path` endpoint is connected next
+//! ([`restore_ready_sink`]); the worker writes the restore readiness event to
+//! it when the restored VM first starts.
 //!
 //! With `OPENVMM_STARTUP_PROFILE` set, these steps record the `restore` phases
 //! `artifact_open`, `artifact_prepare`, and `cow_section_create`, and the
@@ -15,6 +18,9 @@
 //! ([`worker_launched`]).
 
 mod prepare;
+mod ready;
+
+pub(crate) use ready::restore_ready_sink;
 
 use crate::Options;
 use anyhow::Context;
