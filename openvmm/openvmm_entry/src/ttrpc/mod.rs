@@ -1326,6 +1326,7 @@ impl VmService {
                     snapshot_restore_guards: None,
                     snapshot_boundary_requests: None,
                     snapshot_ready: None,
+                    snapshot_capture_enabled: false,
                     restore_ready_sink: None,
                     rpc: recv,
                     notify: notify_send,
