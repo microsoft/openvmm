@@ -45,11 +45,12 @@ describes the source definitions.
   anchored to UTC,
   the microVM portb console, lifecycle ports, and the optional fixed virtio
   devices described below. User arguments cannot override `earlycon=`,
-  `console=`, `virtio_mmio.device=`, `nr_cpus=`, or `virtnet_*=`.
+  `console=`, `virtio_mmio.device=`, `nr_cpus=`, `virtnet_*=`, or `virtfs_*=`.
 
-  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`, and
-  one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
-  IRQ 7 as the boot/log console (`hvc1`). Both use split rings. Firmware, ACPI,
+  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`, one
+  optional `--mount` HostFs device at MMIO `0xd0001000`, IRQ 6, and one
+  optional `--virtio-console <BACKEND>` at MMIO `0xd0002000`, IRQ 7 as the
+  boot/log console (`hvc1`). All use split rings. Firmware, ACPI,
   SMBIOS, PCI,
   VMBus, UARTs, storage, graphics, isolation, nested
   virtualization, and other devices are rejected. Linux discovers contiguous
@@ -94,6 +95,33 @@ describes the source definitions.
   sockets and NAT flow tables are not serialized. The capture
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
+* `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
+  one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 6, with tag `microvm`.
+  The default mode is read-only; `rw` must be explicit. The guest target must
+  be an absolute, non-root Linux path without dot, parent, empty, whitespace,
+  backslash, or `=` components.
+
+  ```bash
+  openvmm --machine microvm --hypervisor kvm \
+    --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz \
+    --mount /mnt/share,path/to/share,ro
+  ```
+
+  The device has one high-priority queue, one request queue, direct-I/O file
+  behavior, zero entry and attribute cache lifetimes, and no shared-memory
+  window. `--mount` conflicts with `--virtio-fs` and
+  `--virtio-fs-shmem`; those standard-machine options cannot select the
+  microVM filesystem profile. The profile appends
+  `virtfs_dir=<GUEST_TARGET> virtfs_tag=microvm virtfs_mode=<ro|rw>` to the
+  kernel command line, so that the guest can mount the share at boot.
+
+  The host path must name a plain directory, and a path with a parent
+  component or a symbolic-link or reparse-point component is rejected. The
+  canonical directory is identified by its device and inode numbers on Linux,
+  or by its volume and file ID on Windows, and the device refuses the
+  attachment if the path no longer names that directory when it opens the
+  root. The guest memory backing file must be outside the exported root.
+  Snapshot capture does not yet support `--mount`, and restore rejects it.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
