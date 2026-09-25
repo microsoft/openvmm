@@ -2321,7 +2321,8 @@ impl InitializedVm {
                                 ranges.ecam_range,
                             );
                             #[cfg(guest_arch = "x86_64")]
-                            let builder = if legacy_pci_config_io {
+                            let builder = if legacy_pci_config_io && !cfg.chipset.with_piix4_pci_bus
+                            {
                                 builder.pci_config_io(&mut register_pio)
                             } else {
                                 builder
