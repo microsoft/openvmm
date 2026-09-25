@@ -30,6 +30,7 @@ use super::fs::sync_directory;
 use super::fs::validate_directory;
 use super::fs::verify_hard_link_identity;
 use super::fs::write_bytes;
+use super::microvm;
 use anyhow::Context;
 use std::path::Path;
 use std::path::PathBuf;
@@ -192,6 +193,13 @@ fn stage_snapshot(
 ) -> Result<StagingDirectory, SnapshotWriteError> {
     validate_manifest_header(manifest)?;
     validate_manifest_version(manifest)?;
+    if let Some(contract) = &manifest.machine_contract {
+        microvm::validate_machine_contract_shape(
+            contract,
+            manifest.memory_size_bytes,
+            manifest.vp_count,
+        )?;
+    }
     if manifest.version != MANIFEST_VERSION {
         return Err(anyhow::anyhow!(
             "snapshot manifest version {} is not supported for writing (expected {})",

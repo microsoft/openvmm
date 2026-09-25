@@ -22,14 +22,17 @@ These are stored as three files in a snapshot directory:
 
 ## Prerequisites
 
-Snapshots require **file-backed guest memory**. Pass `file=<PATH>` in the
-`--memory` option when launching the VM so that guest RAM is written to a
-file on disk rather than held in anonymous memory.
+Host-driven snapshots require **file-backed guest memory**. Pass `file=<PATH>`
+in the `--memory` option when launching a standard VM. A microVM launched with
+`--snapshot-destination` automatically creates temporary file-backed RAM in
+the destination's parent directory when no backing file was supplied.
 
-```admonish note
-OpenVMM copies the memory backing file into `memory.bin`, using file cloning
-when the filesystem supports it, so the backing file and the snapshot directory
-can be on different filesystems.
+```admonish warning
+Automatically allocated microVM RAM and the snapshot destination are on the
+same filesystem so OpenVMM can promote the exact RAM file by hard link. A
+filesystem without hard-link support falls back to copying. Explicit
+user-supplied memory is always copied into a uniquely named sibling staging
+directory. OpenVMM atomically renames the completed directory into place.
 ```
 
 ## Saving a snapshot
@@ -51,16 +54,57 @@ specifying the output directory:
 save-snapshot path/to/snapshot-dir
 ```
 
-OpenVMM writes and flushes `manifest.bin`, `state.bin`, and a copy of guest
-RAM in `memory.bin` in a uniquely named sibling staging directory, and then
-atomically renames the completed directory to the specified path. The
-destination must not already exist. The rename is the commit point: if saving
-fails before it, nothing is published at the destination.
+OpenVMM writes and flushes `manifest.bin`, `state.bin`, and `memory.bin` in a
+sibling staging directory. Host-driven saves and user-supplied microVM backing
+use an independent memory copy. Automatic microVM backing uses its exact RAM
+file when the filesystem supports hard links. The destination must not already
+exist. Publishing the completed directory is the commit point.
+
+On Windows, NTFS zero-fills a file below any write that starts past the file's
+valid data length, and a newly created RAM backing file has none. Capture
+therefore first marks every page of the writable guest RAM views modified,
+without changing its contents and on up to eight threads for large ranges, and
+then flushes the whole range with one ascending `FlushViewOfFile`. The flush
+writes each page once, in large sequential writes, whatever the guest's
+dirty-page layout, so a 128-MiB guest writes at most 128 MiB. Flushing disjoint
+ranges concurrently instead let NTFS zero ranges that another range then wrote
+again, and flushing scattered dirty pages serially issues one small,
+latency-bound write per run. Pages of read-only views, such as deferred-protect
+windows that the guest never wrote, are flushed as they are. Marking faults in
+the pages of writable views that the guest never touched, so the file cache
+holds the whole range after capture. An error prevents publication. The
+subsequent file and directory durability barriers are unchanged.
+
+The Windows-only `sparse_mmap` test `profile_fragmented_file_flush` reproduces
+the fragmented writeback workload with alternating dirty 4-KiB pages in a new
+128-MiB file. It compares the former policy, which flushed bounded-parallel
+ranges without marking their pages, with the current flush, including the
+subsequent file sync, and verifies the persisted bytes. Run it on an otherwise
+idle host:
+
+```text
+cargo nextest run --profile agent --release -p sparse_mmap --run-ignored only -E "test(profile_fragmented_file_flush)" --success-output immediate
+```
+
+Timing output is diagnostic, not a portable assertion or proof that an
+external storage-throttling condition has been eliminated.
 
 ```admonish warning
-After saving, the VM remains **paused** and the REPL blocks resume.
-Use `shutdown` to exit OpenVMM after saving.
+After a host-driven save, the VM remains **paused**. Guest-requested microVM
+capture instead terminates the source process after publication commits.
+If automatic-RAM publication fails after creating its staging link, OpenVMM
+removes the complete staging directory before resuming; if cleanup cannot be
+proved, it terminates the source instead.
 ```
+
+While a guest-requested snapshot boundary is held, VM-worker management RPCs
+that can change VM state are rejected rather than queued. This includes memory
+writes, pause/resume, reset, interrupt injection, hotplug, and state dumps.
+Snapshot lifecycle RPCs and memory reads remain available. Mutating RPCs with
+an error result report that the boundary is active; pause, clear-halt, and NMI
+requests report a reply-channel error because their result types cannot carry
+an application error. Retry a rejected operation after the boundary is
+released; ordinary paused VMs are not subject to this restriction.
 
 ## Restoring a snapshot
 
