@@ -53,6 +53,9 @@ pub struct MicrovmCli {
     pub network_profile: Option<MicrovmNetworkProfileCli>,
 
     /// attach the microVM virtio-fs device
+    ///
+    /// A snapshot with the filesystem requires the same canonical host path,
+    /// guest target, and mode on restore.
     #[clap(
         long = "mount",
         value_name = "GUEST_TARGET,HOST_PATH[,ro|rw]",
@@ -161,10 +164,6 @@ impl Options {
             anyhow::ensure!(
                 !self.memory.hugepages,
                 "microVM snapshot capture does not support explicit hugepage backing"
-            );
-            anyhow::ensure!(
-                self.microvm.microvm_mount.is_none(),
-                "microVM snapshot capture does not yet support --mount"
             );
         }
         if self.restore_snapshot.is_some() {
@@ -440,10 +439,7 @@ mod tests {
         .unwrap();
         capture.validate_microvm_options().unwrap();
 
-        for extra in [
-            vec!["--memory", "size=1G,shared=off"],
-            vec!["--mount", "/mnt/share,host"],
-        ] {
+        for extra in [vec!["--memory", "size=1G,shared=off"]] {
             let options = Options::try_parse_from(
                 [
                     "openvmm",

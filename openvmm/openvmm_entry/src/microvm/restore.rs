@@ -6,11 +6,13 @@
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
+use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_helpers::snapshot::SnapshotManifest;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
+use std::path::Path;
 use std::time::Duration;
 
 const MAX_SNAPSHOT_DOWNTIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -90,11 +92,17 @@ pub(crate) fn prepare_restore(
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor, effective command line, network, and boot console attachment.
+/// hypervisor, effective command line, network, filesystem, and boot console
+/// attachment.
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
     Option<(&'a MicrovmNetworkConfig, &'a SnapshotAttachment)>,
+    Option<(
+        &'a MicrovmFilesystemConfig,
+        &'a Path,
+        &'a SnapshotAttachment,
+    )>,
     Option<&'a SnapshotAttachment>,
 );
 
@@ -112,6 +120,7 @@ pub(crate) fn validate_restore_contract(
         expected_hypervisor,
         effective_command_line,
         network,
+        filesystem,
         console_attachment,
     ): ExpectedRestoreContract<'_>,
 ) -> anyhow::Result<RestoreTime> {
@@ -119,11 +128,17 @@ pub(crate) fn validate_restore_contract(
         .machine_contract
         .as_ref()
         .context("microVM snapshot is missing its authoritative machine contract")?;
+    let filesystem = saved_contract
+        .microvm_filesystem
+        .as_ref()
+        .and(filesystem)
+        .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()));
     let expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
         network.map(|(config, attachment)| (config, attachment.clone())),
+        filesystem,
         console_attachment.cloned(),
         expected_vp_count,
         expected_memory_size,
