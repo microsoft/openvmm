@@ -11,6 +11,8 @@
 //!
 //! If this ends up not being true, then this layer should probably be removed.
 
+pub mod microvm;
+
 cfg_select! {
     guest_arch = "x86_64" => {
         use virt::X86Partition as ArchPartition;
@@ -57,7 +59,9 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
+pub trait HvlitePartition:
+    Inspect + Send + Sync + RequestYield + microvm::MicrovmPartition
+{
     /// Completes backend partition initialization after guest memory is attached.
     fn finalize_memory(&self) -> anyhow::Result<()>;
 
