@@ -17,6 +17,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::time::Duration;
 use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -72,6 +73,11 @@ impl StateUnit for LoggingUnit {
 
     async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
         self.log.push(self.name, "restore");
+        Ok(())
+    }
+
+    async fn advance_time(&mut self, _duration: Duration) -> anyhow::Result<()> {
+        self.log.push(self.name, "advance_time");
         Ok(())
     }
 }
@@ -149,9 +155,9 @@ fn assert_terminal_unit_error(error: StateTransitionError, op: &str, name: &str)
     );
 }
 
-/// Checks that a reset, save, and restore of `units` each fail because of the
-/// unit named `name`, which is in a terminal state, without sending a unit a
-/// request.
+/// Checks that a reset, save, restore, and time advance of `units` each fail
+/// because of the unit named `name`, which is in a terminal state, without
+/// sending a unit a request.
 async fn assert_requests_fail(units: &mut StateUnits, name: &str, log: &Log) {
     assert_terminal_unit_error(units.reset().await.unwrap_err(), "reset", name);
     let Err(error) = units.save().await else {
@@ -161,6 +167,14 @@ async fn assert_requests_fail(units: &mut StateUnits, name: &str, log: &Log) {
     assert_terminal_unit_error(
         units.restore(Vec::new()).await.unwrap_err(),
         "restore",
+        name,
+    );
+    assert_terminal_unit_error(
+        units
+            .advance_time(Duration::from_secs(1))
+            .await
+            .unwrap_err(),
+        "advance_time",
         name,
     );
     assert_eq!(log.take(), Vec::<String>::new());
@@ -189,6 +203,7 @@ async fn requests_fail_after_a_start_leaves_a_terminal_unit(driver: DefaultDrive
     let log = Log::default();
     let _healthy = units
         .add("healthy")
+        .advances_time()
         .spawn(&driver, |recv| {
             run_unit(LoggingUnit::new("healthy", &log), recv)
         })
