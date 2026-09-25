@@ -69,6 +69,8 @@ pub(crate) fn fresh_microvm_restore_packet() -> anyhow::Result<([u8; 16], Vec<u8
 pub(crate) struct MicrovmRestore {
     /// The authoritative machine contract of the snapshot being restored.
     pub(crate) machine_contract: Option<SnapshotMachineContract>,
+    /// Whether the guest must complete post-restore repair before readiness.
+    pub(crate) gate_required: bool,
     /// Private copy of a paired scratch image, kept alive for the VM lifetime.
     pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
 }
@@ -76,13 +78,14 @@ pub(crate) struct MicrovmRestore {
 /// Validates a snapshot restore against the microVM profile and prepares the
 /// restore-time inputs of the microVM configuration.
 ///
-/// This may adjust `opt`: the snapshot selects the RAM size, and a paired
-/// scratch image is replaced by a private copy.
+/// This may adjust `opt`: the snapshot selects the RAM size, a paired scratch
+/// image is replaced by a private copy, and restore gates require entropy.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
 ) -> anyhow::Result<MicrovmRestore> {
     let mut private_scratch_dir = None;
+    let mut restore_gate_required = false;
     if let Some(contract) =
         restore_snapshot.and_then(|snapshot| snapshot.manifest().machine_contract.as_ref())
         && contract.machine_profile == "microvm"
@@ -101,6 +104,8 @@ pub(crate) fn prepare_restore(
             .restore_snapshot
             .as_deref()
             .expect("restore manifest requires a snapshot path");
+        restore_gate_required =
+            openvmm_helpers::snapshot::microvm::requires_post_restore_gate(manifest);
         let contract = manifest
             .machine_contract
             .as_ref()
@@ -192,6 +197,9 @@ pub(crate) fn prepare_restore(
     } else {
         None
     };
+    if restore_gate_required {
+        opt.microvm.restore_entropy = true;
+    }
     if restore_machine_contract.is_some() && !opt.microvm.restore_entropy {
         tracing::warn!(
             "restoring cloned guest RNG state without fresh entropy injection; cryptographic workloads are unsafe"
@@ -199,6 +207,7 @@ pub(crate) fn prepare_restore(
     }
     Ok(MicrovmRestore {
         machine_contract: restore_machine_contract,
+        gate_required: restore_gate_required,
         private_scratch_dir,
     })
 }

@@ -49,6 +49,7 @@ impl Worker {
             restore_apic_frequency_hz: None,
             restore_cpu_contract: None,
             restore_ready_sink: None,
+            restore_gate_timeout: None,
             rpc: rpc_recv,
             notify: notify_send,
         };

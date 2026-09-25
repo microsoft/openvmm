@@ -95,8 +95,8 @@ use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::driver::SpawnDriver;
 use pal_async::local::block_with_io;
-use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use pci_core::PciInterruptPin;
@@ -3819,7 +3819,7 @@ impl LoadedVm {
 
     pub async fn run(
         mut self,
-        driver: &impl Spawn,
+        driver: &impl SpawnDriver,
         mut rpc_recv: mesh::Receiver<VmRpc>,
         mut worker_rpc: mesh::Receiver<WorkerRpc<RestartState>>,
     ) {
@@ -3828,6 +3828,7 @@ impl LoadedVm {
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
             SnapshotBoundary(microvm::SnapshotBoundaryEvent),
+            RestoreGateTimeout,
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3856,7 +3857,11 @@ impl LoadedVm {
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
                 let d = self.snapshot_boundary.recv().map(Event::SnapshotBoundary);
-                (a, b, c, d).race().await
+                let e = self
+                    .snapshot_restore
+                    .gate_expired(driver)
+                    .map(|()| Event::RestoreGateTimeout);
+                (a, b, c, d, e).race().await
             };
 
             let event = match event {
@@ -4307,6 +4312,10 @@ impl LoadedVm {
                     if !self.handle_snapshot_boundary(event).await {
                         break;
                     }
+                }
+                Event::RestoreGateTimeout => {
+                    self.handle_restore_gate_timeout().await;
+                    break;
                 }
             }
         }

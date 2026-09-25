@@ -124,19 +124,24 @@ directory, so `file=...` should not be specified in `--memory` (the two options
 are mutually exclusive). Guest writes use a private copy-on-write mapping and
 do not modify the snapshot artifact.
 
-Orchestrators can add `--restore-ready-path <PATH>`, which requires
-`--restore-snapshot`. OpenVMM connects to an existing Unix domain socket on
-Linux or a `//./pipe/...` named pipe on Windows and writes
-`OPENVMM_RESTORE_READY_V1\n` after restore validation and state-unit startup,
-before releasing a restored vCPU. The event is single-use and is not
-serialized. A connection, write, or flush failure aborts startup and stops the
-started units. With `--paused`, the first successful `resume` publishes the
-event; if that resume fails, OpenVMM exits with an error rather than allowing
-a later resume to start the guest without the event. The peer must accept and
-read while resume is in progress; on Windows, flush completion waits until the
-named-pipe peer consumes the complete frame.
+MicroVM orchestrators can add `--restore-ready-path <PATH>`. OpenVMM connects
+to an existing Unix domain socket on Linux or named pipe on Windows and writes
+`OPENVMM_RESTORE_READY_V1\n` after restore validation, attachment resolution,
+and state-unit startup. Ungated restores publish it before releasing a restored
+vCPU. Gated microVM restores publish it after the guest acknowledges repair and
+host input is re-enabled, while the restored vCPU remains stopped. The event
+is single-use and is not serialized.
+Failure to write and flush it stops the started units and fails restore without
+releasing gated input. The peer must accept and read while resume is in
+progress; on Windows, flush completion waits until the named-pipe peer consumes
+the complete frame.
 
-For a tiered microVM restore, platform manifests
+For a tiered microVM restore, OpenVMM starts device workers with network and
+control input gated. The guest performs post-restore repair and writes the
+existing snapshot port (`0x605`) to acknowledge completion. OpenVMM stops at
+that exact post-write boundary, completes the deferred write while the vCPU is
+stopped, and then releases device input before resuming the vCPU. The acknowledgement is bounded by
+`--restore-gate-timeout-ms` (60000 milliseconds by default). Platform manifests
 leave read-only layer identities unbound, while later tiers require exact image
 identities. An instance-checkpoint restore attempt atomically creates
 `resume.claim`; subsequent restores are rejected. The claim is committed after
@@ -148,8 +153,8 @@ ID. Status bit 5 advertises the feature; writing `0xa6` to status port `0xea`
 and reading 16 bytes from data port `0xe9` returns the ID. It is repeatable
 within one process and is never restored from snapshot state. A restore derives
 the ID from the first 16 bytes of the fresh entropy packet, so the guest can
-reject an unchanged clone identity, reseed Linux, and refresh runtime
-identifiers without another PMIO transfer.
+reject an unchanged clone identity, reseed Linux, refresh runtime identifiers,
+and acknowledge the input gate without another PMIO transfer.
 
 ```admonish warning
 Versions 3 through 5 do not contain or validate embedded checksums for
