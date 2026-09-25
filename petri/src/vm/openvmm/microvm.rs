@@ -10,6 +10,7 @@ use crate::PetriLogFile;
 use anyhow::Context;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
+use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use futures::AsyncWriteExt;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LinuxDirectBootMode;
@@ -153,6 +154,10 @@ pub(super) fn attach_chipset_devices(
         ChipsetDeviceHandle {
             name: MicrovmShutdownHandle::ID.to_owned(),
             resource: MicrovmShutdownHandle.into_resource(),
+        },
+        ChipsetDeviceHandle {
+            name: MicrovmSnapshotRequestHandle::ID.to_owned(),
+            resource: MicrovmSnapshotRequestHandle { notify: None }.into_resource(),
         },
     ]);
     runtime
