@@ -6,6 +6,7 @@
 mod config;
 mod console;
 mod launch;
+mod network;
 mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;

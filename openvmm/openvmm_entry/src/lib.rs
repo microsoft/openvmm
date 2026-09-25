@@ -796,6 +796,9 @@ async fn vm_config_from_command_line(
 
     let mut nic_index = 0;
     for cli_cfg in &opt.net {
+        if microvm.is_active() {
+            continue;
+        }
         if cli_cfg.pcie_port.is_some() {
             anyhow::bail!("`--net` does not support PCIe");
         }
@@ -1894,6 +1897,11 @@ async fn vm_config_from_command_line(
             }),
         };
 
+    microvm.add_virtio_devices(
+        &mut |bus, resource| add_virtio_device(bus, resource, &mut pcie_devices),
+        &mut resources,
+    )?;
+
     for cli_cfg in &opt.virtio_net {
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
@@ -2433,6 +2441,9 @@ fn parse_endpoint(
                 let _ = name;
                 bail!("TAP backend is only supported on Linux")
             }
+        }
+        EndpointConfigCli::Microvm(_) => {
+            bail!("a bare IPv4/prefix --net is only supported by the microVM profile")
         }
     };
 
