@@ -4,6 +4,7 @@
 //! Writing VM snapshots to a directory.
 
 use super::SnapshotManifest;
+use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use anyhow::Context;
 use std::path::Path;
 
@@ -19,10 +20,16 @@ pub fn write_snapshot(
     saved_state_bytes: &[u8],
     memory_file_path: &Path,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        u64::try_from(saved_state_bytes.len()).unwrap_or(u64::MAX) <= MAX_SAVED_STATE_SIZE_BYTES,
+        "saved state exceeds the maximum size of {MAX_SAVED_STATE_SIZE_BYTES} bytes"
+    );
     fs_err::create_dir_all(dir)?;
 
     // Write manifest.
-    let manifest_bytes = mesh::payload::encode(manifest.clone());
+    let mut manifest = manifest.clone();
+    manifest.state_size_bytes = saved_state_bytes.len() as u64;
+    let manifest_bytes = mesh::payload::encode(manifest);
     fs_err::write(dir.join("manifest.bin"), &manifest_bytes)?;
 
     // Write device state.
