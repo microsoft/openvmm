@@ -36,6 +36,57 @@ To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
 --` with `/path/to/openvmm`.
 ```
 
+### microVM sandbox block devices
+
+`--machine microvm` is the only microVM profile. It assigns up to three
+read-only lower layers and one writable scratch device to fixed virtio-mmio
+locations:
+
+| Role | Access | MMIO address | IRQ |
+| --- | --- | ---: | ---: |
+| `distro` | read-only | `0xd0003000` | 4 |
+| `runtime` | read-only | `0xd0004000` | 12 |
+| `custom` | read-only | `0xd0005000` | 9 |
+| `scratch` | writable | `0xd0006000` | 11 |
+
+Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. Lower-layer
+roles require the normal disk `,ro` option and a non-empty topology must end
+with `scratch`; ordinary `--virtio-blk` is intentionally rejected.
+For example:
+
+```shell
+openvmm --machine microvm --kernel vmlinux --initrd initramfs.cpio.gz \
+  --microvm-sandbox-block distro:file:distro.erofs,ro \
+  --microvm-sandbox-block runtime:file:runtime.erofs,ro \
+  --microvm-sandbox-block custom:file:custom.erofs,ro \
+  --microvm-sandbox-block scratch:file:scratch.img
+```
+
+Snapshot capture and restore do not yet support sandbox blocks.
+
+### microVM deterministic SMP
+
+`--machine microvm --processors N` selects the microVM machine.
+`N` must be exactly `1`, `2`, `4`, or `8`. The guest topology is independent
+of the host: one socket, one die, `N` cores, one thread per core, no SMT or
+NUMA, xAPIC mode, and contiguous APIC IDs `0..N-1`; APIC ID 0 is the BSP.
+Custom socket, SMT, APIC, x2APIC, and NUMA options are rejected.
+
+The microVM uses fixed virtio device slots and sandbox block roles. Its
+persisted ABI and boot layout remain value 2. The
+MP floating pointer begins at `0x0`, the MP configuration table at `0x400`,
+the boot GDT at `0x1000`, and the Linux zero page at `0x2000`. No ACPI MADT or
+SMBIOS data is exposed.
+
+Snapshots record the ABI version, processor count, full topology, APIC IDs,
+and boot-layout version. Restore requires an exact match before any VP starts.
+For example:
+
+```shell
+openvmm --machine microvm --processors 8 \
+  --kernel vmlinux --initrd initramfs.cpio.gz
+```
+
 ~~~admonish tip title="UEFI firmware required when running outside cargo"
 When running via `cargo run`, environment variables in `.cargo/config.toml`
 automatically point OpenVMM to the `mu_msvm` UEFI firmware (`MSVM.fd`)

@@ -3,6 +3,7 @@
 
 //! Command-line options of the microVM machine profile.
 
+use super::DiskCli;
 use super::EndpointConfigCli;
 use super::Options;
 use super::SerialConfigCli;
@@ -12,6 +13,7 @@ use clap::ValueEnum;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -50,6 +52,15 @@ pub struct MicrovmCli {
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
     pub snapshot_quiesce_timeout_ms: u64,
+
+    /// Attach a fixed-role microVM sandbox block device.
+    ///
+    /// The value is `<role>:<disk>`, where the roles are `distro`, `runtime`,
+    /// `custom`, and `scratch`. Lower-layer roles must use `,ro`; `scratch`
+    /// must be writable. The profile assigns each role a fixed virtio-mmio
+    /// address and IRQ independent of option order.
+    #[clap(long, value_name = "ROLE:DISK")]
+    pub microvm_sandbox_block: Vec<MicrovmSandboxBlockCli>,
 
     /// Required host-network implementation contract for microVM `--net`.
     #[clap(long, value_enum, value_name = "PROFILE")]
@@ -105,6 +116,38 @@ impl FromStr for MicrovmMountCli {
     }
 }
 
+/// A fixed-role microVM sandbox block-device CLI argument.
+#[derive(Clone)]
+pub struct MicrovmSandboxBlockCli {
+    /// The stable guest-visible role.
+    pub role: MicrovmSandboxBlockRole,
+    /// The generic disk backend and access mode.
+    pub disk: DiskCli,
+}
+
+impl FromStr for MicrovmSandboxBlockCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        let (role, disk) = value
+            .split_once(':')
+            .context("expected ROLE:DISK for --microvm-sandbox-block")?;
+        let role = match role {
+            "distro" => MicrovmSandboxBlockRole::Distro,
+            "runtime" => MicrovmSandboxBlockRole::Runtime,
+            "custom" => MicrovmSandboxBlockRole::Custom,
+            "scratch" => MicrovmSandboxBlockRole::Scratch,
+            _ => anyhow::bail!(
+                "unknown microVM sandbox block role '{role}'; expected distro, runtime, custom, or scratch"
+            ),
+        };
+        Ok(Self {
+            role,
+            disk: disk.parse()?,
+        })
+    }
+}
+
 /// Parses a bare `<IPv4>/<prefix>` `--net` endpoint into the microVM network
 /// configuration.
 pub(super) fn parse_endpoint(network: &str) -> Result<EndpointConfigCli, String> {
@@ -118,8 +161,10 @@ impl Options {
     pub(crate) fn validate_microvm_options(&self) -> anyhow::Result<()> {
         if self.machine != MachineProfileCli::Microvm {
             anyhow::ensure!(
-                self.microvm.network_profile.is_none() && self.microvm.microvm_mount.is_none(),
-                "--network-profile and --mount require a microVM machine"
+                self.microvm.network_profile.is_none()
+                    && self.microvm.microvm_mount.is_none()
+                    && self.microvm.microvm_sandbox_block.is_empty(),
+                "--network-profile, --mount, and --microvm-sandbox-block require a microVM machine"
             );
             return Ok(());
         }
@@ -157,11 +202,19 @@ impl Options {
                 self.microvm.snapshot_quiesce_timeout_ms != 0,
                 "microVM snapshot quiesce timeout must be nonzero"
             );
+            anyhow::ensure!(
+                self.microvm.microvm_sandbox_block.is_empty(),
+                "microVM snapshot capture does not yet support sandbox blocks"
+            );
         }
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
                 self.net.is_empty(),
                 "microVM restore takes network addressing from saved state; do not pass --net"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_sandbox_block.is_empty(),
+                "microVM restore does not yet support sandbox blocks"
             );
         }
         anyhow::ensure!(
@@ -248,10 +301,47 @@ impl Options {
                 && self.vmbus_scsi.is_empty()
                 && self.openhcl_controller.is_empty()
                 && self.ide.is_empty()
-                && self.floppy.is_empty()
-                && self.virtio_blk.is_empty(),
-            "microVM does not expose storage devices"
+                && self.floppy.is_empty(),
+            "microVM supports only its fixed MMIO storage devices"
         );
+        anyhow::ensure!(
+            self.virtio_blk.is_empty(),
+            "microVM requires --microvm-sandbox-block instead of --virtio-blk"
+        );
+        anyhow::ensure!(
+            self.microvm.microvm_sandbox_block.len() <= 4,
+            "microVM permits at most three read-only layers and one writable scratch device"
+        );
+        for (index, block) in self.microvm.microvm_sandbox_block.iter().enumerate() {
+            anyhow::ensure!(
+                block.disk.read_only == block.role.is_read_only(),
+                "microVM sandbox block role {:?} must be {}",
+                block.role,
+                if block.role.is_read_only() {
+                    "read-only"
+                } else {
+                    "writable"
+                }
+            );
+            if let Some(previous) = index
+                .checked_sub(1)
+                .and_then(|index| self.microvm.microvm_sandbox_block.get(index))
+            {
+                anyhow::ensure!(
+                    previous.role < block.role,
+                    "microVM sandbox block roles must be unique and in fixed order"
+                );
+            }
+        }
+        if !self.microvm.microvm_sandbox_block.is_empty() && self.restore_snapshot.is_none() {
+            anyhow::ensure!(
+                self.microvm
+                    .microvm_sandbox_block
+                    .last()
+                    .is_some_and(|block| block.role == MicrovmSandboxBlockRole::Scratch),
+                "microVM sandbox block topology requires a writable scratch device"
+            );
+        }
         anyhow::ensure!(
             self.virtio_9p.is_empty()
                 && self.virtio_fs.is_empty()
@@ -419,6 +509,12 @@ mod tests {
         for extra in [
             vec!["--snapshot-quiesce-timeout-ms", "0"],
             vec!["--memory", "size=1G,shared=off"],
+            vec![
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
         ] {
             let options = Options::try_parse_from(
                 [
@@ -458,6 +554,17 @@ mod tests {
         .unwrap();
         assert_eq!(restore.memory, Default::default());
         restore.validate_microvm_options().unwrap();
+        let restore_blocks = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+        ])
+        .unwrap();
+        assert!(restore_blocks.validate_microvm_options().is_err());
         for override_arg in ["--kernel", "--initrd"] {
             assert!(
                 Options::try_parse_from([
@@ -524,6 +631,59 @@ mod tests {
     }
 
     #[test]
+    fn test_microvm_sandbox_block_parser_and_validation() {
+        let valid = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "runtime:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "custom:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        valid.validate_microvm_options().unwrap();
+
+        for args in [
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M,ro",
+            ],
+            vec!["openvmm", "--machine", "microvm", "--virtio-blk", "mem:1M"],
+        ] {
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+    }
+
+    #[test]
     fn test_microvm_command_line_is_owned_and_bounded() {
         assert_eq!(
             build_microvm_command_line(&[], false).unwrap(),
@@ -539,7 +699,7 @@ mod tests {
         );
 
         let mut with_devices = build_microvm_command_line(&[], true).unwrap();
-        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true).unwrap();
+        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true, &[]).unwrap();
         assert_eq!(
             with_devices,
             format!("{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7")
@@ -551,8 +711,15 @@ mod tests {
         )
         .unwrap();
         let mut with_filesystem = build_microvm_command_line(&[], false).unwrap();
-        append_microvm_virtio_discovery(&mut with_filesystem, None, true, Some(&filesystem), false)
-            .unwrap();
+        append_microvm_virtio_discovery(
+            &mut with_filesystem,
+            None,
+            true,
+            Some(&filesystem),
+            false,
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             with_filesystem,
             format!(

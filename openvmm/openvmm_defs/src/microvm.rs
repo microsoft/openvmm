@@ -130,6 +130,96 @@ pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
 /// The microVM publishes no level-triggered virtio IRQs in its MP table.
 pub const MICROVM_LEVEL_TRIGGERED_IRQS: [u32; 0] = [];
 
+/// The stable role of a microVM sandbox block device.
+#[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MicrovmSandboxBlockRole {
+    /// The lowest, widest-shared read-only layer.
+    Distro,
+    /// The read-only runtime layer above the distro layer.
+    Runtime,
+    /// The optional read-only customer layer above the runtime layer.
+    Custom,
+    /// The writable overlayfs upper and work directories.
+    Scratch,
+}
+
+impl MicrovmSandboxBlockRole {
+    /// Returns the canonical manifest and CLI name of this role.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Distro => "distro",
+            Self::Runtime => "runtime",
+            Self::Custom => "custom",
+            Self::Scratch => "scratch",
+        }
+    }
+
+    /// Returns the role's fixed virtio-mmio address.
+    pub const fn mmio_base(self) -> u64 {
+        MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[self.index()]
+    }
+
+    /// Returns the role's fixed interrupt.
+    pub const fn irq(self) -> u32 {
+        match self {
+            Self::Distro => MICROVM_VIRTIO_BLK_IRQ,
+            Self::Runtime => MICROVM_VIRTIO_RUNTIME_BLK_IRQ,
+            Self::Custom => MICROVM_VIRTIO_CUSTOM_BLK_IRQ,
+            Self::Scratch => MICROVM_VIRTIO_SCRATCH_BLK_IRQ,
+        }
+    }
+
+    /// Returns whether the role must be read-only.
+    pub const fn is_read_only(self) -> bool {
+        !matches!(self, Self::Scratch)
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Distro => 0,
+            Self::Runtime => 1,
+            Self::Custom => 2,
+            Self::Scratch => 3,
+        }
+    }
+}
+
+/// Returns the fixed virtio-blk feature mask for a sandbox role.
+pub const fn microvm_sandbox_block_features(role: MicrovmSandboxBlockRole) -> u64 {
+    const RING_INDIRECT_DESC: u64 = 1 << 28;
+    const RING_EVENT_IDX: u64 = 1 << 29;
+    const VERSION_1: u64 = 1 << 32;
+    const ACCESS_PLATFORM: u64 = 1 << 33;
+    const BLK_SEG_MAX: u64 = 1 << 2;
+    const BLK_READ_ONLY: u64 = 1 << 5;
+    const BLK_SIZE: u64 = 1 << 6;
+    const BLK_FLUSH: u64 = 1 << 9;
+    const BLK_TOPOLOGY: u64 = 1 << 10;
+
+    RING_INDIRECT_DESC
+        | RING_EVENT_IDX
+        | VERSION_1
+        | ACCESS_PLATFORM
+        | BLK_SEG_MAX
+        | BLK_SIZE
+        | BLK_FLUSH
+        | BLK_TOPOLOGY
+        | if role.is_read_only() {
+            BLK_READ_ONLY
+        } else {
+            0
+        }
+}
+
+/// The immutable role and access mode of a microVM sandbox block device.
+#[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MicrovmSandboxBlockConfig {
+    /// The fixed guest-visible role and transport location.
+    pub role: MicrovmSandboxBlockRole,
+    /// Whether writes are rejected by the VMM.
+    pub read_only: bool,
+}
+
 /// Static guest-visible network identity for the microVM NIC.
 #[derive(MeshPayload, Clone, Debug, PartialEq, Eq)]
 pub struct MicrovmNetworkConfig {
@@ -388,6 +478,40 @@ fn validate_microvm_virtio_reservations() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_microvm_sandbox_blocks(blocks: &[MicrovmSandboxBlockConfig]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        blocks.len() <= MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES.len(),
+        "microVM permits at most three read-only layers and one writable scratch device"
+    );
+    for (index, block) in blocks.iter().enumerate() {
+        anyhow::ensure!(
+            block.read_only == block.role.is_read_only(),
+            "microVM sandbox block role {:?} must be {}",
+            block.role,
+            if block.role.is_read_only() {
+                "read-only"
+            } else {
+                "writable"
+            }
+        );
+        if let Some(previous) = index.checked_sub(1).and_then(|index| blocks.get(index)) {
+            anyhow::ensure!(
+                previous.role < block.role,
+                "microVM sandbox block roles must be unique and in fixed order"
+            );
+        }
+    }
+    if !blocks.is_empty() {
+        anyhow::ensure!(
+            blocks
+                .last()
+                .is_some_and(|block| block.role == MicrovmSandboxBlockRole::Scratch),
+            "microVM sandbox block topology requires a writable scratch device"
+        );
+    }
+    Ok(())
+}
+
 /// Appends sandbox virtio devices in fixed-address order.
 pub fn append_microvm_virtio_discovery(
     cmdline: &mut String,
@@ -395,7 +519,9 @@ pub fn append_microvm_virtio_discovery(
     filesystem_slot: bool,
     filesystem: Option<&MicrovmFilesystemConfig>,
     has_console: bool,
+    blocks: &[MicrovmSandboxBlockConfig],
 ) -> anyhow::Result<()> {
+    validate_microvm_sandbox_blocks(blocks)?;
     anyhow::ensure!(
         !cmdline
             .split_ascii_whitespace()
@@ -428,6 +554,14 @@ pub fn append_microvm_virtio_discovery(
         write!(
             cmdline,
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONSOLE_IRQ}"
+        )?;
+    }
+    for block in blocks {
+        write!(
+            cmdline,
+            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{:#x}:{}",
+            block.role.mmio_base(),
+            block.role.irq()
         )?;
     }
     if let Some((network, _, gateway_dns)) = network {
@@ -476,6 +610,11 @@ fn validate_microvm_command_line(
         .virtio_devices
         .iter()
         .any(|(_, device)| device.id() == "virtio-console");
+    let block_count = config
+        .virtio_devices
+        .iter()
+        .filter(|(_, device)| device.id() == "virtio-blk")
+        .count();
     let has_network = config
         .virtio_devices
         .iter()
@@ -495,6 +634,11 @@ fn validate_microvm_command_line(
     anyhow::ensure!(
         !config.microvm.filesystem_bootstrap || config.microvm.filesystem.is_some(),
         "microVM filesystem bootstrap requires an active filesystem policy"
+    );
+    validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
+    anyhow::ensure!(
+        block_count == config.microvm.sandbox_blocks.len(),
+        "microVM sandbox block roles do not match the virtio-blk device inventory"
     );
     let base_tokens = if has_console {
         MICROVM_CONSOLE_COMMAND_LINE
@@ -572,6 +716,13 @@ fn validate_microvm_command_line(
             "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONSOLE_IRQ}"
         ));
     }
+    expected_discovery.extend(config.microvm.sandbox_blocks.iter().map(|block| {
+        format!(
+            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{:#x}:{}",
+            block.role.mmio_base(),
+            block.role.irq()
+        )
+    }));
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
             network
@@ -690,6 +841,8 @@ pub struct MicrovmConfig {
     pub network: Option<MicrovmNetworkConfig>,
     /// Guest-visible policy for the optional microVM virtio-fs device.
     pub filesystem: Option<MicrovmFilesystemConfig>,
+    /// Stable sandbox block-device roles in virtio-blk device order.
+    pub sandbox_blocks: Vec<MicrovmSandboxBlockConfig>,
     /// Whether the effective command line bootstraps the active microVM filesystem.
     pub filesystem_bootstrap: bool,
 }
@@ -779,6 +932,10 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         anyhow::ensure!(
             config.microvm.filesystem.is_none(),
             "microVM filesystem policy requires the microVM profile"
+        );
+        anyhow::ensure!(
+            config.microvm.sandbox_blocks.is_empty(),
+            "microVM sandbox block roles require the microVM profile"
         );
         return Ok(());
     };
@@ -906,6 +1063,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     let mut has_network = false;
     let mut has_filesystem = false;
     let mut has_console = false;
+    let mut block_count = 0;
     for (bus, device) in &config.virtio_devices {
         anyhow::ensure!(
             *bus == VirtioBus::Mmio,
@@ -924,9 +1082,15 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
                 !std::mem::replace(&mut has_console, true),
                 "microVM permits only one virtio-console device"
             ),
+            "virtio-blk" => block_count += 1,
             id => anyhow::bail!("microVM does not permit virtio device '{id}'"),
         }
     }
+    validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
+    anyhow::ensure!(
+        block_count == config.microvm.sandbox_blocks.len(),
+        "microVM sandbox block roles do not match the virtio-blk device inventory"
+    );
     anyhow::ensure!(
         has_network == config.microvm.network.is_some(),
         "microVM virtio-net device and static network identity must be configured together"
@@ -1078,6 +1242,42 @@ mod tests {
     }
 
     #[test]
+    fn microvm_sandbox_block_slots_are_stable() {
+        let blocks = [
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Distro,
+                read_only: true,
+            },
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Runtime,
+                read_only: true,
+            },
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Custom,
+                read_only: true,
+            },
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Scratch,
+                read_only: false,
+            },
+        ];
+        validate_microvm_sandbox_blocks(&blocks).unwrap();
+
+        let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+        append_microvm_virtio_discovery(&mut cmdline, None, false, None, false, &blocks).unwrap();
+        assert_eq!(
+            cmdline,
+            format!(
+                "{MICROVM_BASE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0003000:4 \
+                virtio_mmio.device=0x1000@0xd0004000:12 \
+                 virtio_mmio.device=0x1000@0xd0005000:9 \
+                 virtio_mmio.device=0x1000@0xd0006000:11"
+            )
+        );
+    }
+
+    #[test]
     fn microvm_block_irqs_avoid_rtc_and_are_edge_triggered() {
         assert_eq!(MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ, 3);
         assert_eq!(MICROVM_VIRTIO_RUNTIME_BLK_IRQ, 12);
@@ -1104,5 +1304,74 @@ mod tests {
             );
         }
         assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
+    }
+    #[test]
+    fn microvm_sandbox_block_validation_rejects_invalid_layouts() {
+        assert!(
+            validate_microvm_sandbox_blocks(&[MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Scratch,
+                read_only: true,
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_microvm_sandbox_blocks(&[
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Runtime,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Distro,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    read_only: false,
+                },
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_microvm_sandbox_blocks(&[
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Distro,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Distro,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    read_only: false,
+                },
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_microvm_sandbox_blocks(&[
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Distro,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Runtime,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Custom,
+                    read_only: true,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    read_only: false,
+                },
+                MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    read_only: false,
+                },
+            ])
+            .is_err()
+        );
     }
 }
