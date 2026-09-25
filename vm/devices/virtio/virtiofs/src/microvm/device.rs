@@ -88,10 +88,16 @@ impl VirtioFsDevice {
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
+        denied_paths: Vec<String>,
         root_path: impl AsRef<Path>,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> anyhow::Result<Self> {
-        let profile = MicroVmVirtioFsProfile::from_attachment(stable_id, root_identity, read_only)?;
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            stable_id,
+            root_identity,
+            read_only,
+            denied_paths,
+        )?;
         let fs = VirtioFs::new_microvm(root_path, profile.clone())?;
         Self::new_microvm(driver_source, profile, fs, notify_corruption)
     }
@@ -285,6 +291,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             root_identity,
             true,
+            Vec::new(),
             temporary_directory.path(),
             None,
         )
@@ -332,6 +339,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             microvm_root_identity(root.path()).unwrap(),
             false,
+            Vec::new(),
             root.path(),
             None,
         )
@@ -348,6 +356,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             microvm_root_identity(root.path()).unwrap(),
             false,
+            Vec::new(),
             root.path(),
             None,
         )
@@ -371,6 +380,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             microvm_root_identity(temporary_directory.path()).unwrap(),
             true,
+            Vec::new(),
         )
         .unwrap();
         let fs = VirtioFs::new(temporary_directory.path(), None).unwrap();
@@ -417,6 +427,7 @@ mod tests {
             MICROVM_ATTACHMENT_ID.to_owned(),
             microvm_root_identity(root.path()).unwrap(),
             false,
+            Vec::new(),
             root.path(),
             None,
         )

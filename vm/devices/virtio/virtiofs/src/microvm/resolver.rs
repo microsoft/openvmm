@@ -32,6 +32,7 @@ pub(crate) fn resolve(
             stable_id,
             root_identity,
             read_only,
+            denied_paths,
         } => {
             anyhow::ensure!(
                 resource.tag == MICROVM_MOUNT_TAG,
@@ -54,6 +55,7 @@ pub(crate) fn resolve(
                 stable_id.clone(),
                 root_identity.clone(),
                 *read_only,
+                denied_paths.clone(),
                 root_path,
                 None,
             )?
@@ -98,6 +100,7 @@ mod tests {
                     stable_id: MICROVM_ATTACHMENT_ID.to_owned(),
                     root_identity,
                     read_only: true,
+                    denied_paths: Vec::new(),
                 },
             },
             VirtioResolveInput {
