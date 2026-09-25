@@ -43,6 +43,7 @@ async fn reconnects_after_client_close(driver: DefaultDriver) {
     poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
     drop(client);
     poll_fn(|cx| backend.poll_disconnect(cx)).await.unwrap();
+    backend.disconnect_current().unwrap();
 
     let _replacement = OpenOptions::new()
         .read(true)
