@@ -374,31 +374,45 @@ impl GetReferenceTime for MshvPartitionInner {
 
 impl virt::PartitionTimeControl for MshvPartition {
     fn freeze_time(&self) {
-        let mut frozen = self.inner.time_frozen.lock();
-        if !*frozen {
-            self.inner
-                .vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
-                .expect("failed to freeze partition time");
-            *frozen = true;
-        }
+        self.inner
+            .freeze_time()
+            .expect("failed to freeze partition time");
     }
 
     fn thaw_time(&self) {
-        let mut frozen = self.inner.time_frozen.lock();
-        if *frozen {
-            self.inner
-                .vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
-                .expect("failed to thaw partition time");
-            *frozen = false;
-        }
+        self.inner
+            .thaw_time()
+            .expect("failed to thaw partition time");
     }
 }
 
 impl MshvPartitionInner {
     fn vp(&self, vp_index: VpIndex) -> &MshvVpInner {
         &self.vps[vp_index.index() as usize]
+    }
+
+    /// Freezes partition time. Time stays frozen until [`Self::thaw_time`].
+    fn freeze_time(&self) -> Result<(), Error> {
+        let mut frozen = self.time_frozen.lock();
+        if !*frozen {
+            self.vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+            *frozen = true;
+        }
+        Ok(())
+    }
+
+    /// Thaws partition time if it is frozen.
+    fn thaw_time(&self) -> Result<(), Error> {
+        let mut frozen = self.time_frozen.lock();
+        if *frozen {
+            self.vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
+                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+            *frozen = false;
+        }
+        Ok(())
     }
 
     fn post_message(&self, vp_index: VpIndex, sint: u8, message: &HvMessage) {
@@ -797,6 +811,13 @@ enum ErrorInner {
     #[error("register access error")]
     Register(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]
+    #[error("failed to synchronize restored VP {vp_index} TSC")]
+    SynchronizeTsc {
+        vp_index: u32,
+        #[source]
+        error: KernelError,
+    },
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get VP state {ty}")]
     GetVpState {
         #[source]
@@ -822,6 +843,14 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("unsupported processor vendor: {0:?}")]
     UnsupportedProcessorVendor(hvdef::HvProcessorVendor),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "TSC frequency mismatch between snapshot ({saved} Hz) and destination ({destination} Hz)"
+    )]
+    TscFrequencyMismatch { saved: u64, destination: u64 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    TscFrequencyCpuid(#[from] virt::x86::tsc::TscFrequencyCpuidError),
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
