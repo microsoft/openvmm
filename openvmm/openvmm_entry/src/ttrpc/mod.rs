@@ -1599,6 +1599,8 @@ impl VmService {
                     cfg: config,
                     saved_state,
                     shared_memory,
+                    shared_memory_copy_on_write: false,
+                    snapshot_restore_guards: None,
                     rpc: recv,
                     notify: notify_send,
                 },
