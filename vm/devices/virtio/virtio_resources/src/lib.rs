@@ -81,6 +81,7 @@ pub mod fs {
         Aggregate {
             children: Vec<VirtioFsAggregateChild>,
         },
+        Dormant,
     }
 
     /// A single host folder exposed as a named child of a [`VirtioFsBackend::Aggregate`].
