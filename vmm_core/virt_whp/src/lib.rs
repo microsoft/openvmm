@@ -10,6 +10,8 @@
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod apic;
+#[cfg(guest_arch = "x86_64")]
+mod cpu_contract;
 pub mod device;
 mod emu;
 mod hypercalls;
@@ -1148,6 +1150,8 @@ impl WhpPartitionInner {
                         .map(|(f, v)| virt::CpuidLeaf::new(f.0, [v.eax, v.ebx, v.ecx, v.edx])),
                     );
                     hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
+                } else {
+                    cpuid.push(cpu_contract::mask_gpa_pinning_enlightenment());
                 }
             }
 
