@@ -62,4 +62,20 @@ pub enum HaltReason {
     },
     /// The guest watchdog timer expired without being petted.
     Watchdog,
+    PowerOffWithStatus {
+        code: u8,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn power_off_status_survives_mesh_round_trip() {
+        let encoded = mesh::payload::encode(HaltReason::PowerOffWithStatus { code: 37 });
+        let decoded: HaltReason = mesh::payload::decode(&encoded).unwrap();
+        assert_eq!(decoded, HaltReason::PowerOffWithStatus { code: 37 });
+        assert_eq!(format!("{decoded:?}"), "PowerOffWithStatus { code: 37 }");
+    }
 }

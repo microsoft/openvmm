@@ -53,7 +53,9 @@ impl DebuggerState {
             tracing::debug!("halt reported to debugger");
             self.halt_reported = true;
             notify.send(match reason {
-                HaltReason::PowerOff | HaltReason::Hibernate => DebugStopReason::PowerOff,
+                HaltReason::PowerOff
+                | HaltReason::PowerOffWithStatus { .. }
+                | HaltReason::Hibernate => DebugStopReason::PowerOff,
                 HaltReason::Reset => DebugStopReason::Reset,
                 HaltReason::Watchdog => DebugStopReason::Watchdog,
                 HaltReason::TripleFault { vp, .. } => DebugStopReason::TripleFault { vp: *vp },
