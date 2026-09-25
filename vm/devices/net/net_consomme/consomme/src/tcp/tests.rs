@@ -21,10 +21,10 @@ use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
-use socket2::SockRef;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
+use std::net::Shutdown;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
@@ -790,115 +790,6 @@ impl TcpTestHarness {
             }
         })
         .await;
-    }
-
-    /// Flood guest→host data (without reading the host socket) until the
-    /// available receive buffer (`rx_window_avail`) reaches zero, which drives
-    /// the advertised window to zero. Only sends segments that fit the current
-    /// window, so nothing is dropped. Returns bytes accepted.
-    async fn flood_guest_until_window_closed(&mut self) -> usize {
-        let guest_mac = self.guest_mac;
-        let gateway_mac = self.gateway_mac;
-        let guest_ip = self.guest_ip;
-        let dst_ip = self.dst_ip;
-        let guest_port = self.guest_port;
-        let dst_port = self.dst_port;
-        let server_ack = self.server_ack;
-        let ft = self.four_tuple();
-
-        let consomme = &mut self.consomme;
-        let client = &mut self.client;
-        // Deliberately do NOT read `host_stream`: the path backs up so the
-        // receive window fills.
-        let guest_seq = &mut self.guest_seq;
-        let mut buf = vec![0u8; 1514];
-        let payload = [0x5Au8; 1400];
-        let mut total = 0usize;
-        // Safety cap so a regression can't loop forever.
-        let mut budget = 64 << 20;
-        std::future::poll_fn(move |cx| {
-            consomme.access(client).poll(cx);
-            let avail = consomme
-                .tcp
-                .connections
-                .get(&ft)
-                .expect("connection should exist")
-                .inner
-                .rx_window_avail();
-            if avail == 0 || budget == 0 {
-                return Poll::Ready(total);
-            }
-            let n = avail.min(payload.len()).min(budget);
-            let tcp = TcpRepr {
-                src_port: guest_port,
-                dst_port,
-                control: TcpControl::None,
-                seq_number: *guest_seq,
-                ack_number: Some(server_ack),
-                window_len: 64240,
-                window_scale: None,
-                max_seg_size: None,
-                sack_permitted: false,
-                sack_ranges: [None, None, None],
-                timestamp: None,
-                payload: &payload[..n],
-            };
-            let len = build_tcp_packet(&mut buf, guest_mac, gateway_mac, guest_ip, dst_ip, &tcp);
-            consomme
-                .access(client)
-                .send(&buf[..len], &ChecksumState::NONE)
-                .unwrap();
-            *guest_seq += n;
-            total += n;
-            budget -= n;
-            // Re-poll promptly to keep pushing; once the host socket buffers
-            // fill, consomme stops draining and `avail` reaches zero.
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await
-    }
-
-    /// Drain the host socket while polling consomme, waiting for a guest-bound
-    /// ACK that advertises a non-zero receive window. Returns the advertised
-    /// window length, or `None` if no such packet appeared within a few
-    /// seconds.
-    async fn drain_host_until_window_update(&mut self) -> Option<u16> {
-        let mut timer = pal_async::timer::PolledTimer::new(self.client.driver());
-        let received = self.client.received_packets.clone();
-        let consomme = &mut self.consomme;
-        let client = &mut self.client;
-        let host_stream = &mut self.host_stream;
-        let poll = std::future::poll_fn(move |cx| {
-            consomme.access(client).poll(cx);
-            // Drain the host socket so the receive window reopens. Registers a
-            // read-readiness waker on Pending so we are re-polled as more data
-            // arrives.
-            let mut rb = [0u8; 4096];
-            loop {
-                match Pin::new(&mut *host_stream).poll_read(cx, &mut rb) {
-                    Poll::Ready(Ok(0)) => break,
-                    Poll::Ready(Ok(_)) => {}
-                    Poll::Ready(Err(e)) => panic!("host read error: {e}"),
-                    Poll::Pending => break,
-                }
-            }
-            let found = received.lock().iter().rev().find_map(|p| {
-                let t = TcpTestHarness::is_tcp_packet(p)?;
-                (t.ack_number.is_some() && t.window_len > 0).then_some(t.window_len)
-            });
-            match found {
-                Some(w) => Poll::Ready(w),
-                None => Poll::Pending,
-            }
-        });
-        let timeout = timer.sleep(std::time::Duration::from_secs(5));
-        let poll = std::pin::pin!(poll);
-        let timeout = std::pin::pin!(timeout);
-        match futures::future::select(poll, timeout).await {
-            futures::future::Either::Left((w, _)) => Some(w),
-            futures::future::Either::Right(_) => None,
-        }
     }
 }
 
@@ -2503,42 +2394,105 @@ async fn test_tcp_tx_buffer_autotune_caps_at_max(driver: DefaultDriver) {
 /// ACK rather than waiting for the guest's zero-window probe.
 #[pal_async::async_test]
 async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
-    let mut params = ConsommeParams::new().unwrap();
-    // Small, fixed receive window so it closes quickly and autotune can't grow
-    // it (which would mask the reopen path via its own `needs_ack`).
-    params.tcp_rx_buffer = crate::TcpBufferBounds {
-        initial: 16 << 10,
-        max: 16 << 10,
-    };
-    let mut h = TcpTestHarness::connect_with_params(driver, params).await;
+    struct HostWriter {
+        allowance: usize,
+        received: Vec<u8>,
+    }
 
-    // Shrink the host receive buffer so the egress path backs up after only a
-    // modest amount of data, keeping the flood bounded.
-    SockRef::from(h.host_stream.get())
-        .set_recv_buffer_size(8 << 10)
-        .unwrap();
+    impl AsyncWrite for HostWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.allowance == 0 {
+                return Poll::Pending;
+            }
+            let n = self.allowance.min(buf.len());
+            self.received.extend_from_slice(&buf[..n]);
+            self.allowance -= n;
+            Poll::Ready(Ok(n))
+        }
 
-    // Flood until consomme's advertised receive window closes to zero.
-    let sent = h.flood_guest_until_window_closed().await;
-    assert_eq!(
-        h.connection_inner().rx_window_avail(),
-        0,
-        "receive window should have closed after flooding {sent} bytes"
-    );
-    assert!(
-        h.connection_inner().rx_window_last_adv < h.connection_inner().tx_mss,
-        "consomme should have advertised a (near) zero window to the guest"
-    );
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
 
-    // Discard the zero-window ACKs, then drain the host socket. Consomme must
-    // emit a window-update ACK on its own, without the guest probing.
-    h.clear_guest_packets();
-    let window_update = h.drain_host_until_window_update().await;
-    assert!(
-        window_update.is_some_and(|w| w > 0),
-        "consomme must proactively re-advertise a non-zero window after the \
-         host drains the backlog; got {window_update:?}"
-    );
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            panic!("established connection must not shut down");
+        }
+    }
+
+    // Control host backpressure directly: real TCP receive/send buffers and
+    // their persist timers make a bounded flood/drain test depend on OS timing.
+    for window_scale in [0, 2, 7] {
+        let params = ConnectionParams {
+            rx_buffer: NormalizedBufferBounds {
+                initial: 16 << 10,
+                max: 16 << 10,
+            },
+            tx_buffer: NormalizedBufferBounds {
+                initial: 16 << 10,
+                max: 16 << 10,
+            },
+        };
+        let mut connection = TcpConnection::new_base(&params);
+        connection.state = TcpState::Established;
+        connection.rx_window_scale = window_scale;
+        connection.rx_buffer = ring::Ring::new(params.rx_buffer.initial);
+        let data = vec![0x5a; params.rx_buffer.initial];
+        connection.rx_buffer.write_at(0, &data);
+        connection.rx_buffer.extend_by(data.len());
+        connection.needs_ack = true;
+
+        let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+        let mut client = TestClient::new(driver.clone());
+        let packets = client.received_packets.clone();
+        let ft = FourTuple {
+            src: SocketAddr::from(([10, 0, 0, 2], 44444)),
+            dst: SocketAddr::from(([10, 0, 0, 1], 80)),
+        };
+        let mut sender = Sender {
+            ft: &ft,
+            client: &mut client,
+            state: &mut consomme.state,
+        };
+        let dns = DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+        let mut host = HostWriter {
+            allowance: 0,
+            received: Vec::new(),
+        };
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        assert!(connection.poll_socket_write(&mut cx, &mut sender, &mut host, &mut None, &dns));
+        connection.send_next(&mut sender, AckPolicy::Flush);
+        let closed = packets.lock().pop().expect("zero-window ACK");
+        assert_eq!(parse_tcp_packet(&closed).2.window_len, 0);
+        assert_eq!(connection.rx_window_last_adv, 0);
+        assert!(!connection.needs_ack);
+
+        let quantum = 1 << window_scale;
+        let reopen = connection.tx_mss.div_ceil(quantum) * quantum;
+        for (drain, expect_update) in [(0, false), (reopen - 1, false), (1, true), (1, false)] {
+            packets.lock().clear();
+            host.allowance = drain;
+            assert!(connection.poll_socket_write(&mut cx, &mut sender, &mut host, &mut None, &dns));
+            assert_eq!(connection.needs_ack, expect_update);
+            connection.send_next(&mut sender, AckPolicy::Flush);
+            let packets = packets.lock();
+            assert_eq!(packets.len(), usize::from(expect_update));
+            if expect_update {
+                let (_, _, update) = parse_tcp_packet(&packets[0]);
+                assert_eq!(update.control, TcpControl::None);
+                assert_eq!(update.ack_number, Some(connection.rx_seq));
+                assert_eq!(usize::from(update.window_len) << window_scale, reopen);
+                assert!(update.payload.is_empty());
+            }
+            assert!(!connection.needs_ack);
+        }
+        assert_eq!(host.received, data[..reopen + 1]);
+        assert_eq!(connection.rx_window_cap, params.rx_buffer.initial);
+    }
 }
 
 /// Verifies that the zero-copy TCP checksum computed over the header and the
