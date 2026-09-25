@@ -27,6 +27,9 @@ impl ResolveResource<PowerRequestHandleKind, PlatformResource> for HaltResolver 
         let halt = self.0.clone();
         Ok((move |request: PowerRequest| match request {
             PowerRequest::PowerOff => halt.halt(HaltReason::PowerOff),
+            PowerRequest::PowerOffWithStatus { code } => {
+                halt.halt(HaltReason::PowerOffWithStatus { code })
+            }
             PowerRequest::Reset => halt.halt(HaltReason::Reset),
             PowerRequest::Hibernate => halt.halt(HaltReason::Hibernate),
             PowerRequest::TripleFault { vp } => halt.halt(HaltReason::TripleFault {
