@@ -72,7 +72,8 @@ only uncompressed ELF kernels. `--machine microvm` uses this boot mode.
 
 For `--machine microvm`, steps 4 and 5 are replaced by the MP-table layout
 described above. The zero page leaves `acpi_rsdp_addr` zero, reserves the ISA
-hole in e820, and leaves the fixed 3-to-4-GiB MMIO aperture out of RAM. The loader enters the ELF kernel in long mode with
+hole and the live shared-status page in e820, and leaves the fixed 3-to-4-GiB
+MMIO aperture out of RAM. The loader enters the ELF kernel in long mode with
 `RSI=0x2000`, `CR3=0x4000`, and paging enabled.
 
 ## AArch64 Boot Flow
