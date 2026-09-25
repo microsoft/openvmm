@@ -904,6 +904,22 @@ pub fn append_microvm_processor_limit(
     Ok(())
 }
 
+/// Appends the host-owned fixed workload identity to a microVM command line.
+pub fn append_microvm_workload_identity(
+    cmdline: &mut String,
+    uid: u32,
+    gid: u32,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(uid != 0, "microVM workload UID must be nonzero");
+    anyhow::ensure!(gid != 0, "microVM workload GID must be nonzero");
+    write!(cmdline, " nvx_workload_uid={uid} nvx_workload_gid={gid}")?;
+    anyhow::ensure!(
+        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
+        "microVM kernel command line exceeds the 64-KiB ABI limit"
+    );
+    Ok(())
+}
+
 fn kernel_parameter_name_matches(token: &str, expected: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
@@ -973,6 +989,8 @@ fn build_microvm_command_line_inner(
                 "virtfs_mode=",
                 "nvx_snapshot_tier=",
                 "nr_cpus=",
+                "nvx_workload_uid=",
+                "nvx_workload_gid=",
             ]
             .iter()
             .any(|reserved| token.starts_with(reserved))
