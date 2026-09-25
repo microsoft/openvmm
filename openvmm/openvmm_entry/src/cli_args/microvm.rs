@@ -56,6 +56,9 @@ pub struct MicrovmCli {
     pub network_profile: Option<MicrovmNetworkProfileCli>,
 
     /// attach the microVM virtio-fs device
+    ///
+    /// A snapshot with the filesystem requires the same canonical host path,
+    /// guest target, and mode on restore.
     #[clap(
         long = "mount",
         value_name = "GUEST_TARGET,HOST_PATH[,ro|rw]",
@@ -152,10 +155,6 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.snapshot_quiesce_timeout_ms != 0,
                 "microVM snapshot quiesce timeout must be nonzero"
-            );
-            anyhow::ensure!(
-                self.microvm.microvm_mount.is_none(),
-                "microVM snapshot capture does not yet support --mount"
             );
         }
         if self.restore_snapshot.is_some() {
@@ -419,7 +418,6 @@ mod tests {
         for extra in [
             vec!["--snapshot-quiesce-timeout-ms", "0"],
             vec!["--memory", "size=1G,shared=off"],
-            vec!["--mount", "/mnt/share,host"],
         ] {
             let options = Options::try_parse_from(
                 [

@@ -35,6 +35,8 @@ pub(crate) struct MicrovmResources {
     pub(crate) console_socket_cleanup: Option<MicrovmConsoleSocketCleanup>,
     /// Snapshot identity of the portable network attachment.
     pub(crate) network_attachment: Option<SnapshotAttachment>,
+    /// Snapshot identity of the live filesystem root.
+    pub(crate) filesystem_attachment: Option<SnapshotAttachment>,
     /// Canonical host path of the live filesystem root.
     pub(crate) filesystem_root_path: Option<PathBuf>,
 }

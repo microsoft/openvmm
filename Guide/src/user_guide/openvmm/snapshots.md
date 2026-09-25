@@ -184,6 +184,25 @@ guest transmit offset live in the device-private virtio payload, preserving
 their order across a new-process restore. Host input is gated before the vCPU
 snapshot boundary and resumed only if capture rolls back.
 
+For microVM virtio-fs, the manifest records the stable attachment ID, exact
+canonical host path, pinned root identity, guest mount target, access mode,
+no-DAX queue policy, and `live-revalidate` restore mode. Its device-private
+payload records FUSE negotiation, namespace IDs and aliases, lookup counts,
+reopenable handles, bounded directory-entry snapshots and cookies, and queue
+progress. Native file descriptors and Windows handles are never serialized.
+
+Restoring such a snapshot requires a fresh
+`--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment with the same canonical
+host path, target, and mode. OpenVMM independently validates the root and every
+saved object identity before starting a vCPU.
+
+```admonish warning
+The host directory is external live state, not snapshot content. Host
+mutations after capture can change restored reads or make restore fail. A
+read-write restore also changes the shared host directory, and restoring the
+same VM snapshot again does not roll those changes back.
+```
+
 The rules are:
 
 | Scenario | Result |
@@ -244,7 +263,8 @@ OpenVMM snapshots:
 | Assigned PCI (pass-through) | PCI | **No** |
 | Relayed vPCI | PCI | **No** |
 | PCAT BIOS firmware | Chipset (ISA) | **No** (see limitations) |
-| virtio-9p, virtiofs | Virtio (PCI/MMIO) | **No** |
+| virtio-fs | Virtio (MMIO) | microVM HostFs only |
+| virtio-9p | Virtio (PCI/MMIO) | **No** |
 | Guest Crash Device | VMBus | **No** |
 | Guest Emulation Device (GED) | VMBus | **No** |
 | VMBus serial (host) | VMBus | **No** |
