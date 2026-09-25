@@ -43,6 +43,29 @@ pub enum MicrovmNetworkActionCli {
     Deny,
 }
 
+/// Fixed numeric identity for microVM workloads.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct MicrovmWorkloadIdentityCli {
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
+impl FromStr for MicrovmWorkloadIdentityCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (uid, gid) = value
+            .split_once(':')
+            .filter(|(_, gid)| !gid.contains(':'))
+            .context("expected <UID>:<GID>")?;
+        let uid = uid.parse::<u32>().context("invalid workload UID")?;
+        let gid = gid.parse::<u32>().context("invalid workload GID")?;
+        anyhow::ensure!(uid != 0, "microVM workload UID must be nonzero");
+        anyhow::ensure!(gid != 0, "microVM workload GID must be nonzero");
+        Ok(Self { uid, gid })
+    }
+}
+
 /// Protocol for a localhost-to-guest port forward.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MicrovmLoopbackForwardProtocol {
@@ -204,6 +227,13 @@ pub struct MicrovmCli {
     /// address and IRQ independent of option order.
     #[clap(long, value_name = "ROLE:DISK")]
     pub microvm_sandbox_block: Vec<MicrovmSandboxBlockCli>,
+
+    /// Run guest workloads under this fixed non-root numeric identity.
+    ///
+    /// The identity is part of the initial-boot command line and cannot be
+    /// replaced when restoring a snapshot.
+    #[clap(long, value_name = "UID:GID")]
+    pub microvm_workload_identity: Option<MicrovmWorkloadIdentityCli>,
 
     /// Required host-network implementation contract for microVM `--net`.
     #[clap(long, value_enum, value_name = "PROFILE")]
@@ -422,12 +452,13 @@ impl Options {
                     && self.microvm.microvm_mount.is_none()
                     && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_sandbox_block.is_empty()
+                    && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -486,6 +517,10 @@ impl Options {
             }
         }
         if self.restore_snapshot.is_some() {
+            anyhow::ensure!(
+                self.microvm.microvm_workload_identity.is_none(),
+                "--microvm-workload-identity is fixed by the captured microVM command line"
+            );
             anyhow::ensure!(
                 self.net.is_empty(),
                 "microVM restore takes network addressing from saved state; do not pass --net"
@@ -1717,6 +1752,215 @@ mod tests {
         let standard =
             Options::try_parse_from(["openvmm", "--allow-endpoint", "192.0.2.7:443"]).unwrap();
         assert!(standard.validate_microvm_options().is_err());
+    }
+
+    #[test]
+    fn test_microvm_workload_identity_is_non_root_and_not_restorable() {
+        for identity in ["0:1", "1:0", "root:1", "1:root", "1", "1:2:3"] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--microvm-workload-identity",
+                    identity,
+                ])
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn test_microvm_l3_l4_rules_are_explicit_and_composable() {
+            let options = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--network-egress",
+                "deny",
+                "--network-egress-allow",
+                "192.0.2.0/24:tcp:443",
+                "--network-egress-allow",
+                "192.0.2.7:udp:53",
+                "--network-egress-deny",
+                "192.0.2.9:tcp:443",
+            ])
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+            let network: openvmm_defs::microvm::MicrovmNetworkConfig =
+                "10.0.0.2/24".parse().unwrap();
+            let policy = options.microvm_egress_policy(&network).unwrap();
+            let net_backend_resources::egress::EgressPolicyMode::Rules {
+                default_action,
+                allow,
+                deny,
+            } = policy.mode()
+            else {
+                panic!("expected rule-based egress policy")
+            };
+            assert_eq!(
+                *default_action,
+                net_backend_resources::egress::EgressAction::Deny
+            );
+            assert_eq!((allow.len(), deny.len()), (2, 1));
+
+            let missing_default = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--network-egress-allow",
+                "192.0.2.0/24",
+            ])
+            .unwrap();
+            assert!(missing_default.validate_microvm_options().is_err());
+
+            let mixed_legacy = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--network-egress",
+                "deny",
+                "--network-egress-allow",
+                "192.0.2.0/24",
+                "--allow-host",
+                "192.0.2.0/24",
+            ])
+            .unwrap();
+            assert!(mixed_legacy.validate_microvm_options().is_err());
+        }
+
+        fn check_microvm_host_loopback_policy_and_explicit_forwards() {
+            let network: openvmm_defs::microvm::MicrovmNetworkConfig =
+                "10.0.0.2/24".parse().unwrap();
+            let denied = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--host-loopback",
+                "deny",
+                "--network-proxy",
+                "10.0.0.1:8443",
+            ])
+            .unwrap();
+            denied.validate_microvm_options().unwrap();
+            let policy = denied.microvm_egress_policy(&network).unwrap();
+            assert_eq!(
+                policy.host_loopback_action(),
+                net_backend_resources::egress::EgressAction::Deny
+            );
+            assert_eq!(policy.proxy_endpoint().unwrap().port(), 8443);
+
+            let wrong_proxy = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--host-loopback",
+                "deny",
+                "--network-proxy",
+                "192.0.2.1:8443",
+            ])
+            .unwrap();
+            assert!(wrong_proxy.validate_microvm_options().is_err());
+
+            let denied_forward = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--host-loopback",
+                "deny",
+                "--host-loopback-forward",
+                "tcp:3000:8080",
+            ])
+            .unwrap();
+            assert!(denied_forward.validate_microvm_options().is_err());
+
+            let allowed_forward = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--host-loopback",
+                "allow",
+                "--host-loopback-forward",
+                "tcp:3000:8080",
+            ])
+            .unwrap();
+            allowed_forward.validate_microvm_options().unwrap();
+
+            let duplicate_forward = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--net",
+                "10.0.0.2/24",
+                "--network-profile",
+                "portable",
+                "--host-loopback",
+                "allow",
+                "--host-loopback-forward",
+                "tcp:3000:8080",
+                "--host-loopback-forward",
+                "tcp:3000:8081",
+            ])
+            .unwrap();
+            assert!(duplicate_forward.validate_microvm_options().is_err());
+        }
+        check_microvm_host_loopback_policy_and_explicit_forwards();
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--microvm-workload-identity",
+            "65534:65534",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.microvm.microvm_workload_identity,
+            Some(MicrovmWorkloadIdentityCli {
+                uid: 65_534,
+                gid: 65_534,
+            })
+        );
+        options.validate_microvm_options().unwrap();
+
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--microvm-workload-identity",
+            "65534:65534",
+        ])
+        .unwrap();
+        assert!(restore.validate_microvm_options().is_err());
     }
 
     #[test]

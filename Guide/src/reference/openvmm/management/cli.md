@@ -247,6 +247,13 @@ describes the source definitions.
   the scratch filesystem, and asks OpenVMM to drain queues and atomically
   publish `scratch.img`. `/sbin/nvx-snapshot --fresh-scratch` is for a
   pre-mount boundary and records that restore must supply a fresh scratch.
+* `--microvm-workload-identity <UID:GID>`: Add a fixed non-root numeric
+  workload identity to the host-owned microVM command line. UID and GID zero
+  are rejected. The guest workload supervisor must resolve both values in the
+  workload root before launch and fail closed when either identity is
+  unavailable. Workload requests cannot replace this identity. Snapshot
+  restore takes the captured identity from the authoritative command line and
+  rejects an override.
 * `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
   The manifest supplies the authoritative RAM size, topology, ABI,
   fixed device inventory, effective kernel command line, source backend, CPU
