@@ -21,6 +21,16 @@ The manifest is a protobuf message defined as
 in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
 crate's protobuf encoding.
 
+New snapshots use manifest version 3, which records a format magic, the
+saved-state schema version and protobuf root type, and the exact length of
+`state.bin`. The legacy `state_sha256` and `memory_sha256` protobuf tags remain
+reserved so version 2 manifests can be decoded; version 3 requires both fields
+to be absent. Restore accepts versions 2 and 3.
+
+Reading a snapshot bounds `manifest.bin` to 1 MiB and `state.bin` to 256 MiB,
+validates the manifest format before it reads `state.bin`, and requires
+`state.bin` to have the length that the manifest records.
+
 ## Device state (`state.bin`)
 
 The device state contains every device's saved state, collected via the
