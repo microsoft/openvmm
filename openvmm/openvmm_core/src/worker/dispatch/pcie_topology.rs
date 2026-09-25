@@ -90,6 +90,7 @@ pub(super) fn validate_pcie_root_complexes(
 mod tests {
     use super::*;
     use openvmm_defs::config::PcieMmioRangeConfig;
+    use openvmm_defs::config::legacy_pci_config_io_enabled;
 
     fn rc(name: &str, segment: u16, start_bus: u8, end_bus: u8) -> PcieRootComplexConfig {
         PcieRootComplexConfig {
@@ -129,5 +130,15 @@ mod tests {
     fn rejects_overlapping_ranges_on_same_segment() {
         let rcs = [rc("rc0", 0, 0, 4), rc("rc1", 0, 4, 8)];
         assert!(validate_pcie_root_complexes(&rcs).is_err());
+    }
+
+    #[test]
+    fn legacy_pci_config_io_requires_single_full_domain_root() {
+        assert!(legacy_pci_config_io_enabled(&[rc("rc0", 0, 0, u8::MAX)]));
+        assert!(!legacy_pci_config_io_enabled(&[
+            rc("rc0", 0, 0, u8::MAX),
+            rc("rc1", 1, 0, u8::MAX),
+        ]));
+        assert!(!legacy_pci_config_io_enabled(&[rc("rc0", 0, 0, 254)]));
     }
 }

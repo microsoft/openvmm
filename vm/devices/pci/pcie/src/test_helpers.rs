@@ -6,6 +6,8 @@ use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pio::ControlPortIoIntercept;
+use chipset_device::pio::RegisterPortIoIntercept;
 use pci_bus::GenericPciBusDevice;
 use std::fmt::Debug;
 
@@ -60,6 +62,47 @@ impl ControlMmioIntercept for TestPcieControlMmioIntercept {
 
     fn region_name(&self) -> &str {
         "???"
+    }
+}
+
+pub struct TestPciePioRegistration;
+
+impl RegisterPortIoIntercept for TestPciePioRegistration {
+    fn new_io_region(&mut self, _debug_name: &str, len: u16) -> Box<dyn ControlPortIoIntercept> {
+        Box::new(TestPcieControlPioIntercept { mapping: None, len })
+    }
+}
+
+struct TestPcieControlPioIntercept {
+    mapping: Option<u16>,
+    len: u16,
+}
+
+impl ControlPortIoIntercept for TestPcieControlPioIntercept {
+    fn map(&mut self, addr: u16) {
+        assert!(self.mapping.replace(addr).is_none());
+    }
+
+    fn unmap(&mut self) {
+        assert!(self.mapping.take().is_some());
+    }
+
+    fn addr(&self) -> Option<u16> {
+        self.mapping
+    }
+
+    fn len(&self) -> u16 {
+        self.len
+    }
+
+    fn offset_of(&self, addr: u16) -> Option<u16> {
+        let base = self.mapping?;
+        let end = base.checked_add(self.len)?;
+        (base..end).contains(&addr).then_some(addr - base)
+    }
+
+    fn region_name(&self) -> &str {
+        "test-pio"
     }
 }
 
