@@ -134,7 +134,7 @@ impl virt::Hypervisor for LinuxMshv {
                 nested: config.nested_virt,
             },
         )?;
-        let create_args = tsc::with_features1(create_args, false);
+        let create_args = tsc::with_features1(create_args, config.versioned_cpu_contract);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
