@@ -437,6 +437,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     max_queues: Some(1),
                     mac_address: config.guest_mac,
                     endpoint,
+                    egress_policy: None,
                     save_restore: true,
                     static_ipv4: Some(StaticIpv4Config {
                         guest_ipv4: config.guest_ipv4,
