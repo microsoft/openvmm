@@ -278,6 +278,14 @@ pub struct MicrovmCli {
         conflicts_with_all = ["virtio_fs", "virtio_fs_shmem"]
     )]
     pub microvm_mount: Option<MicrovmMountCli>,
+
+    /// Hide an existing host path inside the microVM filesystem export.
+    #[clap(
+        long = "mount-deny",
+        value_name = "HOST_PATH",
+        requires = "microvm_mount"
+    )]
+    pub microvm_mount_deny: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -387,6 +395,7 @@ impl Options {
                     && self.microvm.block_host.is_empty()
                     && self.microvm.allow_endpoint.is_empty()
                     && self.microvm.microvm_mount.is_none()
+                    && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
@@ -559,6 +568,10 @@ impl Options {
         anyhow::ensure!(
             self.microvm.microvm_sandbox_block.len() <= 4,
             "microVM permits at most three read-only layers and one writable scratch device"
+        );
+        anyhow::ensure!(
+            self.microvm.microvm_mount_deny.len() <= 128,
+            "microVM filesystem permits at most 128 denied paths"
         );
         for (index, block) in self.microvm.microvm_sandbox_block.iter().enumerate() {
             anyhow::ensure!(
