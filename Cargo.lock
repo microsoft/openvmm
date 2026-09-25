@@ -8417,6 +8417,7 @@ dependencies = [
  "inspect",
  "openhcl_attestation_protocol",
  "serde_json",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
@@ -9082,6 +9083,7 @@ dependencies = [
  "user_driver_emulated_mock",
  "vmgs",
  "vmgs_format",
+ "x86defs",
  "zerocopy",
 ]
 

@@ -5,7 +5,7 @@
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
 use crate::igvm_attest::Error as CommonError;
-use crate::igvm_attest::parse_response_header;
+use crate::igvm_attest::parse_response_payload;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
@@ -21,8 +21,6 @@ pub(crate) enum WrappedKeyError {
     PayloadSizeTooSmall,
     #[error("error in response header)")]
     ParseHeader(#[source] CommonError),
-    #[error("invalid response header version: {0}")]
-    InvalidResponseVersion(u32),
 }
 
 /// Return value of the [`parse_response`].
@@ -38,9 +36,9 @@ pub struct IgvmWrappedKeyParsedResponse {
 /// Returns `Ok(IgvmWrappedKeyParsedResponse)` on successfully extracting a wrapped DiskEncryptionSettings
 /// key from `response`, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, WrappedKeyError> {
-    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
-    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
-    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseExtensions;
+    use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
@@ -48,20 +46,17 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
     const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
     const MINIMUM_PAYLOAD_SIZE: usize = CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE;
 
-    let header = parse_response_header(response).map_err(WrappedKeyError::ParseHeader)?;
-
-    // Extract payload as per header version
-    let header_size = match header.version {
-        IgvmAttestResponseVersion::VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
-        IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestWrappedKeyResponseHeader>(),
-        invalid_version => return Err(WrappedKeyError::InvalidResponseVersion(invalid_version.0)),
-    };
-    let payload = &response[header_size..header.data_size as usize];
+    let parsed = parse_response_payload::<IgvmAttestWrappedKeyResponseExtensions>(
+        response,
+        IgvmAttestResponseRequestType::WrappedKey,
+        WRAPPED_KEY_RESPONSE_BUFFER_SIZE,
+    )
+    .map_err(WrappedKeyError::ParseHeader)?;
+    let payload = parsed.payload;
 
     if payload.len() < MINIMUM_PAYLOAD_SIZE {
         Err(WrappedKeyError::PayloadSizeTooSmall)?
     }
-    let payload = String::from_utf8_lossy(payload);
     let payload: cps::VmmdBlob = serde_json::from_str(&payload).map_err(|json_err| {
         WrappedKeyError::WrappedKeyResponsePayloadToJson {
             json_err,
@@ -91,7 +86,10 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     const KEY_REFERENCE: &str = r#"{
@@ -172,7 +170,7 @@ mod tests {
     }
 
     fn mock_response() -> Vec<u8> {
-        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
         const WRAPPED_KEY: [u8; 256] = [
@@ -220,7 +218,7 @@ mod tests {
 
         let header = IgvmAttestWrappedKeyResponseHeader {
             data_size: (payload.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>()) as u32,
-            version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+            version: IgvmAttestResponseVersion::VERSION_2,
             error_info: IgvmErrorInfo::default(),
         };
         [header.as_bytes(), payload.as_bytes()].concat()
@@ -241,5 +239,228 @@ mod tests {
             igvm_wrapped_key.key_reference,
             expected_key_reference.to_string().as_bytes()
         );
+    }
+
+    #[test]
+    fn v3_and_v1_match_v2_wrapped_key() {
+        use crate::igvm_attest::tests::frame_response;
+        use crate::igvm_attest::tests::v3_response;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+
+        let legacy = mock_response();
+        let expected = parse_response(&legacy).unwrap();
+        let payload =
+            std::str::from_utf8(&legacy[size_of::<IgvmAttestWrappedKeyResponseHeader>()..])
+                .unwrap();
+        for hash in [None, Some([42; 32])] {
+            let response = v3_response(
+                IgvmAttestResponseRequestType::WrappedKey,
+                payload,
+                hash,
+                IgvmErrorInfo::default(),
+            );
+            let parsed = parse_response(&response).unwrap();
+            assert_eq!(parsed.wrapped_key, expected.wrapped_key);
+            assert_eq!(parsed.key_reference, expected.key_reference);
+        }
+        let response = frame_response(
+            IgvmAttestResponseVersion::VERSION_1,
+            payload.as_bytes(),
+            IgvmErrorInfo::default(),
+        );
+        let parsed = parse_response(&response).unwrap();
+        assert_eq!(parsed.wrapped_key, expected.wrapped_key);
+        assert_eq!(parsed.key_reference, expected.key_reference);
+
+        let wrong_type = v3_response(
+            IgvmAttestResponseRequestType::KeyRelease,
+            payload,
+            None,
+            IgvmErrorInfo::default(),
+        );
+        assert!(matches!(
+            parse_response(&wrong_type),
+            Err(WrappedKeyError::ParseHeader(
+                CommonError::ResponseRequestTypeMismatch { .. }
+            ))
+        ));
+        let nested = serde_json::json!({
+            "schema_version": 1, "request_type": "wrapped_key", "payload": payload, "extensions": {}
+        })
+        .to_string();
+        let response = v3_response(
+            IgvmAttestResponseRequestType::WrappedKey,
+            &nested,
+            None,
+            IgvmErrorInfo::default(),
+        );
+        assert!(parse_response(&response).is_err());
+    }
+
+    #[test]
+    fn v3_ignores_all_wrapped_key_extension_values() {
+        use crate::igvm_attest::tests::frame_response;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+
+        let legacy = mock_response();
+        let expected = parse_response(&legacy).unwrap();
+        let payload =
+            std::str::from_utf8(&legacy[size_of::<IgvmAttestWrappedKeyResponseHeader>()..])
+                .unwrap();
+        let payload = serde_json::to_string(payload).unwrap();
+        // Use raw JSON to retain duplicate unknown fields. A context hash is
+        // unknown for this request type, regardless of its value or duplicates.
+        for extensions in [
+            r#"{}"#,
+            r#"{"key_release_context_hash":null}"#,
+            r#"{"key_release_context_hash":42}"#,
+            r#"{"key_release_context_hash":true}"#,
+            r#"{"key_release_context_hash":[]}"#,
+            r#"{"key_release_context_hash":[null,42,"badhex",{}]}"#,
+            r#"{"key_release_context_hash":{"nested":[1,2,3]}}"#,
+            r#"{"key_release_context_hash":""}"#,
+            r#"{"key_release_context_hash":"not a 64-character hex digest"}"#,
+            r#"{"key_release_context_hash":"000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"}"#,
+            r#"{"key_release_context_hash":null,"key_release_context_hash":"badhex"}"#,
+            r#"{"future_extension":{"opaque":[null,false,{},[]]},"future_extension":5}"#,
+        ] {
+            let envelope = format!(
+                r#"{{"schema_version":1,"request_type":"wrapped_key","payload":{payload},"extensions":{extensions},"future_field":{{"ignored":true}}}}"#
+            );
+            let response = frame_response(
+                IgvmAttestResponseVersion::VERSION_3,
+                envelope.as_bytes(),
+                IgvmErrorInfo::default(),
+            );
+            let parsed = parse_response(&response)
+                .unwrap_or_else(|err| panic!("rejected {extensions}: {err}"));
+            assert_eq!(parsed.wrapped_key, expected.wrapped_key);
+            assert_eq!(parsed.key_reference, expected.key_reference);
+        }
+    }
+
+    #[test]
+    fn v3_rejects_nonobject_extensions_and_invalid_envelopes() {
+        use crate::igvm_attest::tests::frame_response;
+
+        for extensions in [
+            "null",
+            "42",
+            "false",
+            r#""string""#,
+            "[]",
+            "[null]",
+            r#"{"key_release_context_hash":}"#,
+            r#"{"key_release_context_hash":[1,]}"#,
+            r#"{"key_release_context_hash":{"broken":}}"#,
+            r#"{"key_release_context_hash":"\x"}"#,
+        ] {
+            let envelope = format!(
+                r#"{{"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{extensions}}}"#
+            );
+            let response = frame_response(
+                IgvmAttestResponseVersion::VERSION_3,
+                envelope.as_bytes(),
+                IgvmErrorInfo::default(),
+            );
+            assert!(
+                matches!(
+                    parse_response(&response),
+                    Err(WrappedKeyError::ParseHeader(
+                        CommonError::InvalidResponseEnvelope(_)
+                    ))
+                ),
+                "accepted {extensions}"
+            );
+        }
+
+        for invalid in [
+            r#"{"request_type":"wrapped_key","payload":"x","extensions":{}}"#,
+            r#"{"schema_version":1,"payload":"x","extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","payload":"x"}"#,
+            r#"{"schema_version":1,"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","request_type":"wrapped_key","payload":"x","extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","payload":"x","payload":"x","extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{},"extensions":{}}"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","payload":{},"extensions":{}}"#,
+            r#"[1,"wrapped_key","x",{}]"#,
+            r#"{"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{}} trailing"#,
+        ] {
+            let response = frame_response(
+                IgvmAttestResponseVersion::VERSION_3,
+                invalid.as_bytes(),
+                IgvmErrorInfo::default(),
+            );
+            assert!(
+                matches!(
+                    parse_response(&response),
+                    Err(WrappedKeyError::ParseHeader(
+                        CommonError::InvalidResponseEnvelope(_)
+                    ))
+                ),
+                "accepted {invalid}"
+            );
+        }
+        for schema_version in [0, 2] {
+            let envelope = serde_json::json!({
+                "schema_version": schema_version,
+                "request_type": "wrapped_key",
+                "payload": "x",
+                "extensions": {}
+            });
+            let response = frame_response(
+                IgvmAttestResponseVersion::VERSION_3,
+                &serde_json::to_vec(&envelope).unwrap(),
+                IgvmErrorInfo::default(),
+            );
+            assert!(matches!(
+                parse_response(&response),
+                Err(WrappedKeyError::ParseHeader(CommonError::InvalidResponseSchemaVersion(v)))
+                    if v == schema_version
+            ));
+        }
+    }
+
+    #[test]
+    fn wrapped_key_header_errors_are_preserved() {
+        use crate::igvm_attest::tests::frame_response;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
+
+        for version in [
+            IgvmAttestResponseVersion::VERSION_1,
+            IgvmAttestResponseVersion::VERSION_2,
+            IgvmAttestResponseVersion::VERSION_3,
+        ] {
+            let mut response = frame_response(version, b"", IgvmErrorInfo::default());
+            response[..4].copy_from_slice(&0u32.to_le_bytes());
+            // In particular, an undersized declared V2 header must not panic
+            // when slicing the payload.
+            assert!(matches!(
+                parse_response(&response),
+                Err(WrappedKeyError::ParseHeader(_))
+            ));
+        }
+        let response = frame_response(
+            IgvmAttestResponseVersion::VERSION_3,
+            &[0xff],
+            IgvmErrorInfo {
+                error_code: 1103,
+                http_status_code: 503,
+                igvm_signal: IgvmSignal::new()
+                    .with_retry(true)
+                    .with_skip_hw_unsealing(true),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            parse_response(&response),
+            Err(WrappedKeyError::ParseHeader(CommonError::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 503,
+                retry_signal: true,
+                skip_hw_unsealing_signal: true,
+            }))
+        ));
     }
 }
