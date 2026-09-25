@@ -193,9 +193,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
                 let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
                 (Ok(Some(mana_saved_state)), driver.into_device())
             }
-            Ok(None) => {
-                (Ok(None), driver.into_device())
-            }
+            Ok(None) => (Ok(None), driver.into_device()),
             Err(err) => {
                 tracing::error!(
                     err = err.as_ref() as &dyn std::error::Error,

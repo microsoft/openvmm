@@ -1984,33 +1984,17 @@ async fn mana_nic_servicing_both_boot_with_nvme_only(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    let options = ServicingKeepAliveOperations {
-        enable_mana_keepalive_at_boot: true,
-        disable_nvme_keepalive_at_boot: false,
-        enable_nvme_keepalive_during_servicing: true,
-        enable_mana_keepalive_during_servicing: false,
-    };
-    let mut flags = config.default_servicing_flags();
-    flags.enable_nvme_keepalive = options.enable_nvme_keepalive_during_servicing;
-    flags.enable_mana_keepalive = options.enable_mana_keepalive_during_servicing;
-
-    let (mut vm, agent) = mana_nic_servicing_config(config, options).run().await?;
-
-    configure_mana_nic(&agent).await?;
-    validate_mana_nic(&agent).await?;
-
-    let error = vm
-        .restart_openhcl(igvm_file, flags)
-        .await
-        .expect_err("MANA allocations should fail DMA manager restore validation");
-    assert!(
-        format!("{error:#}").contains("unrestored allocations found"),
-        "unexpected servicing error: {error:#}"
-    );
-
-    // No graceful shutdown.
-
-    Ok(())
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: true,
+            disable_nvme_keepalive_at_boot: false,
+            enable_nvme_keepalive_during_servicing: true,
+            enable_mana_keepalive_during_servicing: false,
+        },
+    )
+    .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]

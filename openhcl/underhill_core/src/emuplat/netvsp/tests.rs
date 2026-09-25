@@ -23,7 +23,7 @@ fn test_pool() -> PagePool {
 }
 
 #[test]
-fn discard_pending_buffers_allows_fresh_init_after_keepalive_without_mana_state() {
+fn discard_pending_mana_buffers_releases_restored_allocations() {
     let mut pool = test_pool();
     let persistent = Arc::new(pool.allocator("nic_0000:00:00.0".into()).unwrap());
     let gdma_buffer = persistent.allocate_dma_buffer(GDMA_BUFFER_SIZE).unwrap();
