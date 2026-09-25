@@ -214,7 +214,7 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_open_readonly(&inode, flags)?;
         let file = inode.open(flags)?;
-        let fh = self.insert_file(file);
+        let fh = self.insert_file(file)?;
 
         // TODO: Optionally allow caching.
         Ok(fuse_open_out::new(fh, FOPEN_DIRECT_IO))
@@ -237,9 +237,9 @@ impl Fuse for VirtioFs {
         // Insert the newly created inode; this can return an existing inode if it found a match
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
-        let (new_inode, node_id) = self.insert_inode(new_inode);
+        let (new_inode, node_id) = self.insert_inode(new_inode)?;
         let file = VirtioFsFile::new(file, new_inode);
-        let fh = self.insert_file(file);
+        let fh = self.insert_file(file)?;
         Ok(CreateOut {
             entry: fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr),
             open: fuse_open_out::new(fh, FOPEN_DIRECT_IO),
@@ -258,7 +258,7 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -281,7 +281,7 @@ impl Fuse for VirtioFs {
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
 
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -303,7 +303,7 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
-        let (_, node_id) = self.insert_inode(new_inode);
+        let (_, node_id) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -572,7 +572,9 @@ impl VirtioFs {
         let mut inodes = InodeMap::new(false);
         let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly));
         let (root_inode, _) = VirtioFsInode::new(volume, PathBuf::new())?;
-        assert!(inodes.insert(root_inode).1 == FUSE_ROOT_ID);
+        if inodes.insert(root_inode)?.1 != FUSE_ROOT_ID {
+            return Err(lx::Error::EINVAL);
+        }
         Ok(Self {
             inner: Arc::new(VirtioFsInner {
                 inodes: RwLock::new(inodes),
@@ -601,7 +603,7 @@ impl VirtioFs {
 
     fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
-        let (_, new_inode_nr) = self.insert_inode(new_inode);
+        let (_, new_inode_nr) = self.insert_inode(new_inode)?;
         Ok(fuse_entry_out::new(
             new_inode_nr,
             ENTRY_TIMEOUT,
@@ -638,8 +640,9 @@ impl VirtioFs {
     ///
     /// If the file system supports stable inode numbers and an inode already existed with this
     /// number, the existing inode is returned, not the passed in one.
-    fn insert_inode(&self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
-        self.inner.inodes.write().insert(inode)
+    fn insert_inode(&self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        let mut inodes = self.inner.inodes.write();
+        inodes.insert(inode)
     }
 
     /// Retrieve the file object with the specified file handle.
@@ -654,8 +657,9 @@ impl VirtioFs {
     }
 
     /// Insert a new file object, and return the assigned file handle.
-    fn insert_file(&self, file: VirtioFsFile) -> u64 {
-        self.inner.files.write().insert(Arc::new(file))
+    fn insert_file(&self, file: VirtioFsFile) -> lx::Result<u64> {
+        let mut files = self.inner.files.write();
+        files.insert(Arc::new(file)).ok_or(lx::Error::ENOSPC)
     }
 
     /// Remove the file with the specified node ID.
@@ -687,14 +691,18 @@ impl<T> HandleMap<T> {
     }
 
     /// Inserts an item into the map, and returns the assigned handle.
-    pub fn insert(&mut self, value: T) -> u64 {
-        let handle = self.next_handle;
-        if self.values.insert(handle, value).is_some() {
-            panic!("Inode number reused.");
+    pub fn insert(&mut self, value: T) -> Option<u64> {
+        if !self.can_insert() {
+            return None;
         }
+        let handle = self.next_handle;
+        self.values.insert(handle, value);
+        self.next_handle = handle.checked_add(1).unwrap_or(0);
+        Some(handle)
+    }
 
-        self.next_handle += 1;
-        handle
+    pub fn can_insert(&self) -> bool {
+        self.next_handle != 0 && !self.values.contains_key(&self.next_handle)
     }
 
     /// Retrieves a value from the map.
@@ -758,7 +766,7 @@ impl InodeMap {
     }
 
     /// Insert an inode into the map, returning its node ID.
-    pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
+    pub fn insert(&mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         // Reuse an existing node id for the same host file; see `DedupKey`
         // for how each volume type is keyed.
         match self.inodes_by_key.entry(inode.dedup_key()) {
@@ -767,21 +775,26 @@ impl InodeMap {
                 let new_path = inode.clone_path();
                 let (existing, node_id) = entry.get();
                 existing.lookup(new_path);
-                (Arc::clone(existing), *node_id)
+                Ok((Arc::clone(existing), *node_id))
             }
             Entry::Vacant(entry) => {
                 // Inode not found, so insert it into both maps.
                 let inode = Arc::new(inode);
-                let node_id = self.inodes_by_node_id.insert(Arc::clone(&inode));
+                let node_id = self
+                    .inodes_by_node_id
+                    .insert(Arc::clone(&inode))
+                    .ok_or(lx::Error::ENOSPC)?;
                 entry.insert((Arc::clone(&inode), node_id));
-                (inode, node_id)
+                Ok((inode, node_id))
             }
         }
     }
 
     /// Remove an inode with the specified FUSE node ID from the map.
     pub fn remove(&mut self, node_id: u64) {
-        let inode = self.inodes_by_node_id.remove(node_id).unwrap();
+        let Some(inode) = self.inodes_by_node_id.remove(node_id) else {
+            return;
+        };
         // Only drop the by-key entry if it still points at THIS node: on
         // path-keyed volumes the path may have been repointed to a newer inode
         // (via delete+recreate or `evict_dedup_key`), which must not be lost.
@@ -812,11 +825,20 @@ impl InodeMap {
             return;
         }
 
-        let root_inode = Arc::clone(self.inodes_by_node_id.get(FUSE_ROOT_ID).unwrap());
+        let Some(root_inode) = self.inodes_by_node_id.get(FUSE_ROOT_ID).cloned() else {
+            self.inodes_by_node_id.clear();
+            self.inodes_by_key.clear();
+            return;
+        };
         self.inodes_by_node_id.clear();
 
         // Re-insert the root inode.
-        assert!(self.inodes_by_node_id.insert(Arc::clone(&root_inode)) == FUSE_ROOT_ID);
+        let inserted = self.inodes_by_node_id.insert(Arc::clone(&root_inode));
+        if inserted != Some(FUSE_ROOT_ID) {
+            self.inodes_by_node_id.clear();
+            self.inodes_by_key.clear();
+            return;
+        }
 
         // Rebuild the dedup map with just the root.
         self.inodes_by_key.clear();
