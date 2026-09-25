@@ -4,9 +4,9 @@
 //! MicroVM launch state carried from the VM configuration to the VM worker
 //! and the VM controller.
 
-use super::ExpectedRestoreContract;
 use super::MicrovmResources;
 use super::MicrovmRestore;
+use super::restore::ExpectedRestoreContract;
 use super::validate_microvm_filesystem_private_storage;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
@@ -236,6 +236,7 @@ impl MicrovmLaunch {
                 .zip(resources.filesystem_attachment.as_ref())
                 .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment)),
             resources.console_attachment.as_ref(),
+            resources.control_console_attachment.as_ref(),
             sandbox_blocks,
         )))
     }
