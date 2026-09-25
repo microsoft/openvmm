@@ -3,6 +3,7 @@
 
 //! x86_64-specific implementation of the mshv hypervisor backend.
 
+mod extint;
 pub(crate) mod finalize;
 mod vm_state;
 mod vp_state;
@@ -635,13 +636,7 @@ impl virt::X86Partition for MshvPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
-        // TODO: Implement LINT injection for non-isolated MSHV partitions.
-        //
-        // The legacy PIC/PIT are temporarily attached for direct-boot TSC
-        // calibration, but MSHV isolated VPs cannot receive PIC ExtINT through
-        // LINT0. The guest must route runtime interrupts through the IOAPIC/MSI
-        // path; PIC-dependent isolated guests are not supported.
-        tracelimit::warn_ratelimited!(?vp_index, ?vtl, lint, "ignored lint pulse");
+        self.inner.pulse_lint(vp_index, vtl, lint)
     }
 }
 
@@ -881,6 +876,9 @@ impl MshvProcessor<'_> {
             HvMessageType::HvMessageTypeX64ApicEoi => {
                 let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
                 dev.handle_eoi(msg.interrupt_vector);
+            }
+            HvMessageType::HvMessageTypeX64InterruptionDeliverable => {
+                self.handle_interrupt_deliverable(exit, dev);
             }
             exit_type => {
                 panic!("Unhandled vcpu exit code {exit_type:?}");

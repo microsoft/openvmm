@@ -159,6 +159,7 @@ impl<'a> MshvProtoPartition<'a> {
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
                 message_queues_pending: AtomicBool::new(false),
+                extint_pending: AtomicBool::new(false),
                 waker: RwLock::new(None),
             })
             .collect();
@@ -345,6 +346,9 @@ struct MshvVpInner {
     /// Set by device threads after enqueuing a message to signal the VP
     /// thread to flush its message queues.
     message_queues_pending: AtomicBool,
+    /// Set when the userspace PIC pulses LINT0 and cleared after ExtINT delivery.
+    #[cfg(guest_arch = "x86_64")]
+    extint_pending: AtomicBool,
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,
@@ -662,6 +666,9 @@ impl virt::Processor for MshvProcessor<'_> {
                     self.flush_messages(pending_sints);
                 }
             }
+
+            #[cfg(guest_arch = "x86_64")]
+            self.request_extint_notification();
 
             match self.runner.run() {
                 Ok(exit) => {
