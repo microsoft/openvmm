@@ -473,6 +473,7 @@ pub fn build_qemu_command(
     let PetriVmConfig {
         name: _,
         arch,
+        machine_profile,
         host_log_levels,
         firmware,
         hibernation_enabled,
@@ -514,6 +515,10 @@ pub fn build_qemu_command(
 
     // make sure we aren't silently ignoring any configurations
     assert!(matches!(arch, MachineArch::Aarch64));
+    assert!(matches!(
+        machine_profile,
+        openvmm_defs::microvm::MachineProfile::Standard
+    ));
     assert!(matches!(
         host_log_levels,
         None | Some(crate::OpenvmmLogConfig::TestDefault)
@@ -656,10 +661,11 @@ mod tests {
         let config = PetriVmConfig {
             name: "test".into(),
             arch: MachineArch::Aarch64,
+            machine_profile: openvmm_defs::microvm::MachineProfile::Standard,
             host_log_levels: None,
             firmware: Firmware::LinuxDirect {
                 kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
-                initrd: ResolvedArtifact::from_local_path("base-initrd".into()),
+                initrd: Some(ResolvedArtifact::from_local_path("base-initrd".into())),
             },
             hibernation_enabled: false,
             ipmi_enabled: false,
