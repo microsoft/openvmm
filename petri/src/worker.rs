@@ -29,8 +29,13 @@ impl Worker {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
+        let hypervisor = crate::openvmm::microvm::choose_hypervisor(
+            cfg.machine_profile,
+            openvmm_helpers::hypervisor::choose_hypervisor,
+            openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor,
+        )?;
         let params = VmWorkerParameters {
-            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
+            hypervisor,
             cfg,
             saved_state: None,
             shared_memory,
