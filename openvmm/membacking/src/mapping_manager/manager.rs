@@ -61,6 +61,7 @@ impl MappingManager {
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
         supports_memory_fault_resolution: bool,
+        track_memory_faults: bool,
     ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
         let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
         // Create the primary mapper as part of construction. Being first, it is
@@ -72,6 +73,7 @@ impl MappingManager {
                 true,
                 MapperRole::Primary {
                     supports_memory_fault_resolution,
+                    track_memory_faults,
                 },
             )
             .await?;
@@ -302,7 +304,7 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
                     req.respond()
                         .field("writable", mapping.params.writable)
                         .field("mapping_type", mapping.params.mapping_type)
-                        .field("backed_by_fd", mapping.params.backing.mappable().is_some())
+                        .field("backed_by_fd", mapping.params.backing.is_file_backed())
                         .hex("file_offset", mapping.params.backing.file_offset());
                 }),
             );
@@ -315,6 +317,15 @@ struct Mapping {
     active_mappers: Vec<MapperId>,
 }
 
+/// Controls whether writes to a file-backed mapping update the backing object.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, MeshPayload)]
+pub enum FileMappingMode {
+    /// Writes are visible through the backing object and all of its mappings.
+    Shared,
+    /// Writes are private to this mapper and do not modify the backing object.
+    CopyOnWrite,
+}
+
 /// How a guest memory mapping is backed by host memory.
 #[derive(Debug, MeshPayload, Clone)]
 pub enum MappingBacking {
@@ -323,6 +334,17 @@ pub enum MappingBacking {
     /// same physical pages are shared across all mappers (and shareable with
     /// other processes via `GuestMemorySharing`).
     File {
+        /// The OS object to map.
+        mappable: Mappable,
+        /// The file offset into `mappable`.
+        file_offset: u64,
+    },
+    /// Backed by a file whose writable pages are private to this mapper.
+    ///
+    /// Although this retains a mappable handle internally, it cannot be
+    /// exported to DMA targets or additional VA mappers because each mapping
+    /// would otherwise receive an independent private copy.
+    CopyOnWriteFile {
         /// The OS object to map.
         mappable: Mappable,
         /// The file offset into `mappable`.
@@ -354,16 +376,33 @@ impl MappingBacking {
     pub fn mappable(&self) -> Option<&Mappable> {
         match self {
             MappingBacking::File { mappable, .. } => Some(mappable),
-            MappingBacking::Private => None,
+            MappingBacking::CopyOnWriteFile { .. } | MappingBacking::Private => None,
         }
     }
 
     /// Returns the offset within the backing object, or 0 if there is none.
     pub fn file_offset(&self) -> u64 {
         match self {
-            MappingBacking::File { file_offset, .. } => *file_offset,
+            MappingBacking::File { file_offset, .. }
+            | MappingBacking::CopyOnWriteFile { file_offset, .. } => *file_offset,
             MappingBacking::Private => 0,
         }
+    }
+
+    /// Returns whether the backing has process-private write state.
+    pub fn is_private(&self) -> bool {
+        matches!(
+            self,
+            MappingBacking::CopyOnWriteFile { .. } | MappingBacking::Private
+        )
+    }
+
+    /// Returns whether the backing uses a file or section internally.
+    pub fn is_file_backed(&self) -> bool {
+        matches!(
+            self,
+            MappingBacking::File { .. } | MappingBacking::CopyOnWriteFile { .. }
+        )
     }
 }
 
@@ -710,7 +749,7 @@ impl MappingManagerTask {
         // Private memory is anonymous and lives in a single mapper's address
         // space, so it requires at most one mapper. Reject adding private RAM
         // (e.g. via hotplug) while more than one mapper is present.
-        if matches!(params.backing, MappingBacking::Private) && self.mappers.mappers.len() > 1 {
+        if params.backing.is_private() && self.mappers.mappers.len() > 1 {
             anyhow::bail!("cannot add private memory while multiple mappers are present");
         }
 
@@ -765,9 +804,7 @@ impl MappingManagerTask {
 
     /// Returns true if any current mapping is backed by private memory.
     fn has_private_mapping(&self) -> bool {
-        self.mappings
-            .iter()
-            .any(|m| matches!(m.params.backing, MappingBacking::Private))
+        self.mappings.iter().any(|m| m.params.backing.is_private())
     }
 
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
@@ -1490,6 +1527,7 @@ mod tests {
             true, // eager
             MapperRole::Primary {
                 supports_memory_fault_resolution: false,
+                track_memory_faults: false,
             },
         );
         let (mapper, _) = futures::join!(mapper_future, async {
@@ -1530,6 +1568,7 @@ mod tests {
             true, // eager
             MapperRole::Primary {
                 supports_memory_fault_resolution: false,
+                track_memory_faults: false,
             },
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
