@@ -33,8 +33,8 @@ validates the manifest format before it reads `state.bin`, and requires
 
 The default format is a local machine-state contract, not an authenticated
 container. All versions receive the same regular-file, no-follow/no-reparse,
-bounded decoding, exact-length, and inventory validation, but the on-disk
-format does not authenticate same-length payload changes. Export or transport
+bounded decoding, exact-length, inventory, and machine-contract validation,
+but the on-disk format does not authenticate same-length payload changes. Export or transport
 layers must provide broader integrity and authentication outside this format.
 
 ## Device state (`state.bin`)
