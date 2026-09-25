@@ -13,7 +13,6 @@ pub mod restore;
 
 pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
-pub use restore::read_snapshot;
 
 /// Current manifest format version. Bump when making incompatible changes.
 pub const MANIFEST_VERSION: u32 = 3;
@@ -143,6 +142,7 @@ pub fn validate_expectations(
 
 #[cfg(test)]
 mod tests {
+    use super::restore::read_snapshot;
     use super::*;
 
     const TEST_ID: guid::Guid = guid::guid!("3099921d-f0e6-48aa-9d58-8fd4811ce4d2");
@@ -180,7 +180,7 @@ mod tests {
 
         write_snapshot(&snap_dir, &manifest, state, &mem_path).unwrap();
 
-        let (read_manifest, read_state) = read_snapshot(&snap_dir).unwrap();
+        let (read_manifest, read_state) = read_snapshot(&snap_dir, 1024).unwrap();
         assert_eq!(read_manifest.version, manifest.version);
         assert_eq!(read_manifest.memory_size_bytes, manifest.memory_size_bytes);
         assert_eq!(read_manifest.vp_count, manifest.vp_count);
@@ -300,7 +300,7 @@ mod tests {
     fn read_snapshot_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         // No files written — read should fail.
-        let result = read_snapshot(dir.path());
+        let result = read_snapshot(dir.path(), 1024);
         assert!(result.is_err());
     }
 
