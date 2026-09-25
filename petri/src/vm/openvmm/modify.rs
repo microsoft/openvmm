@@ -123,9 +123,13 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             params: Default::default(),
+            static_ipv4: None,
             ports: Vec::new(),
             internal_dns: true,
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
@@ -190,9 +194,13 @@ impl PetriVmConfigOpenVmm {
                 endpoint: net_backend_resources::consomme::ConsommeHandle {
                     cidr: None,
                     params: Default::default(),
+                    static_ipv4: None,
                     ports: Vec::new(),
                     internal_dns: true,
                     recv: None,
+                    allow_host_local_access: None,
+                    map_gateway_to_host_loopback: None,
+                    gateway_loopback_proxy_port: None,
                 }
                 .into_resource(),
             })
@@ -222,9 +230,13 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             params: Default::default(),
+            static_ipv4: None,
             ports: Vec::new(),
             internal_dns: true,
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
@@ -284,9 +296,13 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             params: Default::default(),
+            static_ipv4: None,
             ports: Vec::new(),
             internal_dns: true,
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
 
@@ -319,6 +335,7 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             params: Default::default(),
+            static_ipv4: None,
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
@@ -329,6 +346,9 @@ impl PetriVmConfigOpenVmm {
             }],
             internal_dns: true,
             recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
