@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! MicroVM snapshot restore-time contract checks.
+//! MicroVM snapshot restore packets and restore-time contract checks.
 
 use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use crate::Options;
@@ -15,6 +15,7 @@ use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_helpers::snapshot::SnapshotManifest;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
+use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
 use openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
 use std::path::Path;
@@ -39,8 +40,39 @@ fn calculate_snapshot_downtime(
 fn microvm_restore_packet(
     entropy: &[u8; 64],
     restore_online_vp_count: Option<u32>,
+    restore_memory_target_requested: bool,
+    restore_memory_ranges: &[SnapshotMemoryExpansionRange],
 ) -> anyhow::Result<Vec<u8>> {
-    let mut packet = if let Some(count) = restore_online_vp_count {
+    anyhow::ensure!(
+        restore_memory_target_requested || restore_memory_ranges.is_empty(),
+        "restore memory ranges require an explicit memory target"
+    );
+    let mut packet = if restore_memory_target_requested {
+        // V3 is: 19-byte NUL-terminated header, u8 online-VP target (zero
+        // means absent), u8 range count, repeated little-endian (u64 GPA,
+        // u64 length) pairs, and 64 bytes of entropy. The exact GPA ranges
+        // keep guest repair independent of the host's layout implementation.
+        let range_count = u8::try_from(restore_memory_ranges.len())
+            .context("restore memory range count does not fit in u8")?;
+        let mut packet = b"OPENVMM_ENTROPY_V3\0".to_vec();
+        let online_vp_count = restore_online_vp_count
+            .map(u8::try_from)
+            .transpose()
+            .context("restore-online VP count does not fit in u8")?
+            .unwrap_or(0);
+        packet.push(online_vp_count);
+        packet.push(range_count);
+        for range in restore_memory_ranges {
+            anyhow::ensure!(range.length != 0, "restore memory range is empty");
+            range
+                .gpa_start
+                .checked_add(range.length)
+                .context("restore memory range overflows GPA space")?;
+            packet.extend_from_slice(&range.gpa_start.to_le_bytes());
+            packet.extend_from_slice(&range.length.to_le_bytes());
+        }
+        packet
+    } else if let Some(count) = restore_online_vp_count {
         let count = u8::try_from(count).context("restore-online VP count does not fit in u8")?;
         let mut packet = b"OPENVMM_ENTROPY_V2\0".to_vec();
         packet.push(count);
@@ -66,12 +98,19 @@ pub(crate) fn fresh_microvm_generation_id() -> anyhow::Result<[u8; 16]> {
 
 pub(crate) fn fresh_microvm_restore_packet(
     restore_online_vp_count: Option<u32>,
+    restore_memory_target_requested: bool,
+    restore_memory_ranges: &[SnapshotMemoryExpansionRange],
 ) -> anyhow::Result<([u8; 16], Vec<u8>)> {
     let generation_id_create = openvmm_defs::profile::ProfileSpan::start();
     let mut entropy = [0_u8; 64];
     getrandom::fill(&mut entropy).context("failed to generate restore entropy")?;
     let generation_id = microvm_generation_id(&entropy);
-    let packet = microvm_restore_packet(&entropy, restore_online_vp_count)?;
+    let packet = microvm_restore_packet(
+        &entropy,
+        restore_online_vp_count,
+        restore_memory_target_requested,
+        restore_memory_ranges,
+    )?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
     Ok((generation_id, packet))
 }
@@ -83,6 +122,10 @@ pub(crate) struct MicrovmRestore {
     pub(crate) machine_contract: Option<SnapshotMachineContract>,
     /// Whether the guest must complete post-restore repair before readiness.
     pub(crate) gate_required: bool,
+    /// Whether `--restore-memory` selected an explicit RAM target.
+    pub(crate) memory_target_requested: bool,
+    /// Fresh private GPA ranges selected for this restore.
+    pub(crate) memory_ranges: Vec<SnapshotMemoryExpansionRange>,
     /// Private copy of a paired scratch image, kept alive for the VM lifetime.
     pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
 }
@@ -98,6 +141,8 @@ pub(crate) fn prepare_restore(
 ) -> anyhow::Result<MicrovmRestore> {
     let mut private_scratch_dir = None;
     let mut restore_gate_required = false;
+    let restore_memory_target_requested = opt.microvm.restore_memory.is_some();
+    let mut restore_memory_ranges = Vec::new();
     if let Some(contract) =
         restore_snapshot.and_then(|snapshot| snapshot.manifest().machine_contract.as_ref())
         && contract.machine_profile == "microvm"
@@ -134,6 +179,21 @@ pub(crate) fn prepare_restore(
             )?;
             restore_gate_required = true;
         }
+        let restore_memory_size = opt
+            .microvm
+            .restore_memory
+            .map(|memory| memory.0)
+            .unwrap_or(manifest.memory_size_bytes);
+        if restore_memory_target_requested {
+            restore_memory_ranges =
+                openvmm_helpers::snapshot::microvm::validate_restore_memory_target(
+                    manifest,
+                    restore_memory_size,
+                )?;
+        }
+        if !restore_memory_ranges.is_empty() {
+            restore_gate_required = true;
+        }
         anyhow::ensure!(
             opt.cmdline.is_empty(),
             "restore-time command-line overrides are not allowed"
@@ -146,7 +206,7 @@ pub(crate) fn prepare_restore(
                 && opt.deprecated_memory_backing_file.is_none(),
             "restore-time memory overrides are not allowed"
         );
-        opt.memory.size = Some(vmm_cli::MemorySize(manifest.memory_size_bytes));
+        opt.memory.size = Some(vmm_cli::MemorySize(restore_memory_size));
         if !contract.microvm_sandbox_blocks.is_empty() {
             let scratch = contract
                 .microvm_sandbox_blocks
@@ -219,7 +279,10 @@ pub(crate) fn prepare_restore(
     if restore_gate_required || opt.microvm.restore_processors.is_some() {
         opt.microvm.restore_entropy = true;
     }
-    if restore_machine_contract.is_some() && !opt.microvm.restore_entropy {
+    if restore_machine_contract.is_some()
+        && !opt.microvm.restore_entropy
+        && !restore_memory_target_requested
+    {
         tracing::warn!(
             "restoring cloned guest RNG state without fresh entropy injection; cryptographic workloads are unsafe"
         );
@@ -227,6 +290,8 @@ pub(crate) fn prepare_restore(
     Ok(MicrovmRestore {
         machine_contract: restore_machine_contract,
         gate_required: restore_gate_required,
+        memory_target_requested: restore_memory_target_requested,
+        memory_ranges: restore_memory_ranges,
         private_scratch_dir,
     })
 }
@@ -287,6 +352,8 @@ pub(crate) fn validate_restore_contract(
         sandbox_blocks,
         expected_vp_count,
         expected_memory_size,
+        (saved_contract.memory_expansion_version != 0)
+            .then_some(saved_contract.memory_capacity_bytes),
         saved_contract.state_unit_names.clone(),
         saved_contract.capture_wall_clock,
         saved_contract.tsc_frequency_hz,
@@ -313,6 +380,7 @@ pub(crate) fn validate_restore_contract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
     use test_with_tracing::test;
 
     #[test]
@@ -353,13 +421,67 @@ mod tests {
     fn restore_packet_versions_preserve_entropy_and_online_target() {
         let entropy = [0x5a; 64];
         assert_eq!(microvm_generation_id(&entropy), [0x5a; 16]);
-        let v1 = microvm_restore_packet(&entropy, None).unwrap();
+        let v1 = microvm_restore_packet(&entropy, None, false, &[]).unwrap();
         assert_eq!(&v1[..19], b"OPENVMM_ENTROPY_V1\0");
         assert_eq!(&v1[19..], &entropy);
 
-        let v2 = microvm_restore_packet(&entropy, Some(8)).unwrap();
+        let v2 = microvm_restore_packet(&entropy, Some(8), false, &[]).unwrap();
         assert_eq!(&v2[..19], b"OPENVMM_ENTROPY_V2\0");
         assert_eq!(v2[19], 8);
         assert_eq!(&v2[20..], &entropy);
+
+        let ranges = [
+            SnapshotMemoryExpansionRange {
+                gpa_start: 0x2000_0000,
+                length: 0x2000_0000,
+            },
+            SnapshotMemoryExpansionRange {
+                gpa_start: 0x1_0000_0000,
+                length: 0x4000_0000,
+            },
+        ];
+        let v3 = microvm_restore_packet(&entropy, Some(4), true, &ranges).unwrap();
+        assert_eq!(&v3[..19], b"OPENVMM_ENTROPY_V3\0");
+        assert_eq!(v3[19], 4);
+        assert_eq!(v3[20], 2);
+        assert_eq!(
+            &v3[21..37],
+            &[
+                ranges[0].gpa_start.to_le_bytes(),
+                ranges[0].length.to_le_bytes(),
+            ]
+            .concat()
+        );
+        assert_eq!(
+            &v3[37..53],
+            &[
+                ranges[1].gpa_start.to_le_bytes(),
+                ranges[1].length.to_le_bytes(),
+            ]
+            .concat()
+        );
+        assert_eq!(&v3[53..], &entropy);
+
+        let v3_without_cpu = microvm_restore_packet(&entropy, None, true, &ranges[..1]).unwrap();
+        assert_eq!(&v3_without_cpu[..19], b"OPENVMM_ENTROPY_V3\0");
+        assert_eq!(v3_without_cpu[19], 0);
+        assert_eq!(v3_without_cpu[20], 1);
+        assert_eq!(
+            &v3_without_cpu[21..37],
+            &[
+                ranges[0].gpa_start.to_le_bytes(),
+                ranges[0].length.to_le_bytes(),
+            ]
+            .concat()
+        );
+        assert_eq!(&v3_without_cpu[37..], &entropy);
+
+        let v3_explicit_base = microvm_restore_packet(&entropy, None, true, &[]).unwrap();
+        assert_eq!(&v3_explicit_base[..19], b"OPENVMM_ENTROPY_V3\0");
+        assert_eq!(v3_explicit_base[19], 0);
+        assert_eq!(v3_explicit_base[20], 0);
+        assert_eq!(&v3_explicit_base[21..], &entropy);
+
+        assert!(microvm_restore_packet(&entropy, None, false, &ranges[..1]).is_err());
     }
 }

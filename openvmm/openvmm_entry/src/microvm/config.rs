@@ -314,11 +314,16 @@ impl<'a> MicrovmConfigBuilder<'a> {
             return Ok(());
         };
         let opt = self.opt;
-        let (generation_id, restore_entropy) = if opt.microvm.restore_entropy {
-            fresh_microvm_restore_packet(opt.microvm.restore_processors)?
-        } else {
-            (fresh_microvm_generation_id()?, Vec::new())
-        };
+        let (generation_id, restore_entropy) =
+            if opt.microvm.restore_entropy || self.restore.memory_target_requested {
+                fresh_microvm_restore_packet(
+                    opt.microvm.restore_processors,
+                    self.restore.memory_target_requested,
+                    &self.restore.memory_ranges,
+                )?
+            } else {
+                (fresh_microvm_generation_id()?, Vec::new())
+            };
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
             resource: MicrovmPortbHandle {
@@ -533,6 +538,33 @@ impl<'a> MicrovmConfigBuilder<'a> {
             .map(|contract| contract.microvm_filesystem.is_some())
             .unwrap_or_else(|| microvm_filesystem.is_some());
         cfg.microvm.filesystem = microvm_filesystem;
+        cfg.microvm.memory_capacity = restore_machine_contract
+            .and_then(|contract| {
+                (contract.memory_expansion_version != 0).then_some(contract.memory_capacity_bytes)
+            })
+            .or(opt.microvm.memory_capacity.map(|capacity| capacity.0));
+        cfg.microvm.snapshot_memory_ranges = restore_machine_contract
+            .filter(|contract| contract.memory_expansion_version != 0)
+            .map(|contract| {
+                contract
+                    .memory_ranges
+                    .iter()
+                    .map(|range| {
+                        memory_range::MemoryRange::new(
+                            range.gpa_start..range.gpa_start + range.length,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        cfg.microvm.restore_memory_ranges = self
+            .restore
+            .memory_ranges
+            .iter()
+            .map(|range| {
+                memory_range::MemoryRange::new(range.gpa_start..range.gpa_start + range.length)
+            })
+            .collect();
 
         let requested_hypervisor = opt
             .hypervisor

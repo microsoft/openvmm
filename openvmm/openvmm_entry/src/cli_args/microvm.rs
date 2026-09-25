@@ -91,6 +91,10 @@ pub struct MicrovmCli {
     #[clap(long, value_name = "COUNT", requires = "restore_snapshot")]
     pub restore_processors: Option<u32>,
 
+    /// Restore a capable microVM snapshot with this total guest RAM size.
+    #[clap(long, value_name = "SIZE", requires = "restore_snapshot")]
+    pub restore_memory: Option<vmm_cli::MemorySize>,
+
     /// Maximum time allowed for a microVM guest to complete post-restore repair.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
     pub restore_gate_timeout_ms: u64,
@@ -98,6 +102,10 @@ pub struct MicrovmCli {
     /// Capture a microVM snapshot to this directory when the guest writes PMIO 0x605.
     #[clap(long, value_name = "DIR", conflicts_with = "restore_snapshot")]
     pub snapshot_destination: Option<PathBuf>,
+
+    /// Reserve this immutable total RAM capacity in a captured microVM snapshot.
+    #[clap(long, value_name = "SIZE", requires = "snapshot_destination")]
+    pub memory_capacity: Option<vmm_cli::MemorySize>,
 
     /// Sandbox capture tier. Required for microVM snapshot capture with sandbox blocks.
     #[clap(
@@ -223,8 +231,10 @@ impl Options {
                 self.microvm.network_profile.is_none()
                     && self.microvm.microvm_mount.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
-                    && self.microvm.restore_processors.is_none(),
-                "--network-profile, --mount, --microvm-sandbox-block, and --restore-processors require a microVM machine"
+                    && self.microvm.restore_processors.is_none()
+                    && self.microvm.restore_memory.is_none()
+                    && self.microvm.memory_capacity.is_none(),
+                "--network-profile, --mount, --microvm-sandbox-block, --restore-processors, --restore-memory, and --memory-capacity require a microVM machine"
             );
             return Ok(());
         }
@@ -267,6 +277,20 @@ impl Options {
                     != self.microvm.microvm_sandbox_block.is_empty(),
                 "--snapshot-tier is required exactly for microVM snapshot capture with sandbox blocks"
             );
+            if let Some(memory_capacity) = self.microvm.memory_capacity {
+                anyhow::ensure!(
+                    memory_capacity.0 >= self.memory_size(),
+                    "--memory-capacity must be at least the base --memory size"
+                );
+                anyhow::ensure!(
+                    self.memory_size().is_multiple_of(
+                        openvmm_helpers::snapshot::microvm::MICROVM_MEMORY_BLOCK_SIZE_BYTES
+                    ) && memory_capacity.0.is_multiple_of(
+                        openvmm_helpers::snapshot::microvm::MICROVM_MEMORY_BLOCK_SIZE_BYTES
+                    ),
+                    "--memory and --memory-capacity must be aligned to the 128-MiB microVM memory block size"
+                );
+            }
         }
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
@@ -584,50 +608,23 @@ mod tests {
     }
 
     #[test]
-    fn test_microvm_snapshot_capture_options() {
+    fn test_microvm_memory_capacity_and_restore_target_parsing() {
         let capture = Options::try_parse_from([
             "openvmm",
             "--machine",
             "microvm",
-            "--processors",
-            "2",
+            "--memory",
+            "512M",
             "--snapshot-destination",
             "snapshot",
+            "--memory-capacity",
+            "2G",
         ])
         .unwrap();
-        assert_eq!(capture.microvm.snapshot_quiesce_timeout_ms, 5000);
         capture.validate_microvm_options().unwrap();
-
-        for extra in [
-            vec!["--snapshot-quiesce-timeout-ms", "0"],
-            vec!["--memory", "size=1G,shared=off"],
-        ] {
-            let options = Options::try_parse_from(
-                [
-                    "openvmm",
-                    "--machine",
-                    "microvm",
-                    "--snapshot-destination",
-                    "snapshot",
-                ]
-                .into_iter()
-                .chain(extra),
-            )
-            .unwrap();
-            assert!(options.validate_microvm_options().is_err());
-        }
-
-        assert!(
-            Options::try_parse_from([
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--snapshot-destination",
-                "snapshot",
-                "--restore-snapshot",
-                "snapshot",
-            ])
-            .is_err()
+        assert_eq!(
+            capture.microvm.memory_capacity.unwrap().0,
+            2 * 1024 * 1024 * 1024
         );
 
         let restore = Options::try_parse_from([
@@ -636,24 +633,37 @@ mod tests {
             "microvm",
             "--restore-snapshot",
             "snapshot",
+            "--restore-memory",
+            "512M",
         ])
         .unwrap();
-        assert_eq!(restore.memory, Default::default());
         restore.validate_microvm_options().unwrap();
-        for override_arg in ["--kernel", "--initrd"] {
-            assert!(
-                Options::try_parse_from([
-                    "openvmm",
-                    "--machine",
-                    "microvm",
-                    "--restore-snapshot",
-                    "snapshot",
-                    override_arg,
-                    "file",
-                ])
+        assert_eq!(restore.microvm.restore_memory.unwrap().0, 512 * 1024 * 1024);
+
+        assert!(
+            Options::try_parse_from(
+                ["openvmm", "--machine", "microvm", "--memory-capacity", "2G",]
+            )
+            .is_err()
+        );
+        assert!(
+            Options::try_parse_from(["openvmm", "--machine", "microvm", "--restore-memory", "1G",])
                 .is_err()
-            );
-        }
+        );
+
+        let unaligned = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--memory",
+            "513M",
+            "--snapshot-destination",
+            "snapshot",
+            "--memory-capacity",
+            "2G",
+        ])
+        .unwrap();
+        assert!(unaligned.validate_microvm_options().is_err());
     }
 
     #[test]

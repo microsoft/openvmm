@@ -258,6 +258,7 @@ impl MicrovmLaunch {
         MicrovmController {
             active: self.active,
             snapshot_memory_handle: self.snapshot_memory_handle,
+            memory_capacity: opt.microvm.memory_capacity.map(|capacity| capacity.0),
             snapshot_requests,
             snapshot_destination: self.snapshot_destination,
             snapshot_tier: opt.microvm.snapshot_tier,

@@ -155,6 +155,12 @@ describes the source definitions.
   when attached, its negotiated FUSE policy, namespace and handle identifiers,
   aliases, and directory cookies. The host tree remains external live state.
 
+  `--memory-capacity <SIZE>` opts the snapshot into restore-time memory
+  expansion. `SIZE` is an immutable 128-MiB-aligned upper bound, must be at
+  least the base `--memory` size, and reserves the complete canonical GPA
+  aperture without adding it to the initial Linux direct e820 RAM map or
+  `memory.bin`.
+
   ```bash
   openvmm --machine microvm --hypervisor kvm --memory 128M \
     --kernel vmlinux --initrd initramfs.cpio.gz \
@@ -170,9 +176,10 @@ describes the source definitions.
   The manifest supplies the authoritative RAM size, topology, ABI,
   fixed device inventory, effective kernel command line, source backend, CPU
   contract, and TSC frequency. Kernel, initrd, command-line, ordinary
-  `--memory`, processor, device, and topology overrides are not accepted.
-  Repeat the snapshot's exact `--processors` count; a mismatch is rejected
-  before any VP starts. Restore requires the same backend kind as capture.
+  `--memory`, processor, device, and topology overrides are not accepted;
+  expansion-capable snapshots use only `--restore-memory`. Repeat the
+  snapshot's exact `--processors` count; a mismatch is rejected before any VP
+  starts. Restore requires the same backend kind as capture.
 
   When the snapshot contains a virtio console, its attachment policy comes
   from the manifest. OpenVMM recreates listeners, reconnects required clients,
@@ -199,6 +206,12 @@ describes the source definitions.
   rejected. A fresh-scratch snapshot instead requires a writable scratch
   argument with matching geometry.
 
+  `--restore-memory <SIZE>` selects the total RAM for this launch. It requires
+  an expansion-capable snapshot and a 128-MiB-aligned value from the exact
+  captured base through the immutable capacity. Base RAM remains a private
+  copy-on-write mapping of `memory.bin`; selected expansion ranges use fresh
+  zeroed private backing. Expansion implies the post-restore repair gate.
+
   ```bash
   openvmm --machine microvm --hypervisor kvm \
     --restore-snapshot snapshot --restore-entropy
@@ -219,7 +232,16 @@ describes the source definitions.
   the private portb restore channel. The guest must consume the packet and
   explicitly reseed its RNG. Restoring cloned RNG state without this option is
   unsafe for cryptographic workloads and emits a warning.
-  Processor activation uses `OPENVMM_ENTROPY_V2`.
+  Processor activation uses `OPENVMM_ENTROPY_V2`. Memory expansion uses the
+  backward-compatible `OPENVMM_ENTROPY_V3` packet. Its exact format is the
+  19-byte `OPENVMM_ENTROPY_V3\0` header, a one-byte online-VP target (zero
+  means none), a one-byte expansion-range count, that many little-endian
+  `(u64 GPA start, u64 byte length)` pairs, and 64 bytes of fresh entropy.
+  Explicitly selecting the snapshot base size with `--restore-memory` still
+  emits V3 with an expansion-range count of zero; omitting the option preserves
+  V1/V2 behavior. Private portb status bit 3 reports a V3 memory target, while
+  bit 4 additionally reports that the packet contains one or more expansion
+  ranges, allowing a zero-range target to avoid post-restore repair.
   Every microVM portb device also reports generation-ID support in status bit
   5. Writing `0xa6` to the status port and reading 16 bytes from the data port
   returns an opaque ID that is stable for that VM process and may be selected

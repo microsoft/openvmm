@@ -28,6 +28,11 @@ use std::path::Path;
 pub const MICROVM_FILESYSTEM_SLOT_VERSION: u32 = 1;
 /// Linux-direct MP-table boot layout with shared interrupt status.
 pub const MICROVM_BOOT_LAYOUT_VERSION: u32 = 2;
+/// Contract version for one-shot restore-time microVM memory expansion.
+pub const MICROVM_MEMORY_EXPANSION_VERSION: u32 = 1;
+/// Linux memory-block granularity used by the x86-64 microVM guest.
+pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 =
+    openvmm_defs::microvm::MICROVM_MEMORY_BLOCK_SIZE_BYTES;
 /// Snapshot contract name for shared-status edge interrupts.
 pub const MICROVM_SHARED_STATUS_INTERRUPT_MODE: &str = "edge-shared-status";
 /// Clock policy applied when a snapshot is restored.
@@ -54,6 +59,18 @@ pub struct SnapshotMemoryRange {
     /// Byte offset in `memory.bin`.
     #[mesh(3)]
     pub file_offset: u64,
+}
+
+/// A restore-attachable guest RAM range that is absent from `memory.bin`.
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+pub struct SnapshotMemoryExpansionRange {
+    /// Guest physical base address.
+    #[mesh(1)]
+    pub gpa_start: u64,
+    /// Range length in bytes.
+    #[mesh(2)]
+    pub length: u64,
 }
 
 /// Processor topology that must be reproduced during restore.
@@ -367,6 +384,18 @@ pub struct SnapshotMachineContract {
     /// Size of the shared interrupt-status page, or zero when absent.
     #[mesh(26)]
     pub virtio_shared_status_page_size: u64,
+    /// Restore-time memory expansion capability version, or zero when absent.
+    #[mesh(27)]
+    pub memory_expansion_version: u32,
+    /// Immutable maximum guest RAM size for restore-time expansion.
+    #[mesh(28)]
+    pub memory_capacity_bytes: u64,
+    /// Required alignment of every restore-time memory target and range.
+    #[mesh(29)]
+    pub memory_block_size_bytes: u64,
+    /// Canonical capacity ranges absent from the captured boot memory map.
+    #[mesh(30)]
+    pub memory_expansion_ranges: Vec<SnapshotMemoryExpansionRange>,
 }
 
 impl SnapshotMachineContract {
@@ -457,6 +486,41 @@ pub fn validate_restore_online_vp_count(
     Ok(())
 }
 
+/// Validates and selects the expansion ranges for a restore-time RAM target.
+pub fn validate_restore_memory_target(
+    manifest: &SnapshotManifest,
+    restore_memory_size: u64,
+) -> anyhow::Result<Vec<SnapshotMemoryExpansionRange>> {
+    let contract = manifest
+        .machine_contract
+        .as_ref()
+        .context("snapshot is missing the authoritative machine contract")?;
+    validate_machine_contract_shape(contract, manifest.memory_size_bytes, manifest.vp_count)?;
+    anyhow::ensure!(
+        contract.memory_expansion_version == MICROVM_MEMORY_EXPANSION_VERSION,
+        "snapshot does not declare restore-time memory expansion support"
+    );
+    anyhow::ensure!(
+        restore_memory_size >= manifest.memory_size_bytes,
+        "restore memory target {restore_memory_size} is below snapshot RAM {}",
+        manifest.memory_size_bytes
+    );
+    anyhow::ensure!(
+        restore_memory_size <= contract.memory_capacity_bytes,
+        "restore memory target {restore_memory_size} exceeds RAM capacity {}",
+        contract.memory_capacity_bytes
+    );
+    anyhow::ensure!(
+        restore_memory_size.is_multiple_of(contract.memory_block_size_bytes),
+        "restore memory target {restore_memory_size} is not aligned to the {}-byte memory block size",
+        contract.memory_block_size_bytes
+    );
+    memory_expansion_prefix(
+        &contract.memory_expansion_ranges,
+        restore_memory_size - manifest.memory_size_bytes,
+    )
+}
+
 fn canonical_microvm_memory_ranges(memory_size: u64) -> anyhow::Result<Vec<SnapshotMemoryRange>> {
     const LOW_RAM_END: u64 = 3 * 1024 * 1024 * 1024;
     const HIGH_RAM_START: u64 = 4 * 1024 * 1024 * 1024;
@@ -481,6 +545,56 @@ fn canonical_microvm_memory_ranges(memory_size: u64) -> anyhow::Result<Vec<Snaps
     Ok(ranges)
 }
 
+fn canonical_memory_expansion_ranges(
+    memory_size: u64,
+    memory_capacity: u64,
+) -> anyhow::Result<Vec<SnapshotMemoryExpansionRange>> {
+    anyhow::ensure!(
+        memory_capacity >= memory_size,
+        "RAM capacity {memory_capacity} is below snapshot RAM {memory_size}"
+    );
+    let mut ranges = Vec::new();
+    for capacity_range in canonical_microvm_memory_ranges(memory_capacity)? {
+        let logical_start = capacity_range.file_offset.max(memory_size);
+        let logical_end = capacity_range
+            .file_offset
+            .checked_add(capacity_range.length)
+            .context("microVM capacity range overflows")?;
+        if logical_start >= logical_end {
+            continue;
+        }
+        ranges.push(SnapshotMemoryExpansionRange {
+            gpa_start: capacity_range.gpa_start + logical_start - capacity_range.file_offset,
+            length: logical_end - logical_start,
+        });
+    }
+    Ok(ranges)
+}
+
+fn memory_expansion_prefix(
+    ranges: &[SnapshotMemoryExpansionRange],
+    size: u64,
+) -> anyhow::Result<Vec<SnapshotMemoryExpansionRange>> {
+    let mut remaining = size;
+    let mut prefix = Vec::new();
+    for range in ranges {
+        if remaining == 0 {
+            break;
+        }
+        let length = range.length.min(remaining);
+        prefix.push(SnapshotMemoryExpansionRange {
+            gpa_start: range.gpa_start,
+            length,
+        });
+        remaining -= length;
+    }
+    anyhow::ensure!(
+        remaining == 0,
+        "memory expansion ranges do not cover target"
+    );
+    Ok(prefix)
+}
+
 /// Builds the authoritative microVM machine contract.
 pub fn microvm_machine_contract(
     source_hypervisor: &str,
@@ -500,6 +614,7 @@ pub fn microvm_machine_contract(
     sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
     processor_count: u32,
     memory_size: u64,
+    memory_capacity: Option<u64>,
     state_unit_names: Vec<String>,
     capture_wall_clock: Timestamp,
     tsc_frequency_hz: u64,
@@ -515,6 +630,29 @@ pub fn microvm_machine_contract(
         microvm_boot_online_vp_count(processor_count, &effective_command_line)?;
 
     let memory_ranges = canonical_microvm_memory_ranges(memory_size)?;
+    let (
+        memory_expansion_version,
+        memory_capacity_bytes,
+        memory_block_size_bytes,
+        memory_expansion_ranges,
+    ) = if let Some(memory_capacity) = memory_capacity {
+        anyhow::ensure!(
+            memory_size.is_multiple_of(MICROVM_MEMORY_BLOCK_SIZE_BYTES),
+            "snapshot RAM {memory_size} is not aligned to the {MICROVM_MEMORY_BLOCK_SIZE_BYTES}-byte memory block size"
+        );
+        anyhow::ensure!(
+            memory_capacity.is_multiple_of(MICROVM_MEMORY_BLOCK_SIZE_BYTES),
+            "RAM capacity {memory_capacity} is not aligned to the {MICROVM_MEMORY_BLOCK_SIZE_BYTES}-byte memory block size"
+        );
+        (
+            MICROVM_MEMORY_EXPANSION_VERSION,
+            memory_capacity,
+            MICROVM_MEMORY_BLOCK_SIZE_BYTES,
+            canonical_memory_expansion_ranges(memory_size, memory_capacity)?,
+        )
+    } else {
+        (0, 0, 0, Vec::new())
+    };
 
     let device = |stable_id: &str,
                   state_unit_name: &str,
@@ -874,6 +1012,10 @@ pub fn microvm_machine_contract(
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
         virtio_shared_status_page_size: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
+        memory_expansion_version,
+        memory_capacity_bytes,
+        memory_block_size_bytes,
+        memory_expansion_ranges,
     };
     contract.set_effective_command_line(effective_command_line);
     contract.set_cpu_compatibility_contract(cpu_contract);
@@ -986,6 +1128,13 @@ pub fn validate_microvm_machine_contract(
     anyhow::ensure!(
         contract.memory_ranges == expected.memory_ranges,
         "snapshot RAM layout doesn't match the requested machine"
+    );
+    anyhow::ensure!(
+        contract.memory_expansion_version == expected.memory_expansion_version
+            && contract.memory_capacity_bytes == expected.memory_capacity_bytes
+            && contract.memory_block_size_bytes == expected.memory_block_size_bytes
+            && contract.memory_expansion_ranges == expected.memory_expansion_ranges,
+        "snapshot RAM capacity contract doesn't match the requested machine"
     );
     anyhow::ensure!(
         contract.topology == expected.topology,
@@ -1147,6 +1296,48 @@ pub(super) fn validate_machine_contract_shape(
         total_memory == memory_size,
         "snapshot RAM ranges cover {total_memory} bytes, expected {memory_size}"
     );
+    match contract.memory_expansion_version {
+        0 => anyhow::ensure!(
+            contract.memory_capacity_bytes == 0
+                && contract.memory_block_size_bytes == 0
+                && contract.memory_expansion_ranges.is_empty(),
+            "legacy snapshot has an unexpected RAM capacity contract"
+        ),
+        MICROVM_MEMORY_EXPANSION_VERSION => {
+            anyhow::ensure!(
+                memory_size.is_multiple_of(MICROVM_MEMORY_BLOCK_SIZE_BYTES),
+                "snapshot RAM is not memory-block aligned"
+            );
+            anyhow::ensure!(
+                contract.memory_block_size_bytes == MICROVM_MEMORY_BLOCK_SIZE_BYTES,
+                "snapshot memory block size {} is unsupported",
+                contract.memory_block_size_bytes
+            );
+            anyhow::ensure!(
+                contract.memory_capacity_bytes >= memory_size
+                    && contract
+                        .memory_capacity_bytes
+                        .is_multiple_of(MICROVM_MEMORY_BLOCK_SIZE_BYTES),
+                "snapshot RAM capacity is invalid"
+            );
+            anyhow::ensure!(
+                contract.memory_ranges == canonical_microvm_memory_ranges(memory_size)?,
+                "snapshot base RAM ranges are not canonical"
+            );
+            anyhow::ensure!(
+                contract.memory_expansion_ranges
+                    == canonical_memory_expansion_ranges(
+                        memory_size,
+                        contract.memory_capacity_bytes,
+                    )?,
+                "snapshot memory expansion ranges are not canonical"
+            );
+        }
+        version => {
+            anyhow::bail!("snapshot memory expansion contract version {version} is unsupported")
+        }
+    }
+
     let topology = &contract.topology;
     let topology_vp_count = u64::from(topology.sockets)
         .checked_mul(u64::from(topology.dies_per_socket))
@@ -1700,6 +1891,10 @@ fn test_machine_contract() -> SnapshotMachineContract {
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
         virtio_shared_status_page_size: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
+        memory_expansion_version: 0,
+        memory_capacity_bytes: 0,
+        memory_block_size_bytes: 0,
+        memory_expansion_ranges: Vec::new(),
     };
     contract.set_effective_command_line("console=hvc0".to_owned());
     contract.set_cpu_compatibility_contract(vec![1, 2, 3]);
@@ -1798,6 +1993,7 @@ mod tests {
             Vec::new(),
             1,
             1024,
+            None,
             [
                 "partition",
                 "vmtime",
@@ -1867,6 +2063,7 @@ mod tests {
             Vec::new(),
             1,
             1024,
+            None,
             [
                 "partition",
                 "vmtime",
@@ -1902,6 +2099,7 @@ mod tests {
             Vec::new(),
             1,
             1024,
+            None,
             [
                 "partition",
                 "vmtime",
@@ -1937,6 +2135,7 @@ mod tests {
             Vec::new(),
             1,
             1024,
+            None,
             [
                 "partition",
                 "vmtime",
@@ -2449,6 +2648,142 @@ mod tests {
         manifest.machine_contract = Some(contract.clone());
         let err = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
         assert!(err.to_string().contains("overlap in GPA space"));
+    }
+
+    fn expandable_memory_manifest(base_memory: u64, capacity: u64) -> SnapshotManifest {
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = base_memory;
+        let mut contract = test_machine_contract();
+        contract.memory_ranges = canonical_microvm_memory_ranges(base_memory).unwrap();
+        contract.memory_expansion_version = MICROVM_MEMORY_EXPANSION_VERSION;
+        contract.memory_capacity_bytes = capacity;
+        contract.memory_block_size_bytes = MICROVM_MEMORY_BLOCK_SIZE_BYTES;
+        contract.memory_expansion_ranges =
+            canonical_memory_expansion_ranges(base_memory, capacity).unwrap();
+        manifest.machine_contract = Some(contract);
+        manifest
+    }
+
+    #[test]
+    fn restore_memory_targets_select_canonical_prefixes() {
+        const MB: u64 = 1024 * 1024;
+        const GB: u64 = 1024 * MB;
+        let manifest = expandable_memory_manifest(512 * MB, 2 * GB);
+
+        assert_eq!(
+            validate_restore_memory_target(&manifest, 512 * MB).unwrap(),
+            []
+        );
+        assert_eq!(
+            validate_restore_memory_target(&manifest, GB).unwrap(),
+            [SnapshotMemoryExpansionRange {
+                gpa_start: 512 * MB,
+                length: 512 * MB,
+            }]
+        );
+        assert_eq!(
+            validate_restore_memory_target(&manifest, 2 * GB).unwrap(),
+            [SnapshotMemoryExpansionRange {
+                gpa_start: 512 * MB,
+                length: 1536 * MB,
+            }]
+        );
+    }
+
+    #[test]
+    fn restore_memory_target_validation_rejects_invalid_requests() {
+        const MB: u64 = 1024 * 1024;
+        const GB: u64 = 1024 * MB;
+        let manifest = expandable_memory_manifest(512 * MB, 2 * GB);
+
+        assert!(
+            validate_restore_memory_target(&manifest, 384 * MB)
+                .unwrap_err()
+                .to_string()
+                .contains("below snapshot RAM")
+        );
+        assert!(
+            validate_restore_memory_target(&manifest, 640 * MB + 1)
+                .unwrap_err()
+                .to_string()
+                .contains("not aligned")
+        );
+        assert!(
+            validate_restore_memory_target(&manifest, 2 * GB + 128 * MB)
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds RAM capacity")
+        );
+    }
+
+    #[test]
+    fn restore_memory_contract_rejects_malformed_and_legacy_snapshots() {
+        const MB: u64 = 1024 * 1024;
+        const GB: u64 = 1024 * MB;
+
+        let mut overlap = expandable_memory_manifest(512 * MB, 2 * GB);
+        overlap
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .memory_expansion_ranges[0]
+            .gpa_start = 256 * MB;
+        assert!(
+            validate_restore_memory_target(&overlap, GB)
+                .unwrap_err()
+                .to_string()
+                .contains("not canonical")
+        );
+
+        let mut version = expandable_memory_manifest(512 * MB, 2 * GB);
+        version
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .memory_expansion_version += 1;
+        assert!(
+            validate_restore_memory_target(&version, GB)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported")
+        );
+
+        let mut legacy = test_manifest();
+        legacy.machine_contract = Some(test_machine_contract());
+        assert!(
+            validate_restore_memory_target(&legacy, 1024)
+                .unwrap_err()
+                .to_string()
+                .contains("does not declare")
+        );
+    }
+
+    #[test]
+    fn memory_capacity_contract_rejects_alignment_and_overflow() {
+        const MB: u64 = 1024 * 1024;
+        assert!(canonical_memory_expansion_ranges(512 * MB, 512 * MB - 1).is_err());
+        assert!(
+            microvm_machine_contract(
+                "whp",
+                MICROVM_BOOT_LAYOUT_VERSION,
+                "console=hvc0".to_owned(),
+                None,
+                false,
+                None,
+                None,
+                Vec::new(),
+                1,
+                512 * MB,
+                Some(512 * MB + 1),
+                Vec::new(),
+                std::time::SystemTime::now().into(),
+                1_000_000_000,
+                Some(1_000_000_000),
+                vec![1],
+            )
+            .is_err()
+        );
+        assert!(canonical_microvm_memory_ranges(u64::MAX).is_err());
     }
 
     fn canonical_worker_platform_command_line(
