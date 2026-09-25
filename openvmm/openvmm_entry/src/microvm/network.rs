@@ -153,6 +153,7 @@ pub(crate) mod tests {
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             Some((&network, irq, true)),
+            false,
             None,
             false,
         )
@@ -162,6 +163,7 @@ pub(crate) mod tests {
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             Some((&network, microvm_network_attachment())),
+            false,
             None,
             None,
             1,

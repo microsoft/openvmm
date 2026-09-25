@@ -16,6 +16,18 @@ pub(crate) fn resolve(
 ) -> anyhow::Result<Option<VirtioFsDevice>> {
     let device = match &resource.profile {
         VirtioFsProfile::Standard => return Ok(None),
+        VirtioFsProfile::MicrovmDormant { stable_id } => {
+            anyhow::ensure!(
+                resource.tag == MICROVM_MOUNT_TAG,
+                "microVM virtio-fs tag must be '{}'",
+                MICROVM_MOUNT_TAG
+            );
+            anyhow::ensure!(
+                matches!(resource.fs, VirtioFsBackend::Dormant),
+                "dormant microVM virtio-fs cannot have an active backend"
+            );
+            VirtioFsDevice::new_microvm_dormant(driver_source, stable_id.clone(), None)?
+        }
         VirtioFsProfile::Microvm {
             stable_id,
             root_identity,
