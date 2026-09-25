@@ -139,10 +139,10 @@ impl PolledPipe {
     /// Polls the pipe for entering the closing state, where the client has
     /// closed its handle.
     pub fn poll_closing(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.events & FILE_PIPE_DISCONNECTED != 0 {
-            // Make sure the pipe is still disconnected.
-            self.refresh_events()?;
+        if self.file.is_pipe_peer_closed()? {
+            return Poll::Ready(Ok(()));
         }
+        self.refresh_events()?;
         while self.events & FILE_PIPE_DISCONNECTED == 0 {
             ready!(
                 self.wakers
@@ -410,6 +410,9 @@ impl Future for ListeningPipe {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let inner = this.inner.as_mut().expect("polled after completion");
+        if inner.sync_success {
+            return Poll::Ready(Ok(this.inner.take().unwrap().file));
+        }
         ready!(inner.event.poll_wait(cx))?;
         let (status, _) = inner.overlapped.io_status().expect("io should be complete");
         chk_status(status)?;
@@ -419,6 +422,8 @@ impl Future for ListeningPipe {
 
 #[cfg(test)]
 mod tests {
+    mod reconnect;
+
     use super::PolledPipe;
     use crate::DefaultDriver;
     use crate::sys::pipe::NamedPipeServer;
