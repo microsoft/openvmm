@@ -101,11 +101,11 @@ impl StateUnits {
                         failures.push(format!("{name}: a dependency did not start"));
                     }
                     StartResult::Failed(error) => {
-                        unit.state = State::StartUncertain;
+                        unit.state = State::QuiesceUncertain;
                         failures.push(format!("{name}: {error:#}"));
                     }
                     StartResult::Uncertain(error) => {
-                        unit.state = State::StartUncertain;
+                        unit.state = State::QuiesceUncertain;
                         failures.push(format!("{name}: {error:#}"));
                     }
                 }
