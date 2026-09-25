@@ -6,6 +6,8 @@
 
 #![warn(missing_docs)]
 
+pub mod clock;
+
 use self::spec::CmosReg;
 use self::spec::ENABLE_OSCILLATOR_CONTROL;
 use self::spec::StatusRegA;
@@ -176,7 +178,7 @@ pub struct Rtc {
     enlightened_interrupts: bool,
 
     // Runtime deps
-    real_time_source: Box<dyn InspectableLocalClock>,
+    real_time_source: Box<dyn clock::UtcClockSource>,
     interrupt: LineInterrupt,
     vmtime_alarm: VmTimeAccess,
     vmtimer_periodic: VmTimerPeriodic,
@@ -185,6 +187,8 @@ pub struct Rtc {
     // Runtime book-keeping
     #[inspect(debug)]
     last_update_bit_blip: LocalClockTime,
+    #[inspect(debug)]
+    held: Option<clock::HeldClock>,
 
     // Volatile state
     state: RtcState,
@@ -194,6 +198,8 @@ pub struct Rtc {
 struct RtcState {
     addr: u8,
     cmos: CmosData,
+    time_valid: bool,
+    transaction_read_mask: Option<u16>,
 }
 
 impl RtcState {
@@ -220,20 +226,35 @@ impl RtcState {
             // default Hyper-V used, so we'll stick with it
             addr: 0x80,
             cmos,
+            time_valid: true,
+            transaction_read_mask: None,
         }
     }
 }
 
 impl ChangeDeviceState for Rtc {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.release_clock();
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.hold_clock();
+    }
 
     async fn reset(&mut self) {
         self.state = RtcState::new(self.initial_cmos);
+        self.rebase_held_clock();
 
         self.update_timers();
         self.sync_interrupt_line_level();
+    }
+
+    async fn advance_time(&mut self, duration: Duration) -> anyhow::Result<()> {
+        self.advance_clock(duration)
+    }
+
+    fn advances_time(&self) -> bool {
+        true
     }
 }
 
@@ -253,6 +274,20 @@ fn to_bcd(n: u8) -> u8 {
 
 fn from_bcd(n: u8) -> u8 {
     (n >> 4) * 10 + (n & 0xf)
+}
+
+/// The period of the update-ended interrupt.
+const UPDATE_PERIOD: Duration = Duration::from_secs(1);
+
+/// The period of the periodic interrupt at the rate of `status_a`, or `None`
+/// if that rate turns it off.
+fn periodic_timer_period(status_a: StatusRegA) -> Option<Duration> {
+    use self::spec::PERIODIC_TIMER_RATE_HZ;
+
+    // 0b0000 means the periodic timer is off
+    let rate = status_a.periodic_timer_rate().checked_sub(1)?;
+    let tick_hz = PERIODIC_TIMER_RATE_HZ[usize::from(rate)];
+    Some(Duration::from_secs_f32(1. / tick_hz as f32))
 }
 
 /// Applies BCD + 24H time calculations on-top of HMS values fetched from CMOS.
@@ -317,13 +352,14 @@ impl Rtc {
             initial_cmos,
             enlightened_interrupts,
 
-            real_time_source,
+            real_time_source: Box::new(clock::LocalClockUtcSource(real_time_source)),
             interrupt,
             vmtime_alarm: vmtime_source.access("rtc-alarm"),
             vmtimer_periodic: VmTimerPeriodic::new(vmtime_source.access("rtc-periodic")),
             vmtimer_update: VmTimerPeriodic::new(vmtime_source.access("rtc-update")),
 
             last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
+            held: None,
 
             state: RtcState::new(initial_cmos),
         }
@@ -437,21 +473,13 @@ impl Rtc {
     }
 
     fn set_periodic_timer(&mut self) {
-        use self::spec::PERIODIC_TIMER_RATE_HZ;
-
         let status_a = StatusRegA::from(self.state.cmos[CmosReg::STATUS_A]);
-
-        // 0b0000 means the periodic timer is off
-        if status_a.periodic_timer_rate() == 0 {
+        let Some(tick_period) = periodic_timer_period(status_a) else {
             return;
-        }
-
-        let tick_hz = PERIODIC_TIMER_RATE_HZ[status_a.periodic_timer_rate() as usize - 1];
-        let tick_period = Duration::from_secs_f32(1. / tick_hz as f32);
+        };
 
         tracing::debug!(
             periodic_timer_rate = ?status_a.periodic_timer_rate(),
-            ?tick_hz,
             ?tick_period,
             "setting periodic timer"
         );
@@ -467,7 +495,7 @@ impl Rtc {
     }
 
     fn set_update_timer(&mut self) {
-        self.vmtimer_update.start(Duration::from_secs(1));
+        self.vmtimer_update.start(UPDATE_PERIOD);
     }
 
     fn on_update_timer(&mut self) {
@@ -647,11 +675,17 @@ impl Rtc {
                 // wait for a rising or falling transition of the bit (typically rising edge),
                 // and then the guest OS will wait for another of the same transition.
                 if !StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]).set() {
-                    let now = self.real_time_source.get_time();
-                    let elapsed = now - self.last_update_bit_blip;
+                    let Ok(now) = self.utc_time() else {
+                        return self.status_a_without_clock(data);
+                    };
+                    // A saved state can restore any blip time, so the
+                    // difference saturates rather than overflows.
+                    let elapsed_millis = now
+                        .as_millis_since_unix_epoch()
+                        .saturating_sub(self.last_update_bit_blip.as_millis_since_unix_epoch());
 
                     // check if the programmed time jumped backwards
-                    if elapsed.as_millis().is_negative() {
+                    if elapsed_millis.is_negative() {
                         tracing::debug!("clock jumped backwards between update bit blips");
                         self.last_update_bit_blip = LocalClockTime::from_millis_since_unix_epoch(0);
                     }
@@ -659,11 +693,10 @@ impl Rtc {
                     tracing::trace!(
                         ?self.last_update_bit_blip,
                         ?now,
-                        ?elapsed,
+                        elapsed_millis,
                         "get_status_byte"
                     );
 
-                    let elapsed_millis = elapsed.as_millis();
                     if elapsed_millis > 1000 {
                         // Update the date/time and note that we set the update bit now.
                         data.set_update(true);
@@ -671,7 +704,7 @@ impl Rtc {
                         self.last_update_bit_blip = now;
                         tracing::trace!(
                             ?data,
-                            ?elapsed,
+                            elapsed_millis,
                             cmos_date_time = ?self.read_cmos_date_time(),
                             "blip'd status a update bit"
                         );
@@ -691,6 +724,7 @@ impl Rtc {
 
                 data.into()
             }
+            CmosReg::STATUS_D if !self.state.time_valid => StatusRegD::new().with_vrt(false).into(),
             CmosReg::STATUS_D => {
                 // always report valid ram time
                 StatusRegD::new().with_vrt(true).into()
@@ -747,16 +781,22 @@ impl Rtc {
             return;
         }
 
-        let real_time = self.real_time_source.get_time();
+        let Some(real_time) = self.sample_utc_clock() else {
+            return;
+        };
         let Ok(clock_time): Result<jiff::Timestamp, _> = real_time.try_into() else {
             tracelimit::warn_ratelimited!(
                 ?real_time,
                 "invalid date/time in real_time_source, skipping sync"
             );
+            self.invalidate_calendar();
             return;
         };
 
         let clock_time = clock_time.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+        if !self.validate_calendar_year(&clock_time) {
+            return;
+        }
 
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
 
@@ -800,6 +840,7 @@ impl Rtc {
                 self.state.cmos[CmosReg::HOUR] |= 0x80;
             }
         }
+        self.state.time_valid = true;
 
         tracing::trace!(
             cmos_reg_status_b = self.state.cmos[CmosReg::STATUS_B],
@@ -811,7 +852,7 @@ impl Rtc {
     }
 
     /// Write-back the current contents of the CMOS RTC registers into the
-    /// backing `real_time_source`
+    /// guest-visible UTC time.
     fn sync_cmos_to_clock(&mut self) {
         let cmos_time: jiff::Timestamp = match self
             .read_cmos_date_time()
@@ -823,7 +864,7 @@ impl Rtc {
                 return;
             }
         };
-        self.real_time_source.set_time(cmos_time.into());
+        self.set_utc_time(cmos_time.into());
     }
 
     #[cfg(test)]
@@ -888,6 +929,8 @@ impl PollDevice for Rtc {
 }
 
 mod save_restore {
+    mod snapshot;
+
     use super::*;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
@@ -896,8 +939,13 @@ mod save_restore {
     mod state {
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
+        use vmcore::vmtime::VmTime;
 
         /// RTC saved state.
+        ///
+        /// A saved state without the timers' deadlines restores the enabled
+        /// timers as if the guest had just enabled them, and one without the
+        /// last update blip restores the Unix epoch as that blip.
         #[derive(Protobuf, SavedStateRoot)]
         #[mesh(package = "chipset.cmos_rtc")]
         pub struct SavedState {
@@ -905,6 +953,34 @@ mod save_restore {
             pub addr: u8,
             #[mesh(2)]
             pub cmos: [u8; 256],
+            /// Guest-visible RTC time at the stopped snapshot boundary, in
+            /// milliseconds from the Unix epoch. A restore refuses a time
+            /// that the RTC's clock source cannot hold: one outside the
+            /// guest's calendar range, widened by the Linux host clock's.
+            #[mesh(3)]
+            pub clock_time_millis: i64,
+            /// Calendar registers already read from an active coherent sample.
+            #[mesh(4)]
+            pub transaction_read_mask: Option<u16>,
+            /// Whether the latched calendar sample is valid.
+            #[mesh(5)]
+            pub time_valid: Option<bool>,
+            /// VM time of the alarm interrupt's next deadline, which is before
+            /// the snapshot's cut if the device did not poll it since.
+            #[mesh(6)]
+            pub alarm_deadline: Option<VmTime>,
+            /// VM time of the periodic interrupt's next deadline, which is
+            /// before the snapshot's cut if the device did not poll it since.
+            #[mesh(7)]
+            pub periodic_deadline: Option<VmTime>,
+            /// VM time of the update-ended interrupt's next deadline, which is
+            /// before the snapshot's cut if the device did not poll it since.
+            #[mesh(8)]
+            pub update_deadline: Option<VmTime>,
+            /// Guest-visible RTC time, in milliseconds from the Unix epoch, of
+            /// the last time that status A reported an update in progress.
+            #[mesh(9)]
+            pub last_update_millis: i64,
         }
     }
 
@@ -912,22 +988,39 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let RtcState { addr, ref cmos } = self.state;
+            let RtcState { addr, ref cmos, .. } = self.state;
 
-            let saved_state = state::SavedState { addr, cmos: cmos.0 };
+            let saved_state = state::SavedState {
+                addr,
+                cmos: cmos.0,
+                clock_time_millis: self.saved_clock_time()?,
+                transaction_read_mask: self.state.transaction_read_mask,
+                time_valid: Some(self.state.time_valid),
+                alarm_deadline: self.vmtime_alarm.get_timeout(),
+                periodic_deadline: self.vmtimer_periodic.deadline(),
+                update_deadline: self.vmtimer_update.deadline(),
+                last_update_millis: self.last_update_bit_blip.as_millis_since_unix_epoch(),
+            };
 
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { addr, cmos } = state;
+            let fields = snapshot::Fields::validate(&state, self.vmtime_alarm.now())?;
+            let state::SavedState { addr, cmos, .. } = state;
 
             self.state = RtcState {
                 addr,
                 cmos: CmosData(cmos),
+                time_valid: fields.time_valid,
+                transaction_read_mask: fields.transaction_read_mask,
             };
-
-            self.update_timers();
+            self.hold_utc_time(LocalClockTime::from_millis_since_unix_epoch(
+                fields.clock_time_millis,
+            ));
+            self.last_update_bit_blip =
+                LocalClockTime::from_millis_since_unix_epoch(fields.last_update_millis);
+            self.restore_timers(fields.deadlines);
             self.sync_interrupt_line_level();
 
             Ok(())
@@ -937,6 +1030,8 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    mod snapshot;
+
     use super::*;
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
