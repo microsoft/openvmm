@@ -9182,6 +9182,7 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
