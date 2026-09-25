@@ -111,8 +111,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 "microVM snapshot excludes live host filesystem contents; restore revalidates the external directory and may fail after host changes"
             );
         }
-        // Without an egress policy, the guest may use the gateway's DNS proxy.
-        let gateway_dns = network.is_some();
+        let gateway_dns = network
+            .as_ref()
+            .is_some_and(|network| network.policy.allows_gateway_dns());
 
         if active
             && (opt.com1.is_some()
@@ -145,6 +146,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
+            egress_policy: network.as_ref().map(|network| network.policy.clone()),
             filesystem_attachment: filesystem
                 .as_ref()
                 .map(|filesystem| filesystem.attachment.clone()),
@@ -430,14 +432,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
     ) -> anyhow::Result<()> {
         if let Some(network) = self.network.as_ref() {
             let config = &network.config;
-            let endpoint = microvm_network_endpoint(config, resources)?;
+            let endpoint = microvm_network_endpoint(
+                config,
+                &network.policy,
+                &self.opt.microvm.host_loopback_forward,
+                resources,
+            )?;
             add_virtio_device(
                 VirtioBusCli::Mmio,
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: Some(1),
                     mac_address: config.guest_mac,
                     endpoint,
-                    egress_policy: None,
+                    egress_policy: Some(network.policy.clone()),
                     save_restore: true,
                     static_ipv4: Some(StaticIpv4Config {
                         guest_ipv4: config.guest_ipv4,
