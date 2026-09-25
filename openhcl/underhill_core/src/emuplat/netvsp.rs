@@ -80,6 +80,24 @@ enum VfManagerSaveResult {
     Saved(ManaSavedState),
     DeviceMissing,
     SaveFailed,
+    NoSavedState,
+}
+
+fn discard_pending_mana_buffers(dma_clients: &VfioDmaClients) -> anyhow::Result<()> {
+    let persistent = match dma_clients {
+        VfioDmaClients::EphemeralOnly(_) | VfioDmaClients::PersistentOnly(_) => {
+            anyhow::bail!("must have both clients to discard pending MANA buffers")
+        }
+        VfioDmaClients::Split { persistent, .. } => persistent,
+    };
+
+    // Attach pending buffers, then discard them so that they get freed.
+    drop(
+        persistent
+            .attach_pending_buffers()
+            .context("failed to attach pending MANA buffers")?,
+    );
+    Ok(())
 }
 
 async fn create_mana_device(
@@ -101,18 +119,15 @@ async fn create_mana_device(
             vtl2_vfid,
             "have saved state from keepalive but restoring on an unsupported host"
         );
-
-        // Re-attach pending buffers, but discard them so that they get freed.
-        let dma_client = match &dma_clients {
-            VfioDmaClients::EphemeralOnly(_) | VfioDmaClients::PersistentOnly(_) => {
-                anyhow::bail!("must have both clients to free previously attached buffers")
-            }
-            VfioDmaClients::Split { persistent, .. } => persistent,
-        };
-        let _ = dma_client.attach_pending_buffers();
+        discard_pending_mana_buffers(&dma_clients)?;
 
         // Remove the mana saved state so that we don't go through restore path.
         let _ = mana_state.take();
+    }
+
+    if mana_state.is_none() && keepalive_mode.is_enabled() {
+        tracing::warn!(vtl2_vfid, "missing saved state but keepalive is enabled");
+        discard_pending_mana_buffers(&dma_clients)?;
     }
 
     if keepalive_mode.is_enabled() && mana_state.is_some() {
@@ -1060,7 +1075,7 @@ impl HclNetworkVFManagerWorker {
                     .await;
 
                 match saved_state {
-                    Ok(saved_state) => {
+                    Ok(Some(saved_state)) => {
                         // Closing the VFIO device handle can take a long time.
                         // Leak the handle by stashing it away.
                         std::mem::forget(device);
@@ -1073,6 +1088,11 @@ impl HclNetworkVFManagerWorker {
                             mana_device: saved_state,
                             pci_id: self.vtl2_pci_id.clone(),
                         })
+                    }
+                    Ok(None) => {
+                        tracing::info!(vtl2_vfid, "skipping saved state");
+                        drop(device);
+                        VfManagerSaveResult::NoSavedState
                     }
                     Err(err) => {
                         tracing::error!(
@@ -1983,6 +2003,10 @@ impl HclNetworkVFManager {
                 tracing::error!("MANA device present but save failed");
                 None
             }
+            Ok(VfManagerSaveResult::NoSavedState) => {
+                tracing::info!("No MANA device state to save, restore will reinitialize");
+                None
+            }
             Err(err) => {
                 tracing::error!(
                     err = &err as &dyn std::error::Error,
@@ -2251,3 +2275,6 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
