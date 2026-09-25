@@ -469,7 +469,12 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
         "post-restore write/read mismatch: {readback}"
     );
 
-    agent.power_off().await?;
+    drop(sh);
+    drop(agent);
+    // Avoid the pipette shutdown delay after the pulse, since that delay
+    // depends on the guest timer state the test just restored.
+    vm.send_enlightened_shutdown(petri::ShutdownKind::Shutdown)
+        .await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
