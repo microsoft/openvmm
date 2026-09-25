@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod start;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -70,9 +72,14 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(Debug, MeshPayload)]
 pub enum StateRequest {
     /// Start asynchronous operations.
+    ///
+    /// Once this request is delivered, a [`StateRequest::Stop`] may follow
+    /// even if its response is not observed.
     Start(Rpc<(), ()>),
 
     /// Stop asynchronous operations.
+    ///
+    /// The handler must be safe after any delivered start attempt.
     Stop(Rpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
@@ -222,6 +229,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
 }
 
 #[derive(Debug)]
@@ -486,36 +494,60 @@ impl StateUnits {
         self.running
     }
 
+    fn check_no_terminal_units(&self, op: &'static str) -> Result<(), StateTransitionError> {
+        let inner = self.inner.lock();
+        check(
+            op,
+            inner
+                .units
+                .values()
+                .filter(|unit| matches!(unit.state, State::StartUncertain))
+                .map(|unit| {
+                    (
+                        unit.name.clone(),
+                        Err::<(), _>(anyhow::anyhow!(
+                            "unit is in terminal state {:?}",
+                            unit.state
+                        )),
+                    )
+                }),
+        )
+    }
+
     /// Starts any units that are individually stopped, because they were added
     /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
-    pub async fn start_stopped_units(&mut self) {
+    pub async fn start_stopped_units(&mut self) -> anyhow::Result<()> {
         if self.is_running() {
-            self.start().await;
+            self.start().await?;
         }
+        Ok(())
     }
 
     /// Starts all the state units.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         self.restore_allowed = false;
-        self.run_op(
-            "start",
-            None,
-            State::Stopped,
-            State::Starting,
-            State::Running,
-            StateRequest::Start,
-            |_, _| Some(()),
-            |unit| Some(&unit.dependencies),
-        )
-        .await;
-        self.running = true;
+        self.start_with_rollback().await
     }
 
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
+        // Make units whose start is uncertain receive Stop, then restore their
+        // terminal markers after the ordered operation.
+        let terminal_states = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter(|(_, unit)| unit.state == State::StartUncertain)
+                .map(|(&id, unit)| {
+                    unit.state = State::Running;
+                    (id, State::StartUncertain)
+                })
+                .collect::<Vec<_>>()
+        };
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -529,6 +561,13 @@ impl StateUnits {
             |unit| Some(&unit.dependents),
         )
         .await;
+        let mut inner = self.inner.lock();
+        for (id, state) in terminal_states {
+            if let Some(unit) = inner.units.get_mut(&id) {
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = state;
+            }
+        }
         self.running = false;
     }
 
@@ -537,6 +576,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("reset")?;
         self.restore_allowed = false;
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
@@ -563,6 +603,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("save")?;
         // Save can occur in any order since it will not observably mutate
         // state.
         let r = self
@@ -601,6 +642,7 @@ impl StateUnits {
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("restore")?;
         if !self.restore_allowed {
             return Err(StateTransitionError {
                 op: "restore",
@@ -1047,6 +1089,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod start;
+
     use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
@@ -1219,7 +1263,7 @@ mod tests {
         let state = units.save().await.unwrap();
         units.restore(state).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
@@ -1293,13 +1337,13 @@ mod tests {
             .add("b")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
 
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
         units.stop().await;
-        units.start().await;
+        units.start().await.unwrap();
 
         units.stop().await;
 
@@ -1347,7 +1391,7 @@ mod tests {
                 )
             })
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         let state = units.save().await.unwrap();
@@ -1457,7 +1501,7 @@ mod tests {
             );
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         a.remove().await;
@@ -1467,7 +1511,7 @@ mod tests {
             assert!(inner.units[&c.handle().id.id].dependencies.is_empty());
         }
 
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         // Removing the remaining unit leaves the set empty.
