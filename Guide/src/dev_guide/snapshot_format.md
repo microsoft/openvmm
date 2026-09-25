@@ -151,7 +151,8 @@ Key unsupported categories:
   `supports_save_restore()` to `false`. `virtio-blk`, `virtio-console`,
   `virtio-pmem`, `virtio-rng`, and `virtio-rtc` override it to `true`.
   `virtio-net` enables it only for resources with an explicit static identity
-  and feature contract; ordinary virtio-net resources remain disabled.
+  and feature contract, such as the microVM NIC; ordinary virtio-net resources
+  remain disabled.
   The transport stores an opaque typed device-private payload in addition to
   common queue state. Devices with unsupported host-side session state
   (`virtio-9p`, `virtiofs`) leave save/restore disabled.
