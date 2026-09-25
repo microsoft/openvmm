@@ -664,6 +664,65 @@ Serial devices can be configured to appear as different devices inside the guest
   boundary; it cannot prove that the remote application consumed bytes without
   its own acknowledgment protocol.
 
+* `--microvm-control-console <BACKEND>`: With `--machine microvm`, expose a
+  second independent single-port virtio console at fixed MMIO `0xd0007000`, IRQ
+  3. `--virtio-console` is required on a fresh boot and remains the only kernel
+  console. The control device normally appears as the profile-owned
+  `nvx_control_tty=hvc2`.
+
+  On Linux, the only live backend is `listen=PATH`, and PATH is always an
+  AF_UNIX socket. Its parent must already be an owned, non-symlink directory
+  with mode `0700`; OpenVMM exclusively binds the socket, sets and verifies
+  mode `0600`, and verifies `SO_PEERCRED` before accepting the protocol
+  attachment.
+
+  On Windows, `listen=//./pipe/openvmm-microvm-<NAME>` creates one byte-mode
+  named pipe with a protected DACL granting access only to LocalSystem and the
+  OpenVMM process user. OpenVMM obtains the connecting process ID from the pipe,
+  resolves its token user SID, and requires it to match the OpenVMM process
+  user before capability authentication. TCP, client-connect, terminal, file,
+  stdout/stderr, and inherited control backends are rejected on every platform.
+
+  A live endpoint also requires the hidden launcher option
+  `--microvm-control-auth-stdin`. The launcher must attach a prepared readable
+  one-way pipe to standard input, containing exactly 32 random capability
+  bytes, and close every writer before starting OpenVMM. OpenVMM safely
+  duplicates stdin into an owned file, performs one bounded nonblocking read
+  through EOF, and closes the duplicate. An all-zero capability is rejected.
+  Standard input remains at EOF and is reserved for authentication: the stdin
+  REPL is disabled, the boot console must use a socket or `none`, and portb
+  recovery output goes to stderr. This option cannot be combined with the
+  management RPC server, console relay, or `--paused`. Capability
+  bytes must never appear in arguments, environment variables, endpoint names,
+  logs, snapshots, or attachment identities. The first host record must prove
+  that capability. Peer identity is checked first. Authentication must complete
+  within `--microvm-control-auth-timeout-ms` (default 5000, range 1 to 60000).
+  A stalled or failed authentication attempt closes the connection without a
+  protocol Error record and without changing the broker epoch.
+
+  The outer protocol uses byte-counted guest receive credits so host DATA is
+  backpressured before the guest's bounded ingress storage is exhausted. See
+  [Control-session Protocol](./control_session_protocol.md).
+
+  `none` does not consume stdin and rejects `--microvm-control-auth-stdin`.
+  OpenVMM generates an unreachable random capability so disconnected process
+  tests remain supported.
+
+  The numeric `--microvm-control-auth-handle` interface is not supported.
+  Launchers must explicitly select the stdin contract; there is no fallback
+  to an unauthenticated endpoint.
+
+  Boot and control endpoints must be distinct. Snapshot capture records only
+  the separate `console:microvm-control0` endpoint and broker-authenticated
+  reconnect policy. It never records a capability or UID/SID. Restore validates
+  the saved endpoint contract, requires a fresh launcher-provided capability
+  for a live endpoint, and generates a fresh VMM instance ID; saved credentials
+  and stale capabilities are never reused.
+
+  Restore snapshots containing this device through the CLI. The OpenVMM
+  management RPC does not expose control-console restore attachments and
+  rejects these snapshots explicitly.
+
 The `BACKEND` argument is the same for all serial devices:
 
   * `none`: Serial output is dropped.

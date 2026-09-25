@@ -316,8 +316,8 @@ pub(crate) fn prepare_restore(
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor, effective command line, network, filesystem, boot console
-/// attachment, and sandbox blocks.
+/// hypervisor, effective command line, network, filesystem, boot and control
+/// console attachments, and sandbox blocks.
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
@@ -331,6 +331,7 @@ pub(crate) type ExpectedRestoreContract<'a> = (
         &'a Path,
         &'a SnapshotAttachment,
     )>,
+    Option<&'a SnapshotAttachment>,
     Option<&'a SnapshotAttachment>,
     Vec<SnapshotMicrovmSandboxBlock>,
 );
@@ -351,6 +352,7 @@ pub(crate) fn validate_restore_contract(
         network,
         filesystem,
         console_attachment,
+        control_console_attachment,
         sandbox_blocks,
     ): ExpectedRestoreContract<'_>,
 ) -> anyhow::Result<RestoreTime> {
@@ -373,7 +375,7 @@ pub(crate) fn validate_restore_contract(
         filesystem_slot,
         filesystem,
         console_attachment.cloned(),
-        None,
+        control_console_attachment.cloned(),
         sandbox_blocks,
         expected_vp_count,
         expected_memory_size,

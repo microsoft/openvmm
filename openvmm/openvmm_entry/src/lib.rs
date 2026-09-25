@@ -2032,6 +2032,9 @@ async fn vm_config_from_command_line(
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
+    microvm.add_control_console(&mut |bus, resource| {
+        add_virtio_device(bus, resource, &mut pcie_devices)
+    })?;
 
     // Handle --vhost-user arguments.
     #[cfg(target_os = "linux")]
