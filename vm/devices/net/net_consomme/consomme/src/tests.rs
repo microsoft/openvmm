@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod fragments;
+mod limits;
 
 use super::*;
 use pal_async::DefaultDriver;

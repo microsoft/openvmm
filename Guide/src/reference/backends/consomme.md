@@ -161,6 +161,10 @@ host-side UDP socket bound to an ephemeral port. Datagrams are
 forwarded in both directions. Idle bindings are cleaned up after a
 configurable timeout (5 minutes by default, per RFC 4787).
 
+Consomme admits at most 256 active guest UDP flows, 128 active guest TCP flows,
+and 16 guest ICMP source flows by default. It rejects an excess flow before
+creating its host socket; it never evicts an active flow to make room.
+
 UDP packets to the gateway on well-known ports are intercepted:
 
 - **Port 67** — handled by the built-in DHCP server
