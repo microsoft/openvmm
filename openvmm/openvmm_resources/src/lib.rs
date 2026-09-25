@@ -21,6 +21,7 @@ vm_resource::register_static_resolvers! {
     chipset::pit::resolver::PitResolver,
     chipset::microvm::resolver::MicrovmPortbResolver,
     chipset::microvm::resolver::MicrovmShutdownResolver,
+    chipset::microvm::resolver::MicrovmSnapshotRequestResolver,
     chipset::pic::resolver::PicResolver,
     chipset::ioapic::resolver::GenericIoApicResolver,
     chipset::pm::resolver::HyperVPowerManagementResolver,
