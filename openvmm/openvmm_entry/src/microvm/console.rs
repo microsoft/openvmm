@@ -579,10 +579,7 @@ fn microvm_console_attachment_from_snapshot_with_identity(
     Ok(reconstructed)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the management RPC restores through it")
-)]
+#[cfg(any(test, feature = "ttrpc", feature = "grpc"))]
 pub(crate) fn microvm_console_attachment_from_snapshot(
     attachment: &openvmm_helpers::snapshot::microvm::SnapshotAttachment,
     requested: Option<&SerialConfigCli>,

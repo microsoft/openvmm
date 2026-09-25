@@ -10,6 +10,7 @@
 mod fd_passing;
 #[cfg(windows)]
 mod handle_passing;
+mod microvm;
 
 use anyhow::Context;
 use futures::AsyncBufReadExt;
@@ -17,6 +18,7 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use guid::Guid;
 use mesh::CancelContext;
+use microvm::test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot;
 use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
@@ -41,6 +43,13 @@ const PMEM_SIZE: u64 = 4 * 1024 * 1024;
 const PMEM_HOST_MARKER: &str = "ttrpc-pmem-host";
 const PMEM_GUEST_MARKER: &str = "ttrpc-pmem-guest";
 const PMEM_GUEST_OFFSET: usize = 4096;
+
+// Registered here, rather than in the `microvm` module, to keep the test named
+// `ttrpc::test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot`.
+petri::test!(
+    test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot,
+    microvm::lifecycle_and_snapshot_artifacts
+);
 
 petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
@@ -164,6 +173,7 @@ exec /bin/busybox poweroff -f
                         ..Default::default()
                     }),
                     log_id: String::new(),
+                    microvm_snapshot: None,
                 },
             )
             .await
@@ -357,6 +367,7 @@ async fn test_ttrpc_shutdown_windows_guest(
                     ..Default::default()
                 }),
                 log_id: String::new(),
+                microvm_snapshot: None,
             },
         )
         .await
@@ -573,6 +584,7 @@ async fn test_ttrpc_no_vmbus(
                         ..Default::default()
                     }),
                     log_id: String::new(),
+                    microvm_snapshot: None,
                 },
             )
             .await
@@ -725,6 +737,7 @@ async fn test_ttrpc_interface(
             vmservice::CreateVmRequest {
                 config: Some(vmservice::VmConfig::default()),
                 log_id: String::new(),
+                microvm_snapshot: None,
             },
         )
         .await
@@ -1127,6 +1140,7 @@ async fn test_ttrpc_interface(
                         root_path: virtiofs_root.to_string_lossy().into(),
                         mount_options: if i == 0 { "ro" } else { "" }.to_string(),
                         windows_options: None,
+                        ..Default::default()
                     }]
                 },
                 // A SCSI controller keeps a request channel
@@ -1160,6 +1174,7 @@ async fn test_ttrpc_interface(
                 vmservice::CreateVmRequest {
                     config: Some(vm_config),
                     log_id: String::new(),
+                    microvm_snapshot: None,
                 },
             )
             .await
@@ -1365,6 +1380,7 @@ async fn test_ttrpc_interface(
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
                                 mount_options: "ro".to_string(),
                                 windows_options: None,
+                                ..Default::default()
                             },
                         ))),
                     },
@@ -2088,6 +2104,7 @@ async fn test_ttrpc_uefi_boot(
                         ..Default::default()
                     }),
                     log_id: String::new(),
+                    microvm_snapshot: None,
                 },
             )
             .await
@@ -2413,6 +2430,7 @@ fn virtio_fs_vpci_request(
                 root_path: root_path.to_string_lossy().into_owned(),
                 mount_options: if read_only { "ro" } else { "" }.to_string(),
                 windows_options: None,
+                ..Default::default()
             },
         ))),
     }
