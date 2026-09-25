@@ -10044,6 +10044,7 @@ name = "virtio_blk"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-trait",
  "disk_backend",
  "disklayer_ram",

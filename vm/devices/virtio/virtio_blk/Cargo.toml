@@ -28,6 +28,7 @@ unicycle.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+async-channel.workspace = true
 disklayer_ram.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
