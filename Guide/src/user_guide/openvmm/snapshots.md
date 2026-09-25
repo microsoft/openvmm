@@ -180,6 +180,7 @@ OpenVMM snapshots:
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
 | virtio-rtc | Virtio (PCI/MMIO) | Yes |
+| virtio-console | Virtio (PCI/MMIO) | Yes |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |
@@ -188,7 +189,6 @@ OpenVMM snapshots:
 | Relayed vPCI | PCI | **No** |
 | PCAT BIOS firmware | Chipset (ISA) | **No** (see limitations) |
 | virtio-9p, virtiofs | Virtio (PCI/MMIO) | **No** |
-| virtio-console | Virtio (PCI/MMIO) | **No** |
 | Guest Crash Device | VMBus | **No** |
 | Guest Emulation Device (GED) | VMBus | **No** |
 | VMBus serial (host) | VMBus | **No** |
