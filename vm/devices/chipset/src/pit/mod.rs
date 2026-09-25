@@ -595,7 +595,10 @@ impl PitDevice {
 }
 
 impl ChangeDeviceState for PitDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.evaluate(self.vmtime.now());
+        self.arm_wakeup();
+    }
 
     async fn stop(&mut self) {}
 
