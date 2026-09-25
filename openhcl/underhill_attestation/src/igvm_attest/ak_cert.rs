@@ -307,6 +307,31 @@ mod tests {
     }
 
     #[test]
+    fn ak_responses_remain_v1_or_v2_only() {
+        use crate::igvm_attest::tests::frame_response;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
+
+        for version in [
+            IgvmAttestResponseVersion::VERSION_1,
+            IgvmAttestResponseVersion::VERSION_2,
+        ] {
+            // AK certificates are binary, not subject to service payload UTF-8 checks.
+            let response = frame_response(version, &[0xff, 0x30], IgvmErrorInfo::default());
+            assert_eq!(parse_response(&response).unwrap(), [0xff, 0x30]);
+        }
+        let response = frame_response(
+            IgvmAttestResponseVersion::VERSION_3,
+            b"{}",
+            IgvmErrorInfo::default(),
+        );
+        assert!(matches!(
+            parse_response(&response),
+            Err(AkCertError::InvalidResponseVersion(3))
+        ));
+    }
+
+    #[test]
     fn test_undersized_response() {
         const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
         let properly_sized_response: [u8; HEADER_SIZE] = [1; HEADER_SIZE];
@@ -326,8 +351,9 @@ mod tests {
         assert!(undersized_parse_.is_err());
         assert_eq!(
             undersized_parse_.unwrap_err().to_string(),
-            AkCertError::ParseHeader(CommonError::ResponseSizeTooSmall {
-                response_size: HEADER_SIZE - 1
+            AkCertError::ParseHeader(CommonError::ResponseSizeMismatch {
+                size: HEADER_SIZE - 1,
+                specified_size: 0x01010101,
             })
             .to_string()
         );
