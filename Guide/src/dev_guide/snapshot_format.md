@@ -145,10 +145,11 @@ Key unsupported categories:
 - **Pass-through PCI** — `AssignedPciDevice`, `RelayedVpciDevice`.
 - **VGA / GDMA** — marked `todo!()` (will panic on save).
 - **Virtio devices** — the `VirtioDevice` trait defaults
-  `supports_save_restore()` to `false`. Only `virtio-blk`,
+  `supports_save_restore()` to `false`. `virtio-blk`, `virtio-console`,
   `virtio-net`, `virtio-pmem`, and `virtio-rng` override it to `true`.
-  Devices with host-side session state (`virtio-9p`, `virtiofs`,
-  `virtio-console`) intentionally leave it `false`.
+  The transport stores an opaque typed device-private payload in addition to
+  common queue state. Devices with unsupported host-side session state
+  (`virtio-9p`, `virtiofs`) leave save/restore disabled.
 - **Some VMBus devices** — `GuestCrashDevice`, `GuestEmulationDevice`,
   `VmbusSerialHost`, `Vmbfs` return `None` from
   `supports_save_restore()`.

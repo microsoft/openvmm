@@ -141,6 +141,11 @@ impl SavedStateBlob {
     pub fn parse<T: SavedStateRoot>(&self) -> Result<T, payload::Error> {
         self.0.parse()
     }
+
+    /// Returns the encoded state payload length without decoding it.
+    pub fn encoded_len(&self) -> usize {
+        self.0.value_len()
+    }
 }
 
 impl<T: SaveRestore> ProtobufSaveRestore for T
