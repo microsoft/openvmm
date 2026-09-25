@@ -41,6 +41,8 @@ pub mod p9 {
 }
 
 pub mod fs {
+    pub mod microvm;
+
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
@@ -49,6 +51,7 @@ pub mod fs {
     pub struct VirtioFsHandle {
         pub tag: String,
         pub fs: VirtioFsBackend,
+        pub profile: microvm::VirtioFsProfile,
     }
 
     #[derive(MeshPayload)]

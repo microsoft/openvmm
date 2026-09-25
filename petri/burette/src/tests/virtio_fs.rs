@@ -183,6 +183,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                                     root_path: vfs_root_path,
                                     mount_options: String::new(),
                                 },
+                                profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
                             }
                             .into_resource(),
                         )
