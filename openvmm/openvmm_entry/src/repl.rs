@@ -67,6 +67,9 @@ use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 
+pub(crate) mod launch;
+mod restore_ready;
+
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
     let (radix, prefix_len) = if s.starts_with("0x") || s.starts_with("0X") {
         (16, 2)
@@ -437,6 +440,7 @@ pub(crate) struct ReplResources {
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     pub has_vtl2: bool,
+    pub launch: launch::ReplLaunch,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -518,6 +522,7 @@ pub(crate) async fn run_repl(
         kvp_ic,
         console_in,
         has_vtl2,
+        mut launch,
     } = resources;
 
     let (console_command_send, console_command_recv) = mesh::channel();
@@ -768,13 +773,14 @@ pub(crate) async fn run_repl(
                         }
                         StateChange::Resume(Ok(success)) => {
                             if success {
+                                launch.restore_ready_pending = false;
                                 tracing::info!("resumed complete");
                             } else {
                                 tracing::warn!("already running");
                             }
                         }
                         StateChange::Resume(Err(err)) => {
-                            tracing::error!(error = &err as &dyn std::error::Error, "resume failed")
+                            restore_ready::resume_failed(err, launch.restore_ready_pending)?
                         }
                         StateChange::Reset(r) => match r {
                             Ok(()) => tracing::info!("reset complete"),
