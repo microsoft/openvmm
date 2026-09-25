@@ -10115,6 +10115,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
