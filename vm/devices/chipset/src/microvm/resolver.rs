@@ -5,11 +5,13 @@
 
 use super::MicrovmPortb;
 use super::MicrovmShutdown;
+use super::MicrovmSnapshotRequest;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
+use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use power_resources::PowerRequestHandleKind;
 use serial_core::resources::ResolveSerialBackendParams;
 use thiserror::Error;
@@ -17,8 +19,10 @@ use vm_resource::AsyncResolveResource;
 use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveError;
+use vm_resource::ResolveResource;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
+use vm_resource::declare_static_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// Resolver for the microVM portb console.
@@ -68,6 +72,14 @@ declare_static_async_resolver! {
     (ChipsetDeviceHandleKind, MicrovmShutdownHandle),
 }
 
+/// Resolver for the microVM snapshot-request port.
+pub struct MicrovmSnapshotRequestResolver;
+
+declare_static_resolver! {
+    MicrovmSnapshotRequestResolver,
+    (ChipsetDeviceHandleKind, MicrovmSnapshotRequestHandle),
+}
+
 #[async_trait]
 impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmShutdownHandle>
     for MicrovmShutdownResolver
@@ -86,5 +98,20 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmShutdownHandle>
             .await
             .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
         Ok(MicrovmShutdown::new(power_request).into())
+    }
+}
+
+impl ResolveResource<ChipsetDeviceHandleKind, MicrovmSnapshotRequestHandle>
+    for MicrovmSnapshotRequestResolver
+{
+    type Output = ResolvedChipsetDevice;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        resource: MicrovmSnapshotRequestHandle,
+        _input: ResolveChipsetDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(MicrovmSnapshotRequest::new(resource.notify, resource.input_gate_timeout).into())
     }
 }
