@@ -2394,9 +2394,13 @@ fn parse_endpoint(
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
                 params: Default::default(),
+                static_ipv4: None,
                 ports,
                 internal_dns: true,
                 recv,
+                allow_host_local_access: None,
+                map_gateway_to_host_loopback: None,
+                gateway_loopback_proxy_port: None,
             }
             .into_resource()
         }
