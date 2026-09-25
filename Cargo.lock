@@ -10358,6 +10358,7 @@ dependencies = [
  "pci_core",
  "range_map_vec",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
