@@ -3699,7 +3699,12 @@ impl LoadedVm {
         if self.running {
             return false;
         }
-        self.state_units.start().await;
+        // Resume cannot report a failure to its callers, so treat a unit that
+        // fails to start like any other unrecoverable state unit failure.
+        self.state_units
+            .start()
+            .await
+            .expect("state units failed to start");
         self.running = true;
         true
     }
@@ -3741,7 +3746,10 @@ impl LoadedVm {
 
         // Start state units so device config space is accessible. This also
         // freezes SMMU capabilities before firmware reads them.
-        self.state_units.start().await;
+        self.state_units
+            .start()
+            .await
+            .context("failed to start devices for PCI resource assignment")?;
 
         let result = ecam_config_access::assign_pci_resources_for_root_complexes(
             &self.inner.chipset,
@@ -3849,7 +3857,12 @@ impl LoadedVm {
                             }
                             Err(err) => {
                                 if stopped {
-                                    self.state_units.start().await;
+                                    if let Err(start_error) = self.state_units.start().await {
+                                        rpc.complete(Err(RemoteError::new(start_error.context(
+                                            "worker restart failed and the VM could not resume",
+                                        ))));
+                                        continue;
+                                    }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
                             }
@@ -3923,7 +3936,7 @@ impl LoadedVm {
                             )
                             .await?;
                             self.inner.vmbus_devices.push(device);
-                            self.state_units.start_stopped_units().await;
+                            self.state_units.start_stopped_units().await?;
                             anyhow::Ok(())
                         })
                         .await
@@ -4089,7 +4102,7 @@ impl LoadedVm {
                             // MSI. The guest may begin probing config space
                             // immediately after receiving the interrupt, so
                             // the device must be ready first.
-                            self.state_units.start_stopped_units().await;
+                            self.state_units.start_stopped_units().await?;
 
                             // Now attach the device and notify the guest.
                             if let Err(e) = rc.lock().hotplug_add_device(
