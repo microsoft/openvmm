@@ -359,7 +359,7 @@ impl Worker for VmWorker {
             .transpose()
             .context("failed to decode saved state")?;
 
-        let vm = block_with_io(|_| vm.load(saved_state, parameters.notify))?;
+        let vm = block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
 
         LOADED_VM.store(&vm);
 
@@ -394,7 +394,9 @@ impl Worker for VmWorker {
             shared_memory,
         ))?;
         pal_async::local::block_on(async {
-            let mut vm = vm.load(Some(saved_state), notify).await?;
+            let mut vm = vm
+                .load(Some(saved_state), notify, Default::default())
+                .await?;
 
             LOADED_VM.store(&vm);
 
@@ -878,6 +880,7 @@ pub(crate) struct LoadedVm {
     state_units: StateUnits,
     inner: LoadedVmInner,
     running: bool,
+    snapshot_restore: restore::SnapshotRestore,
 }
 
 struct DynamicVpciDeviceEntry {
@@ -1459,6 +1462,7 @@ impl InitializedVm {
         memory_builder = memory_builder
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
+            .track_memory_faults(openvmm_defs::profile::enabled())
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
@@ -1629,6 +1633,7 @@ impl InitializedVm {
         self,
         saved_state: Option<SavedState>,
         client_notify_send: mesh::Sender<HaltReason>,
+        snapshot_restore: restore::SnapshotRestore,
     ) -> Result<LoadedVm, anyhow::Error> {
         use vmotherboard::options::dev;
 
@@ -3212,6 +3217,7 @@ impl InitializedVm {
         let mut this = LoadedVm {
             state_units,
             running: false,
+            snapshot_restore,
             inner: LoadedVmInner {
                 driver_source,
                 resolver,
@@ -3269,9 +3275,11 @@ impl InitializedVm {
         };
 
         if let Some(saved_state) = saved_state {
+            let saved_state_restore = this.begin_snapshot_restore();
             this.restore(saved_state)
                 .await
                 .context("loadedvm restore failed")?;
+            this.finish_snapshot_restore(saved_state_restore).await;
         } else {
             // Assign PCI bus numbers/BARs before building firmware so that the
             // ACPI tables (specifically the SRAT generic-initiator entries) can
@@ -3717,10 +3725,7 @@ impl LoadedVm {
         if self.running {
             return Ok(false);
         }
-        self.state_units
-            .start()
-            .await
-            .context("VM state units failed to start")?;
+        self.start_state_units().await?;
         self.running = true;
         Ok(true)
     }
