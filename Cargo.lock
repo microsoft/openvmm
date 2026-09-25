@@ -10445,10 +10445,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chipset_device",
  "futures",
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "mesh",
  "pal_async",
  "pal_event",
  "parking_lot",
