@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+pub(crate) mod copy_on_write;
+
 use pal::unix::SyscallResult;
 use std::ffi::c_void;
 use std::fs::File;

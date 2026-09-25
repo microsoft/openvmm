@@ -8029,6 +8029,7 @@ dependencies = [
  "libc",
  "pal",
  "parking_lot",
+ "tempfile",
  "thiserror 2.0.16",
  "trycopy",
  "windows-sys 0.61.0",
