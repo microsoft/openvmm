@@ -2269,6 +2269,13 @@ impl FromStr for DiskCliKind {
                     Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
+                "delay" => {
+                    let (delay_ms, kind) = arg.split_once(':').context("expected delay_ms:kind")?;
+                    DiskCliKind::DelayDiskWrapper {
+                        delay_ms: delay_ms.parse().context("invalid disk delay")?,
+                        disk: Box::new(kind.parse()?),
+                    }
+                }
                 "file" => {
                     let FileOpts {
                         path,
