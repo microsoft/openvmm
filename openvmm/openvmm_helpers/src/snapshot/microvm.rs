@@ -144,6 +144,43 @@ pub struct SnapshotAttachment {
     pub reconnect_timeout_ms: u64,
 }
 
+/// Canonical guest-visible identity of the microVM network.
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+pub struct SnapshotMicrovmNetwork {
+    /// Required cross-platform host-network implementation contract.
+    #[mesh(9)]
+    pub profile: String,
+    /// Guest IPv4 address in network byte order.
+    #[mesh(1)]
+    pub guest_ipv4: u32,
+    /// IPv4 subnet prefix length.
+    #[mesh(2)]
+    pub prefix_length: u32,
+    /// Derived gateway IPv4 address in network byte order.
+    #[mesh(3)]
+    pub gateway_ipv4: u32,
+    /// Deterministic guest MAC address.
+    #[mesh(4)]
+    pub guest_mac: Vec<u8>,
+    /// Deterministic gateway MAC address.
+    #[mesh(5)]
+    pub gateway_mac: Vec<u8>,
+}
+
+impl SnapshotMicrovmNetwork {
+    fn new(config: &openvmm_defs::microvm::MicrovmNetworkConfig) -> Self {
+        Self {
+            profile: config.profile.as_str().to_owned(),
+            guest_ipv4: u32::from(config.guest_ipv4),
+            prefix_length: u32::from(config.prefix_length),
+            gateway_ipv4: u32::from(config.derived_gateway_ipv4),
+            guest_mac: config.guest_mac.to_bytes().to_vec(),
+            gateway_mac: config.gateway_mac.to_bytes().to_vec(),
+        }
+    }
+}
+
 /// Machine composition that becomes authoritative after capture.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
@@ -199,6 +236,9 @@ pub struct SnapshotMachineContract {
     /// Policy used to advance clocks and deadlines over host downtime.
     #[mesh(17)]
     pub clock_policy: String,
+    /// Static identity of the optional microVM virtio-net device.
+    #[mesh(18)]
+    pub microvm_network: Option<SnapshotMicrovmNetwork>,
     /// Effective local APIC timer frequency.
     #[mesh(20)]
     pub apic_frequency_hz: Option<u64>,
@@ -270,6 +310,10 @@ pub fn microvm_machine_contract(
     source_hypervisor: &str,
     boot_layout_version: u32,
     effective_command_line: String,
+    network: Option<(
+        &openvmm_defs::microvm::MicrovmNetworkConfig,
+        SnapshotAttachment,
+    )>,
     console_attachment: Option<SnapshotAttachment>,
     processor_count: u32,
     memory_size: u64,
@@ -370,6 +414,65 @@ pub fn microvm_machine_contract(
         ),
     ];
     let mut attachments = Vec::new();
+    let microvm_network = if let Some((network, attachment)) = network {
+        let policy_is_valid = matches!(source_hypervisor, "kvm" | "mshv" | "whp")
+            && attachment.reconnect_policy == "recreate-endpoint"
+            && !attachment.required
+            && attachment.identity_kind == "user-mode-nat"
+            && attachment.identity == b"consomme";
+        anyhow::ensure!(
+            attachment.stable_id == "net:microvm0"
+                && attachment.kind == "virtio-net"
+                && policy_is_valid
+                && !attachment.identity.is_empty()
+                && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES
+                && attachment.length == 0
+                && attachment.reconnect_timeout_ms == 0,
+            "microVM network attachment has an unsupported endpoint policy"
+        );
+        let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor))?;
+        let discovery = format!(
+            "virtio_mmio.device={:#x}@{:#x}:{irq}",
+            openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+            openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
+        );
+        let tokens = effective_command_line
+            .split_ascii_whitespace()
+            .collect::<HashSet<_>>();
+        anyhow::ensure!(
+            tokens.contains(discovery.as_str())
+                && network
+                    .command_line_fragment()
+                    .split_ascii_whitespace()
+                    .all(|token| tokens.contains(token)),
+            "microVM network command line does not match its saved identity"
+        );
+        devices.push(SnapshotDevice {
+            stable_id: "net:microvm0".to_owned(),
+            state_unit_name: format!(
+                "virtio-net-{}",
+                openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE
+            ),
+            kind: "virtio-net".to_owned(),
+            order: devices.len() as u32,
+            ranges: vec![mmio(
+                openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
+                openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+            )],
+            irq: Some(irq),
+            transport: "virtio-mmio".to_owned(),
+            feature_banks: vec![
+                openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES as u32,
+                (openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES >> 32) as u32,
+            ],
+            queue_count: 2,
+            queue_max_sizes: vec![256, 256],
+        });
+        attachments.push(attachment);
+        Some(SnapshotMicrovmNetwork::new(network))
+    } else {
+        None
+    };
     if let Some(attachment) = console_attachment {
         let policy_is_valid = match attachment.reconnect_policy.as_str() {
             "recreate-listener" => {
@@ -451,6 +554,7 @@ pub fn microvm_machine_contract(
         cpu_contract_sha256: Vec::new(),
         boot_layout_version,
         clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
+        microvm_network,
         apic_frequency_hz,
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
@@ -550,6 +654,10 @@ pub fn validate_microvm_machine_contract(
     anyhow::ensure!(
         contract.attachments == expected.attachments,
         "snapshot attachment inventory doesn't match the supplied attachments"
+    );
+    anyhow::ensure!(
+        contract.microvm_network == expected.microvm_network,
+        "snapshot static network identity doesn't match the requested machine"
     );
     anyhow::ensure!(
         contract.tsc_frequency_hz == expected.tsc_frequency_hz
@@ -741,6 +849,29 @@ pub(super) fn validate_machine_contract_shape(
         );
     }
 
+    if let Some(network) = &contract.microvm_network {
+        anyhow::ensure!(
+            network.profile == openvmm_defs::microvm::MicrovmNetworkProfile::Portable.as_str(),
+            "snapshot microVM network profile '{}' is unsupported",
+            network.profile
+        );
+        let prefix_length = u8::try_from(network.prefix_length)
+            .context("snapshot network prefix does not fit in u8")?;
+        let parsed = format!(
+            "{}/{}",
+            std::net::Ipv4Addr::from(network.guest_ipv4),
+            prefix_length
+        )
+        .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+        .context("snapshot static network identity is invalid")?;
+        anyhow::ensure!(
+            network.gateway_ipv4 == u32::from(parsed.derived_gateway_ipv4)
+                && network.guest_mac == parsed.guest_mac.to_bytes()
+                && network.gateway_mac == parsed.gateway_mac.to_bytes(),
+            "snapshot static network identity is not canonical"
+        );
+    }
+
     anyhow::ensure!(
         contract.attachments.len() <= MAX_ATTACHMENTS,
         "snapshot attachment inventory is too large"
@@ -773,6 +904,9 @@ pub(super) fn validate_machine_contract_shape(
                     attachment.required && attachment.reconnect_timeout_ms == 0
                 }
                 "discard-while-disconnected" => {
+                    !attachment.required && attachment.reconnect_timeout_ms == 0
+                }
+                "recreate-endpoint" => {
                     !attachment.required && attachment.reconnect_timeout_ms == 0
                 }
                 _ => false,
@@ -859,6 +993,7 @@ fn test_machine_contract() -> SnapshotMachineContract {
         cpu_contract_sha256: Vec::new(),
         boot_layout_version: MICROVM_BOOT_LAYOUT_VERSION,
         clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
+        microvm_network: None,
         apic_frequency_hz: Some(1_000_000_000),
         virtio_interrupt_mode: MICROVM_SHARED_STATUS_INTERRUPT_MODE.to_owned(),
         virtio_shared_status_page_gpa: openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA,
@@ -887,12 +1022,64 @@ mod tests {
         }
     }
 
+    fn microvm_network_attachment(source_hypervisor: &str) -> SnapshotAttachment {
+        assert!(matches!(source_hypervisor, "kvm" | "mshv" | "whp"));
+        SnapshotAttachment {
+            stable_id: "net:microvm0".to_owned(),
+            kind: "virtio-net".to_owned(),
+            required: false,
+            reconnect_policy: "recreate-endpoint".to_owned(),
+            identity_kind: "user-mode-nat".to_owned(),
+            identity: b"consomme".to_vec(),
+            length: 0,
+            reconnect_timeout_ms: 0,
+        }
+    }
+
+    fn generated_network_contract(source_hypervisor: &str) -> SnapshotMachineContract {
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
+        let command_line = format!(
+            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0000000:{irq} {}",
+            network.command_line_fragment_with_dns(true)
+        );
+        microvm_machine_contract(
+            source_hypervisor,
+            MICROVM_BOOT_LAYOUT_VERSION,
+            command_line,
+            Some((&network, microvm_network_attachment(source_hypervisor))),
+            None,
+            1,
+            1024,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtio-net-3489660928",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            std::time::SystemTime::now().into(),
+            1_000_000_000,
+            Some(1_000_000_000),
+            vec![1, 2, 3],
+        )
+        .unwrap()
+    }
+
     fn generated_console_contract() -> SnapshotMachineContract {
         microvm_machine_contract(
             "whp",
             MICROVM_BOOT_LAYOUT_VERSION,
             "earlycon=xe9 console=hvc1 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0002000:7"
                 .to_owned(),
+            None,
             Some(microvm_console_attachment()),
             1,
             1024,
@@ -931,6 +1118,102 @@ mod tests {
         assert_eq!(console.feature_banks, [0x3000_0001, 0x0000_0003]);
         assert_eq!(console.queue_max_sizes, [256, 256]);
         assert_eq!(contract.attachments, [microvm_console_attachment()]);
+    }
+
+    #[test]
+    fn generated_microvm_network_contract_has_backend_specific_fixed_abi() {
+        for (source_hypervisor, irq) in [("kvm", 10), ("mshv", 10), ("whp", 5)] {
+            let contract = generated_network_contract(source_hypervisor);
+            let network_device = contract.devices.last().unwrap();
+            assert_eq!(network_device.stable_id, "net:microvm0");
+            assert_eq!(network_device.state_unit_name, "virtio-net-3489660928");
+            assert_eq!(network_device.ranges[0].start, 0xd000_0000);
+            assert_eq!(network_device.ranges[0].length, 0x1000);
+            assert_eq!(network_device.irq, Some(irq));
+            assert_eq!(network_device.transport, "virtio-mmio");
+            assert_eq!(network_device.feature_banks, [0x20, 0x1]);
+            assert_eq!(network_device.queue_count, 2);
+            assert_eq!(network_device.queue_max_sizes, [256, 256]);
+            assert_eq!(
+                contract.attachments,
+                [microvm_network_attachment(source_hypervisor)]
+            );
+
+            let network = contract.microvm_network.unwrap();
+            assert_eq!(network.profile, "portable");
+            assert_eq!(
+                network.guest_ipv4,
+                u32::from(std::net::Ipv4Addr::new(10, 0, 0, 2))
+            );
+            assert_eq!(network.prefix_length, 24);
+            assert_eq!(
+                network.gateway_ipv4,
+                u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))
+            );
+            assert_eq!(network.guest_mac, [0x52, 0x54, 0, 0, 0, 2]);
+            assert_eq!(network.gateway_mac, [0x52, 0x54, 0, 0, 0, 1]);
+        }
+    }
+
+    #[test]
+    fn validate_microvm_network_contract_rejects_noncanonical_identity() {
+        let contract = generated_network_contract("whp");
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_network
+            .as_mut()
+            .unwrap()
+            .guest_mac[5] = 3;
+
+        let error = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
+        assert!(error.to_string().contains("not canonical"));
+    }
+
+    #[test]
+    fn validate_microvm_network_contract_rejects_unsupported_profile() {
+        let contract = generated_network_contract("whp");
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_network
+            .as_mut()
+            .unwrap()
+            .profile = "other".to_owned();
+
+        let error = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
+        assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn validate_microvm_network_contract_rejects_legacy_missing_profile() {
+        let contract = generated_network_contract("whp");
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_network
+            .as_mut()
+            .unwrap()
+            .profile
+            .clear();
+
+        let error = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
+        assert!(error.to_string().contains("profile '' is unsupported"));
     }
 
     #[test]
