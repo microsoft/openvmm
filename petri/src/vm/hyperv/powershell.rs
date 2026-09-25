@@ -497,6 +497,7 @@ impl HyperVNewCustomVMArgs {
         let PetriVmConfig {
             name,
             arch,
+            machine_profile,
             firmware,
             memory,
             proc_topology,
@@ -505,6 +506,8 @@ impl HyperVNewCustomVMArgs {
             physical_nvme_devices,
             ..
         } = config;
+
+        crate::vm::microvm::ensure_hyperv_compatible(*machine_profile)?;
 
         if firmware
             .openhcl_config()
