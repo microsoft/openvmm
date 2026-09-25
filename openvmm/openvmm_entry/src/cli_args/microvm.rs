@@ -115,10 +115,6 @@ impl Options {
                 !self.memory.hugepages,
                 "microVM snapshot capture does not support explicit hugepage backing"
             );
-            anyhow::ensure!(
-                self.net.is_empty(),
-                "microVM snapshot capture does not yet support --net"
-            );
         }
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
@@ -257,8 +253,10 @@ impl Options {
             "microVM --net requires --network-profile portable"
         );
         anyhow::ensure!(
-            self.microvm.network_profile.is_none() || !self.net.is_empty(),
-            "--network-profile portable requires --net"
+            self.microvm.network_profile.is_none()
+                || !self.net.is_empty()
+                || self.restore_snapshot.is_some(),
+            "--network-profile portable requires --net or --restore-snapshot"
         );
         anyhow::ensure!(
             self.net.iter().all(|network| {
@@ -536,17 +534,6 @@ mod tests {
                 "10.0.1.2/24",
                 "--network-profile",
                 "portable",
-            ],
-            vec![
-                "openvmm",
-                "--machine",
-                "microvm",
-                "--net",
-                "10.0.0.2/24",
-                "--network-profile",
-                "portable",
-                "--snapshot-destination",
-                "snapshot",
             ],
             vec!["openvmm", "--network-profile", "portable"],
         ] {
