@@ -151,6 +151,7 @@ pub(crate) mod tests {
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             Some((&network, irq, true)),
+            None,
             false,
         )
         .unwrap();

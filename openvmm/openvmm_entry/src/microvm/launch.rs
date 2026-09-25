@@ -6,6 +6,7 @@
 
 use super::ExpectedRestoreContract;
 use super::MicrovmResources;
+use super::validate_microvm_filesystem_private_storage;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::vm_controller::MicrovmController;
@@ -56,6 +57,14 @@ impl MicrovmLaunch {
                 std::env::current_dir().unwrap_or_default().join(path)
             }
         });
+        if let Some(root_path) = resources.filesystem_root_path.as_deref() {
+            validate_microvm_filesystem_private_storage(
+                root_path,
+                snapshot_destination.as_deref(),
+                opt.restore_snapshot.as_deref(),
+                opt.memory_backing_file().map(PathBuf::as_path),
+            )?;
+        }
         let snapshot_memory_file = if let Some(destination) = &snapshot_destination
             && opt.memory_backing_file().is_none()
         {

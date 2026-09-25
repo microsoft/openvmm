@@ -5,12 +5,14 @@
 
 mod config;
 mod console;
+mod filesystem;
 mod launch;
 mod network;
 mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;
 pub(crate) use console::MicrovmConsoleSocketCleanup;
+pub(crate) use filesystem::validate_microvm_filesystem_private_storage;
 pub(crate) use launch::MicrovmLaunch;
 pub(crate) use restore::ExpectedRestoreContract;
 pub(crate) use restore::MicrovmRestore;
@@ -19,6 +21,7 @@ pub(crate) use restore::validate_restore_contract;
 
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
+use std::path::PathBuf;
 
 /// Host-side microVM resources produced while building the VM configuration
 /// and consumed by the snapshot, restore, and teardown paths.
@@ -32,4 +35,6 @@ pub(crate) struct MicrovmResources {
     pub(crate) console_socket_cleanup: Option<MicrovmConsoleSocketCleanup>,
     /// Snapshot identity of the portable network attachment.
     pub(crate) network_attachment: Option<SnapshotAttachment>,
+    /// Canonical host path of the live filesystem root.
+    pub(crate) filesystem_root_path: Option<PathBuf>,
 }
