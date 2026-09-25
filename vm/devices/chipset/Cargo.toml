@@ -19,6 +19,7 @@ vmcore.workspace = true
 x86defs.workspace = true
 
 async-trait.workspace = true
+anyhow.workspace = true
 bitfield-struct.workspace = true
 futures.workspace = true
 inspect_counters.workspace = true
