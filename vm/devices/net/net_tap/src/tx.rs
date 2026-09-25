@@ -9,7 +9,8 @@
 //! The queue keeps the packet that meets backpressure, and with it the
 //! ownership of its descriptors, until `poll_ready` writes it; the call then
 //! completes asynchronously, and `tx_poll` returns the packets that it wrote
-//! before that packet and then that packet.
+//! before that packet and then that packet. Packets that the run-scoped egress
+//! policy denies are completed without being written.
 
 use crate::TapQueue;
 use crate::VirtioNetHdr;
@@ -25,6 +26,7 @@ use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend::linearize;
 use net_backend::next_packet;
+use net_backend_resources::egress::EgressPolicy;
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -38,6 +40,7 @@ pub(crate) struct TxState {
     pub(crate) pending: Option<PendingTx>,
     pub(crate) ready: VecDeque<TxId>,
     pub(crate) error: Option<std::io::Error>,
+    egress_policy: Option<EgressPolicy>,
 }
 
 /// A packet accepted from the guest and not yet written to the TAP interface.
@@ -48,11 +51,12 @@ pub(crate) struct PendingTx {
 }
 
 impl TxState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(egress_policy: Option<EgressPolicy>) -> Self {
         Self {
             pending: None,
             ready: VecDeque::new(),
             error: None,
+            egress_policy,
         }
     }
 }
@@ -139,6 +143,12 @@ impl TapQueue {
                 fixup_gso_pseudo_header(&mut packet, metadata.l2_len as usize);
             }
             consumed += segment_count;
+            if let Some(policy) = &self.tx.egress_policy
+                && policy.authorize_frame(&packet, packet.len()).is_err()
+            {
+                continue;
+            }
+
             let tap = self.tap.as_mut().context("TAP queue is unavailable")?;
             let header_bytes = header.as_bytes();
             let bufs = [
