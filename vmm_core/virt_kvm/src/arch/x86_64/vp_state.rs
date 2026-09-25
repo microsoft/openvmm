@@ -275,7 +275,6 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         };
         let events = self.kvm().get_vcpu_events()?;
 
-        // N.B. KVM has no way to get back the pending extint vector.
         let event = if events.exception.pending != 0 {
             Some(vp::PendingEvent::Exception {
                 vector: events.exception.nr,
@@ -288,7 +287,10 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 },
             })
         } else {
-            None
+            self.vp
+                .runner
+                .pending_extint()
+                .map(|vector| vp::PendingEvent::ExtInt { vector })
         };
 
         let interruption = if events.exception.injected != 0 {
@@ -386,9 +388,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 let _ = parameter;
             }
             Some(vp::PendingEvent::ExtInt { vector }) => {
-                // N.B. KVM has no way to clear a pending (but non-injected)
-                //      extint interrupt.
-                self.kvm().interrupt(vector.into())?;
+                self.vp.runner.restore_pending_extint(vector)?;
             }
             None => {}
         }

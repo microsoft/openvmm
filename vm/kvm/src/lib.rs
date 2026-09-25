@@ -1765,6 +1765,7 @@ impl<'a> Processor<'a> {
         VpRunner {
             partition: self.0,
             idx: self.1,
+            pending_extint: None,
             _not_send_sync: PhantomData,
         }
     }
@@ -1773,6 +1774,7 @@ impl<'a> Processor<'a> {
 pub struct VpRunner<'a> {
     partition: &'a Partition,
     idx: u32,
+    pending_extint: Option<u8>,
     // This type stores the current thread in `partition` and removes it in
     // `drop`, so don't allow sending or sharing this.
     _not_send_sync: PhantomData<*const u8>,
@@ -1878,6 +1880,9 @@ impl<'a> VpRunner<'a> {
         if !self.run_vp_once()? {
             return Ok(Exit::Interrupted);
         }
+        // KVM accepted the run, so an extint queued while the interrupt window
+        // was open has now been injected before guest execution.
+        self.pending_extint = None;
 
         let exit = match self.run_data().exit_reason {
             #[cfg(target_arch = "x86_64")]
@@ -2065,9 +2070,22 @@ impl<'a> VpRunner<'a> {
     /// [`Self::check_or_request_interrupt_window`] has returned `true`.
     pub fn inject_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
+        self.pending_extint = Some(vector);
         // Remember that there is a pending extint interrupt. KVM will update
         // this field again after the VP runs.
         self.run_data().ready_for_interrupt_injection = 0;
+        Ok(())
+    }
+
+    /// Returns an extint queued in KVM but not yet consumed by a successful run.
+    pub fn pending_extint(&self) -> Option<u8> {
+        self.pending_extint
+    }
+
+    /// Restores an extint that was queued but not injected at capture time.
+    pub fn restore_pending_extint(&mut self, vector: u8) -> Result<()> {
+        self.partition.vp(self.idx).interrupt(vector.into())?;
+        self.pending_extint = Some(vector);
         Ok(())
     }
 }
