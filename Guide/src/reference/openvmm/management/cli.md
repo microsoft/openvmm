@@ -63,8 +63,8 @@ describes the source definitions.
 
   `microvm` uses one socket and one die,
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
-  Guest-requested snapshot capture and new-process restore are available on
-  Linux/KVM, Linux/MSHV, and Windows/WHP.
+  Guest-requested snapshot capture and new-process restore are available for
+  blockless and fixed-block machines on Linux/KVM, Linux/MSHV, and Windows/WHP.
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
   at MMIO `0xd0000000`. KVM and MSHV use IRQ 10; WHP uses IRQ 5. Prefixes
   `/1` through `/30` are accepted. The first usable subnet address becomes
@@ -203,6 +203,23 @@ describes the source definitions.
   openvmm --machine microvm --hypervisor kvm \
     --restore-snapshot snapshot
   ```
+* `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
+  `platform`, `workload-start`, or `instance-checkpoint`. The first two are
+  reusable clone policies; instance checkpoints use single-use resume policy.
+
+A committed snapshot contains `manifest.bin`, `state.bin`, `memory.bin`, and
+optionally the manifest-declared `scratch.img`. Restore rejects unknown files,
+symlinks, malformed or oversized data, length or scratch-digest mismatches, and
+incompatible machine contracts before starting a vCPU. `memory.bin` uses a
+private writable copy-on-write mapping and paired scratch is privately copied,
+so clone-policy snapshots can be restored repeatedly without modifying
+artifacts. Instance-checkpoint snapshots permit one restore attempt.
+
+Versions 3 through 5 do not embed or validate checksums for `state.bin` or `memory.bin`;
+legacy version 2 checksum fields are accepted without re-hashing their
+payloads. This format does not detect same-length payload changes,
+authenticate, or encrypt a snapshot. Treat all three artifacts as sensitive
+guest state and protect the directory with host access controls.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
   comma-separated key/value list:
