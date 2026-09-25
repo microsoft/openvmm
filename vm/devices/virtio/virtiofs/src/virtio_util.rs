@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::microvm::MAX_FUSE_REQUEST_BYTES;
 use guestmem::GuestMemory;
 use std::cmp;
 use std::io;
@@ -110,6 +111,9 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
             }
 
             let new_len = buffer.len().checked_add(len).ok_or(lx::Error::E2BIG)?;
+            if new_len > MAX_FUSE_REQUEST_BYTES {
+                return Err(lx::Error::E2BIG);
+            }
             buffer
                 .try_reserve_exact(len)
                 .map_err(|_| lx::Error::ENOMEM)?;
