@@ -1937,6 +1937,7 @@ async fn vm_config_from_command_line(
                 root_path: args.path.clone(),
                 mount_options: args.options.clone(),
             },
+            profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
@@ -1955,6 +1956,7 @@ async fn vm_config_from_command_line(
             fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
                 root_path: args.path.clone(),
             },
+            profile: virtio_resources::fs::microvm::VirtioFsProfile::Standard,
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
