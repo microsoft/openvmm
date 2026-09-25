@@ -106,7 +106,7 @@ fn new_runner() -> (PartitionUnitRunner, Arc<Mutex<Clock>>, Arc<Halt>) {
         partition: Box::new(TestPartition {
             clock: clock.clone(),
         }),
-        vp_set: VpSet::new([None, None, None], halt.clone()),
+        vp_set: VpSet::new([None, None, None], halt.clone(), 0),
         unit_started: false,
         vp_stop_count: 0,
         needs_reset: false,
