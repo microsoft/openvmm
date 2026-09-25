@@ -711,7 +711,7 @@ fn build_dt(
 /// RSDP. We synthesize:
 ///   - An `EFI_SYSTEM_TABLE` pointing to an ACPI 2.0 configuration table
 ///     entry (the RSDP) and an RT Properties table (advertising no runtime
-///     services).
+///     services), plus the Linux EFI persistent memory reservation root.
 ///   - An EFI memory map describing the metadata, ACPI tables, and
 ///     conventional RAM regions.
 ///   - The ACPI tables themselves (RSDP, XSDT, FADT, MADT, GTDT, DSDT, etc.).
@@ -738,6 +738,8 @@ fn write_efi_and_acpi_tables(
     use uefi_specs::uefi::boot::EfiMemoryType;
     use uefi_specs::uefi::boot::EfiRtPropertiesTable;
     use uefi_specs::uefi::boot::EfiSystemTable;
+    use uefi_specs::uefi::boot::LINUX_EFI_MEMRESERVE_TABLE_GUID;
+    use uefi_specs::uefi::boot::LinuxEfiMemreserve;
     use uefi_specs::uefi::boot::SMBIOS3_TABLE_GUID;
 
     // Helper to align a value up to the given power-of-two alignment.
@@ -762,7 +764,7 @@ fn write_efi_and_acpi_tables(
 
     // Configuration table entries (24 bytes each: 16-byte GUID + 8-byte pointer)
     const CONFIG_ENTRY_SIZE: u64 = 24;
-    let num_config_entries: u64 = 3;
+    let num_config_entries: u64 = 4;
     let config_table_addr = cursor;
     cursor += num_config_entries * CONFIG_ENTRY_SIZE;
 
@@ -779,6 +781,14 @@ fn write_efi_and_acpi_tables(
     let rt_props_addr = cursor;
     let rt_props = EfiRtPropertiesTable::NONE_SUPPORTED;
     cursor += size_of::<EfiRtPropertiesTable>() as u64;
+
+    // Linux EFI persistent memory reservation root. The EFI stub normally
+    // installs this before entering the kernel. Drivers append reservations
+    // that must survive kexec, including GIC ITS LPI tables.
+    cursor = align_up(cursor, 8);
+    let memreserve_addr = cursor;
+    let memreserve = LinuxEfiMemreserve::default();
+    cursor += size_of::<LinuxEfiMemreserve>() as u64;
 
     // SMBIOS — unlike x86 (which brute-force scans the F-segment for the
     // `_SM3_` anchor), the aarch64 kernel discovers DMI only via the SMBIOS3
@@ -804,19 +814,23 @@ fn write_efi_and_acpi_tables(
     // Now write everything.
     gm.write_at(rt_props_addr, rt_props.as_bytes())
         .map_err(Error::Efi)?;
+    gm.write_at(memreserve_addr, memreserve.as_bytes())
+        .map_err(Error::Efi)?;
 
     gm.write_at(smbios_ep_addr, &smbios.entry_point)
         .map_err(Error::Efi)?;
     gm.write_at(smbios_table_addr, &smbios.structure_table)
         .map_err(Error::Efi)?;
 
-    let mut config_entries = [0u8; 72];
+    let mut config_entries = [0u8; 96];
     config_entries[0..16].copy_from_slice(ACPI_20_TABLE_GUID.as_bytes());
     config_entries[16..24].copy_from_slice(&rsdp_addr.to_le_bytes());
     config_entries[24..40].copy_from_slice(EFI_RT_PROPERTIES_TABLE_GUID.as_bytes());
     config_entries[40..48].copy_from_slice(&rt_props_addr.to_le_bytes());
     config_entries[48..64].copy_from_slice(SMBIOS3_TABLE_GUID.as_bytes());
     config_entries[64..72].copy_from_slice(&smbios_ep_addr.to_le_bytes());
+    config_entries[72..88].copy_from_slice(LINUX_EFI_MEMRESERVE_TABLE_GUID.as_bytes());
+    config_entries[88..96].copy_from_slice(&memreserve_addr.to_le_bytes());
     gm.write_at(config_table_addr, &config_entries)
         .map_err(Error::Efi)?;
 
