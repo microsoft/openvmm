@@ -10,7 +10,9 @@ use lxutil::LxCreateOptions;
 use lxutil::LxVolume;
 use lxutil::PathBufExt;
 use parking_lot::RwLock;
+use std::collections::BTreeSet;
 use std::ops::Deref;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -93,6 +95,7 @@ pub(crate) enum DedupKey {
 pub struct VirtioFsInode {
     pub(crate) volume: Arc<VirtioFsVolume>,
     path: RwLock<PathBuf>,
+    pub(crate) aliases: RwLock<BTreeSet<PathBuf>>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
     /// This inode's number as reported to the guest: its namespaced inode
@@ -111,9 +114,12 @@ impl VirtioFsInode {
     /// Create a new inode for the specified path, with previously retrieved attributes.
     pub fn with_attr(volume: Arc<VirtioFsVolume>, path: PathBuf, stat: &lx::Stat) -> Self {
         let guest_inode_nr = volume.map_inode(stat.inode_nr);
+        let mut aliases = BTreeSet::new();
+        aliases.insert(path.clone());
         Self {
             volume,
             path: RwLock::new(path),
+            aliases: RwLock::new(aliases),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
             guest_inode_nr,
@@ -172,6 +178,7 @@ impl VirtioFsInode {
     /// Increments the lookup count.
     pub fn lookup(&self, new_path: PathBuf) {
         self.lookup_count.fetch_add(1, Ordering::AcqRel);
+        self.aliases.write().insert(new_path.clone());
         let mut path = self.path.write();
         *path = new_path;
     }
@@ -400,6 +407,56 @@ impl VirtioFsInode {
         self.get_path().clone()
     }
 
+    /// Returns all host-relative aliases currently known to the guest.
+    pub(crate) fn aliases(&self) -> Vec<PathBuf> {
+        self.aliases.read().iter().cloned().collect()
+    }
+
+    /// Adds an alias after a successful hard link.
+    pub(crate) fn add_alias(&self, path: PathBuf) {
+        self.aliases.write().insert(path);
+    }
+
+    /// Removes all aliases at or below an unlinked directory path.
+    pub(crate) fn remove_alias_prefix(&self, path: &Path) {
+        let mut aliases = self.aliases.write();
+        let removed_primary = self.path.read().starts_with(path);
+        aliases.retain(|alias| !alias.starts_with(path));
+        if removed_primary {
+            if let Some(alias) = aliases.first() {
+                *self.path.write() = alias.clone();
+            }
+        }
+    }
+
+    /// Replaces an alias prefix after a successful rename.
+    pub(crate) fn rename_alias_prefix(&self, old: &Path, new: &Path) {
+        let mut aliases = self.aliases.write();
+        let replacements: Vec<_> = aliases
+            .iter()
+            .filter_map(|alias| {
+                alias.strip_prefix(old).ok().map(|suffix| {
+                    let mut replacement = new.to_path_buf();
+                    replacement.push(suffix);
+                    (alias.clone(), replacement)
+                })
+            })
+            .collect();
+        for (old_alias, new_alias) in &replacements {
+            aliases.remove(old_alias);
+            aliases.insert(new_alias.clone());
+        }
+        drop(aliases);
+
+        let mut path = self.path.write();
+        let suffix = path.strip_prefix(old).ok().map(ToOwned::to_owned);
+        if let Some(suffix) = suffix {
+            let mut replacement = new.to_path_buf();
+            replacement.push(&suffix);
+            *path = replacement;
+        }
+    }
+
     /// The key used to deduplicate this inode in the `InodeMap`, so that
     /// repeated lookups of the same host file return one stable FUSE node id.
     ///
@@ -416,18 +473,8 @@ impl VirtioFsInode {
         DedupKey::Path(self.volume_id(), self.get_path().clone())
     }
 
-    /// The [`DedupKey::Path`] that a child named `name` of this inode would use,
-    /// for path-keyed (non-stable-id) volumes only.
-    pub(crate) fn child_path_dedup_key(&self, name: &LxStr) -> Option<DedupKey> {
-        if self.volume.supports_stable_file_id() {
-            return None;
-        }
-        let path = self.child_path(name).ok()?;
-        Some(DedupKey::Path(self.volume_id(), path))
-    }
-
     /// Appends a child name to this inode's path.
-    fn child_path(&self, name: &LxStr) -> lx::Result<PathBuf> {
+    pub(crate) fn child_path(&self, name: &LxStr) -> lx::Result<PathBuf> {
         // Defense in depth: the FUSE request parser already validates names,
         // but assert here to catch any bypass.
         assert!(!name.is_empty(), "empty child name");
