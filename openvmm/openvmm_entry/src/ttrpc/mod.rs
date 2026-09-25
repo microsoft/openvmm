@@ -126,6 +126,7 @@ use storvsp_resources::ScsiControllerRequest;
 use storvsp_resources::ScsiDeviceAndPath;
 use unix_socket::UnixListener;
 use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -1543,7 +1544,12 @@ impl VmService {
                             )
                         })?;
                     let resource: Resource<VirtioDeviceHandle> =
-                        virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+                        virtio_resources::console::VirtioConsoleHandle {
+                            backend,
+                            disconnect_policy: VirtioConsoleDisconnectPolicy::Discard,
+                            attachment: None,
+                        }
+                        .into_resource();
                     if cfg!(any(windows, target_os = "macos")) {
                         // VMBus sorts VPCI offers by instance ID, comparing data1 first.
                         let instance_id = Guid {
@@ -3103,7 +3109,12 @@ async fn build_virtio_device(
         }
         Kind::Console(vmservice::VirtioConsole { backend }) => {
             let backend = build_serial_backend(backend.context("missing console backend")?)?;
-            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
+            virtio_resources::console::VirtioConsoleHandle {
+                backend,
+                disconnect_policy: VirtioConsoleDisconnectPolicy::Discard,
+                attachment: None,
+            }
+            .into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
         Kind::Fs(config) => build_virtio_fs(config, registry)?.into_resource(),
