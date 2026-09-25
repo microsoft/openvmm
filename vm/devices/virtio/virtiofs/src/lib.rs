@@ -321,7 +321,9 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
         self.check_writable(&inode)?;
+        let alias = inode.child_path(name)?;
         let attr = inode.link(name, &target_inode)?;
+        target_inode.add_alias(alias);
 
         // Increment the lookup count since we're returning an entry for this inode.
         // The kernel will send a forget for this entry later.
@@ -422,17 +424,12 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::EXDEV);
         }
         self.check_writable(&inode)?;
+        let old_path = inode.child_path(name)?;
+        let new_path = new_inode.child_path(new_name)?;
         inode.rename(name, &new_inode, new_name, flags)?;
-        // A rename doesn't preserve inode identity on path-keyed volumes, so
-        // evict both the vacated source path and the overwritten destination
-        // path from the dedup map.
         let mut inodes = self.inner.inodes.write();
-        if let Some(key) = inode.child_path_dedup_key(name) {
-            inodes.evict_dedup_key(&key);
-        }
-        if let Some(key) = new_inode.child_path_dedup_key(new_name) {
-            inodes.evict_dedup_key(&key);
-        }
+        inodes.remove_alias_prefix(inode.volume_id(), &new_path);
+        inodes.rename_alias_prefix(inode.volume_id(), &old_path, &new_path);
         Ok(())
     }
 
@@ -627,12 +624,12 @@ impl VirtioFs {
         }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
+        let path = inode.child_path(name)?;
         inode.unlink(name, flags)?;
-        // On path-keyed volumes the path is the inode's identity, so evict it
-        // now; a later create at the same path must not alias the removed inode.
-        if let Some(key) = inode.child_path_dedup_key(name) {
-            self.inner.inodes.write().evict_dedup_key(&key);
-        }
+        self.inner
+            .inodes
+            .write()
+            .remove_alias_prefix(inode.volume_id(), &path);
         Ok(())
     }
 
@@ -826,13 +823,38 @@ impl InodeMap {
         }
     }
 
-    /// Detach a [`DedupKey::Path`] entry from its current inode so a later
-    /// create at that path gets a fresh node id instead of aliasing the
-    /// removed/renamed file. The inode stays in `inodes_by_node_id` for any
-    /// live fd or watch.
-    pub fn evict_dedup_key(&mut self, key: &DedupKey) {
-        if matches!(key, DedupKey::Path(..)) {
-            self.inodes_by_key.remove(key);
+    /// Removes aliases at or below an unlinked path and refreshes path-keyed
+    /// deduplication for any surviving inodes.
+    pub fn remove_alias_prefix(&mut self, volume_id: u32, path: &Path) {
+        for inode in self.inodes_by_node_id.values.values() {
+            if inode.volume_id() == volume_id {
+                inode.remove_alias_prefix(path);
+            }
+        }
+        self.rebuild_dedup_keys();
+    }
+
+    /// Rewrites aliases at or below a renamed path and refreshes path-keyed
+    /// deduplication for any surviving inodes.
+    pub fn rename_alias_prefix(&mut self, volume_id: u32, old: &Path, new: &Path) {
+        for inode in self.inodes_by_node_id.values.values() {
+            if inode.volume_id() == volume_id {
+                inode.rename_alias_prefix(old, new);
+            }
+        }
+        self.rebuild_dedup_keys();
+    }
+
+    fn rebuild_dedup_keys(&mut self) {
+        self.inodes_by_key.clear();
+        for (&node_id, inode) in &self.inodes_by_node_id.values {
+            let key = inode.dedup_key();
+            if matches!(key, DedupKey::Path(..)) && inode.aliases().is_empty() {
+                continue;
+            }
+            self.inodes_by_key
+                .entry(key)
+                .or_insert_with(|| (Arc::clone(inode), node_id));
         }
     }
 
