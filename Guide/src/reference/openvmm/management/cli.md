@@ -45,20 +45,30 @@ describes the source definitions.
   anchored to UTC,
   the microVM portb console, lifecycle ports, and the optional fixed virtio
   devices described below. User arguments cannot override `earlycon=`,
-  `console=`, `virtio_mmio.device=`, `nr_cpus=`, `virtnet_*=`, or `virtfs_*=`.
+  `console=`, `virtio_mmio.device=`, `virtnet_*=`, or `virtfs_*=`.
 
   One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
   dormant when `--mount` is omitted; an optional `--mount` binds HostFs to it;
   one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
   IRQ 7 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
   exposes fixed distro, runtime, custom, and scratch slots starting at MMIO
-  `0xd0003000`. Ordinary `--virtio-blk` is rejected. All use split rings.
-  Firmware, ACPI, SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested
-  virtualization, and other devices are rejected. Linux discovers contiguous
-  APIC IDs and the IOAPIC from Intel
+  `0xd0003000`. The profile also reserves MMIO `0xd0007000`, IRQ 3 for the
+  dedicated control console (`hvc2`), selected by the host-owned
+  `nvx_control_tty=hvc2` token. The reserved slot and resource identity do not
+  expose a live control endpoint. Both consoles
+  remain virtio-console devices from the guest's perspective. Ordinary
+  `--virtio-blk` is rejected. All use split rings. Firmware, ACPI, SMBIOS, PCI,
+  VMBus, UARTs, graphics, isolation, nested virtualization, and other devices
+  are rejected. Linux discovers contiguous APIC IDs and the IOAPIC from Intel
   MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
   line starts at `0x20000`, and no ACPI or SMBIOS data is exposed. Host-driven
   save/restore, pulse-save/restore, and worker restart remain unavailable.
+
+  `microvm` may also expose a dedicated control virtio-console at MMIO
+  `0xd0007000`, IRQ 3. It requires the boot virtio-console, preserves
+  `console=hvc1`, and publishes `nvx_control_tty=hvc2`. The profile fixes
+  boot-before-control discovery order and rejects user overrides that could
+  change it.
 
   `microvm` uses one socket and one die,
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.

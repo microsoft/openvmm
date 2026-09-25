@@ -832,6 +832,7 @@ mod tests {
     use openvmm_defs::microvm::MICROVM_CONSOLE_COMMAND_LINE;
     use openvmm_defs::microvm::append_microvm_virtio_discovery;
     use openvmm_defs::microvm::build_microvm_command_line;
+    use openvmm_defs::microvm::build_microvm_control_command_line;
     use test_with_tracing::test;
 
     #[test]
@@ -1112,11 +1113,84 @@ mod tests {
         );
 
         let mut with_devices = build_microvm_command_line(&[], true).unwrap();
-        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true, &[]).unwrap();
+        let blocks = [
+            openvmm_defs::microvm::MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Distro,
+                read_only: true,
+            },
+            openvmm_defs::microvm::MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Scratch,
+                read_only: false,
+            },
+        ];
+        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true, false, &blocks)
+            .unwrap();
         assert_eq!(
             with_devices,
-            format!("{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7")
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7 virtio_mmio.device=0x1000@0xd0003000:4 virtio_mmio.device=0x1000@0xd0006000:11"
+            )
         );
+        let mut with_control_console = build_microvm_control_command_line(&[], true).unwrap();
+        append_microvm_virtio_discovery(
+            &mut with_control_console,
+            None,
+            false,
+            None,
+            true,
+            true,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            with_control_console,
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0002000:7 \
+                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 {}",
+                openvmm_defs::microvm::MICROVM_CONTROL_TTY_COMMAND_LINE
+            )
+        );
+
+        let network = "10.0.0.2/24".parse().unwrap();
+        let mut with_network = build_microvm_command_line(&[], false).unwrap();
+        append_microvm_virtio_discovery(
+            &mut with_network,
+            Some((
+                &network,
+                openvmm_defs::microvm::MICROVM_VIRTIO_NET_KVM_IRQ,
+                false,
+            )),
+            false,
+            None,
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            with_network,
+            format!(
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:10 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1"
+            )
+        );
+        let mut with_whp_network = build_microvm_command_line(&[], false).unwrap();
+        append_microvm_virtio_discovery(
+            &mut with_whp_network,
+            Some((
+                &network,
+                openvmm_defs::microvm::MICROVM_VIRTIO_NET_WHP_IRQ,
+                true,
+            )),
+            false,
+            None,
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(with_whp_network.ends_with("virtnet_dns=10.0.0.1"));
 
         let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
             "/mnt/share".to_owned(),
@@ -1129,6 +1203,7 @@ mod tests {
             None,
             true,
             Some(&filesystem),
+            false,
             false,
             &[],
         )
@@ -1154,6 +1229,20 @@ mod tests {
             "virtfs_mode=rw",
         ] {
             assert!(build_microvm_command_line(&[reserved.into()], false).is_err());
+        }
+        for reserved in [
+            "nvx_control_tty=hvc9",
+            "nvx-control-tty=hvc9",
+            "driver_async_probe=virtio_console",
+            "driver-async-probe=virtio_console",
+            "virtio-mmio.device=0x1000@0xd0007000:3",
+        ] {
+            assert!(build_microvm_control_command_line(&[reserved.into()], false).is_err());
+            assert!(build_microvm_command_line(&[reserved.into()], false).is_ok());
+        }
+        for delimiter in ["--", "\"driver-async-probe=virtio_console\""] {
+            assert!(build_microvm_control_command_line(&[delimiter.into()], false).is_err());
+            assert!(build_microvm_command_line(&[delimiter.into()], false).is_ok());
         }
         assert!(build_microvm_command_line(&["foo=bar\0baz".into()], false).is_err());
         assert!(
