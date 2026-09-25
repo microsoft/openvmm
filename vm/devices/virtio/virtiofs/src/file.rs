@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 
 use crate::inode::VirtioFsInode;
+use crate::microvm::file::DirectorySnapshotBudget;
+use crate::microvm::file::DirectorySnapshotCharge;
+use crate::microvm::saved_state::SavedDirectoryEntry;
 use crate::util;
 use fuse::DirEntryWriter;
 use fuse::protocol::fuse_attr;
@@ -12,24 +15,82 @@ use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
+#[derive(Default)]
+pub(crate) struct DirectorySnapshot {
+    pub(crate) built: bool,
+    pub(crate) entries: Vec<SavedDirectoryEntry>,
+    /// The share of the attachment's [`DirectorySnapshotBudget`] that
+    /// `entries` takes, once built.
+    pub(crate) _charge: Option<DirectorySnapshotCharge>,
+}
+
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {
-    file: RwLock<LxFile>,
-    inode: Arc<VirtioFsInode>,
+    pub(crate) file: RwLock<LxFile>,
+    pub(crate) inode: Arc<VirtioFsInode>,
+    open_flags: u32,
+    pub(crate) directory_snapshot: RwLock<DirectorySnapshot>,
 }
 
 impl VirtioFsFile {
     /// Create a new file.
-    pub fn new(file: LxFile, inode: Arc<VirtioFsInode>) -> Self {
+    pub fn new(file: LxFile, inode: Arc<VirtioFsInode>, open_flags: u32) -> Self {
         Self {
             file: RwLock::new(file),
             inode,
+            open_flags,
+            directory_snapshot: RwLock::new(DirectorySnapshot::default()),
         }
     }
 
     /// The inode backing this open file.
     pub fn inode(&self) -> &VirtioFsInode {
         &self.inode
+    }
+
+    pub(crate) fn open_flags(&self) -> u32 {
+        self.open_flags
+    }
+
+    pub(crate) fn directory_entries(&self) -> Vec<SavedDirectoryEntry> {
+        self.directory_snapshot.read().entries.clone()
+    }
+
+    pub(crate) fn directory_snapshot_built(&self) -> bool {
+        self.directory_snapshot.read().built
+    }
+
+    pub(crate) fn object_stat(&self) -> lx::Result<lx::Stat> {
+        self.file.read().fstat().map(Into::into)
+    }
+
+    /// Restores a directory snapshot that a saved state holds, charging it to
+    /// `budget` when built.
+    pub(crate) fn restore_directory_snapshot(
+        &self,
+        budget: &Arc<DirectorySnapshotBudget>,
+        built: bool,
+        entries: Vec<SavedDirectoryEntry>,
+    ) -> lx::Result<()> {
+        Self::validate_directory_entries(&entries)?;
+        if !built && !entries.is_empty() {
+            return Err(lx::Error::EINVAL);
+        }
+        let charge = if built {
+            let stat = self.object_stat()?;
+            if stat.mode & lx::S_IFMT != lx::S_IFDIR {
+                return Err(lx::Error::ENOTDIR);
+            }
+            Some(budget.charge(&entries)?)
+        } else {
+            None
+        };
+        *self.directory_snapshot.write() = DirectorySnapshot {
+            built,
+            entries,
+            _charge: charge,
+        };
+        Ok(())
     }
 
     /// Gets the attributes of the open file.
@@ -76,6 +137,9 @@ impl VirtioFsFile {
         size: u32,
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
+        if fs.is_microvm() {
+            return self.read_dir_microvm(fs, offset, size, plus);
+        }
         self.read_dir_with(offset, size, plus, |name| {
             fs.lookup_helper(&self.inode, name)
         })
@@ -136,7 +200,8 @@ impl VirtioFsFile {
                     }
                 };
 
-                Ok(buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry))
+                let written = buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry);
+                Ok(written)
             } else {
                 // Plain readdir does not take FUSE lookup references.
                 //
@@ -165,12 +230,13 @@ impl VirtioFsFile {
                     self.inode.guest_ino(entry.inode_nr)
                 };
 
-                Ok(buffer.dir_entry(
+                let written = buffer.dir_entry(
                     &entry.name,
                     inode_nr,
                     entry.offset as u64,
                     entry.file_type as u32,
-                ))
+                );
+                Ok(written)
             }
         });
 
