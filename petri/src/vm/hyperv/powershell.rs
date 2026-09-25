@@ -246,19 +246,19 @@ pub struct HyperVManagementVtlFeatureFlags {
     pub _reserved2: u64,
 }
 
-// impl HyperVManagementVtlFeatureFlags {
-//     fn with_tpm_version(self, version: Option<crate::PetriTpmVersion>) -> Self {
-//         match version {
-//             Some(crate::PetriTpmVersion::V138) => self
-//                 .with_use_tpm_138_by_default(true)
-//                 .with_use_tpm_185_by_default(false),
-//             Some(crate::PetriTpmVersion::V185) => self
-//                 .with_use_tpm_138_by_default(false)
-//                 .with_use_tpm_185_by_default(true),
-//             None => self,
-//         }
-//     }
-// }
+impl HyperVManagementVtlFeatureFlags {
+    fn with_tpm_version(self, version: Option<crate::PetriTpmVersion>) -> Self {
+        match version {
+            Some(crate::PetriTpmVersion::V138) => self
+                .with_use_tpm_138_by_default(true)
+                .with_use_tpm_185_by_default(false),
+            Some(crate::PetriTpmVersion::V185) => self
+                .with_use_tpm_138_by_default(false)
+                .with_use_tpm_185_by_default(true),
+            None => self,
+        }
+    }
+}
 
 impl ps::AsVal for HyperVManagementVtlFeatureFlags {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
@@ -562,13 +562,13 @@ impl HyperVNewCustomVMArgs {
                     }
                 }),
             management_vtl_feature_flags: properties.is_openhcl.then(|| {
-                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(
-                    vmgs.encryption_policy()
-                        .map(|p| p.is_strict())
-                        .unwrap_or(false),
-                )
-                // TODO Once UEFI is fixed
-                //.with_tpm_version(tpm.as_ref().map(|t| t.version))
+                HyperVManagementVtlFeatureFlags::new()
+                    .with_strict_encryption_policy(
+                        vmgs.encryption_policy()
+                            .map(|p| p.is_strict())
+                            .unwrap_or(false),
+                    )
+                    .with_tpm_version(tpm.as_ref().map(|t| t.version))
             }),
             guest_state_encryption_policy: {
                 // A requested hardware sealing policy takes precedence over the
