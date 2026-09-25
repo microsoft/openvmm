@@ -211,6 +211,7 @@ impl Manifest {
     fn from_config(config: Config) -> Self {
         Self {
             machine_profile: config.machine_profile,
+            microvm: config.microvm.into(),
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
@@ -290,6 +291,7 @@ pub struct Manifest {
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
     machine_profile: MachineProfile,
+    microvm: microvm::MicrovmManifest,
 }
 
 async fn open_simple_disk(
@@ -3081,7 +3083,8 @@ impl InitializedVm {
         // allocation indexed by the order of VirtioBus::Mmio devices.
         let mut pci_device_number = 10;
         let mut virtio_mmio_index = 0;
-        let mut microvm_virtio_slots = microvm::VirtioMmioSlots::new(chipset_mmio);
+        let mut microvm_virtio_slots =
+            microvm::VirtioMmioSlots::new(&cfg.microvm.sandbox_blocks, chipset_mmio);
 
         // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
         // configure the line as level-triggered in the MADT (necessary for
@@ -4442,6 +4445,7 @@ impl LoadedVm {
 
         let manifest = Manifest {
             machine_profile: self.inner.machine_profile,
+            microvm: Default::default(), // TODO
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],            // TODO
             ide_disks: vec![],               // TODO

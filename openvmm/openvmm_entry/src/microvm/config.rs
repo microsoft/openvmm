@@ -23,6 +23,7 @@ use crate::cli_args::SerialConfigCli;
 use crate::cli_args::VirtioBusCli;
 use crate::cli_args::microvm::MachineProfileCli;
 use crate::serial_io;
+use crate::storage_builder::StorageBuilder;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::microvm::MicrovmPortbHandle;
@@ -33,6 +34,7 @@ use futures::executor::block_on;
 use futures::io::AllowStdIo;
 use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::build_microvm_command_line;
@@ -268,6 +270,32 @@ impl<'a> MicrovmConfigBuilder<'a> {
             None
         };
         Ok(virtio_console_backend)
+    }
+
+    /// Adds the fixed-role sandbox block devices.
+    pub(crate) async fn add_sandbox_blocks(
+        &self,
+        storage: &mut StorageBuilder,
+    ) -> anyhow::Result<()> {
+        let opt = self.opt;
+        for block in &opt.microvm.microvm_sandbox_block {
+            let disk = &block.disk;
+            anyhow::ensure!(
+                disk.vtl == DeviceVtl::Vtl0
+                    && !disk.is_dvd
+                    && disk.underhill.is_none()
+                    && disk.pcie_port.is_none()
+                    && disk.controller.is_none()
+                    && disk.nsid.is_none()
+                    && disk.lun.is_none()
+                    && disk.relay.is_none(),
+                "--microvm-sandbox-block accepts only a plain VTL0 disk backend"
+            );
+            storage
+                .add_microvm_sandbox_block(block.role, &disk.kind, disk.read_only)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Adds the portb, shutdown, and snapshot-request chipset devices.
@@ -526,6 +554,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 self.filesystem_slot,
                 cfg.microvm.filesystem.as_ref(),
                 has_console,
+                &cfg.microvm.sandbox_blocks,
             )?;
         }
         openvmm_defs::microvm::validate_machine_config(cfg, requested_hypervisor)?;

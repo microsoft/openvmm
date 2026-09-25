@@ -339,6 +339,7 @@ mod tests {
             true,
             Some(&filesystem),
             false,
+            &[],
         )
         .unwrap();
         openvmm_helpers::snapshot::microvm::microvm_machine_contract(
@@ -382,6 +383,7 @@ mod tests {
             true,
             None,
             false,
+            &[],
         )
         .unwrap();
         openvmm_helpers::snapshot::microvm::microvm_machine_contract(

@@ -678,6 +678,8 @@ async fn vm_config_from_command_line(
             .await?;
     }
 
+    microvm.add_sandbox_blocks(&mut storage).await?;
+
     for &cli_args::IdeDiskCli {
         ref kind,
         read_only,

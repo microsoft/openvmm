@@ -50,11 +50,11 @@ describes the source definitions.
   One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`.
   One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
   dormant when `--mount` is omitted; an optional `--mount` binds HostFs to it;
-  and one optional `--virtio-console <BACKEND>` is exposed at MMIO
-  `0xd0002000`, IRQ 7 as the boot/log console (`hvc1`). All use split rings.
-  Firmware, ACPI,
-  SMBIOS, PCI,
-  VMBus, UARTs, storage, graphics, isolation, nested
+  one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
+  IRQ 7 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
+  exposes fixed distro, runtime, custom, and scratch slots starting at MMIO
+  `0xd0003000`. Ordinary `--virtio-blk` is rejected. All use split rings.
+  Firmware, ACPI, SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested
   virtualization, and other devices are rejected. Linux discovers contiguous
   APIC IDs and the IOAPIC from Intel
   MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
