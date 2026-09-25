@@ -43,6 +43,8 @@ pub enum Register64 {
     XCr0 = abi::WHvX64RegisterXCr0.0,
 
     Tsc = abi::WHvX64RegisterTsc.0,
+    TscAdjust = abi::WHvX64RegisterTscAdjust.0,
+    TscDeadline = abi::WHvX64RegisterTscDeadline.0,
     Efer = abi::WHvX64RegisterEfer.0,
     KernelGsBase = abi::WHvX64RegisterKernelGsBase.0,
     ApicBase = abi::WHvX64RegisterApicBase.0,
