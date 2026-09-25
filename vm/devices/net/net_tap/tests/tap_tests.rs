@@ -436,9 +436,9 @@ mod tap_tests {
         assert_eq!(packets[0].0, usable.0);
     }
 
-    /// Validates that flooding tx_avail doesn't panic or error — packets are
-    /// silently dropped when the kernel buffer fills up.
-    async fn test_tap_tx_wouldblock_drops(driver: DefaultDriver) {
+    /// Validates that flooding tx_avail preserves ownership until the TAP
+    /// accepts each packet, including when the kernel applies backpressure.
+    async fn test_tap_tx_backpressure_preserves_ownership(driver: DefaultDriver) {
         let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
@@ -476,11 +476,17 @@ mod tap_tests {
             len: frame_len,
         }];
 
-        // Flood with packets — should never error.
+        // Flood with packets. A packet accepted asynchronously must be
+        // returned through tx_poll before the next packet is submitted.
         for _ in 0..10000 {
             let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
-            assert!(completed, "tx should always complete synchronously");
             assert_eq!(count, 1);
+            if !completed {
+                poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+                let mut done = [TxId(0)];
+                assert_eq!(queue.tx_poll(&mut pool, &mut done).unwrap(), 1);
+                assert_eq!(done[0].0, 0);
+            }
         }
     }
 
@@ -758,7 +764,10 @@ mod tap_tests {
                 "tap_rx_reuses_undersized_buffer",
                 test_tap_rx_reuses_undersized_buffer,
             ),
-            async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
+            async_trial(
+                "tap_tx_backpressure_preserves_ownership",
+                test_tap_tx_backpressure_preserves_ownership,
+            ),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
             async_trial("tap_tso_ipv4_checksum", test_tap_tso_ipv4_checksum),
         ]
