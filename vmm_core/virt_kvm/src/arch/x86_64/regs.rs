@@ -52,6 +52,7 @@ pub const fn register_to_msr(name: HvX64RegisterName) -> Result<u32, NoRegisterM
         HvX64RegisterName::MsrMtrrPhysMask7 => x86defs::X86X_MSR_MTRR_PHYSBASE0 + 15,
 
         HvX64RegisterName::Tsc => x86defs::X86X_MSR_TSC,
+        HvX64RegisterName::TscDeadline => x86defs::X86X_MSR_TSC_DEADLINE,
         HvX64RegisterName::TscAux => x86defs::X86X_MSR_TSC_AUX,
 
         HvX64RegisterName::Xss => x86defs::X86X_MSR_XSS,

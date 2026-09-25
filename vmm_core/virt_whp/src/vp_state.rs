@@ -211,6 +211,14 @@ mod x86 {
             self.run.vp.set_register_state(self.vtl, value)
         }
 
+        fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+            self.run.vp.get_register_state(self.vtl)
+        }
+
+        fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
+            self.run.vp.set_register_state(self.vtl, value)
+        }
+
         fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
             match self.run.state.vtls[self.vtl].hv {
                 Some(_) => {

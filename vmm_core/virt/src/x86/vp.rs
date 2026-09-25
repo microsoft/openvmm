@@ -3,6 +3,8 @@
 
 //! Per-VP state.
 
+mod snapshot;
+
 use super::SegmentRegister;
 use super::TableRegister;
 use super::X86PartitionCapabilities;
@@ -24,6 +26,7 @@ use hvdef::HvX64SegmentRegister;
 use hvdef::HvX64TableRegister;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
+pub use snapshot::TscDeadline;
 use std::fmt::Debug;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::RFlags;
@@ -1962,6 +1965,7 @@ state_trait! {
     (12, "cet", cet, set_cet, Cet),
     (13, "cet_ss", cet_ss, set_cet_ss, CetSs),
     (14, "tsc_aux", tsc_aux, set_tsc_aux, TscAux),
+    (15, "tsc_deadline", tsc_deadline, set_tsc_deadline, TscDeadline),
 
     // Synic state
     (100, "synic", synic_msrs, set_synic_msrs, SyntheticMsrs),
