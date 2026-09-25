@@ -3,9 +3,12 @@
 
 //! MicroVM-specific support for the management RPC endpoint.
 
+use super::VmLifecycle;
+use super::grpc_error;
 use crate::cli_args::SerialConfigCli;
 use crate::serial_io::connect::bind_serial_without_cleanup;
 use crate::vm_controller::MicrovmController;
+use crate::vm_controller::VmControllerEvent;
 use anyhow::Context;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
@@ -1294,6 +1297,43 @@ pub(super) struct ControllerFields {
     pub(super) microvm: MicrovmController,
 }
 
+/// Handles controller events emitted by the microVM guest-exit path.
+pub(super) fn handle_exit_event(
+    event: VmControllerEvent,
+    lifecycle: &mut VmLifecycle,
+    wait_vm_response: &mut Option<(
+        mesh::CancelContext,
+        mesh::OneshotSender<Result<(), mesh_rpc::service::Status>>,
+    )>,
+) -> anyhow::Result<bool> {
+    match event {
+        VmControllerEvent::ExitRequested { code } => {
+            let reason = format!("guest exited with status {code}");
+            tracing::info!(code, "guest halted with process status");
+            *lifecycle = VmLifecycle::Halted(reason.clone());
+            if code == 0 {
+                if let Some((_, response)) = wait_vm_response.take() {
+                    response.send(Ok(()));
+                }
+                Ok(true)
+            } else {
+                if let Some((_, response)) = wait_vm_response.take() {
+                    response.send(Err(grpc_error(anyhow::anyhow!(reason.clone()))));
+                }
+                Err(anyhow::anyhow!(reason))
+            }
+        }
+        VmControllerEvent::ExitFailed { error } => {
+            *lifecycle = VmLifecycle::Halted(error.clone());
+            if let Some((_, response)) = wait_vm_response.take() {
+                response.send(Err(grpc_error(anyhow::anyhow!(error.clone()))));
+            }
+            Err(anyhow::anyhow!(error))
+        }
+        _ => unreachable!("only microVM exit events are delegated"),
+    }
+}
+
 fn openvmm_machine_profile(profile: vmservice::vm_config::MachineProfile) -> MachineProfile {
     match profile {
         vmservice::vm_config::MachineProfile::Standard => MachineProfile::Standard,
@@ -1328,6 +1368,60 @@ mod tests {
     use super::*;
     use openvmm_defs::microvm::MachineProfile as OpenvmmMachineProfile;
     use test_with_tracing::test;
+
+    #[test]
+    fn rpc_service_reports_guest_exit_status() {
+        DefaultPool::run_with(async |driver| {
+            for (event, expected_error) in [
+                (VmControllerEvent::ExitRequested { code: 0 }, None),
+                (
+                    VmControllerEvent::ExitRequested { code: 1 },
+                    Some("guest exited with status 1"),
+                ),
+                (
+                    VmControllerEvent::ExitFailed {
+                        error: "console output drain timed out".to_owned(),
+                    },
+                    Some("console output drain timed out"),
+                ),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let listener = UnixListener::bind(directory.path().join("rpc")).unwrap();
+                let (events, event_recv) = mesh::channel();
+                let (worker_send, worker_recv) = mesh::channel();
+                let (response, received) = mesh::oneshot();
+                let mut service = VmService {
+                    driver: driver.clone(),
+                    vm: None,
+                    vm_controller: None,
+                    vm_controller_events: Some(event_recv),
+                    controller_task: None,
+                    wait_vm_response: Some((mesh::CancelContext::new(), response)),
+                    lifecycle: VmLifecycle::Running,
+                    restore_ready_pending: false,
+                    rpc_tasks: Vec::new(),
+                    transport: ResolvedTransport::Auto,
+                    registry: FdRegistry::default(),
+                };
+                events.send(event);
+                let result = mesh::CancelContext::new()
+                    .with_timeout(Duration::from_secs(5))
+                    .until_cancelled(service.run(listener, worker_recv))
+                    .await
+                    .expect("guest exit must stop the RPC service");
+                drop(worker_send);
+                let response = received.await.unwrap();
+                if let Some(expected_error) = expected_error {
+                    assert!(result.unwrap_err().to_string().contains(expected_error));
+                    assert!(response.unwrap_err().message.contains(expected_error));
+                } else {
+                    result.unwrap();
+                    response.unwrap();
+                }
+                assert!(matches!(service.lifecycle, VmLifecycle::Halted(_)));
+            }
+        });
+    }
 
     #[test]
     fn ttrpc_standard_virtio_fs_preserves_access_mode() {
