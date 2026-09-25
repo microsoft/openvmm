@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod lazy_registration;
 pub mod vtl2_mapper;
 
 use super::VtlPartition;
@@ -132,6 +133,15 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn in_deferred_range(&self, gpa: u64) -> bool;
 
+    /// Registers the deferred range containing `gpa`, if any.
+    fn map_deferred_on_fault(
+        &self,
+        _partition: &dyn SimpleMemoryMap,
+        _gpa: u64,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Map all deferred ranges and put the mapper into a mapped state, where
     /// future map calls are no longer deferred.
     fn map_deferred(&self, partition: &dyn SimpleMemoryMap) -> anyhow::Result<()>;
@@ -191,10 +201,12 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
 }
 
 /// Memory mapper implementation that does not support VTLs, but does support
-/// overlays.
+/// overlays and optional on-demand GPA registration.
 #[derive(Debug, Inspect)]
 pub(crate) struct WhpMemoryMapper {
+    #[inspect(rename = "state")]
     overlays: Option<Mutex<EmulatedOverlayState>>,
+    overlays_supported: bool,
 }
 
 impl WhpMemoryMapper {
@@ -205,6 +217,7 @@ impl WhpMemoryMapper {
             } else {
                 None
             },
+            overlays_supported: with_overlays,
         }
     }
 }
@@ -230,7 +243,7 @@ impl MemoryMapper for WhpMemoryMapper {
                 writable,
                 executable: exec,
             };
-            overlays.lock().map_range(partition, mapping);
+            overlays.lock().map_range(partition, mapping)?;
         } else {
             // SAFETY: caller guarantees `data` is a valid pointer
             // describing `size` bytes until this range is unmapped.
@@ -255,7 +268,7 @@ impl MemoryMapper for WhpMemoryMapper {
     }
 
     fn overlays_supported(&self) -> bool {
-        self.overlays.is_some()
+        self.overlays_supported
     }
 
     fn add_overlay_page(
@@ -268,6 +281,7 @@ impl MemoryMapper for WhpMemoryMapper {
     ) -> bool {
         self.overlays
             .as_ref()
+            .filter(|_| self.overlays_supported)
             .expect("cannot add overlays if not supported")
             .lock()
             .add_overlay_page(
@@ -284,6 +298,7 @@ impl MemoryMapper for WhpMemoryMapper {
     fn remove_overlay_page(&self, partition: &dyn SimpleMemoryMap, gpa: u64) {
         self.overlays
             .as_ref()
+            .filter(|_| self.overlays_supported)
             .expect("cannot remove overlays if not supported")
             .lock()
             .remove_overlay_page(partition, gpa)
@@ -293,6 +308,17 @@ impl MemoryMapper for WhpMemoryMapper {
 
     fn in_deferred_range(&self, _gpa: u64) -> bool {
         false
+    }
+
+    fn map_deferred_on_fault(
+        &self,
+        partition: &dyn SimpleMemoryMap,
+        gpa: u64,
+    ) -> anyhow::Result<bool> {
+        match self.overlays.as_ref() {
+            Some(state) => state.lock().map_deferred_on_fault(partition, gpa),
+            None => Ok(false),
+        }
     }
 
     fn map_deferred(&self, _partition: &dyn SimpleMemoryMap) -> anyhow::Result<()> {
@@ -586,21 +612,25 @@ impl Overlay {
     }
 }
 
-/// Tracks active mappings and overlay pages. Only used when the Hv1 emulator is
-/// enabled, since otherwise there are no overlay pages and mapping requests can
-/// be passed straight through to WHP.
+/// Tracks active mappings, overlay pages, and optional on-demand GPA
+/// registration. Without overlays or lazy registration, mapping requests pass
+/// straight through to WHP.
 #[derive(Debug, Default, Inspect)]
 pub(crate) struct EmulatedOverlayState {
+    lazy_registration: bool,
     /// Active memory mappings. Non-overlapping, sorted by GPA.
     #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(Mapping::as_inspect_kv))")]
     mappings: Vec<Mapping>,
     /// Active overlay pages. Non-overlapping, sorted by GPA.
     #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(Overlay::as_inspect_kv))")]
     overlays: Vec<Overlay>,
+    /// Underlying GPA ranges already registered with WHP.
+    #[inspect(iter_by_index)]
+    registered_ranges: Vec<MemoryRange>,
 }
 
 impl EmulatedOverlayState {
-    fn map_range(&mut self, p: &dyn SimpleMemoryMap, mapping: Mapping) {
+    fn map_range(&mut self, p: &dyn SimpleMemoryMap, mapping: Mapping) -> anyhow::Result<()> {
         let index = self
             .mappings
             .binary_search_by_key(&mapping.range.start(), |m| m.range.end() - 1)
@@ -609,8 +639,19 @@ impl EmulatedOverlayState {
             assert!(old_mapping.range.start() >= mapping.range.end());
         }
 
-        let mut gpa = mapping.range.start();
-        let end = mapping.range.end();
+        self.map_initial_range(p, &mapping)?;
+        self.mappings.insert(index, mapping);
+        Ok(())
+    }
+
+    fn map_underlay_range(
+        &self,
+        p: &dyn SimpleMemoryMap,
+        mapping: &Mapping,
+        range: MemoryRange,
+    ) -> anyhow::Result<()> {
+        let mut gpa = range.start();
+        let end = range.end();
         while gpa < end {
             let o_index = self
                 .overlays
@@ -621,6 +662,13 @@ impl EmulatedOverlayState {
                 .get(o_index)
                 .map(|o| std::cmp::min(o.gpa, end))
                 .unwrap_or(end);
+            if this_end == gpa {
+                // An overlay page starts here; skip it without mapping.
+                gpa += HV_PAGE_SIZE;
+                continue;
+            }
+            // SAFETY: `range` is contained by `mapping.range`, whose data
+            // pointer remains valid until the matching unmap.
             unsafe {
                 p.map_range(
                     None,
@@ -631,15 +679,16 @@ impl EmulatedOverlayState {
                     gpa,
                     mapping.writable,
                     mapping.executable,
-                )
-                .expect("cannot handle mapping failure");
+                )?;
             }
 
+            if this_end == end {
+                break;
+            }
             // Skip the overlay page.
             gpa = this_end + HV_PAGE_SIZE;
         }
-
-        self.mappings.insert(index, mapping);
+        Ok(())
     }
 
     fn unmap_range(&mut self, p: &dyn SimpleMemoryMap, gpa: u64, len: u64) {
@@ -661,6 +710,13 @@ impl EmulatedOverlayState {
             assert!(range.contains(&mapping.range));
         }
 
+        if self.lazy_registration {
+            return self.unmap_registered_ranges(p, range);
+        }
+        self.unmap_underlay_range(p, range);
+    }
+
+    fn unmap_underlay_range(&self, p: &dyn SimpleMemoryMap, range: MemoryRange) {
         let mut gpa = range.start();
         let end = range.end();
         while gpa < end {
@@ -679,6 +735,9 @@ impl EmulatedOverlayState {
                     .expect("cannot handle unmap failure");
             }
 
+            if this_end == end {
+                break;
+            }
             // Skip the overlay page.
             gpa = this_end + HV_PAGE_SIZE;
         }
@@ -716,6 +775,11 @@ impl EmulatedOverlayState {
             .unwrap();
 
         let _overlay = self.overlays.remove(index);
+        if !self.underlay_registered(gpa) {
+            p.unmap_range(gpa, HV_PAGE_SIZE)
+                .expect("cannot handle unmap failure");
+            return;
+        }
 
         // Remap the old page.
         let mut remapped = false;

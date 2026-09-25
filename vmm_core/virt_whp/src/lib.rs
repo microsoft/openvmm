@@ -1029,7 +1029,8 @@ impl ProtoPartition for WhpProtoPartition<'_> {
         // the memory backing can resolve them on demand (soft large pages, lazy
         // commit). WHP on aarch64 does not deliver these faults, so the backing
         // must not defer any commit or protection to a fault.
-        cfg!(guest_arch = "x86_64")
+        // Pure COW restores intentionally leave these faults to WHP.
+        cfg!(guest_arch = "x86_64") && self.config.user_mode_memory_faults
     }
 
     fn build(
@@ -1610,8 +1611,10 @@ impl VtlPartition {
         // for ROM regions, resulting in an extra syscall and C++ exception for
         // each such exit. We know locally whether memory is supposed to be
         // mapped writable, so we can avoid this.
+        // Pure writable-COW restores leave these faults to WHP instead,
+        // avoiding one VP exit and populate call per first-touch page.
         // TODO-aarch64
-        if cfg!(guest_arch = "x86_64") {
+        if cfg!(guest_arch = "x86_64") && config.user_mode_memory_faults {
             extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::GpaAccessFaultExit;
         }
 
@@ -1803,7 +1806,10 @@ impl VtlPartition {
 
             Box::new(memory::vtl2_mapper::VtlMemoryMapper::new(mapping_state))
         } else {
-            Box::new(memory::WhpMemoryMapper::new(with_overlays))
+            Box::new(memory::WhpMemoryMapper::with_lazy_registration(
+                with_overlays,
+                config.lazy_memory_registration,
+            ))
         };
 
         Ok(Self {

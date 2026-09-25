@@ -356,6 +356,12 @@ pub struct ProtoPartitionConfig<'a> {
     /// Device-assignment MSI IOVA reservation selected for this partition.
     #[cfg(guest_arch = "aarch64")]
     pub device_assignment_msi_iova_range: Option<MemoryRange>,
+    /// Whether supported backends should return mapped guest-memory faults to
+    /// the VMM for user-mode resolution.
+    pub user_mode_memory_faults: bool,
+    /// Whether supported backends should register large guest-memory ranges
+    /// incrementally as the guest accesses them.
+    pub lazy_memory_registration: bool,
 }
 
 /// Partition creation configuration.

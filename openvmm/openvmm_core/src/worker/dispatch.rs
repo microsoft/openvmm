@@ -1244,6 +1244,8 @@ impl InitializedVm {
                 nested_virt: cfg.hypervisor.nested_virt,
                 #[cfg(guest_arch = "aarch64")]
                 device_assignment_msi_iova_range,
+                user_mode_memory_faults: true,
+                lazy_memory_registration: false,
             })
             .context("failed to create the prototype partition")?;
         partition_prototype.complete("startup", "partition_prototype", Default::default());
