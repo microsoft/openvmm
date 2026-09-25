@@ -87,6 +87,8 @@ pub struct VmWorkerParameters {
     pub restore_ready_sink: Option<std::fs::File>,
     /// Timeout for the microVM post-restore input gate, when required.
     pub restore_gate_timeout: Option<std::time::Duration>,
+    /// MSHV VP prefix instantiated for an explicit restore-time activation target.
+    pub restore_vp_count: Option<u32>,
     /// The VM RPC channel.
     pub rpc: mesh::Receiver<VmRpc>,
     /// The notification channel.
