@@ -1,11 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Partition unit support for snapshots: stopping VPs at a deferred I/O
-//! boundary for capture, and advancing TSC after restore downtime.
+//! Partition unit support for snapshots: validating the instantiated VP prefix,
+//! stopping VPs at a deferred I/O boundary for capture, and advancing TSC after
+//! restore downtime.
 
+use super::Error;
 use super::PartitionRequest;
 use super::PartitionUnit;
+use super::PartitionUnitParams;
 use super::PartitionUnitRunner;
 use super::StopGuard;
 use mesh::rpc::FailableRpc;
@@ -16,6 +19,20 @@ pub(super) enum SnapshotRequest {
     StopVpsAtIoBoundary(FailableRpc<(mesh::OneshotSender<()>, mesh::OneshotReceiver<()>), ()>),
     #[cfg(guest_arch = "x86_64")]
     AdvanceTsc(FailableRpc<(std::time::Duration, u64, Option<u64>), ()>),
+}
+
+/// Returns the number of VPs to instantiate, validated against the topology's
+/// VP count.
+pub(super) fn active_vp_count(params: &PartitionUnitParams<'_>) -> Result<u32, Error> {
+    let vp_capacity = params.processor_topology.vp_count();
+    let active_vp_count = params.active_vp_count.unwrap_or(vp_capacity);
+    if !(1..=vp_capacity).contains(&active_vp_count) {
+        return Err(Error::InvalidActiveVpCount {
+            active: active_vp_count,
+            capacity: vp_capacity,
+        });
+    }
+    Ok(active_vp_count)
 }
 
 impl PartitionUnit {
