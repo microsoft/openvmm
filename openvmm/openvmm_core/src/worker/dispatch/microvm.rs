@@ -14,6 +14,7 @@ use anyhow::Context;
 use chipset_device_resources::IRQ_LINE_SET;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
+use memory_range::MemoryRange;
 use mesh::error::RemoteError;
 use mesh_worker::WorkerRpc;
 use openvmm_defs::microvm::MachineProfile;
@@ -22,6 +23,7 @@ use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
 use std::sync::Arc;
 use virtio::VirtioMmioDevice;
+use virtio::VirtioMmioInterruptMode;
 use virtio::resolve::ResolvedVirtioDevice;
 use vm_loader::InitialLoad;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -74,6 +76,11 @@ pub(super) fn load_linux_x86_mptable(
         .vps_arch()
         .map(|vp| vp.apic_id)
         .collect::<Vec<_>>();
+    let reserved_memory_ranges = [MemoryRange::new(
+        openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+            ..openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+                + openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
+    )];
     let kernel_config = crate::worker::vm_loaders::linux::KernelConfig {
         kernel,
         initrd,
@@ -87,7 +94,7 @@ pub(super) fn load_linux_x86_mptable(
         &vm.gm,
         &apic_ids,
         &openvmm_defs::microvm::MICROVM_LEVEL_TRIGGERED_IRQS,
-        &[],
+        &reserved_memory_ranges,
     )?)
 }
 
@@ -132,7 +139,7 @@ impl LoadedVm {
 fn virtio_mmio_config(
     id: &str,
     chipset_mmio: ChipsetMmioRanges,
-) -> anyhow::Result<(u64, u64, u32, u64)> {
+) -> anyhow::Result<(u64, u64, u32, u64, VirtioMmioInterruptMode)> {
     let (start, irq) = match id {
         "virtio-console" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
@@ -150,7 +157,11 @@ fn virtio_mmio_config(
     );
     // The fixed slots expose split rings only.
     let disabled_features = 1 << 34;
-    Ok((start, len, irq, disabled_features))
+    let interrupt_mode = VirtioMmioInterruptMode::SharedStatus {
+        status_gpa: openvmm_defs::microvm::microvm_virtio_status_gpa(start)
+            .context("microVM slot has no shared-status word")?,
+    };
+    Ok((start, len, irq, disabled_features, interrupt_mode))
 }
 
 /// Assigns the fixed virtio-mmio slots of the microVM profile to devices, in
@@ -174,12 +185,12 @@ impl VirtioMmioSlots {
         id: &str,
         device: ResolvedVirtioDevice,
     ) -> anyhow::Result<()> {
-        let (mmio_start, mmio_len, irq, disabled_features) =
+        let (mmio_start, mmio_len, irq, disabled_features, interrupt_mode) =
             virtio_mmio_config(id, self.chipset_mmio)?;
         let id = format!("{id}-{mmio_start}");
         let gm = gm.clone();
         chipset_builder.arc_mutex_device(id).try_add(|services| {
-            VirtioMmioDevice::new_with_disabled_features(
+            VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
                 device.0,
                 &driver_source.simple(),
                 gm,
@@ -188,6 +199,7 @@ impl VirtioMmioSlots {
                 mmio_start,
                 mmio_len,
                 disabled_features,
+                interrupt_mode,
             )
         })?;
         Ok(())
