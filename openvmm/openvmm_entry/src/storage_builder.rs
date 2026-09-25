@@ -38,6 +38,8 @@ use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
 
+pub(crate) mod microvm;
+
 /// Namespace GUID for deriving deterministic GUIDs from controller names.
 /// This is hashed together with the name via SHA-256 to produce a UUIDv8.
 const OPENVMM_CONTROLLER_NS: Guid = guid::guid!("a3f1e2d4-5b6c-4a8d-9e0f-1234567890ab");
@@ -142,6 +144,7 @@ struct VirtioBlkDisk {
     read_only: bool,
     serial: Option<String>,
     options: virtio_resources::blk::VirtioBlkOptions,
+    microvm: Option<microvm::SandboxBlock>,
 }
 
 impl VirtioBlkDisk {
@@ -541,6 +544,7 @@ impl StorageBuilder {
                     read_only,
                     serial,
                     options,
+                    microvm: None,
                 };
                 if let Some(port) = pcie_port {
                     self.pcie_virtio_blk_disks.push((port, vblk));
@@ -908,6 +912,7 @@ impl StorageBuilder {
             resources.nvme_vtl2_rpc = Some(send);
         }
 
+        self.build_microvm_sandbox_blocks(config)?;
         for (i, vblk) in std::mem::take(&mut self.vtl0_virtio_blk_disks)
             .into_iter()
             .enumerate()
