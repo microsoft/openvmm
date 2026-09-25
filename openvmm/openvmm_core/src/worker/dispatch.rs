@@ -1995,6 +1995,7 @@ impl InitializedVm {
                 .into_resource(),
                 century_reg_idx: 0x32, // TODO: automatically sync with FADT
                 initial_cmos: initial_rtc_cmos,
+                mode: dev::GenericCmosRtcMode::Standard,
             }
         });
 

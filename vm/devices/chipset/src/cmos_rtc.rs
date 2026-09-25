@@ -7,7 +7,9 @@
 #![warn(missing_docs)]
 
 pub mod clock;
+mod mode;
 
+pub use self::mode::RtcMode;
 use self::spec::CmosReg;
 use self::spec::ENABLE_OSCILLATOR_CONTROL;
 use self::spec::StatusRegA;
@@ -176,6 +178,8 @@ pub struct Rtc {
     century_reg: CmosReg,
     initial_cmos: Option<[u8; 256]>,
     enlightened_interrupts: bool,
+    #[inspect(skip)]
+    mode: RtcMode,
 
     // Runtime deps
     real_time_source: Box<dyn clock::UtcClockSource>,
@@ -236,7 +240,7 @@ impl ChangeDeviceState for Rtc {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.state = RtcState::new(self.initial_cmos);
+        self.state = RtcState::with_mode(self.initial_cmos, self.mode);
 
         self.update_timers();
         self.update_interrupt_line_level();
@@ -321,6 +325,7 @@ impl Rtc {
             century_reg: CmosReg(century_reg_idx),
             initial_cmos,
             enlightened_interrupts,
+            mode: RtcMode::Standard,
 
             real_time_source: Box::new(clock::LocalClockUtcSource(real_time_source)),
             interrupt,

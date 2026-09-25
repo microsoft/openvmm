@@ -438,6 +438,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             time_source,
             century_reg_idx,
             initial_cmos,
+            mode,
         }) = deps_generic_cmos_rtc
         {
             let resolved = resolver
@@ -445,13 +446,16 @@ impl<'a> BaseChipsetBuilder<'a> {
                 .await
                 .map_err(BaseChipsetBuilderError::ResolveResource)?;
             builder.arc_mutex_device("rtc").add(|services| {
-                cmos_rtc::Rtc::new(
+                cmos_rtc::Rtc::new_with_mode(
                     resolved.0,
                     services.new_line(IRQ_LINE_SET, "interrupt", irq),
                     services.register_vmtime(),
                     century_reg_idx,
                     initial_cmos,
                     false,
+                    match mode {
+                        options::dev::GenericCmosRtcMode::Standard => cmos_rtc::RtcMode::Standard,
+                    },
                 )
             })?;
         }
@@ -1168,6 +1172,13 @@ pub mod options {
             }
         }
 
+        /// Guest-visible generic CMOS RTC behavior.
+        #[derive(Clone, Copy)]
+        pub enum GenericCmosRtcMode {
+            /// Standard programmable MC146818-compatible behavior.
+            Standard,
+        }
+
         /// Generic MC146818A compatible RTC + CMOS device
         pub struct GenericCmosRtcDeps {
             /// IRQ line to signal RTC device events
@@ -1178,6 +1189,8 @@ pub mod options {
             pub century_reg_idx: u8,
             /// Initial state of CMOS RAM
             pub initial_cmos: Option<[u8; 256]>,
+            /// Guest-visible RTC behavior.
+            pub mode: GenericCmosRtcMode,
         }
 
         /// PIIX4 "flavored" MC146818A compatible RTC + CMOS device

@@ -3045,6 +3045,7 @@ async fn new_underhill_vm(
             time_source: PlatformResource.into_resource(),
             century_reg_idx: 0x32,
             initial_cmos: None,
+            mode: dev::GenericCmosRtcMode::Standard,
         });
 
     if dps.general.tpm_enabled {
