@@ -27,6 +27,8 @@ pub mod null {
 
 /// Consomme backend.
 pub mod consomme {
+    pub mod static_ipv4;
+
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
     use vm_resource::kind::NetEndpointHandleKind;
@@ -108,6 +110,15 @@ pub mod consomme {
         pub ports: Vec<HostPortConfig>,
         /// Optional channel for runtime port bind/unbind after the endpoint starts.
         pub recv: Option<mesh::Receiver<ConsommeRequest>>,
+        /// Optional exact static identity, mutually exclusive with `cidr`.
+        pub static_ipv4: Option<static_ipv4::StaticIpv4Config>,
+        /// Override guest access to host-local destination addresses.
+        pub allow_host_local_access: Option<bool>,
+        /// Override translation of the guest gateway onto host loopback.
+        pub map_gateway_to_host_loopback: Option<bool>,
+        /// Exact gateway TCP port translated to host loopback even when the
+        /// general gateway mapping is disabled.
+        pub gateway_loopback_proxy_port: Option<u16>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

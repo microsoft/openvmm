@@ -1828,12 +1828,16 @@ fn parse_nic_config(
             } else {
                 Some(consomme.cidr)
             },
+            static_ipv4: None,
             ports: consomme
                 .ports
                 .into_iter()
                 .map(parse_port_config)
                 .collect::<anyhow::Result<_>>()?,
             recv,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
         }
         .into_resource(),
         _ => anyhow::bail!("unsupported backend"),
@@ -2436,11 +2440,15 @@ fn build_nic_backend(
         Kind::Consomme(vmservice::ConsommeBackend { cidr, ports }) => {
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: (!cidr.is_empty()).then_some(cidr),
+                static_ipv4: None,
                 ports: ports
                     .into_iter()
                     .map(parse_port_config)
                     .collect::<anyhow::Result<_>>()?,
                 recv: None,
+                allow_host_local_access: None,
+                map_gateway_to_host_loopback: None,
+                gateway_loopback_proxy_port: None,
             }
             .into_resource()
         }

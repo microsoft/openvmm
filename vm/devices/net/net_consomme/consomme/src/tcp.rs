@@ -1110,7 +1110,12 @@ impl<T: Client> Access<'_, T> {
                     } else {
                         // Resolve virtual mapped addresses back to real host
                         // addresses before establishing the connection.
-                        let resolved_dst = sender.state.resolve_destination(&sender.ft.dst);
+                        let Some(resolved_dst) = sender
+                            .state
+                            .resolve_flow_destination(&sender.ft.dst, IpProtocol::Tcp)
+                        else {
+                            return Err(DropReason::DestinationNotAllowed);
+                        };
                         // If this is directed to a local port owned by the guest, use the
                         // appropriate host port substitution.
                         let is_local_address = sender.state.params.is_local_address(&resolved_dst);

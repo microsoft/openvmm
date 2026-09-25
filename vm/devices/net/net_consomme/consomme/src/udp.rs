@@ -460,7 +460,11 @@ impl<T: Client> Access<'_, T> {
         };
 
         // Resolve virtual mapped addresses back to the real host address.
-        let mut dst_sock_addr = self.inner.state.resolve_destination(&dst_sock_addr);
+        let mut dst_sock_addr = self
+            .inner
+            .state
+            .resolve_flow_destination(&dst_sock_addr, IpProtocol::Udp)
+            .ok_or(DropReason::DestinationNotAllowed)?;
         if self.inner.state.params.is_local_address(&dst_sock_addr) {
             // This packet is destined for a local address. If the port matches a listener,
             // translate it so that the connection loops back to the expected destination.
