@@ -178,7 +178,7 @@ impl VirtioDevice for VirtioFsDevice {
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
-        tracing::warn!(offset, val, "[virtiofs] Unknown write",);
+        tracelimit::warn_ratelimited!(offset, val, "[virtiofs] Unknown write",);
     }
 
     fn set_shared_memory_region(
@@ -292,7 +292,7 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
                     state.queue.complete(work, bytes);
                 }
                 Err(err) => {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
                         "Failed processing queue"
                     );
@@ -314,7 +314,7 @@ fn process_virtiofs_request(
     let request = match fuse::Request::new(reader) {
         Ok(request) => request,
         Err(e) => {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 error = &e as &dyn std::error::Error,
                 "[virtiofs] Invalid FUSE message, error"
             );
@@ -363,16 +363,20 @@ struct VirtioReplySender<'a> {
 impl fuse::ReplySender for VirtioReplySender<'_> {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let mut writer = VirtioPayloadWriter::new(self.mem, self.work);
-        let mut size = 0;
+        let mut size: usize = 0;
 
         // Write all the slices to the payload buffers.
         // N.B. write_vectored isn't used because it isn't guaranteed to write all the data.
         for buf in bufs {
             writer.write_all(buf)?;
-            size += buf.len();
+            size = size
+                .checked_add(buf.len())
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         }
 
-        self.bytes_written = size as u32;
+        self.bytes_written = size
+            .try_into()
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
         Ok(())
     }
 }

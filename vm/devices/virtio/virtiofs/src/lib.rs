@@ -47,6 +47,8 @@ const ATTRIBUTE_TIMEOUT: Duration = Duration::from_millis(1);
 // update the path.
 const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
+const MAX_GUEST_BUFFER_SIZE: usize = 1024 * 1024;
+
 /// Shared mutable state behind a [`VirtioFs`] handle.
 struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
@@ -341,13 +343,16 @@ impl Fuse for VirtioFs {
 
     fn read(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
         let file = self.get_file(arg.fh)?;
-        let mut buffer = vec![0u8; arg.size as usize];
+        let mut buffer = guest_buffer(arg.size)?;
         let size = file.read(&mut buffer, arg.offset)?;
         buffer.truncate(size);
         Ok(buffer)
     }
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
+        if data.len() > MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
         let file = self.get_file(arg.fh)?;
         self.check_writable(file.inode())?;
         file.write(data, arg.offset, request.uid())
@@ -454,7 +459,7 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::ENODATA);
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut value = vec![0u8; size as usize];
+        let mut value = guest_buffer(size)?;
         let size = inode.get_xattr(name, Some(&mut value))?;
         value.truncate(size);
         Ok(value)
@@ -480,6 +485,9 @@ impl Fuse for VirtioFs {
         if self.is_synthetic_root(request.node_id()) {
             return Err(lx::Error::EROFS);
         }
+        if value.len() > MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.set_xattr(name, value, flags)
@@ -490,7 +498,7 @@ impl Fuse for VirtioFs {
             return Ok(Vec::new());
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut list = vec![0u8; size as usize];
+        let mut list = guest_buffer(size)?;
         let size = inode.list_xattr(Some(&mut list))?;
         list.truncate(size);
         Ok(list)
@@ -631,7 +639,7 @@ impl VirtioFs {
     /// Retrieve the inode with the specified node ID.
     fn get_inode(&self, node_id: u64) -> lx::Result<Arc<VirtioFsInode>> {
         self.inner.inodes.read().get(node_id).ok_or_else(|| {
-            tracing::warn!(node_id, "request for unknown inode");
+            tracelimit::warn_ratelimited!(node_id, "request for unknown inode");
             lx::Error::EINVAL
         })
     }
@@ -649,7 +657,7 @@ impl VirtioFs {
     fn get_file(&self, fh: u64) -> lx::Result<Arc<VirtioFsFile>> {
         let files = self.inner.files.read();
         let file = files.get(fh).ok_or_else(|| {
-            tracing::warn!(fh, "Request for unknown file");
+            tracelimit::warn_ratelimited!(fh, "Request for unknown file");
             lx::Error::EBADF
         })?;
 
@@ -666,6 +674,19 @@ impl VirtioFs {
     fn remove_file(&self, fh: u64) {
         self.inner.files.write().remove(fh);
     }
+}
+
+fn guest_buffer(size: u32) -> lx::Result<Vec<u8>> {
+    let size = size as usize;
+    if size > MAX_GUEST_BUFFER_SIZE {
+        return Err(lx::Error::E2BIG);
+    }
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(size)
+        .map_err(|_| lx::Error::ENOMEM)?;
+    buffer.resize(size, 0);
+    Ok(buffer)
 }
 
 /// A key/value map where the keys are automatically incremented identifiers.

@@ -61,7 +61,7 @@ impl<'payload, 'mem> VirtioPayloadReader<'payload, 'mem> {
     /// Gets the remaining length of the current payload buffer only.
     fn get_current_remaining_len(&mut self) -> usize {
         if let Some(payload) = self.get_payload() {
-            payload.length as usize - self.offset
+            (payload.length as usize).saturating_sub(self.offset)
         } else {
             0
         }
@@ -74,10 +74,16 @@ impl Read for VirtioPayloadReader<'_, '_> {
             // Determine how much space is left in the current buffer, and read at most that much.
             // A single call to read won't cross payload buffers, so to read more you must call
             // it repeatedly or e.g. use read_exact.
-            let remaining = payload.length as usize - self.offset;
+            let remaining = (payload.length as usize)
+                .checked_sub(self.offset)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
             let size = cmp::min(remaining, buf.len());
+            let address = payload
+                .address
+                .checked_add(self.offset as u64)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
             self.guest_memory
-                .read_at(payload.address + self.offset as u64, &mut buf[..size])
+                .read_at(address, &mut buf[..size])
                 .map_err(io::Error::other)?;
             self.offset += size;
             self.position += size;
@@ -103,9 +109,16 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
                 return Err(lx::Error::EINVAL);
             }
 
-            buffer.resize_with(buffer.len() + len, Default::default);
+            let new_len = buffer.len().checked_add(len).ok_or(lx::Error::E2BIG)?;
+            buffer
+                .try_reserve_exact(len)
+                .map_err(|_| lx::Error::ENOMEM)?;
+            buffer.resize(new_len, 0);
             let start_offset = self.offset;
-            assert!(self.read(&mut buffer[buffer_offset..])? == len);
+            let start_position = self.position;
+            if self.read(&mut buffer[buffer_offset..])? != len {
+                return Err(lx::Error::EIO);
+            }
 
             // Search for a matching byte in the portion of the buffer we just read.
             if let Some(length) = buffer[buffer_offset..].iter().position(|&c| c == byte) {
@@ -114,6 +127,7 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
 
                 // Rewind the offset to be just after the matching byte.
                 self.offset = start_offset + length + 1;
+                self.position = start_position + length + 1;
                 return Ok(buffer);
             } else {
                 buffer_offset += len;
@@ -122,7 +136,7 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
     }
 
     fn remaining_len(&self) -> usize {
-        self.len - self.position
+        self.len.saturating_sub(self.position)
     }
 }
 
@@ -175,10 +189,16 @@ impl Write for VirtioPayloadWriter<'_, '_> {
             // Find the remaining size of the current payload buffer, and write at most that much.
             // This method never writes data spanning multiple buffers, so to write more you must
             // call it repeatedly or use write_all.
-            let remaining = payload.length as usize - self.offset;
+            let remaining = (payload.length as usize)
+                .checked_sub(self.offset)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
             let size = cmp::min(remaining, buf.len());
+            let address = payload
+                .address
+                .checked_add(self.offset as u64)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
             self.guest_memory
-                .write_at(payload.address + self.offset as u64, &buf[..size])
+                .write_at(address, &buf[..size])
                 .map_err(io::Error::other)?;
             self.offset += size;
             Ok(size)
