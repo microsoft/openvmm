@@ -81,9 +81,18 @@ cargo run -- \
   --restore-snapshot path/to/snapshot-dir
 ```
 
-`--restore-snapshot` automatically opens `memory.bin` from the snapshot
-directory, so `file=...` should not be specified in `--memory` (the two
-options are mutually exclusive).
+`--restore-snapshot` verifies and opens `memory.bin` from the snapshot
+directory, so `file=...` should not be specified in `--memory` (the two options
+are mutually exclusive).
+
+```admonish warning
+Version 3 does not contain or validate embedded checksums for `state.bin` or
+`memory.bin`. Restore still requires regular files, bounded manifest and state
+decoding, and exact artifact lengths, but same-length payload changes are not
+detected. Protect snapshot directories with host access controls. Integrity or
+authentication for export and transport must be supplied outside the default
+snapshot format.
+```
 
 Pass the same boot flags and files that were used at save time (for example
 `--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
