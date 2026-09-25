@@ -6,5 +6,6 @@
 mod device_tree;
 pub mod igvm;
 pub mod linux;
+pub mod microvm;
 pub mod pcat;
 pub mod uefi;
