@@ -5959,6 +5959,7 @@ name = "openvmm_defs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chipset_resources",
  "floppy_resources",
  "framebuffer",
  "get_resources",

@@ -1312,6 +1312,8 @@ impl VmService {
                     shared_memory: None,
                     shared_memory_copy_on_write: false,
                     snapshot_restore_guards: None,
+                    snapshot_boundary_requests: None,
+                    snapshot_ready: None,
                     restore_ready_sink: None,
                     rpc: recv,
                     notify: notify_send,

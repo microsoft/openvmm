@@ -910,6 +910,26 @@ impl VaMapper {
         self.inner.mapping.len()
     }
 
+    /// Flushes every active shared file mapping in this mapper.
+    pub fn flush_shared_file_mappings(&self) -> std::io::Result<()> {
+        let ranges: Vec<MemoryRange> = self
+            .inner
+            .mappings
+            .read()
+            .iter()
+            .filter_map(|(range, properties)| {
+                (!properties.private)
+                    .then(|| MemoryRange::new(*range.start()..range.end().saturating_add(1)))
+            })
+            .collect();
+        for range in ranges {
+            self.inner
+                .mapping
+                .flush(range.start() as usize, range.len() as usize)?;
+        }
+        Ok(())
+    }
+
     /// Returns true if this mapper receives mappings eagerly.
     pub fn is_eager(&self) -> bool {
         self.inner.eager.load(Ordering::Relaxed)
