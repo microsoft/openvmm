@@ -6,6 +6,7 @@
 #![cfg(windows)]
 
 pub(crate) mod copy_on_write;
+mod flush;
 
 use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
