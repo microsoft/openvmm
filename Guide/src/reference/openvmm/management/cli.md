@@ -179,23 +179,22 @@ describes the source definitions.
   behavior, zero entry and attribute cache lifetimes, and no shared-memory
   window. `--mount` conflicts with `--virtio-fs` and
   `--virtio-fs-shmem`; those standard-machine options cannot select the
-  microVM filesystem profile. The profile appends
-  `virtfs_dir=<GUEST_TARGET> virtfs_tag=microvm virtfs_mode=<ro|rw>` to the
-  kernel command line, so that the guest can mount the share at boot.
+  microVM filesystem profile.
 
-  The host path must name a plain directory, and a path with a parent
-  component or a symbolic-link or reparse-point component is rejected. The
-  canonical directory is identified by its device and inode numbers on Linux,
-  or by its volume and file ID on Windows, and the device refuses the
-  attachment if the path no longer names that directory when it opens the
-  root. The guest memory backing file, the snapshot destination, and the
-  restore snapshot must be outside the exported root.
+  `--mount-deny <HOST_PATH>` is repeatable and hides an existing file or
+  directory inside the exported root. Paths are canonicalized to
+  host-relative policy entries before resources are opened. The complete root,
+  paths outside the root, duplicates, overlaps, symlink/reparse components,
+  and nested-mount crossings are rejected. The virtio-fs server blocks the
+  denied subtree and its root object identity, so `..`, a second mount of the
+  same device, hard-link aliases, symlinks, junctions, and bind-mount aliases
+  cannot re-expose it.
 
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
   directory contents or native handles. An active snapshot requires
-  `--mount` again with the exact canonical host path, guest target, and access
-  mode; the live root and every saved object identity are also revalidated
-  before vCPUs start. A snapshot captured without `--mount` may remain dormant
+  `--mount` again with the exact canonical host path, guest target, access
+  mode, and denied-path set; the live root and every saved object identity are
+  also revalidated before vCPUs start. A snapshot captured without `--mount` may remain dormant
   or bind a new attachment. The resumed guest must then explicitly run
   `mount -t virtiofs microvm <GUEST_TARGET>` because its cold-boot mount hook
   has already completed.
