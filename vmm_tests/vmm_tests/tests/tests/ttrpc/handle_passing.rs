@@ -397,6 +397,7 @@ fn virtiofs_config(share_root: &Path, user_token_name: &str) -> vmservice::VmCon
                     user_token_name: user_token_name.to_string(),
                     shared_mem: false,
                 }),
+                ..Default::default()
             }],
             ..Default::default()
         }),
@@ -431,5 +432,6 @@ fn create_vm_request(
             ..config
         }),
         log_id: String::new(),
+        microvm_snapshot: None,
     }
 }
