@@ -4,6 +4,8 @@
 //! State unit for managing the VM partition and associated virtual processors.
 
 mod debug;
+#[cfg(guest_arch = "x86_64")]
+mod snapshot;
 #[cfg(test)]
 mod tests;
 mod vp_set;
@@ -140,6 +142,8 @@ enum PartitionRequest {
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>), Result<(), InitialRegError>>),
     AcceptInitialPages(Rpc<Vec<InitialPageImport>, Result<(), AcceptInitialPagesError>>),
     StopVps(Rpc<(), ()>),
+    #[cfg(guest_arch = "x86_64")]
+    Snapshot(snapshot::SnapshotRequest),
     StartVps,
     /// Build the partition state blob for a dump file.
     #[cfg(feature = "dump")]
@@ -389,6 +393,8 @@ impl PartitionUnitRunner {
                     PartitionRequest::StopVps(rpc) => {
                         rpc.handle(async |()| self.stop_vps().await).await
                     }
+                    #[cfg(guest_arch = "x86_64")]
+                    PartitionRequest::Snapshot(req) => self.handle_snapshot(req).await,
                     PartitionRequest::StartVps => {
                         self.resume_vps();
                     }
