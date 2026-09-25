@@ -59,8 +59,8 @@ describes the source definitions.
 
   `microvm` uses one socket and one die,
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
-  Guest-requested snapshot capture is available on Linux/KVM, Linux/MSHV, and
-  Windows/WHP.
+  Guest-requested snapshot capture and new-process restore are available on
+  Linux/KVM, Linux/MSHV, and Windows/WHP.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
@@ -79,6 +79,19 @@ describes the source definitions.
   openvmm --machine microvm --hypervisor kvm --memory 128M \
     --kernel vmlinux --initrd initramfs.cpio.gz \
     --snapshot-destination snapshot
+  ```
+* `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
+  The manifest supplies the authoritative RAM size, topology, ABI,
+  fixed device inventory, effective kernel command line, source backend, CPU
+  contract, and TSC frequency. Kernel, initrd, command-line, ordinary
+  `--memory`, processor, device, and topology overrides are not accepted.
+  Repeat the snapshot's exact `--processors` count; a mismatch is rejected
+  before any VP starts. Restore requires the same backend kind as capture.
+  It does not yet support `--virtio-console`.
+
+  ```bash
+  openvmm --machine microvm --hypervisor kvm \
+    --restore-snapshot snapshot
   ```
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
   `SPEC` can be a size-only shorthand, such as `--memory 4G`, or a
