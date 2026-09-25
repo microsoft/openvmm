@@ -195,28 +195,30 @@ impl LoadedVm {
             return true;
         };
 
-        // The gate waits for every unit. When a unit fails it, roll it back
-        // and let the guest continue without a snapshot; only a failed
-        // rollback ends the VM.
-        let input_gate = openvmm_defs::profile::ProfileSpan::start();
-        if let Err(error) = self.state_units.quiesce_input_for_save().await {
-            tracelimit::error_ratelimited!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to gate host input before snapshot boundary"
-            );
-            if let Err(resume_error) = self.state_units.resume_input_after_save().await {
+        if !self.snapshot_restore.input_gated {
+            // The gate waits for every unit. When a unit fails it, roll it
+            // back and let the guest continue without a snapshot; only a
+            // failed rollback ends the VM.
+            let input_gate = openvmm_defs::profile::ProfileSpan::start();
+            if let Err(error) = self.state_units.quiesce_input_for_save().await {
                 tracelimit::error_ratelimited!(
-                    error = resume_error.as_ref() as &dyn std::error::Error,
-                    "failed to roll back the host-input gate; terminating VM worker"
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to gate host input before snapshot boundary"
                 );
+                if let Err(resume_error) = self.state_units.resume_input_after_save().await {
+                    tracelimit::error_ratelimited!(
+                        error = resume_error.as_ref() as &dyn std::error::Error,
+                        "failed to roll back the host-input gate; terminating VM worker"
+                    );
+                    request.transaction_complete.complete(());
+                    return false;
+                }
+                request.release_write.send(());
                 request.transaction_complete.complete(());
-                return false;
+                return true;
             }
-            request.release_write.send(());
-            request.transaction_complete.complete(());
-            return true;
+            input_gate.complete("capture", "input_gate", Default::default());
         }
-        input_gate.complete("capture", "input_gate", Default::default());
 
         let vp_stop_at_io_boundary = openvmm_defs::profile::ProfileSpan::start();
         match self
@@ -266,9 +268,16 @@ impl LoadedVm {
             .stop_guard
             .take()
             .context("snapshot boundary is missing its vCPU stop guard")?;
+        let restore_gate_profile = self.snapshot_restore.gate_profile.take();
         self.snapshot_boundary.capture_wall_clock = None;
+        self.snapshot_restore.gate_timeout = None;
+        self.snapshot_restore.gate_deadline = None;
+        self.snapshot_restore.input_gated = false;
         transaction_complete.complete(());
         drop(stop_guard);
+        if let Some(profile) = restore_gate_profile {
+            profile.complete_milestone("restore", "guest_repair_gate", Default::default());
+        }
         Ok(())
     }
 
