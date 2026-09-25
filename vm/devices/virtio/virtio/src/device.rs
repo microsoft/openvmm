@@ -4,6 +4,8 @@
 //! Per-queue virtio device trait (`VirtioDevice`) and object-safe wrapper
 //! (`DynVirtioDevice`).
 
+pub mod saved_state;
+
 use crate::DEFAULT_QUEUE_SIZE;
 use crate::DeviceTraits;
 use crate::QueueResources;
@@ -11,9 +13,13 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
+use saved_state::DeviceStateValidator;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 
 /// Per-queue virtio device trait. Ergonomic async fn — not object-safe.
 ///
@@ -114,6 +120,32 @@ pub trait VirtioDevice: InspectMut + Send {
     fn supports_save_restore(&self) -> bool {
         false
     }
+
+    /// Save device-private state after all queues have stopped.
+    ///
+    /// The transport saves queue and feature-negotiation state separately.
+    /// Devices with additional state should return a typed [`SavedStateBlob`].
+    fn save_device(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        saved_state::default_save_device(self.supports_save_restore())
+    }
+
+    /// Restore device-private state into the stopped device, before any
+    /// queue starts.
+    ///
+    /// The transport calls this from its own restore, after
+    /// [`device_state_validator`](Self::device_state_validator) has accepted
+    /// the state, and fails the restore with its error. A device acquires the
+    /// host resources that its state refers to here, so that a missing one
+    /// fails the restore rather than a later start.
+    fn restore_device(&mut self, state: Option<SavedStateBlob>) -> Result<(), RestoreError> {
+        saved_state::default_restore_device(self.supports_save_restore(), state)
+    }
+
+    /// Return an immutable validator that the transport can retain after the
+    /// device moves into its async task.
+    fn device_state_validator(&self) -> DeviceStateValidator {
+        saved_state::default_device_state_validator(self.supports_save_restore())
+    }
 }
 
 /// Object-safe wrapper for [`VirtioDevice`].
@@ -166,6 +198,16 @@ pub trait DynVirtioDevice: InspectMut + Send {
 
     /// Whether the device supports save/restore.
     fn supports_save_restore(&self) -> bool;
+
+    /// Save device-private state after all queues have stopped.
+    fn save_device(&mut self) -> Result<Option<SavedStateBlob>, SaveError>;
+
+    /// Restore device-private state into the stopped device, before any
+    /// queue starts.
+    fn restore_device(&mut self, state: Option<SavedStateBlob>) -> Result<(), RestoreError>;
+
+    /// Return immutable validation for device-private saved state.
+    fn device_state_validator(&self) -> DeviceStateValidator;
 }
 
 impl<T: VirtioDevice> DynVirtioDevice for T {
@@ -228,5 +270,17 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn supports_save_restore(&self) -> bool {
         VirtioDevice::supports_save_restore(self)
+    }
+
+    fn save_device(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        VirtioDevice::save_device(self)
+    }
+
+    fn restore_device(&mut self, state: Option<SavedStateBlob>) -> Result<(), RestoreError> {
+        VirtioDevice::restore_device(self, state)
+    }
+
+    fn device_state_validator(&self) -> DeviceStateValidator {
+        VirtioDevice::device_state_validator(self)
     }
 }

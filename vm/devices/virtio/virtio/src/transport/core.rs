@@ -3,6 +3,8 @@
 
 //! Shared virtio transport core — state and logic common to PCI and MMIO.
 
+pub(crate) mod restore;
+
 use super::StalledIo;
 use super::task::DeviceCommand;
 use super::task::StartParams;
@@ -17,10 +19,13 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::VirtioDeviceStatus;
 use chipset_device::io::deferred::DeferredWrite;
+use futures::FutureExt;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use inspect::Inspect;
-use mesh::rpc::Rpc;
+use mesh::error::RemoteError;
+use mesh::rpc::PendingFailableRpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -88,11 +93,17 @@ pub(crate) struct VirtioTransportCore {
     pub doorbells: VirtioDoorbells,
     pub supports_save_restore: bool,
     #[inspect(skip)]
+    pub restore: restore::TransportRestore,
+    #[inspect(skip)]
     pub guest_memory: GuestMemory,
     #[inspect(with = "Option::is_some")]
     pub pending_status_deferred: Option<DeferredWrite>,
     #[inspect(with = "Vec::len")]
     pub stalled_io: Vec<StalledIo>,
+    /// The device task's answer to the last start, until `poll_device` or
+    /// `stop()` takes it.
+    #[inspect(skip)]
+    pending_start: Option<PendingFailableRpc<()>>,
 }
 
 impl VirtioTransportCore {
@@ -129,6 +140,7 @@ impl VirtioTransportCore {
             .with_version_1(true)
             .with_access_platform(true);
         let supports_save_restore = device.supports_save_restore();
+        let restore = restore::TransportRestore::new(&*device);
 
         let (sender, receiver) = mesh::channel();
         let _device_task = driver.spawn("virtio-device-task", async move {
@@ -150,9 +162,11 @@ impl VirtioTransportCore {
             config_generation: 0,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             supports_save_restore,
+            restore,
             guest_memory,
             pending_status_deferred: None,
             stalled_io: Vec::new(),
+            pending_start: None,
         })
     }
 
@@ -199,6 +213,9 @@ impl VirtioTransportCore {
             pending_status_deferred,
             stalled_io,
 
+            // A start whose answer is pending — moot once the device resets.
+            pending_start,
+
             // Reset below.
             doorbells,
             device_status,
@@ -208,10 +225,13 @@ impl VirtioTransportCore {
             driver_feature_select,
             queue_select,
             queues,
+            restore,
         } = self;
 
         drop(pending_status_deferred.take());
         stalled_io.clear();
+        *pending_start = None;
+        restore.reset();
 
         doorbells.clear();
         *device_status = VirtioDeviceStatus::new();
@@ -277,6 +297,7 @@ impl VirtioTransportCore {
         );
 
         if val == 0 {
+            self.reset_inactive_device();
             if self.device_status.as_u32() == 0 {
                 return;
             }
@@ -327,6 +348,7 @@ impl VirtioTransportCore {
                             event: qd.event.clone(),
                             guest_memory: self.guest_memory.clone(),
                         },
+                        qd.saved_state,
                     )
                 })
                 .collect();
@@ -354,10 +376,63 @@ impl VirtioTransportCore {
             }
             self.apply_transport_result(ops, result);
         }
+
+        if let Some(start) = &mut self.pending_start {
+            if let Poll::Ready(result) = start.poll_unpin(cx) {
+                self.pending_start = None;
+                self.complete_start(ops, result);
+            }
+        }
+    }
+
+    /// Sets `DEVICE_NEEDS_RESET`, notifying a driver that has set
+    /// `DRIVER_OK`, as virtio 1.2 section 2.1.2 requires.
+    fn mark_needs_reset(&mut self, ops: &mut dyn TransportOps) {
+        if self.device_status.device_needs_reset() {
+            return;
+        }
+        self.device_status.set_device_needs_reset(true);
+        if self.device_status.driver_ok() {
+            ops.signal_config_change();
+        }
     }
 
     /// `ChangeDeviceState::start()` implementation.
+    ///
+    /// `start()` cannot wait for the device task, so `poll_device` or the next
+    /// `stop()` takes its answer.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
+        if let Some(params) = self.start_params(ops) {
+            self.pending_start = Some(
+                self.device_sender
+                    .call_failable(DeviceCommand::Start, params),
+            );
+            if let Some(waker) = self.poll_waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// Applies the device task's answer to a start: a device whose queues
+    /// did not all start processes nothing, so the transport marks it as
+    /// needing reset, as virtio 1.2 section 2.1.2 requires of a device in an
+    /// error state, rather than let the guest wait on it.
+    fn complete_start(
+        &mut self,
+        ops: &mut dyn TransportOps,
+        result: Result<(), RpcError<RemoteError>>,
+    ) {
+        if let Err(err) = result {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "virtio device failed to start, marking it as needing reset"
+            );
+            self.mark_needs_reset(ops);
+        }
+    }
+
+    fn start_params(&mut self, ops: &mut dyn TransportOps) -> Option<StartParams> {
+        self.restore.discard_captured();
         if self.device_status.driver_ok() {
             let features = self.driver_feature;
             let mut queues = Vec::new();
@@ -365,7 +440,7 @@ impl VirtioTransportCore {
                 if !qd.params.enable {
                     continue;
                 }
-                let initial_state = qd.saved_state.take();
+                let initial_state = qd.saved_state;
                 queues.push((
                     i,
                     qd.params,
@@ -391,16 +466,16 @@ impl VirtioTransportCore {
                 })
                 .collect();
 
-            let params = StartParams { queues, features };
-
-            // Fire and forget — start() is sync, can't await.
-            self.device_sender
-                .send(DeviceCommand::Start(Rpc::detached(params)));
+            return Some(StartParams { queues, features });
         }
+        None
     }
 
     /// `ChangeDeviceState::stop()` implementation.
     pub async fn stop(&mut self, ops: &mut dyn TransportOps) {
+        if let Some(start) = self.pending_start.take() {
+            self.complete_start(ops, start.await);
+        }
         if let Some(result) = self.state.drain().await {
             self.apply_transport_result(ops, result);
         }
@@ -412,6 +487,7 @@ impl VirtioTransportCore {
             .call(DeviceCommand::Stop, ())
             .await
             .expect("device task is gone");
+        let states = self.restore.capture_stop(states, &self.queues);
         for (i, state) in states.into_iter().enumerate() {
             self.queues[i].saved_state = state;
         }
@@ -419,6 +495,7 @@ impl VirtioTransportCore {
 
     /// `ChangeDeviceState::reset()` implementation.
     pub async fn reset(&mut self, ops: &mut dyn TransportOps) {
+        self.pending_start = None;
         let _ = self.state.drain().await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
         self.reset_status(ops);
@@ -469,6 +546,7 @@ impl VirtioTransportCore {
         &mut self,
         ops: &mut dyn TransportOps,
         common: &super::saved_state::state::CommonSavedState,
+        device_state: &Option<vmcore::save_restore::SavedStateBlob>,
         queue_states: impl Iterator<Item = (super::saved_state::state::CommonQueueState, u16)>,
         saved_queue_count: usize,
     ) -> Result<(), RestoreError> {
@@ -477,6 +555,7 @@ impl VirtioTransportCore {
         }
 
         let queue_items: Vec<_> = queue_states.collect();
+        self.validate_restored_state(common, device_state, &queue_items, saved_queue_count)?;
 
         super::saved_state::validate_restore(
             common,

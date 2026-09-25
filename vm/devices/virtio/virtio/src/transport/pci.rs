@@ -817,6 +817,7 @@ mod saved_state {
         use mesh::payload::Protobuf;
         use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
         use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf)]
@@ -844,6 +845,8 @@ mod saved_state {
             /// the guest firmware runs) survive a save/restore cycle.
             #[mesh(5)]
             pub cfg_space: <ConfigSpaceType0Emulator as SaveRestore>::SavedState,
+            #[mesh(6)]
+            pub device_state: Option<SavedStateBlob>,
         }
 
         #[derive(Protobuf, SavedStateRoot)]
@@ -879,8 +882,9 @@ mod saved_state {
                         msix_vector: qd.msix_vector,
                     })
                     .collect(),
-                interrupt_status: *self.pci.interrupt_status.lock(),
                 cfg_space: SaveRestore::save(&mut self.pci.config_space)?,
+                device_state: self.core.take_device_state()?,
+                interrupt_status: *self.pci.interrupt_status.lock(),
             })
         }
 
@@ -905,6 +909,7 @@ mod saved_state {
             self.core.restore_common(
                 &mut self.pci,
                 &state.common,
+                &state.device_state,
                 state
                     .queues
                     .into_iter()
@@ -919,7 +924,7 @@ mod saved_state {
             }
             self.pci.msix_config_vector = state.msix_config_vector;
 
-            Ok(())
+            self.core.restore_device_state(state.device_state).await
         }
     }
 
