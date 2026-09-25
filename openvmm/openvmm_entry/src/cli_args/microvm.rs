@@ -57,8 +57,9 @@ pub struct MicrovmCli {
 
     /// attach the microVM virtio-fs device
     ///
-    /// A snapshot with the filesystem requires the same canonical host path,
-    /// guest target, and mode on restore.
+    /// An active snapshot requires the same canonical host path, guest target,
+    /// and mode. A dormant-slot snapshot may bind a new attachment on restore;
+    /// the resumed guest must mount the `microvm` tag explicitly.
     #[clap(
         long = "mount",
         value_name = "GUEST_TARGET,HOST_PATH[,ro|rw]",
@@ -538,7 +539,7 @@ mod tests {
         );
 
         let mut with_devices = build_microvm_command_line(&[], true).unwrap();
-        append_microvm_virtio_discovery(&mut with_devices, None, None, true).unwrap();
+        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true).unwrap();
         assert_eq!(
             with_devices,
             format!("{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7")
@@ -550,7 +551,7 @@ mod tests {
         )
         .unwrap();
         let mut with_filesystem = build_microvm_command_line(&[], false).unwrap();
-        append_microvm_virtio_discovery(&mut with_filesystem, None, Some(&filesystem), false)
+        append_microvm_virtio_discovery(&mut with_filesystem, None, true, Some(&filesystem), false)
             .unwrap();
         assert_eq!(
             with_filesystem,

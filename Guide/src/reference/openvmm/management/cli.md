@@ -47,10 +47,12 @@ describes the source definitions.
   devices described below. User arguments cannot override `earlycon=`,
   `console=`, `virtio_mmio.device=`, `nr_cpus=`, `virtnet_*=`, or `virtfs_*=`.
 
-  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`, one
-  optional `--mount` HostFs device at MMIO `0xd0001000`, IRQ 6, and one
-  optional `--virtio-console <BACKEND>` at MMIO `0xd0002000`, IRQ 7 as the
-  boot/log console (`hvc1`). All use split rings. Firmware, ACPI,
+  One optional `--net <IPv4/PREFIX>` NIC is exposed at MMIO `0xd0000000`.
+  One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
+  dormant when `--mount` is omitted; an optional `--mount` binds HostFs to it;
+  and one optional `--virtio-console <BACKEND>` is exposed at MMIO
+  `0xd0002000`, IRQ 7 as the boot/log console (`hvc1`). All use split rings.
+  Firmware, ACPI,
   SMBIOS, PCI,
   VMBus, UARTs, storage, graphics, isolation, nested
   virtualization, and other devices are rejected. Linux discovers contiguous
@@ -124,9 +126,14 @@ describes the source definitions.
   restore snapshot must be outside the exported root.
 
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
-  directory contents or native handles. Restore requires `--mount` again with
-  the exact canonical host path, guest target, and access mode; the live root
-  and every saved object identity are also revalidated before vCPUs start.
+  directory contents or native handles. An active snapshot requires
+  `--mount` again with the exact canonical host path, guest target, and access
+  mode; the live root and every saved object identity are also revalidated
+  before vCPUs start. A snapshot captured without `--mount` may remain dormant
+  or bind a new attachment. The resumed guest must then explicitly run
+  `mount -t virtiofs microvm <GUEST_TARGET>` because its cold-boot mount hook
+  has already completed.
+  See [virtio-fs](../../devices/virtio/virtio-fs.md).
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
@@ -142,9 +149,10 @@ describes the source definitions.
   saves accepted but undelivered input and the offset of a partially forwarded
   guest transmit descriptor. An attached microVM virtio-net device saves its
   static identity, queue progress, drained packet ownership, and endpoint
-  generation. An attached microVM virtio-fs device saves its negotiated FUSE
-  policy, namespace and handle identifiers, aliases, and directory cookies.
-  The host tree remains external live state.
+  generation.
+  The fixed microVM virtio-fs slot saves either an explicit dormant state or,
+  when attached, its negotiated FUSE policy, namespace and handle identifiers,
+  aliases, and directory cookies. The host tree remains external live state.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm --memory 128M \
@@ -166,11 +174,12 @@ describes the source definitions.
   A listener peer may connect after restore; guest transmit descriptors remain
   pending while no peer is connected.
 
-  When the snapshot contains a virtio-fs attachment, restore requires a fresh
-  `--mount`. The argument must reproduce the manifest's exact canonical host
-  path, guest target, and `ro`/`rw` mode while also supplying a live root with
-  the same saved identity. A snapshot without the filesystem rejects
-  `--mount`.
+  When the snapshot contains an active virtio-fs attachment, restore requires
+  a fresh `--mount`. The argument must reproduce the manifest's exact
+  canonical host path, guest target, and `ro`/`rw` mode while also supplying a
+  live root with the same saved identity. A snapshot advertising the dormant
+  slot may instead accept a new attachment; snapshots without that capability
+  reject additive attachment.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile must match the supplied

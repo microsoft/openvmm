@@ -33,6 +33,8 @@ pub(crate) struct MicrovmController {
     pub(crate) resources: MicrovmResources,
     /// Static identity of the microVM virtio-net device.
     pub(crate) network: Option<openvmm_defs::microvm::MicrovmNetworkConfig>,
+    /// Whether the microVM virtio-fs slot is present.
+    pub(crate) filesystem_slot: bool,
     /// Guest-visible policy of the active microVM filesystem.
     pub(crate) filesystem: Option<openvmm_defs::microvm::MicrovmFilesystemConfig>,
     /// Automatic RAM backing created for snapshot capture.
@@ -162,6 +164,7 @@ impl VmController {
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
                 command_line,
                 network,
+                self.microvm.filesystem_slot,
                 filesystem,
                 self.microvm.resources.console_attachment.clone(),
                 self.processors,

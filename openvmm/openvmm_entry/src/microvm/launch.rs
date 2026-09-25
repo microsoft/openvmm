@@ -29,6 +29,7 @@ pub(crate) struct MicrovmLaunch {
     effective_command_line: Option<String>,
     resources: MicrovmResources,
     network: Option<MicrovmNetworkConfig>,
+    filesystem_slot: bool,
     filesystem: Option<MicrovmFilesystemConfig>,
     snapshot_destination: Option<PathBuf>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
@@ -51,6 +52,10 @@ impl MicrovmLaunch {
             } => Some(cmdline.clone()),
             _ => None,
         };
+        let filesystem_slot = vm_config
+            .virtio_devices
+            .iter()
+            .any(|(_, device)| device.id() == "virtiofs");
 
         let snapshot_destination = opt.microvm.snapshot_destination.as_ref().map(|path| {
             if path.is_absolute() {
@@ -126,6 +131,7 @@ impl MicrovmLaunch {
             effective_command_line,
             resources,
             network: vm_config.microvm.network.clone(),
+            filesystem_slot,
             filesystem: vm_config.microvm.filesystem.clone(),
             snapshot_destination,
             snapshot_memory_file,
@@ -231,6 +237,7 @@ impl MicrovmLaunch {
             effective_command_line: self.effective_command_line,
             resources: self.resources,
             network: self.network,
+            filesystem_slot: self.filesystem_slot,
             filesystem: self.filesystem,
             snapshot_memory_file: self.snapshot_memory_file,
         }

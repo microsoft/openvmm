@@ -111,7 +111,7 @@
 - [Devices]()
   - [PCI IDs](./reference/devices/pci_ids.md)
   - [Virtio]()
-      - [virtio-fs]()
+      - [virtio-fs](./reference/devices/virtio/virtio-fs.md)
       - [virtio-9p]()
       - [virtio-net]()
       - [virtio-pmem]()

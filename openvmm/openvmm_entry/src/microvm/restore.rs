@@ -3,6 +3,7 @@
 
 //! MicroVM snapshot restore-time contract checks.
 
+use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
@@ -128,6 +129,7 @@ pub(crate) fn validate_restore_contract(
         .machine_contract
         .as_ref()
         .context("microVM snapshot is missing its authoritative machine contract")?;
+    let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
     let filesystem = saved_contract
         .microvm_filesystem
         .as_ref()
@@ -138,6 +140,7 @@ pub(crate) fn validate_restore_contract(
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
         network.map(|(config, attachment)| (config, attachment.clone())),
+        filesystem_slot,
         filesystem,
         console_attachment.cloned(),
         expected_vp_count,

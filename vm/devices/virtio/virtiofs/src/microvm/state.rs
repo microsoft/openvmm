@@ -7,6 +7,7 @@ use super::MAX_FUSE_REQUEST_BYTES;
 use super::profile::MICROVM_FUSE_MAJOR;
 use super::profile::MICROVM_FUSE_MAX_WRITE;
 use super::profile::MICROVM_FUSE_MIN_MINOR;
+use super::profile::MICROVM_REQUEST_QUEUES;
 use super::profile::MicroVmAccessMode;
 use super::profile::MicroVmVirtioFsProfile;
 use super::saved_state::MAX_ALIAS_BYTES;
@@ -18,6 +19,7 @@ use super::saved_state::MAX_DIRECTORY_ENTRIES_PER_HANDLE;
 use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
+use super::saved_state::PREVIOUS_SCHEMA_VERSION;
 use super::saved_state::SCHEMA_VERSION;
 use super::saved_state::SavedNegotiation;
 use super::saved_state::SavedObjectIdentity;
@@ -181,12 +183,80 @@ pub(crate) fn validate_reopenable_alias(
         .context("alias cannot be inspected")
 }
 
+pub(crate) fn save_dormant_microvm_state(
+    attachment_id: &str,
+    session_state: SessionState,
+) -> anyhow::Result<SavedState> {
+    anyhow::ensure!(
+        session_state == SessionState::default(),
+        "dormant microVM virtio-fs has initialized FUSE state"
+    );
+    Ok(SavedState {
+        schema_version: SCHEMA_VERSION,
+        attachment_id: attachment_id.to_owned(),
+        access_mode: 0,
+        request_queues: MICROVM_REQUEST_QUEUES,
+        shared_memory_size: 0,
+        packed_rings: false,
+        direct_io: true,
+        entry_cache_timeout_ns: 0,
+        attribute_cache_timeout_ns: 0,
+        negotiation: saved_negotiation(session_state),
+        next_node_id: 0,
+        next_handle_id: 0,
+        inodes: Vec::new(),
+        handles: Vec::new(),
+        attachment_root_identity: Vec::new(),
+        maximum_request_size: MAX_FUSE_REQUEST_BYTES as u32,
+        dormant: true,
+    })
+}
+
+pub(crate) fn validate_dormant_microvm_state(
+    state: &SavedState,
+    attachment_id: &str,
+) -> anyhow::Result<SessionState> {
+    anyhow::ensure!(
+        state.schema_version == SCHEMA_VERSION && state.dormant,
+        "saved virtio-fs state is not a supported dormant slot"
+    );
+    anyhow::ensure!(
+        state.attachment_id == attachment_id,
+        "saved attachment ID does not match the microVM ABI"
+    );
+    anyhow::ensure!(
+        state.access_mode == 0
+            && state.request_queues == MICROVM_REQUEST_QUEUES
+            && state.shared_memory_size == 0
+            && !state.packed_rings
+            && state.direct_io
+            && state.entry_cache_timeout_ns == 0
+            && state.attribute_cache_timeout_ns == 0
+            && state.maximum_request_size == MAX_FUSE_REQUEST_BYTES as u32
+            && state.next_node_id == 0
+            && state.next_handle_id == 0
+            && state.inodes.is_empty()
+            && state.handles.is_empty()
+            && state.attachment_root_identity.is_empty(),
+        "dormant virtio-fs state contains active filesystem policy or objects"
+    );
+    let session_state = session_state_from_saved(&state.negotiation)?;
+    anyhow::ensure!(
+        session_state == SessionState::default(),
+        "dormant microVM virtio-fs contains initialized FUSE state"
+    );
+    Ok(session_state)
+}
+
 pub(crate) fn validate_microvm_state(
     state: &SavedState,
     profile: &MicroVmVirtioFsProfile,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        state.schema_version == SCHEMA_VERSION,
+        matches!(
+            state.schema_version,
+            PREVIOUS_SCHEMA_VERSION | SCHEMA_VERSION
+        ) && !state.dormant,
         "unsupported virtio-fs state schema version {}",
         state.schema_version
     );

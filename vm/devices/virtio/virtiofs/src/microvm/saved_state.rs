@@ -10,7 +10,8 @@
 use mesh::payload::Protobuf;
 use vmcore::save_restore::SavedStateRoot;
 
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+pub(crate) const PREVIOUS_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SCHEMA_VERSION: u32 = 5;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -58,6 +59,8 @@ pub(crate) struct SavedState {
     pub attachment_root_identity: Vec<u8>,
     #[mesh(16)]
     pub maximum_request_size: u32,
+    #[mesh(17)]
+    pub dormant: bool,
 }
 
 #[derive(Protobuf)]
