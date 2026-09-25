@@ -34,6 +34,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the control-session broker consumes the protocol")
+)]
+pub(crate) mod control_session_protocol;
 mod direct;
 pub mod resolver;
 mod saved_state;
