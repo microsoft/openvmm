@@ -3105,12 +3105,12 @@ async fn run_control_inner(
 
     // Wait for the controller task to finish (it stops the VM worker and
     // shuts down the mesh).
-    controller_task.await;
+    let teardown = controller_task.await;
     drop(serial_driver);
 
     // run_repl returns the exit status: the code the guest drove via an opt-in
     // exit (VmControllerEvent::ExitRequested), or 0 when the VM stopped normally.
-    repl_result
+    teardown.enforce(opt.machine == MachineProfileCli::Microvm, repl_result)
 }
 
 struct DiagDialer {

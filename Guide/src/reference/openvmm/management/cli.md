@@ -764,6 +764,13 @@ status code as `exit:<code>` (0-255); a bare `exit` uses 0:
 A bare `exit` exits with status 0; `exit:<code>` exits with that code instead, so
 a supervisor can tell the exit reasons apart.
 
+For microVMs, a process-status shutdown through port `0x604`, or a power event
+configured to exit, drains previously accepted portb console output before the
+process exits. This includes the host stdout/stderr relay, not just the device's
+transmit buffer. Draining is bounded to five seconds; an output error or timeout
+is reported as a failure rather than a successful exit with truncated output.
+Snapshot capture still preserves pending console bytes in the snapshot.
+
 * `--crash-dump-path <PATH>`: when the guest triple-faults, write a
   WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
   `PATH` before the `--guest-crash-action` is applied (see

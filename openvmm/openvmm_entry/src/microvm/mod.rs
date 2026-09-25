@@ -8,6 +8,7 @@ mod console;
 mod filesystem;
 mod launch;
 mod network;
+pub(crate) mod output;
 mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;
@@ -23,12 +24,15 @@ use crate::storage_builder::microvm::MicrovmSandboxBlockSource;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use net_backend_resources::egress::EgressPolicy;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
+use output::MicrovmOutputDrain;
 use std::path::PathBuf;
 
 /// Host-side microVM resources produced while building the VM configuration
 /// and consumed by the snapshot, restore, and teardown paths.
 #[derive(Default)]
 pub(crate) struct MicrovmResources {
+    /// Drains portb and its host output relay before a guest-requested exit.
+    pub(crate) output_drain: Option<MicrovmOutputDrain>,
     /// Guest-requested snapshot boundaries from the snapshot-request port.
     pub(crate) snapshot_requests: Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
     /// Snapshot sources of the fixed-role sandbox blocks, in role order.

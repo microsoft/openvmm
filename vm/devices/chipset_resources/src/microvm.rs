@@ -42,6 +42,8 @@ pub struct MicrovmPortbHandle {
     pub generation_id: [u8; 16],
     /// Fresh entropy exposed only through the private restore-input selector.
     pub restore_entropy: Vec<u8>,
+    /// Requests to drain and close output before terminating the VM process.
+    pub output_drain: Option<mesh::Receiver<mesh::rpc::FailableRpc<(), ()>>>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPortbHandle {
