@@ -35,7 +35,7 @@ impl InspectMut for ArcMutexChipsetDeviceUnit {
 /// Object-safe trait for the subset of [`VmmChipsetDevice`] that we use here.
 #[async_trait]
 trait DynDevice: InspectMut + Send {
-    fn start(&mut self);
+    async fn start(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
     async fn reset(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
@@ -45,8 +45,8 @@ trait DynDevice: InspectMut + Send {
 
 #[async_trait]
 impl<T: VmmChipsetDevice> DynDevice for T {
-    fn start(&mut self) {
-        self.start()
+    async fn start(&mut self) -> anyhow::Result<()> {
+        self.start_fallible().await
     }
 
     async fn stop(&mut self) {
@@ -140,11 +140,11 @@ impl ArcMutexChipsetDeviceUnit {
 
 impl StateUnit for ArcMutexChipsetDeviceUnit {
     async fn start(&mut self) -> anyhow::Result<()> {
+        self.device.clone().close().start().await?;
         self.running = true;
 
-        // Poll the device at least once.
+        // Poll the device at least once after startup completes.
         let mut device = self.device.lock();
-        device.start();
         device.poll_device(&mut Context::from_waker(&waker_ref(&self.poll_event)));
         Ok(())
     }
