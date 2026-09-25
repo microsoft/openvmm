@@ -5,9 +5,14 @@
 
 mod config;
 mod launch;
+mod restore;
 
 pub(crate) use config::MicrovmConfigBuilder;
 pub(crate) use launch::MicrovmLaunch;
+pub(crate) use restore::ExpectedRestoreContract;
+pub(crate) use restore::MicrovmRestore;
+pub(crate) use restore::prepare_restore;
+pub(crate) use restore::validate_restore_contract;
 
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 

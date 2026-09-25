@@ -4,10 +4,12 @@
 //! Snapshot restore of a VM launched from the command line.
 //!
 //! A `--restore-snapshot` launch opens one exact snapshot generation first
-//! ([`SnapshotRestore::open`]). Just before the VM worker launches, the opened
-//! generation is validated against the VM configuration and its RAM is mapped
-//! copy-on-write ([`SnapshotRestore::prepare`]). Its open artifact handles then
-//! move to the worker, which keeps the generation pinned until VM teardown.
+//! ([`SnapshotRestore::open`]); a microVM derives its restore-time
+//! configuration from that generation's manifest. Just before the VM worker
+//! launches, the opened generation is validated against the VM configuration
+//! and its RAM is mapped copy-on-write ([`SnapshotRestore::prepare`]). Its open
+//! artifact handles then move to the worker, which keeps the generation pinned
+//! until VM teardown.
 //! The `--restore-ready-path` endpoint is connected next
 //! ([`restore_ready_sink`]); the worker writes the restore readiness event to
 //! it when the restored VM first starts.
@@ -23,12 +25,14 @@ mod ready;
 pub(crate) use ready::restore_ready_sink;
 
 use crate::Options;
+use crate::microvm::MicrovmLaunch;
 use anyhow::Context;
 use mesh::payload::message::ProtobufMessage;
 use openvmm_defs::profile::ProfileSpan;
 use openvmm_defs::worker::SharedMemoryFd;
 use openvmm_defs::worker::SnapshotRestoreGuards;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
+use std::time::Duration;
 
 /// The snapshot restore of a VM launched from the command line.
 pub(crate) struct SnapshotRestore {
@@ -45,6 +49,14 @@ pub(crate) struct WorkerRestore {
     pub(crate) shared_memory_copy_on_write: bool,
     /// Snapshot generation handles that must outlive the restored VM.
     pub(crate) guards: Option<SnapshotRestoreGuards>,
+    /// Host downtime to apply before starting a restored microVM.
+    pub(crate) downtime: Option<Duration>,
+    /// Saved effective TSC frequency of a restored microVM.
+    pub(crate) tsc_frequency_hz: Option<u64>,
+    /// Saved local APIC timer frequency of a restored microVM.
+    pub(crate) apic_frequency_hz: Option<u64>,
+    /// Saved canonical CPU contract of a restored microVM.
+    pub(crate) cpu_contract: Option<Vec<u8>>,
 }
 
 impl SnapshotRestore {
@@ -80,6 +92,12 @@ impl SnapshotRestore {
         })
     }
 
+    /// Returns the opened snapshot generation, until [`Self::prepare`] takes
+    /// it.
+    pub(crate) fn snapshot(&self) -> Option<&OpenedSnapshot> {
+        self.snapshot.as_ref()
+    }
+
     /// Validates the opened snapshot generation against the VM configuration
     /// and prepares it for the VM worker.
     ///
@@ -88,15 +106,27 @@ impl SnapshotRestore {
     pub(crate) fn prepare(
         &mut self,
         opt: &Options,
+        microvm: &MicrovmLaunch,
+        expected_hypervisor: &str,
     ) -> anyhow::Result<(SharedMemoryFd, ProtobufMessage)> {
         let prepared = prepare::prepare_snapshot_restore(
             self.snapshot
                 .take()
                 .context("snapshot restore is missing its opened generation")?,
             opt,
+            microvm,
+            expected_hypervisor,
         )?;
         self.worker.shared_memory_copy_on_write = true;
         self.worker.guards = Some(prepared.guards);
+        if let Some((downtime, tsc_frequency_hz, apic_frequency_hz, cpu_contract)) =
+            prepared.restore_time
+        {
+            self.worker.downtime = Some(downtime);
+            self.worker.tsc_frequency_hz = Some(tsc_frequency_hz);
+            self.worker.apic_frequency_hz = apic_frequency_hz;
+            self.worker.cpu_contract = Some(cpu_contract);
+        }
         Ok((prepared.shared_memory, prepared.saved_state))
     }
 
