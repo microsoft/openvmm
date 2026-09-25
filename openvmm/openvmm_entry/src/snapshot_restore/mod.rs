@@ -1,15 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Snapshot restore of a VM launched from the command line.
+//! Snapshot restore of a VM launched from the command line, and the restore
+//! steps it shares with the management RPC endpoint.
 //!
 //! A `--restore-snapshot` launch opens one exact snapshot generation first
 //! ([`SnapshotRestore::open`]); a microVM derives its restore-time
 //! configuration from that generation's manifest. Just before the VM worker
-//! launches, the opened generation is validated against the VM configuration
-//! and its RAM is mapped copy-on-write ([`SnapshotRestore::prepare`]). Its open
-//! artifact handles then move to the worker, which keeps the generation pinned
-//! until VM teardown.
+//! launches, the opened generation is validated against the VM configuration,
+//! claimed if it is a single-use resume snapshot, and its RAM is mapped
+//! copy-on-write ([`SnapshotRestore::prepare`]). Its open artifact handles then
+//! move to the worker, which keeps the generation pinned until VM teardown.
 //! The `--restore-ready-path` endpoint is connected next
 //! ([`restore_ready_sink`]); the worker writes the restore readiness event to
 //! it when the restored VM first starts.
@@ -22,6 +23,8 @@
 mod prepare;
 mod ready;
 
+pub(crate) use prepare::prepare_snapshot_restore_for_config;
+pub(crate) use ready::connect_restore_ready_sink;
 pub(crate) use ready::restore_ready_sink;
 
 use crate::Options;

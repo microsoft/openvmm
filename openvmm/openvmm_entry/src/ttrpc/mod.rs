@@ -8,6 +8,7 @@
 // The fd-passing protocol relies on `SCM_RIGHTS` and so exists only on unix.
 #[cfg(unix)]
 mod fd_passing;
+mod microvm;
 
 #[cfg(unix)]
 use fd_passing::FdRegistry;
@@ -90,6 +91,8 @@ use pal_async::task::Task;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
+use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -374,6 +377,7 @@ impl Worker for TtrpcWorker {
                 controller_task: None,
                 wait_vm_response: None,
                 lifecycle: VmLifecycle::Uninitialized,
+                restore_ready_pending: false,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
                 registry: FdRegistry::default(),
@@ -677,6 +681,7 @@ struct VmService {
     controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
     lifecycle: VmLifecycle,
+    restore_ready_pending: bool,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
     /// Registry of file descriptors passed in over the fd-passing protocol,
@@ -845,14 +850,31 @@ impl VmService {
     }
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
-        let mut req_config = request.config.context("missing configuration")?;
-
         if self.vm.is_some() {
             bail!("VM already created");
         }
 
+        let (mut microvm, mut req_config) = microvm::CreateVm::new(request)?;
         validate_platform_config(&req_config)?;
 
+        let hypervisor = if microvm.is_active() {
+            openvmm_helpers::hypervisor::microvm::choose_microvm_hypervisor()?
+        } else {
+            openvmm_helpers::hypervisor::choose_hypervisor()?
+        };
+        let source_hypervisor = hypervisor.id().to_owned();
+        microvm.prepare_restore(source_hypervisor)?;
+        let restore_ready_path = microvm.take_restore_ready_path();
+        let restore_ready_sink = if restore_ready_path.is_empty() {
+            None
+        } else {
+            Some(
+                crate::snapshot_restore::connect_restore_ready_sink(Path::new(&restore_ready_path))
+                    .context("failed to connect restore readiness endpoint")?,
+            )
+        };
+        let restore_ready_required = restore_ready_sink.is_some();
+        microvm.finish_prepare(&req_config)?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
         // Snapshot the fd registry so tap NIC backends can resolve descriptors
@@ -874,6 +896,7 @@ impl VmService {
         }
         let any_serial_configured = ports.iter().any(|port| port.is_some());
         let com1_configured = ports[0].is_some();
+        let has_requested_microvm_console = microvm.has_requested_console(&req_config);
 
         #[cfg(guest_arch = "aarch64")]
         let arch = vm_manifest_builder::MachineArch::Aarch64;
@@ -911,23 +934,33 @@ impl VmService {
                 if isolation.is_some() {
                     bail!("VM-service SNP isolation currently supports only IGVM boot");
                 }
-                let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
+                let kernel = if let Some(kernel) = microvm.restore_kernel()? {
+                    kernel
+                } else {
+                    File::open(boot.kernel_path).context("failed to open kernel")?
+                };
                 let initrd = if boot.initrd_path.is_empty() {
                     None
                 } else {
                     Some(File::open(boot.initrd_path).context("failed to open initrd")?)
                 };
+                let cmdline =
+                    microvm.command_line(boot.kernel_cmdline, has_requested_microvm_console)?;
                 (
                     LoadMode::Linux {
                         kernel,
                         initrd,
-                        cmdline: boot.kernel_cmdline,
-                        enable_serial: true,
+                        cmdline,
+                        enable_serial: !microvm.is_active(),
                         isolation: openvmm_defs::config::LinuxIsolationConfig::None,
-                        boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
-                        smbios,
+                        boot_mode: microvm.direct_boot_mode(),
+                        smbios: if microvm.is_active() {
+                            Box::default()
+                        } else {
+                            smbios
+                        },
                     },
-                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    microvm.base_chipset_type(),
                     None,
                     None,
                 )
@@ -1043,8 +1076,11 @@ impl VmService {
             }
         };
 
-        let mut chipset_builder =
-            VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        let ports = microvm.configure_serial_ports(ports)?;
+        let mut chipset_builder = VmManifestBuilder::new(base_chipset_type, arch);
+        if let Some(ports) = ports {
+            chipset_builder = chipset_builder.with_serial(ports);
+        }
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
         }
@@ -1065,15 +1101,18 @@ impl VmService {
             ));
         }
         let layout_config = chipset_builder.layout_config();
-        let chipset = chipset_builder
+        let mut chipset = chipset_builder
             .build()
             .context("failed to build vm configuration")?;
+        microvm.add_chipset_devices(&mut chipset.chipset_devices)?;
 
         // Build the NUMA topology. A `MemoryConfig` and an explicit
         // `NumaConfig` are mutually exclusive (mirrors the CLI `--memory` vs
         // `--numa` conflict). `config_mem_size` is the total guest memory
         // reported to the `VmController`.
-        let (numa, config_mem_size) = if let Some(numa_config) = req_config.numa_config.take() {
+        let (numa, config_mem_size) = if let Some(restored) = microvm.restore_numa() {
+            restored
+        } else if let Some(numa_config) = req_config.numa_config.take() {
             if req_config.memory_config.is_some() {
                 bail!("memory_config and numa_config are mutually exclusive");
             }
@@ -1104,11 +1143,7 @@ impl VmService {
             (numa, mem_size)
         };
 
-        let config_proc_count = req_config
-            .processor_config
-            .as_ref()
-            .map(|c| c.processor_count)
-            .unwrap_or(1);
+        let config_proc_count = microvm.processor_count();
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
 
         // Build the PCIe topology (root complexes, switches, and the devices
@@ -1167,6 +1202,7 @@ impl VmService {
             layout: layout_config,
             rtc_delta_milliseconds: 0,
         };
+        microvm.apply_config(&mut config);
 
         let guest_power_actions = {
             use vmservice::vm_config::GuestPowerAction as ProtoAction;
@@ -1191,7 +1227,9 @@ impl VmService {
 
         let mut scsi_rpc = None;
         let mut consomme_rpc = None;
-        if let Some(devices_config) = req_config.devices_config {
+        microvm.add_restored_devices(&mut config)?;
+        if let Some(mut devices_config) = req_config.devices_config {
+            microvm.take_devices(&mut config, &mut devices_config)?;
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
                 for disk in devices_config.scsi_disks {
@@ -1280,6 +1318,8 @@ impl VmService {
             }
         }
 
+        microvm.finish_devices(&mut config)?;
+
         if let Some(hvsocket_config) = req_config.hvsocket_config {
             let vmbus = config
                 .vmbus
@@ -1291,6 +1331,9 @@ impl VmService {
             vmbus.vsock_listener = Some(listener);
             vmbus.vsock_path = Some(hvsocket_config.path);
         }
+
+        microvm.prepare_launch(&config, config_mem_size)?;
+        let worker_fields = microvm.worker_fields()?;
 
         let (send, recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -1306,22 +1349,33 @@ impl VmService {
             .launch_worker(
                 VM_WORKER,
                 VmWorkerParameters {
-                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
+                    hypervisor,
                     cfg: config,
-                    saved_state: None,
-                    shared_memory: None,
-                    shared_memory_copy_on_write: false,
-                    snapshot_restore_guards: None,
-                    snapshot_boundary_requests: None,
-                    snapshot_ready: None,
-                    snapshot_capture_enabled: false,
-                    restore_downtime: None,
-                    restore_tsc_frequency_hz: None,
-                    restore_apic_frequency_hz: None,
-                    restore_cpu_contract: None,
-                    restore_ready_sink: None,
-                    restore_gate_timeout: None,
-                    restore_vp_count: None,
+                    saved_state: worker_fields.saved_state,
+                    shared_memory: worker_fields.shared_memory,
+                    shared_memory_copy_on_write: worker_fields.shared_memory_copy_on_write,
+                    snapshot_restore_guards: worker_fields.snapshot_restore_guards,
+                    snapshot_boundary_requests: worker_fields.snapshot_boundary_requests,
+                    snapshot_ready: worker_fields.snapshot_ready,
+                    snapshot_capture_enabled: worker_fields.snapshot_capture_enabled,
+                    restore_downtime: worker_fields
+                        .restore_time
+                        .as_ref()
+                        .map(|(downtime, _, _, _)| *downtime),
+                    restore_tsc_frequency_hz: worker_fields
+                        .restore_time
+                        .as_ref()
+                        .map(|(_, frequency, _, _)| *frequency),
+                    restore_apic_frequency_hz: worker_fields
+                        .restore_time
+                        .as_ref()
+                        .and_then(|(_, _, frequency, _)| *frequency),
+                    restore_cpu_contract: worker_fields
+                        .restore_time
+                        .map(|(_, _, _, cpu_contract)| cpu_contract),
+                    restore_ready_sink,
+                    restore_gate_timeout: worker_fields.restore_gate_timeout,
+                    restore_vp_count: worker_fields.restore_vp_count,
                     rpc: recv,
                     notify: notify_send,
                 },
@@ -1334,6 +1388,7 @@ impl VmService {
         // Create channels for VmController.
         let (vm_controller_send, vm_controller_recv) = mesh::channel();
         let (event_send, event_recv) = mesh::channel();
+        let controller_fields = microvm.into_controller();
 
         // Build VmController with no paravisor-specific fields.
         let controller = VmController {
@@ -1347,12 +1402,12 @@ impl VmService {
             vm_rpc: send.clone(),
             paravisor_diag: None,
             igvm_path,
-            memory_backing_file: None,
+            memory_backing_file: controller_fields.memory_backing_file,
             memory,
             processors,
             log_file: None,
             crash_dump_path: req_config.crash_dump_path.map(Into::into),
-            microvm: Default::default(),
+            microvm: controller_fields.microvm,
             guest_power_actions,
         };
 
@@ -1372,6 +1427,7 @@ impl VmService {
             worker_rpc: send,
             iommufds: Arc::new(iommufds),
         }));
+        self.restore_ready_pending = restore_ready_required;
         self.lifecycle = VmLifecycle::Paused;
         Ok(())
     }
@@ -1390,6 +1446,7 @@ impl VmService {
             task.await;
         }
         self.vm_controller_events.take();
+        self.restore_ready_pending = false;
         self.lifecycle = VmLifecycle::Uninitialized;
         if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
@@ -1455,11 +1512,22 @@ impl VmService {
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
         let vm = self.vm.clone().context("VM not created yet")?;
-        vm.worker_rpc
-            .call_failable(VmRpc::Resume, ())
-            .await
-            .map(drop)
-            .context("resume failed")?;
+        let resumed = match vm.worker_rpc.call_failable(VmRpc::Resume, ()).await {
+            Ok(resumed) => resumed,
+            Err(error) => {
+                if self.restore_ready_pending {
+                    self.teardown_vm()
+                        .await
+                        .context("failed to tear down VM after restore readiness failure")?;
+                }
+                return Err(error).context("resume failed");
+            }
+        };
+        anyhow::ensure!(
+            resumed,
+            "VM did not resume; a state unit failed to start or the VM was already running"
+        );
+        self.restore_ready_pending = false;
         if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
             self.lifecycle = VmLifecycle::Running;
         }
@@ -1700,7 +1768,7 @@ impl VmService {
 fn open_socket_backend(
     connect: bool,
 ) -> (
-    fn(&std::path::Path) -> std::io::Result<Resource<SerialBackendHandle>>,
+    fn(&Path) -> io::Result<Resource<SerialBackendHandle>>,
     &'static str,
 ) {
     if connect {
@@ -2206,7 +2274,7 @@ fn build_vfio_device(
     if host_pci_address.contains('/') || host_pci_address.contains("..") {
         anyhow::bail!("PCI address must not contain path separators");
     }
-    let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&host_pci_address);
+    let sysfs_path = Path::new("/sys/bus/pci/devices").join(&host_pci_address);
     if let Some(iommu_id) = iommufd_id {
         let iommufd = iommufds.get(&iommu_id)?;
         let vfio_dev_dir = sysfs_path.join("vfio-dev");
@@ -2220,7 +2288,7 @@ fn build_vfio_device(
             .next()
             .context("no vfio-dev entry found")?
             .context("failed to read vfio-dev entry")?;
-        let dev_path = std::path::Path::new("/dev/vfio/devices").join(entry.file_name());
+        let dev_path = Path::new("/dev/vfio/devices").join(entry.file_name());
         let cdev = File::options()
             .read(true)
             .write(true)
@@ -2400,8 +2468,14 @@ fn build_virtio_fs(
         tag,
         root_path,
         read_only,
+        guest_mount_target,
+        read_write,
     } = config;
     const VIRTIO_FS_TAG_LEN: usize = 36;
+    anyhow::ensure!(
+        guest_mount_target.is_empty() && !read_write,
+        "standard-machine virtio-fs does not accept microVM mount fields"
+    );
     anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
     anyhow::ensure!(
         !tag.contains('\0'),
