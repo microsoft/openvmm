@@ -15,7 +15,6 @@ use closeable_mutex::CloseableMutex;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::Vtl;
-use openhcl_tdisp::TdispVirtualDeviceInterface;
 use openhcl_tdisp::noop::TdispNoopResourceValidator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -131,7 +130,6 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .init(
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
-            0,
             Vtl::Vtl0,
         )
         .await
@@ -203,13 +201,13 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         .init(
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
-            0,
             Vtl::Vtl0,
         )
         .await
         .unwrap();
     let interface = device
-        .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
+        .tdisp()
+        .get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
         .await;
 
     match interface {

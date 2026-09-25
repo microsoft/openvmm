@@ -12,8 +12,6 @@
 pub mod tdisp;
 mod tests;
 
-pub use tdisp::VpciClientTdispState;
-
 use ::tdisp::TdispGuestUnbindReason;
 use anyhow::Context;
 use chipset_device::pci::ByteEnabledDwordRead;
@@ -28,6 +26,7 @@ use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use openhcl_tdisp::GuestToHostResponse;
+use openhcl_tdisp::TdispClient;
 use openhcl_tdisp::TdispResourceValidationInterface;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -187,17 +186,6 @@ pub trait MemoryAccess: Send {
 /// The amount of MMIO space required by the VPCI bus.
 pub const MMIO_SIZE: u64 = 0x2000;
 
-struct InspectableAsyncMutex<T>(futures::lock::Mutex<T>);
-
-impl<T: Inspect> Inspect for InspectableAsyncMutex<T> {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        match self.0.try_lock() {
-            Some(guard) => guard.inspect(req),
-            None => req.value("locked"),
-        }
-    }
-}
-
 /// A device description, which represents a VPCI device available on a bus.
 #[derive(Inspect)]
 pub struct VpciDeviceDescription {
@@ -231,7 +219,7 @@ pub struct VpciDevice {
     #[inspect(hex, iter_by_index)]
     /// RAO == Read As One
     bar_rao: [u32; 6],
-    tdisp: InspectableAsyncMutex<VpciClientTdispState>,
+    tdisp: TdispClient,
 }
 
 #[derive(Inspect)]
@@ -359,7 +347,6 @@ impl VpciDeviceDescription {
         self,
         resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
-        vtom: u64,
         target_vtl: hvdef::Vtl,
     ) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
         let requirements = self
@@ -382,12 +369,13 @@ impl VpciDeviceDescription {
             eject,
         } = self;
 
-        let tdisp = VpciClientTdispState::new(
-            req.clone(),
-            id.slot.into_bits() as u64,
+        let tdisp = TdispClient::new(
+            Box::new(tdisp::VpciTdispTransport::new(
+                req.clone(),
+                id.slot.into_bits() as u64,
+            )),
             resource_validator,
             isolation_type,
-            vtom,
             target_vtl,
             implemented_bars(&requirements.bars),
         );
@@ -426,7 +414,7 @@ impl VpciDeviceDescription {
             numa_node,
             serial_num,
             dev,
-            tdisp: InspectableAsyncMutex(futures::lock::Mutex::new(tdisp)),
+            tdisp,
         };
 
         Ok((device, VpciDeviceEject(eject)))
@@ -462,6 +450,12 @@ impl Stream for VpciDeviceEject {
 }
 
 impl VpciDevice {
+    /// The device's TDISP client, for driving attestation and resource
+    /// validation.
+    pub fn tdisp(&self) -> &TdispClient {
+        &self.tdisp
+    }
+
     /// Reads device configuration space.
     ///
     /// Some values will be handled without communicating with the host.
@@ -593,18 +587,17 @@ impl VpciDevice {
     /// Returns `true` only if attestation and every BAR notification succeeded
     /// completely. Otherwise, the device is disabled and `false` is returned.
     pub async fn tdisp_on_device_activate(&self, command_value: ByteEnabledDwordWrite) -> bool {
-        use tdisp::TdispVpciAttestationInterface;
-
         tracing::info!(
             "tdisp_on_device_activate: guest enabled MMIO, attesting device and notifying TDISP of MMIO bars"
         );
         // Attest the device before enabling the command register.
-        let attest_result = match self.tdisp_query_capabilities().await {
+        let attest_result = match self.tdisp.query_capabilities().await {
             Ok(interface_info) => self
-                .tdisp_attest_device(interface_info)
+                .tdisp
+                .attest(interface_info)
                 .await
-                .context("tdisp_attest_device failed"),
-            Err(err) => Err(err.context("tdisp_query_capabilities failed")),
+                .context("attest failed"),
+            Err(err) => Err(err.context("query_capabilities failed")),
         };
 
         if let Err(err) = attest_result {
@@ -647,7 +640,8 @@ impl VpciDevice {
                 "notifying TDISP state of active MMIO BAR"
             );
             if let Err(e) = self
-                .tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                .tdisp
+                .on_mmio_reconfigured(bar_id, base_address, length_bytes)
                 .await
             {
                 tracing::error!(
@@ -673,8 +667,6 @@ impl VpciDevice {
     /// Common teardown for all device resources. Ensures the device is unbound
     /// completely in the host and guest and unmaps all resources.
     async fn tdisp_unbind_resources(&self, reason: TdispGuestUnbindReason) {
-        use openhcl_tdisp::TdispVirtualDeviceInterface;
-
         tracing::error!(
             "tdisp_unbind_resources: unbinding TDI back to Unlocked due to device deactivation or attestation failure"
         );
@@ -682,7 +674,7 @@ impl VpciDevice {
         // Unbind the device from the TDISP interface. This hard ensures that
         // the device is returned to the Unlocked state. Any other failure to
         // cleanup is a panic.
-        self.tdisp_unbind(reason).await;
+        self.tdisp.unbind(reason).await;
 
         // Always clear the command register so the device is left in the
         // expected off state after a failed activation.

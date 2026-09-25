@@ -50,7 +50,6 @@ use vpci::test_helpers::TestVpciInterruptController;
 use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
-use vpci_client::tdisp::TdispVpciAttestationInterface;
 
 /// A config space register unrelated to TDISP, used to check that writes that
 /// would otherwise pass straight through still wait their turn.
@@ -194,7 +193,6 @@ async fn connect_relay(driver: &DefaultDriver, tdisp_capable: bool) -> TestRelay
         .init(
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::Snp,
-            TEST_VTOM,
             Vtl::Vtl0,
         )
         .await
@@ -301,7 +299,7 @@ async fn write_during_tdisp_operation_waits_its_turn(driver: DefaultDriver) {
     relay.drive(scratch.write_future()).await.unwrap();
 
     // Attestation ran to completion and enabled the device...
-    assert_eq!(relay.device.tdisp_tdi_state().await, TdispTdiState::Run);
+    assert_eq!(relay.device.tdisp().tdi_state().await, TdispTdiState::Run);
     // ...and only then did the queued write land.
     let offsets = relay.written_offsets();
     let command_index = offsets
@@ -374,7 +372,7 @@ async fn queued_write_starts_the_next_tdisp_operation(driver: DefaultDriver) {
     // The second write saw the state the first one left behind, recognized the
     // MMIO-disable edge, and unbound the TDI.
     assert_eq!(
-        relay.device.tdisp_tdi_state().await,
+        relay.device.tdisp().tdi_state().await,
         TdispTdiState::Unlocked
     );
     assert_eq!(

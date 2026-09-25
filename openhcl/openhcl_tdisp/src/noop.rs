@@ -23,7 +23,7 @@ use tdisp::devicereport::TdiReportStruct;
 pub struct UnblockedMmioRange {
     /// The VTL the MMIO range was unblocked for.
     pub target_vtl: Vtl,
-    /// Identifies the TDI device (not a VPCI ID).
+    /// Identifies the TDI device (not the bus's device ID).
     pub device_id: u16,
     /// The base guest physical address of the unblocked MMIO range.
     pub base_gpa: u64,

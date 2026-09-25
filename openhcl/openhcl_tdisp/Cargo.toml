@@ -8,12 +8,14 @@ edition.workspace = true
 
 [dependencies]
 hvdef.workspace = true
+inspect.workspace = true
 parking_lot.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
 virt.workspace = true
 
 anyhow.workspace = true
+futures.workspace = true
 tracing.workspace = true
 
 [lints]
