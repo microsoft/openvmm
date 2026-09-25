@@ -840,7 +840,14 @@ impl LoadedVm {
     }
 
     async fn start(&mut self, correlation_id: Option<Guid>) {
-        self.state_units.start().await;
+        if let Err(error) = self.state_units.start().await {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = error.as_ref() as &dyn std::error::Error,
+                "VM state units failed to start"
+            );
+            return;
+        }
 
         // Log the boot/blackout time.
         let reference_time = ReferenceTime::new(self.partition.reference_time());
@@ -1067,7 +1074,7 @@ impl LoadedVm {
             )
             .await?;
 
-        self.state_units.start_stopped_units().await;
+        self.state_units.start_stopped_units().await?;
         self.emuplat_servicing.netvsp_state.push(save_state);
 
         Ok(())

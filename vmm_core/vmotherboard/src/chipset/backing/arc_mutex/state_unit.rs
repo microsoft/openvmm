@@ -139,13 +139,14 @@ impl ArcMutexChipsetDeviceUnit {
 }
 
 impl StateUnit for ArcMutexChipsetDeviceUnit {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.running = true;
 
         // Poll the device at least once.
         let mut device = self.device.lock();
         device.start();
         device.poll_device(&mut Context::from_waker(&waker_ref(&self.poll_event)));
+        Ok(())
     }
 
     async fn stop(&mut self) {
