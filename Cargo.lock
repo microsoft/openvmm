@@ -7777,15 +7777,18 @@ name = "serial_socket"
 version = "0.0.0"
 dependencies = [
  "futures",
+ "getrandom 0.4.2",
  "inspect",
  "mesh",
  "pal",
  "pal_async",
+ "pal_async_test",
  "serial_core",
  "socket2",
  "tracing",
  "unix_socket",
  "vm_resource",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
