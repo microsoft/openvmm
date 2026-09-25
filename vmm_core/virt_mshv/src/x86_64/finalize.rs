@@ -158,7 +158,8 @@ impl MshvPartitionInner {
         caps.nested_virt = self.config.nested_virt;
         caps.tsc_deadline = false;
         caps.xsaves_state_bv_broken = true;
-        caps.can_freeze_time = true;
+        // Ordinary state access does not freeze the partition clock.
+        caps.can_freeze_time = false;
         Ok(caps)
     }
 }
