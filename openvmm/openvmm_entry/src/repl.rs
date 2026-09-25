@@ -464,6 +464,10 @@ pub(crate) async fn run_repl(
         mut launch,
     } = resources;
 
+    if !launch.stdin_enabled {
+        return headless::run(&mut vm_controller_events).await;
+    }
+
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
 
