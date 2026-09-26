@@ -46,6 +46,7 @@ struct ResolvedConfig {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names)]
 enum Vmm {
     OpenVmm,
     HyperV,
