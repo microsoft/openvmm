@@ -325,7 +325,7 @@ struct MshvPartitionInner {
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
     #[inspect(skip)]
     isolation: MshvIsolationState,
-    /// Set to `true` when partition time is frozen (e.g. during reset).
+    /// Set to `true` when partition time is frozen (e.g. during reset or restore).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
@@ -379,7 +379,7 @@ impl MshvPartitionInner {
     }
 
     /// Freezes partition time. Time will remain frozen until [`thaw_time`] is
-    /// called (typically on the first VP run after reset).
+    /// called (typically on the first VP run after reset or restore).
     fn freeze_time(&self) -> Result<(), Error> {
         let mut frozen = self.time_frozen.lock();
         if !*frozen {

@@ -90,6 +90,10 @@ impl AccessVmState for &'_ MshvPartition {
     }
 
     fn set_reftime(&mut self, value: &vm::ReferenceTime) -> Result<(), Self::Error> {
+        // ReferenceTime can only be changed while partition time is frozen.
+        // Keep it frozen through the remaining VM and VP state restore; the
+        // first VP to run will thaw it.
+        self.inner.freeze_time()?;
         self.inner
             .vmfd
             .set_partition_property(HvPartitionPropertyCode::ReferenceTime.0, value.value)
