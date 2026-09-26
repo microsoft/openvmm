@@ -14,7 +14,7 @@ pub enum PipetteOutput {
         #[serde(rename = "pipette")]
         bin: PathBuf,
         #[serde(rename = "pipette.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
     WindowsBin {
         #[serde(rename = "pipette.exe")]
@@ -73,10 +73,7 @@ impl SimpleFlowNode for Node {
                         PipetteOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        PipetteOutput::LinuxBin {
-                            bin,
-                            dbg: dbg.unwrap(),
-                        }
+                        PipetteOutput::LinuxBin { bin, dbg }
                     }
                     _ => unreachable!(),
                 };

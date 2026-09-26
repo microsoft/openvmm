@@ -57,13 +57,13 @@ pub enum OpenhclIgvmOutput {
         #[serde(rename = "openhcl-x64-cvm.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     X64CvmDevkern {
         #[serde(rename = "openhcl-x64-cvm-devkern.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     Aarch64 {
         #[serde(rename = "openhcl-aarch64.bin")]
@@ -152,9 +152,9 @@ impl OpenhclIgvmOutput {
 
     pub fn endorsements(&self) -> Option<&OpenhclIgvmEndorsements> {
         match self {
-            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. } => endorsements.as_ref(),
-            OpenhclIgvmOutput::X64Cvm { endorsements, .. }
-            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => Some(endorsements),
+            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. }
+            | OpenhclIgvmOutput::X64Cvm { endorsements, .. }
+            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => endorsements.as_ref(),
             _ => None,
         }
     }
@@ -223,17 +223,21 @@ impl OpenhclIgvmOutput {
                     }
                     OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {

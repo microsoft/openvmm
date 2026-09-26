@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::common::CommonArch;
-use crate::common::CommonTriple;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite;
 use flowey::node::prelude::*;
 use flowey_lib_common::gh_workflow_id;
@@ -10,7 +8,6 @@ use flowey_lib_common::gh_workflow_id;
 flowey_request! {
     pub struct Request {
         pub built_artifacts_write: VmmTestsBuiltArtifactsWrite,
-        pub target: CommonTriple,
     }
 }
 
@@ -29,33 +26,57 @@ impl SimpleFlowNode for Node {
         let Request {
             built_artifacts_write:
                 VmmTestsBuiltArtifactsWrite {
-                    flowey_hvlite,
-                    nextest_vmm_tests_archive,
-                    incubator,
-                    prep_steps,
-                    test_igvm_agent_rpc_server,
-                    openvmm,
-                    openvmm_vhost,
-                    pipette_windows,
+                    flowey_hvlite_windows_x64,
+                    flowey_hvlite_windows_aarch64,
+                    flowey_hvlite_linux_x64,
+                    nextest_vmm_tests_archive_windows_x64,
+                    nextest_vmm_tests_archive_windows_aarch64,
+                    nextest_vmm_tests_archive_linux_x64,
+                    nextest_vmm_tests_archive_linux_musl_x64,
+                    nextest_vmm_tests_archive_linux_musl_aarch64,
+                    incubator_linux_x64,
+                    prep_steps_windows_x64,
+                    prep_steps_linux_musl_x64,
+                    test_igvm_agent_rpc_server_windows_x64,
+                    openvmm_windows_x64,
+                    openvmm_windows_aarch64,
+                    openvmm_linux_x64,
+                    openvmm_linux_aarch64,
+                    openvmm_linux_musl_x64,
+                    openvmm_linux_musl_aarch64,
+                    openvmm_vhost_linux_x64,
+                    openvmm_vhost_linux_aarch64,
+                    openvmm_vhost_linux_musl_x64,
+                    openvmm_vhost_linux_musl_aarch64,
+                    pipette_windows_x64,
+                    pipette_windows_aarch64,
                     pipette_linux_musl_x64,
                     pipette_linux_musl_aarch64,
-                    guest_test_uefi,
-                    openhcl_standard,
-                    openhcl_standard_dev,
-                    openhcl_cvm,
-                    openhcl_linux_direct,
-                    tmks,
-                    tmk_vmm,
-                    tmk_vmm_linux_musl,
-                    vmgstool,
-                    vmgstool_dev,
-                    tpm_guest_tests_windows,
-                    tpm_guest_tests_linux,
+                    guest_test_uefi_x64,
+                    guest_test_uefi_aarch64,
+                    openhcl_standard_x64,
+                    openhcl_standard_aarch64,
+                    openhcl_standard_dev_x64,
+                    openhcl_standard_dev_aarch64,
+                    openhcl_cvm_x64,
+                    openhcl_linux_direct_x64,
+                    tmks_x64,
+                    tmks_aarch64,
+                    tmk_vmm_windows_x64,
+                    tmk_vmm_windows_aarch64,
+                    tmk_vmm_linux_musl_x64,
+                    tmk_vmm_linux_musl_aarch64,
+                    vmgstool_windows_x64,
+                    vmgstool_windows_aarch64,
+                    vmgstool_linux_x64,
+                    vmgstool_dev_windows_x64,
+                    vmgstool_dev_windows_aarch64,
+                    vmgstool_dev_linux_x64,
+                    tpm_guest_tests_windows_x64,
+                    tpm_guest_tests_linux_x64,
                 },
-            target,
         } = request;
 
-        // TODO: make this configurable with pipeline parameters
         let run = ctx.reqv(|v| gh_workflow_id::Request {
             repo_owner: "microsoft".into(),
             repo_name: "openvmm".into(),
@@ -69,205 +90,101 @@ impl SimpleFlowNode for Node {
         });
         let run_id = run.map(ctx, |r| r.id);
 
-        let arch_tag = match target.common_arch()? {
-            CommonArch::X86_64 => "x64",
-            CommonArch::Aarch64 => "aarch64",
-        };
+        macro_rules! download {
+            ($output:expr, $file_name:literal) => {
+                if let Some(output) = $output {
+                    download_artifact(ctx, $file_name.into(), run_id.clone(), output);
+                }
+            };
+        }
 
-        let os = target.as_triple().operating_system;
-        let os_tag = match os {
-            target_lexicon::OperatingSystem::Windows => "windows",
-            target_lexicon::OperatingSystem::Linux => "linux",
-            _ => anyhow::bail!("unsupported operating system: {:?}", os),
-        };
-
-        if flowey_hvlite.is_some() {
+        if flowey_hvlite_windows_x64.is_some()
+            || flowey_hvlite_windows_aarch64.is_some()
+            || flowey_hvlite_linux_x64.is_some()
+        {
             anyhow::bail!("downloading flowey_hvlite is not supported");
         }
 
-        if let Some(nextest_vmm_tests_archive) = nextest_vmm_tests_archive {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-vmm-tests-archive"),
-                run_id.clone(),
-                nextest_vmm_tests_archive,
-            );
-        }
+        download!(
+            nextest_vmm_tests_archive_windows_x64,
+            "x64-windows-vmm-tests-archive"
+        );
+        download!(
+            nextest_vmm_tests_archive_windows_aarch64,
+            "aarch64-windows-vmm-tests-archive"
+        );
+        download!(
+            nextest_vmm_tests_archive_linux_x64,
+            "x64-linux-vmm-tests-archive"
+        );
+        download!(
+            nextest_vmm_tests_archive_linux_musl_x64,
+            "x64-linux-musl-vmm-tests-archive"
+        );
+        download!(
+            nextest_vmm_tests_archive_linux_musl_aarch64,
+            "aarch64-linux-musl-vmm-tests-archive"
+        );
 
-        if let Some(incubator) = incubator {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-incubator"),
-                run_id.clone(),
-                incubator,
-            );
-        }
+        download!(incubator_linux_x64, "x64-linux-incubator");
+        download!(prep_steps_windows_x64, "x64-windows-prep_steps");
+        download!(prep_steps_linux_musl_x64, "x64-linux-musl-prep_steps");
+        download!(
+            test_igvm_agent_rpc_server_windows_x64,
+            "x64-windows-test_igvm_agent_rpc_server"
+        );
 
-        if let Some(prep_steps) = prep_steps {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-prep_steps"),
-                run_id.clone(),
-                prep_steps,
-            );
-        }
+        download!(openvmm_windows_x64, "x64-windows-openvmm");
+        download!(openvmm_windows_aarch64, "aarch64-windows-openvmm");
+        download!(openvmm_linux_x64, "x64-linux-openvmm");
+        download!(openvmm_linux_aarch64, "aarch64-linux-openvmm");
+        download!(openvmm_linux_musl_x64, "x64-linux-musl-openvmm");
+        download!(openvmm_linux_musl_aarch64, "aarch64-linux-musl-openvmm");
 
-        if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-test_igvm_agent_rpc_server"),
-                run_id.clone(),
-                test_igvm_agent_rpc_server,
-            );
-        }
+        download!(openvmm_vhost_linux_x64, "x64-linux-openvmm_vhost");
+        download!(openvmm_vhost_linux_aarch64, "aarch64-linux-openvmm_vhost");
+        download!(openvmm_vhost_linux_musl_x64, "x64-linux-musl-openvmm_vhost");
+        download!(
+            openvmm_vhost_linux_musl_aarch64,
+            "aarch64-linux-musl-openvmm_vhost"
+        );
 
-        if let Some(openvmm) = openvmm {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-openvmm"),
-                run_id.clone(),
-                openvmm,
-            );
-        }
+        download!(pipette_windows_x64, "x64-windows-pipette");
+        download!(pipette_windows_aarch64, "aarch64-windows-pipette");
+        download!(pipette_linux_musl_x64, "x64-linux-musl-pipette");
+        download!(pipette_linux_musl_aarch64, "aarch64-linux-musl-pipette");
 
-        if let Some(openvmm_vhost) = openvmm_vhost {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-openvmm_vhost"),
-                run_id.clone(),
-                openvmm_vhost,
-            );
-        }
+        download!(guest_test_uefi_x64, "x64-guest_test_uefi");
+        download!(guest_test_uefi_aarch64, "aarch64-guest_test_uefi");
 
-        if let Some(pipette_windows) = pipette_windows {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-windows-pipette"),
-                run_id.clone(),
-                pipette_windows,
-            );
-        }
+        download!(openhcl_standard_x64, "x64-openhcl-igvm");
+        download!(openhcl_standard_aarch64, "aarch64-openhcl-igvm");
+        download!(openhcl_standard_dev_x64, "x64-openhcl-igvm-devkern");
+        download!(openhcl_standard_dev_aarch64, "aarch64-openhcl-igvm-devkern");
+        download!(openhcl_cvm_x64, "x64-openhcl-igvm-cvm");
+        download!(
+            openhcl_linux_direct_x64,
+            "x64-openhcl-igvm-test-linux-direct"
+        );
 
-        if let Some(pipette_linux_musl_x64) = pipette_linux_musl_x64 {
-            download_artifact(
-                ctx,
-                "x64-linux-musl-pipette".into(),
-                run_id.clone(),
-                pipette_linux_musl_x64,
-            );
-        }
+        download!(tmks_x64, "x64-tmks");
+        download!(tmks_aarch64, "aarch64-tmks");
 
-        if let Some(pipette_linux_musl_aarch64) = pipette_linux_musl_aarch64 {
-            download_artifact(
-                ctx,
-                "aarch64-linux-musl-pipette".into(),
-                run_id.clone(),
-                pipette_linux_musl_aarch64,
-            );
-        }
+        download!(tmk_vmm_windows_x64, "x64-windows-tmk_vmm");
+        download!(tmk_vmm_windows_aarch64, "aarch64-windows-tmk_vmm");
+        download!(tmk_vmm_linux_musl_x64, "x64-linux-musl-tmk_vmm");
+        download!(tmk_vmm_linux_musl_aarch64, "aarch64-linux-musl-tmk_vmm");
 
-        if let Some(guest_test_uefi) = guest_test_uefi {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-guest_test_uefi"),
-                run_id.clone(),
-                guest_test_uefi,
-            );
-        }
+        download!(vmgstool_windows_x64, "x64-windows-vmgstool");
+        download!(vmgstool_windows_aarch64, "aarch64-windows-vmgstool");
+        download!(vmgstool_linux_x64, "x64-linux-vmgstool");
 
-        if let Some(openhcl_standard) = openhcl_standard {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-openhcl-igvm"),
-                run_id.clone(),
-                openhcl_standard,
-            );
-        }
+        download!(vmgstool_dev_windows_x64, "x64-windows-vmgstool-dev");
+        download!(vmgstool_dev_windows_aarch64, "aarch64-windows-vmgstool-dev");
+        download!(vmgstool_dev_linux_x64, "x64-linux-vmgstool-dev");
 
-        if let Some(openhcl_standard_dev) = openhcl_standard_dev {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-openhcl-igvm-devkern"),
-                run_id.clone(),
-                openhcl_standard_dev,
-            );
-        }
-
-        if let Some(openhcl_cvm) = openhcl_cvm {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-openhcl-igvm-cvm"),
-                run_id.clone(),
-                openhcl_cvm,
-            );
-        }
-
-        if let Some(openhcl_linux_direct) = openhcl_linux_direct {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-openhcl-igvm-test-linux-direct"),
-                run_id.clone(),
-                openhcl_linux_direct,
-            );
-        }
-
-        if let Some(tmks) = tmks {
-            download_artifact(ctx, format!("{arch_tag}-tmks"), run_id.clone(), tmks);
-        }
-
-        if let Some(tmk_vmm) = tmk_vmm {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-tmk_vmm"),
-                run_id.clone(),
-                tmk_vmm,
-            );
-        }
-
-        if let Some(tmk_vmm_linux_musl) = tmk_vmm_linux_musl {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-linux-musl-tmk_vmm"),
-                run_id.clone(),
-                tmk_vmm_linux_musl,
-            );
-        }
-
-        if let Some(vmgstool) = vmgstool {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-vmgstool"),
-                run_id.clone(),
-                vmgstool,
-            );
-        }
-
-        if let Some(vmgstool_dev) = vmgstool_dev {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-{os_tag}-vmgstool-dev"),
-                run_id.clone(),
-                vmgstool_dev,
-            );
-        }
-
-        if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-windows-tpm_guest_tests"),
-                run_id.clone(),
-                tpm_guest_tests_windows,
-            );
-        }
-
-        if let Some(tpm_guest_tests_linux) = tpm_guest_tests_linux {
-            download_artifact(
-                ctx,
-                format!("{arch_tag}-linux-tpm_guest_tests"),
-                run_id.clone(),
-                tpm_guest_tests_linux,
-            );
-        }
+        download!(tpm_guest_tests_windows_x64, "x64-windows-tpm_guest_tests");
+        download!(tpm_guest_tests_linux_x64, "x64-linux-tpm_guest_tests");
 
         Ok(())
     }

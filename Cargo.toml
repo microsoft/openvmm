@@ -114,7 +114,6 @@ vhost_user_protocol = { path = "vm/devices/virtio/vhost_user_protocol" }
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
-vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }

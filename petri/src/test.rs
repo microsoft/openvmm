@@ -598,10 +598,10 @@ pub fn test_main(
 
             if matches {
                 for artifact in test.artifact_requirements.required_artifacts() {
-                    required_set.insert(artifact.global_unique_id());
+                    required_set.insert(artifact.global_unique_id().to_string());
                 }
                 for artifact in test.artifact_requirements.optional_artifacts() {
-                    optional_set.insert(artifact.global_unique_id());
+                    optional_set.insert(artifact.global_unique_id().to_string());
                 }
             }
         }

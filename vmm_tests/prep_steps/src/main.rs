@@ -180,7 +180,7 @@ fn build_no_vmbus(
             let output_dir =
                 resolver.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
             let virtio_win = resolver
-                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS);
+                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS);
             (artifacts, source_disk, output_dir, virtio_win)
         },
     )?;

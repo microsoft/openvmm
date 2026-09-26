@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize)]
 pub struct GuestTestUefiOutput {
     #[serde(rename = "guest_test_uefi.efi")]
-    pub efi: PathBuf,
+    pub efi: Option<PathBuf>,
     #[serde(rename = "guest_test_uefi.pdb")]
-    pub pdb: PathBuf,
+    pub pdb: Option<PathBuf>,
     #[serde(rename = "guest_test_uefi.img")]
     pub img: PathBuf,
 }
@@ -106,8 +106,8 @@ impl FlowNode for Node {
                     .run()?;
 
                     let output = GuestTestUefiOutput {
-                        efi,
-                        pdb,
+                        efi: Some(efi),
+                        pdb: Some(pdb),
                         img: img_path.absolute()?,
                     };
 

@@ -54,7 +54,7 @@ impl AgentImage {
             ),
             (OsFlavor::Linux, MachineArch::X86_64) => Some(
                 resolver
-                    .require(common_artifacts::PIPETTE_LINUX_X64)
+                    .require(common_artifacts::PIPETTE_LINUX_X64_MUSL)
                     .erase(),
             ),
             (OsFlavor::Windows, MachineArch::Aarch64) => Some(
@@ -64,7 +64,7 @@ impl AgentImage {
             ),
             (OsFlavor::Linux, MachineArch::Aarch64) => Some(
                 resolver
-                    .require(common_artifacts::PIPETTE_LINUX_AARCH64)
+                    .require(common_artifacts::PIPETTE_LINUX_AARCH64_MUSL)
                     .erase(),
             ),
             (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => {

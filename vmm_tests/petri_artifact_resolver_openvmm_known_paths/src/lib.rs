@@ -6,17 +6,169 @@
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
-use fs_err::PathExt;
-use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ArtifactSource;
-use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
+use petri_artifacts_vmm_test::vmm_test_image_from_id;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
-use vmm_test_images::CONTAINER;
-use vmm_test_images::KnownTestArtifacts;
-use vmm_test_images::STORAGE_ACCOUNT;
+
+/// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
+/// that resolves artifacts to various "known paths" within the context of
+/// the OpenVMM repository.
+pub struct OpenvmmKnownPathsTestArtifactResolver<'a>(&'a str);
+
+impl<'a> OpenvmmKnownPathsTestArtifactResolver<'a> {
+    /// Creates a new resolver for a test with the given name.
+    pub fn new(test_name: &'a str) -> Self {
+        Self(test_name)
+    }
+}
+
+impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifactResolver<'_> {
+    fn resolve(&self, handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
+        use petri_artifacts_common::artifacts::*;
+        use petri_artifacts_core::ArtifactId;
+        use petri_artifacts_vmm_test::artifacts::*;
+
+        match handle.global_unique_id() {
+            TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => test_log_directory_path(self.0),
+
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID
+            | test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID => {
+                get_vmm_test_image_path(handle.filename(), handle.global_unique_id())
+            }
+
+            id if let Some(artifact) = vmm_test_image_from_id(id) => {
+                get_vmm_test_image_path(artifact.filename(), artifact.name())
+            }
+
+            _ => resolve_artifact(handle),
+        }
+    }
+
+    fn resolve_source(&self, handle: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
+        // Try local resolution first.
+        let local_err = match self.resolve(handle) {
+            Ok(path) => return Ok(ArtifactSource::Local(path)),
+            Err(e) => e,
+        };
+
+        // Fall back to remote URL for artifacts hosted on Azure Blob Storage,
+        // but only for formats the blob disk backend supports (fixed VHD1 and flat).
+        if let Some(url) = vmm_test_image_from_id(handle.global_unique_id()).and_then(|i| i.url()) {
+            return Ok(ArtifactSource::Remote { url });
+        }
+
+        // No local path and no remote URL available — return the original error.
+        Err(local_err)
+    }
+}
+
+const VMM_TESTS_CONTENT_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
+const TEST_OUTPUT_PATH_ENV_VAR: &str = "TEST_OUTPUT_PATH";
+const VMM_TEST_IMAGES_ENV_VAR: &str = "VMM_TEST_IMAGES";
+
+/// Get the path to an artifact from its erased artifact handle
+pub fn resolve_artifact(handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
+    let test_content_dir_path = test_content_dir_artifact_path(handle.relative_path());
+
+    if test_content_dir_path.is_ok() {
+        return test_content_dir_path;
+    }
+
+    let target = handle.target_triple();
+    let exe_artifact_path = target
+        .as_ref()
+        .context("no associated triple for artifact")
+        .and_then(|t| get_executable_path_artifact(t, None, handle.filename()));
+
+    if exe_artifact_path.is_ok() {
+        return exe_artifact_path;
+    }
+
+    let relative_path = get_executable_path_relative(handle.filename());
+
+    if relative_path.is_ok() {
+        return relative_path;
+    }
+
+    // also look for the other environment target, since it may work as well
+    let fallback_target = handle.target_triple().and_then(|mut target| {
+        matches!(
+            target,
+            target_lexicon::Triple {
+                operating_system: target_lexicon::OperatingSystem::Linux,
+                environment: target_lexicon::Environment::Gnu | target_lexicon::Environment::Musl,
+                ..
+            }
+        )
+        .then(|| {
+            if target.environment == target_lexicon::Environment::Gnu {
+                target.environment = target_lexicon::Environment::Musl;
+            } else {
+                target.environment = target_lexicon::Environment::Gnu;
+            }
+            target
+        })
+    });
+
+    let fallback_test_content_dir_path = fallback_target
+        .as_ref()
+        .context("no fallback target")
+        .and_then(|t| {
+            test_content_dir_artifact_path(PathBuf::from(t.to_string()).join(handle.filename()))
+        });
+
+    if fallback_test_content_dir_path.is_ok() {
+        return fallback_test_content_dir_path;
+    }
+
+    let fallback_exe_artifact_path = fallback_target
+        .as_ref()
+        .context("no associated triple for artifact")
+        .and_then(|t| get_executable_path_artifact(t, None, handle.filename()));
+
+    if fallback_exe_artifact_path.is_ok() {
+        return fallback_exe_artifact_path;
+    }
+
+    Err(anyhow::anyhow!(
+        "unable to locate {}:\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        handle.global_unique_id(),
+        test_content_dir_path.unwrap_err(),
+        exe_artifact_path.unwrap_err(),
+        relative_path.unwrap_err(),
+        fallback_test_content_dir_path.unwrap_err(),
+        fallback_exe_artifact_path.unwrap_err(),
+    ))
+}
+
+fn test_content_dir_artifact_path(relative_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+    let test_content_dir =
+        std::env::var(VMM_TESTS_CONTENT_DIR_ENV_VAR).context("test content dir env var not set")?;
+    let path = PathBuf::from(test_content_dir).join(relative_path.as_ref());
+    if !path.exists() {
+        anyhow::bail!("{} not found", path.display())
+    }
+    Ok(path)
+}
+
+/// Path to the per-test test output directory.
+fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
+    let root =
+        std::env::var_os(TEST_OUTPUT_PATH_ENV_VAR).context("test output path env var not set")?;
+    // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
+    // with filesystems that don't support `::` in filenames.
+    let path = PathBuf::from(root).join(test_name.replace("::", "__"));
+    fs_err::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// Gets a path to the root of the repo.
+pub fn get_repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
 
 /// Returns the Cargo build profile directory name for cross-compiled
 /// artifacts (e.g., pipette).
@@ -36,1049 +188,51 @@ pub fn cargo_build_profile() -> &'static str {
     })
 }
 
-/// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
-/// that resolves artifacts to various "known paths" within the context of
-/// the OpenVMM repository.
-pub struct OpenvmmKnownPathsTestArtifactResolver<'a>(&'a str);
-
-impl<'a> OpenvmmKnownPathsTestArtifactResolver<'a> {
-    /// Creates a new resolver for a test with the given name.
-    pub fn new(test_name: &'a str) -> Self {
-        Self(test_name)
-    }
-}
-
-impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifactResolver<'_> {
-    #[rustfmt::skip]
-    fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
-        use petri_artifacts_common::artifacts as common;
-        use petri_artifacts_vmm_test::artifacts::*;
-        use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
-
-        match id {
-            _ if id == common::PIPETTE_WINDOWS_X64 => pipette_path(MachineArch::X86_64, PipetteFlavor::Windows),
-            _ if id == common::PIPETTE_LINUX_X64 => pipette_path(MachineArch::X86_64, PipetteFlavor::Linux),
-            _ if id == common::PIPETTE_WINDOWS_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Windows),
-            _ if id == common::PIPETTE_LINUX_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Linux),
-
-            _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
-
-            _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
-            #[cfg(target_os = "linux")]
-            _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
-
-            _ if id == QEMU_SYSTEM_AARCH64_LINUX_X64 => qemu_system_aarch64_path(),
-
-            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
-            _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => linux_direct_x64_test_bzimage_path(),
-            _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
-            _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
-            _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
-
-            _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
-            _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
-
-            _ if id == loadable::PCAT_FIRMWARE_X64 => pcat_firmware_path(),
-            _ if id == loadable::SVGA_FIRMWARE_X64 => svga_firmware_path(),
-            _ if id == loadable::UEFI_FIRMWARE_X64 => uefi_firmware_path(MachineArch::X86_64),
-            _ if id == loadable::UEFI_FIRMWARE_AARCH64 => uefi_firmware_path(MachineArch::Aarch64),
-
-            _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
-            _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
-            _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
-            _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
-
-            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect),
-            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
-
-            _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
-            _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
-
-            _ if id == test_vhd::GUEST_TEST_UEFI_X64 => guest_test_uefi_disk_path(MachineArch::X86_64),
-            _ if id == test_vhd::GUEST_TEST_UEFI_AARCH64 => guest_test_uefi_disk_path(MachineArch::Aarch64),
-
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => {
-                let base_filename = test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME;
-                let prepped_filename = base_filename.replace(".vhd", "-prepped.vhd");
-                let images_dir = std::env::var("VMM_TEST_IMAGES");
-                let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
-                get_path(
-                    full_path,
-                    prepped_filename,
-                    MissingCommand::Run {
-                        description: "prepped test image",
-                        package: "prep_steps",
-                    },
-                )
-            }
-
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED => {
-                let base_filename = test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME;
-                let prepped_filename = base_filename.replace(".vhd", "-no-vmbus-prepped.vhd");
-                let images_dir = std::env::var("VMM_TEST_IMAGES");
-                let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
-                get_path(
-                    full_path,
-                    prepped_filename,
-                    MissingCommand::Custom {
-                        description: "no-vmbus prepped test image",
-                        cmd: "cargo run -p prep_steps -- no-vmbus",
-                    },
-                )
-            }
-
-            _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
-            _ if id == tmks::TMK_VMM_LINUX_X64 => tmk_vmm_linux_path(MachineArch::X86_64),
-            _ if id == tmks::TMK_VMM_LINUX_AARCH64 =>
-                env_path_or(OPENVMM_CCA_TMK_VMM_ENV_VAR, || {
-                    tmk_vmm_linux_path(MachineArch::Aarch64)
-                }),
-            _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
-            _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
-            _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
-            _ if id == tmks::SIMPLE_TMK_AARCH64 =>
-                env_path_or(OPENVMM_CCA_SIMPLE_TMK_ENV_VAR, || {
-                    simple_tmk_path(MachineArch::Aarch64)
-                }),
-
-            _ if id == cca::SHRINKWRAP => cca_shrinkwrap_path(),
-            _ if id == cca::VENV => cca_venv_path(),
-            _ if id == cca::ROOTFS => cca_package_path("rootfs.ext2", "CCA emulation rootfs"),
-            _ if id == cca::E2FSCK => cca_buildroot_host_sbin_path("e2fsck", "CCA buildroot host e2fsck"),
-            _ if id == cca::RESIZE2FS => cca_buildroot_host_sbin_path("resize2fs", "CCA buildroot host resize2fs"),
-            _ if id == cca::GUEST_DISK => cca_package_path("guest-disk.img", "CCA guest disk"),
-            _ if id == cca::PLANE0_LINUX_IMAGE => cca_plane0_linux_image_path(),
-            _ if id == cca::KVMTOOL_EFI => cca_package_path("KVMTOOL_EFI.fd", "CCA kvmtool EFI firmware"),
-            _ if id == cca::LKVM => cca_package_path("lkvm", "CCA lkvm"),
-
-            _ if id == vmgstool::VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
-            _ if id == vmgstool::VMGSTOOL_DEV_NATIVE => vmgstool_dev_native_executable_path(),
-
-            _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
-                tpm_guest_tests_windows_path(MachineArch::X86_64)
-            }
-            _ if id == guest_tools::TPM_GUEST_TESTS_LINUX_X64 => {
-                tpm_guest_tests_linux_path(MachineArch::X86_64)
-            }
-
-            _ if id == virtio_win::VIRTIO_WIN_DRIVERS => {
-                virtio_win_path()
-            }
-
-            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
-                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
-            }
-
-            // Blob-hosted artifacts: resolved via blob_artifact_info.
-            _ if let Some(artifact) = KnownTestArtifacts::from_handle(id) => {
-                get_test_artifact_path(artifact)
-            }
-
-            _ => anyhow::bail!("no support for given artifact type"),
-        }
-    }
-
-    fn resolve_source(&self, id: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
-        // Try local resolution first.
-        let local_err = match self.resolve(id) {
-            Ok(path) => return Ok(ArtifactSource::Local(path)),
-            Err(e) => e,
-        };
-
-        // Fall back to remote URL for artifacts hosted on Azure Blob Storage,
-        // but only for formats the blob disk backend supports (fixed VHD1 and flat).
-        if let Some(artifact) = KnownTestArtifacts::from_handle(id) {
-            if artifact.supports_blob_disk() {
-                let url = format!(
-                    "https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{}",
-                    artifact.filename()
-                );
-                return Ok(ArtifactSource::Remote { url });
-            }
-        }
-
-        // No local path and no remote URL available — return the original error.
-        Err(local_err)
-    }
-}
-
-/// Returns the bundle-relative file name for the given artifact.
-///
-/// This is the `file_name` argument that [`get_path`] would use when
-/// resolving this artifact. When creating a self-contained bundle for
-/// deployment, place the artifact at this relative path within the
-/// bundle directory, then set `VMM_TESTS_CONTENT_DIR` to the bundle
-/// directory at runtime.
-///
-/// Returns `None` for artifacts that don't have a fixed bundle name
-/// (e.g., log directories).
-pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
-    use petri_artifacts_common::artifacts as common;
-    use petri_artifacts_vmm_test::artifacts::*;
-
-    match id {
-        _ if id == common::PIPETTE_LINUX_X64 => Some("pipette"),
-        _ if id == common::PIPETTE_LINUX_AARCH64 => Some("pipette"),
-        _ if id == common::PIPETTE_WINDOWS_X64 => Some("pipette.exe"),
-        _ if id == common::PIPETTE_WINDOWS_AARCH64 => Some("pipette.exe"),
-        _ if id == OPENVMM_NATIVE => Some(if cfg!(windows) {
-            "openvmm.exe"
-        } else {
-            "openvmm"
-        }),
-        _ if id == QEMU_SYSTEM_AARCH64_LINUX_X64 => Some("qemu-system-aarch64"),
-        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => Some("x64/vmlinux"),
-        _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => Some("x64/bzImage"),
-        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
-        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
-        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
-        _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
-        _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
-        _ if id == loadable::UEFI_FIRMWARE_X64 => {
-            Some("hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd")
-        }
-        _ if id == loadable::UEFI_FIRMWARE_AARCH64 => {
-            Some("hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV/MSVM.fd")
-        }
-        _ => {
-            // For test VHDs, the bundle name is the artifact filename from
-            // IsHostedOnHvliteAzureBlobStore. Use resolve_test_vhd_bundle_name
-            // for those.
-            None
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum PipetteFlavor {
-    Windows,
-    Linux,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum OpenhclVersion {
-    Latest,
-    Release2511,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum OpenhclFlavor {
-    Standard,
-    StandardDevKernel,
-    Cvm,
-    LinuxDirect,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum OpenhclExtras {
-    UmBin,
-    UmDbg,
-}
-
-/// The architecture specific fragment of the name of the directory used by rust when referring to specific targets.
-fn target_arch_path(arch: MachineArch) -> &'static str {
-    match arch {
-        MachineArch::X86_64 => "x86_64",
-        MachineArch::Aarch64 => "aarch64",
-    }
-}
-
-fn windows_msvc_target(arch: MachineArch) -> &'static str {
-    match arch {
-        MachineArch::X86_64 => "x86_64-pc-windows-msvc",
-        MachineArch::Aarch64 => "aarch64-pc-windows-msvc",
-    }
-}
-
-fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
-    let images_dir = std::env::var("VMM_TEST_IMAGES");
-    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
-
-    get_path(
-        full_path,
-        artifact.filename(),
-        MissingCommand::Xtask {
-            xtask_args: &[
-                "guest-test",
-                "download-image",
-                "--artifacts",
-                artifact.name(),
-            ],
-            description: "test artifact",
-        },
-    )
-}
-
-/// Path to the output location of our guest-test image for UEFI.
-fn guest_test_uefi_disk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    // `guest_test_uefi` is always at `{arch}-unknown-uefi/debug`
-    get_path(
-        format!("target/{}-unknown-uefi/debug", target_arch_path(arch)),
-        "guest_test_uefi.img",
-        MissingCommand::Xtask {
-            xtask_args: &[
-                "guest-test",
-                "uefi",
-                &format!(
-                    "--boot{}",
-                    match arch {
-                        MachineArch::X86_64 => "x64",
-                        MachineArch::Aarch64 => "aa64",
-                    }
-                ),
-            ],
-            description: "guest_test_uefi image",
-        },
-    )
-}
-
-/// Path to the output location of the pipette executable.
-fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<PathBuf> {
-    // Always use (statically-built) musl on Linux to avoid needing libc
-    // compatibility.
-    let (target_suffixes, binary) = match os_flavor {
-        PipetteFlavor::Windows => (vec!["pc-windows-msvc", "pc-windows-gnu"], "pipette.exe"),
-        PipetteFlavor::Linux => (vec!["unknown-linux-musl"], "pipette"),
-    };
-    for (index, target_suffix) in target_suffixes.iter().enumerate() {
-        let target = format!("{}-{}", target_arch_path(arch), target_suffix);
-        match get_path(
-            ".",
-            PathBuf::from(&target).join(binary),
-            MissingCommand::Build {
-                package: "pipette",
-                target: Some(&target),
-            },
-        ) {
-            Ok(path) => return Ok(path),
-            Err(err) => {
-                if index < target_suffixes.len() - 1 {
-                    continue;
-                } else {
-                    anyhow::bail!(
-                        "None of the suffixes {:?} had `pipette` built, {err:?}",
-                        target_suffixes
-                    );
-                }
-            }
-        }
-    }
-
-    unreachable!()
-}
-
-/// Path to the output location of the openvmm executable.
-fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_output_executable_path("openvmm")
-}
-
-/// Path to the output location of the openvmm_vhost executable.
-#[cfg(target_os = "linux")]
-fn openvmm_vhost_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_output_executable_path("openvmm_vhost")
-}
-
-fn qemu_system_aarch64_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(
-            petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase(),
-        )
-        .unwrap(),
-        MissingCommand::Restore {
-            description: "qemu-system-aarch64",
-        },
-    )
-}
-
-/// Path to the output location of the tmk_vmm executable.
-fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_output_executable_path("tmk_vmm")
-}
-
-/// Path to the output location of the vmgstool executable.
-fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_output_executable_path("vmgstool")
-}
-
-/// Path to the output location of the vmgstool-dev executable.
-fn vmgstool_dev_native_executable_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        "target/debug",
-        Path::new("vmgstool-dev").with_extension(EXE_EXTENSION),
-        MissingCommand::Custom {
-            description: "vmgstool-dev (Cargo build output must be renamed to match)",
-            cmd: "cargo build -p vmgstool --features encryption,test_helpers",
-        },
-    )
-}
-
-/// Path to the output location of the tpm_guest_tests executable.
-fn tpm_guest_tests_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let target = windows_msvc_target(arch);
-    get_path(
-        format!("target/{target}/debug"),
-        "tpm_guest_tests.exe",
-        MissingCommand::Build {
-            package: "tpm_guest_tests",
-            target: Some(target),
-        },
-    )
-}
-
-fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let target = match arch {
-        MachineArch::X86_64 => "x86_64-unknown-linux-gnu",
-        MachineArch::Aarch64 => "aarch64-unknown-linux-gnu",
-    };
-
-    get_path(
-        format!("target/{target}/debug"),
-        "tpm_guest_tests",
-        MissingCommand::Build {
-            package: "tpm_guest_tests",
-            target: Some(target),
-        },
-    )
-}
-
-/// Path to the output location of the test_igvm_agent_rpc_server executable.
-fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let target = windows_msvc_target(arch);
-    get_path(
-        format!("target/{target}/debug"),
-        "test_igvm_agent_rpc_server.exe",
-        MissingCommand::Build {
-            package: "test_igvm_agent_rpc_server",
-            target: Some(target),
-        },
-    )
-}
-
-/// Path to the extracted virtio-win driver package from openvmm-deps.
-fn virtio_win_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        ".packages",
-        "virtio-win",
-        MissingCommand::Restore {
-            description: "virtio-win drivers",
-        },
-    )
-}
-
-const OPENVMM_CCA_TEST_ROOT_ENV_VAR: &str = "OPENVMM_CCA_TEST_ROOT";
-const OPENVMM_CCA_TMK_VMM_ENV_VAR: &str = "OPENVMM_CCA_TMK_VMM";
-const OPENVMM_CCA_SIMPLE_TMK_ENV_VAR: &str = "OPENVMM_CCA_SIMPLE_TMK";
-
-fn cca_missing_command(description: &'static str) -> MissingCommand<'static> {
-    MissingCommand::XFlowey {
-        description,
-        xflowey_args: &["cca-tests", "--install-emu"],
-    }
-}
-
-fn env_path_or(
-    name: &str,
-    fallback: impl FnOnce() -> anyhow::Result<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    std::env::var_os(name)
-        .map(PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(fallback)
-}
-
-fn cca_test_root() -> PathBuf {
-    std::env::var_os(OPENVMM_CCA_TEST_ROOT_ENV_VAR)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/cca-test"))
-}
-
-fn cca_home_dir() -> anyhow::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
-}
-
-fn cca_shrinkwrap_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        cca_test_root().join("shrinkwrap"),
-        "shrinkwrap/shrinkwrap",
-        cca_missing_command("CCA shrinkwrap executable"),
-    )
-}
-
-fn cca_venv_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        cca_test_root().join("shrinkwrap"),
-        "venv",
-        cca_missing_command("CCA shrinkwrap virtual environment"),
-    )
-}
-
-fn cca_plane0_linux_image_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        cca_test_root().join("plane0-linux/arch/arm64/boot"),
-        "Image",
-        cca_missing_command("CCA Plane0 Linux image"),
-    )
-}
-
-fn cca_package_path(file_name: &'static str, description: &'static str) -> anyhow::Result<PathBuf> {
-    get_path(
-        cca_home_dir()?.join(".shrinkwrap/package/cca-3world"),
-        file_name,
-        cca_missing_command(description),
-    )
-}
-
-fn cca_buildroot_host_sbin_path(
-    file_name: &'static str,
-    description: &'static str,
-) -> anyhow::Result<PathBuf> {
-    get_path(
-        cca_home_dir()?.join(".shrinkwrap/build/build/cca-3world/buildroot/host/sbin"),
-        file_name,
-        cca_missing_command(description),
-    )
-}
-
-/// Path to the output location of the GNU/Linux tmk_vmm executable.
-fn tmk_vmm_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let target = match arch {
-        MachineArch::X86_64 => "x86_64-unknown-linux-gnu",
-        MachineArch::Aarch64 => "aarch64-unknown-linux-gnu",
-    };
-
-    if let Some(path) = try_get_path(format!("target/{target}/debug"), "tmk_vmm")? {
-        return Ok(path);
-    }
-
-    if let Some(path) =
-        flowey_built_executable_path(format!("target/tmk_vmm/{target}/debug/deps"), "tmk_vmm")?
-    {
-        return Ok(path);
-    }
-
-    get_path(
-        format!("target/{target}/debug"),
-        "tmk_vmm",
-        MissingCommand::Build {
-            package: "tmk_vmm",
-            target: Some(target),
-        },
-    )
-}
-
-/// Path to the output location of the musl/Linux tmk_vmm executable.
-fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let target = match arch {
-        MachineArch::X86_64 => "x86_64-unknown-linux-musl",
-        MachineArch::Aarch64 => "aarch64-unknown-linux-musl",
-    };
-    get_path(
-        format!("target/{target}/debug"),
-        "tmk_vmm",
-        MissingCommand::Build {
-            package: "tmk_vmm",
-            target: Some(target),
-        },
-    )
-}
-
-/// Path to the output location of the simple_tmk executable.
-fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    let arch_str = match arch {
-        MachineArch::X86_64 => "x86_64",
-        MachineArch::Aarch64 => "aarch64",
-    };
-    let target = match arch {
-        MachineArch::X86_64 => "x86_64-unknown-none",
-        MachineArch::Aarch64 => "aarch64-minimal_rt-none",
-    };
-
-    if let Some(path) = try_get_path(format!("target/{target}/debug"), "simple_tmk")? {
-        return Ok(path);
-    }
-
-    if let Some(path) = flowey_built_executable_path(
-        format!("target/simple_tmk/{target}/debug/deps"),
-        "simple_tmk",
-    )? {
-        return Ok(path);
-    }
-
-    get_path(
-        format!("target/{target}/debug"),
-        "simple_tmk",
-        MissingCommand::Custom {
-            description: "simple_tmk",
-            cmd: &format!(
-                "RUSTC_BOOTSTRAP=1 cargo build -p simple_tmk --config openhcl/minimal_rt/{arch_str}-config.toml"
-            ),
-        },
-    )
-}
-
-/// Path to our packaged linux direct test kernel.
-fn linux_direct_x64_test_kernel_path() -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::loadable;
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase()).unwrap(),
-        MissingCommand::Restore {
-            description: "linux direct test kernel",
-        },
-    )
-}
-
-/// Path to our packaged linux direct test bzImage.
-fn linux_direct_x64_test_bzimage_path() -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::loadable;
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_BZIMAGE_X64.erase()).unwrap(),
-        MissingCommand::Restore {
-            description: "linux direct test bzImage",
-        },
-    )
-}
-
-/// Path to our packaged linux direct test initrd.
-fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::loadable;
-    let id = match arch {
-        MachineArch::X86_64 => loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
-        MachineArch::Aarch64 => loadable::LINUX_DIRECT_TEST_INITRD_AARCH64.erase(),
-    };
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(id).unwrap(),
-        MissingCommand::Restore {
-            description: "linux direct test initrd",
-        },
-    )
-}
-
-/// Path to our packaged petritools erofs image.
-fn petritools_erofs_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::petritools;
-    let id = match arch {
-        MachineArch::X86_64 => petritools::PETRITOOLS_EROFS_X64.erase(),
-        MachineArch::Aarch64 => petritools::PETRITOOLS_EROFS_AARCH64.erase(),
-    };
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(id).unwrap(),
-        MissingCommand::Restore {
-            description: "petritools erofs image",
-        },
-    )
-}
-
-/// Path to our packaged linux direct test kernel.
-fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::loadable;
-    get_path(
-        ".packages/underhill-deps-private",
-        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase()).unwrap(),
-        MissingCommand::Restore {
-            description: "linux direct test kernel",
-        },
-    )
-}
-
-/// Path to our packaged PCAT firmware.
-fn pcat_firmware_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        ".packages",
-        "Microsoft.Windows.VmFirmware.Pcat.amd64fre/content/vmfirmwarepcat.dll",
-        MissingCommand::Restore {
-            description: "PCAT firmware binary",
-        },
-    )
-}
-
-/// Path to our packaged SVGA firmware.
-fn svga_firmware_path() -> anyhow::Result<PathBuf> {
-    get_path(
-        ".packages",
-        "Microsoft.Windows.VmEmulatedDevices.amd64fre/content/VmEmulatedDevices.dll",
-        MissingCommand::Restore {
-            description: "SVGA firmware binary",
-        },
-    )
-}
-
-/// Path to our packaged UEFI firmware image.
-fn uefi_firmware_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
-    use petri_artifacts_vmm_test::artifacts::loadable;
-    let id = match arch {
-        MachineArch::X86_64 => loadable::UEFI_FIRMWARE_X64.erase(),
-        MachineArch::Aarch64 => loadable::UEFI_FIRMWARE_AARCH64.erase(),
-    };
-    get_path(
-        ".packages",
-        resolve_bundle_name(id).unwrap(),
-        MissingCommand::Restore {
-            description: "UEFI firmware binary",
-        },
-    )
-}
-
-/// Path to the output location of the requested OpenHCL package.
-fn openhcl_bin_path(
-    arch: MachineArch,
-    version: OpenhclVersion,
-    flavor: OpenhclFlavor,
-) -> anyhow::Result<PathBuf> {
-    let (path, name, cmd) = match (arch, version, flavor) {
-        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/build-igvm/debug/x64",
-            "openhcl-x64.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "x64"],
-            },
-        ),
-        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel) => (
-            "flowey-out/artifacts/build-igvm/debug/x64-devkern",
-            "openhcl-x64-devkern.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "x64-devkern"],
-            },
-        ),
-        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (
-            "flowey-out/artifacts/build-igvm/debug/x64-cvm",
-            "openhcl-x64-cvm.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "x64-cvm"],
-            },
-        ),
-        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
-            "openhcl-x64-test-linux-direct.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "x64-test-linux-direct"],
-            },
-        ),
-        (MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/build-igvm/debug/aarch64",
-            "openhcl-aarch64.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "aarch64"],
-            },
-        ),
-        (MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel) => (
-            "flowey-out/artifacts/build-igvm/debug/aarch64-devkern",
-            "openhcl-aarch64-devkern.bin",
-            MissingCommand::XFlowey {
-                description: "OpenHCL IGVM file",
-                xflowey_args: &["build-igvm", "aarch64-devkern"],
-            },
-        ),
-        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/last-release-igvm-files",
-            "release-2511-x64-direct-openhcl.bin",
-            MissingCommand::XFlowey {
-                description: "Previous OpenHCL release IGVM file",
-                xflowey_args: &["restore-packages"],
-            },
-        ),
-        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/last-release-igvm-files",
-            "release-2511-x64-openhcl.bin",
-            MissingCommand::XFlowey {
-                description: "Previous OpenHCL release IGVM file",
-                xflowey_args: &["restore-packages"],
-            },
-        ),
-        (MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/last-release-igvm-files",
-            "release-2511-aarch64-openhcl.bin",
-            MissingCommand::XFlowey {
-                description: "Previous OpenHCL release IGVM file",
-                xflowey_args: &["restore-packages"],
-            },
-        ),
-        _ => anyhow::bail!("no openhcl bin with given arch, version, and flavor"),
-    };
-
-    get_path(path, name, cmd)
-}
-
-/// Path to the specified build artifact for the requested OpenHCL package.
-fn openhcl_extras_path(
-    version: OpenhclVersion,
-    flavor: OpenhclFlavor,
-    item: OpenhclExtras,
-) -> anyhow::Result<PathBuf> {
-    if !matches!(version, OpenhclVersion::Latest) || !matches!(flavor, OpenhclFlavor::LinuxDirect) {
-        anyhow::bail!("Debug symbol path currently only available for LATEST_LINUX_DIRECT_TEST")
-    }
-
-    let (path, name) = match item {
-        OpenhclExtras::UmBin => (
-            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
-            "openvmm_hcl_msft",
-        ),
-        OpenhclExtras::UmDbg => (
-            "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
-            "openvmm_hcl_msft.dbg",
-        ),
-    };
-
-    get_path(
-        path,
-        name,
-        MissingCommand::XFlowey {
-            description: "OpenHCL IGVM file",
-            xflowey_args: &["build-igvm", "x64-test-linux-direct"],
-        },
-    )
-}
-
-/// Path to the per-test test output directory.
-fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
-    let root = if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
-        PathBuf::from(path)
-    } else {
-        get_repo_root()?.join("vmm_test_results")
-    };
-    // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
-    // with filesystems that don't support `::` in filenames.
-    let path = root.join(test_name.replace("::", "__"));
-    fs_err::create_dir_all(&path)?;
-    Ok(path)
-}
-
-const VMM_TESTS_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
-
-/// Gets a path to the root of the repo.
-pub fn get_repo_root() -> anyhow::Result<PathBuf> {
-    Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
-fn try_get_path(
-    search_path: impl AsRef<Path>,
-    file_name: impl AsRef<Path>,
-) -> anyhow::Result<Option<PathBuf>> {
-    let search_path = search_path.as_ref();
-    let file_name = file_name.as_ref();
-    if file_name.is_absolute() {
-        anyhow::bail!("{} should be a relative path", file_name.display());
-    }
-
-    if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
-        let full_path = Path::new(&env_dir).join(file_name);
-        if full_path.try_exists()? {
-            return Ok(Some(full_path));
-        }
-    }
-
-    let file_path = if search_path.is_absolute() {
-        search_path.to_owned()
-    } else {
-        get_repo_root()?.join(search_path)
-    };
-
-    let full_path = file_path.join(file_name);
-    Ok(full_path.try_exists()?.then_some(full_path))
-}
-
-fn flowey_built_executable_path(
-    search_path: impl AsRef<Path>,
-    binary_prefix: &str,
-) -> anyhow::Result<Option<PathBuf>> {
-    let search_path = search_path.as_ref();
-    let dir = if search_path.is_absolute() {
-        search_path.to_owned()
-    } else {
-        get_repo_root()?.join(search_path)
-    };
-
-    if !dir.is_dir() {
-        return Ok(None);
-    }
-
-    let mut candidates = Vec::new();
-    for entry in std::fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        if path.extension().is_some() {
-            continue;
-        }
-
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-
-        if file_name == binary_prefix || file_name.starts_with(&format!("{binary_prefix}-")) {
-            let modified = entry.metadata()?.modified().ok();
-            candidates.push((modified, path));
-        }
-    }
-
-    candidates.sort_by_key(|(modified, _)| *modified);
-    Ok(candidates.pop().map(|(_, path)| path))
-}
-
-/// Attempts to find the given file, first checking for it relative to the test
-/// content directory, then falling back to the provided search path.
-///
-/// Note that the file name can be a multi-segment path (e.g. `foo/bar.txt`) so
-/// that it must be in subdirectory of the test content directory. This is useful
-/// when multiple files with the same name are needed in different contexts.
-///
-/// If the search path is relative it is treated as relative to the repo root.
-/// If it is absolute it is used unchanged.
-///
-/// If the file cannot be found then the provided command will be returned as an
-/// easily printable error.
-// DEVNOTE: `pub` in order to re-use logic in closed-source known_paths resolver
-pub fn get_path(
-    search_path: impl AsRef<Path>,
-    file_name: impl AsRef<Path>,
-    missing_cmd: MissingCommand<'_>,
-) -> anyhow::Result<PathBuf> {
-    let search_path = search_path.as_ref();
-    let file_name = file_name.as_ref();
-    if file_name.is_absolute() {
-        anyhow::bail!("{} should be a relative path", file_name.display());
-    }
-
-    if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
-        let full_path = Path::new(&env_dir).join(file_name);
-        if full_path.fs_err_try_exists()? {
-            return Ok(full_path);
-        }
-    }
-
-    let file_path = if search_path.is_absolute() {
-        search_path.to_owned()
-    } else {
-        get_repo_root()?.join(search_path)
-    };
-
-    let full_path = file_path.join(file_name);
-    if !full_path.fs_err_try_exists()? {
-        missing_cmd
-            .to_error()
-            .with_context(|| format!("failed to find {}", full_path.display()))?;
-    }
-
-    Ok(full_path)
-}
-
-/// Attempts to find the path to a rust executable built by Cargo, checking
-/// the test content directory if the environment variable is set.
-// DEVNOTE: `pub` in order to re-use logic in closed-source known_paths resolver
-pub fn get_output_executable_path(name: &str) -> anyhow::Result<PathBuf> {
-    let mut path: PathBuf = std::env::current_exe()?;
+/// Attempts to find the path to a rust executable built by Cargo using the path
+/// to the current executable to find the base path.
+pub fn get_executable_path_relative(name: &str) -> anyhow::Result<PathBuf> {
+    let mut current_exe = std::env::current_exe().context("unable to get current exe")?;
     // Sometimes we end up inside deps instead of the output dir, but if we
     // are we can just go up a level.
-    if path.parent().and_then(|x| x.file_name()).unwrap() == "deps" {
-        path.pop();
+    if current_exe.parent().and_then(|x| x.file_name()).unwrap() == "deps" {
+        current_exe.pop();
     }
 
-    get_path(
-        path.parent().unwrap(),
-        Path::new(name).with_extension(EXE_EXTENSION),
-        MissingCommand::Build {
-            package: name,
-            target: None,
-        },
-    )
-}
-
-/// A description of a command that can be run to create a missing file.
-// DEVNOTE: `pub` in order to re-use logic in closed-source known_paths resolver
-#[derive(Copy, Clone)]
-#[expect(missing_docs)] // Self-describing field names.
-pub enum MissingCommand<'a> {
-    /// A `cargo build` invocation.
-    Build {
-        package: &'a str,
-        target: Option<&'a str>,
-    },
-    /// A `cargo run` invocation.
-    Run {
-        description: &'a str,
-        package: &'a str,
-    },
-    /// A `cargo xtask` invocation.
-    Xtask {
-        description: &'a str,
-        xtask_args: &'a [&'a str],
-    },
-    /// A `cargo xflowey` invocation.
-    XFlowey {
-        description: &'a str,
-        xflowey_args: &'a [&'a str],
-    },
-    /// A `xflowey restore-packages` invocation.
-    Restore { description: &'a str },
-    /// A custom command.
-    Custom { description: &'a str, cmd: &'a str },
-}
-
-impl MissingCommand<'_> {
-    fn to_error(self) -> anyhow::Result<()> {
-        match self {
-            MissingCommand::Build { package, target } => anyhow::bail!(
-                "Failed to find {package} binary. Run `cargo build {target_args}-p {package}` to build it.",
-                target_args =
-                    target.map_or(String::new(), |target| format!("--target {} ", target)),
-            ),
-            MissingCommand::Run {
-                description,
-                package,
-            } => anyhow::bail!(
-                "Failed to find {}. Run `cargo run -p {}` to create it.",
-                description,
-                package
-            ),
-            MissingCommand::Xtask {
-                description,
-                xtask_args: args,
-            } => {
-                anyhow::bail!(
-                    "Failed to find {}. Run `cargo xtask {}` to create it.",
-                    description,
-                    args.join(" ")
-                )
-            }
-            MissingCommand::XFlowey {
-                description,
-                xflowey_args: args,
-            } => anyhow::bail!(
-                "Failed to find {}. Run `cargo xflowey {}` to create it.",
-                description,
-                args.join(" ")
-            ),
-            MissingCommand::Restore { description } => {
-                anyhow::bail!(
-                    "Failed to find {}. Run `cargo xflowey restore-packages`.",
-                    description
-                )
-            }
-            MissingCommand::Custom { description, cmd } => {
-                anyhow::bail!(
-                    "Failed to find {}. Run `{}` to create it.",
-                    description,
-                    cmd
-                )
-            }
-        }
+    let exe_path = current_exe
+        .parent()
+        .context("current exe has no parent")?
+        .join(Path::new(name).with_extension(EXE_EXTENSION));
+    if !exe_path.exists() {
+        anyhow::bail!("{} not found", exe_path.display());
     }
+    Ok(exe_path)
+}
+
+/// Attempts to find the path to a rust executable built by Cargo using a path
+/// constructed from the repo root and the default target directory. The build
+/// profile is inferred from the current exe path if not specified.
+pub fn get_executable_path_artifact(
+    target: &target_lexicon::Triple,
+    build_profile: Option<&str>,
+    filename: &str,
+) -> anyhow::Result<PathBuf> {
+    let exe_path = get_repo_root()
+        .join("target")
+        .join(target.to_string())
+        .join(build_profile.unwrap_or_else(|| cargo_build_profile()))
+        .join(filename);
+    if !exe_path.exists() {
+        anyhow::bail!("{} not found", exe_path.display());
+    }
+    Ok(exe_path)
+}
+
+fn get_vmm_test_image_path(filename: &str, name: &str) -> Result<PathBuf, anyhow::Error> {
+    let test_images_dir =
+        std::env::var(VMM_TEST_IMAGES_ENV_VAR).context("test images dir env var not set")?;
+    let path = PathBuf::from(test_images_dir).join(filename);
+    if !path.exists() {
+        anyhow::bail!("missing {} at {}", name, path.display())
+    }
+    Ok(path)
 }

@@ -16,7 +16,7 @@ pub struct OpenvmmVhostBuildParams {
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmVhostOutput {
     pub bin: PathBuf,
-    pub dbg: PathBuf,
+    pub dbg: Option<PathBuf>,
 }
 
 impl Artifact for OpenvmmVhostOutput {}
@@ -62,10 +62,7 @@ impl FlowNode for Node {
                 move |rt| {
                     let output = match rt.read(output) {
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            OpenvmmVhostOutput {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            OpenvmmVhostOutput { bin, dbg }
                         }
                         _ => unreachable!("openvmm_vhost is Linux-only"),
                     };

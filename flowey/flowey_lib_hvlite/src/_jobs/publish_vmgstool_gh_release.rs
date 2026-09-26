@@ -43,9 +43,11 @@ impl SimpleFlowNode for Node {
                             fs_err::hard_link(&bin, &bin_name)?;
                             files.push((bin_name.absolute()?, None));
 
-                            let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
-                            fs_err::hard_link(&dbg, &dbg_name)?;
-                            files.push((dbg_name.absolute()?, None));
+                            if let Some(dbg) = dbg {
+                                let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
+                                fs_err::hard_link(&dbg, &dbg_name)?;
+                                files.push((dbg_name.absolute()?, None));
+                            }
                         }
                         VmgstoolOutput::WindowsBin { exe, pdb } => {
                             let exe_name = PathBuf::from(format!("vmgstool-{target}.exe"));

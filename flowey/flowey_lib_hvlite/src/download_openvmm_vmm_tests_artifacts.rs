@@ -6,11 +6,10 @@
 //! If persistent storage is available, caches downloaded artifacts locally.
 
 use flowey::node::prelude::*;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::vmm_test_image_from_filename;
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
-use vmm_test_images::CONTAINER;
-use vmm_test_images::KnownTestArtifacts;
-use vmm_test_images::STORAGE_ACCOUNT;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CustomDiskPolicy {
@@ -38,7 +37,7 @@ flowey_config! {
 flowey_request! {
     pub enum Request {
         /// Download test artifacts into the download folder
-        Download(Vec<KnownTestArtifacts>),
+        Download(Vec<ErasedVmmTestImage>),
         /// Get path to folder containing all downloaded artifacts
         GetDownloadFolder(WriteVar<PathBuf>),
     }
@@ -144,7 +143,7 @@ impl FlowNodeWithConfig for Node {
                         continue;
                     };
 
-                    if let Some(vhd) = KnownTestArtifacts::from_filename(filename) {
+                    if let Some(vhd) = vmm_test_image_from_filename(filename) {
                         let size = e.metadata()?.len();
                         let expected_size = vhd.file_size();
                         if size != expected_size {
@@ -346,7 +345,7 @@ fn download_blobs_from_azure(
     //
     // Use azcopy to download the files
     //
-    let url = format!("https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/*");
+    let url = petri_artifacts_vmm_test::artifacts::blob_storage_url();
 
     let include_path = files_to_download
         .into_iter()

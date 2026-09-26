@@ -178,53 +178,18 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 5
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 0
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 6
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 1
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 2
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 1
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 15
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 2
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 5
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 0
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 16
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 8
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 3
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 9
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 13
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 10
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 14
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 13
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 4
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 2
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 5
       shell: bash
     - name: download artifacts from github actions run
       run: |-
@@ -250,6 +215,41 @@ jobs:
       run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 12
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 12
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 9
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 13
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 10
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 14
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 1
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 15
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 0
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 16
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 5
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 0
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 6
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 1
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 2
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 0 flowey_lib_hvlite::resolve_openvmm_test_initrd 0

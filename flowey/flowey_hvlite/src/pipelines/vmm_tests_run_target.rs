@@ -13,9 +13,10 @@ use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::parse_vmm_test_image;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use vmm_test_images::KnownTestArtifacts;
 
 /// Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
 #[derive(clap::Args)]
@@ -35,8 +36,8 @@ pub struct VmmTestsRunTargetCli {
     filter: String,
 
     /// The test artifacts to download.
-    #[clap(long, value_delimiter = ',')]
-    artifacts: Vec<KnownTestArtifacts>,
+    #[clap(long, value_delimiter = ',', value_parser = parse_vmm_test_image)]
+    artifacts: Vec<ErasedVmmTestImage>,
 
     /// Prep steps variants to run
     #[clap(long, value_delimiter = ',')]

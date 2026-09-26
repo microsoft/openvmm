@@ -22,7 +22,7 @@ pub enum TmkVmmOutput {
         #[serde(rename = "tmk_vmm")]
         bin: PathBuf,
         #[serde(rename = "tmk_vmm.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
 }
 
@@ -82,10 +82,7 @@ impl FlowNode for Node {
                             TmkVmmOutput::WindowsBin { exe, pdb }
                         }
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            TmkVmmOutput::LinuxBin {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            TmkVmmOutput::LinuxBin { bin, dbg }
                         }
                         _ => unreachable!(),
                     };

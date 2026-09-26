@@ -2014,6 +2014,8 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm_vhost" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-openvmm_vhost' --is-raw-string update
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-prep_steps"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-prep_steps" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-prep_steps' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-vmm-perf-runner"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-perf-runner" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-musl-vmm-perf-runner' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-musl-vmm-tests-archive"
@@ -2024,8 +2026,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-openvmm" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-openvmm_vhost" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-openvmm_vhost' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-prep_steps"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-prep_steps" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-prep_steps' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-vmgs_lib"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmgs_lib" | $FLOWEY_BIN v 9 'artifact_publish_from_x64-linux-vmgs_lib' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-linux-vmgstool"
@@ -2329,6 +2329,9 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-openvmm_vhost
     displayName: 🌼📦 Publish x64-linux-musl-openvmm_vhost
     artifact: x64-linux-musl-openvmm_vhost
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-prep_steps
+    displayName: 🌼📦 Publish x64-linux-musl-prep_steps
+    artifact: x64-linux-musl-prep_steps
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-musl-vmm-perf-runner
     displayName: 🌼📦 Publish x64-linux-musl-vmm-perf-runner
     artifact: x64-linux-musl-vmm-perf-runner
@@ -2344,9 +2347,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-openvmm_vhost
     displayName: 🌼📦 Publish x64-linux-openvmm_vhost
     artifact: x64-linux-openvmm_vhost
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-prep_steps
-    displayName: 🌼📦 Publish x64-linux-prep_steps
-    artifact: x64-linux-prep_steps
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-linux-vmgs_lib
     displayName: 🌼📦 Publish x64-linux-vmgs_lib
     artifact: x64-linux-vmgs_lib
@@ -2404,6 +2404,8 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-openvmm_vhost' --is-raw-string update
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-prep_steps"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-prep_steps" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-prep_steps' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-musl-vmm-perf-runner' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-musl-vmm-tests-archive"
@@ -2414,8 +2416,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-openvmm" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-openvmm' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-openvmm_vhost"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-openvmm_vhost" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-openvmm_vhost' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-prep_steps"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-prep_steps" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-prep_steps' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-vmgs_lib"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmgs_lib" | $FLOWEY_BIN v 8 'artifact_publish_from_aarch64-linux-vmgs_lib' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-linux-vmgstool"
@@ -2715,6 +2715,9 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-openvmm_vhost
     displayName: 🌼📦 Publish aarch64-linux-musl-openvmm_vhost
     artifact: aarch64-linux-musl-openvmm_vhost
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-prep_steps
+    displayName: 🌼📦 Publish aarch64-linux-musl-prep_steps
+    artifact: aarch64-linux-musl-prep_steps
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-musl-vmm-perf-runner
     displayName: 🌼📦 Publish aarch64-linux-musl-vmm-perf-runner
     artifact: aarch64-linux-musl-vmm-perf-runner
@@ -2730,9 +2733,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-openvmm_vhost
     displayName: 🌼📦 Publish aarch64-linux-openvmm_vhost
     artifact: aarch64-linux-openvmm_vhost
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-prep_steps
-    displayName: 🌼📦 Publish aarch64-linux-prep_steps
-    artifact: aarch64-linux-prep_steps
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-linux-vmgs_lib
     displayName: 🌼📦 Publish aarch64-linux-vmgs_lib
     artifact: aarch64-linux-vmgs_lib
@@ -4549,6 +4549,11 @@ jobs:
       artifact: x64-linux-musl-pipette
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette
   - task: DownloadPipelineArtifact@2
+    displayName: 🌼📦 Download x64-linux-musl-prep_steps
+    inputs:
+      artifact: x64-linux-musl-prep_steps
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-prep_steps
+  - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-musl-tmk_vmm
     inputs:
       artifact: x64-linux-musl-tmk_vmm
@@ -4563,11 +4568,6 @@ jobs:
     inputs:
       artifact: x64-linux-openvmm_vhost
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-openvmm_vhost
-  - task: DownloadPipelineArtifact@2
-    displayName: 🌼📦 Download x64-linux-prep_steps
-    inputs:
-      artifact: x64-linux-prep_steps
-      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-prep_steps
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-linux-vmm-tests-archive
     inputs:
@@ -4604,10 +4604,10 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/aarch64-linux-musl-pipette" | $FLOWEY_BIN v 19 'artifact_use_from_aarch64-linux-musl-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-guest_test_uefi" | $FLOWEY_BIN v 19 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-pipette" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-prep_steps" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-prep_steps' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-musl-tmk_vmm" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-openvmm" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-openvmm_vhost" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-openvmm_vhost' --is-raw-string update
-      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-prep_steps" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-prep_steps' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-linux-vmm-tests-archive" | $FLOWEY_BIN v 19 'artifact_use_from_x64-linux-vmm-tests-archive' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-tmks" | $FLOWEY_BIN v 19 'artifact_use_from_x64-tmks' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-pipette" | $FLOWEY_BIN v 19 'artifact_use_from_x64-windows-pipette' --is-raw-string update
@@ -4705,11 +4705,11 @@ jobs:
       EOF
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 9
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 5
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 2
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 0
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 8
     displayName: downloading VMM test disk images
@@ -4719,10 +4719,10 @@ jobs:
     displayName: unpack openvmm-test-linux archives
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
-  - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
-    displayName: unpack openvmm-test-virtio-win archive
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_qemu 0
     displayName: unpack QEMU archive
+  - bash: $(FLOWEY_BIN) e 19 flowey_lib_hvlite::resolve_openvmm_test_virtio_win 0
+    displayName: unpack openvmm-test-virtio-win archive
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_hvlite::init_vmm_tests_content_dir 0
@@ -4738,7 +4738,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 6
+      $(FLOWEY_BIN) e 19 flowey_core::pipeline::artifact::resolve 3
     displayName: generate nextest command
   - bash: |-
       set -e
@@ -4969,13 +4969,13 @@ jobs:
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 15
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 11
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 18 flowey_core::pipeline::artifact::resolve 7
     displayName: remove leftover Hyper-V VMs
@@ -5289,13 +5289,13 @@ jobs:
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 15
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 11
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 7
       $(FLOWEY_BIN) e 17 flowey_core::pipeline::artifact::resolve 8
@@ -5603,13 +5603,13 @@ jobs:
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 14
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 15
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 13
-      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 11
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 4
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 5
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 6
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 1
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 2
+      $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 3
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 0
       $(FLOWEY_BIN) e 16 flowey_core::pipeline::artifact::resolve 7
     displayName: remove leftover Hyper-V VMs

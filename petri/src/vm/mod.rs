@@ -131,10 +131,10 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         use petri_artifacts_common::artifacts as common_artifacts;
         match (os_flavor, arch) {
             (OsFlavor::Linux, MachineArch::X86_64) => resolver
-                .require(common_artifacts::PIPETTE_LINUX_X64)
+                .require(common_artifacts::PIPETTE_LINUX_X64_MUSL)
                 .erase(),
             (OsFlavor::Linux, MachineArch::Aarch64) => resolver
-                .require(common_artifacts::PIPETTE_LINUX_AARCH64)
+                .require(common_artifacts::PIPETTE_LINUX_AARCH64_MUSL)
                 .erase(),
             (OsFlavor::Windows, MachineArch::X86_64) => resolver
                 .require(common_artifacts::PIPETTE_WINDOWS_X64)

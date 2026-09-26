@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+mod artifacts;
+mod resolver;
+
 use anyhow::Context as _;
 use std::ffi::OsStr;
 use std::io::Read;
@@ -65,7 +68,7 @@ impl CcaRuntimeArtifacts {
             ("cca::ROOTFS", self.rootfs_file.get()),
             ("cca::E2FSCK", self.e2fsck_bin.get()),
             ("cca::RESIZE2FS", self.resize2fs_bin.get()),
-            ("tmks::TMK_VMM_LINUX_AARCH64", self.tmk_vmm_bin.get()),
+            ("tmks::TMK_VMM_LINUX_AARCH64_MUSL", self.tmk_vmm_bin.get()),
             ("tmks::SIMPLE_TMK_AARCH64", self.simple_tmk_bin.get()),
             ("cca::GUEST_DISK", self.guest_disk.get()),
             ("cca::PLANE0_LINUX_IMAGE", self.plane0_linux_image.get()),
@@ -77,39 +80,21 @@ impl CcaRuntimeArtifacts {
 
 fn resolve_cca_runtime(resolver: &petri::ArtifactResolver<'_>) -> Option<CcaRuntimeArtifacts> {
     Some(CcaRuntimeArtifacts {
-        shrinkwrap_exe: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::SHRINKWRAP)
-            .erase(),
-        venv_dir: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::VENV)
-            .erase(),
-        rootfs_file: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::ROOTFS)
-            .erase(),
-        e2fsck_bin: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::E2FSCK)
-            .erase(),
-        resize2fs_bin: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::RESIZE2FS)
-            .erase(),
+        shrinkwrap_exe: resolver.require(artifacts::SHRINKWRAP).erase(),
+        venv_dir: resolver.require(artifacts::VENV).erase(),
+        rootfs_file: resolver.require(artifacts::ROOTFS).erase(),
+        e2fsck_bin: resolver.require(artifacts::E2FSCK).erase(),
+        resize2fs_bin: resolver.require(artifacts::RESIZE2FS).erase(),
         tmk_vmm_bin: resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64)
+            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL)
             .erase(),
         simple_tmk_bin: resolver
             .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
             .erase(),
-        guest_disk: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::GUEST_DISK)
-            .erase(),
-        plane0_linux_image: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::PLANE0_LINUX_IMAGE)
-            .erase(),
-        kvmtool_efi: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::KVMTOOL_EFI)
-            .erase(),
-        lkvm: resolver
-            .require(petri_artifacts_vmm_test::artifacts::cca::LKVM)
-            .erase(),
+        guest_disk: resolver.require(artifacts::GUEST_DISK).erase(),
+        plane0_linux_image: resolver.require(artifacts::PLANE0_LINUX_IMAGE).erase(),
+        kvmtool_efi: resolver.require(artifacts::KVMTOOL_EFI).erase(),
+        lkvm: resolver.require(artifacts::LKVM).erase(),
     })
 }
 
@@ -708,11 +693,7 @@ fn write_visible_output(line: &[u8], logged_len: &mut usize, output_send: &mpsc:
 petri::test_sync!(cca_runtime, resolve_cca_runtime);
 
 fn main() {
-    petri::test_main(|name, requirements| {
-        requirements.resolve(
-            petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new(
-                name,
-            ),
-        )
+    petri::test_main(|_name, requirements| {
+        requirements.resolve(resolver::OpenvmmCcaKnownPathsTestArtifactResolver::new())
     })
 }

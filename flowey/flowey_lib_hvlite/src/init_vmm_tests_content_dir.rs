@@ -19,62 +19,467 @@ use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::common::CommonArch;
-use crate::common::CommonTriple;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use flowey::node::prelude::*;
+use petri_artifacts_common::artifacts::*;
+use petri_artifacts_core::ArtifactId;
+use petri_artifacts_core::ArtifactTarget;
+use petri_artifacts_core::AsArtifactHandle;
+use petri_artifacts_vmm_test::artifacts::*;
 
-#[macro_export]
 macro_rules! define_vmm_tests_built_artifacts {
     (
-        $($artifact:ident => $output:ty),* $(,)?
+        $name:ident,
+        $($artifact:ident(
+            $($variant:ident(
+                ($output_let_expr:expr, $member:ident $(, $none_member:ident)*),
+                $artifact_ty:ty
+            )),* $(,)?
+        ) => $output:ty),* $(,)?
     ) => {
         ::paste::paste! {
-            #[derive(Serialize, Deserialize, Default)]
-            pub struct VmmTestsBuiltArtifacts {
-                $(pub $artifact: Option<::flowey::node::prelude::ReadVar<$output>>,)*
+            #[derive(Serialize, Deserialize)]
+            pub struct $name<C = VarNotClaimed> {$($(
+                pub [<$artifact _ $variant>]: Option<::flowey::node::prelude::ReadVar<$output, C>>,
+            )*)*}
+
+            impl Default for $name<VarNotClaimed> {
+                fn default() -> Self {
+                    Self {$($(
+                        [<$artifact _ $variant>]: None,
+                    )*)*}
+                }
             }
 
-            #[derive(Serialize, Deserialize, Default)]
-            pub struct VmmTestsBuiltArtifactsWrite {
-                $(pub $artifact: Option<::flowey::node::prelude::WriteVar<$output>>,)*
+            impl $name<VarNotClaimed> {
+                pub fn claim(self, ctx: &mut StepCtx<'_>) -> $name<VarClaimed> {
+                    let Self {$($(
+                        [<$artifact _ $variant>],
+                    )*)*} = self;
+                    $name {$($(
+                        [<$artifact _ $variant>]: [<$artifact _ $variant>].claim(ctx),
+                    )*)*}
+                }
+
+                $(pub fn $artifact(&mut self, target: ArtifactTarget) -> ::anyhow::Result<&mut Option<::flowey::node::prelude::ReadVar<$output>>> {
+                    match &target {
+                        $($artifact_ty::TARGET => Ok(&mut self.[<$artifact _ $variant>]),)*
+                        _ if let Some(target) = retry_as_musl(target.clone()) => {
+                            return self.$artifact(target);
+                        }
+                        _ => Err(anyhow::anyhow!("{} {}", target, concat!("does not exist for ", stringify!($artifact)))),
+                    }
+                })*
+
+                $($(pub fn [<$artifact _ $variant _target>]() -> ::target_lexicon::Triple {
+                    $artifact_ty::TARGET.target_triple().expect("no target triple for artifact")
+                })*)*
+            }
+
+            impl $name<VarClaimed> {
+                pub fn write(self, rt: &mut RustRuntimeServices<'_>, test_content_dir: impl AsRef<Path>) -> ::anyhow::Result<()> {
+                    let Self {$($(
+                        [<$artifact _ $variant>],
+                    )*)*} = self;
+
+
+                    $($(if let Some(artifact) = [<$artifact _ $variant>] {
+                        let dst = test_content_dir
+                            .as_ref()
+                            .join($artifact_ty::relative_path());
+
+                        #[expect(clippy::allow_attributes)]
+                        #[allow(irrefutable_let_patterns, unused_variables)]
+                        let $output_let_expr = rt.read(artifact) else {
+                            ::anyhow::bail!(concat!(
+                                "unexpected variant of ",
+                                stringify!($output),
+                                " for ",
+                                stringify!([<$artifact _ $variant>])
+                            ));
+                        };
+
+                        fs_err::create_dir_all(dst.parent().unwrap())?;
+                        fs_err::copy($member, &dst)?;
+                        dst.make_executable()?;
+                    })*)*
+
+                    Ok(())
+                }
+            }
+
+            #[derive(Serialize, Deserialize)]
+            pub struct [<$name Write>]<C = VarNotClaimed> {$($(
+                pub [<$artifact _ $variant>]: Option<::flowey::node::prelude::WriteVar<$output, C>>,
+            )*)*}
+
+            impl Default for [<$name Write>]<VarNotClaimed> {
+                fn default() -> Self {
+                    Self {$($(
+                        [<$artifact _ $variant>]: None,
+                    )*)*}
+                }
+            }
+
+            impl [<$name Write>]<VarNotClaimed> {
+                pub fn claim(self, ctx: &mut StepCtx<'_>) -> [<$name Write>]<VarClaimed> {
+                    let Self {$($(
+                        [<$artifact _ $variant>],
+                    )*)*} = self;
+                    [<$name Write>] {$($(
+                        [<$artifact _ $variant>]: [<$artifact _ $variant>].claim(ctx),
+                    )*)*}
+                }
+            }
+
+            impl [<$name Write>]<VarClaimed> {
+                pub fn resolve(self, rt: &mut RustRuntimeServices<'_>, test_content_dir: impl AsRef<Path>) -> ::anyhow::Result<()> {
+                    let Self {$($(
+                        [<$artifact _ $variant>],
+                    )*)*} = self;
+
+
+                    $($(if let Some(artifact) = [<$artifact _ $variant>] {
+                        let $member = test_content_dir
+                            .as_ref()
+                            .join($artifact_ty::relative_path());
+
+                        if $member.exists() {
+                            $(let $none_member = None;)*
+                            rt.write(
+                                artifact,
+                                &$output_let_expr,
+                            )
+                        } else {
+                            anyhow::bail!("{} not found", $member.display());
+                        }
+                    })*)*
+
+                    Ok(())
+                }
             }
 
             #[derive(Serialize, Deserialize, Default, Debug)]
-            pub struct VmmTestsBuiltArtifactsSelections {
-                $(pub $artifact: bool,)*
+            pub struct [<$name Selections>] {$($(
+                pub [<$artifact _ $variant>]: bool,
+            )*)*}
+
+            impl [<$name Selections>] {
+                pub fn resolve_artifact(&mut self, id: &str) -> bool {
+                    match id {
+                        $($($artifact_ty::GLOBAL_UNIQUE_ID => {
+                            self.[<$artifact _ $variant>] = true;
+                            true
+                        })*)*
+                        _ => false
+                    }
+                }
+
+                $(pub fn [<$artifact _for>](&self, target: ArtifactTarget) -> ::anyhow::Result<bool>{
+                    match &target {
+                        $($artifact_ty::TARGET => {
+                            Ok(self.[<$artifact _ $variant>])
+                        })*
+                        _ => Err(anyhow::anyhow!("{} {}", target, concat!("does not exist for ", stringify!($artifact)))),
+                    }
+                }
+
+                pub fn [<require_ $artifact _for>](&mut self, target: ArtifactTarget) -> ::anyhow::Result<PathBuf>{
+                    match &target {
+                        $($artifact_ty::TARGET => {
+                            self.[<$artifact _ $variant>] = true;
+                            Ok($artifact_ty::relative_path())
+                        })*
+                        _ if let Some(target) = retry_as_musl(target.clone()) => {
+                            self.[<require_ $artifact _for>](target)
+                        }
+                        _ => Err(anyhow::anyhow!("{} {}", target, concat!("does not exist for ", stringify!($artifact)))),
+                    }
+                })*
+
+                pub fn new_var_set(&self, ctx: &mut ::flowey::node::prelude::NodeCtx<'_>) -> (
+                    $name,
+                    [<$name Write>],
+                ) {
+                    let mut built_artifacts_read = $name::default();
+                    let mut built_artifacts_write = [<$name Write>]::default();
+
+                    $($(if self.[<$artifact _ $variant>] {
+                        let (read_var, write_var) = ctx.new_var();
+                        built_artifacts_read.[<$artifact _ $variant>] = Some(read_var);
+                        built_artifacts_write.[<$artifact _ $variant>] = Some(write_var);
+                    })*)*
+
+                    (built_artifacts_read, built_artifacts_write)
+                }
+
+                pub fn handles(&self) -> Vec<::petri_artifacts_core::ErasedArtifactHandle> {
+                    let mut handles = Vec::new();
+
+                    $($(if self.[<$artifact _ $variant>] {
+                        handles.push($artifact_ty.erase())
+                    })*)*
+
+                    handles
+                }
             }
+
         }
     };
 }
 
+// Try again with musl target, since some artifacts may only be built for musl
+// to save time. Binaries targeting musl can also run in gnu environments.
+fn retry_as_musl(target: ArtifactTarget) -> Option<ArtifactTarget> {
+    let ArtifactTarget::Triple(mut triple) = target else {
+        return None;
+    };
+
+    if matches!(
+        triple.operating_system,
+        target_lexicon::OperatingSystem::Linux
+    ) && !matches!(triple.environment, target_lexicon::Environment::Musl)
+    {
+        triple.environment = target_lexicon::Environment::Musl;
+        Some(ArtifactTarget::Triple(triple))
+    } else {
+        None
+    }
+}
+
 define_vmm_tests_built_artifacts!(
-    // artifacts used at the pipeline level
-    flowey_hvlite => FloweyHvliteOutput,
-    nextest_vmm_tests_archive => NextestVmmTestsArchive,
-    incubator => IncubatorOutput,
-    prep_steps => PrepStepsOutput,
-    test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
-    // artifacts used internally in petri
-    openvmm => OpenvmmOutput,
-    openvmm_vhost => OpenvmmVhostOutput,
-    pipette_windows => PipetteOutput,
-    // Specify arch for pipette here as a hack to bring up qemu support
-    // TODO: have a VmmTestsBuiltArtifacts for each target with corresponding
-    // test content sub-dir.
-    pipette_linux_musl_x64 => PipetteOutput,
-    pipette_linux_musl_aarch64 => PipetteOutput,
-    guest_test_uefi => GuestTestUefiOutput,
-    openhcl_standard => OpenhclIgvmOutput,
-    openhcl_standard_dev => OpenhclIgvmOutput,
-    openhcl_cvm => OpenhclIgvmOutput,
-    openhcl_linux_direct => OpenhclIgvmOutput,
-    tmks => TmksOutput,
-    tmk_vmm => TmkVmmOutput,
-    tmk_vmm_linux_musl => TmkVmmOutput,
-    vmgstool => VmgstoolOutput,
-    vmgstool_dev => VmgstoolOutput,
-    tpm_guest_tests_windows => TpmGuestTestsOutput,
-    tpm_guest_tests_linux => TpmGuestTestsOutput,
+    VmmTestsBuiltArtifacts,
+    // Artifacts used at the pipeline level.
+    flowey_hvlite(
+        windows_x64(
+            (FloweyHvliteOutput::WindowsBin { exe, pdb }, exe, pdb),
+            host_tools::FLOWEY_HVLITE_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (FloweyHvliteOutput::WindowsBin { exe, pdb }, exe, pdb),
+            host_tools::FLOWEY_HVLITE_WINDOWS_AARCH64
+        ),
+        linux_x64(
+            (FloweyHvliteOutput::LinuxBin { bin, dbg}, bin, dbg),
+            host_tools::FLOWEY_HVLITE_LINUX_X64
+        ),
+    ) => FloweyHvliteOutput,
+    nextest_vmm_tests_archive(
+        windows_x64(
+            (NextestVmmTestsArchive { archive_file }, archive_file),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (NextestVmmTestsArchive { archive_file }, archive_file),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_WINDOWS_AARCH64
+        ),
+        linux_x64(
+            (NextestVmmTestsArchive { archive_file }, archive_file),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64
+        ),
+        linux_musl_x64(
+            (NextestVmmTestsArchive { archive_file }, archive_file),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL
+        ),
+        linux_musl_aarch64(
+            (NextestVmmTestsArchive { archive_file }, archive_file),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL
+        ),
+    ) => NextestVmmTestsArchive,
+    incubator(
+        linux_x64(
+            (IncubatorOutput { bin, dbg}, bin, dbg),
+            host_tools::INCUBATOR_LINUX_X64
+        ),
+    ) => IncubatorOutput,
+    prep_steps(
+        windows_x64(
+            (PrepStepsOutput::WindowsBin { exe, pdb }, exe, pdb),
+            host_tools::PREP_STEPS_WINDOWS_X64
+        ),
+        linux_musl_x64(
+            (PrepStepsOutput::LinuxBin { bin, dbg}, bin, dbg),
+            host_tools::PREP_STEPS_LINUX_X64_MUSL
+        ),
+    ) => PrepStepsOutput,
+    test_igvm_agent_rpc_server(
+        windows_x64(
+            (TestIgvmAgentRpcServerOutput { exe, pdb }, exe, pdb),
+            host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64
+        ),
+    ) => TestIgvmAgentRpcServerOutput,
+
+    // Artifacts used internally by petri.
+    openvmm(
+        windows_x64(
+            (OpenvmmOutput::WindowsBin { exe, pdb }, exe, pdb),
+            OPENVMM_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (OpenvmmOutput::WindowsBin { exe, pdb }, exe, pdb),
+            OPENVMM_WINDOWS_AARCH64
+        ),
+        linux_x64(
+            (OpenvmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            OPENVMM_LINUX_X64
+        ),
+        linux_aarch64(
+            (OpenvmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            OPENVMM_LINUX_AARCH64
+        ),
+        linux_musl_x64(
+            (OpenvmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            OPENVMM_LINUX_X64_MUSL
+        ),
+        linux_musl_aarch64(
+            (OpenvmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            OPENVMM_LINUX_AARCH64_MUSL
+        ),
+    ) => OpenvmmOutput,
+    openvmm_vhost(
+        linux_x64(
+            (OpenvmmVhostOutput { bin, dbg}, bin, dbg),
+            OPENVMM_VHOST_LINUX_X64
+        ),
+        linux_aarch64(
+            (OpenvmmVhostOutput { bin, dbg}, bin, dbg),
+            OPENVMM_VHOST_LINUX_AARCH64
+        ),
+        linux_musl_x64(
+            (OpenvmmVhostOutput { bin, dbg}, bin, dbg),
+            OPENVMM_VHOST_LINUX_X64_MUSL
+        ),
+        linux_musl_aarch64(
+            (OpenvmmVhostOutput { bin, dbg}, bin, dbg),
+            OPENVMM_VHOST_LINUX_AARCH64_MUSL
+        ),
+    ) => OpenvmmVhostOutput,
+    pipette(
+        windows_x64(
+            (PipetteOutput::WindowsBin { exe, pdb }, exe, pdb),
+            PIPETTE_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (PipetteOutput::WindowsBin { exe, pdb }, exe, pdb),
+            PIPETTE_WINDOWS_AARCH64
+        ),
+        linux_musl_x64(
+            (PipetteOutput::LinuxBin { bin, dbg}, bin, dbg),
+            PIPETTE_LINUX_X64_MUSL
+        ),
+        linux_musl_aarch64(
+            (PipetteOutput::LinuxBin { bin, dbg}, bin, dbg),
+            PIPETTE_LINUX_AARCH64_MUSL
+        ),
+    ) => PipetteOutput,
+    guest_test_uefi(
+        x64(
+            (GuestTestUefiOutput { img, efi, pdb }, img, efi, pdb),
+            test_vhd::GUEST_TEST_UEFI_X64
+        ),
+        aarch64(
+            (GuestTestUefiOutput { img, efi, pdb }, img, efi, pdb),
+            test_vhd::GUEST_TEST_UEFI_AARCH64
+        ),
+    ) => GuestTestUefiOutput,
+    openhcl_standard(
+        x64(
+            (OpenhclIgvmOutput::X64 { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_STANDARD_X64
+        ),
+        aarch64(
+            (OpenhclIgvmOutput::Aarch64 { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_STANDARD_AARCH64
+        ),
+    ) => OpenhclIgvmOutput,
+    openhcl_standard_dev(
+        x64(
+            (OpenhclIgvmOutput::X64Devkern { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64
+        ),
+        aarch64(
+            (OpenhclIgvmOutput::Aarch64Devkern { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64
+        ),
+    ) => OpenhclIgvmOutput,
+    openhcl_cvm(
+        x64(
+            (OpenhclIgvmOutput::X64Cvm { igvm_bin, endorsements }, igvm_bin, endorsements),
+            openhcl_igvm::LATEST_CVM_X64
+        ),
+    ) => OpenhclIgvmOutput,
+    openhcl_linux_direct(
+        x64(
+            (OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64
+        ),
+    ) => OpenhclIgvmOutput,
+    tmks(
+        x64(
+            (TmksOutput { bin, dbg}, bin, dbg),
+            tmks::SIMPLE_TMK_X64
+        ),
+        aarch64(
+            (TmksOutput { bin, dbg}, bin, dbg),
+            tmks::SIMPLE_TMK_AARCH64
+        ),
+    ) => TmksOutput,
+    tmk_vmm(
+        windows_x64(
+            (TmkVmmOutput::WindowsBin { exe, pdb }, exe, pdb),
+            tmks::TMK_VMM_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (TmkVmmOutput::WindowsBin { exe, pdb }, exe, pdb),
+            tmks::TMK_VMM_WINDOWS_AARCH64
+        ),
+        linux_musl_x64(
+            (TmkVmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            tmks::TMK_VMM_LINUX_X64_MUSL
+        ),
+        linux_musl_aarch64(
+            (TmkVmmOutput::LinuxBin { bin, dbg}, bin, dbg),
+            tmks::TMK_VMM_LINUX_AARCH64_MUSL
+        ),
+    ) => TmkVmmOutput,
+    vmgstool(
+        windows_x64(
+            (VmgstoolOutput::WindowsBin { exe, pdb }, exe, pdb),
+            vmgstool::VMGSTOOL_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (VmgstoolOutput::WindowsBin { exe, pdb }, exe, pdb),
+            vmgstool::VMGSTOOL_WINDOWS_AARCH64
+        ),
+        linux_x64(
+            (VmgstoolOutput::LinuxBin { bin, dbg}, bin, dbg),
+            vmgstool::VMGSTOOL_LINUX_X64
+        ),
+    ) => VmgstoolOutput,
+    vmgstool_dev(
+        windows_x64(
+            (VmgstoolOutput::WindowsBin { exe, pdb }, exe, pdb),
+            vmgstool::VMGSTOOL_DEV_WINDOWS_X64
+        ),
+        windows_aarch64(
+            (VmgstoolOutput::WindowsBin { exe, pdb }, exe, pdb),
+            vmgstool::VMGSTOOL_DEV_WINDOWS_AARCH64
+        ),
+        linux_x64(
+            (VmgstoolOutput::LinuxBin { bin, dbg}, bin, dbg),
+            vmgstool::VMGSTOOL_DEV_LINUX_X64
+        ),
+    ) => VmgstoolOutput,
+    tpm_guest_tests(
+        windows_x64(
+            (TpmGuestTestsOutput::WindowsBin { exe, pdb }, exe, pdb),
+            guest_tools::TPM_GUEST_TESTS_WINDOWS_X64
+        ),
+        linux_x64(
+            (TpmGuestTestsOutput::LinuxBin { bin, dbg}, bin, dbg),
+            guest_tools::TPM_GUEST_TESTS_LINUX_X64
+        ),
+    ) => TpmGuestTestsOutput,
 );
 
 pub type ResolveVmmTestsBuiltArtifacts =
@@ -108,45 +513,61 @@ macro_rules! vmm_tests_built_artifacts_builder {
                     }))
                 }
 
-                pub fn pair(ctx: &mut ::flowey::node::prelude::NodeCtx<'_>) -> (
-                    $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts,
-                    $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite,
-                ) {
-
-                    $(let ([<$artifact _read>], [<$artifact _write>]) = ctx.new_var();)*
-
-                    let built_artifacts_read = $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts {
-                        $($artifact: Some([<$artifact _read>]),)*
-                        .. Default::default()
-                    };
-
-                    let built_artifacts_write = $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite {
-                        $($artifact: Some([<$artifact _write>]),)*
-                        .. Default::default()
-                    };
-
-                    (built_artifacts_read, built_artifacts_write)
+                pub fn selections() -> $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections {
+                    let mut selections = $crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections::default();
+                    $(selections.$artifact = true;)*
+                    selections
                 }
             }
         }
     };
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct VmmTestsPreBuiltArtifactsSelections {
-    // Specify arch for initrd and kernel here as a hack to bring up qemu support
-    // TODO: have a VmmTestsPreBuiltArtifacts for each target with corresponding
-    // test content sub-dir.
-    pub test_linux_initrd_x64: bool,
-    pub test_linux_kernel_x64: bool,
-    pub test_linux_initrd_aarch64: bool,
-    pub test_linux_kernel_aarch64: bool,
-    pub test_linux_bzimage_x64: bool,
-    pub uefi: bool,
-    pub virtio_win_drivers: bool,
-    pub release_igvm: bool,
-    pub qemu_system_aarch64: bool,
-}
+define_vmm_tests_built_artifacts!(
+    VmmTestsPreBuiltArtifacts,
+    test_linux_kernel(
+        x64(
+            (src, src),
+            loadable::LINUX_DIRECT_TEST_KERNEL_X64
+        ),
+        aarch64(
+            (src, src),
+            loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64
+        ),
+    ) => PathBuf,
+    test_linux_initrd(
+        x64(
+            (src, src),
+            loadable::LINUX_DIRECT_TEST_INITRD_X64
+        ),
+        aarch64(
+            (src, src),
+            loadable::LINUX_DIRECT_TEST_INITRD_AARCH64
+        ),
+    ) => PathBuf,
+    test_linux_bzimage(
+        x64(
+            (src, src),
+            loadable::LINUX_DIRECT_TEST_BZIMAGE_X64
+        ),
+    ) => PathBuf,
+    uefi(
+        x64(
+            (src, src),
+            loadable::UEFI_FIRMWARE_X64
+        ),
+        aarch64(
+            (src, src),
+            loadable::UEFI_FIRMWARE_AARCH64
+        ),
+    ) => PathBuf,
+    qemu_system_aarch64(
+        linux_x64(
+            (src, src),
+            QEMU_SYSTEM_AARCH64_LINUX_X64
+        ),
+    ) => PathBuf,
+);
 
 flowey_request! {
     pub struct Request {
@@ -168,6 +589,11 @@ flowey_request! {
         pub is_repo_root: bool,
         /// Whether to copy incubator profiles into the test content directory.
         pub needs_incubator_profiles: bool,
+
+        // TODO: refactor these last two to use one artifact per arch so that
+        // they can be part of `VmmTestsPreBuiltArtifactsSelections`.
+        pub needs_virtio_win_drivers: bool,
+        pub needs_release_igvm: bool,
 
         pub done: WriteVar<SideEffect>
     }
@@ -196,6 +622,8 @@ impl SimpleFlowNode for Node {
             prebuilt_artifacts,
             is_repo_root,
             needs_incubator_profiles,
+            needs_virtio_win_drivers,
+            needs_release_igvm,
             done,
         } = request;
 
@@ -241,15 +669,45 @@ impl SimpleFlowNode for Node {
             })
         });
 
-        let uefi = prebuilt_artifacts.uefi.then(|| {
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v })
+        let uefi_x64 = prebuilt_artifacts.uefi_x64.then(|| {
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: CommonArch::X86_64,
+                msvm_fd: v,
+            })
+        });
+        let uefi_aarch64 = prebuilt_artifacts.uefi_aarch64.then(|| {
+            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: CommonArch::Aarch64,
+                msvm_fd: v,
+            })
         });
 
-        let virtio_win_dir = prebuilt_artifacts
-            .virtio_win_drivers
+        let qemu_system_aarch64_linux_x64 =
+            prebuilt_artifacts.qemu_system_aarch64_linux_x64.then(|| {
+                ctx.reqv(|v| {
+                    crate::resolve_openvmm_qemu::Request::Get(
+                        crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                        CommonArch::X86_64,
+                        v,
+                    )
+                })
+            });
+
+        let prebuilt_artifacts = VmmTestsPreBuiltArtifacts {
+            test_linux_kernel_x64,
+            test_linux_kernel_aarch64,
+            test_linux_initrd_x64,
+            test_linux_initrd_aarch64,
+            test_linux_bzimage_x64,
+            uefi_x64,
+            uefi_aarch64,
+            qemu_system_aarch64_linux_x64,
+        };
+
+        let virtio_win_dir = needs_virtio_win_drivers
             .then(|| ctx.reqv(crate::resolve_openvmm_test_virtio_win::Request::Get));
 
-        let release_igvm_files = prebuilt_artifacts.release_igvm.then(|| {
+        let release_igvm_files = needs_release_igvm.then(|| {
             ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
                     arch,
@@ -259,108 +717,25 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        let qemu_system_aarch64 = prebuilt_artifacts.qemu_system_aarch64.then(|| {
-            ctx.reqv(|v| {
-                crate::resolve_openvmm_qemu::Request::Get(
-                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
-                    arch,
-                    v,
-                )
-            })
-        });
-
-        let VmmTestsBuiltArtifacts {
-            flowey_hvlite,
-            nextest_vmm_tests_archive,
-            incubator,
-            prep_steps,
-            test_igvm_agent_rpc_server,
-            openvmm,
-            openvmm_vhost,
-            pipette_windows,
-            pipette_linux_musl_x64,
-            pipette_linux_musl_aarch64,
-            guest_test_uefi,
-            openhcl_standard,
-            openhcl_standard_dev,
-            openhcl_cvm,
-            openhcl_linux_direct,
-            tmks,
-            tmk_vmm,
-            tmk_vmm_linux_musl,
-            vmgstool,
-            vmgstool_dev,
-            tpm_guest_tests_windows,
-            tpm_guest_tests_linux,
-        } = built_artifacts;
-
-        let openhcl_igvm_files = [
-            openhcl_standard,
-            openhcl_standard_dev,
-            openhcl_cvm,
-            openhcl_linux_direct,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-
         ctx.emit_rust_step("setting up vmm_tests content dir", |ctx| {
             claim_vars!(
                 ctx,
                 (
                     test_content_dir,
                     openvmm_repo_path,
-                    // built artifacts - pipeline
-                    flowey_hvlite,
-                    nextest_vmm_tests_archive,
-                    incubator,
-                    prep_steps,
-                    test_igvm_agent_rpc_server,
-                    // built artifacts - petri
-                    openvmm,
-                    openvmm_vhost,
-                    pipette_windows,
-                    pipette_linux_musl_x64,
-                    pipette_linux_musl_aarch64,
-                    guest_test_uefi,
-                    openhcl_igvm_files,
-                    tmks,
-                    tmk_vmm,
-                    tmk_vmm_linux_musl,
-                    vmgstool,
-                    vmgstool_dev,
-                    tpm_guest_tests_windows,
-                    tpm_guest_tests_linux,
+                    // built artifacts
+                    built_artifacts,
                     // downloaded artifacts
-                    test_linux_initrd_x64,
-                    test_linux_kernel_x64,
-                    test_linux_initrd_aarch64,
-                    test_linux_kernel_aarch64,
-                    test_linux_bzimage_x64,
-                    uefi,
+                    prebuilt_artifacts,
                     virtio_win_dir,
                     release_igvm_files,
-                    qemu_system_aarch64,
                 )
             );
 
             done.claim(ctx);
 
             move |rt| {
-                read_vars!(
-                    rt,
-                    (
-                        test_linux_initrd_x64,
-                        test_linux_kernel_x64,
-                        test_linux_initrd_aarch64,
-                        test_linux_kernel_aarch64,
-                        test_linux_bzimage_x64,
-                        uefi,
-                        release_igvm_files,
-                        qemu_system_aarch64,
-                        test_content_dir
-                    )
-                );
+                read_vars!(rt, (release_igvm_files, test_content_dir));
 
                 if !test_content_dir.exists() {
                     fs_err::create_dir_all(&test_content_dir)?
@@ -421,311 +796,69 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                if let Some(flowey_hvlite) = flowey_hvlite {
-                    match rt.read(flowey_hvlite) {
-                        FloweyHvliteOutput::WindowsBin { exe, .. } => {
-                            fs_err::copy(exe, test_content_dir.join("flowey_hvlite.exe"))?;
-                        }
-                        FloweyHvliteOutput::LinuxBin { bin, .. } => {
-                            let dst = test_content_dir.join("flowey_hvlite");
-                            fs_err::copy(bin, &dst)?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
+                built_artifacts.write(rt, &test_content_dir)?;
 
-                if let Some(archive) = nextest_vmm_tests_archive {
-                    let NextestVmmTestsArchive { archive_file } = rt.read(archive);
-                    fs_err::copy(archive_file, test_content_dir.join("vmm_tests.tar.zst"))?;
-                }
-
-                if let Some(openvmm) = openvmm {
-                    match rt.read(openvmm) {
-                        OpenvmmOutput::WindowsBin { exe, pdb: _ } => {
-                            fs_err::copy(exe, test_content_dir.join("openvmm.exe"))?;
-                        }
-                        OpenvmmOutput::LinuxBin { bin, dbg: _ } => {
-                            let dst = test_content_dir.join("openvmm");
-                            fs_err::copy(bin, dst.clone())?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
-
-                if let Some(openvmm_vhost) = openvmm_vhost {
-                    let OpenvmmVhostOutput { bin, dbg: _ } = rt.read(openvmm_vhost);
-                    let dst = test_content_dir.join("openvmm_vhost");
-                    fs_err::copy(bin, &dst)?;
-                    dst.make_executable()?;
-                }
-
-                let mut write_pipette = |target: CommonTriple, pipette| -> anyhow::Result<()> {
-                    let target_dir = test_content_dir.join(target.to_string());
-                    let pipette = rt.read(pipette);
-                    fs_err::create_dir_all(&target_dir)?;
-                    match target.as_triple().operating_system {
-                        target_lexicon::OperatingSystem::Windows => {
-                            if let PipetteOutput::WindowsBin { exe, pdb: _ } = pipette {
-                                let dst = target_dir.join("pipette.exe");
-                                fs_err::copy(&exe, &dst)?;
-                            } else {
-                                anyhow::bail!("expected windows bin");
-                            }
-                        }
-                        _ => {
-                            if let PipetteOutput::LinuxBin { bin, dbg: _ } = pipette {
-                                let dst = target_dir.join("pipette");
-                                fs_err::copy(&bin, &dst)?;
-                                dst.make_executable()?;
-                            } else {
-                                anyhow::bail!("expected linux bin");
-                            }
-                        }
-                    }
-
-                    Ok(())
-                };
-
-                if let Some(pipette_windows) = pipette_windows {
-                    write_pipette(
-                        match arch {
-                            CommonArch::X86_64 => CommonTriple::X86_64_WINDOWS_MSVC,
-                            CommonArch::Aarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
-                        },
-                        pipette_windows,
-                    )?;
-                }
-                if let Some(pipette_linux_musl_x64) = pipette_linux_musl_x64 {
-                    write_pipette(CommonTriple::X86_64_LINUX_MUSL, pipette_linux_musl_x64)?;
-                }
-                if let Some(pipette_linux_musl_aarch64) = pipette_linux_musl_aarch64 {
-                    write_pipette(CommonTriple::AARCH64_LINUX_MUSL, pipette_linux_musl_aarch64)?;
-                }
-
-                if let Some(guest_test_uefi) = guest_test_uefi {
-                    let GuestTestUefiOutput {
-                        efi: _,
-                        pdb: _,
-                        img,
-                    } = rt.read(guest_test_uefi);
-                    fs_err::copy(img, test_content_dir.join("guest_test_uefi.img"))?;
-                }
-
-                if let Some(tmks) = tmks {
-                    let TmksOutput { bin, dbg: _ } = rt.read(tmks);
-                    fs_err::copy(bin, test_content_dir.join("simple_tmk"))?;
-                }
-
-                if let Some(tmk_vmm) = tmk_vmm {
-                    match rt.read(tmk_vmm) {
-                        TmkVmmOutput::WindowsBin { exe, .. } => {
-                            fs_err::copy(exe, test_content_dir.join("tmk_vmm.exe"))?;
-                        }
-                        TmkVmmOutput::LinuxBin { bin, .. } => {
-                            let dst = test_content_dir.join("tmk_vmm");
-                            fs_err::copy(bin, &dst)?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
-
-                if let Some(tmk_vmm_linux_musl) = tmk_vmm_linux_musl {
-                    let TmkVmmOutput::LinuxBin { bin, dbg: _ } = rt.read(tmk_vmm_linux_musl) else {
-                        anyhow::bail!("invalid tmk_vmm output")
-                    };
-                    // Note that this overwrites the previous tmk_vmm. That's
-                    // OK, they should be the same. Fix this when the resolver
-                    // can handle multiple different outputs with the same name.
-                    fs_err::copy(bin, test_content_dir.join("tmk_vmm"))?;
-                }
-
-                if let Some(vmgstool) = vmgstool {
-                    match rt.read(vmgstool) {
-                        VmgstoolOutput::WindowsBin { exe, .. } => {
-                            fs_err::copy(exe, test_content_dir.join("vmgstool.exe"))?;
-                        }
-                        VmgstoolOutput::LinuxBin { bin, .. } => {
-                            let dst = test_content_dir.join("vmgstool");
-                            fs_err::copy(bin, &dst)?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
-
-                if let Some(vmgstool_dev) = vmgstool_dev {
-                    match rt.read(vmgstool_dev) {
-                        VmgstoolOutput::WindowsBin { exe, .. } => {
-                            fs_err::copy(exe, test_content_dir.join("vmgstool-dev.exe"))?;
-                        }
-                        VmgstoolOutput::LinuxBin { bin, .. } => {
-                            let dst = test_content_dir.join("vmgstool-dev");
-                            fs_err::copy(bin, &dst)?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
-
-                if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {
-                    let TpmGuestTestsOutput::WindowsBin { exe, .. } =
-                        rt.read(tpm_guest_tests_windows)
-                    else {
-                        anyhow::bail!("expected Windows tpm_guest_tests artifact")
-                    };
-                    fs_err::copy(exe, test_content_dir.join("tpm_guest_tests.exe"))?;
-                }
-
-                if let Some(tpm_guest_tests_linux) = tpm_guest_tests_linux {
-                    let TpmGuestTestsOutput::LinuxBin { bin, .. } = rt.read(tpm_guest_tests_linux)
-                    else {
-                        anyhow::bail!("expected Linux tpm_guest_tests artifact")
-                    };
-                    let dst = test_content_dir.join("tpm_guest_tests");
-                    fs_err::copy(bin, &dst)?;
-                    dst.make_executable()?;
-                }
-
-                if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
-                    let TestIgvmAgentRpcServerOutput { exe, .. } =
-                        rt.read(test_igvm_agent_rpc_server);
-                    fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
-                }
-
-                if let Some(prep_steps) = prep_steps {
-                    match rt.read(prep_steps) {
-                        PrepStepsOutput::WindowsBin { exe, .. } => {
-                            fs_err::copy(exe, test_content_dir.join("prep_steps.exe"))?;
-                        }
-                        PrepStepsOutput::LinuxBin { bin, .. } => {
-                            let dst = test_content_dir.join("prep_steps");
-                            fs_err::copy(bin, &dst)?;
-                            dst.make_executable()?;
-                        }
-                    }
-                }
-
-                if let Some(incubator) = incubator {
-                    let IncubatorOutput { bin, .. } = rt.read(incubator);
-                    fs_err::copy(bin, test_content_dir.join("incubator"))?;
-                }
-
-                for openhcl_igvm in rt.read(openhcl_igvm_files) {
-                    let igvm_bin = openhcl_igvm.igvm_bin();
-                    if let Some(recipe) = openhcl_igvm.recipe() {
-                        fs_err::copy(
-                            igvm_bin,
-                            test_content_dir.join(format!("{}.bin", recipe.non_production_name())),
-                        )?;
-                    } else {
-                        log::warn!("petri doesn't support custom OpenHCL files");
-                    };
-                }
+                prebuilt_artifacts.write(rt, &test_content_dir)?;
 
                 if let Some(release_igvm_files) = release_igvm_files {
-                    let latest_release_version = OpenhclReleaseVersion::latest();
-
                     if let Some(src) = &release_igvm_files.openhcl {
-                        let new_name = format!("{latest_release_version}-x64-openhcl.bin");
-                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                        fs_err::copy(
+                            src,
+                            test_content_dir
+                                .join(openhcl_igvm::LATEST_RELEASE_STANDARD_X64::relative_path()),
+                        )?;
                     }
 
                     if let Some(src) = &release_igvm_files.openhcl_aarch64 {
-                        let new_name = format!("{latest_release_version}-aarch64-openhcl.bin");
-                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                        fs_err::copy(
+                            src,
+                            test_content_dir.join(
+                                openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64::relative_path(),
+                            ),
+                        )?;
                     }
 
                     if let Some(src) = &release_igvm_files.openhcl_direct {
-                        let new_name = format!("{latest_release_version}-x64-direct-openhcl.bin");
-                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                        fs_err::copy(
+                            src,
+                            test_content_dir.join(
+                                openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64::relative_path(),
+                            ),
+                        )?;
                     }
-                }
-
-                if let Some(qemu_system_aarch64) = qemu_system_aarch64 {
-                    fs_err::copy(
-                        qemu_system_aarch64,
-                        test_content_dir.join("qemu-system-aarch64"),
-                    )?;
-                }
-
-                let arch_dir = |arch| match arch {
-                    CommonArch::X86_64 => "x64",
-                    CommonArch::Aarch64 => "aarch64",
-                };
-                if test_linux_initrd_x64.is_some()
-                    || test_linux_kernel_x64.is_some()
-                    || test_linux_bzimage_x64.is_some()
-                {
-                    fs_err::create_dir_all(test_content_dir.join(arch_dir(CommonArch::X86_64)))?;
-                }
-                if test_linux_initrd_aarch64.is_some() || test_linux_kernel_aarch64.is_some() {
-                    fs_err::create_dir_all(test_content_dir.join(arch_dir(CommonArch::Aarch64)))?;
-                }
-                if let Some(test_linux_initrd_x64) = test_linux_initrd_x64 {
-                    fs_err::copy(
-                        test_linux_initrd_x64,
-                        test_content_dir
-                            .join(arch_dir(CommonArch::X86_64))
-                            .join("initrd"),
-                    )?;
-                }
-                if let Some(test_linux_initrd_aarch64) = test_linux_initrd_aarch64 {
-                    fs_err::copy(
-                        test_linux_initrd_aarch64,
-                        test_content_dir
-                            .join(arch_dir(CommonArch::Aarch64))
-                            .join("initrd"),
-                    )?;
-                }
-                if let Some(test_linux_kernel_x64) = test_linux_kernel_x64 {
-                    fs_err::copy(
-                        test_linux_kernel_x64,
-                        test_content_dir
-                            .join(arch_dir(CommonArch::X86_64))
-                            .join("vmlinux"),
-                    )?;
-                }
-                if let Some(test_linux_kernel_aarch64) = test_linux_kernel_aarch64 {
-                    fs_err::copy(
-                        test_linux_kernel_aarch64,
-                        test_content_dir
-                            .join(arch_dir(CommonArch::Aarch64))
-                            .join("Image"),
-                    )?;
-                }
-                if let Some(test_linux_bzimage_x64) = test_linux_bzimage_x64 {
-                    fs_err::copy(
-                        test_linux_bzimage_x64,
-                        test_content_dir
-                            .join(arch_dir(CommonArch::X86_64))
-                            .join("bzImage"),
-                    )?;
-                }
-
-                if let Some(uefi) = uefi {
-                    let uefi_dir = test_content_dir.join(match arch {
-                        CommonArch::Aarch64 => {
-                            "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_CLANGPDB/FV"
-                        }
-                        CommonArch::X86_64 => {
-                            "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV"
-                        }
-                    });
-                    fs_err::create_dir_all(&uefi_dir)?;
-                    fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
                 }
 
                 if let Some(virtio_win_dir) = virtio_win_dir {
                     let src = rt.read(virtio_win_dir);
-                    let dst = test_content_dir.join("virtio-win");
+                    let dst =
+                        test_content_dir.join(virtio_win::VIRTIO_WINDOWS_DRIVERS::relative_path());
                     let _ = fs_err::remove_dir_all(&dst);
                     flowey_lib_common::_util::copy_dir_all(&src, &dst)?;
                 }
 
-                // debug log the current contents of the dir
-                log::debug!("final folder content: {}", test_content_dir.display());
-                for entry in test_content_dir.read_dir()? {
-                    let entry = entry?;
-                    log::debug!("contains: {:?}", entry.file_name());
+                // log the current contents of the dir
+                log::info!("final folder content: {}", test_content_dir.display());
+                fn list_dir(dir: PathBuf, layer: usize) -> anyhow::Result<()> {
+                    if layer > 2
+                        || dir
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| ["temp", "test_results"].contains(&n))
+                    {
+                        log::info!("{}- ...", " ".repeat(layer * 2));
+                        return Ok(());
+                    }
+                    for entry in dir.read_dir()? {
+                        let entry = entry?;
+                        log::info!("{}- {}", " ".repeat(layer * 2), entry.file_name().display());
+                        let subdir = entry.path();
+                        if subdir.is_dir() {
+                            list_dir(subdir, layer + 1)?;
+                        }
+                    }
+                    Ok(())
                 }
+                list_dir(test_content_dir, 0)?;
 
                 Ok(())
             }
@@ -746,18 +879,37 @@ pub mod vmm_tests_artifact_builders {
         VmmTestsArtifactsBuilderLinuxX86,
         (
             // windows build machine
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
+            pipette_windows_x64 => PipetteOutput,
             // linux build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            openvmm_vhost => OpenvmmVhostOutput,
+            nextest_vmm_tests_archive_linux_x64 => NextestVmmTestsArchive,
+            openvmm_linux_x64 => OpenvmmOutput,
+            openvmm_vhost_linux_x64 => OpenvmmVhostOutput,
             pipette_linux_musl_x64 => PipetteOutput,
             pipette_linux_musl_aarch64 => PipetteOutput,
-            prep_steps => PrepStepsOutput,
+            prep_steps_linux_musl_x64 => PrepStepsOutput,
+            tmk_vmm_linux_musl_x64 => TmkVmmOutput,
             // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
+            guest_test_uefi_x64 => GuestTestUefiOutput,
+            tmks_x64 => TmksOutput,
+        )
+    );
+
+    vmm_tests_built_artifacts_builder!(
+        VmmTestsArtifactsBuilderLinuxMuslX86,
+        (
+            // windows build machine
+            pipette_windows_x64 => PipetteOutput,
+            // linux build machine
+            nextest_vmm_tests_archive_linux_musl_x64 => NextestVmmTestsArchive,
+            openvmm_linux_musl_x64 => OpenvmmOutput,
+            openvmm_vhost_linux_musl_x64 => OpenvmmVhostOutput,
+            pipette_linux_musl_x64 => PipetteOutput,
+            pipette_linux_musl_aarch64 => PipetteOutput,
+            prep_steps_linux_musl_x64 => PrepStepsOutput,
+            tmk_vmm_linux_musl_x64 => TmkVmmOutput,
+            // any machine
+            guest_test_uefi_x64 => GuestTestUefiOutput,
+            tmks_x64 => TmksOutput,
         )
     );
 
@@ -765,25 +917,25 @@ pub mod vmm_tests_artifact_builders {
         VmmTestsArtifactsBuilderWindowsX86,
         (
             // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            prep_steps => PrepStepsOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
-            tpm_guest_tests_windows => TpmGuestTestsOutput,
-            tpm_guest_tests_linux => TpmGuestTestsOutput,
-            test_igvm_agent_rpc_server => TestIgvmAgentRpcServerOutput,
+            nextest_vmm_tests_archive_windows_x64 => NextestVmmTestsArchive,
+            openvmm_windows_x64 => OpenvmmOutput,
+            pipette_windows_x64 => PipetteOutput,
+            tmk_vmm_windows_x64 => TmkVmmOutput,
+            prep_steps_windows_x64 => PrepStepsOutput,
+            vmgstool_windows_x64 => VmgstoolOutput,
+            vmgstool_dev_windows_x64 => VmgstoolOutput,
+            tpm_guest_tests_windows_x64 => TpmGuestTestsOutput,
+            test_igvm_agent_rpc_server_windows_x64 => TestIgvmAgentRpcServerOutput,
             // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
-            openhcl_cvm => OpenhclIgvmOutput,
-            openhcl_linux_direct => OpenhclIgvmOutput,
+            openhcl_standard_x64 => OpenhclIgvmOutput,
+            openhcl_cvm_x64 => OpenhclIgvmOutput,
+            openhcl_linux_direct_x64 => OpenhclIgvmOutput,
             pipette_linux_musl_x64 => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
+            tmk_vmm_linux_musl_x64 => TmkVmmOutput,
+            tpm_guest_tests_linux_x64 => TpmGuestTestsOutput,
             // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
+            guest_test_uefi_x64 => GuestTestUefiOutput,
+            tmks_x64 => TmksOutput,
         )
     );
 
@@ -791,19 +943,19 @@ pub mod vmm_tests_artifact_builders {
         VmmTestsArtifactsBuilderWindowsAarch64,
         (
             // windows build machine
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
-            pipette_windows => PipetteOutput,
-            tmk_vmm => TmkVmmOutput,
-            vmgstool => VmgstoolOutput,
-            vmgstool_dev => VmgstoolOutput,
+            nextest_vmm_tests_archive_windows_aarch64 => NextestVmmTestsArchive,
+            openvmm_windows_aarch64 => OpenvmmOutput,
+            pipette_windows_aarch64 => PipetteOutput,
+            tmk_vmm_windows_aarch64 => TmkVmmOutput,
+            vmgstool_windows_aarch64 => VmgstoolOutput,
+            vmgstool_dev_windows_aarch64 => VmgstoolOutput,
             // linux build machine
-            openhcl_standard => OpenhclIgvmOutput,
+            openhcl_standard_aarch64 => OpenhclIgvmOutput,
             pipette_linux_musl_aarch64 => PipetteOutput,
-            tmk_vmm_linux_musl => TmkVmmOutput,
+            tmk_vmm_linux_musl_aarch64 => TmkVmmOutput,
             // any machine
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
+            guest_test_uefi_aarch64 => GuestTestUefiOutput,
+            tmks_aarch64 => TmksOutput,
         )
     );
 
@@ -815,14 +967,14 @@ pub mod vmm_tests_artifact_builders {
         VmmTestsArtifactsBuilderLinuxAarch64Tcg,
         (
             // x86_64 CI host binary
-            incubator => IncubatorOutput,
+            incubator_linux_x64 => IncubatorOutput,
             // aarch64 guest binaries
-            nextest_vmm_tests_archive => NextestVmmTestsArchive,
-            openvmm => OpenvmmOutput,
+            nextest_vmm_tests_archive_linux_musl_aarch64 => NextestVmmTestsArchive,
+            openvmm_linux_musl_aarch64 => OpenvmmOutput,
             pipette_linux_musl_aarch64 => PipetteOutput,
-            guest_test_uefi => GuestTestUefiOutput,
-            tmks => TmksOutput,
-            tmk_vmm => TmkVmmOutput,
+            guest_test_uefi_aarch64 => GuestTestUefiOutput,
+            tmks_aarch64 => TmksOutput,
+            tmk_vmm_linux_musl_aarch64 => TmkVmmOutput,
         )
     );
 }

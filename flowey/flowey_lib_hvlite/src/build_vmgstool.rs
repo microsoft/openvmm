@@ -16,7 +16,7 @@ pub enum VmgstoolOutput {
         #[serde(rename = "vmgstool")]
         bin: PathBuf,
         #[serde(rename = "vmgstool.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
     WindowsBin {
         #[serde(rename = "vmgstool.exe")]
@@ -105,10 +105,7 @@ impl SimpleFlowNode for Node {
                         VmgstoolOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        VmgstoolOutput::LinuxBin {
-                            bin,
-                            dbg: dbg.unwrap(),
-                        }
+                        VmgstoolOutput::LinuxBin { bin, dbg }
                     }
                     _ => unreachable!(),
                 };
