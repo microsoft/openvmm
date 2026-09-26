@@ -1,0 +1,8 @@
+Language: Proto
+BasedOnStyle: Microsoft
+AlignConsecutiveAssignments: Consecutive
+BreakBeforeBraces: Attach
+IndentWidth: 4
+InsertNewlineAtEOF: true
+KeepEmptyLines:
+  AtEndOfFile: true

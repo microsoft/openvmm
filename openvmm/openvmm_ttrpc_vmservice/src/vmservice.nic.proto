@@ -1,0 +1,77 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = 'proto3';
+
+package vmservice;
+option go_package = "vmservice";
+
+message NicConfig {
+    reserved 2, 4;
+    reserved "legacy_port_id", "legacy_switch_id";
+
+    string nic_id      = 1; // GUID
+    string mac_address = 3; // 12-34-56-78-9A-BC
+    // Optional friendly name for the adapter. Might be useful to show up in logs.
+    optional string nic_name = 5;
+    NicBackend backend       = 6;
+}
+
+// A host network backend, shared across NIC device types (virtio-net, MANA,
+// vmbus netvsp, ...).
+message NicBackend {
+    oneof kind {
+        // DirectIO backend bound to a host switch/port.
+        DioBackend dio = 1;
+        // Host TAP device backend.
+        TapBackend tap = 2;
+        // Built-in user-mode (consomme) network backend.
+        ConsommeBackend consomme    = 3;
+        LegacyWindowsBackend legacy = 4;
+    }
+}
+
+message DioBackend {
+    string switch_id = 1; // GUID
+    string port_id   = 2; // GUID
+}
+
+message TapBackend {
+    oneof source {
+        // Open /dev/net/tun by this device name (existing behavior).
+        string name = 1;
+        // Use the file descriptor registered under this name via the
+        // fd-passing protocol (see fd_passing.md).
+        string fd_name = 2;
+    }
+}
+
+enum IpProtocol {
+    IP_PROTOCOL_UNSPECIFIED = 0;
+    IP_PROTOCOL_TCP         = 1;
+    IP_PROTOCOL_UDP         = 2;
+}
+
+message PortConfig {
+    // The host port to listen on.
+    uint32 host_port = 1;
+    // The guest port to forward to.
+    uint32 guest_port = 2;
+    // The protocol to forward.
+    IpProtocol protocol = 3;
+    string host_address = 4;
+}
+
+message ConsommeBackend {
+    // Optional CIDR for the guest network (e.g. "10.0.0.0/24").
+    // If empty, a default is used.
+    optional string cidr = 1;
+    // Ports to forward from the host into the guest.
+    // Used during initial creation and for dynamic add/remove via ModifyVmResource.
+    repeated PortConfig ports = 2;
+}
+
+message LegacyWindowsBackend {
+    string switch_id = 1; // GUID
+    string port_id   = 2; // GUID
+}
