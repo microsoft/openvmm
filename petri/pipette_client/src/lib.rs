@@ -43,6 +43,7 @@ use std::time::Duration;
 /// A client to a running `pipette` instance inside a VM.
 pub struct PipetteClient {
     send: PipetteSender,
+    local_vsock_cid: Option<u32>,
     watch: mesh::OneshotReceiver<()>,
     _mesh: PointToPointMesh,
     _log_task: Task<()>,
@@ -88,6 +89,7 @@ impl PipetteClient {
 
         let PipetteBootstrap {
             requests,
+            local_vsock_cid,
             diag_file_recv,
             watch,
             log,
@@ -101,6 +103,7 @@ impl PipetteClient {
 
         let client = Self {
             send: PipetteSender::new(requests),
+            local_vsock_cid,
             watch,
             _mesh: mesh,
             _log_task: log_task,
@@ -125,6 +128,11 @@ impl PipetteClient {
     /// Pings the agent to check if it's alive.
     pub async fn ping(&self) -> Result<(), RpcError> {
         self.send.call(PipetteRequest::Ping, ()).await
+    }
+
+    /// Returns the guest's local AF_VSOCK CID when pipette uses that transport.
+    pub fn local_vsock_cid(&self) -> Option<u32> {
+        self.local_vsock_cid
     }
 
     /// Return a shell object to interact with a Windows guest.

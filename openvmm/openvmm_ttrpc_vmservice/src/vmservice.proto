@@ -345,6 +345,8 @@ message VirtioRng {
 message VirtioVsock {
     // Unix socket base path (mirrors --virtio-vsock-path).
     string socket_path = 1;
+    // Context ID assigned to the guest. Defaults to 3 when omitted.
+    optional uint64 guest_cid = 2;
 }
 
 // NVMe controller. Attached behind a PCIe port in the topology, or hot-added

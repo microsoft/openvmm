@@ -32,6 +32,8 @@ pub struct PipetteBootstrap {
     pub watch: mesh::OneshotReceiver<()>,
     /// The log channel.
     pub log: ReadPipe,
+    /// The local CID of the agent's AF_VSOCK connection, when applicable.
+    pub local_vsock_cid: Option<u32>,
 }
 
 /// A request to the agent.

@@ -24,6 +24,12 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
+/// Gets the local AF_VSOCK CID.
+#[cfg(unix)]
+pub fn local_vsock_cid() -> io::Result<u32> {
+    sys::local_cid()
+}
+
 /// A VM socket address.
 #[derive(Debug)]
 pub struct VmAddress(sys::Address);
