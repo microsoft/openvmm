@@ -56,6 +56,9 @@ pub type IocpPool = IoPool<IocpBackend>;
 /// A driver to spawn tasks and IO objects on [`IocpPool`].
 pub type IocpDriver = IoDriver<IocpBackend>;
 
+/// A weak reference to an [`IocpDriver`].
+pub type WeakIocpDriver = crate::io_pool::WeakIoDriver<IocpBackend>;
+
 #[derive(Debug)]
 pub struct IocpBackend {
     port: IoCompletionPort,
