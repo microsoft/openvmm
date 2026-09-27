@@ -329,7 +329,16 @@ pub const X86X_AMD_MSR_SEV: u32 = 0xC0010131;
 pub const X86X_AMD_MSR_SECURE_AVIC_CONTROL: u32 = 0xc0010138;
 pub const X86X_AMD_MSR_OSVW_ID_LENGTH: u32 = 0xc0010140;
 pub const X86X_AMD_MSR_OSVW_ID_STATUS: u32 = 0xc0010141;
+/// Load-Store Configuration Register, the first of the AMD
+/// implementation-specific unit configuration registers.
+pub const X86X_AMD_MSR_LS_CFG: u32 = 0xc0011020;
 pub const X86X_AMD_MSR_DE_CFG: u32 = 0xc0011029;
+/// Bus Unit Configuration Register 2.
+pub const X86X_AMD_MSR_BU_CFG2: u32 = 0xc001102a;
+/// Execution Unit Configuration Register, the last of the AMD
+/// implementation-specific unit configuration registers that a guest is known
+/// to access. Linux calls this `MSR_F15H_EX_CFG`.
+pub const X86X_AMD_MSR_EX_CFG: u32 = 0xc001102c;
 
 pub const DR6_BREAKPOINT_MASK: u64 = 0xf;
 pub const DR6_SINGLE_STEP: u64 = 0x4000;
