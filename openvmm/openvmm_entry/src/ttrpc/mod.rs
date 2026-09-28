@@ -883,15 +883,20 @@ impl VmService {
         let smbios_requested = req_config.smbios_config.is_some();
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
 
-        let isolation_type = req_config
-            .isolation_config
-            .take()
-            .unwrap_or_default()
-            .isolation_type;
-        let isolation = match vmservice::isolation_config::Type::from_i32(isolation_type) {
-            Some(vmservice::isolation_config::Type::None) => None,
-            Some(vmservice::isolation_config::Type::Snp) => Some(IsolationType::Snp),
-            None => bail!("unsupported isolation type {isolation_type}"),
+        let isolation = match req_config.isolation_config.take() {
+            // Unset isolation config defaults to no isolation
+            None => None,
+            Some(config) => match config.isolation_type() {
+                // Setting isolation config with an unspecified type returns an error
+                vmservice::isolation_config::Type::Unspecified => {
+                    bail!(
+                        "unspecified or invalid isolation type {}",
+                        config.isolation_type
+                    )
+                }
+                vmservice::isolation_config::Type::None => None,
+                vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
+            },
         };
 
         // The boot configuration also determines the base chipset, since the
@@ -933,18 +938,20 @@ impl VmService {
                 if isolation != Some(IsolationType::Snp) {
                     bail!("VM-service IGVM boot currently supports only SNP isolation");
                 }
-                let base_chipset_type =
-                    match vmservice::igvm_boot::Personality::from_i32(boot.personality) {
-                        Some(vmservice::igvm_boot::Personality::LinuxDirect) => {
-                            vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
-                        }
-                        Some(vmservice::igvm_boot::Personality::Uefi) => {
-                            bail!(
-                                "VM-service IGVM boot with UEFI personality is not yet supported"
-                            );
-                        }
-                        None => bail!("unsupported IGVM personality {}", boot.personality),
-                    };
+                let base_chipset_type = match boot.personality() {
+                    vmservice::igvm_boot::Personality::Unspecified => {
+                        bail!(
+                            "unspecified or invalid IGVM personality {}",
+                            boot.personality
+                        )
+                    }
+                    vmservice::igvm_boot::Personality::LinuxDirect => {
+                        vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
+                    }
+                    vmservice::igvm_boot::Personality::Uefi => {
+                        bail!("VM-service IGVM boot with UEFI personality is not yet supported");
+                    }
+                };
                 let igvm_path = PathBuf::from(&boot.igvm_path);
                 let file = File::open(&igvm_path)
                     .with_context(|| format!("failed to open IGVM {}", igvm_path.display()))?;

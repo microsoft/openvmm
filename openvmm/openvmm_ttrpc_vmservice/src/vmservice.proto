@@ -76,10 +76,12 @@ message DirectBoot {
 // Boot from an IGVM file.
 message IgvmBoot {
     enum Personality {
+        // A personality must be specified.
+        PERSONALITY_UNSPECIFIED = 0;
         // Linux direct boot with Hyper-V enlightenments.
-        LINUX_DIRECT = 0;
+        PERSONALITY_LINUX_DIRECT = 1;
         // Reserved for UEFI IGVM boot.
-        UEFI = 1;
+        PERSONALITY_UEFI = 2;
     }
 
     // Path to the IGVM file on the host.
@@ -91,10 +93,12 @@ message IgvmBoot {
 // Confidential-computing isolation configuration.
 message IsolationConfig {
     enum Type {
+        // An isolation type must be specified when this configuration is supplied.
+        TYPE_UNSPECIFIED = 0;
         // No confidential-computing isolation.
-        NONE = 0;
+        TYPE_NONE = 1;
         // AMD SEV-SNP isolation.
-        SNP = 1;
+        TYPE_SNP = 2;
     }
 
     // Isolation mode.
