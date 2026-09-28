@@ -599,12 +599,16 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref serial,
         ref controller,
         nsid,
         lun,
         ref relay,
     } in &opt.disk
     {
+        if serial.is_some() {
+            anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
                 "--disk without `on` is deprecated; \
@@ -703,12 +707,16 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref serial,
         controller: _,
         nsid: _,
         lun: _,
         relay: _,
     } in &opt.nvme
     {
+        if serial.is_some() {
+            anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
         let target = if let Some(port) = pcie_port {
             storage_builder::DiskLocation::Named {
                 controller: port.clone(),
@@ -730,6 +738,7 @@ async fn vm_config_from_command_line(
         is_dvd,
         ref underhill,
         ref pcie_port,
+        ref serial,
         controller: _,
         nsid: _,
         lun: _,
@@ -744,7 +753,10 @@ async fn vm_config_from_command_line(
                 vtl,
                 None,
                 None,
-                storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+                storage_builder::DiskLocation::VirtioBlk {
+                    pcie_port: pcie_port.clone(),
+                    serial: serial.clone(),
+                },
                 kind,
                 is_dvd,
                 read_only,

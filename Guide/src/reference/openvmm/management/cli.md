@@ -483,9 +483,12 @@ PCIe root port. The syntax varies slightly between device types:
 **Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
---virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0,serial=DATA-DISK
 --nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
+
+The optional `serial` value accepts 1-20 printable ASCII bytes except commas
+and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 

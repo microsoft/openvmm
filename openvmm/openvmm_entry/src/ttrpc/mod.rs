@@ -2245,10 +2245,19 @@ async fn build_virtio_device(
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
     Ok(match kind.context("missing virtio device kind")? {
-        Kind::Blk(vmservice::VirtioBlk { backend, read_only }) => {
+        Kind::Blk(vmservice::VirtioBlk {
+            backend,
+            read_only,
+            serial,
+        }) => {
             let disk =
                 build_disk_backend(backend.context("missing blk backend")?, read_only).await?;
-            virtio_resources::blk::VirtioBlkHandle { disk, read_only }.into_resource()
+            virtio_resources::blk::VirtioBlkHandle {
+                disk,
+                read_only,
+                serial,
+            }
+            .into_resource()
         }
         Kind::Net(vmservice::VirtioNet {
             max_queues,

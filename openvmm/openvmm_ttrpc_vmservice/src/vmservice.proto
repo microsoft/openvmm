@@ -264,6 +264,8 @@ message VirtioBlk {
     DiskBackend backend = 1;
     // Expose the disk read-only to the guest.
     bool read_only = 2;
+    // Serial returned by VIRTIO_BLK_T_GET_ID.
+    optional string serial = 3;
 }
 
 // virtio-net network device configuration. An absent backend means "none"

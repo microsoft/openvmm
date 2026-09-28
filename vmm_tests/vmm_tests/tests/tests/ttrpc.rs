@@ -34,6 +34,8 @@ use std::time::Duration;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 
+const VIRTIO_BLK_SERIAL: &str = "ttrpc-blk";
+
 petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
@@ -401,6 +403,7 @@ async fn test_ttrpc_interface(
                             vmservice::virtio_device::Kind::Blk(vmservice::VirtioBlk {
                                 backend: Some(file_disk(&blk_disk_path)),
                                 read_only: false,
+                                serial: Some(VIRTIO_BLK_SERIAL.to_string()),
                             }),
                         ))),
                         acs_capabilities_supported: Some(1),
@@ -1651,6 +1654,13 @@ async fn validate_smbios(agent: &pipette_client::PipetteClient) -> anyhow::Resul
 
 async fn validate_pcie_config(agent: &pipette_client::PipetteClient) -> anyhow::Result<()> {
     let sh = agent.unix_shell();
+    let serial = cmd!(sh, "cat /sys/block/vda/serial").read().await?;
+    anyhow::ensure!(
+        serial.trim() == VIRTIO_BLK_SERIAL,
+        "expected serial {VIRTIO_BLK_SERIAL:?} but found {:?}",
+        serial.trim()
+    );
+
     let devices = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
     let mut device = None;
     for bdf in devices.split_whitespace() {

@@ -563,6 +563,7 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port
+    `serial=<value>`               1-20 printable ASCII bytes except comma and brackets
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
@@ -2438,6 +2439,7 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
+    pub serial: Option<String>,
     pub controller: Option<String>,
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
@@ -2491,6 +2493,7 @@ struct DiskArgs {
     #[kv(flag, key = "uh-nvme")]
     uh_nvme: bool,
     pcie_port: Option<String>,
+    serial: Option<String>,
     #[kv(key = "on")]
     controller: Option<String>,
     nsid: Option<u32>,
@@ -2514,10 +2517,19 @@ impl FromStr for DiskCli {
         let is_dvd = args.dvd;
         let vtl = args.vtl;
         let pcie_port = args.pcie_port;
+        let serial = args.serial;
         let controller = args.controller;
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+
+        if serial.as_ref().is_some_and(|serial| {
+            serial.bytes().any(|byte| {
+                !(byte.is_ascii_graphic() || byte == b' ') || matches!(byte, b'[' | b']')
+            })
+        }) {
+            anyhow::bail!("`serial` must contain only printable ASCII characters and no brackets");
+        }
 
         if underhill.is_some() && vtl != DeviceVtl::Vtl0 {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
@@ -2568,6 +2580,7 @@ impl FromStr for DiskCli {
             is_dvd,
             underhill,
             pcie_port,
+            serial,
             controller,
             nsid,
             lun,
@@ -6127,6 +6140,17 @@ mod tests {
         let d = DiskCli::from_str("file:disk.vhd,on=nvme0").unwrap();
         assert_eq!(d.controller.as_deref(), Some("nvme0"));
         assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_serial() {
+        let d = DiskCli::from_str("file:disk.vhd,serial=DATA-DISK").unwrap();
+        assert_eq!(d.serial.as_deref(), Some("DATA-DISK"));
+        assert!(DiskCli::from_str("file:disk.vhd,serial=").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA[1]").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA,DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA\u{1f}DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=non-ascii-\u{e9}").is_err());
     }
 
     #[test]
