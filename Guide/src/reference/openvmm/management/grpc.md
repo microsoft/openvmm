@@ -146,7 +146,9 @@ restore flow over both transports:
   valid only for a snapshot that advertises processor activation, implies fresh entropy and the
   post-restore gate, and must satisfy the snapshot's boot-online and immutable
   capacity bounds. `ProcessorConfig.processor_count`, when present, remains an
-  exact capacity assertion.
+  exact capacity assertion. On MSHV, a nonzero value instantiates and binds
+  only that VP prefix, as for `--restore-processors`; MSHV restores without a
+  target, and all KVM and WHP restores, instantiate the full VP capacity.
 * `restore_memory_bytes` selects a 128-MiB-aligned total RAM target between the
   snapshot base and immutable capacity. Zero selects the base. Expansion uses
   fresh private zeroed backing, implies fresh restore packet delivery and the

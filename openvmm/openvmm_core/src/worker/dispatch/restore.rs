@@ -2,8 +2,9 @@
 // Licensed under the MIT License.
 
 //! Snapshot restore support for the VM worker: the restore inputs taken from
-//! the worker parameters, the restore state kept by [`LoadedVm`], the steps
-//! around applying the saved state, and the post-restore start sequence
+//! the worker parameters, the restore state kept by [`LoadedVm`], the VP
+//! prefix instantiated by an explicit restore-time activation target, the
+//! steps around applying the saved state, and the post-restore start sequence
 //! (input gate, readiness event, and VP release).
 
 use super::LoadedVm;
@@ -11,6 +12,8 @@ use super::clock;
 use super::clock::RestoreTime;
 use crate::partition::HvlitePartition;
 use anyhow::Context;
+use hypervisor_resources::HypervisorKind;
+use hypervisor_resources::MshvHandle;
 use membacking::FileMappingMode;
 use membacking::SharedMemoryBacking;
 use openvmm_defs::profile::ProfileSpan;
@@ -27,6 +30,7 @@ use std::fs::File;
 use std::future::Future;
 use std::io::Write as _;
 use std::time::Duration;
+use vm_resource::ResourceId;
 use vmm_core::partition_unit::StopGuard;
 
 /// Snapshot-restore inputs taken from the [`VmWorkerParameters`].
@@ -54,6 +58,13 @@ impl RestoreParameters {
             parameters.restore_apic_frequency_hz,
         )?;
         tracing::debug!(?restore_time, "received snapshot restore time contract");
+        let restore_vp_count = parameters.restore_vp_count.take();
+        let vp_prefix = restore_vp_prefix(parameters.hypervisor.id(), restore_vp_count);
+        tracing::debug!(
+            ?restore_vp_count,
+            ?vp_prefix,
+            "received restore-time VP activation target"
+        );
         let cpu_contract = parameters.restore_cpu_contract.take();
         let file_mapping_mode = if parameters.shared_memory_copy_on_write {
             FileMappingMode::CopyOnWrite
@@ -63,6 +74,7 @@ impl RestoreParameters {
         Ok(Self {
             state: SnapshotRestore {
                 time: restore_time,
+                vp_prefix,
                 ready_sink,
                 gate_timeout,
                 ..Default::default()
@@ -79,11 +91,52 @@ impl RestoreParameters {
     }
 }
 
+/// Returns the VP prefix that a restore instantiates, or `None` for the full
+/// VP capacity.
+///
+/// Only MSHV instantiates an explicit restore-time activation target: it
+/// creates application processors lazily while binding them, so discarding
+/// the suffix binders avoids creating VPs that the restore will not run.
+/// Other backends create their VPs with the partition and keep the full
+/// capacity.
+fn restore_vp_prefix(hypervisor: &str, restore_vp_count: Option<u32>) -> Option<u32> {
+    restore_vp_count.filter(|_| hypervisor == <MshvHandle as ResourceId<HypervisorKind>>::ID)
+}
+
+/// Discards the binders after an explicit VP prefix and returns the number
+/// of VPs to instantiate. The topology and saved VP inventory keep the full
+/// capacity.
+fn select_instantiated_vps<T>(
+    vps: &mut Vec<T>,
+    vp_capacity: u32,
+    vp_prefix: Option<u32>,
+    restoring: bool,
+) -> anyhow::Result<u32> {
+    anyhow::ensure!(
+        vps.len() == vp_capacity as usize,
+        "backend returned {} VP binders for topology capacity {vp_capacity}",
+        vps.len()
+    );
+    let Some(vp_prefix) = vp_prefix else {
+        return Ok(vp_capacity);
+    };
+    anyhow::ensure!(restoring, "a restore VP prefix requires saved state");
+    anyhow::ensure!(
+        (1..=vp_capacity).contains(&vp_prefix),
+        "restore VP prefix {vp_prefix} is outside topology capacity 1..={vp_capacity}"
+    );
+    vps.truncate(vp_prefix as usize);
+    Ok(vp_prefix)
+}
+
 /// Snapshot-restore state of a [`LoadedVm`].
 #[derive(Default)]
 pub(super) struct SnapshotRestore {
     /// Saved guest-clock contract, checked and applied around the restore.
     time: Option<RestoreTime>,
+    /// VP prefix instantiated for an explicit MSHV restore-time activation
+    /// target.
+    vp_prefix: Option<u32>,
     /// Whether the VM was loaded from saved state.
     restored_from_snapshot: bool,
     /// Holds the VPs stopped after a restore until the VM first starts.
@@ -101,6 +154,17 @@ pub(super) struct SnapshotRestore {
 }
 
 impl SnapshotRestore {
+    /// Discards the binders after the restore VP prefix, if any, before
+    /// binding creates their VPs. Returns the number of VPs to instantiate.
+    pub(super) fn select_instantiated_vps<T>(
+        &self,
+        vps: &mut Vec<T>,
+        vp_capacity: u32,
+        restoring: bool,
+    ) -> anyhow::Result<u32> {
+        select_instantiated_vps(vps, vp_capacity, self.vp_prefix, restoring)
+    }
+
     /// Returns a future that completes when the armed post-restore input gate
     /// expires, and never completes while the gate is not armed.
     pub(super) fn gate_expired(&self, driver: &impl Driver) -> impl Future<Output = ()> {
@@ -258,5 +322,80 @@ impl LoadedVm {
             self.state_units.stop().await;
             self.running = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn binders() -> Vec<u32> {
+        (0..8).collect()
+    }
+
+    #[test]
+    fn limits_only_explicit_mshv_restores() {
+        assert_eq!(restore_vp_prefix("mshv", Some(2)), Some(2));
+        assert_eq!(restore_vp_prefix("mshv", None), None);
+        for hypervisor in ["kvm", "whp", "hvf"] {
+            assert_eq!(restore_vp_prefix(hypervisor, Some(2)), None);
+            assert_eq!(restore_vp_prefix(hypervisor, None), None);
+        }
+    }
+
+    #[test]
+    fn restore_vp_prefix_discards_suffix_binders() {
+        for prefix in [1, 2, 4, 8] {
+            let mut vps = binders();
+            assert_eq!(
+                select_instantiated_vps(&mut vps, 8, Some(prefix), true).unwrap(),
+                prefix
+            );
+            assert_eq!(vps, (0..prefix).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn untargeted_loads_keep_every_binder() {
+        for restoring in [false, true] {
+            let mut vps = binders();
+            assert_eq!(
+                select_instantiated_vps(&mut vps, 8, None, restoring).unwrap(),
+                8
+            );
+            assert_eq!(vps, binders());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_restore_vp_prefix() {
+        for prefix in [0, 9] {
+            let mut vps = binders();
+            let error = select_instantiated_vps(&mut vps, 8, Some(prefix), true).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("restore VP prefix {prefix} is outside topology capacity 1..=8")
+            );
+            assert_eq!(vps, binders());
+        }
+
+        let mut vps = binders();
+        let error = select_instantiated_vps(&mut vps, 8, Some(2), false).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "a restore VP prefix requires saved state"
+        );
+        assert_eq!(vps, binders());
+    }
+
+    #[test]
+    fn rejects_a_partial_backend_binder_set() {
+        let mut vps = (0..4).collect::<Vec<u32>>();
+        let error = select_instantiated_vps(&mut vps, 8, None, true).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "backend returned 4 VP binders for topology capacity 8"
+        );
     }
 }
