@@ -320,10 +320,10 @@ pub const IORT_RMR_REVISION: u8 = 3;
 
 /// RMR flags: access privilege hint. When set, the OS may map the region
 /// with elevated privileges (e.g., supervisor mode).
-pub const IORT_RMR_ACCESS_PRIVILEGE: u32 = 1 << 0;
+pub const IORT_RMR_ACCESS_PRIVILEGE: u32 = 1 << 1;
 /// RMR flags: remap permitted. When clear, the region MUST be identity-
 /// mapped (IOVA == physical address).
-pub const IORT_RMR_REMAP_PERMITTED: u32 = 1 << 1;
+pub const IORT_RMR_REMAP_PERMITTED: u32 = 1 << 0;
 
 /// RMR node header. Followed by `rmr_count` [`IortRmrDescriptor`] entries,
 /// then `mapping_count` [`IortIdMapping`] entries.
