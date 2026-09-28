@@ -683,7 +683,10 @@ Serial devices can be configured to appear as different devices inside the guest
     recreate the optional listener on restore. Unix sockets must be beside the
     snapshot directory. Windows pipes use the
     `//./pipe/openvmm-microvm-<NAME>` namespace. TCP ports must be nonzero.
-    TCP addresses must be loopback addresses.
+    TCP addresses must be loopback addresses. A restore caller can resupply
+    `--virtio-console listen=<FRESH-ENDPOINT>` with `--restore-snapshot` to
+    replace the saved listener identity while preserving the attachment
+    contract. Omitting the option recreates the saved listener endpoint.
   * `connect=PATH` or `connect=tcp:IP:PORT`: require a client connection before
     vCPUs start. Cold boot and restore use a five-second timeout. The
     restore command must explicitly resupply the matching client attachment.
@@ -750,7 +753,11 @@ Serial devices can be configured to appear as different devices inside the guest
   reconnect policy. It never records a capability or UID/SID. Restore validates
   the saved endpoint contract, requires a fresh launcher-provided capability
   for a live endpoint, and generates a fresh VMM instance ID; saved credentials
-  and stale capabilities are never reused.
+  and stale capabilities are never reused. Restore callers resupply
+  `--microvm-control-console listen=<FRESH-ENDPOINT>` together with
+  `--microvm-control-auth-stdin`; the endpoint may change, but the saved stable
+  attachment ID, attachment kind, backend kind, reconnect policy, required
+  flag, length, and timeout remain exact.
 
   Restore snapshots containing this device through the CLI. The OpenVMM
   management RPC does not expose control-console restore attachments and

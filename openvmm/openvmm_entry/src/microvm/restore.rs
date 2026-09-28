@@ -3,6 +3,9 @@
 
 //! MicroVM snapshot restore packets and restore-time contract checks.
 
+use super::console::MICROVM_CONSOLE_STABLE_ID;
+use super::console::MICROVM_CONTROL_CONSOLE_STABLE_ID;
+use super::console::microvm_console_listener_replacement_matches;
 use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use crate::Options;
 use crate::cli_args;
@@ -131,6 +134,36 @@ pub(super) fn align_legacy_network_policy_contract(
         expected
             .egress_policy_sha256
             .clone_from(&saved.egress_policy_sha256);
+    }
+}
+
+fn align_restore_console_listener_contract(
+    saved: &SnapshotMachineContract,
+    expected: &mut SnapshotMachineContract,
+) {
+    align_restore_console_listener_attachments(&saved.attachments, &mut expected.attachments);
+}
+
+fn align_restore_console_listener_attachments(
+    saved: &[SnapshotAttachment],
+    expected: &mut [SnapshotAttachment],
+) {
+    for stable_id in [MICROVM_CONSOLE_STABLE_ID, MICROVM_CONTROL_CONSOLE_STABLE_ID] {
+        let Some(saved_attachment) = saved
+            .iter()
+            .find(|attachment| attachment.stable_id == stable_id)
+        else {
+            continue;
+        };
+        let Some(expected_attachment) = expected
+            .iter_mut()
+            .find(|attachment| attachment.stable_id == stable_id)
+        else {
+            continue;
+        };
+        if microvm_console_listener_replacement_matches(saved_attachment, expected_attachment) {
+            expected_attachment.clone_from(saved_attachment);
+        }
     }
 }
 
@@ -388,6 +421,7 @@ pub(crate) fn validate_restore_contract(
         saved_contract.cpu_contract.clone(),
     )?;
     align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
+    align_restore_console_listener_contract(saved_contract, &mut expected_contract);
     openvmm_helpers::snapshot::microvm::validate_microvm_machine_contract(
         manifest,
         &expected_contract,
@@ -410,6 +444,28 @@ mod tests {
     use super::*;
     use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
     use test_with_tracing::test;
+
+    #[test]
+    fn listener_replacement_alignment_preserves_saved_machine_contract() {
+        let saved_attachment = SnapshotAttachment {
+            stable_id: MICROVM_CONSOLE_STABLE_ID.to_owned(),
+            kind: "virtio-console".to_owned(),
+            required: false,
+            reconnect_policy: "recreate-listener".to_owned(),
+            identity_kind: "unix-socket".to_owned(),
+            identity: b"source.sock".to_vec(),
+            length: 0,
+            reconnect_timeout_ms: 0,
+        };
+        let mut requested_attachment = saved_attachment.clone();
+        requested_attachment.identity = b"restored.sock".to_vec();
+        let saved = vec![saved_attachment.clone()];
+        let mut expected = vec![requested_attachment];
+
+        align_restore_console_listener_attachments(&saved, &mut expected);
+
+        assert_eq!(expected, vec![saved_attachment]);
+    }
 
     #[test]
     fn snapshot_downtime_accepts_supported_elapsed_time() {
