@@ -5,7 +5,6 @@
 
 pub mod ado_flowey_bootstrap_template;
 pub mod ado_pools;
-pub(crate) mod build_and_test;
 pub mod cfg_common_params;
 pub mod gh_flowey_bootstrap_template;
 pub mod gh_pools;

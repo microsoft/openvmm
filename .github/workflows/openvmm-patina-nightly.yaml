@@ -73,7 +73,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -230,7 +230,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -2228,7 +2228,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -2565,7 +2565,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -3160,7 +3160,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -3562,7 +3562,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -3882,7 +3882,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -4210,7 +4210,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
@@ -4656,7 +4656,7 @@ jobs:
         ${{ runner.temp }}
         EOF
         )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci patina-nightly
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-patina-nightly.yaml ci checkin-gates --config=patina-nightly
       shell: bash
     - name: 🌼🛫 Initialize job
       run: |
