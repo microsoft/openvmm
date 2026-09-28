@@ -835,11 +835,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             iort_extra.extend_from_slice(
                 iort::IortRmr::new(
                     cfg_idx as u32 + 0x1000,
-                    if direct {
-                        iort::IORT_RMR_ACCESS_PRIVILEGE
-                    } else {
-                        0
-                    },
+                    0, // Strict identity mapping with unprivileged access.
                     cfg.reserved_iova_ranges.len() as u32,
                     mapping_count,
                 )
@@ -2161,7 +2157,9 @@ mod test {
             .find(|&&offset| data[offset] == iort::IORT_NODE_TYPE_RMR)
             .unwrap();
         assert_eq!(u32_at(&data, rmr + 8), 2);
-        assert_eq!(u32_at(&data, rmr + 16), iort::IORT_RMR_ACCESS_PRIVILEGE);
+        assert_eq!(iort::IORT_RMR_REMAP_PERMITTED, 1);
+        assert_eq!(iort::IORT_RMR_ACCESS_PRIVILEGE, 1 << 1);
+        assert_eq!(u32_at(&data, rmr + 16), 0);
         assert_eq!(u32_at(&data, rmr + 20), 1);
         let mapping = rmr + u32_at(&data, rmr + 12) as usize;
         for (index, stream_id) in [0x100, 0x200].into_iter().enumerate() {
