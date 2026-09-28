@@ -183,7 +183,7 @@ async fn ak_refresh<T, S, U: PetriVmmBackend>(
 
 /// 1.38 variant of [`super::tpm::skip_hw_unseal`].
 #[cfg(windows)]
-#[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
@@ -196,7 +196,7 @@ async fn skip_unseal<T, U: PetriVmmBackend>(
 
 /// 1.38 variant of [`super::tpm::use_hw_unseal`].
 #[cfg(windows)]
-#[vmm_test_with(unstable(reason = "SNP hardware-unseal key-release test is unreliable in CI; awaiting a fix"), configs(
+#[vmm_test_with(unstable, configs(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 ))]
