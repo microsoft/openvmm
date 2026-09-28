@@ -84,6 +84,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disklayer_sqlite")]
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
     disklayer_vhdx::resolver::VhdxDiskLayerResolver,
+    #[cfg(feature = "disklayer_qcow2")]
+    disklayer_qcow2::resolver::Qcow2DiskLayerResolver,
 
     // PCI devices
     cxl_spec::test::resolver::CxlTestDeviceResolver,

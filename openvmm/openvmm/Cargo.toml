@@ -41,6 +41,12 @@ disk_blob = ["openvmm_resources/disk_blob"]
 disk_crypt = ["openvmm_resources/disk_crypt"]
 disklayer_sqlite = ["openvmm_resources/disklayer_sqlite"]
 
+# Enable the experimental qcow2 disk layer.
+disklayer_qcow2 = [
+  "openvmm_entry/disklayer_qcow2",
+  "openvmm_resources/disklayer_qcow2",
+]
+
 [dependencies]
 openvmm_entry.workspace = true
 openvmm_hypervisors.workspace = true

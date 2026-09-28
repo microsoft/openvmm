@@ -12,6 +12,9 @@ default = ["ttrpc", "grpc"]
 grpc = ["mesh_rpc/grpc"]
 ttrpc = []
 
+# Enable opening qcow2 disks. Off by default; see openvmm_resources.
+disklayer_qcow2 = ["openvmm_helpers/disklayer_qcow2"]
+
 [dependencies]
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
