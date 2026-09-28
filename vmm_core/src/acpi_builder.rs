@@ -850,7 +850,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     iort_extra.extend_from_slice(
                         iort::IortIdMapping::new(
                             stream_id,
-                            0,
+                            0, // id_count (one ID; field stores count minus one)
                             stream_id,
                             smmu_offset,
                             iort::IORT_ID_SINGLE_MAPPING,
@@ -2167,6 +2167,7 @@ mod test {
         for (index, stream_id) in [0x100, 0x200].into_iter().enumerate() {
             let mapping = mapping + index * 20;
             assert_eq!(u32_at(&data, mapping), stream_id);
+            assert_eq!(u32_at(&data, mapping + 4), 0); // one ID
             assert_eq!(u32_at(&data, mapping + 8), stream_id);
             assert_eq!(u32_at(&data, mapping + 16), iort::IORT_ID_SINGLE_MAPPING);
         }
