@@ -9843,6 +9843,7 @@ dependencies = [
  "mshv-bindings",
  "mshv-ioctls",
  "pal",
+ "pal_async",
  "pal_event",
  "parking_lot",
  "pci_core",

@@ -15,6 +15,7 @@ use inspect::Inspect;
 use mshv_ioctls::VcpuFd;
 use std::sync::OnceLock;
 use virt::ProtoPartitionConfig;
+use virt::VpIndex;
 
 /// Partition state that exists only after memory finalization.
 pub(crate) struct MshvFinalizedPartition {
@@ -109,13 +110,13 @@ impl MshvPartitionInner {
         finalize_memory_once(&self.finalized, memory_attached, || {
             let _span = tracing::info_span!("mshv create BSP", vp_index = 0).entered();
             let started = std::time::Instant::now();
-            let result = self.vmfd.create_vcpu(0);
+            let result = self.create_vp(VpIndex::BSP);
             tracing::info!(
                 elapsed_us = started.elapsed().as_micros() as u64,
                 success = result.is_ok(),
                 "MSHV_CREATE_VCPU completed"
             );
-            let bsp_vcpufd = result.map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+            let bsp_vcpufd = result?;
             let caps = self.build_caps(&bsp_vcpufd)?;
             Ok(MshvFinalizedPartition { bsp_vcpufd, caps })
         })

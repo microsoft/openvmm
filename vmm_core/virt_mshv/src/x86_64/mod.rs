@@ -762,6 +762,24 @@ impl virt::irqcon::IoApicRouting for MshvPartitionInner {
 // Processor binding and run loop
 // ---------------------------------------------------------------------------
 
+impl MshvPartitionInner {
+    /// Creates the hypervisor VP and records that it exists. Every VP is
+    /// created here, so restored-TSC synchronization sees exactly the created
+    /// VPs.
+    fn create_vp(&self, vp_index: VpIndex) -> Result<VcpuFd, Error> {
+        let vcpufd = self
+            .vmfd
+            .create_vcpu(
+                u8::try_from(vp_index.index()).expect("VP count validated at partition creation"),
+            )
+            .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+        self.vp(vp_index)
+            .created
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(vcpufd)
+    }
+}
+
 impl virt::BindProcessor for MshvProcessorBinder {
     type Processor<'a>
         = MshvProcessor<'a>
@@ -777,12 +795,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
             &finalized.bsp_vcpufd
         } else {
             if self.vcpufd.is_none() {
-                let vcpufd = self
-                    .partition
-                    .vmfd
-                    .create_vcpu(u8::try_from(self.vpindex.index()).expect("validated above"))
-                    .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
-                self.vcpufd = Some(vcpufd);
+                self.vcpufd = Some(self.partition.create_vp(self.vpindex)?);
             }
             self.vcpufd.as_ref().unwrap()
         };

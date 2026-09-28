@@ -160,6 +160,8 @@ impl<'a> MshvProtoPartition<'a> {
                 message_queues: MessageQueues::new(),
                 message_queues_pending: AtomicBool::new(false),
                 extint_pending: AtomicBool::new(false),
+                #[cfg(guest_arch = "x86_64")]
+                created: AtomicBool::new(false),
                 waker: RwLock::new(None),
             })
             .collect();
@@ -349,6 +351,12 @@ struct MshvVpInner {
     /// Set when the userspace PIC pulses LINT0 and cleared after ExtINT delivery.
     #[cfg(guest_arch = "x86_64")]
     extint_pending: AtomicBool,
+    /// Set once this VP exists in the hypervisor. The BSP is created when
+    /// partition memory is finalized and an application processor when its
+    /// binder is first bound, so a restore-time VP prefix leaves the suffix
+    /// uncreated.
+    #[cfg(guest_arch = "x86_64")]
+    created: AtomicBool,
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,

@@ -88,16 +88,28 @@ impl MshvPartitionInner {
         Ok(())
     }
 
-    /// Aligns the restored VP counters to the advanced BSP counter.
+    /// Aligns the restored counters of the created application processors to
+    /// the advanced BSP counter.
     pub(super) fn advance_snapshot_time(&self) -> Result<(), Error> {
-        if self.vps.len() <= 1 {
+        let aps = created_aps(
+            self.vps
+                .iter()
+                .map(|vp| vp.created.load(std::sync::atomic::Ordering::Acquire)),
+        );
+        // Uncreated VPs are skipped silently, so record how many are aligned.
+        tracing::info!(
+            created_aps = aps.len(),
+            vp_capacity = self.vps.len(),
+            "aligning restored AP TSCs to the BSP"
+        );
+        if aps.is_empty() {
             return Ok(());
         }
 
         // Per-VP counter writes run at different host times. Freeze before
         // aligning them to the advanced BSP counter; the first VP run thaws time.
         self.freeze_time()?;
-        synchronize_restored_tscs(&self.vmfd, &self.finalized()?.bsp_vcpufd, self.vps.len())
+        synchronize_restored_tscs(&self.vmfd, &self.finalized()?.bsp_vcpufd, &aps)
     }
 
     pub(super) fn apic_frequency_hz(&self) -> Result<Option<u64>, Error> {
@@ -109,7 +121,20 @@ impl MshvPartitionInner {
     }
 }
 
-fn synchronize_restored_tscs(vmfd: &VmFd, bsp: &VcpuFd, vp_count: usize) -> Result<(), Error> {
+/// Returns the VP indices of the created application processors, given
+/// whether each VP of the topology was created. A restore-time VP prefix
+/// leaves the suffix VPs uncreated, and the hypervisor rejects register access
+/// to a VP that does not exist.
+fn created_aps(created: impl IntoIterator<Item = bool>) -> Vec<u32> {
+    created
+        .into_iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(vp_index, created)| created.then_some(vp_index as u32))
+        .collect()
+}
+
+fn synchronize_restored_tscs(vmfd: &VmFd, bsp: &VcpuFd, aps: &[u32]) -> Result<(), Error> {
     let mut registers = [HvRegisterAssoc::from((HvX64RegisterName::Tsc, 0_u64))];
     bsp.get_hvdef_regs(&mut registers)
         .map_err(ErrorInner::Register)?;
@@ -129,7 +154,7 @@ fn synchronize_restored_tscs(vmfd: &VmFd, bsp: &VcpuFd, vp_count: usize) -> Resu
         },
         register: registers[0],
     };
-    for vp_index in 1..vp_count as u32 {
+    for &vp_index in aps {
         input.header.vp_index = vp_index;
         let mut args = mshv_bindings::mshv_root_hvcall {
             code: hvdef::HypercallCode::HvCallSetVpRegisters.0,
@@ -157,9 +182,30 @@ fn synchronize_restored_tscs(vmfd: &VmFd, bsp: &VcpuFd, vp_count: usize) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LinuxMshv;
     use crate::x86_64::partition_create_args;
+    use guestmem::GuestMemory;
+    use hvdef::HvError;
+    use hvdef::HypercallCode;
+    use hvdef::Vtl;
     use mshv_ioctls::Mshv;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::borrow::Borrow;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
+    use virt::BindProcessor;
+    use virt::Hypervisor;
+    use virt::Partition;
+    use virt::PartitionConfig;
+    use virt::PartitionMemoryMapper;
+    use virt::ProtoPartition;
+    use virt::ProtoPartitionConfig;
+    use vm_topology::memory::MemoryLayout;
+    use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::x86::X2ApicState;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
 
     #[test]
     fn versioned_cpu_contract_does_not_expose_tsc_adjust() {
@@ -179,38 +225,176 @@ mod tests {
     }
 
     #[test]
+    fn restored_tsc_synchronization_targets_only_created_aps() {
+        // The BSP is the synchronization source, never a target.
+        assert!(created_aps([true]).is_empty());
+        assert!(created_aps([true, false, false, false]).is_empty());
+        assert_eq!(created_aps([true, true, false, false]), [1]);
+        assert_eq!(created_aps([true, true, true, true]), [1, 2, 3]);
+    }
+
+    fn create_frozen_partition(vp_count: u8) -> (VmFd, Vec<VcpuFd>) {
+        let mshv = Mshv::new().unwrap();
+        let vmfd = mshv.create_vm().unwrap();
+        vmfd.initialize().unwrap();
+        let vps: Vec<_> = (0..vp_count)
+            .map(|index| vmfd.create_vcpu(index).unwrap())
+            .collect();
+        vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+            .unwrap();
+        (vmfd, vps)
+    }
+
+    fn set_skewed_tscs(vps: &[impl Borrow<VcpuFd>], tsc: u64) {
+        for (index, vp) in vps.iter().enumerate() {
+            vp.borrow()
+                .set_hvdef_regs(&[HvRegisterAssoc::from((
+                    HvX64RegisterName::Tsc,
+                    tsc + index as u64 * 100_000,
+                ))])
+                .unwrap();
+        }
+    }
+
+    fn assert_tscs(vps: &[impl Borrow<VcpuFd>], expected_tsc: u64) {
+        for (index, vp) in vps.iter().enumerate() {
+            let mut registers = [HvRegisterAssoc::from((HvX64RegisterName::Tsc, 0_u64))];
+            vp.borrow().get_hvdef_regs(&mut registers).unwrap();
+            assert_eq!(
+                registers[0].value.as_u64(),
+                expected_tsc,
+                "VP {index} TSC differs with {} VPs",
+                vps.len()
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires /dev/mshv"]
     fn restored_tscs_are_identical_while_partition_time_is_frozen() {
         for vp_count in [1, 2, 4, 8] {
-            let mshv = Mshv::new().unwrap();
-            let vmfd = mshv.create_vm().unwrap();
-            vmfd.initialize().unwrap();
-            let vps: Vec<_> = (0..vp_count)
-                .map(|index| vmfd.create_vcpu(index).unwrap())
-                .collect();
-            vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
-                .unwrap();
+            let (vmfd, vps) = create_frozen_partition(vp_count);
             let expected_tsc = 1_000_000_u64;
-            for (index, vp) in vps.iter().enumerate() {
-                vp.set_hvdef_regs(&[HvRegisterAssoc::from((
-                    HvX64RegisterName::Tsc,
-                    expected_tsc + index as u64 * 100_000,
-                ))])
-                .unwrap();
-            }
+            set_skewed_tscs(&vps, expected_tsc);
 
-            synchronize_restored_tscs(&vmfd, &vps[0], vps.len()).unwrap();
+            let aps = created_aps(std::iter::repeat_n(true, usize::from(vp_count)));
+            synchronize_restored_tscs(&vmfd, &vps[0], &aps).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(10));
 
-            for (index, vp) in vps.iter().enumerate() {
-                let mut registers = [HvRegisterAssoc::from((HvX64RegisterName::Tsc, 0_u64))];
-                vp.get_hvdef_regs(&mut registers).unwrap();
-                assert_eq!(
-                    registers[0].value.as_u64(),
-                    expected_tsc,
-                    "VP {index} TSC differs with {vp_count} VPs"
-                );
+            assert_tscs(&vps, expected_tsc);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn restored_tsc_synchronization_skips_uncreated_suffix_vps() {
+        const VP_CAPACITY: u8 = 8;
+        for vp_count in [1, 2, 4] {
+            let (vmfd, vps) = create_frozen_partition(vp_count);
+            let expected_tsc = 1_000_000_u64;
+            set_skewed_tscs(&vps, expected_tsc);
+
+            // The hypervisor rejects register access to an uncreated VP.
+            let uncreated = u32::from(vp_count);
+            let failure = synchronize_restored_tscs(&vmfd, &vps[0], &[uncreated]).unwrap_err();
+            match failure.0 {
+                ErrorInner::SynchronizeTsc {
+                    vp_index,
+                    error: KernelError::Hypercall { code, error },
+                } => {
+                    assert_eq!(vp_index, uncreated);
+                    assert_eq!(code, HypercallCode::HvCallSetVpRegisters);
+                    assert_eq!(error, HvError::InvalidVpIndex);
+                }
+                other => panic!("unexpected error: {other:?}"),
             }
+
+            let aps = created_aps((0..VP_CAPACITY).map(|index| index < vp_count));
+            synchronize_restored_tscs(&vmfd, &vps[0], &aps).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            assert_tscs(&vps, expected_tsc);
+        }
+    }
+
+    #[async_test]
+    #[ignore = "requires /dev/mshv"]
+    async fn restored_tsc_synchronization_aligns_only_bound_vps(driver: DefaultDriver) {
+        const VP_CAPACITY: u32 = 4;
+        let processor_topology = TopologyBuilder::new_x86()
+            .x2apic(X2ApicState::Supported)
+            .build(VP_CAPACITY)
+            .unwrap();
+        let mem_layout = MemoryLayout::new(0x400000, &[], &[], &[], None).unwrap();
+        let vmtime_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = vmtime_keeper.builder().build(&driver).await.unwrap();
+
+        for vp_count in [1, 2, VP_CAPACITY] {
+            let guest_memory = GuestMemory::allocate(mem_layout.end_of_ram() as usize);
+            let mut mshv = LinuxMshv::new().unwrap();
+            let (partition, mut binders) = mshv
+                .new_partition(ProtoPartitionConfig {
+                    processor_topology: &processor_topology,
+                    hv_config: None,
+                    vmtime: &vmtime,
+                    isolation: virt::ProtoPartitionIsolation::None,
+                    nested_virt: false,
+                    user_mode_memory_faults: false,
+                    lazy_memory_registration: false,
+                    versioned_cpu_contract: false,
+                })
+                .unwrap()
+                .build(PartitionConfig {
+                    mem_layout: &mem_layout,
+                    guest_memory: &guest_memory,
+                    cpuid: &[],
+                    vtl0_alias_map: None,
+                    fault_resolver: None,
+                })
+                .unwrap();
+            let ram = guest_memory.inner_buf().unwrap();
+            // SAFETY: the guest memory outlives the partition.
+            unsafe {
+                partition.memory_mapper(Vtl::Vtl0).map_range(
+                    ram.as_ptr().cast_mut().cast(),
+                    ram.len(),
+                    0,
+                    true,
+                    true,
+                )
+            }
+            .unwrap();
+            partition.finalize_memory().unwrap();
+
+            // A restore binds only the VPs that it runs, which creates them.
+            for binder in &mut binders[..vp_count as usize] {
+                binder.bind().unwrap();
+            }
+            let created: Vec<_> = partition
+                .inner
+                .vps
+                .iter()
+                .map(|vp| vp.created.load(Ordering::Acquire))
+                .collect();
+            let expected_created: Vec<_> = (0..VP_CAPACITY).map(|index| index < vp_count).collect();
+            assert_eq!(created, expected_created);
+
+            partition.inner.freeze_time().unwrap();
+            let bound: Vec<&VcpuFd> =
+                std::iter::once(&partition.inner.finalized().unwrap().bsp_vcpufd)
+                    .chain(
+                        binders[1..vp_count as usize]
+                            .iter()
+                            .map(|binder| binder.vcpufd.as_ref().unwrap()),
+                    )
+                    .collect();
+            let expected_tsc = 1_000_000_u64;
+            set_skewed_tscs(&bound, expected_tsc);
+
+            partition.inner.advance_snapshot_time().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            assert_tscs(&bound, expected_tsc);
         }
     }
 }
