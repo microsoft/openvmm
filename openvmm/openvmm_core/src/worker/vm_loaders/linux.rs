@@ -822,15 +822,16 @@ fn write_efi_and_acpi_tables(
     gm.write_at(smbios_table_addr, &smbios.structure_table)
         .map_err(Error::Efi)?;
 
-    let mut config_entries = [0u8; 96];
-    config_entries[0..16].copy_from_slice(ACPI_20_TABLE_GUID.as_bytes());
-    config_entries[16..24].copy_from_slice(&rsdp_addr.to_le_bytes());
-    config_entries[24..40].copy_from_slice(EFI_RT_PROPERTIES_TABLE_GUID.as_bytes());
-    config_entries[40..48].copy_from_slice(&rt_props_addr.to_le_bytes());
-    config_entries[48..64].copy_from_slice(SMBIOS3_TABLE_GUID.as_bytes());
-    config_entries[64..72].copy_from_slice(&smbios_ep_addr.to_le_bytes());
-    config_entries[72..88].copy_from_slice(LINUX_EFI_MEMRESERVE_TABLE_GUID.as_bytes());
-    config_entries[88..96].copy_from_slice(&memreserve_addr.to_le_bytes());
+    let mut config_entries = Vec::new();
+    for (guid, address) in [
+        (ACPI_20_TABLE_GUID, rsdp_addr),
+        (EFI_RT_PROPERTIES_TABLE_GUID, rt_props_addr),
+        (SMBIOS3_TABLE_GUID, smbios_ep_addr),
+        (LINUX_EFI_MEMRESERVE_TABLE_GUID, memreserve_addr),
+    ] {
+        config_entries.extend_from_slice(guid.as_bytes());
+        config_entries.extend_from_slice(&address.to_le_bytes());
+    }
     gm.write_at(config_table_addr, &config_entries)
         .map_err(Error::Efi)?;
 
