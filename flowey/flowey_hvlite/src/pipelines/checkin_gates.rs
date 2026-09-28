@@ -310,6 +310,21 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(windows_fmt_job);
         }
 
+        let linux_cargo_hack_job = pipeline
+            .new_job(
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                FlowArch::X86_64,
+                "cargo hack (linux)",
+            )
+            .gh_set_pool(gh_pools::linux_x64_gh())
+            .ado_set_pool(ado_pools::default_linux())
+            .side_effect(|done| flowey_lib_hvlite::_jobs::check_cargo_hack::Request {
+                profile: CommonProfile::from_release(release),
+                done,
+            })
+            .finish();
+        all_jobs.push(linux_cargo_hack_job);
+
         // emit shared dependencies jobs
         //
         // In order to ensure we start running VMM tests as soon as possible, we emit

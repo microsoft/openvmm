@@ -8783,6 +8783,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "guid",
  "inspect",
  "mesh",
@@ -9219,7 +9220,6 @@ dependencies = [
  "tee_call",
  "test_with_tracing",
  "thiserror 2.0.16",
- "tpm_device",
  "tpm_protocol",
  "tpm_resources",
  "tpm_vmgs",

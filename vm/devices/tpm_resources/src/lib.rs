@@ -8,6 +8,8 @@
 use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
+use std::sync::Arc;
+use vm_resource::CanResolveTo;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
@@ -54,11 +56,57 @@ pub enum TpmVersion {
     V185,
 }
 
+/// Returns the default vTPM NVRAM size for `version`.
+///
+/// Each reference implementation is compiled for a fixed NVRAM size and reads
+/// and writes anywhere in that range, so this must match the library in use.
+pub const fn default_vtpm_size(version: TpmVersion) -> usize {
+    match version {
+        TpmVersion::V138 => 32 * 1024,
+        TpmVersion::V185 => 128 * 1024,
+    }
+}
+
 /// A resource kind for AK cert renewal helpers.
 pub enum RequestAkCertKind {}
 
 impl ResourceKind for RequestAkCertKind {
     const NAME: &'static str = "tpm_request_ak_cert";
+}
+
+impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
+    // Workaround for async_trait not supporting GATs with missing lifetimes.
+    type Input<'a> = &'a ();
+}
+
+/// A resolved AK cert request helper resource.
+pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
+
+impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
+    fn from(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+/// A helper for creating and issuing AK cert requests.
+#[async_trait::async_trait]
+pub trait RequestAkCert: Send + Sync {
+    /// Creates the request payload needed by [`RequestAkCert::request_ak_cert`].
+    fn create_ak_cert_request(
+        &self,
+        ak_pub_modulus: &[u8],
+        ak_pub_exponent: &[u8],
+        ek_pub_modulus: &[u8],
+        ek_pub_exponent: &[u8],
+        guest_input: &[u8],
+        is_attestation_report: bool,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Requests an AK cert.
+    async fn request_ak_cert(
+        &self,
+        request: Vec<u8>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }
 
 /// `TpmAkCertType`-equivalent enum for resource
@@ -94,4 +142,55 @@ pub enum TpmLoggerKind {}
 
 impl ResourceKind for TpmLoggerKind {
     const NAME: &'static str = "tpm_logger";
+}
+
+impl CanResolveTo<ResolvedTpmLogger> for TpmLoggerKind {
+    // Workaround for async_trait not supporting GATs with missing lifetimes.
+    type Input<'a> = &'a ();
+}
+
+/// A resolved TPM logger resource.
+pub struct ResolvedTpmLogger(pub Arc<dyn TpmLogger>);
+
+impl<T: 'static + TpmLogger> From<T> for ResolvedTpmLogger {
+    fn from(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+/// An event reported by [`TpmLogger`].
+pub enum TpmLogEvent {
+    /// Failed to renew AK cert.
+    AkCertRenewalFailed,
+    /// Failed to change TPM seeds.
+    IdentityChangeFailed,
+    /// Invalid PPI or NVRAM state.
+    InvalidState,
+}
+
+/// A host-provided logger for TPM events.
+#[async_trait::async_trait]
+pub trait TpmLogger: Send + Sync {
+    /// Sends an event to the host and flushes it.
+    async fn log_event_and_flush(&self, event: TpmLogEvent);
+
+    /// Sends an event to the host without flushing it.
+    ///
+    /// This is needed for the non-async AK cert request callback.
+    fn log_event(&self, event: TpmLogEvent);
+}
+
+#[async_trait::async_trait]
+impl TpmLogger for Option<Arc<dyn TpmLogger>> {
+    async fn log_event_and_flush(&self, event: TpmLogEvent) {
+        if let Some(logger) = self {
+            logger.log_event_and_flush(event).await;
+        }
+    }
+
+    fn log_event(&self, event: TpmLogEvent) {
+        if let Some(logger) = self {
+            logger.log_event(event);
+        }
+    }
 }
