@@ -178,11 +178,12 @@ without adding host read/write latency. KVM snapshot resume requires
 fails restore explicitly instead of falling back to imprecise counter writes.
 All backends read back the adjusted TSC before resume and reject a discarded
 or incomplete downtime adjustment.
-After restoring counters and advancing snapshot time, MSHV and WHP freeze
-partition time and align every VP's TSC to the BSP's advanced counter before
-any VP runs. The first VP run thaws time. Setting counters while time is
-running would introduce inter-VP skew from host scheduling delays, which can
-make Linux reject the TSC clocksource during CPU activation.
+When more than one VP is instantiated, MSHV and WHP freeze partition time
+after restoring counters and advancing snapshot time, and align every
+instantiated VP's TSC to the BSP's advanced counter before any VP runs. The
+first VP run thaws time. Setting counters while time is running would
+introduce inter-VP skew from host scheduling delays, which can make Linux
+reject the TSC clocksource during CPU activation.
 For restored WHP partitions with multiple VPs, RDTSC, RDTSCP, and
 `IA32_TSC` reads additionally use one partition-reference-time epoch anchored
 to the advanced BSP counter. This clock has 100-nanosecond resolution and
