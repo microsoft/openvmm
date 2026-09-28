@@ -61,6 +61,7 @@ impl GicdRegister {
     pub const ICPENDR: Range<u16> = Self::ICPENDR0.0..Self::ICPENDR0.0 + 0x80;
     pub const ISACTIVER: Range<u16> = Self::ISACTIVER0.0..Self::ISACTIVER0.0 + 0x80;
     pub const ICACTIVER: Range<u16> = Self::ICACTIVER0.0..Self::ICACTIVER0.0 + 0x80;
+    pub const IGRPMODR: Range<u16> = Self::IGRPMODR0.0..Self::IGRPMODR0.0 + 0x100;
     pub const ICFGR: Range<u16> = Self::ICFGR0.0..Self::ICFGR0.0 + 0x100;
     pub const IPRIORITYR: Range<u16> = Self::IPRIORITYR0.0..Self::IPRIORITYR0.0 + 0x400;
     pub const IROUTER: Range<u16> = Self::IROUTER0.0..Self::IROUTER0.0 + 0x2000;
@@ -104,9 +105,9 @@ pub struct GicdTyper2 {
 #[bitfield(u32)]
 pub struct GicdCtlr {
     pub enable_grp0: bool,
-    pub enable_grp1: bool,
-    #[bits(2)]
-    _res_2_3: u8,
+    pub enable_grp1_non_secure: bool,
+    pub enable_grp1_secure: bool,
+    _res_3: bool,
     pub are: bool,
     _res_5: bool,
     pub ds: bool,
