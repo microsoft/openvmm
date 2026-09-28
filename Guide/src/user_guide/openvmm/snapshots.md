@@ -124,6 +124,18 @@ directory, so `file=...` should not be specified in `--memory` (the two options
 are mutually exclusive). Guest writes use a private copy-on-write mapping and
 do not modify the snapshot artifact.
 
+Saved virtio-console listener attachments may be rebound to fresh restore-time
+listener paths. The replacement must retain the saved stable attachment ID,
+attachment kind, backend kind, reconnect policy, required flag, length, and
+timeout; only the listener endpoint identity may change. Restore callers use
+`--virtio-console listen=<FRESH-ENDPOINT>` and, for an authenticated control
+listener, `--microvm-control-console listen=<FRESH-ENDPOINT>` with
+`--microvm-control-auth-stdin`. OpenVMM validates an approved replacement
+without reopening or canonicalizing the captured listener path, so the source
+generation's private directory need not survive until restore. Client,
+inherited-provider, and disconnected attachments retain their stricter saved
+identity requirements.
+
 MicroVM orchestrators can add `--restore-ready-path <PATH>`. OpenVMM connects
 to an existing Unix domain socket on Linux or named pipe on Windows and writes
 `OPENVMM_RESTORE_READY_V1\n` after restore validation, attachment resolution,
