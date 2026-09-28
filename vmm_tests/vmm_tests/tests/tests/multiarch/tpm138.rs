@@ -31,10 +31,6 @@ use vmm_test_macros::vmm_test_with;
 
 /// 1.38 variant of [`super::tpm::boot_with_tpm`].
 #[vmm_test(
-    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
-    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
-    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
-    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
     openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
@@ -44,7 +40,6 @@ use vmm_test_macros::vmm_test_with;
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -83,7 +78,6 @@ async fn ged_ak_retry<T>(
 /// 1.38 variant of [`super::tpm::vbs_boot_with_attestation`].
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    ignore(reason = "OpenVMM VBS Ubuntu attestation boot is not yet reliable (microsoft/openvmm#2608)", openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)))
 )]
 async fn vbs_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     super::tpm::vbs_boot_with_attestation_impl(config, PetriTpmVersion::V138).await
