@@ -645,8 +645,6 @@ impl RelayedVpciDevice {
 
     /// Applies the writes that queued up behind a TDISP operation, in arrival
     /// order, stopping at the first one that starts another operation.
-    ///
-    /// Must only be called with no operation in flight.
     fn drain_queued(&mut self) {
         while let Some(QueuedWrite {
             offset,

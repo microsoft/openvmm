@@ -1020,7 +1020,7 @@ impl ReadyState {
                     DeviceRequest::QueryIsolatedResources => {
                         let all_invalid = [protocol::ResourceIsolation::INVALID; 6];
                         let reply = if self.vpci_version < protocol::ProtocolVersion::RB {
-                            tracelimit::info_ratelimited!(
+                            tracelimit::warn_ratelimited!(
                                 instance_id = %dev.instance_id,
                                 negotiated_version = ?self.vpci_version,
                                 "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol. Replying NOT_SUPPORTED."

@@ -587,7 +587,7 @@ impl VpciDevice {
     /// Returns `true` only if attestation and every BAR notification succeeded
     /// completely. Otherwise, the device is disabled and `false` is returned.
     pub async fn tdisp_on_device_activate(&self, command_value: ByteEnabledDwordWrite) -> bool {
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             "tdisp_on_device_activate: guest enabled MMIO, attesting device and notifying TDISP of MMIO bars"
         );
         // Attest the device before enabling the command register.
