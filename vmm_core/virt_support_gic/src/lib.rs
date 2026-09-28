@@ -789,6 +789,40 @@ mod gicd {
             *v &= !(1 << (intid & 31));
         }
 
+        fn write8(&self, address: GicdRegister, value: u8) -> bool {
+            let j = address.0%4;
+            match address {
+                r if GicdRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x3ff) / 4;
+                    if n >= 8 {
+                        if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
+                            *priority &= !(0xff << (j * 8));
+                            *priority |= (u32::from(value) << (j * 8));
+                        }
+                    }
+                }
+                _ => return false,
+            };
+
+            true
+        }
+
+        fn read8(&self, address: GicdRegister) -> Option<u8> {
+            let j = address.0 % 4;
+            match address {
+                r if GicdRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x3ff) / 4;
+                    if n >= 8 {
+                        if let Some(priority) = self.state.lock().priority.get(n as usize) {
+                           return Some(((*priority >> (j * 8)) & 0xff) as u8);
+                        }
+                    }
+                    None
+                },
+                _ => None,
+            }
+        }
+
         fn write32(&self, address: GicdRegister, value: u32) -> bool {
             assert!(address.0 & 3 == 0);
             match address {
@@ -1048,6 +1082,14 @@ mod gicd {
             }
             let address = GicdRegister(address as u16);
             let handled = match data.len() {
+                1 => {
+                    if let Some(v) = self.read8(address) {
+                        data[0] = v;
+                        true
+                    } else {
+                        false
+                    }
+                }
                 4 => {
                     if let Some(v) = self.read32(address) {
                         data.copy_from_slice(&v.to_ne_bytes());
@@ -1099,6 +1141,7 @@ mod gicd {
             }
             let address = GicdRegister(address as u16);
             let handled = match data.len() {
+                1 => self.write8(address, u8::from_ne_bytes(data.try_into().unwrap())),
                 4 => self.write32(address, u32::from_ne_bytes(data.try_into().unwrap())),
                 8 => self.write64(address, u64::from_ne_bytes(data.try_into().unwrap())),
                 _ => false,
@@ -1133,9 +1176,10 @@ mod gicd {
             distributor.add_redistributor(0, true);
 
             let mut state = distributor.state.lock();
-            state.enable_grp1 = true;
+            state.enable_grp1_non_secure = true;
             state.enable[1] |= 1;
-            state.group[1] |= 1;
+            state.group_status[1] |= 1;
+            state.group_modifier[1] |= 1;
             drop(state);
 
             distributor
@@ -1415,7 +1459,7 @@ mod gicd {
                 .unwrap();
             assert_eq!((interrupt.intid, interrupt.priority), (TEST_PPI, 0x80));
 
-            distributor.state.lock().enable_grp1 = false;
+            distributor.state.lock().enable_grp1_non_secure = false;
             assert!(
                 distributor
                     .next_pending_private_interrupt(vp, both_pending, u8::MAX)
@@ -1637,6 +1681,14 @@ mod gicr {
             } else {
                 let address = GicrSgiRegister(address as u16);
                 let handled = match data.len() {
+                    1 => {
+                        if let Some(v) = self.sgi_read8(address) {
+                            data[0] = v;
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     4 => {
                         if let Some(v) = self.sgi_read32(address) {
                             data.copy_from_slice(&v.to_ne_bytes());
@@ -1687,6 +1739,10 @@ mod gicr {
             } else {
                 let address = GicrSgiRegister(address as u16);
                 let handled = match data.len() {
+                    1 => {
+                        let data = u8::from_ne_bytes(data.try_into().unwrap());
+                        self.sgi_write8(address, data)
+                    }
                     4 => {
                         let data = u32::from_ne_bytes(data.try_into().unwrap());
                         self.sgi_write32(address, data)
@@ -1752,6 +1808,30 @@ mod gicr {
 
         fn rd_write64(&self, _address: GicrRdRegister, _data: u64) -> bool {
             false
+        }
+
+        fn sgi_read8(&self, address: GicrSgiRegister) -> Option<u8> {
+            let j = address.0%4;
+            match address {
+                r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x1f) / 4;
+                    Some((self.mutable.lock().priority[n as usize] >> (j*8) & 0xff) as u8)
+                }
+                _ => None,
+            }
+        }
+
+        fn sgi_write8(&self, address: GicrSgiRegister, data: u8) -> bool {
+            let j = address.0%4;
+            match address {
+                r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x1f) / 4;
+                    self.mutable.lock().priority[n as usize] &= !(0xff << (j*8));
+                    self.mutable.lock().priority[n as usize] |= u32::from(data) << (j*8);
+                    true
+                }
+                _ => false,
+            }
         }
 
         fn sgi_read32(&self, address: GicrSgiRegister) -> Option<u32> {
