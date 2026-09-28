@@ -13,6 +13,7 @@ use crate::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
 use crate::common::CommonTriple;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsWrite;
+use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use crate::init_vmm_tests_content_dir::vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsX86;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
@@ -130,7 +131,18 @@ impl SimpleFlowNode for Node {
                 test_content_config: TestContentConfig::Uninitialized {
                     test_content_dir: None,
                     built_artifacts,
-                    needs_release_igvm: true, // TODO
+                    prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections {
+                        // TODO: figure out which are actually needed
+                        test_linux_initrd_x64: true,
+                        test_linux_kernel_x64: true,
+                        test_linux_initrd_aarch64: true,
+                        test_linux_kernel_aarch64: true,
+                        test_linux_bzimage_x64: true,
+                        uefi: true,
+                        virtio_win_drivers: true,
+                        release_igvm: true,
+                        qemu_system_aarch64: false,
+                    },
                 },
                 downloaded_artifacts,
                 prep_steps_variants,

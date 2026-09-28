@@ -145,27 +145,22 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "disk_io",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         // Open the perf rootfs erofs image for the virtio-blk device.
         let erofs_path = require_petritools_erofs(resolver);
         let erofs_file = fs_err::File::open(&erofs_path)?;
 
-        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
-            .with_processor_topology(petri::ProcessorTopology {
-                vp_count: 2,
-                ..Default::default()
-            })
-            .with_memory(petri::MemoryConfig {
-                startup_bytes: 1024 * 1024 * 1024, // 1 GB
-                ..Default::default()
-            });
+        let mut builder =
+            petri::PetriVmBuilder::minimal("disk_io", &log_source, artifacts, driver)?
+                .with_processor_topology(petri::ProcessorTopology {
+                    vp_count: 2,
+                    ..Default::default()
+                })
+                .with_memory(petri::MemoryConfig {
+                    startup_bytes: 1024 * 1024 * 1024, // 1 GB
+                    ..Default::default()
+                });
 
         // Attach erofs + data disk and NIC. Only one modify_backend() call is
         // allowed, so combine all PCIe device setup in a single call.

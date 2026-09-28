@@ -37,7 +37,8 @@ impl SimpleFlowNode for Node {
                     openvmm,
                     openvmm_vhost,
                     pipette_windows,
-                    pipette_linux_musl,
+                    pipette_linux_musl_x64,
+                    pipette_linux_musl_aarch64,
                     guest_test_uefi,
                     openhcl_standard,
                     openhcl_standard_dev,
@@ -147,12 +148,21 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        if let Some(pipette_linux_musl) = pipette_linux_musl {
+        if let Some(pipette_linux_musl_x64) = pipette_linux_musl_x64 {
             download_artifact(
                 ctx,
-                format!("{arch_tag}-linux-musl-pipette"),
+                "x64-linux-musl-pipette".into(),
                 run_id.clone(),
-                pipette_linux_musl,
+                pipette_linux_musl_x64,
+            );
+        }
+
+        if let Some(pipette_linux_musl_aarch64) = pipette_linux_musl_aarch64 {
+            download_artifact(
+                ctx,
+                "aarch64-linux-musl-pipette".into(),
+                run_id.clone(),
+                pipette_linux_musl_aarch64,
             );
         }
 

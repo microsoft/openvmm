@@ -172,7 +172,7 @@ async fn test_ttrpc_no_vmbus(
             "com1",
             petri::log_task(
                 params
-                    .logger
+                    .log_source
                     .log_file(&format!("no-vmbus-disable-hv-{disable_hv}"))?,
                 PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
                 "linux com1",
@@ -191,7 +191,7 @@ async fn test_ttrpc_no_vmbus(
                 pipette_client::PipetteClient::new(
                     &driver,
                     PolledSocket::new(&driver, conn)?,
-                    params.logger.output_dir(),
+                    params.log_source.output_dir(),
                 )
                 .await
             })
@@ -835,7 +835,7 @@ async fn test_ttrpc_interface(
         let _com1_task = driver.spawn(
             "com1",
             petri::log_task(
-                params.logger.log_file("linux").unwrap(),
+                params.log_source.log_file("linux").unwrap(),
                 PolledSocket::new(&driver, com1).unwrap(),
                 "linux com1",
             ),
@@ -844,7 +844,7 @@ async fn test_ttrpc_interface(
         let _console_task = driver.spawn(
             "console",
             petri::log_task(
-                params.logger.log_file("virtio-console").unwrap(),
+                params.log_source.log_file("virtio-console").unwrap(),
                 PolledSocket::new(&driver, console).unwrap(),
                 "virtio console",
             ),
@@ -885,7 +885,7 @@ async fn test_ttrpc_interface(
                     let agent = pipette_client::PipetteClient::new(
                         &driver,
                         conn,
-                        params.logger.output_dir(),
+                        params.log_source.output_dir(),
                     )
                     .await?;
                     validate_pcie_config(&agent).await?;
@@ -1118,7 +1118,7 @@ async fn test_ttrpc_uefi_boot(
     let _com1_task = driver.spawn(
         "com1",
         log_serial(
-            params.logger.log_file("uefi")?,
+            params.log_source.log_file("uefi")?,
             com1,
             UEFI_BANNER,
             marker_send,
@@ -1495,7 +1495,7 @@ async fn launch_openvmm(
     let stderr_task = driver.spawn(
         "stderr",
         petri::log_task(
-            params.logger.log_file("stderr")?,
+            params.log_source.log_file("stderr")?,
             PolledPipe::new(driver, stderr_read)?,
             "openvmm stderr",
         ),

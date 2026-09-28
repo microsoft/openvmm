@@ -3224,12 +3224,21 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guestmem_core",
  "inspect",
  "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
  "trycopy",
+ "zerocopy",
+]
+
+[[package]]
+name = "guestmem_core"
+version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.16",
  "zerocopy",
 ]
 
@@ -3702,6 +3711,14 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+]
+
+[[package]]
+name = "hyperv_keyboard_protocol"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4989,7 +5006,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -4997,6 +5013,7 @@ dependencies = [
  "inspect_counters",
  "memory_range",
  "mesh",
+ "net_backend_core",
  "net_backend_resources",
  "pal_async",
  "parking_lot",
@@ -5005,6 +5022,13 @@ dependencies = [
  "tracing",
  "vm_resource",
  "vm_topology",
+]
+
+[[package]]
+name = "net_backend_core"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
 ]
 
 [[package]]
@@ -5131,7 +5155,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "event-listener",
  "futures",
  "futures-concurrency",
@@ -5144,8 +5167,8 @@ dependencies = [
  "mesh",
  "net_backend",
  "net_backend_resources",
+ "netvsp_protocol",
  "netvsp_resources",
- "open_enum",
  "pal_async",
  "parking_lot",
  "safeatomic",
@@ -5161,6 +5184,19 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "netvsp_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "net_backend_core",
+ "open_enum",
+ "static_assertions",
+ "vmbus_core",
  "zerocopy",
 ]
 
@@ -5790,7 +5826,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -5803,7 +5839,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "test_with_tracing",
 ]
@@ -8737,6 +8773,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "guid",
  "inspect",
  "mesh",
@@ -8985,6 +9022,7 @@ dependencies = [
  "futures",
  "guestmem",
  "guid",
+ "hyperv_keyboard_protocol",
  "input_core",
  "inspect",
  "mesh",
@@ -9172,7 +9210,6 @@ dependencies = [
  "tee_call",
  "test_with_tracing",
  "thiserror 2.0.16",
- "tpm_device",
  "tpm_protocol",
  "tpm_resources",
  "tpm_vmgs",
@@ -10384,11 +10421,10 @@ name = "vmbus_core"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
- "futures",
  "guid",
  "hvdef",
  "inspect",
- "mesh",
+ "mesh_protobuf",
  "open_enum",
  "static_assertions",
  "thiserror 2.0.16",
@@ -10466,7 +10502,7 @@ name = "vmbus_ring"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "guestmem",
+ "guestmem_core",
  "inspect",
  "safeatomic",
  "thiserror 2.0.16",

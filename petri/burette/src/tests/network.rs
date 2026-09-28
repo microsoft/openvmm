@@ -191,31 +191,26 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
         let test_name = match self.backend {
             NetBackend::Consomme => "network_consomme",
             NetBackend::Tap => "network_tap",
-        };
-        let params = petri::PetriTestParams {
-            test_name,
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
         };
 
         // Open the perf rootfs erofs image for the virtio-blk device.
         let erofs_path = require_petritools_erofs(resolver);
         let erofs_file = fs_err::File::open(&erofs_path)?;
 
-        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
-            .with_processor_topology(petri::ProcessorTopology {
-                vp_count: 2,
-                ..Default::default()
-            })
-            .with_memory(petri::MemoryConfig {
-                startup_bytes: 1024 * 1024 * 1024, // 1 GB
-                ..Default::default()
-            });
+        let mut builder =
+            petri::PetriVmBuilder::minimal(test_name, &log_source, artifacts, driver)?
+                .with_processor_topology(petri::ProcessorTopology {
+                    vp_count: 2,
+                    ..Default::default()
+                })
+                .with_memory(petri::MemoryConfig {
+                    startup_bytes: 1024 * 1024 * 1024, // 1 GB
+                    ..Default::default()
+                });
 
         // Configure NICs and erofs device based on backend.
         match self.backend {

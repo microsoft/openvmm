@@ -44,7 +44,7 @@ x86defs.workspace = true
 # support/
 cache_topology.workspace = true
 closeable_mutex.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 pal_async.workspace = true
 

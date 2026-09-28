@@ -248,15 +248,23 @@ describes the source definitions.
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+* `--virtio-fs-bus <BUS>`: Select the bus for `--virtio-fs` and
+  `--virtio-fs-shmem` devices. Accepted values are `auto`, `mmio`, `pci`,
+  `pcie:PORT`, and `vpci`. Defaults to `auto`. A `pcie_port` prefix on either
+  device option overrides this setting. Each PCIe port may be assigned to only
+  one device, whether selected by `pcie:PORT` or a `pcie_port` prefix.
 * `--virtio-rng`: Add a virtio entropy (RNG) device, exposing `/dev/hwrng` in the Linux guest.
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
-* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
-  Defaults to `auto`.
-* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using OpenVMM's
-  hybrid Unix-socket relay.
-* `--virtio-vsock-bus <mmio|pci>`: Select the bus for a virtio-vsock device
-  created by `--virtio-vsock-path` or `--virtio-vsock-vhost-cid`. When omitted,
-  OpenVMM selects the bus automatically.
+* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
+  values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
+  `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
+  hybrid Unix socket relay.
+* `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
+  virtio-vsock device created by `--virtio-vsock-path` or
+  `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
+  automatically. The `pcie` value uses the root port named `vsock`. Use
+  `pcie:PORT` to select another root port.
 * `--virtio-vsock-vhost-cid <CID>`: Add a virtio-vsock device backed by the
   Linux kernel's `vhost_vsock` implementation. This makes the guest reachable
   from host applications through `AF_VSOCK` at `CID`, which must be between 3

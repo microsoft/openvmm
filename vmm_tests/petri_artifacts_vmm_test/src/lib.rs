@@ -58,6 +58,11 @@ pub mod artifacts {
         OPENVMM_VHOST_LINUX_AARCH64,
     }
 
+    declare_artifacts! {
+        /// QEMU Aarch64 system emulator for x86_64 Linux
+        QEMU_SYSTEM_AARCH64_LINUX_X64,
+    }
+
     /// Guest-side tools used by the VMM tests.
     pub mod guest_tools {
         use petri_artifacts_core::declare_artifacts;

@@ -67,6 +67,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             #[cfg(target_os = "linux")]
             _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
 
+            _ if id == QEMU_SYSTEM_AARCH64_LINUX_X64 => qemu_system_aarch64_path(),
+
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => linux_direct_x64_test_bzimage_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
@@ -227,6 +229,7 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
         } else {
             "openvmm"
         }),
+        _ if id == QEMU_SYSTEM_AARCH64_LINUX_X64 => Some("qemu-system-aarch64"),
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => Some("x64/vmlinux"),
         _ if id == loadable::LINUX_DIRECT_TEST_BZIMAGE_X64 => Some("x64/bzImage"),
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
@@ -343,8 +346,8 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     for (index, target_suffix) in target_suffixes.iter().enumerate() {
         let target = format!("{}-{}", target_arch_path(arch), target_suffix);
         match get_path(
-            format!("target/{target}/{}", cargo_build_profile()),
-            binary,
+            ".",
+            PathBuf::from(&target).join(binary),
             MissingCommand::Build {
                 package: "pipette",
                 target: Some(&target),
@@ -376,6 +379,19 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 #[cfg(target_os = "linux")]
 fn openvmm_vhost_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm_vhost")
+}
+
+fn qemu_system_aarch64_path() -> anyhow::Result<PathBuf> {
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(
+            petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase(),
+        )
+        .unwrap(),
+        MissingCommand::Restore {
+            description: "qemu-system-aarch64",
+        },
+    )
 }
 
 /// Path to the output location of the tmk_vmm executable.

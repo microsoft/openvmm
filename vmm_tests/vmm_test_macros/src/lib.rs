@@ -49,6 +49,7 @@ struct ResolvedConfig {
 enum Vmm {
     OpenVmm,
     HyperV,
+    Qemu,
 }
 
 /// Host CPU vendor that a test can be restricted to via macro overrides.
@@ -139,6 +140,7 @@ impl ResolvedConfig {
         let vmm_prefix = match self.vmm {
             Vmm::OpenVmm => "openvmm",
             Vmm::HyperV => "hyperv",
+            Vmm::Qemu => "qemu",
         };
 
         let firmware_prefix = match &self.firmware {
@@ -288,7 +290,8 @@ impl Parse for ArgsWithOverrides {
 
         while !input.is_empty() {
             let ident = input.parse::<Ident>()?;
-            match ident.to_string().as_str() {
+            let ident_string = ident.to_string();
+            match ident_string.as_str() {
                 "configs" => {
                     let configs;
                     syn::parenthesized!(configs in input);
@@ -309,18 +312,19 @@ impl Parse for ArgsWithOverrides {
                         overrides.add_capability(capability.span, capability.name)?;
                     }
                 }
-                "openvmm" | "hyperv" => {
+                "openvmm" | "hyperv" | "qemu" => {
                     if position != 0 {
                         return Err(Error::new(
                             ident.span(),
                             "the vmm must be the first argument",
                         ));
                     }
-                    overrides.vmm = Some(if ident == "openvmm" {
-                        Vmm::OpenVmm
-                    } else {
-                        Vmm::HyperV
-                    });
+                    overrides.vmm = match ident_string.as_str() {
+                        "openvmm" => Some(Vmm::OpenVmm),
+                        "hyperv" => Some(Vmm::HyperV),
+                        "qemu" => Some(Vmm::Qemu),
+                        _ => unreachable!(),
+                    };
                 }
                 "unstable" | "ignore" => {
                     let inner;
@@ -484,6 +488,9 @@ impl ArgsWithOverrides {
                     (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
                     | (Some(Vmm::OpenVmm), None)
                     | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+                    (Some(Vmm::Qemu), Some(Vmm::Qemu))
+                    | (Some(Vmm::Qemu), None)
+                    | (None, Some(Vmm::Qemu)) => Vmm::Qemu,
                     (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
                     _ => return Err(Error::new(config.span, "vmm mismatch")),
                 },
@@ -583,6 +590,8 @@ impl Parse for Config {
             (Some(Vmm::HyperV), remainder)
         } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
             (Some(Vmm::OpenVmm), remainder)
+        } else if let Some(remainder) = word_string.strip_prefix("qemu_") {
+            (Some(Vmm::Qemu), remainder)
         } else {
             (None, word_string.as_str())
         };
@@ -1113,11 +1122,17 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                 quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
+            Vmm::Qemu => (
+                quote!(),
+                quote!(::petri::PetriVmArtifacts::<::petri::qemu::QemuPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::qemu::QemuPetriBackend>),
+            ),
         };
 
         let remote_access = match config.vmm {
             Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
             Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
+            Vmm::Qemu => quote!(::petri::RemoteAccess::LocalOnly),
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
@@ -1222,6 +1237,7 @@ fn build_requirements(
         let vmm = match resolved_vmm {
             Vmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
             Vmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
+            Vmm::Qemu => quote!(::petri::requirements::VmmType::Qemu),
         };
         requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::RequiresCapability {

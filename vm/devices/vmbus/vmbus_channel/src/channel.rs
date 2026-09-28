@@ -3,6 +3,7 @@
 
 //! Trait-based VMBus channel support.
 
+use crate::TaggedStream;
 use crate::bus::ChannelRequest;
 use crate::bus::ChannelServerRequest;
 use crate::bus::ModifyRequest;
@@ -35,7 +36,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::instrument;
-use vmbus_core::TaggedStream;
 use vmbus_core::protocol::GpadlId;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::notify::Notify;

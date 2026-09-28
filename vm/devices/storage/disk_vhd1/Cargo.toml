@@ -14,7 +14,7 @@ scsi_buffers.workspace = true
 vhd1_defs.workspace = true
 vm_resource.workspace = true
 
-guid = { workspace = true, features = ["inspect"] }
+guid = { workspace = true, features = ["getrandom", "inspect"] }
 inspect.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
