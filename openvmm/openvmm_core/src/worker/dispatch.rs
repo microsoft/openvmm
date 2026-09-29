@@ -1221,6 +1221,14 @@ fn validate_generic_initiator_memory_ranges(
     assigned_bars: &[ecam_config_access::AssignedPciBar],
     ram_ranges: impl IntoIterator<Item = MemoryRange>,
 ) -> anyhow::Result<()> {
+    fn contains(range: &std::ops::Range<u64>, contained: MemoryRange) -> bool {
+        range.start <= contained.start() && range.end >= contained.end()
+    }
+
+    fn overlaps(range: &std::ops::Range<u64>, other: MemoryRange) -> bool {
+        range.end > other.start() && range.start < other.end()
+    }
+
     let ram_ranges = ram_ranges.into_iter().collect::<Vec<_>>();
     let mut coherent_ranges = Vec::new();
 
@@ -1252,14 +1260,15 @@ fn validate_generic_initiator_memory_ranges(
             })?;
 
         anyhow::ensure!(
-            bar4.range.contains(&memory_range),
-            "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} is outside assigned BAR4 {}",
+            contains(&bar4.range, memory_range),
+            "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} is outside assigned BAR4 {:#x}..{:#x}",
             initiator.segment,
             initiator.bus,
             initiator.device,
             initiator.function,
             memory_range,
-            bar4.range
+            bar4.range.start,
+            bar4.range.end
         );
 
         if let Some(ram) = ram_ranges.iter().find(|ram| ram.overlaps(&memory_range)) {
@@ -1281,21 +1290,22 @@ fn validate_generic_initiator_memory_ranges(
                     && bar.kind == pci_resource_assignment::AssignedBarKind::Function
                     && bar.index == 4)
             })
-            .find(|bar| bar.range.overlaps(&memory_range))
+            .find(|bar| overlaps(&bar.range, memory_range))
         {
             let kind = match bar.kind {
                 pci_resource_assignment::AssignedBarKind::Function => "BAR",
                 pci_resource_assignment::AssignedBarKind::SriovVf => "SR-IOV VF BAR",
             };
             anyhow::bail!(
-                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps {kind}{} {} of {:04x}:{:02x}:{:02x}.{}",
+                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps {kind}{} {:#x}..{:#x} of {:04x}:{:02x}:{:02x}.{}",
                 initiator.segment,
                 initiator.bus,
                 initiator.device,
                 initiator.function,
                 memory_range,
                 bar.index,
-                bar.range,
+                bar.range.start,
+                bar.range.end,
                 bar.segment,
                 bar.bus,
                 bar.device,
@@ -5221,7 +5231,7 @@ mod generic_initiator_memory_tests {
             function: 0,
             kind: pci_resource_assignment::AssignedBarKind::Function,
             index,
-            range,
+            range: range.start()..range.end(),
         }
     }
 

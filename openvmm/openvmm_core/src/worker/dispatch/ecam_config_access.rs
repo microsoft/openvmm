@@ -6,14 +6,14 @@
 //! Routes config space reads/writes through the [`Chipset`]'s MMIO dispatch,
 //! exercising the same code path the guest uses.
 
-use memory_range::MemoryRange;
 use pci_resource_assignment::AssignmentError;
 use pci_resource_assignment::PciConfigAccess;
+use std::ops::Range;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::Chipset;
 
 /// A final PCI BAR assignment, including its segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignedPciBar {
     pub segment: u16,
     pub bus: u8,
@@ -21,7 +21,7 @@ pub struct AssignedPciBar {
     pub function: u8,
     pub kind: pci_resource_assignment::AssignedBarKind,
     pub index: u8,
-    pub range: MemoryRange,
+    pub range: Range<u64>,
 }
 
 /// Implements [`PciConfigAccess`] by performing MMIO reads/writes through
