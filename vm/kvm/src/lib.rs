@@ -2045,12 +2045,13 @@ impl<'a> VpRunner<'a> {
 
     /// Request an exit when the interrupt window opens.
     ///
-    /// Returns true if the window is already open (in which case the request is
-    /// not registered).
+    /// Returns true if the window is already open, in which case no request is
+    /// registered, and any earlier request is withdrawn.
     #[must_use]
     pub fn check_or_request_interrupt_window(&mut self) -> bool {
         let rdata = self.run_data();
         if rdata.ready_for_interrupt_injection != 0 {
+            rdata.request_interrupt_window = 0;
             true
         } else {
             rdata.request_interrupt_window = 1;
@@ -2062,7 +2063,8 @@ impl<'a> VpRunner<'a> {
     /// opens (see [`Self::check_or_request_interrupt_window`]).
     ///
     /// The request stays registered until [`Self::run`] returns
-    /// [`Exit::InterruptWindow`].
+    /// [`Exit::InterruptWindow`], or until
+    /// [`Self::check_or_request_interrupt_window`] finds the window open.
     pub fn interrupt_window_requested(&mut self) -> bool {
         self.run_data().request_interrupt_window != 0
     }

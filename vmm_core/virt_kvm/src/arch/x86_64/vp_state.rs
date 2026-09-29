@@ -330,6 +330,17 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
             pending_interruption,
         } = *value;
 
+        // KVM can neither report nor withdraw an extint queued with
+        // KVM_INTERRUPT, so a restored one would be missing from the next save,
+        // and a reset could not discard it. Reject it before changing any
+        // state. KVM's own saved state never has one: injected PIC interrupts
+        // are saved as pending interruptions, and queued ones are not saved.
+        if let Some(vp::PendingEvent::ExtInt { .. }) = pending_event {
+            return Err(KvmError::InvalidState(
+                "restoring a pending ExtINT is not supported",
+            ));
+        }
+
         let state = match mp_state {
             vp::MpState::Running => kvm::KVM_MP_STATE_RUNNABLE,
             vp::MpState::WaitForSipi => kvm::KVM_MP_STATE_INIT_RECEIVED,
@@ -388,13 +399,8 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
                 // TODO
                 let _ = parameter;
             }
-            Some(vp::PendingEvent::ExtInt { vector }) => {
-                // N.B. KVM has no way to report or clear a pending (but
-                //      non-injected) extint interrupt, so this one is missing
-                //      from the saved state until the guest takes it.
-                self.vp.runner.queue_extint_interrupt(vector)?;
-            }
-            None => {}
+            // Rejected above.
+            Some(vp::PendingEvent::ExtInt { .. }) | None => {}
         }
 
         match pending_interruption {

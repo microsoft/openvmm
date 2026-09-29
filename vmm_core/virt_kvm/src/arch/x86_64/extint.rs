@@ -166,11 +166,14 @@ mod tests {
     }
 
     /// Runs the VP until it writes to an I/O port, and returns the port.
+    ///
+    /// No test leaves an exit requested for when the interrupt window opens, so
+    /// such an exit is unexpected.
     fn next_out_port(runner: &mut VpRunner<'_>, timed_out: &AtomicBool) -> u16 {
         loop {
             match runner.run().unwrap() {
                 Exit::IoOut { port, .. } => break port,
-                Exit::Interrupted | Exit::InterruptWindow => {
+                Exit::Interrupted => {
                     assert!(
                         !timed_out.load(Ordering::SeqCst),
                         "timed out waiting for the guest"
@@ -345,12 +348,14 @@ mod tests {
 
             // Enable them again, as a debugger might. The window request is
             // still registered, but KVM would not wake a halted VP to report
-            // that the window is now open, so check the window again.
+            // that the window is now open, so check the window again. Finding
+            // it open withdraws the request.
             regs.rflags |= RFLAGS_IF;
             vp.set_regs(&regs).unwrap();
             assert!(runner.interrupt_window_requested());
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
+            assert!(!runner.interrupt_window_requested());
             assert!(inject(vp, || Some(VECTOR)).unwrap());
         });
     }
