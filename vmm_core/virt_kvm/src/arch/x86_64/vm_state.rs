@@ -43,7 +43,7 @@ impl AccessVmState for &'_ KvmPartition {
         // Round up so that restoring this value never moves the kvm clock
         // backwards, since the guest can observe the clock at nanosecond
         // granularity.
-        let clock = self.inner.kvm.get_clock_ns()?;
+        let clock = self.inner.read_reference_time()?;
         Ok(vm::ReferenceTime {
             value: clock.clock.div_ceil(100),
         })
@@ -55,8 +55,7 @@ impl AccessVmState for &'_ KvmPartition {
         // updates the reference TSC page parameters, so that the guest's view
         // of the reference time is consistent however it queries it.
         self.inner
-            .kvm
-            .set_clock_ns(value.value.saturating_mul(100))?;
+            .set_reference_time(value.value.saturating_mul(100))?;
         Ok(())
     }
 
