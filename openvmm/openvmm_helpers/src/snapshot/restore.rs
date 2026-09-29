@@ -20,11 +20,13 @@ use super::fs::OpenedFileGeneration;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
 use super::fs::copy_exact;
+use super::fs::create_hard_link_from_handle;
 use super::fs::open_file_with_length;
 use super::fs::opened_file_generation;
 use super::fs::read_bounded_open_file;
 use super::fs::reflink_exact;
 use super::fs::verify_file_digest;
+use super::fs::verify_hard_link_identity;
 use super::microvm;
 use anyhow::Context;
 use std::collections::HashSet;
@@ -390,6 +392,28 @@ pub fn clone_paired_scratch_file(
     )?;
     let clone = open_file_with_length(destination, block.length, "copy-on-write scratch clone")?;
     verify_sandbox_block_identity(&clone, block, "copy-on-write scratch clone")
+}
+
+/// Creates a private path to the exact claimed paired-scratch generation.
+pub fn link_claimed_paired_scratch_file(
+    source: &std::fs::File,
+    destination: &Path,
+    block: &microvm::SnapshotMicrovmSandboxBlock,
+) -> anyhow::Result<()> {
+    verify_sandbox_block_identity(source, block, SCRATCH_FILE_NAME)?;
+    let parent = destination
+        .parent()
+        .context("claimed scratch destination has no parent")?;
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("claimed scratch destination name is invalid")?;
+    let directory = OpenedSnapshotDirectory::open_for_publication(parent)?;
+    create_hard_link_from_handle(source, &directory.file, name)
+        .context("failed to link claimed scratch generation")?;
+    let linked = open_file_with_length(destination, block.length, "claimed scratch link")?;
+    verify_hard_link_identity(source, &linked, block.length)?;
+    verify_sandbox_block_identity(&linked, block, "claimed scratch link")
 }
 
 /// Atomically consumes a single-use resume snapshot.
