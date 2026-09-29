@@ -45,11 +45,15 @@ pub(super) fn inject(vp: &kvm::Processor<'_>, vector: u8) -> Result<(), KvmRunVp
     vp.set_vcpu_events(&events)
         .map_err(KvmRunVpError::ExtintInterrupt)?;
 
-    // KVM does not wake a halted VP for an interrupt in this slot, so leave the
-    // halted state just as taking the interrupt would. Do this after setting
-    // the interrupt: reading the state makes KVM process a latched INIT, which
+    // KVM does not wake a halted VP (or a VP in an SEV-ES AP reset hold, which
+    // KVM wakes the same way) for an interrupt in this slot, so make it
+    // runnable, just as taking the interrupt would. Do this after setting the
+    // interrupt: reading the state makes KVM process a latched INIT, which
     // resets the VP and discards the interrupt, as INIT would.
-    if vp.get_mp_state().map_err(KvmRunVpError::ExtintInterrupt)? == kvm::KVM_MP_STATE_HALTED {
+    if matches!(
+        vp.get_mp_state().map_err(KvmRunVpError::ExtintInterrupt)?,
+        kvm::KVM_MP_STATE_HALTED | kvm::KVM_MP_STATE_AP_RESET_HOLD
+    ) {
         vp.set_mp_state(kvm::KVM_MP_STATE_RUNNABLE)
             .map_err(KvmRunVpError::ExtintInterrupt)?;
     }
@@ -61,6 +65,7 @@ pub(super) fn inject(vp: &kvm::Processor<'_>, vector: u8) -> Result<(), KvmRunVp
 mod tests {
     use super::inject;
     use kvm::Exit;
+    use kvm::KVM_MP_STATE_AP_RESET_HOLD;
     use kvm::KVM_MP_STATE_HALTED;
     use kvm::KVM_MP_STATE_RUNNABLE;
     use kvm::Kvm;
@@ -147,11 +152,10 @@ mod tests {
         assert!(matches!(runner.complete_exit().unwrap(), Exit::Interrupted));
     }
 
-    /// Stops a real-mode VP just after a `hlt` with interrupts enabled
-    /// (halting it if `halted` is set), calls `deliver` to deliver an extint,
-    /// and then checks that the guest takes the interrupt exactly once before
-    /// resuming after the `hlt`.
-    fn check_extint(halted: bool, deliver: impl FnOnce(&mut VpRunner<'_>, &Processor<'_>)) {
+    /// Stops a real-mode VP in `mp_state` just after a `hlt` with interrupts
+    /// enabled, calls `deliver` to deliver an extint, and then checks that the
+    /// guest takes the interrupt exactly once before resuming after the `hlt`.
+    fn check_extint(mp_state: u32, deliver: impl FnOnce(&mut VpRunner<'_>, &Processor<'_>)) {
         kvm::init();
 
         let ram = GuestRam::new(0x10000);
@@ -196,9 +200,7 @@ mod tests {
         lapic[0x350..0x354].copy_from_slice(&0x700u32.to_le_bytes());
         vp.set_lapic(&lapic).unwrap();
 
-        if halted {
-            vp.set_mp_state(KVM_MP_STATE_HALTED).unwrap();
-        }
+        vp.set_mp_state(mp_state).unwrap();
 
         let timed_out = &AtomicBool::new(false);
         let partition = &partition;
@@ -227,7 +229,7 @@ mod tests {
     #[test]
     #[ignore = "requires access to /dev/kvm"]
     fn injected_extint_wakes_halted_vp_and_is_saved() {
-        check_extint(true, |runner, vp| {
+        check_extint(KVM_MP_STATE_HALTED, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
             inject(vp, VECTOR).unwrap();
@@ -243,8 +245,19 @@ mod tests {
 
     #[test]
     #[ignore = "requires access to /dev/kvm"]
+    fn injected_extint_wakes_vp_in_ap_reset_hold() {
+        check_extint(KVM_MP_STATE_AP_RESET_HOLD, |runner, vp| {
+            refresh_interrupt_window(runner);
+            assert!(runner.check_or_request_interrupt_window());
+            inject(vp, VECTOR).unwrap();
+            assert_eq!(vp.get_mp_state().unwrap(), KVM_MP_STATE_RUNNABLE);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
     fn queued_extint_wakes_halted_vp() {
-        check_extint(true, |runner, vp| {
+        check_extint(KVM_MP_STATE_HALTED, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
             runner.queue_extint_interrupt(VECTOR).unwrap();
@@ -255,9 +268,9 @@ mod tests {
     }
 
     /// Checks that KVM reports the interrupt window for the current state of a
-    /// VP (halted, if `halted` is set) once any pending exit is completed.
-    fn check_stale_interrupt_window(halted: bool) {
-        check_extint(halted, |runner, vp| {
+    /// VP in `mp_state` once any pending exit is completed.
+    fn check_stale_interrupt_window(mp_state: u32) {
+        check_extint(mp_state, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
             assert!(!runner.interrupt_window_requested());
@@ -285,12 +298,12 @@ mod tests {
     #[test]
     #[ignore = "requires access to /dev/kvm"]
     fn stale_interrupt_window_is_refreshed() {
-        check_stale_interrupt_window(false);
+        check_stale_interrupt_window(KVM_MP_STATE_RUNNABLE);
     }
 
     #[test]
     #[ignore = "requires access to /dev/kvm"]
     fn stale_interrupt_window_is_refreshed_while_halted() {
-        check_stale_interrupt_window(true);
+        check_stale_interrupt_window(KVM_MP_STATE_HALTED);
     }
 }
