@@ -46,9 +46,15 @@ pub enum Error {
     /// The underlying hypercall failed.
     #[error("hypercall failed")]
     Hypercall(#[from] TmkError),
-    /// A completion id was returned that we did not have outstanding.
-    #[error("completion for unknown request id")]
-    OrphanCompletion,
+    /// The core completed a request with a different result kind.
+    #[error("unexpected completion result")]
+    UnexpectedCompletion,
+    /// The host rejected a channel open.
+    #[error("host rejected channel open")]
+    OpenFailed,
+    /// The host rejected a GPADL.
+    #[error("host rejected GPADL")]
+    GpadlFailed,
     /// A path that has not been implemented yet in the scaffold.
     #[error("not implemented")]
     NotImplemented,

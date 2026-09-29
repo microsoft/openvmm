@@ -18,8 +18,7 @@
 
 use crate::Error;
 use crate::Result;
-use crate::connection::connection;
-use crate::hypercalls::post_message;
+use crate::client_driver::driver;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use guid::Guid;
@@ -58,9 +57,8 @@ pub fn set_connect_result_handler(handler: ConnectResultHandler) {
 }
 
 /// Dispatch a decoded `TlConnectResult` to the registered handler, if
-/// any. Called from [`crate::message::route_message`] via the
-/// [`MessageSink::tl_connect_result`](crate::message::MessageSink)
-/// hook when a completion arrives.
+/// any. Called by the synchronous client driver before it routes the
+/// host result into `ClientCore`.
 pub fn dispatch_connect_result(result: &TlConnectResult) {
     if let Some(handler) = *HANDLER.lock() {
         handler(result);
@@ -117,7 +115,23 @@ pub fn send_hvsock_connect<C: HypercallPlatformTrait<Config = HyperVHypercallCon
     service: Guid,
     silo: Option<Guid>,
 ) -> Result<()> {
-    let state = connection().clone().ok_or(Error::VersionMismatch)?;
-    let payload = encode_tl_connect_request(state.selected_version, endpoint, service, silo);
-    post_message(ctx, state.post_message_connection_id, &payload)
+    let mut driver = driver();
+    if driver.version().is_none() {
+        return Err(Error::VersionMismatch);
+    }
+    let request_id = driver.request_id();
+    driver.step(
+        ctx,
+        vmbus_client_core::Event::HvsockConnect {
+            request_id,
+            request: vmbus_client_core::HvsockConnectRequest {
+                service_id: service,
+                endpoint_id: endpoint,
+                silo_id: silo.unwrap_or_default(),
+                hosted_silo_unaware: silo.is_none(),
+            },
+        },
+    )?;
+    driver.detach_request(request_id);
+    Ok(())
 }

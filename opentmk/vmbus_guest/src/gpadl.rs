@@ -56,17 +56,10 @@
 
 use crate::Error;
 use crate::Result;
-use crate::connection::MessagePump;
-use crate::connection::OfferCollector;
-use crate::connection::connection;
-use crate::hypercalls::post_message;
+use crate::client_driver::ClientDriver;
+use crate::client_driver::MessagePump;
+use crate::client_driver::driver;
 use crate::interrupt::SimpPump;
-use crate::message::CompletionKey;
-use crate::message::CompletionTable;
-use crate::message::MessageSink;
-use crate::message::completion_table;
-use crate::message::encode;
-use crate::message::parse;
 use crate::protocol::GpaRange;
 use crate::synic::synic_pages;
 use alloc::vec::Vec;
@@ -79,10 +72,8 @@ use opentmk_core::context::HypercallPlatformTrait;
 use opentmk_core::platform::hyperv::ctx::HyperVHypercallConfig;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::GpadlBody;
-use vmbus_core::protocol::GpadlCreated;
 use vmbus_core::protocol::GpadlHeader;
 use vmbus_core::protocol::GpadlId;
-use vmbus_core::protocol::GpadlTeardown;
 use vmbus_core::protocol::HEADER_SIZE;
 use vmbus_core::protocol::MAX_MESSAGE_SIZE;
 use vmbus_core::protocol::MessageHeader;
@@ -234,60 +225,16 @@ pub fn encode_gpadl_messages(
     GpadlMessages { messages }
 }
 
-/// Publish `pfns` describing a contiguous page-aligned buffer of
-/// `total_bytes` to the host as a GPADL for `channel_id`.
-///
-/// `total_bytes` must be a multiple of the Hyper-V page size
-/// (`hvdef::HV_PAGE_SIZE`), and `pfns.len()` must equal
-/// `total_bytes / HV_PAGE_SIZE`.
-///
-/// This posts every message in the encoded exchange but does **not**
-/// wait for `GpadlCreated`. The full flow (post + await completion)
-/// lands with [`crate::connection`]'s message-queue integration.
-pub fn establish_gpadl_partial<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
-    ctx: &mut C,
-    channel_id: ChannelId,
-    gpadl_id: GpadlId,
-    total_bytes: u32,
-    pfns: &[u64],
-) -> Result<GpadlHandle> {
-    if !(total_bytes as u64).is_multiple_of(hvdef::HV_PAGE_SIZE) {
-        return Err(Error::Parse {
-            ty: None,
-            reason: "GPADL total_bytes must be page-aligned",
-        });
-    }
-    let expected_pfns = (total_bytes as u64 / hvdef::HV_PAGE_SIZE) as usize;
-    if pfns.len() != expected_pfns {
-        return Err(Error::Parse {
-            ty: None,
-            reason: "GPADL pfn count doesn't match total_bytes",
-        });
-    }
-
-    let payload = build_single_range_payload(total_bytes, pfns);
-    let msgs = encode_gpadl_messages(channel_id, gpadl_id, /*range_count=*/ 1, &payload);
-    let conn_id = connection_id_from_state()?;
-    for m in &msgs.messages {
-        post_message(ctx, conn_id, m)?;
-    }
-    Ok(GpadlHandle {
-        channel_id,
-        gpadl_id,
-    })
-}
-
 /// Full `establish_gpadl` — posts the header/body chain and waits for
 /// `GpadlCreated`.
 ///
 /// This is the pump-based variant that host tests can drive with a
 /// scripted `MessagePump`. The UEFI entry point [`establish_gpadl`]
-/// wraps it with the process-wide table and SIMP pump.
+/// wraps it with the process-wide driver and SIMP pump.
 pub fn establish_gpadl_with<C, P>(
     ctx: &mut C,
-    table: &CompletionTable,
+    driver: &mut ClientDriver,
     pump: &mut P,
-    sink: &mut dyn MessageSink,
     channel_id: ChannelId,
     gpadl_id: GpadlId,
     total_bytes: u32,
@@ -311,60 +258,61 @@ where
         });
     }
 
-    let payload = build_single_range_payload(total_bytes, pfns);
-    let msgs = encode_gpadl_messages(channel_id, gpadl_id, 1, &payload);
-
-    let handle = table.register(CompletionKey::GpadlCreated(gpadl_id));
-    let conn_id = connection_id_from_state()?;
-    for m in &msgs.messages {
-        post_message(ctx, conn_id, m)?;
+    let mut buf = Vec::with_capacity(1 + pfns.len());
+    buf.push(total_bytes as u64);
+    buf.extend_from_slice(pfns);
+    let request_id = driver.request_id();
+    driver.step(
+        ctx,
+        vmbus_client_core::Event::EstablishGpadl {
+            request_id,
+            channel_id,
+            gpadl_id,
+            request: vmbus_client_core::GpadlRequest {
+                id: gpadl_id,
+                count: 1,
+                buf,
+            },
+        },
+    )?;
+    match driver.wait_for(ctx, pump, request_id)? {
+        vmbus_client_core::CompletionResult::EstablishGpadl(Ok(())) => Ok(GpadlHandle {
+            channel_id,
+            gpadl_id,
+        }),
+        vmbus_client_core::CompletionResult::EstablishGpadl(Err(())) => Err(Error::GpadlFailed),
+        _ => Err(Error::UnexpectedCompletion),
     }
-
-    pump.poll_until(ctx, &handle, sink)?;
-    let bytes = handle.take_response().ok_or(Error::Timeout)?;
-    let created: GpadlCreated = parse(&bytes)?;
-    if created.status != 0 {
-        return Err(Error::Parse {
-            ty: Some(MessageType::GPADL_CREATED),
-            reason: "host returned non-success GpadlCreated status",
-        });
-    }
-    Ok(GpadlHandle {
-        channel_id,
-        gpadl_id,
-    })
 }
 
 /// Post `GpadlTeardown` for `handle` and wait for `GpadlTorndown`.
 pub fn teardown_gpadl_with<C, P>(
     ctx: &mut C,
-    table: &CompletionTable,
+    driver: &mut ClientDriver,
     pump: &mut P,
-    sink: &mut dyn MessageSink,
     handle: GpadlHandle,
 ) -> Result<()>
 where
     C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
     P: MessagePump,
 {
-    let msg = GpadlTeardown {
-        channel_id: handle.channel_id,
-        gpadl_id: handle.gpadl_id,
-    };
-    let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    let used = encode(&msg, &mut buf);
-    let completion = table.register(CompletionKey::GpadlTorndown(handle.gpadl_id));
-    let conn_id = connection_id_from_state()?;
-    post_message(ctx, conn_id, &buf[..used])?;
-    pump.poll_until(ctx, &completion, sink)?;
-    if !completion.completed() {
-        return Err(Error::Timeout);
+    let request_id = driver.request_id();
+    driver.step(
+        ctx,
+        vmbus_client_core::Event::TeardownGpadl {
+            request_id,
+            channel_id: handle.channel_id,
+            gpadl_id: handle.gpadl_id,
+        },
+    )?;
+    match driver.wait_for(ctx, pump, request_id)? {
+        vmbus_client_core::CompletionResult::TeardownGpadl => Ok(()),
+        _ => Err(Error::UnexpectedCompletion),
     }
-    Ok(())
 }
 
 /// UEFI entry point: [`establish_gpadl_with`] using the process-wide
-/// completion table and SIMP pump.
+/// client driver and SIMP pump.
 pub fn establish_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     channel_id: ChannelId,
@@ -372,15 +320,12 @@ pub fn establish_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>
     pfns: &[u64],
 ) -> Result<GpadlHandle> {
     let pages = synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = completion_table();
     let mut pump = SimpPump::new(pages.simp_gpa);
-    let mut sink = OfferCollector::default();
     let gpadl_id = allocate_gpadl_id();
     establish_gpadl_with(
         ctx,
-        table,
+        &mut driver(),
         &mut pump,
-        &mut sink,
         channel_id,
         gpadl_id,
         total_bytes,
@@ -389,16 +334,14 @@ pub fn establish_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>
 }
 
 /// UEFI entry point: [`teardown_gpadl_with`] using the process-wide
-/// completion table and SIMP pump.
+/// client driver and SIMP pump.
 pub fn teardown_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     handle: GpadlHandle,
 ) -> Result<()> {
     let pages = synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = completion_table();
     let mut pump = SimpPump::new(pages.simp_gpa);
-    let mut sink = OfferCollector::default();
-    teardown_gpadl_with(ctx, table, &mut pump, &mut sink, handle)
+    teardown_gpadl_with(ctx, &mut driver(), &mut pump, handle)
 }
 
 /// Allocate a fresh `GpadlId`. Uses a process-wide atomic counter,
@@ -406,16 +349,6 @@ pub fn teardown_gpadl<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>
 pub fn allocate_gpadl_id() -> GpadlId {
     static NEXT_ID: AtomicU32 = AtomicU32::new(1);
     GpadlId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Retrieve the currently negotiated post-message connection id from
-/// [`crate::connection`], failing if none has been negotiated yet.
-fn connection_id_from_state() -> Result<u32> {
-    let guard = connection();
-    match &*guard {
-        Some(state) => Ok(state.post_message_connection_id),
-        None => Err(Error::VersionMismatch),
-    }
 }
 
 // -----------------------------------------------------------------------

@@ -46,11 +46,6 @@ use crate::connection::connection;
 use crate::gpadl::establish_gpadl;
 use crate::gpadl::teardown_gpadl;
 use crate::hypercalls::post_message;
-#[cfg_attr(
-    not(target_os = "uefi"),
-    expect(unused_imports, reason = "used only by the UEFI SIMP drain")
-)]
-use crate::message::completion_table;
 use crate::protocol::NEGOTIATION_LADDER;
 use crate::protocol::PacketFlags;
 use crate::protocol::PacketType;
@@ -179,9 +174,8 @@ pub fn post_raw_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig
 /// the common case — most channel messages are fire-and-forget and the
 /// host answers only a handful of request types.
 ///
-/// Messages are still routed through the completion table and the
-/// offer sink on the way past, so a reply that a *different* part of
-/// the guest was waiting on is not swallowed by this call.
+/// This raw fuzzing path does not route messages through the
+/// process-wide client driver.
 pub fn post_raw_message_wait<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     connection_id: u32,
@@ -499,7 +493,6 @@ fn poll_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     max_polls: usize,
 ) -> Result<Option<Vec<u8>>> {
-    use crate::connection::OfferCollector;
     use crate::interrupt::drain_once_capture;
     use crate::interrupt::slot_offset;
     use crate::synic::VMBUS_SINT;
@@ -508,9 +501,6 @@ fn poll_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     use hvdef::HV_MESSAGE_SIZE;
 
     let pages = synic_pages().ok_or(Error::VersionMismatch)?;
-    let table = completion_table();
-    let mut sink = OfferCollector::default();
-
     for _ in 0..max_polls {
         // SAFETY: `simp_gpa` is a live guest page programmed into SIMP
         // by `crate::synic::init_synic`; guest memory is identity
@@ -522,7 +512,7 @@ fn poll_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
                 HV_MESSAGE_SIZE,
             )
         };
-        if let Some(bytes) = drain_once_capture(ctx, slot, table, &mut sink)? {
+        if let Some(bytes) = drain_once_capture(ctx, slot)? {
             return Ok(Some(bytes));
         }
         spin_loop();

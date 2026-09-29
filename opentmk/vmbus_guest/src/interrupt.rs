@@ -18,9 +18,8 @@
 //!
 //! 1. Read the slot's `HvMessageHeader`.
 //! 2. If `typ == HvMessageTypeNone (0)`, no message — stop.
-//! 3. Otherwise the payload is a vmbus message; hand
-//!    `payload_buffer[..header.len]` off to
-//!    [`crate::message::route_message`].
+//! 3. Otherwise copy the VMBus payload for
+//!    [`crate::client_driver::ClientDriver`] to consume.
 //! 4. Write [`HvMessageType::HvMessageTypeNone`] back into the slot
 //!    header to signal the hypervisor we're done with it.
 //! 5. Re-read `message_flags.message_pending` **after** the clear (the
@@ -34,41 +33,28 @@
 //! Callers get a [`SimpPump`] automatically when they use the
 //! top-level entry points ([`crate::init`], [`crate::request_offers`],
 //! [`crate::channel::open_channel`], etc.). Instantiate one directly
-//! only when building a custom pump against a private completion
-//! table, or when you want to interleave draining with your own
-//! polling loop.
+//! only when building a custom synchronous driver or when you want to
+//! interleave draining with your own polling loop.
 //!
 //! # Example (private pump)
 //!
 //! ```ignore
 //! use vmbus_guest::interrupt::SimpPump;
-//! use vmbus_guest::message::{CompletionKey, CompletionTable};
-//! use vmbus_guest::connection::MessagePump;
+//! use vmbus_guest::client_driver::MessagePump;
 //!
-//! let table = CompletionTable::new();
 //! let mut pump = SimpPump::new(vmbus_guest::synic::synic_pages().unwrap().simp_gpa);
-//!
-//! // Register a completion, then drive the pump until it fires.
-//! let handle = table.register(CompletionKey::VersionResponse);
-//! pump.poll_until(&mut ctx, &handle, &mut sink)?;
+//! let message = pump.poll_message(&mut ctx)?;
 //! # Ok::<_, vmbus_guest::Error>(())
 //! ```
 //!
-//! [`SimpPump`] implements
-//! [`MessagePump`] via `MessagePump::poll_until`,
-//! which returns [`crate::Error::Timeout`] after `max_retries` empty
-//! reads — the guest never blocks indefinitely.
+//! [`SimpPump`] implements [`MessagePump`] and returns
+//! [`crate::Error::Timeout`] after `max_retries` empty reads — the
+//! guest never blocks indefinitely.
 
 use crate::Error;
 use crate::Result;
-use crate::connection::MessagePump;
+use crate::client_driver::MessagePump;
 use crate::hypercalls::set_vp_register;
-use crate::message::CompletionHandle;
-use crate::message::CompletionTable;
-use crate::message::MessageSink;
-#[cfg(target_os = "uefi")]
-use crate::message::completion_table;
-use crate::message::route_message;
 #[cfg_attr(
     not(target_os = "uefi"),
     expect(unused_imports, reason = "used only in the UEFI SIMP-pump impl")
@@ -187,69 +173,32 @@ pub fn write_eom<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     )
 }
 
-/// Drain a single SIMP-slot access into the completion table / sink.
+/// Drain a single SIMP-slot access.
 ///
-/// The routine reads the slot via [`read_slot`], routes the message
-/// (if any) via [`route_message`], clears the slot, and issues an EOM
-/// via [`write_eom`] when required.
+/// The routine reads the slot via [`read_slot`], copies the message,
+/// clears the slot, and issues an EOM via [`write_eom`] when required.
 ///
 /// Returns `true` if a message was processed, `false` if the slot was
 /// empty.
-pub fn drain_once<
-    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    S: MessageSink + ?Sized,
->(
+pub fn drain_once<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     slot: &mut [u8],
-    table: &CompletionTable,
-    sink: &mut S,
 ) -> Result<bool> {
-    Ok(drain_once_inner(ctx, slot, table, sink, false)?.is_some())
+    Ok(drain_once_inner(ctx, slot)?.is_some())
 }
 
-/// Like [`drain_once`], but returns the raw vmbus message bytes that
-/// were drained and never fails on a message the router can't parse.
-///
-/// Both differences exist for the fuzzing surface in [`crate::fuzz`]:
-///
-/// * A fuzzer handler that posts an arbitrary channel message has no
-///   [`crate::message::CompletionKey`] to wait on, because the response
-///   type is whatever the host decides to send (often nothing, often
-///   not a completion type at all). Returning the bytes lets the caller
-///   hand the host's reply straight back to the fuzzer's `pktout`
-///   buffer, matching the legacy puppet `VmbusChannelMessageComp`
-///   semantics.
-/// * A fuzzed request can provoke a reply that
-///   [`crate::message::route_message`] rejects (e.g. a `GPADL_CREATED`
-///   truncated below its struct size). Propagating that as an error
-///   would abort the drain with the slot already consumed, wedging the
-///   SINT2 pipe for the rest of the campaign. Here the routing error is
-///   logged and the bytes are still returned.
-pub fn drain_once_capture<
-    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    S: MessageSink + ?Sized,
->(
+/// Like [`drain_once`], but returns the raw VMBus message bytes.
+pub fn drain_once_capture<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     slot: &mut [u8],
-    table: &CompletionTable,
-    sink: &mut S,
 ) -> Result<Option<Vec<u8>>> {
-    drain_once_inner(ctx, slot, table, sink, true)
+    drain_once_inner(ctx, slot)
 }
 
 /// Shared body of [`drain_once`] and [`drain_once_capture`].
-///
-/// `tolerant` selects whether a [`route_message`] failure is returned
-/// to the caller or merely logged.
-fn drain_once_inner<
-    C: HypercallPlatformTrait<Config = HyperVHypercallConfig>,
-    S: MessageSink + ?Sized,
->(
+fn drain_once_inner<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
     ctx: &mut C,
     slot: &mut [u8],
-    table: &CompletionTable,
-    sink: &mut S,
-    tolerant: bool,
 ) -> Result<Option<Vec<u8>>> {
     let Some(view) = read_slot(slot)? else {
         return Ok(None);
@@ -275,16 +224,6 @@ fn drain_once_inner<
         vmbus_ty,
     );
 
-    if let Err(e) = route_message(&payload_buf[..payload_len], table, sink) {
-        if !tolerant {
-            return Err(e);
-        }
-        // Tolerant (fuzz) drain: the host's reply to a fuzzed request
-        // may be unparseable. Log and keep going — bailing here would
-        // leave the slot consumed but uncleared and stall SINT2.
-        log::debug!("drain_once: route_message failed (ignored): {e:?}");
-    }
-
     // Clear-then-recheck EOM sequence: the hypervisor may set
     // `message_flags.message_pending = 1` on this slot AFTER we
     // snapshotted `view` but BEFORE the clear lands, leaving us
@@ -303,15 +242,16 @@ fn drain_once_inner<
 }
 
 // ---------------------------------------------------------------------------
-// SimpPump (UEFI-only implementation of [`crate::connection::MessagePump`])
+// SimpPump (UEFI-only implementation of [`MessagePump`])
 // ---------------------------------------------------------------------------
 
-/// A [`crate::connection::MessagePump`] that reads from the SIMP page
+/// A [`MessagePump`] that reads from the SIMP page
 /// allocated by [`crate::synic::init_synic`].
 ///
 /// # Retry policy
 ///
-/// Each `poll_until` call polls the slot up to `max_retries` times,
+/// Each [`MessagePump::poll_message`] call polls the slot up to
+/// `max_retries` times,
 /// sleeping via `core::hint::spin_loop()` between empty reads. When
 /// `max_retries` is exhausted without seeing the awaited completion,
 /// [`Error::Timeout`] is returned. This bound guarantees forward
@@ -352,13 +292,10 @@ impl SimpPump {
 
 #[cfg(target_os = "uefi")]
 impl MessagePump for SimpPump {
-    fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    fn poll_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         ctx: &mut C,
-        handle: &CompletionHandle,
-        sink: &mut dyn MessageSink,
-    ) -> Result<()> {
-        let table = completion_table();
+    ) -> Result<Vec<u8>> {
         let mut peek_count: usize = 0;
         for i in 0..self.max_retries {
             // SAFETY: `simp_gpa` is a live guest page programmed into
@@ -380,14 +317,11 @@ impl MessagePump for SimpPump {
                     log::trace!("poll_until: iter={i} non-empty first_byte={first_byte:#x}");
                 }
             }
-            let drained = drain_once(ctx, slot, table, sink)?;
-            if handle.completed() {
-                log::debug!("poll_until: iter={i} handle completed (peek_count={peek_count})");
-                return Ok(());
+            if let Some(message) = drain_once_capture(ctx, slot)? {
+                log::debug!("poll_message: iter={i} received (peek_count={peek_count})");
+                return Ok(message);
             }
-            if !drained {
-                spin_loop();
-            }
+            spin_loop();
         }
         log::warn!("poll_until: max_retries hit (peek_count={peek_count})");
         Err(Error::Timeout)
@@ -396,12 +330,10 @@ impl MessagePump for SimpPump {
 
 #[cfg(not(target_os = "uefi"))]
 impl MessagePump for SimpPump {
-    fn poll_until<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
+    fn poll_message<C: HypercallPlatformTrait<Config = HyperVHypercallConfig>>(
         &mut self,
         _ctx: &mut C,
-        _handle: &CompletionHandle,
-        _sink: &mut dyn MessageSink,
-    ) -> Result<()> {
+    ) -> Result<Vec<u8>> {
         Err(Error::NotImplemented)
     }
 }

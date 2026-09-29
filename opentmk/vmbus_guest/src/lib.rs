@@ -70,7 +70,7 @@
 //! pages. On non-UEFI (host-test) targets [`synic::init_synic`] returns
 //! `Error::NotImplemented`; unit-test the pieces via
 //! [`synic::program_synic_registers`] and
-//! [`connection::negotiate_version`] with a mock ctx instead.
+//! [`connection::initiate_with`] with a scripted message pump instead.
 //!
 //! ## 2. Enumerate offers
 //!
@@ -226,14 +226,10 @@
 //!
 //! # Advanced entry points
 //!
-//! Every high-level function has a `_with` variant in the same module
-//! that takes a [`message::CompletionTable`] and a
-//! [`connection::MessagePump`], for callers that want to build a
-//! composite pump (e.g. draining multiple SIMP slots or interleaving
-//! with a scheduler). The convenience wrappers use the process-wide
-//! table + [`interrupt::SimpPump`]. Do not mix the two — a caller that
-//! registers a completion with a custom table but uses [`init`]'s
-//! implicit pump will never see its completion delivered.
+//! High-level protocol operations have `_with` variants that take a
+//! [`client_driver::ClientDriver`] and [`client_driver::MessagePump`].
+//! This supports scripted host tests and custom synchronous pumps while
+//! keeping all protocol state in one `ClientCore`.
 //!
 //! # Concurrency model
 //!
@@ -264,6 +260,7 @@
 extern crate alloc;
 
 pub mod channel;
+pub mod client_driver;
 pub mod connection;
 pub mod devices;
 mod error;

@@ -10460,6 +10460,7 @@ dependencies = [
  "opentmk_core",
  "spin",
  "thiserror 2.0.16",
+ "vmbus_client_core",
  "vmbus_core",
  "vmbus_ring",
  "zerocopy",
