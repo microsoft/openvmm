@@ -33,6 +33,20 @@ pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 =
     openvmm_defs::microvm::MICROVM_MEMORY_BLOCK_SIZE_BYTES;
 /// Snapshot contract name for shared-status edge interrupts.
 pub const MICROVM_SHARED_STATUS_INTERRUPT_MODE: &str = "edge-shared-status";
+/// Clock policy applied when a snapshot is restored.
+pub const ADVANCE_BY_HOST_DOWNTIME: &str = "advance_by_host_downtime";
+/// Whole-file SHA-256 sandbox-block identity.
+pub const SNAPSHOT_BLOCK_IDENTITY_SHA256: &str = "sha256";
+/// Caller-authenticated immutable storage generation.
+pub const SNAPSHOT_BLOCK_IDENTITY_GENERATION: &str = "generation";
+/// Independent private scratch materialization.
+pub const SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY: &str = "private-copy";
+/// Filesystem copy-on-write scratch materialization.
+pub const SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE: &str = "copy-on-write";
+/// Direct scratch attachment after a single-use resume claim.
+pub const SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED: &str = "direct-claimed";
+/// Byte length of a storage generation identity.
+pub const SNAPSHOT_GENERATION_ID_SIZE: usize = 16;
 const MAX_MEMORY_RANGES: usize = 128;
 const MAX_DEVICES: usize = 64;
 const MAX_DEVICE_RANGES: usize = 16;
@@ -289,6 +303,9 @@ pub struct SnapshotMicrovmSandboxBlock {
     /// Guest-visible physical block size in bytes.
     #[mesh(8)]
     pub physical_block_size: u32,
+    /// Restore-time materialization policy for paired scratch.
+    #[mesh(9)]
+    pub restore_mode: String,
 }
 
 impl SnapshotMicrovmFilesystem {
@@ -1678,33 +1695,111 @@ pub(super) fn validate_machine_contract_shape(
                     );
                 } else {
                     anyhow::ensure!(
-                        block.identity_kind == "sha256",
+                        matches!(
+                            block.identity_kind.as_str(),
+                            SNAPSHOT_BLOCK_IDENTITY_SHA256 | SNAPSHOT_BLOCK_IDENTITY_GENERATION
+                        ),
                         "snapshot paired scratch has an unsupported identity kind"
                     );
-                    validate_sha256(&block.identity, "scratch block")?;
+                    match block.identity_kind.as_str() {
+                        SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
+                            validate_sha256(&block.identity, "scratch block")?;
+                        }
+                        SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
+                            anyhow::ensure!(
+                                block.identity.len() == SNAPSHOT_GENERATION_ID_SIZE
+                                    && block.identity.iter().any(|byte| *byte != 0),
+                                "snapshot scratch generation identity is invalid"
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             } else {
                 anyhow::ensure!(
                     block.artifact.is_empty()
-                        && matches!(block.identity_kind.as_str(), "sha256" | "unbound"),
+                        && matches!(
+                            block.identity_kind.as_str(),
+                            SNAPSHOT_BLOCK_IDENTITY_SHA256
+                                | SNAPSHOT_BLOCK_IDENTITY_GENERATION
+                                | "unbound"
+                        ),
                     "snapshot read-only layer '{}' has an invalid identity policy",
                     block.role
                 );
-                if block.identity_kind == "sha256" {
-                    validate_sha256(&block.identity, &format!("{} block", block.role))?;
-                } else {
-                    anyhow::ensure!(
-                        block.identity.is_empty(),
-                        "snapshot unbound layer '{}' carries an identity",
-                        block.role
-                    );
+                match block.identity_kind.as_str() {
+                    SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
+                        validate_sha256(&block.identity, &format!("{} block", block.role))?;
+                    }
+                    SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
+                        anyhow::ensure!(
+                            block.identity.len() == SNAPSHOT_GENERATION_ID_SIZE
+                                && block.identity.iter().any(|byte| *byte != 0),
+                            "snapshot layer '{}' generation identity is invalid",
+                            block.role
+                        );
+                    }
+                    "unbound" => {
+                        anyhow::ensure!(
+                            block.identity.is_empty(),
+                            "snapshot unbound layer '{}' carries an identity",
+                            block.role
+                        );
+                    }
+                    _ => unreachable!(),
                 }
+            }
+            if role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
+                && !block.artifact.is_empty()
+            {
+                anyhow::ensure!(
+                    matches!(
+                        block.restore_mode.as_str(),
+                        "" | SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
+                            | SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE
+                            | SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED
+                    ),
+                    "snapshot scratch restore mode '{}' is unsupported",
+                    block.restore_mode
+                );
+            } else {
+                anyhow::ensure!(
+                    block.restore_mode.is_empty(),
+                    "snapshot block '{}' unexpectedly carries a restore mode",
+                    block.role
+                );
             }
         }
         anyhow::ensure!(
             previous_role == Some(openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch),
             "microVM snapshot is missing its scratch role"
         );
+        let bound_blocks = contract
+            .microvm_sandbox_blocks
+            .iter()
+            .filter(|block| {
+                matches!(
+                    block.identity_kind.as_str(),
+                    SNAPSHOT_BLOCK_IDENTITY_SHA256 | SNAPSHOT_BLOCK_IDENTITY_GENERATION
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(first) = bound_blocks.first() {
+            anyhow::ensure!(
+                bound_blocks
+                    .iter()
+                    .all(|block| block.identity_kind == first.identity_kind),
+                "snapshot sandbox blocks use mixed identity policies"
+            );
+            if first.identity_kind == SNAPSHOT_BLOCK_IDENTITY_GENERATION {
+                anyhow::ensure!(
+                    bound_blocks
+                        .iter()
+                        .all(|block| block.identity == first.identity),
+                    "snapshot sandbox blocks do not share one storage generation"
+                );
+            }
+        }
     }
 
     anyhow::ensure!(
@@ -1903,6 +1998,20 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
         "snapshot layer identity binding does not match tier '{}'",
         manifest.snapshot_tier,
     );
+    if let Some(scratch) = paired_scratch_block(manifest) {
+        match scratch.restore_mode.as_str() {
+            "" | SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY => {}
+            SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE => anyhow::ensure!(
+                manifest.restore_policy == SNAPSHOT_RESTORE_POLICY_CLONE,
+                "copy-on-write scratch materialization requires clone restore policy"
+            ),
+            SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED => anyhow::ensure!(
+                manifest.restore_policy == SNAPSHOT_RESTORE_POLICY_RESUME,
+                "direct-claimed scratch materialization requires resume restore policy"
+            ),
+            _ => unreachable!("machine-contract shape validation rejects unknown restore modes"),
+        }
+    }
     if manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM {
         let control_tty_count = contract
             .effective_command_line
@@ -1993,6 +2102,7 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
             artifact: String::new(),
             logical_block_size: 512,
             physical_block_size: 4096,
+            restore_mode: String::new(),
         },
         SnapshotMicrovmSandboxBlock {
             role: "scratch".to_owned(),
@@ -2003,6 +2113,7 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
             artifact: SCRATCH_FILE_NAME.to_owned(),
             logical_block_size: 512,
             physical_block_size: 4096,
+            restore_mode: SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY.to_owned(),
         },
     ];
     contract.set_effective_command_line("console=hvc0 nvx_snapshot_tier=workload-start".to_owned());
@@ -2358,6 +2469,7 @@ mod tests {
                     artifact: String::new(),
                     logical_block_size: 512,
                     physical_block_size: 4096,
+                    restore_mode: String::new(),
                 },
                 SnapshotMicrovmSandboxBlock {
                     role: "scratch".to_owned(),
@@ -2368,6 +2480,7 @@ mod tests {
                     artifact: SCRATCH_FILE_NAME.to_owned(),
                     logical_block_size: 512,
                     physical_block_size: 4096,
+                    restore_mode: SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY.to_owned(),
                 },
             ],
             1,
@@ -3632,6 +3745,66 @@ mod tests {
 
         make_platform_snapshot(&mut manifest);
         validate_manifest_contents(&manifest).unwrap();
+    }
+
+    #[test]
+    fn generation_identity_and_scratch_restore_policy_are_canonical() {
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        let generation = vec![0x42; SNAPSHOT_GENERATION_ID_SIZE];
+        for block in &mut manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks
+        {
+            block.identity_kind = SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned();
+            block.identity.clone_from(&generation);
+        }
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks
+            .last_mut()
+            .unwrap()
+            .restore_mode = SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE.to_owned();
+        validate_manifest_contents(&manifest).unwrap();
+
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks
+            .last_mut()
+            .unwrap()
+            .restore_mode = SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED.to_owned();
+        assert!(validate_manifest_contents(&manifest).is_err());
+
+        manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
+        manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .set_effective_command_line(
+                "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
+            );
+        validate_manifest_contents(&manifest).unwrap();
+
+        manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks[0]
+            .identity[0] ^= 1;
+        assert!(
+            validate_machine_contract_shape(
+                manifest.machine_contract.as_ref().unwrap(),
+                manifest.memory_size_bytes,
+                manifest.vp_count,
+            )
+            .is_err()
+        );
     }
 
     #[test]

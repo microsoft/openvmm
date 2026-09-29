@@ -154,6 +154,69 @@ pub enum SnapshotTierCli {
     InstanceCheckpoint,
 }
 
+/// Identity policy for sandbox blocks captured in a microVM snapshot.
+#[derive(Debug, Copy, Clone, Default, ValueEnum, PartialEq, Eq)]
+pub enum SnapshotBlockIdentityCli {
+    /// Compute and verify whole-file SHA-256 identities.
+    #[default]
+    Sha256,
+    /// Trust the caller-supplied immutable storage generation.
+    Generation,
+}
+
+/// Restore-time materialization policy for paired scratch.
+#[derive(Debug, Copy, Clone, Default, ValueEnum, PartialEq, Eq)]
+pub enum SnapshotScratchRestoreModeCli {
+    /// Create an independent private file, falling back to sparse copying.
+    #[default]
+    PrivateCopy,
+    /// Require a filesystem copy-on-write clone.
+    CopyOnWrite,
+    /// Attach the paired scratch file after the resume snapshot is claimed.
+    DirectClaimed,
+}
+
+impl SnapshotScratchRestoreModeCli {
+    pub(crate) fn manifest_name(self) -> &'static str {
+        match self {
+            Self::PrivateCopy => {
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
+            }
+            Self::CopyOnWrite => {
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE
+            }
+            Self::DirectClaimed => {
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED
+            }
+        }
+    }
+}
+
+/// Caller-supplied immutable storage generation.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct SnapshotGenerationIdCli(pub(crate) [u8; 16]);
+
+impl FromStr for SnapshotGenerationIdCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        anyhow::ensure!(
+            value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "snapshot generation ID must be exactly 32 hexadecimal characters"
+        );
+        let mut generation = [0_u8; 16];
+        for (index, byte) in generation.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+                .context("snapshot generation ID contains invalid hexadecimal")?;
+        }
+        anyhow::ensure!(
+            generation.iter().any(|byte| *byte != 0),
+            "snapshot generation ID must be nonzero"
+        );
+        Ok(Self(generation))
+    }
+}
+
 impl SnapshotTierCli {
     pub(crate) fn manifest_name(self) -> &'static str {
         match self {
@@ -244,6 +307,31 @@ pub struct MicrovmCli {
         requires = "snapshot_destination"
     )]
     pub snapshot_tier: Option<SnapshotTierCli>,
+
+    /// Sandbox-block identity policy for this capture.
+    ///
+    /// `sha256` is the default. `generation` avoids whole-file hashing and
+    /// requires an immutable generation supplied by the storage owner.
+    #[clap(
+        long,
+        value_enum,
+        value_name = "MODE",
+        requires = "snapshot_destination"
+    )]
+    pub snapshot_block_identity: Option<SnapshotBlockIdentityCli>,
+
+    /// Immutable storage generation used by `--snapshot-block-identity generation`.
+    #[clap(long, value_name = "HEX", requires = "snapshot_destination")]
+    pub snapshot_generation_id: Option<SnapshotGenerationIdCli>,
+
+    /// Restore-time materialization policy recorded for paired scratch.
+    #[clap(
+        long,
+        value_enum,
+        value_name = "MODE",
+        requires = "snapshot_destination"
+    )]
+    pub snapshot_scratch_restore_mode: Option<SnapshotScratchRestoreModeCli>,
 
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
@@ -580,9 +668,12 @@ impl Options {
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && self.microvm.memory_capacity.is_none()
+                    && self.microvm.snapshot_block_identity.is_none()
+                    && self.microvm.snapshot_generation_id.is_none()
+                    && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -625,6 +716,48 @@ impl Options {
                     != self.microvm.microvm_sandbox_block.is_empty(),
                 "--snapshot-tier is required exactly for microVM snapshot capture with sandbox blocks"
             );
+            let identity = self
+                .microvm
+                .snapshot_block_identity
+                .unwrap_or(SnapshotBlockIdentityCli::Sha256);
+            anyhow::ensure!(
+                !self.microvm.microvm_sandbox_block.is_empty()
+                    || self.microvm.snapshot_block_identity.is_none(),
+                "--snapshot-block-identity requires microVM sandbox blocks"
+            );
+            anyhow::ensure!(
+                matches!(
+                    (identity, self.microvm.snapshot_generation_id),
+                    (SnapshotBlockIdentityCli::Sha256, None)
+                        | (
+                            SnapshotBlockIdentityCli::Generation,
+                            Some(SnapshotGenerationIdCli(_))
+                        )
+                ),
+                "--snapshot-generation-id is required exactly for --snapshot-block-identity generation"
+            );
+            if let Some(mode) = self.microvm.snapshot_scratch_restore_mode {
+                let tier = self
+                    .microvm
+                    .snapshot_tier
+                    .context("--snapshot-scratch-restore-mode requires --snapshot-tier")?;
+                anyhow::ensure!(
+                    tier.requires_paired_scratch(),
+                    "--snapshot-scratch-restore-mode requires a paired-scratch snapshot tier"
+                );
+                anyhow::ensure!(
+                    match mode {
+                        SnapshotScratchRestoreModeCli::PrivateCopy => true,
+                        SnapshotScratchRestoreModeCli::CopyOnWrite => {
+                            tier == SnapshotTierCli::WorkloadStart
+                        }
+                        SnapshotScratchRestoreModeCli::DirectClaimed => {
+                            tier == SnapshotTierCli::InstanceCheckpoint
+                        }
+                    },
+                    "copy-on-write scratch requires workload-start clone semantics, and direct-claimed scratch requires instance-checkpoint resume semantics"
+                );
+            }
             if let Some(memory_capacity) = self.microvm.memory_capacity {
                 anyhow::ensure!(
                     memory_capacity.0 >= self.memory_size(),
@@ -1379,6 +1512,85 @@ mod tests {
         ])
         .unwrap();
         assert!(zero_timeout.validate_microvm_options().is_err());
+    }
+
+    #[test]
+    fn test_microvm_snapshot_identity_and_scratch_restore_modes_are_explicit() {
+        let generation = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--snapshot-tier",
+            "workload-start",
+            "--snapshot-block-identity",
+            "generation",
+            "--snapshot-generation-id",
+            "00112233445566778899aabbccddeeff",
+            "--snapshot-scratch-restore-mode",
+            "copy-on-write",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        generation.validate_microvm_options().unwrap();
+
+        let missing_generation = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--snapshot-tier",
+            "workload-start",
+            "--snapshot-block-identity",
+            "generation",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        assert!(missing_generation.validate_microvm_options().is_err());
+
+        let direct_clone = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--snapshot-tier",
+            "workload-start",
+            "--snapshot-scratch-restore-mode",
+            "direct-claimed",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        assert!(direct_clone.validate_microvm_options().is_err());
+
+        let resume = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--snapshot-tier",
+            "instance-checkpoint",
+            "--snapshot-scratch-restore-mode",
+            "direct-claimed",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+            "--microvm-sandbox-block",
+            "scratch:mem:1M",
+        ])
+        .unwrap();
+        resume.validate_microvm_options().unwrap();
     }
 
     #[test]
