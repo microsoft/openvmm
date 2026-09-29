@@ -63,7 +63,8 @@ VP and GET executors. GET coalesces notifications received before callback
 registration into one pending event and delivers it when registration completes.
 The worker also latches events received before startup or during recovery.
 Failed attempts retry with bounded backoff. There is no periodic verification;
-after success, the worker waits for another event.
+after success, the worker waits for another event. Restoring serialized resealer
+state also schedules a durable rewrite, as described below.
 
 ### Runtime TCB floor
 
@@ -110,12 +111,13 @@ candidate exactly, even if the hardware could still derive an older SVN's key.
 CPU SVN comparison uses all 16 unsigned bytes in their original positions:
 every destination byte must be at least its resident floor byte. There is no
 integer conversion or lexicographic ordering; an increase in one byte cannot
-compensate for a decrease in another. Intel PCS [Get TDX TCB Info V4][intel-tcb],
-step 3.a, uses component-wise minima for the 16 PCK certificate TCB components;
+compensate for a decrease in another. Intel PCS
+[Get TDX TCB Info V4][intel-tcb], step 3.a, uses component-wise minima for the
+16 PCK certificate TCB components;
 [Appendix A][intel-tcb-model] describes the components and comparison metadata.
 OpenHCL's raw-report comparison is a local no-decrease policy, not that complete
-appraisal algorithm: it neither maps raw CPU SVN bytes to PCK component identities
-nor establishes cross-platform equivalence or Intel security status.
+appraisal algorithm: it neither maps raw CPU SVN bytes to PCK component
+identities nor establishes cross-platform equivalence or Intel security status.
 
 For SNP, `SnpDomain` retains report version and CPU family/model because the raw
 TCB bytes do not identify their own layout. CPU family/model selects the layout;
@@ -128,19 +130,61 @@ See [AMD 56860][amd-snp], revision 1.59, section 2.3, tables 4 and 5.
 [intel-tcb-model]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-model-v3
 [amd-snp]: https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP
 
-### Lifecycle and limits
+### Lifecycle and saved state
 
 Memory-preserving migration retains the worker and its floor. Stopping the
 worker drains an in-flight recovery attempt. Reset does not request resealing;
 it preserves the floor, existing retries and backoff, and latched notifications.
 
-Serialized servicing is unsupported for VMs with this worker: its save operation
-returns `SaveError::NotSupported`,
-which fails the VM save, and its restore operation rejects saved state. There is
-no saved-state reconstruction or reconstruction-triggered durable rewrite. The
-worker has no protected floor-transfer format, so reconstruction must not
-replace the source floor with a destination report. Pending recovery, including a
-failed flush obligation, survives only while the resident worker is retained.
+The stopped worker saves a versioned protobuf state unit named
+`hardware_reseal`, containing:
+
+- The accepted TCB floor: raw SNP TCB and report version/CPU comparison domain,
+  or both raw TDX SVN arrays, including identity and reserved bytes.
+- The serialized VM configuration used by the sealing KDF, checked against the
+  destination configuration rather than used to replace it.
+- Pending recovery, the failure count, and the latched migration notification.
+- Remaining retry and minimum-interval delays, bounded to 60 seconds. These are
+  relative durations, not process-specific clock values.
+
+No DEK, hardware secret, derived key, or attestation report is saved by this
+worker. Saving does not consume a notification or clear pending work: if another
+unit fails to save, the original worker can resume with its obligations intact.
+
+Restore constructs the worker without a floor, then installs the validated saved
+floor before starting. It does not obtain a fresh report to initialize a new
+floor or trust a VMGS protector as its source. Malformed or unsupported state,
+an incompatible TEE or sealing configuration, or a decrease relative to an
+existing resident floor fails restore without replacing that floor. A saved
+worker also requires compatible hardware sealing support and encrypted VMGS.
+
+Successful restore preserves retry backoff and merges saved notifications with
+notifications received by the new worker. It always schedules a durable rewrite
+when the worker starts, even when the saved worker was idle: hardware can change
+while the worker is absent, including at the same SVN. Fresh reports must
+satisfy the restored floor before any new protector is created. A cached
+matching protector does not discharge a failed-flush obligation.
+
+If the saved VM has no `hardware_reseal` unit, runtime resealing stays disabled
+after reconstruction. This accommodates state from runtimes that were not
+enrolled or did not support resealer state, without inventing a replacement
+floor. Binaries that cannot interpret this state unit cannot restore an enrolled
+worker's snapshot.
+
+```admonish warning title="Trusted state transfer"
+Protobuf encoding does not authenticate the saved floor. The enclosing transfer
+must preserve integrity, bind the state to the VM, and prevent rollback to an
+older snapshot. The resealer must not load this state from VMGS or
+unauthenticated host metadata. Host-returned servicing state cannot initialize
+this worker with the current transport and is rejected.
+
+Resealer serialization does not enable isolated-VM servicing by itself. The
+host-servicing isolation guard and unsupported SNP/TDX VP save/restore paths
+remain in place. A trusted isolated-servicing handoff must satisfy the above
+requirements before enabling that path.
+```
+
+### Recovery limits
 
 Cold boot establishes a new runtime lifetime. The floor is not a persistent
 anti-rollback counter and does not prevent replay of an entire VMGS snapshot.

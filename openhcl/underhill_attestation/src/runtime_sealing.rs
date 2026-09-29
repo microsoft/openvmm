@@ -9,13 +9,16 @@
 //! they must not be cached across migration, even when the SVN is unchanged.
 //!
 //! Runtime recovery must use a resident [`RuntimeTcbFloor`], initialized from
-//! trusted local hardware before worker events are accepted. The stateless
-//! helpers below do not enforce a runtime TCB floor.
+//! trusted local hardware or restored through authenticated, VM-bound, fresh
+//! servicing state before worker events are accepted. The stateless helpers
+//! below do not enforce a runtime TCB floor.
 
 mod tcb_floor;
 
 pub(crate) use tcb_floor::BootTcbFloor;
 pub use tcb_floor::RuntimeTcbFloor;
+pub use tcb_floor::saved_state::SavedRuntimeTcbFloor;
+pub use tcb_floor::saved_state::SavedRuntimeTcbFloorSvn;
 
 use crate::hardware_key_sealing::HardwareDerivedKeys;
 use crate::hardware_key_sealing::HardwareDerivedKeysError;
@@ -63,6 +66,8 @@ enum ErrorInner {
     TcbLowered,
     #[error("local TCB is incompatible with the runtime floor comparison domain")]
     TcbIncompatible,
+    #[error("saved runtime TCB floor has an invalid version, variant, or comparison domain")]
+    InvalidSavedTcbFloor,
     #[error("failed to freshly derive hardware sealing keys")]
     Derive(#[source] HardwareDerivedKeysError),
     #[error("failed to unseal the hardware protector")]

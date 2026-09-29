@@ -4,6 +4,12 @@
 //! Event-triggered hardware resealing. GET is only a hint: the current hardware
 //! must authenticate the persisted protector. There is no periodic verification
 //! to cover missed events or close the crash window before a durable reseal.
+//! Serialized restore separately forces one durable rewrite: hardware may have
+//! changed without a notification during downtime or after the save cutoff.
+
+pub(crate) mod saved_state;
+
+pub(crate) use saved_state::SavedHardwareResealState;
 
 use cvm_tracing::CVM_ALLOWED;
 use futures::StreamExt;
@@ -32,6 +38,50 @@ use vmgs_broker::VmgsClient;
 
 const MIN_RESEAL_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Stable servicing state-unit identifier.
+pub const STATE_UNIT_NAME: &str = "hardware_reseal";
+
+/// Detect enrollment from the unit list before VM construction. Do not infer
+/// enrollment from a host setting or the destination's VMGS protector.
+pub(crate) fn has_saved_state(units: &[state_unit::SavedStateUnit]) -> anyhow::Result<bool> {
+    let mut matches = units.iter().filter(|unit| unit.name == STATE_UNIT_NAME);
+    let found = matches.next().is_some();
+    anyhow::ensure!(
+        matches.next().is_none(),
+        "duplicate hardware reseal saved state"
+    );
+    Ok(found)
+}
+
+/// Restore provenance and enrollment information, not a replacement TCB floor.
+pub(crate) struct RestoreContext {
+    pub has_saved_state: bool,
+    pub from_host: bool,
+}
+
+/// Select boot enrollment or saved enrollment without observing hardware.
+/// Hardware eligibility includes policy, key-derivation support and encrypted VMGS.
+pub(crate) fn should_enable(
+    eligible: bool,
+    boot_floor_available: bool,
+    restore: Option<RestoreContext>,
+) -> anyhow::Result<bool> {
+    if let Some(restore) = restore {
+        anyhow::ensure!(
+            !(restore.has_saved_state && restore.from_host),
+            "cannot restore hardware resealing from unauthenticated host servicing state"
+        );
+        anyhow::ensure!(
+            !restore.has_saved_state || eligible,
+            "saved hardware resealing requires compatible hardware, policy and encrypted VMGS"
+        );
+        // Never use boot observations to invent enrollment on a restore path.
+        Ok(restore.has_saved_state)
+    } else {
+        Ok(eligible && boot_floor_available)
+    }
+}
 
 /// A bounded, level-triggered notification. Events before startup or during an
 /// in-flight attempt stay pending; duplicate events never allocate queue entries.
@@ -123,10 +173,10 @@ pub(crate) struct HardwareReseal {
     tee: Arc<dyn TeeCall>,
     #[inspect(skip)]
     config: Arc<AttestationVmConfig>,
-    // Only trusted local reports can initialize/advance this resident floor.
+    // Trusted local reports or validated servicing state initialize this floor.
     // A shared mutex preserves advances even when a blocking job returns Err.
     #[inspect(skip)]
-    tcb_floor: Arc<Mutex<runtime_sealing::RuntimeTcbFloor>>,
+    tcb_floor: Arc<Mutex<Option<runtime_sealing::RuntimeTcbFloor>>>,
 }
 
 impl HardwareReseal {
@@ -138,6 +188,21 @@ impl HardwareReseal {
         config: AttestationVmConfig,
         tcb_floor: runtime_sealing::RuntimeTcbFloor,
     ) -> Self {
+        let worker = Self::new_for_restore(notification, timer, vmgs, tee, config);
+        *worker.tcb_floor.lock() = Some(tcb_floor);
+        worker
+    }
+
+    /// Construct without observing hardware or bootstrapping a potentially lower
+    /// floor. Only use when servicing state is available, then restore before
+    /// starting. Until restore succeeds, no reseal I/O is allowed.
+    pub fn new_for_restore(
+        notification: Arc<MigrationNotification>,
+        timer: PolledTimer,
+        vmgs: VmgsClient,
+        tee: Box<dyn TeeCall>,
+        config: AttestationVmConfig,
+    ) -> Self {
         Self {
             schedule: Schedule::new(Instant::now()),
             notification,
@@ -145,7 +210,7 @@ impl HardwareReseal {
             vmgs,
             tee: tee.into(),
             config: Arc::new(config),
-            tcb_floor: Arc::new(Mutex::new(tcb_floor)),
+            tcb_floor: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -160,7 +225,7 @@ impl HardwareReseal {
                 if let Poll::Ready(req) = recv.poll_next_unpin(cx) {
                     return Poll::Ready(Event::State(req));
                 }
-                if !self.schedule.running {
+                if !self.schedule.running || self.tcb_floor.lock().is_none() {
                     return Poll::Pending;
                 }
                 if self.notification.take(cx) {
@@ -212,6 +277,10 @@ impl HardwareReseal {
     /// Reseal the active DEK, durably publish its protector, and verify it
     /// against fresh hardware derivations before and after persistence.
     async fn reseal(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.tcb_floor.lock().is_some(),
+            "hardware reseal floor is not initialized"
+        );
         let key = self.vmgs.active_encryption_key().await?;
         // TEE report/key ioctls are synchronous. Keep their latency off the VP
         // executors (and the GET thread). Only one blocking job per worker is
@@ -223,6 +292,9 @@ impl HardwareReseal {
         let protector = blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<Vec<u8>> {
                 let mut floor = tcb_floor.lock();
+                let floor = floor
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?;
                 let protector = floor.create_protector(&*tee, &config, &key)?;
                 // Validate with a second derivation, not the seal-time keys.
                 anyhow::ensure!(
@@ -254,6 +326,8 @@ impl HardwareReseal {
                 anyhow::ensure!(
                     tcb_floor
                         .lock()
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?
                         .verify_protector(&*tee, &config, &protector, &key)?,
                     "hardware changed while persisting the protector"
                 );
@@ -288,14 +362,19 @@ impl StateUnit for HardwareReseal {
     }
 
     async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
-        // Memory-preserving migration retains the floor. Serialized servicing
-        // must not reconstruct a new, potentially lower floor from VMGS/report.
-        // This error fails the VM save, rather than omitting this state unit.
-        Err(SaveError::NotSupported)
+        self.save_stopped()
+            .map(|state| Some(SavedStateBlob::new(state)))
+            .map_err(SaveError::Other)
     }
 
-    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
-        Err(RestoreError::SavedStateNotSupported)
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
+        if self.schedule.running {
+            return Err(RestoreError::Other(anyhow::anyhow!(
+                "hardware reseal must be stopped before restore"
+            )));
+        }
+        self.restore_stopped(state.parse::<SavedHardwareResealState>()?)
+            .map_err(RestoreError::InvalidSavedState)
     }
 }
 

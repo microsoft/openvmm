@@ -11,7 +11,7 @@
 //! **Ratchet** means replacing the floor with an accepted observation, never
 //! rolling it back if subsequent sealing or persistence fails.
 //!
-//! There are two entry paths:
+//! There are three entry paths:
 //! - **Boot:** `BootTcbFloor::observe` consumes an already acquired report (no
 //!   hardware I/O). It initializes or advances the prospective floor. A bad
 //!   observation permanently disables export for that boot, without failing boot
@@ -21,6 +21,9 @@
 //!   after that check succeeds does it replace the floor and return the accepted
 //!   SVN for sealing or candidate verification. A rejected observation leaves the
 //!   existing floor intact so a later attempt can retry.
+//! - **Servicing:** `RuntimeTcbFloor::restore` validates an accepted floor carried
+//!   by an authenticated, VM-bound, fresh servicing channel, without hardware I/O.
+//!   Replacing a resident floor additionally requires `check_restored_successor`.
 //!
 //! `check_successor` is a pure compatibility/minimum check: it neither fetches a
 //! report nor changes state. "Successor" includes an equal TCB, not only an
@@ -31,6 +34,10 @@
 //! Raw packed integer ordering is not a component-wise security ordering, and
 //! Turin moves components relative to Milan/Genoa.
 
+pub(super) mod saved_state;
+
+use self::saved_state::SavedRuntimeTcbFloor;
+use self::saved_state::SavedRuntimeTcbFloorSvn;
 use super::Error;
 use super::ErrorInner;
 use super::create_protector_with_svn;
@@ -62,16 +69,20 @@ use zerocopy::FromBytes;
 // remain equality-only, even when the CPU model has a known TCB layout.
 const SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING: core::ops::RangeInclusive<u32> = 3..=5;
 
-/// A resident, runtime-only TCB floor derived exclusively from local hardware.
+/// A resident TCB floor originating exclusively from trusted local hardware.
 ///
 /// Obtain once from platform initialization (reusing boot reports), or use
 /// [`Self::new`] **before accepting worker events**, then
 /// retain the same instance across attempts and errors. Blocking hardware jobs
 /// must hold the caller's shared mutex for each complete method call. Never
 /// recreate the floor on retry or initialize it from a VMGS protector header.
-/// This is not a persisted anti-rollback counter and does not protect a new
-/// runtime from rollback across restart. It deliberately has no `Clone`, `Copy`,
-/// `Default`, deserializer, or public constructor from bytes or an SVN.
+/// Trusted servicing may transfer it with [`Self::save`] and [`Self::restore`].
+/// The caller must provide an authenticated, VM-bound, fresh servicing channel;
+/// the DTO is not proof of a hardware observation. Never deserialize a floor
+/// from VMGS or host-controlled metadata. This is not a persisted anti-rollback
+/// counter and does not protect an arbitrary restart from rollback. It has no
+/// `Clone`, `Copy`, or `Default` implementation; restore validates the typed DTO
+/// without observing hardware or bootstrapping a replacement floor.
 ///
 /// SNP ordering is component-wise only for report versions 3, 4, and 5 within
 /// the exact same version/family/model. Milan/Genoa (family 0x19, models
@@ -227,6 +238,102 @@ impl SnpDomain {
 }
 
 impl RuntimeTcbFloor {
+    /// Save only accepted SVN/domain metadata, never secrets or derived keys.
+    /// The result is only for an authenticated, VM-bound, fresh servicing channel.
+    pub fn save(&self) -> SavedRuntimeTcbFloor {
+        let svn = match self.snapshot.svn {
+            KeyDerivationSvn::Snp { tcb_version } => {
+                let domain = self
+                    .snapshot
+                    .snp_domain
+                    .as_ref()
+                    .expect("SNP floor has a comparison domain");
+                SavedRuntimeTcbFloorSvn::Snp {
+                    tcb_version,
+                    report_version: domain.version,
+                    cpuid: domain.cpuid.map(|cpuid| cpuid.to_vec()),
+                }
+            }
+            KeyDerivationSvn::Tdx {
+                tee_tcb_svn,
+                cpu_svn,
+            } => SavedRuntimeTcbFloorSvn::Tdx {
+                tee_tcb_svn: tee_tcb_svn.to_vec(),
+                cpu_svn: cpu_svn.to_vec(),
+            },
+        };
+        SavedRuntimeTcbFloor {
+            version: 1,
+            svn: Some(svn),
+        }
+    }
+
+    /// Validate state from an authenticated, VM-bound, fresh servicing channel.
+    /// The caller establishes that trust: the DTO itself is not a proof, and must
+    /// never come from VMGS, protector headers, or other host-controlled metadata.
+    /// No report, key derivation, VMGS access, or bootstrap occurs here. Only the
+    /// configured policy and TEE capabilities are inspected, not the live TCB.
+    /// Unknown SNP domains retain their existing equality-only interpretation.
+    ///
+    /// When replacing an existing resident floor, first call its
+    /// [`Self::check_restored_successor`] while holding the shared state lock.
+    /// Do not replace the resident floor if either validation step fails.
+    pub fn restore(
+        state: SavedRuntimeTcbFloor,
+        tee: &dyn TeeCall,
+        config: &AttestationVmConfig,
+    ) -> Result<Self, Error> {
+        sealing_context(tee, config)?;
+        let invalid = || Error(ErrorInner::InvalidSavedTcbFloor);
+        if state.version != 1 {
+            return Err(invalid());
+        }
+        let (svn, snp_domain) = match state.svn.ok_or_else(invalid)? {
+            SavedRuntimeTcbFloorSvn::Snp {
+                tcb_version,
+                report_version,
+                cpuid,
+            } => {
+                let cpuid = match (report_version >= 3, cpuid) {
+                    (false, None) => None,
+                    (true, Some(cpuid)) => Some(cpuid.try_into().map_err(|_| invalid())?),
+                    _ => return Err(invalid()),
+                };
+                (
+                    KeyDerivationSvn::Snp { tcb_version },
+                    Some(SnpDomain {
+                        version: report_version,
+                        cpuid,
+                    }),
+                )
+            }
+            SavedRuntimeTcbFloorSvn::Tdx {
+                tee_tcb_svn,
+                cpu_svn,
+            } => (
+                KeyDerivationSvn::Tdx {
+                    tee_tcb_svn: tee_tcb_svn.try_into().map_err(|_| invalid())?,
+                    cpu_svn: cpu_svn.try_into().map_err(|_| invalid())?,
+                },
+                None,
+            ),
+        };
+        if !svn_matches_tee(svn, tee.tee_type()) {
+            return Err(invalid());
+        }
+        Ok(Self {
+            snapshot: Snapshot { svn, snp_domain },
+        })
+    }
+
+    /// Pure check that replacing this resident floor cannot decrease it or
+    /// change its comparison domain. Equal floors are allowed. Neither instance
+    /// is modified, including on failure. The caller must hold its shared state
+    /// lock across this check and replacement; no hardware calls are made.
+    pub fn check_restored_successor(&self, restored: &Self) -> Result<(), Error> {
+        self.snapshot.check_successor(&restored.snapshot)
+    }
+
     /// Initialize from a fresh trusted local report, without deriving any keys.
     /// The `tee` must be the trusted local hardware interface, not report bytes
     /// supplied by the root or by a persisted protector.
