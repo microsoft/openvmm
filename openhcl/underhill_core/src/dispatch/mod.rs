@@ -691,6 +691,8 @@ impl LoadedVm {
             self.nvme_keep_alive = KeepAliveConfig::Disabled
         };
 
+        // The servicing flag can disable MANA keepalive even when the environment
+        // enables it. Both settings must enable keepalive for it to proceed.
         if !capabilities_flags.enable_mana_keepalive() {
             self.mana_keep_alive = KeepAliveConfig::Disabled
         };
@@ -717,9 +719,12 @@ impl LoadedVm {
                 .await?;
             state.init_state.correlation_id = Some(correlation_id);
 
-            // Unload any network devices.
+            // Unload any network devices, but only when MANA keepalive is enabled.
+            // When disabled, save() already unloaded them.
             let shutdown_mana = async {
-                if let Some(network_settings) = self.network_settings.as_mut() {
+                if self.mana_keep_alive.is_enabled()
+                    && let Some(network_settings) = self.network_settings.as_mut()
+                {
                     network_settings
                         .unload_for_servicing()
                         .instrument(
@@ -908,6 +913,27 @@ impl LoadedVm {
         // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
+        // Unload any network devices, but only if MANA keepalive is disabled.
+        // Preserve the synthetic NIC state units, then unload the network devices
+        // before saving the DMA manager state to exclude MANA allocations.
+        let units = if !mana_keepalive_mode.is_enabled() {
+            let units = self.save_units().await.context("state unit save failed")?;
+            if let Some(network_settings) = self.network_settings.as_mut() {
+                // DEVNOTE: Unloading the network devices is destructive. If a later
+                // servicing step fails, resume_drivers() cannot reconstruct them.
+                network_settings
+                    .unload_for_servicing()
+                    .instrument(tracing::info_span!(
+                        "shutdown_mana prior to dma manager save",
+                        CVM_ALLOWED
+                    ))
+                    .await;
+            }
+            Some(units)
+        } else {
+            None
+        };
+
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
@@ -940,7 +966,10 @@ impl LoadedVm {
             None
         };
 
-        let units = self.save_units().await.context("state unit save failed")?;
+        let units = match units {
+            Some(units) => units,
+            None => self.save_units().await.context("state unit save failed")?,
+        };
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {

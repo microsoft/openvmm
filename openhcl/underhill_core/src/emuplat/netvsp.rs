@@ -124,8 +124,11 @@ async fn create_mana_device(
         let _ = mana_state.take();
     }
 
+    // Guard against missing saved state when keepalive is enabled.
+    // On initial boot, there will be no pending buffers making this a no-op.
+    // On servicing restore, pending buffers are cleared.
     if mana_state.is_none() && keepalive_mode.is_enabled() {
-        tracing::warn!(vtl2_vfid, "missing saved state but keepalive is enabled");
+        tracelimit::info_ratelimited!(vtl2_vfid, "missing saved state but keepalive is enabled");
         discard_pending_mana_buffers(&dma_clients)?;
     }
 
