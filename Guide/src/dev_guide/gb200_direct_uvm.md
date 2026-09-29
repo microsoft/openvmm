@@ -66,6 +66,107 @@ use a `--direct-iommu` context. `ats` additionally requires nonzero
 `ssid-bits`; `ssid-bits` may be 0-20. An accelerated root complex does not
 instantiate OpenVMM's local `SmmuDevice`.
 
+## HBM address and NUMA placement
+
+The SRAT coherent-memory range supplied by `--pcie-generic-initiator` must
+describe the usable HBM aperture at the address where the GPU sees it in the
+**guest**. It is not the GPU's host physical BAR address.
+
+For GB200:
+
+- `memory_base` must equal the guest-assigned BAR4 base.
+- `memory_length` must equal the usable HBM length, not BAR4's rounded
+  power-of-two size.
+- The entire range must fit within BAR4 and must not overlap guest RAM, another
+  BAR, or another GPU's HBM range.
+
+The `nvgrace_gpu_vfio_pci` host driver reads the platform
+`nvidia,gpu-mem-size` property. It exposes the next-power-of-two size as VFIO
+BAR4 and reports the exact usable size as BAR4's sparse-mmap area. OpenVMM does
+not currently copy that sparse area into SRAT automatically, so the launcher
+must provide the exact length.
+
+On the validated GB200 system, each GPU reports:
+
+```text
+usable HBM length = 0x2e41f00000 = 198674743296 bytes = 189471 MiB
+BAR4 aperture     = 0x4000000000 = 256 GiB
+```
+
+Use an explicit `bar4=` assignment so the SRAT range cannot drift if PCI
+resource-assignment ordering changes. A validated one-GPU layout is:
+
+```text
+--pcie-root-complex rc0,high_mmio=768G
+--pcie-root-port rc0:rp0
+--vfio host=0008:06:00.0,port=rp0,iommu=iommu0,bar4=0x8000000000
+--numa 'size=32G,host_numa_node=0,vps=[0-7]'
+--numa 'size=0,vps=[]'
+--pcie-generic-initiator \
+  port=rp0,node=1,memory_base=0x8000000000,memory_length=0x2e41f00000
+```
+
+This produces:
+
+```text
+GPU BAR2: 0x4000000000-0x7fffffffff
+GPU BAR4: 0x8000000000-0xbfffffffff
+HBM SRAT: 0x8000000000-0xae41efffff
+```
+
+The guest HBM NUMA node is intentionally smaller than the 256-GiB BAR4
+aperture.
+
+For two GPUs, assign non-overlapping BAR4 apertures and one guest memory-only
+node per GPU. The validated layout uses:
+
+```text
+GPU 0 BAR4/HBM: 0x08000000000 / 0x2e41f00000, guest node 1
+GPU 1 BAR4/HBM: 0x14000000000 / 0x2e41f00000, guest node 2
+high_mmio:      1536G
+```
+
+`node=` is a **guest SRAT proximity domain**, not the host NUMA node. It must
+refer to an existing guest NUMA entry. HBM nodes normally have no vCPUs or
+ordinary guest RAM, so declare them with:
+
+```text
+--numa 'size=0,vps=[]'
+```
+
+Host placement is a separate decision:
+
+1. Read the GPU's host NUMA node:
+
+   ```sh
+   cat /sys/bus/pci/devices/0008:06:00.0/numa_node
+   ```
+
+2. Allocate guest RAM on that host node with `host_numa_node=N`.
+3. Bind the OpenVMM process to CPUs and memory on the same host node:
+
+   ```sh
+   numactl --cpunodebind=N --membind=N openvmm ...
+   ```
+
+On the validated four-GPU host, `0008:06:00.0` and `0009:06:00.0` are local
+to host node 0, while `0018:06:00.0` and `0019:06:00.0` are local to host node
+1. Prefer GPUs from the same host node for a multi-GPU VM unless cross-socket
+placement is intentional. Even when two GPUs share one host node, give their
+HBM apertures distinct guest memory-only NUMA nodes.
+
+After boot, verify the firmware description matches PCI assignment:
+
+```sh
+lspci -vv -s 01:00.0
+dmesg | grep -E 'SRAT: Node|BAR 4'
+numactl --hardware
+nvidia-smi --query-gpu=memory.total --format=csv,noheader
+```
+
+For the validated one-GPU layout, guest BAR4 starts at `0x8000000000`, the
+SRAT range starts at the same address, and `nvidia-smi` reports `189471 MiB`.
+
 ## Safety
 
 PASID-only keeps physical PCIe ATS and endpoint ATC behavior disabled. ATS
