@@ -736,7 +736,7 @@ pub struct ClientCore {
     phase: ClientPhase,
     channels: alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry>,
     outstanding: alloc::collections::BTreeMap<RequestId, PendingRequest>,
-    hvsock_pending: alloc::collections::BTreeMap<Guid, RequestId>,
+    hvsock_pending: alloc::collections::BTreeMap<(Guid, Guid), RequestId>,
     flag_allocator: FlagAllocator,
     running: bool,
     host_busy: bool,
@@ -944,24 +944,26 @@ impl ClientCore {
             } => {
                 self.handle_teardown_gpadl(request_id, channel_id, gpadl_id, sink);
             }
-            // Pause/Resume are wire-only in the V5+ pause-resume
-            // protocol; the wrapper generates them by posting the
-            // corresponding messages directly. They arrive here as
-            // hints only (no protocol-level state transitions).
+            Event::Unload { request_id } => {
+                self.handle_unload(request_id, sink);
+            }
+            Event::ModifyConnection {
+                request_id,
+                monitor_page,
+            } => {
+                self.handle_modify_connection(request_id, monitor_page, sink);
+            }
+            Event::HvsockConnect {
+                request_id,
+                request,
+            } => {
+                self.handle_hvsock_connect(request_id, request, sink);
+            }
             Event::Pause => {
-                // Placeholder — phase 4b-v (Pause/Resume) will emit
-                // the wire message and gate outbound request
-                // processing until PauseResponse.
+                self.handle_pause(sink);
             }
             Event::Resume => {
-                // Placeholder — phase 4b-v.
-            }
-            // Caller-initiated requests land in phase 4b-v.
-            // Recorded here as unimplemented to keep the match
-            // exhaustive.
-            Event::Unload { .. } | Event::ModifyConnection { .. } | Event::HvsockConnect { .. } => {
-                // Not yet implemented in this phase. See doc comment
-                // on `step` for the phased rollout.
+                self.handle_resume(sink);
             }
         }
     }
@@ -1013,9 +1015,22 @@ impl ClientCore {
             Message::GpadlTorndown(torndown, ..) => {
                 self.handle_gpadl_torndown(torndown, sink);
             }
-            // Phase 4b-v adds hvsock / modify-connection / unload
-            // handlers. Silently ignore any stale-phase deliveries
-            // in the meantime.
+            Message::UnloadComplete(..) => {
+                self.handle_unload_complete(sink);
+            }
+            Message::ModifyConnectionResponse(response, ..) => {
+                self.handle_modify_connection_response(response, sink);
+            }
+            Message::TlConnectResult(result, ..) => {
+                self.handle_tl_connect_result(result, sink);
+            }
+            Message::PauseResponse(..) => {
+                self.handle_pause_response(sink);
+            }
+            // Silently ignore any other host wire message. Anything
+            // that arrives here is either a message this client
+            // never sends (e.g., CloseReservedChannelResponse) or a
+            // stale-phase delivery. Never panic on host input.
             _ => {}
         }
     }
@@ -1228,7 +1243,10 @@ impl ClientCore {
     }
 
     /// Handle a host-originated `OfferChannel` — record the channel
-    /// in the core's map and forward it to the wrapper.
+    /// in the core's map and forward it to the wrapper, either as a
+    /// regular offer or as the completion of a pending
+    /// [`Event::HvsockConnect`] when the offer matches a tracked
+    /// hvsock service.
     fn handle_offer(
         &mut self,
         offer: vmbus_core::protocol::OfferChannel,
@@ -1257,10 +1275,50 @@ impl ClientCore {
         if let ClientPhase::RequestingOffers { offer_count, .. } = &mut self.phase {
             *offer_count = offer_count.saturating_add(1);
         }
+        // Hvsock offer check: if the incoming offer matches a
+        // pending HvsockConnect, complete that instead of raising a
+        // regular OfferReceived. Matches vmbus_client's
+        // hvsock_tracker::check_offer semantics.
+        if let Some(request_id) = self.match_hvsock_offer(&offer) {
+            self.outstanding.remove(&request_id);
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::HvsockConnect(Some(OfferDescriptor {
+                    offer,
+                    connection_id: 0,
+                })),
+            });
+            return;
+        }
         sink.emit(Action::OfferReceived(OfferDescriptor {
             offer,
             connection_id: 0,
         }));
+    }
+
+    /// Look up an offered channel against pending hvsock requests.
+    /// Returns the [`RequestId`] of the matching pending request if
+    /// the offer is an hvsock guest-connect (rather than
+    /// host-accept) result.
+    fn match_hvsock_offer(
+        &mut self,
+        offer: &vmbus_core::protocol::OfferChannel,
+    ) -> Option<RequestId> {
+        if !offer.flags.tlnpi_provider() {
+            return None;
+        }
+        // The wire user_defined blob for tlnpi offers is prefixed
+        // with an HvsockUserDefinedParameters struct. If the guest
+        // accept flag is nonzero the offer is from another guest
+        // asking us to accept, not a response to our connect.
+        let params = offer.user_defined.as_hvsock_params();
+        if params.is_for_guest_accept != 0 {
+            return None;
+        }
+        // Wrapper's check_offer matches (service_id, endpoint_id)
+        // against offer.interface_id + offer.instance_id.
+        self.hvsock_pending
+            .remove(&(offer.interface_id, offer.instance_id))
     }
 
     /// Handle `AllOffersDelivered` — complete the outstanding
@@ -2000,6 +2058,189 @@ impl ClientCore {
         self.channels
             .iter()
             .find_map(|(cid, entry)| entry.gpadls.contains_key(&gpadl_id).then_some(*cid))
+    }
+
+    /// Handle [`Event::Unload`] — post `Unload` and transition to
+    /// [`ClientPhase::Disconnecting`]. Rejected if the client is
+    /// not currently `Connected` or `RequestingOffers` (there's
+    /// nothing to unload).
+    fn handle_unload(&mut self, request_id: RequestId, sink: &mut dyn ActionSink) {
+        let version = match self.phase {
+            ClientPhase::Connected { version } => version,
+            ClientPhase::RequestingOffers { version, .. } => version,
+            // Idempotent from Disconnected — nothing to do.
+            _ => {
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::Unload,
+                });
+                return;
+            }
+        };
+        self.outstanding.insert(request_id, PendingRequest::Unload);
+        self.phase = ClientPhase::Disconnecting {
+            version,
+            request_id,
+        };
+        self.post_message(&vmbus_core::protocol::Unload {}, sink);
+    }
+
+    /// Handle `UnloadComplete` — finish the caller's Unload and
+    /// transition back to [`ClientPhase::Disconnected`].
+    fn handle_unload_complete(&mut self, sink: &mut dyn ActionSink) {
+        let old = core::mem::replace(&mut self.phase, ClientPhase::Disconnected);
+        let ClientPhase::Disconnecting { request_id, .. } = old else {
+            self.phase = old;
+            return;
+        };
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::Unload,
+        });
+    }
+
+    /// Handle [`Event::ModifyConnection`] — post `ModifyConnection`
+    /// with new monitor page GPAs. Rejects if not connected, if the
+    /// negotiated feature flags don't include `modify_connection`,
+    /// or if another `ModifyConnection` is already in flight.
+    fn handle_modify_connection(
+        &mut self,
+        request_id: RequestId,
+        monitor_page: MonitorPageGpas,
+        sink: &mut dyn ActionSink,
+    ) {
+        let supported = matches!(
+            self.phase,
+            ClientPhase::Connected { version } if version.feature_flags.modify_connection()
+        );
+        if !supported {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyConnection(
+                    vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                ),
+            });
+            return;
+        }
+        if self.modify_connection_request_id.is_some() {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyConnection(
+                    vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                ),
+            });
+            return;
+        }
+        self.modify_connection_request_id = Some(request_id);
+        self.outstanding
+            .insert(request_id, PendingRequest::ModifyConnection);
+        self.post_message(
+            &vmbus_core::protocol::ModifyConnection {
+                parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
+                child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
+            },
+            sink,
+        );
+    }
+
+    /// Handle `ModifyConnectionResponse` — complete the outstanding
+    /// [`Event::ModifyConnection`] with the host-supplied connection
+    /// state.
+    fn handle_modify_connection_response(
+        &mut self,
+        response: vmbus_core::protocol::ModifyConnectionResponse,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(request_id) = self.modify_connection_request_id.take() else {
+            return;
+        };
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::ModifyConnection(response.connection_state),
+        });
+    }
+
+    /// Handle [`Event::HvsockConnect`] — post `TlConnectRequest2` and
+    /// track the pending caller side by (service_id, endpoint_id).
+    /// The host may respond either with a matching `OfferChannel`
+    /// (success — handled in [`Self::handle_offer`]) or with
+    /// `TlConnectResult` carrying a failure status.
+    fn handle_hvsock_connect(
+        &mut self,
+        request_id: RequestId,
+        request: HvsockConnectRequest,
+        sink: &mut dyn ActionSink,
+    ) {
+        // vmbus_client only sends the newer TlConnectRequest2 (Win10Rs5+).
+        let msg = vmbus_core::protocol::TlConnectRequest2 {
+            base: vmbus_core::protocol::TlConnectRequest {
+                endpoint_id: request.endpoint_id,
+                service_id: request.service_id,
+            },
+            silo_id: request.silo_id,
+        };
+        self.hvsock_pending
+            .insert((request.service_id, request.endpoint_id), request_id);
+        self.outstanding.insert(
+            request_id,
+            PendingRequest::HvsockConnect {
+                service_id: request.service_id,
+            },
+        );
+        self.post_message(&msg, sink);
+    }
+
+    /// Handle `TlConnectResult` — the host reports a failure (any
+    /// success is signalled by an `OfferChannel`, never by
+    /// `TlConnectResult`). Completes the pending hvsock request
+    /// with `None`.
+    fn handle_tl_connect_result(
+        &mut self,
+        result: vmbus_core::protocol::TlConnectResult,
+        sink: &mut dyn ActionSink,
+    ) {
+        // Only failures arrive here; a non-negative status is a
+        // protocol violation.
+        if result.status >= 0 {
+            return;
+        }
+        let Some(request_id) = self
+            .hvsock_pending
+            .remove(&(result.service_id, result.endpoint_id))
+        else {
+            return;
+        };
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::HvsockConnect(None),
+        });
+    }
+
+    /// Handle [`Event::Pause`] — post `Pause` wire message. Only
+    /// meaningful when the negotiated feature set includes
+    /// `pause_resume`; on older versions the message is a no-op on
+    /// the host side and will be silently discarded.
+    fn handle_pause(&mut self, sink: &mut dyn ActionSink) {
+        self.post_message(&vmbus_core::protocol::Pause, sink);
+    }
+
+    /// Handle [`Event::Resume`] — post `Resume`.
+    fn handle_resume(&mut self, sink: &mut dyn ActionSink) {
+        self.post_message(&vmbus_core::protocol::Resume, sink);
+    }
+
+    /// Handle `PauseResponse` — signal acknowledged. Currently no
+    /// per-request tracking; the wrapper uses this as a hint to
+    /// stop draining its incoming-message queue until the next
+    /// [`Event::Resume`].
+    fn handle_pause_response(&mut self, _sink: &mut dyn ActionSink) {
+        // Reserved for future use if the wrapper needs a
+        // ChannelObservable-style hook. For now, dropping is fine —
+        // pause is an outbound-message gating hint, not a
+        // completable operation.
     }
 }
 
@@ -3591,5 +3832,329 @@ mod step_tests {
                 result: CompletionResult::EstablishGpadl(Err(())),
             }
         ));
+    }
+
+    // -- Phase 4b-v: hvsock + unload + modify-connection + pause ----
+
+    #[test]
+    fn unload_from_connected_posts_and_transitions_to_disconnecting() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        core.step(
+            Event::Unload {
+                request_id: RequestId(2000),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::Disconnecting {
+                request_id: RequestId(2000),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unload_from_disconnected_completes_synchronously() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Unload {
+                request_id: RequestId(2001),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2001),
+                result: CompletionResult::Unload,
+            }
+        ));
+    }
+
+    #[test]
+    fn unload_complete_returns_to_disconnected() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        core.step(
+            Event::Unload {
+                request_id: RequestId(2100),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let wire = make_host_message(&vmbus_core::protocol::UnloadComplete {});
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2100),
+                result: CompletionResult::Unload,
+            }
+        ));
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+    }
+
+    #[test]
+    fn modify_connection_without_feature_flag_fails() {
+        // make_config() does not enable modify_connection.
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_with_flags(&mut core, &mut sink, FeatureFlags::new());
+        core.step(
+            Event::ModifyConnection {
+                request_id: RequestId(2200),
+                monitor_page: MonitorPageGpas {
+                    parent_to_child: 0x1000,
+                    child_to_parent: 0x2000,
+                },
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2200),
+                result: CompletionResult::ModifyConnection(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn modify_connection_response_completes_pending() {
+        // Config supports modify_connection.
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            FeatureFlags::new().with_modify_connection(true),
+        );
+        core.step(
+            Event::ModifyConnection {
+                request_id: RequestId(2300),
+                monitor_page: MonitorPageGpas {
+                    parent_to_child: 0x1000,
+                    child_to_parent: 0x2000,
+                },
+            },
+            &mut sink,
+        );
+        let _ = expect_post(&sink.actions[0]);
+        sink.actions.clear();
+
+        let response = vmbus_core::protocol::ModifyConnectionResponse {
+            connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2300),
+                result: CompletionResult::ModifyConnection(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn duplicate_modify_connection_is_rejected() {
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            FeatureFlags::new().with_modify_connection(true),
+        );
+        core.step(
+            Event::ModifyConnection {
+                request_id: RequestId(2400),
+                monitor_page: MonitorPageGpas::default(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+        core.step(
+            Event::ModifyConnection {
+                request_id: RequestId(2401),
+                monitor_page: MonitorPageGpas::default(),
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2401),
+                result: CompletionResult::ModifyConnection(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn hvsock_connect_posts_and_tracks_pending() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        let request = HvsockConnectRequest {
+            service_id: Guid {
+                data1: 0xdead,
+                ..Guid::ZERO
+            },
+            endpoint_id: Guid {
+                data1: 0xbeef,
+                ..Guid::ZERO
+            },
+            silo_id: Guid::ZERO,
+            hosted_silo_unaware: false,
+        };
+        core.step(
+            Event::HvsockConnect {
+                request_id: RequestId(2500),
+                request,
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+    }
+
+    #[test]
+    fn hvsock_offer_completes_pending_connect() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        let service = Guid {
+            data1: 0xdead,
+            ..Guid::ZERO
+        };
+        let endpoint = Guid {
+            data1: 0xbeef,
+            ..Guid::ZERO
+        };
+        core.step(
+            Event::HvsockConnect {
+                request_id: RequestId(2600),
+                request: HvsockConnectRequest {
+                    service_id: service,
+                    endpoint_id: endpoint,
+                    silo_id: Guid::ZERO,
+                    hosted_silo_unaware: false,
+                },
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        // Craft a matching offer.
+        let mut offer = make_offer(60);
+        offer.interface_id = service;
+        offer.instance_id = endpoint;
+        offer.flags = vmbus_core::protocol::OfferFlags::new().with_tlnpi_provider(true);
+        // user_defined is already zeroed (is_for_guest_accept = 0).
+        let wire = make_host_message(&offer);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        // Exactly one Complete for the hvsock request; no
+        // OfferReceived (because the offer was consumed by the
+        // hvsock intercept).
+        assert!(sink.actions.iter().any(|a| matches!(
+            a,
+            Action::Complete {
+                request_id: RequestId(2600),
+                result: CompletionResult::HvsockConnect(Some(_)),
+            }
+        )));
+        assert!(
+            !sink
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::OfferReceived(_)))
+        );
+    }
+
+    #[test]
+    fn tl_connect_result_failure_completes_with_none() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        let service = Guid {
+            data1: 0xf00d,
+            ..Guid::ZERO
+        };
+        let endpoint = Guid {
+            data1: 0xbaad,
+            ..Guid::ZERO
+        };
+        core.step(
+            Event::HvsockConnect {
+                request_id: RequestId(2700),
+                request: HvsockConnectRequest {
+                    service_id: service,
+                    endpoint_id: endpoint,
+                    silo_id: Guid::ZERO,
+                    hosted_silo_unaware: false,
+                },
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let result = vmbus_core::protocol::TlConnectResult {
+            endpoint_id: endpoint,
+            service_id: service,
+            status: -1,
+        };
+        let wire = make_host_message(&result);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2700),
+                result: CompletionResult::HvsockConnect(None),
+            }
+        ));
+    }
+
+    #[test]
+    fn pause_and_resume_post_wire_messages() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        core.step(Event::Pause, &mut sink);
+        core.step(Event::Resume, &mut sink);
+        assert_eq!(sink.actions.len(), 2);
+        let _ = expect_post(&sink.actions[0]);
+        let _ = expect_post(&sink.actions[1]);
     }
 }
