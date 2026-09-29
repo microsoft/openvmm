@@ -11,6 +11,7 @@ vmbus_core.workspace = true
 
 guid.workspace = true
 thiserror.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

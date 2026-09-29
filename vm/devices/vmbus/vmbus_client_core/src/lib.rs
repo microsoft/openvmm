@@ -48,7 +48,7 @@ use vmbus_core::protocol::Version;
 /// Opaque identifier the wrapper attaches to caller-initiated requests
 /// so completions can be routed back. Monotonic, allocated by the
 /// wrapper.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RequestId(pub u64);
 
 /// Immutable configuration for a [`ClientCore`] instance.
@@ -92,10 +92,13 @@ pub enum ClientPhase {
     /// The client has posted `InitiateContact` and is waiting for
     /// `VersionResponse`. `request_id` refers back to the caller-side
     /// `Connect` [`Event`] so the wrapper can complete the pending
-    /// call when the negotiation finishes.
+    /// call when the negotiation finishes. `params` are the original
+    /// parameters supplied by the caller — they are reused verbatim
+    /// on each rung of the ladder while the host rejects versions.
     Connecting {
         version: Version,
         request_id: RequestId,
+        params: ConnectParams,
     },
     /// The client has completed version negotiation and is ready to
     /// enumerate offers or perform per-channel operations.
@@ -351,7 +354,7 @@ mod flag_alloc_tests {
 // converts field-for-field at the Event boundary.
 
 /// Parameters supplied on [`Event::Connect`].
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ConnectParams {
     /// VP that will service outgoing channel-manager messages.
     pub target_message_vp: u32,
@@ -846,6 +849,9 @@ impl ClientCore {
             Event::HostMessage(bytes) => {
                 self.dispatch_host_message(bytes, sink);
             }
+            Event::Connect { request_id, params } => {
+                self.handle_connect(request_id, params, sink);
+            }
             // Pause/Resume are wire-only in the V5+ pause-resume
             // protocol; the wrapper generates them by posting the
             // corresponding messages directly. They arrive here as
@@ -859,10 +865,9 @@ impl ClientCore {
                 // Placeholder — phase 4b-v.
             }
             // Caller-initiated requests, offer channel operations, and
-            // gpadl operations land in phase 4b-ii..iv. Recorded here
+            // gpadl operations land in phase 4b-iii..v. Recorded here
             // as unimplemented to keep the match exhaustive.
-            Event::Connect { .. }
-            | Event::RequestOffers { .. }
+            Event::RequestOffers { .. }
             | Event::Unload { .. }
             | Event::ModifyConnection { .. }
             | Event::HvsockConnect { .. }
@@ -886,17 +891,204 @@ impl ClientCore {
     /// enough to panic. Wrapper-side tracing can pick up the raw
     /// bytes at the transport layer if diagnostics are needed.
     fn dispatch_host_message(&mut self, bytes: &[u8], sink: &mut dyn ActionSink) {
-        // Note: the `_` discard here is deliberate — see method
-        // doc-comment. `Message::parse` never panics, so this cannot
-        // ever be a source of panics from untrusted host data.
-        let _version = self.phase.version();
-        // Phase 4b-i does not yet act on decoded messages; the parse
-        // itself validates the wire framing and keeps the state
-        // machine from panicking on malformed bytes. Subsequent
-        // phases dispatch each parsed variant to a corresponding
-        // handler.
-        let _ = sink;
-        let _ = bytes;
+        use vmbus_core::protocol::Message;
+
+        let version = self.phase.version();
+        let Ok(msg) = Message::parse(bytes, version) else {
+            // Malformed host input. Never panic on host framing;
+            // wrapper-side logs at the transport layer can pick up
+            // the raw bytes if diagnostics are needed.
+            return;
+        };
+        match msg {
+            Message::VersionResponse3(v, ..) => {
+                self.handle_version_response(v.version_response2, sink);
+            }
+            Message::VersionResponse2(v, ..) => {
+                self.handle_version_response(v, sink);
+            }
+            Message::VersionResponse(v, ..) => {
+                self.handle_version_response(v.into(), sink);
+            }
+            // Phase 4b-iii and later add offer / gpadl / channel /
+            // hvsock / modify / unload handlers. Silently ignore any
+            // stale-phase deliveries in the meantime.
+            _ => {}
+        }
+    }
+
+    /// Encode a vmbus channel-manager message and emit an
+    /// [`Action::PostMessage`] carrying its wire bytes.
+    fn post_message<T>(&self, message: &T, sink: &mut dyn ActionSink)
+    where
+        T: zerocopy::IntoBytes
+            + zerocopy::Immutable
+            + zerocopy::KnownLayout
+            + vmbus_core::protocol::VmbusMessage,
+    {
+        let outgoing = vmbus_core::OutgoingMessage::new(message);
+        sink.emit(Action::PostMessage(outgoing.data().to_vec()));
+    }
+
+    /// Post `InitiateContact` (V1) or `InitiateContact2` (V5+ Copper)
+    /// for the given `version`, reusing the caller-supplied
+    /// [`ConnectParams`]. Called by [`Self::handle_connect`] and by
+    /// [`Self::handle_version_response`] when walking the fallthrough
+    /// ladder.
+    fn send_initiate_contact(
+        &self,
+        version: Version,
+        params: &ConnectParams,
+        sink: &mut dyn ActionSink,
+    ) {
+        let feature_flags = if version >= Version::Copper {
+            self.config.supported_feature_flags
+        } else {
+            FeatureFlags::new()
+        };
+        let target_info = vmbus_core::protocol::TargetInfo::new()
+            .with_sint(self.config.sint)
+            .with_vtl(self.config.vtl)
+            .with_feature_flags(feature_flags.into());
+        let monitor_page = params.monitor_page.unwrap_or_default();
+        let msg = vmbus_core::protocol::InitiateContact2 {
+            initiate_contact: vmbus_core::protocol::InitiateContact {
+                version_requested: version as u32,
+                target_message_vp: params.target_message_vp,
+                interrupt_page_or_target_info: target_info.into(),
+                parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
+                child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
+            },
+            client_id: params.client_id,
+        };
+        if version < Version::Copper {
+            self.post_message(&msg.initiate_contact, sink);
+        } else {
+            self.post_message(&msg, sink);
+        }
+    }
+
+    /// Handle [`Event::Connect`] — validate current phase, transition
+    /// to `Connecting`, and post the initial `InitiateContact[2]`
+    /// with the highest supported version.
+    fn handle_connect(
+        &mut self,
+        request_id: RequestId,
+        params: ConnectParams,
+        sink: &mut dyn ActionSink,
+    ) {
+        if !matches!(self.phase, ClientPhase::Disconnected) {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::Connect(Err(ConnectError::InvalidState)),
+            });
+            return;
+        }
+        let Some(&version) = self.config.supported_versions.last() else {
+            // A misconfigured client (empty supported_versions) can
+            // never negotiate. Treat as VersionNotSupported so the
+            // caller sees a clean error rather than a hang.
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::Connect(Err(ConnectError::VersionNotSupported)),
+            });
+            return;
+        };
+        self.outstanding.insert(request_id, PendingRequest::Connect);
+        self.phase = ClientPhase::Connecting {
+            version,
+            request_id,
+            params,
+        };
+        self.send_initiate_contact(version, &params, sink);
+    }
+
+    /// Handle a `VersionResponse[2|3]` — either finish the caller's
+    /// [`Event::Connect`] or walk down the negotiation ladder.
+    fn handle_version_response(
+        &mut self,
+        msg: vmbus_core::protocol::VersionResponse2,
+        sink: &mut dyn ActionSink,
+    ) {
+        // Take current Connecting phase; leaving Disconnected as the
+        // interim value means a stale response can't corrupt state.
+        let old_phase = core::mem::replace(&mut self.phase, ClientPhase::Disconnected);
+        let ClientPhase::Connecting {
+            version,
+            request_id,
+            params,
+        } = old_phase
+        else {
+            // Stale response — restore the previous phase and drop
+            // the message.
+            self.phase = old_phase;
+            return;
+        };
+
+        if msg.version_response.version_supported > 0 {
+            if msg.version_response.connection_state
+                != vmbus_core::protocol::ConnectionState::SUCCESSFUL
+            {
+                self.outstanding.remove(&request_id);
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::Connect(Err(ConnectError::FailedToConnect(
+                        msg.version_response.connection_state,
+                    ))),
+                });
+                return;
+            }
+            let feature_flags = if version >= Version::Copper {
+                FeatureFlags::from(msg.supported_features) & self.config.supported_feature_flags
+            } else {
+                FeatureFlags::new()
+            };
+            let version_info = VersionInfo {
+                version,
+                feature_flags,
+            };
+            self.phase = ClientPhase::Connected {
+                version: version_info,
+            };
+            self.outstanding.remove(&request_id);
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::Connect(Ok(ConnectionSuccess {
+                    version: version_info,
+                })),
+            });
+            return;
+        }
+
+        // Host does not support this version — walk the ladder.
+        let versions = self.config.supported_versions;
+        let index = match versions.iter().position(|v| *v == version) {
+            Some(i) => i,
+            None => {
+                // Bug — should not happen. Fail cleanly.
+                self.outstanding.remove(&request_id);
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::Connect(Err(ConnectError::VersionNotSupported)),
+                });
+                return;
+            }
+        };
+        if index == 0 {
+            self.outstanding.remove(&request_id);
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::Connect(Err(ConnectError::VersionNotSupported)),
+            });
+            return;
+        }
+        let next_version = versions[index - 1];
+        self.phase = ClientPhase::Connecting {
+            version: next_version,
+            request_id,
+            params,
+        };
+        self.send_initiate_contact(next_version, &params, sink);
     }
 }
 
@@ -991,6 +1183,316 @@ mod step_tests {
         core.step(Event::HostMessage(&[]), &mut sink);
         // Any garbage.
         core.step(Event::HostMessage(&[0xff; 64]), &mut sink);
+        assert!(sink.actions.is_empty());
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+    }
+
+    // -- Phase 4b-ii: Connect + version-response ladder --------------
+
+    /// Multi-version fixture so the fallthrough ladder can be
+    /// exercised. Ordered lowest → highest, matching the workspace
+    /// convention that `.last()` is the preferred (highest) version.
+    fn make_multi_version_config() -> Config {
+        Config {
+            sint: vmbus_core::VMBUS_SINT,
+            vtl: 0,
+            supported_versions: &[Version::Iron, Version::Copper],
+            supported_feature_flags: FeatureFlags::new().with_modify_connection(true),
+        }
+    }
+
+    fn connect_params() -> ConnectParams {
+        ConnectParams {
+            target_message_vp: 0,
+            monitor_page: None,
+            client_id: Guid::ZERO,
+        }
+    }
+
+    /// Wrap a wire-typed message in the `MessageHeader` framing the
+    /// core's `dispatch_host_message` expects.
+    fn make_host_message<T>(msg: &T) -> Vec<u8>
+    where
+        T: zerocopy::IntoBytes
+            + zerocopy::Immutable
+            + zerocopy::KnownLayout
+            + vmbus_core::protocol::VmbusMessage,
+    {
+        vmbus_core::OutgoingMessage::new(msg).data().to_vec()
+    }
+
+    /// Extract wire bytes from a captured `Action::PostMessage`.
+    fn expect_post(action: &Action) -> &[u8] {
+        match action {
+            Action::PostMessage(bytes) => bytes.as_slice(),
+            other => panic!("expected PostMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_posts_initiate_contact_and_transitions_to_connecting() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(7),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        // Exactly one PostMessage; no Complete yet.
+        assert_eq!(sink.actions.len(), 1);
+        let bytes = expect_post(&sink.actions[0]);
+        // The wire message must at least contain the message header
+        // and one InitiateContact2 struct.
+        assert!(bytes.len() >= 8);
+        // Phase transitioned; RequestId is tracked as outstanding.
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::Connecting {
+                version: Version::Copper,
+                request_id: RequestId(7),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn connect_from_non_disconnected_phase_completes_with_invalid_state() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        // First connect: legitimate.
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+        // Second connect while still Connecting: rejected.
+        core.step(
+            Event::Connect {
+                request_id: RequestId(2),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(2),
+                result: CompletionResult::Connect(Err(ConnectError::InvalidState)),
+            }
+        ));
+    }
+
+    #[test]
+    fn successful_version_response_transitions_to_connected() {
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        // Fake a successful VersionResponse2 from the host.
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 1,
+            },
+            // Modify-connection is in Config; the host offers all
+            // Copper flags. Intersection selects modify_connection.
+            supported_features: FeatureFlags::new().with_modify_connection(true).into(),
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+
+        // Exactly one Complete, no further posts (phase 4b-ii scope).
+        assert_eq!(sink.actions.len(), 1);
+        let Action::Complete {
+            request_id: RequestId(1),
+            result: CompletionResult::Connect(Ok(ConnectionSuccess { version })),
+        } = sink.actions[0]
+        else {
+            panic!("unexpected: {:?}", sink.actions[0]);
+        };
+        assert_eq!(version.version, Version::Copper);
+        assert!(version.feature_flags.modify_connection());
+        assert!(matches!(core.phase(), ClientPhase::Connected { .. }));
+    }
+
+    #[test]
+    fn feature_flags_are_intersected_with_config() {
+        // Config only supports modify_connection; host offers every
+        // Copper flag. Result must be exactly modify_connection.
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 1,
+            },
+            supported_features: 0xffff_ffff,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        let ClientPhase::Connected { version } = *core.phase() else {
+            panic!();
+        };
+        assert!(version.feature_flags.modify_connection());
+        // Anything not in the config must be cleared.
+        assert!(!version.feature_flags.guest_specified_signal_parameters());
+    }
+
+    #[test]
+    fn host_reject_walks_ladder_and_reposts() {
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        // Initial PostMessage for Copper.
+        assert_eq!(sink.actions.len(), 1);
+        sink.actions.clear();
+
+        // Host says version not supported (v_supported = 0).
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 0,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 0,
+            },
+            supported_features: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+
+        // Ladder walks to Iron: one more PostMessage, no Complete.
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::Connecting {
+                version: Version::Iron,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ladder_bottoms_out_with_version_not_supported() {
+        let mut core = ClientCore::new(make_config()); // Only Copper.
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(3),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        // Host rejects the only version.
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 0,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 0,
+            },
+            supported_features: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(3),
+                result: CompletionResult::Connect(Err(ConnectError::VersionNotSupported)),
+            }
+        ));
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+    }
+
+    #[test]
+    fn failed_connection_state_completes_with_failed_to_connect() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::Connect {
+                request_id: RequestId(9),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                padding: 0,
+                selected_version_or_connection_id: 0,
+            },
+            supported_features: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(9),
+                result: CompletionResult::Connect(Err(ConnectError::FailedToConnect(_))),
+            }
+        ));
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+    }
+
+    #[test]
+    fn stray_version_response_in_disconnected_phase_is_dropped() {
+        // Regression guard: host wire input arriving in the wrong
+        // phase must never panic or emit spurious actions.
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 1,
+            },
+            supported_features: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
         assert!(sink.actions.is_empty());
         assert!(matches!(core.phase(), ClientPhase::Disconnected));
     }
