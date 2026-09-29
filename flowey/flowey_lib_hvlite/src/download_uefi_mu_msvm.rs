@@ -104,8 +104,8 @@ impl FlowNodeWithConfig for Node {
 
         for (arch, out_vars) in reqs {
             let file_name = match arch {
-                CommonArch::X86_64 => "RELEASE-X64-VS2022-artifacts.tar.gz",
-                CommonArch::Aarch64 => "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
+                CommonArch::X86_64 => "firmware-RELEASE-X64-VS2022.tar.gz",
+                CommonArch::Aarch64 => "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz",
             };
 
             let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
