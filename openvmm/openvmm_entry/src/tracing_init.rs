@@ -5,7 +5,6 @@ use anyhow::Context as _;
 use anyhow::anyhow;
 use std::io::IsTerminal;
 use tracing_subscriber::Layer as _;
-use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
@@ -36,14 +35,12 @@ fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
     })
 }
 
-fn exclude_perf_targets() -> FilterFn<fn(&tracing::Metadata<'_>) -> bool> {
-    fn enabled(metadata: &tracing::Metadata<'_>) -> bool {
-        let target = metadata.target();
+fn is_perf_target(target: &str) -> bool {
+    target == PERF_TARGET || target.starts_with(PERF_TARGET_PREFIX)
+}
 
-        target != PERF_TARGET && !target.starts_with(PERF_TARGET_PREFIX)
-    }
-
-    filter_fn(enabled)
+fn include_in_formatted_output(target: &str, is_span: bool, log_perf_spans: bool) -> bool {
+    !is_perf_target(target) || (log_perf_spans && is_span)
 }
 
 /// Enables tracing output to stderr.
@@ -85,6 +82,7 @@ pub fn enable_tracing() -> anyhow::Result<TracingGuard> {
     } else {
         FmtSpan::NONE
     };
+    let log_perf_spans = env_bool(std::env::var("OPENVMM_LOG_PERF_SPANS"));
 
     let format = Format::default()
         .with_timer(uptime())
@@ -95,7 +93,9 @@ pub fn enable_tracing() -> anyhow::Result<TracingGuard> {
         .fmt_fields(tracing_helpers::formatter::FieldFormatter)
         .log_internal_errors(true)
         .with_writer(writer)
-        .with_filter(exclude_perf_targets());
+        .with_filter(filter_fn(move |metadata| {
+            include_in_formatted_output(metadata.target(), metadata.is_span(), log_perf_spans)
+        }));
 
     let sub = tracing_subscriber::Registry::default()
         .with(fmt_layer)
@@ -135,4 +135,30 @@ pub fn enable_tracing() -> anyhow::Result<TracingGuard> {
         #[cfg(feature = "otel")]
         _otel: otel_guard,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::include_in_formatted_output;
+
+    #[test]
+    fn performance_spans_are_opt_in_for_formatted_output() {
+        assert!(!include_in_formatted_output("openvmm::perf", true, false));
+        assert!(include_in_formatted_output("openvmm::perf", true, true));
+        assert!(include_in_formatted_output(
+            "openvmm::perf::startup",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn performance_events_remain_excluded_from_formatted_output() {
+        assert!(!include_in_formatted_output("openvmm::perf", false, true));
+        assert!(include_in_formatted_output(
+            "openvmm::lifecycle",
+            false,
+            false
+        ));
+    }
 }
