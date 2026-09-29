@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
+mod extint;
 mod regs;
 pub(crate) mod snp;
 mod vm_state;
@@ -1023,6 +1024,7 @@ impl virt::BindProcessor for KvmProcessorBinder {
             simp_overlay: OverlayPage::default(),
             siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
+            interrupt_window_stale: true,
         };
 
         // 1. Reset the APIC state to clear the directed EOI bit, which is
@@ -1087,6 +1089,9 @@ pub struct KvmProcessor<'a> {
     simp_overlay: OverlayPage,
     /// Overlay backing the synic event flags page (SIEFP).
     siefp_overlay: OverlayPage,
+    /// Whether the VP state may have changed since KVM last reported the
+    /// interrupt window in `kvm_run`.
+    interrupt_window_stale: bool,
 }
 
 impl KvmProcessor<'_> {
@@ -1100,13 +1105,23 @@ impl KvmProcessor<'_> {
                 // Let KVM decide whether the interrupt must first exit a nested
                 // guest. A queued interrupt is missing from the saved state,
                 // but KVM partitions cannot save nested state either.
-                self.runner.queue_extint_interrupt(vector)
+                self.runner
+                    .queue_extint_interrupt(vector)
+                    .map_err(KvmRunVpError::ExtintInterrupt)?;
             } else {
                 // Keep the interrupt in the saved VP state until the guest
-                // takes it.
-                self.runner.inject_extint_interrupt(vector)
+                // takes it. KVM delivers it without checking whether the guest
+                // can take it, so KVM must have reported the open window for
+                // the current VP state.
+                assert!(
+                    !self.interrupt_window_stale,
+                    "extint injected without a current interrupt window"
+                );
+                extint::inject(&self.kvm, vector)?;
+                // The VP state changed, so the window that KVM reported no
+                // longer applies.
+                self.interrupt_window_stale = true;
             }
-            .map_err(KvmRunVpError::ExtintInterrupt)?;
         }
         Ok(())
     }
@@ -1591,7 +1606,7 @@ impl<'p> Processor for KvmProcessor<'p> {
     ) -> Result<Infallible, VpHaltReason> {
         // The VP state may have changed while the VP was stopped (e.g., by a
         // restore), so the interrupt window that KVM last reported is stale.
-        self.runner.invalidate_interrupt_window();
+        self.interrupt_window_stale = true;
 
         loop {
             self.inner.needs_yield.maybe_yield().await;
@@ -1607,20 +1622,19 @@ impl<'p> Processor for KvmProcessor<'p> {
                 }
             }
 
-            // Check for pending PIC interrupts.
+            // Check for pending PIC interrupts, once KVM has reported the
+            // interrupt window for the current VP state (see below).
             //
             // Check and clear this with a relaxed ordering since `evaluate_vp`
             // (called when this is set) will force the VP to exit, causing us
             // to re-check.
-            if self.inner.request_interrupt_window.load(Ordering::Relaxed) {
+            if !self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed)
+            {
                 self.inner
                     .request_interrupt_window
                     .store(false, Ordering::Relaxed);
-                if self
-                    .runner
-                    .check_or_request_interrupt_window()
-                    .map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?
-                {
+                if self.runner.check_or_request_interrupt_window() {
                     self.deliver_pic_interrupt(dev)
                         .map_err(|e| dev.fatal_error(e.into()))?;
                 }
@@ -1637,11 +1651,23 @@ impl<'p> Processor for KvmProcessor<'p> {
             //
             // Don't break out of the loop while there is a pending exit so that
             // the register state is up-to-date for save.
+            //
+            // If a PIC interrupt is waiting but the interrupt window that KVM
+            // last reported may be stale, don't run the VP: just complete any
+            // pending exit, which makes KVM report the window for the current
+            // VP state, and then loop around to check it.
+            let refresh_interrupt_window = self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed);
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
-                    // Break out of the loop as soon as there is no pending exit.
-                    if !pending_exit {
+                let exit = if refresh_interrupt_window
+                    || self.inner.eval.load(Ordering::Relaxed)
+                    || stop.check().is_err()
+                {
+                    // Break out of the loop as soon as there is no pending exit
+                    // (and KVM has reported the current interrupt window, if
+                    // needed).
+                    if !pending_exit && !(refresh_interrupt_window && self.interrupt_window_stale) {
                         self.inner.eval.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -1651,6 +1677,9 @@ impl<'p> Processor for KvmProcessor<'p> {
                     // Run the VP.
                     self.runner.run()
                 };
+                // KVM reports the interrupt window for the current VP state
+                // whenever KVM_RUN returns.
+                self.interrupt_window_stale = false;
 
                 let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;

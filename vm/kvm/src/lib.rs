@@ -305,9 +305,6 @@ pub enum Error {
     SetCpuid(#[source] nix::Error),
     #[error("Interrupt")]
     Interrupt(#[source] nix::Error),
-    #[cfg(target_arch = "x86_64")]
-    #[error("cannot inject extint vector {0:#x}: the VP is not ready for interrupt injection")]
-    ExtintNotInjectable(u8),
     #[error("GetLApic")]
     GetLApic(#[source] nix::Error),
     #[error("SetLApic")]
@@ -1768,8 +1765,6 @@ impl<'a> Processor<'a> {
         VpRunner {
             partition: self.0,
             idx: self.1,
-            #[cfg(target_arch = "x86_64")]
-            interrupt_window_stale: true,
             _not_send_sync: PhantomData,
         }
     }
@@ -1778,10 +1773,6 @@ impl<'a> Processor<'a> {
 pub struct VpRunner<'a> {
     partition: &'a Partition,
     idx: u32,
-    /// Whether the VP state may have changed since KVM last reported the
-    /// interrupt window in `kvm_run`.
-    #[cfg(target_arch = "x86_64")]
-    interrupt_window_stale: bool,
     // This type stores the current thread in `partition` and removes it in
     // `drop`, so don't allow sending or sharing this.
     _not_send_sync: PhantomData<*const u8>,
@@ -1851,12 +1842,6 @@ impl<'a> VpRunner<'a> {
             // SAFETY: Calling IOCTL as documented, with no special requirements.
             let result = unsafe { ioctl::kvm_run(vp.vcpu.as_raw_fd(), 0) };
             CURRENT_KVM_RUN.with(|r| r.store(NO_KVM_RUN, Ordering::Relaxed));
-            // KVM reports the interrupt window for the current VP state
-            // whenever KVM_RUN returns.
-            #[cfg(target_arch = "x86_64")]
-            {
-                self.interrupt_window_stale = false;
-            }
             match result {
                 Ok(_) => Ok(true),
                 Err(err) => match err {
@@ -2062,111 +2047,31 @@ impl<'a> VpRunner<'a> {
     ///
     /// Returns true if the window is already open (in which case the request is
     /// not registered).
-    ///
-    /// If the last report from KVM may be stale (see
-    /// [`Self::invalidate_interrupt_window`]), this first asks KVM for a new
-    /// report by issuing a `KVM_RUN` that returns without running the VP, so
-    /// this must not be called while an exit is pending completion.
-    #[cfg(target_arch = "x86_64")]
-    pub fn check_or_request_interrupt_window(&mut self) -> Result<bool> {
-        if self.interrupt_window_stale {
-            CURRENT_KVM_RUN.with(|run| run.store(CANCEL_KVM_RUN, Ordering::Relaxed));
-            let exited = self.run_vp_once()?;
-            assert!(
-                !exited,
-                "unexpected exit while checking the interrupt window"
-            );
-        }
+    #[must_use]
+    pub fn check_or_request_interrupt_window(&mut self) -> bool {
         let rdata = self.run_data();
         if rdata.ready_for_interrupt_injection != 0 {
-            Ok(true)
+            true
         } else {
             rdata.request_interrupt_window = 1;
-            Ok(false)
+            false
         }
-    }
-
-    /// Marks the interrupt window that KVM last reported as stale.
-    ///
-    /// KVM only reports whether the VP can take an interrupt when `KVM_RUN`
-    /// returns, so the report no longer applies once the VP state is changed
-    /// from user mode (e.g., by a restore). Call this after such a change so
-    /// that [`Self::check_or_request_interrupt_window`] gets a new report.
-    #[cfg(target_arch = "x86_64")]
-    pub fn invalidate_interrupt_window(&mut self) {
-        self.interrupt_window_stale = true;
-    }
-
-    /// Injects an extint interrupt through the VP's injected-interrupt slot.
-    ///
-    /// Unlike an interrupt queued with [`Self::queue_extint_interrupt`], KVM
-    /// reports this interrupt through `KVM_GET_VCPU_EVENTS` until the guest
-    /// takes it, so it is saved and restored along with the rest of the VP
-    /// state. One difference in timing: if KVM has halted the VP while the host
-    /// pages in guest memory, the guest takes the interrupt only once the page
-    /// is present, as if the memory access were just slow.
-    ///
-    /// KVM delivers an interrupt in this slot without checking whether the
-    /// guest can take it, so the caller must ensure that either it has
-    /// received a [`Exit::InterruptWindow`] exit, or that
-    /// [`Self::check_or_request_interrupt_window`] has returned `true`. KVM
-    /// also cannot turn this interrupt into an exit from a nested guest, so use
-    /// [`Self::queue_extint_interrupt`] if the VP may be running one.
-    #[cfg(target_arch = "x86_64")]
-    pub fn inject_extint_interrupt(&mut self, vector: u8) -> Result<()> {
-        assert!(
-            !self.interrupt_window_stale && self.run_data().ready_for_interrupt_injection != 0,
-            "extint injected without an open interrupt window"
-        );
-
-        let vp = self.partition.vp(self.idx);
-        let mut events = vp.get_vcpu_events()?;
-        // KVM only reports an open interrupt window when no exception is
-        // pending and no event is being injected, so this should never fail.
-        // Pending NMIs and SMIs are delivered right after this interrupt, as if
-        // they had arrived just after it.
-        if events.exception.injected != 0
-            || events.exception.pending != 0
-            || events.nmi.injected != 0
-            || events.interrupt.injected != 0
-            || events.interrupt.shadow != 0
-        {
-            return Err(Error::ExtintNotInjectable(vector));
-        }
-        events.interrupt.injected = 1;
-        events.interrupt.nr = vector;
-        events.interrupt.soft = 0;
-        // Leave the optional state alone, since KVM may have queued NMIs,
-        // SMIs, or INITs since it was read.
-        events.flags = 0;
-        vp.set_vcpu_events(&events)?;
-
-        // KVM does not wake a halted VP for an interrupt in this slot, so leave
-        // the halted state just as taking the interrupt would. Do this after
-        // setting the interrupt: reading the state makes KVM process a latched
-        // INIT, which resets the VP and discards the interrupt, as INIT would.
-        if vp.get_mp_state()? == KVM_MP_STATE_HALTED {
-            vp.set_mp_state(KVM_MP_STATE_RUNNABLE)?;
-        }
-
-        // KVM will update this field again after the VP runs.
-        self.run_data().ready_for_interrupt_injection = 0;
-        Ok(())
     }
 
     /// Queues an extint interrupt with `KVM_INTERRUPT`.
     ///
     /// KVM delivers the interrupt once the guest can take it, exiting from a
     /// nested guest first if needed. But KVM has no way to report or withdraw
-    /// a queued extint, so it is missing from the saved VP state until the
-    /// guest takes it. Prefer [`Self::inject_extint_interrupt`] when the VP
-    /// cannot be running a nested guest.
+    /// a queued extint, so `KVM_GET_VCPU_EVENTS` does not report it until the
+    /// guest takes it.
     ///
-    /// Fails if KVM already has an extint queued for the VP.
-    #[cfg(target_arch = "x86_64")]
+    /// Caller must ensure that either it has received a
+    /// [`Exit::InterruptWindow`] exit, or that
+    /// [`Self::check_or_request_interrupt_window`] has returned `true`.
     pub fn queue_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
-        // KVM will update this field again after the VP runs.
+        // Remember that there is a pending extint interrupt. KVM will update
+        // this field again after the VP runs.
         self.run_data().ready_for_interrupt_injection = 0;
         Ok(())
     }
@@ -2349,206 +2254,5 @@ mod tests {
         assert_eq!(update.len, 0x2000);
         assert_eq!(update.type_, KVM_SEV_SNP_PAGE_TYPE_ZERO_UAPI);
         assert_eq!(update.flags, 0);
-    }
-
-    /// Tests for extint delivery, which run a real-mode guest in a KVM VM.
-    mod extint {
-        use super::*;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        const VECTOR: u8 = 0x20;
-        const CODE_GPA: u64 = 0x1000;
-        const HANDLER_GPA: u64 = 0x2000;
-        const RESUMED_PORT: u8 = 0x80;
-        const HANDLER_PORT: u8 = 0x81;
-        const RFLAGS_IF: u64 = 1 << 9;
-
-        struct GuestRam {
-            ptr: *mut u8,
-            len: usize,
-        }
-
-        impl GuestRam {
-            fn new(len: usize) -> Self {
-                // SAFETY: creating a new anonymous mapping.
-                let ptr = unsafe {
-                    libc::mmap(
-                        std::ptr::null_mut(),
-                        len,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                        -1,
-                        0,
-                    )
-                };
-                assert_ne!(ptr, libc::MAP_FAILED);
-                Self {
-                    ptr: ptr.cast(),
-                    len,
-                }
-            }
-
-            fn write(&self, gpa: u64, data: &[u8]) {
-                let offset = gpa as usize;
-                assert!(offset + data.len() <= self.len);
-                // SAFETY: the range is within the mapping, and the guest is not
-                // running yet.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len())
-                };
-            }
-        }
-
-        impl Drop for GuestRam {
-            fn drop(&mut self) {
-                // SAFETY: unmapping the mapping created in `new`, which KVM no
-                // longer references.
-                unsafe { libc::munmap(self.ptr.cast(), self.len) };
-            }
-        }
-
-        /// Runs the VP until it writes to an I/O port, and returns the port.
-        fn next_out_port(runner: &mut VpRunner<'_>, timed_out: &AtomicBool) -> u16 {
-            loop {
-                match runner.run().unwrap() {
-                    Exit::IoOut { port, .. } => break port,
-                    Exit::Interrupted | Exit::InterruptWindow => {
-                        assert!(
-                            !timed_out.load(Ordering::SeqCst),
-                            "timed out waiting for the guest"
-                        );
-                    }
-                    exit => panic!("unexpected exit: {exit:?}"),
-                }
-            }
-        }
-
-        /// Stops a real-mode VP just after a `hlt` with interrupts enabled
-        /// (halting it if `halted` is set), calls `deliver` to deliver an
-        /// extint, and then checks that the guest takes the interrupt exactly
-        /// once before resuming after the `hlt`.
-        fn check_extint(halted: bool, deliver: impl FnOnce(&mut VpRunner<'_>, &Processor<'_>)) {
-            init();
-
-            let ram = GuestRam::new(0x10000);
-            // The real-mode IVT entry for the vector.
-            ram.write(
-                u64::from(VECTOR) * 4,
-                &[HANDLER_GPA as u8, (HANDLER_GPA >> 8) as u8, 0, 0],
-            );
-            // hlt; out RESUMED_PORT, al; jmp $
-            ram.write(CODE_GPA, &[0xf4, 0xe6, RESUMED_PORT, 0xeb, 0xfe]);
-            // out HANDLER_PORT, al; iret
-            ram.write(HANDLER_GPA, &[0xe6, HANDLER_PORT, 0xcf]);
-
-            let kvm = Kvm::new().unwrap();
-            let mut partition = kvm.new_vm(VmType::Default).unwrap();
-            partition.enable_split_irqchip(24).unwrap();
-            partition.add_vp(0).unwrap();
-            // SAFETY: `ram` outlives `partition`.
-            unsafe {
-                partition
-                    .set_user_memory_region(0, ram.ptr, ram.len, 0, false)
-                    .unwrap();
-            }
-
-            let vp = partition.vp(0);
-            let mut sregs = vp.get_sregs().unwrap();
-            sregs.cs.selector = 0;
-            sregs.cs.base = 0;
-            vp.set_sregs(&sregs).unwrap();
-            vp.set_regs(&kvm_regs {
-                rip: CODE_GPA + 1,
-                rsp: 0x8000,
-                rflags: RFLAGS_IF | 2,
-                ..Default::default()
-            })
-            .unwrap();
-
-            // Route PIC interrupts through LINT0, as in virtual wire mode.
-            let mut lapic = [0; 1024];
-            vp.get_lapic(&mut lapic).unwrap();
-            lapic[0xf0..0xf4].copy_from_slice(&0x1ffu32.to_le_bytes());
-            lapic[0x350..0x354].copy_from_slice(&0x700u32.to_le_bytes());
-            vp.set_lapic(&lapic).unwrap();
-
-            if halted {
-                vp.set_mp_state(KVM_MP_STATE_HALTED).unwrap();
-            }
-
-            let timed_out = &AtomicBool::new(false);
-            let partition = &partition;
-            std::thread::scope(|s| {
-                let (done, wait_done) = mpsc::channel::<()>();
-                s.spawn(move || {
-                    // Kick the VP out of KVM_RUN if the guest gets stuck.
-                    if let Err(mpsc::RecvTimeoutError::Timeout) =
-                        wait_done.recv_timeout(Duration::from_secs(10))
-                    {
-                        timed_out.store(true, Ordering::SeqCst);
-                        partition.vp(0).force_exit();
-                    }
-                });
-
-                let mut runner = vp.runner();
-                deliver(&mut runner, &vp);
-                assert_eq!(next_out_port(&mut runner, timed_out), HANDLER_PORT.into());
-                assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
-                assert_eq!(next_out_port(&mut runner, timed_out), RESUMED_PORT.into());
-                drop(runner);
-                drop(done);
-            });
-        }
-
-        #[test]
-        #[ignore = "requires access to /dev/kvm"]
-        fn injected_extint_wakes_halted_vp_and_is_saved() {
-            check_extint(true, |runner, vp| {
-                assert!(runner.check_or_request_interrupt_window().unwrap());
-                runner.inject_extint_interrupt(VECTOR).unwrap();
-
-                // The interrupt is part of the saved state until the guest
-                // takes it, and the VP is no longer halted.
-                let events = vp.get_vcpu_events().unwrap();
-                assert_eq!(events.interrupt.injected, 1);
-                assert_eq!(events.interrupt.nr, VECTOR);
-                assert_eq!(vp.get_mp_state().unwrap(), KVM_MP_STATE_RUNNABLE);
-            });
-        }
-
-        #[test]
-        #[ignore = "requires access to /dev/kvm"]
-        fn queued_extint_wakes_halted_vp() {
-            check_extint(true, |runner, vp| {
-                assert!(runner.check_or_request_interrupt_window().unwrap());
-                runner.queue_extint_interrupt(VECTOR).unwrap();
-
-                // KVM does not report a queued extint.
-                assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
-            });
-        }
-
-        #[test]
-        #[ignore = "requires access to /dev/kvm"]
-        fn stale_interrupt_window_is_refreshed() {
-            check_extint(false, |runner, vp| {
-                assert!(runner.check_or_request_interrupt_window().unwrap());
-
-                // Disable interrupts from user mode, as a restore might.
-                let mut regs = vp.get_regs().unwrap();
-                regs.rflags &= !RFLAGS_IF;
-                vp.set_regs(&regs).unwrap();
-                runner.invalidate_interrupt_window();
-                assert!(!runner.check_or_request_interrupt_window().unwrap());
-
-                regs.rflags |= RFLAGS_IF;
-                vp.set_regs(&regs).unwrap();
-                runner.invalidate_interrupt_window();
-                assert!(runner.check_or_request_interrupt_window().unwrap());
-                runner.inject_extint_interrupt(VECTOR).unwrap();
-            });
-        }
     }
 }
