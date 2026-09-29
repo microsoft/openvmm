@@ -290,10 +290,23 @@ pub(crate) fn prepare_restore(
                                 == openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME,
                             "direct-claimed scratch requires a resume snapshot"
                         );
-                        (
-                            snapshot_dir.join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME),
-                            None,
-                        )
+                        let parent = snapshot_dir
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or(Path::new("."));
+                        let temp_dir = tempfile::Builder::new()
+                            .prefix(".openvmm-claimed-scratch-")
+                            .tempdir_in(parent)
+                            .context("failed to create claimed restore scratch directory")?;
+                        let private_path = temp_dir
+                            .path()
+                            .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                        openvmm_helpers::snapshot::restore::link_claimed_paired_scratch_file(
+                            &source,
+                            &private_path,
+                            scratch,
+                        )?;
+                        (private_path, Some(temp_dir))
                     }
                     mode => {
                         let parent = snapshot_dir
