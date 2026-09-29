@@ -15,12 +15,17 @@ type; see the associated documentation for more details.
 
 ### Span events
 
-By default, OpenVMM does not log span enter/exit events. To enable them, set
-`OPENVMM_LOG_SPANS=1`.
+By default, OpenVMM does not log span enter/exit events. Setting
+`OPENVMM_LOG_SPANS=1` enables open/close records for spans accepted by the
+formatted stderr target filter; it does not override that filter.
 
 Standalone OpenVMM emits spans for the major VM initialization phases. The
-top-level `init` span has a `mode` field (`boot`, `restore`, or `restart`) and
-contains spans such as:
+initialization and execution spans use the `openvmm::perf` target and are
+excluded from formatted stderr by default. To include them, also set
+`OPENVMM_LOG_PERF_SPANS=1`.
+
+The top-level `init` span has a `mode` field (`boot`, `restore`, or `restart`)
+and contains spans such as:
 
 - `init/resolve_hypervisor`
 - `init/new_vm`
@@ -36,8 +41,8 @@ contains spans such as:
 - `assign_pci_resources` and `load_firmware` for a clean boot
 - `restore` for snapshot or worker restore
 
-The `resume` span covers the transition that starts the state units and releases
-the virtual processors for execution. Existing `state_change` and
+The `resume_vm` span covers the transition that starts the state units and
+releases the virtual processors for execution. Existing `state_change` and
 `device_state_change` spans provide the nested state-unit and per-device
 breakdown.
 
@@ -65,15 +70,17 @@ human-readable message.
 ### Exporter compatibility
 
 Lifecycle instrumentation uses only the `tracing` API and does not depend on a
-specific exporter. On Windows, the existing `Microsoft.HvLite` ETW subscriber
-receives the structured milestone fields and span start/stop records. The ETW
-event header uses the human-readable message, so ETW consumers should identify
-milestones by the `event_name` and `milestone` fields.
+specific exporter. Duration spans use the `openvmm::perf` target, while
+milestone events use `openvmm::lifecycle`. The formatted stderr subscriber
+filters out `openvmm::perf` by default. Set both `OPENVMM_LOG_SPANS=1` and
+`OPENVMM_LOG_PERF_SPANS=1` to include performance span open/close records in
+stderr. This does not affect export through native ETW or GNU/Linux
+`user_events`.
 
-Standalone OpenVMM does not currently configure a Linux `user_events`
-subscriber. A future subscriber can bridge the same spans to OpenTelemetry and
-use a `user_events` trace exporter without changing the instrumentation call
-sites.
+On Windows, the existing `Microsoft.HvLite` ETW subscriber also receives the
+structured milestone fields and span start/stop records. Its event header uses
+the human-readable message, so consumers of that provider should identify
+milestones by the `event_name` and `milestone` fields.
 
 `OPENVMM_LOG_SPANS` controls span lifecycle records in formatted stderr output;
 it is not required for other subscribers. Exporters should use the static span

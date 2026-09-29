@@ -185,6 +185,7 @@ const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 fn startup_milestone(milestone: &'static str) {
     tracing::info!(
         name: "vm.startup.milestone",
+        target: "openvmm::lifecycle",
         event_name = "vm.startup.milestone",
         milestone,
         "VM startup milestone"
@@ -353,7 +354,8 @@ impl Worker for VmWorker {
         } else {
             "boot"
         };
-        let _span = tracing::info_span!("init", mode = startup_mode).entered();
+        let _span =
+            tracing::info_span!(target: "openvmm::perf", "init", mode = startup_mode).entered();
         let (device_thread, device_driver) = new_device_thread();
 
         let manifest = Manifest::from_config(parameters.cfg);
@@ -361,7 +363,10 @@ impl Worker for VmWorker {
         let hypervisor = block_on(
             ResourceResolver::new()
                 .resolve(parameters.hypervisor, ())
-                .instrument(tracing::info_span!("init/resolve_hypervisor")),
+                .instrument(tracing::info_span!(
+                    target: "openvmm::perf",
+                    "init/resolve_hypervisor"
+                )),
         )
         .context("failed to resolve hypervisor backend")?;
         startup_milestone("hypervisor_resolved");
@@ -377,7 +382,7 @@ impl Worker for VmWorker {
                 manifest,
                 shared_memory,
             )
-            .instrument(tracing::info_span!("init/new_vm")),
+            .instrument(tracing::info_span!(target: "openvmm::perf", "init/new_vm")),
         )?;
         let saved_state = parameters
             .saved_state
@@ -387,7 +392,7 @@ impl Worker for VmWorker {
 
         let vm = block_with_io(|_| {
             vm.load(saved_state, parameters.notify)
-                .instrument(tracing::info_span!("init/load_vm"))
+                .instrument(tracing::info_span!(target: "openvmm::perf", "init/load_vm"))
         })?;
 
         LOADED_VM.store(&vm);
@@ -401,7 +406,8 @@ impl Worker for VmWorker {
     }
 
     fn restart(state: Self::State) -> anyhow::Result<Self> {
-        let _span = tracing::info_span!("init", mode = "restart").entered();
+        let _span =
+            tracing::info_span!(target: "openvmm::perf", "init", mode = "restart").entered();
         let RestartState {
             hypervisor,
             manifest,
@@ -413,11 +419,12 @@ impl Worker for VmWorker {
         } = state;
         let (device_thread, device_driver) = new_device_thread();
 
-        let hypervisor = block_on(
-            ResourceResolver::new()
-                .resolve(hypervisor, ())
-                .instrument(tracing::info_span!("init/resolve_hypervisor")),
-        )
+        let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor, ()).instrument(
+            tracing::info_span!(
+                target: "openvmm::perf",
+                "init/resolve_hypervisor"
+            ),
+        ))
         .context("failed to resolve hypervisor backend")?;
         startup_milestone("hypervisor_resolved");
 
@@ -428,12 +435,12 @@ impl Worker for VmWorker {
                 manifest,
                 shared_memory,
             )
-            .instrument(tracing::info_span!("init/new_vm")),
+            .instrument(tracing::info_span!(target: "openvmm::perf", "init/new_vm")),
         )?;
         pal_async::local::block_on(async {
             let mut vm = vm
                 .load(Some(saved_state), notify)
-                .instrument(tracing::info_span!("init/load_vm"))
+                .instrument(tracing::info_span!(target: "openvmm::perf", "init/load_vm"))
                 .await?;
 
             LOADED_VM.store(&vm);
@@ -1181,7 +1188,8 @@ impl InitializedVm {
             resolve_device_assignment_msi_iova_range(platform_info.device_assignment_msi_iova);
 
         let proto = {
-            let _span = tracing::info_span!("new_proto_partition").entered();
+            let _span =
+                tracing::info_span!(target: "openvmm::perf", "new_proto_partition").entered();
             hypervisor
                 .new_partition(virt::ProtoPartitionConfig {
                     processor_topology: &processor_topology,
@@ -1263,7 +1271,8 @@ impl InitializedVm {
             0
         };
         let resolved_layout = {
-            let _span = tracing::info_span!("resolve_memory_layout").entered();
+            let _span =
+                tracing::info_span!(target: "openvmm::perf", "resolve_memory_layout").entered();
             resolve_memory_layout(MemoryLayoutInput {
                 node_mem_sizes: &node_mem_sizes,
                 layout: cfg.layout.clone(),
@@ -1457,7 +1466,7 @@ impl InitializedVm {
 
         let mut memory_manager = memory_builder
             .build(max_addr)
-            .instrument(tracing::info_span!("build_memory"))
+            .instrument(tracing::info_span!(target: "openvmm::perf", "build_memory"))
             .await
             .context("failed to build guest memory")?;
 
@@ -1482,7 +1491,7 @@ impl InitializedVm {
         startup_milestone("guest_memory_created");
 
         let (partition, vps) = {
-            let _span = tracing::info_span!("new_partition").entered();
+            let _span = tracing::info_span!(target: "openvmm::perf", "new_partition").entered();
             proto
                 .build(virt::PartitionConfig {
                     mem_layout: &mem_layout,
@@ -1507,7 +1516,11 @@ impl InitializedVm {
                 None,
                 partition.host_access(),
             )
-            .instrument(tracing::info_span!("attach_memory", vtl = 0))
+            .instrument(tracing::info_span!(
+                target: "openvmm::perf",
+                "attach_memory",
+                vtl = 0
+            ))
             .await
             .context("failed to attach memory to the partition")?;
 
@@ -1519,7 +1532,11 @@ impl InitializedVm {
                     vtl2_memory_process,
                     None,
                 )
-                .instrument(tracing::info_span!("attach_memory", vtl = 2))
+                .instrument(tracing::info_span!(
+                    target: "openvmm::perf",
+                    "attach_memory",
+                    vtl = 2
+                ))
                 .await
                 .context("failed to attach memory to VTL2")?;
         }
@@ -3068,7 +3085,8 @@ impl InitializedVm {
         }
 
         let (chipset, devices) = {
-            let _span = tracing::info_span!("base_chipset_build").entered();
+            let _span =
+                tracing::info_span!(target: "openvmm::perf", "base_chipset_build").entered();
             chipset_builder.build()?
         };
         startup_milestone("device_graph_created");
@@ -3083,7 +3101,8 @@ impl InitializedVm {
         let (halt_send, halt_recv) = mesh::channel();
 
         let (partition_unit, vp_runners) = {
-            let _span = tracing::info_span!("new_partition_unit").entered();
+            let _span =
+                tracing::info_span!(target: "openvmm::perf", "new_partition_unit").entered();
             PartitionUnit::new(
                 driver_source.simple(),
                 state_units
@@ -3140,7 +3159,7 @@ impl InitializedVm {
             ))
             .await
         }
-        .instrument(tracing::info_span!("bind_vps"))
+        .instrument(tracing::info_span!(target: "openvmm::perf", "bind_vps"))
         .await?;
         startup_milestone("vcpus_bound");
 
@@ -3205,7 +3224,7 @@ impl InitializedVm {
 
         if let Some(saved_state) = saved_state {
             this.restore(saved_state)
-                .instrument(tracing::info_span!("restore"))
+                .instrument(tracing::info_span!(target: "openvmm::perf", "restore"))
                 .await
                 .context("loadedvm restore failed")?;
             startup_milestone("state_restored");
@@ -3215,12 +3234,15 @@ impl InitializedVm {
             // read the assigned secondary bus numbers from the root ports'
             // bridge registers.
             this.assign_pci_resources()
-                .instrument(tracing::info_span!("assign_pci_resources"))
+                .instrument(tracing::info_span!(
+                    target: "openvmm::perf",
+                    "assign_pci_resources"
+                ))
                 .await?;
             startup_milestone("pci_resources_assigned");
             this.inner
                 .load_firmware(false)
-                .instrument(tracing::info_span!("load_firmware"))
+                .instrument(tracing::info_span!(target: "openvmm::perf", "load_firmware"))
                 .await?;
             startup_milestone("firmware_loaded");
         }
@@ -3653,8 +3675,8 @@ impl LoadedVmInner {
 impl LoadedVm {
     #[tracing::instrument(
         name = "resume_vm",
-        target = "openvmm::perf",
         parent = None,
+        target = "openvmm::perf",
         skip_all
     )]
     async fn resume(&mut self) -> bool {
