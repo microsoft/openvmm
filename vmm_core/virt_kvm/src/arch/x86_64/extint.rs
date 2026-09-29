@@ -84,6 +84,7 @@ mod tests {
     use kvm::KVM_VCPUEVENT_VALID_SHADOW;
     use kvm::KVM_X86_SHADOW_INT_MOV_SS;
     use kvm::Kvm;
+    use kvm::Partition;
     use kvm::Processor;
     use kvm::VmType;
     use kvm::VpRunner;
@@ -101,13 +102,15 @@ mod tests {
     const HANDLER_PORT: u8 = 0x81;
     const RFLAGS_IF: u64 = 1 << 9;
 
-    struct GuestRam {
+    /// Guest RAM at GPA 0, in memory slot 0 of a VM.
+    struct GuestRam<'a> {
+        partition: &'a Partition,
         ptr: *mut u8,
         len: usize,
     }
 
-    impl GuestRam {
-        fn new(len: usize) -> Self {
+    impl<'a> GuestRam<'a> {
+        fn new(partition: &'a Partition, len: usize) -> Self {
             // SAFETY: creating a new anonymous mapping.
             let ptr = unsafe {
                 libc::mmap(
@@ -120,8 +123,16 @@ mod tests {
                 )
             };
             assert_ne!(ptr, libc::MAP_FAILED);
+            let ptr = ptr.cast::<u8>();
+            // SAFETY: the mapping stays valid until `drop` clears the slot.
+            unsafe {
+                partition
+                    .set_user_memory_region(0, ptr, len, 0, false)
+                    .unwrap();
+            }
             Self {
-                ptr: ptr.cast(),
+                partition,
+                ptr,
                 len,
             }
         }
@@ -137,11 +148,20 @@ mod tests {
         }
     }
 
-    impl Drop for GuestRam {
+    impl Drop for GuestRam<'_> {
         fn drop(&mut self) {
-            // SAFETY: unmapping the mapping created in `new`, which KVM no
-            // longer references.
-            unsafe { libc::munmap(self.ptr.cast(), self.len) };
+            // SAFETY: clearing the slot, after which KVM no longer references
+            // the mapping.
+            let cleared = unsafe {
+                self.partition
+                    .set_user_memory_region(0, std::ptr::null_mut(), 0, 0, false)
+            };
+            // Leak the mapping if KVM might still reference it.
+            if cleared.is_ok() {
+                // SAFETY: unmapping the mapping created in `new`, which KVM no
+                // longer references.
+                unsafe { libc::munmap(self.ptr.cast(), self.len) };
+            }
         }
     }
 
@@ -173,7 +193,12 @@ mod tests {
     fn check_extint(mp_state: u32, deliver: impl FnOnce(&mut VpRunner<'_>, &Processor<'_>)) {
         kvm::init();
 
-        let ram = GuestRam::new(0x10000);
+        let kvm = Kvm::new().unwrap();
+        let mut partition = kvm.new_vm(VmType::Default).unwrap();
+        partition.enable_split_irqchip(24).unwrap();
+        partition.add_vp(0).unwrap();
+
+        let ram = GuestRam::new(&partition, 0x10000);
         // The real-mode IVT entry for the vector.
         ram.write(
             u64::from(VECTOR) * 4,
@@ -183,17 +208,6 @@ mod tests {
         ram.write(CODE_GPA, &[0xf4, 0xe6, RESUMED_PORT, 0xeb, 0xfe]);
         // out HANDLER_PORT, al; iret
         ram.write(HANDLER_GPA, &[0xe6, HANDLER_PORT, 0xcf]);
-
-        let kvm = Kvm::new().unwrap();
-        let mut partition = kvm.new_vm(VmType::Default).unwrap();
-        partition.enable_split_irqchip(24).unwrap();
-        partition.add_vp(0).unwrap();
-        // SAFETY: `ram` outlives `partition`.
-        unsafe {
-            partition
-                .set_user_memory_region(0, ram.ptr, ram.len, 0, false)
-                .unwrap();
-        }
 
         let vp = partition.vp(0);
         let mut sregs = vp.get_sregs().unwrap();
