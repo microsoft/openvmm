@@ -5222,14 +5222,16 @@ mod generic_initiator_memory_tests {
     #[test]
     fn accepts_gb200_coherent_memory_inside_bar4() {
         validate_generic_initiator_memory_ranges(
-            &[initiator(MemoryRange::new(0x8000_0000_00..0xae41_f000_00))],
+            &[initiator(MemoryRange::new(
+                0x0080_0000_0000..0x00ae_41f0_0000,
+            ))],
             &[bar(
                 1,
                 0,
                 4,
-                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+                MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
             )],
-            [MemoryRange::new(0..0x20_0000_0000)],
+            [MemoryRange::new(0..0x0020_0000_0000)],
         )
         .unwrap();
     }
@@ -5237,12 +5239,14 @@ mod generic_initiator_memory_tests {
     #[test]
     fn rejects_coherent_memory_outside_bar4() {
         let error = validate_generic_initiator_memory_ranges(
-            &[initiator(MemoryRange::new(0x8000_0000_00..0xc000_0010_00))],
+            &[initiator(MemoryRange::new(
+                0x0080_0000_0000..0x00c0_0000_1000,
+            ))],
             &[bar(
                 1,
                 0,
                 4,
-                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+                MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
             )],
             [],
         )
@@ -5252,14 +5256,14 @@ mod generic_initiator_memory_tests {
 
     #[test]
     fn rejects_coherent_memory_overlapping_ram() {
-        let range = MemoryRange::new(0x8000_0000_00..0x8000_1000_00);
+        let range = MemoryRange::new(0x0080_0000_0000..0x0080_0010_0000);
         let error = validate_generic_initiator_memory_ranges(
             &[initiator(range)],
             &[bar(
                 1,
                 0,
                 4,
-                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+                MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
             )],
             [range],
         )
@@ -5269,11 +5273,16 @@ mod generic_initiator_memory_tests {
 
     #[test]
     fn rejects_coherent_memory_overlapping_another_bar() {
-        let range = MemoryRange::new(0x8000_0000_00..0x8000_1000_00);
+        let range = MemoryRange::new(0x0080_0000_0000..0x0080_0010_0000);
         let error = validate_generic_initiator_memory_ranges(
             &[initiator(range)],
             &[
-                bar(1, 0, 4, MemoryRange::new(0x8000_0000_00..0xc000_0000_00)),
+                bar(
+                    1,
+                    0,
+                    4,
+                    MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
+                ),
                 bar(2, 0, 0, range),
             ],
             [],
@@ -5284,15 +5293,15 @@ mod generic_initiator_memory_tests {
 
     #[test]
     fn rejects_overlapping_coherent_memory_ranges() {
-        let first = MemoryRange::new(0x8000_0000_00..0x8000_2000_00);
-        let second = MemoryRange::new(0x8000_1000_00..0x8000_3000_00);
+        let first = MemoryRange::new(0x0080_0000_0000..0x0080_0020_0000);
+        let second = MemoryRange::new(0x0080_0010_0000..0x0080_0030_0000);
         let error = validate_generic_initiator_memory_ranges(
             &[initiator(first), initiator(second)],
             &[bar(
                 1,
                 0,
                 4,
-                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+                MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
             )],
             [],
         )
