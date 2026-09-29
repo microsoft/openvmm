@@ -244,7 +244,7 @@ async fn guarded_write_rechecks_key_after_rotation() {
 
     let result = send.call_failable(VmgsBrokerRpc::ActiveEncryptionKey, ());
     broker.process_message(recv.recv().await.unwrap()).await;
-    let candidate_key = result.await.unwrap();
+    let candidate_key: [u8; 32] = result.await.unwrap().try_into().unwrap();
     assert!(candidate_key == old_key);
 
     // Rotate after reading the key, before publishing its candidate. Keep this
@@ -269,7 +269,12 @@ async fn guarded_write_rechecks_key_after_rotation() {
         ),
     );
     broker.process_message(recv.recv().await.unwrap()).await;
-    assert!(!result.await.unwrap());
+    assert!(matches!(
+        result.await,
+        Err(mesh::rpc::RpcError::Call(
+            VmgsBrokerError::ActiveKeyMismatch
+        ))
+    ));
     assert!(io.lock().operations.is_empty());
     assert!(broker.vmgs.active_encryption_key().unwrap() == &new_key);
     assert_eq!(
@@ -286,7 +291,7 @@ async fn guarded_write_rechecks_key_after_rotation() {
         ),
     );
     broker.process_message(recv.recv().await.unwrap()).await;
-    assert!(result.await.unwrap());
+    result.await.unwrap();
     drop(broker);
     let mut reopened = Vmgs::open(disk, None).await.unwrap();
     reopened.unlock_with_encryption_key(&new_key).await.unwrap();
@@ -295,6 +300,28 @@ async fn guarded_write_rechecks_key_after_rotation() {
         reopened.read_file(FileId::ATTEST).await.unwrap(),
         b"replacement candidate"
     );
+}
+
+#[async_test]
+async fn active_key_rejects_invalid_wire_length(driver: DefaultDriver) {
+    use pal_async::task::Spawn;
+
+    for length in [0, 31, 33] {
+        let (send, mut recv) = mesh::mpsc_channel();
+        let client = crate::VmgsClient { control: send };
+        let respond = driver.spawn("invalid-key-response", async move {
+            let VmgsBrokerRpc::ActiveEncryptionKey(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected active key request");
+            };
+            rpc.complete(Ok(vec![0; length]));
+        });
+        let result = client.active_encryption_key().await;
+        respond.await;
+        assert!(matches!(
+            result,
+            Err(VmgsClientError::InvalidActiveKeyLength(actual)) if actual == length
+        ));
+    }
 }
 
 #[async_test]
