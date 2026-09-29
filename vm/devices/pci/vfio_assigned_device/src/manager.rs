@@ -1528,6 +1528,12 @@ struct VsmmuAssociation {
 impl VsmmuAssociations {
     fn begin(&mut self, vsmmu: &Arc<smmu::SmmuSharedState>, iommu_id: &str) -> anyhow::Result<()> {
         self.0.retain(|entry| entry.vsmmu.strong_count() != 0);
+        anyhow::ensure!(
+            !self.0.iter().any(|entry| {
+                entry.iommu_id == iommu_id && entry.vsmmu.as_ptr() != Arc::as_ptr(vsmmu)
+            }),
+            "IOMMU context {iommu_id:?} is already associated with another SMMU"
+        );
         if let Some(entry) = self
             .0
             .iter_mut()
@@ -1860,6 +1866,19 @@ mod tests {
         associations.complete(&vsmmu, "iommu0", false);
         associations.begin(&vsmmu, "iommu1").unwrap();
         associations.complete(&vsmmu, "iommu1", true);
+    }
+
+    #[test]
+    fn iommu_context_cannot_span_vsmmus() {
+        let first = make_vsmmu();
+        let second = make_vsmmu();
+        let mut associations = VsmmuAssociations::default();
+        associations.begin(&first, "iommu0").unwrap();
+        assert!(associations.begin(&second, "iommu0").is_err());
+        associations.complete(&first, "iommu0", false);
+        associations.begin(&second, "iommu0").unwrap();
+        associations.complete(&second, "iommu0", true);
+        assert!(associations.begin(&first, "iommu0").is_err());
     }
 
     #[test]

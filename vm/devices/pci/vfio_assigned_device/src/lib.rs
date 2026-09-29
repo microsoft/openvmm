@@ -857,13 +857,14 @@ impl VfioAssignedPciDevice {
         let ats_drop_guard = if kernel_owned_ats {
             let control_offset = ats_control_offset
                 .context("direct ATS requested but the ATS capability was not discovered")?;
-            set_ats_enabled(&vfio_device, Some(control_offset), false)
-                .context("failed to disable ATS before assigning the device")?;
-            Some(AtsDropGuard {
+            let guard = AtsDropGuard {
                 pci_id: pci_id.clone(),
                 vfio_device: vfio_device.clone(),
                 control_offset,
-            })
+            };
+            set_ats_enabled(&vfio_device, Some(control_offset), false)
+                .context("failed to disable ATS before assigning the device")?;
+            Some(guard)
         } else {
             None
         };
