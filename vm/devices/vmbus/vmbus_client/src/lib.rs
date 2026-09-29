@@ -1142,7 +1142,19 @@ impl ClientTask {
                 rpc.complete(());
             }
             CompletionResult::ReleaseChannel => {}
-            _ => unreachable!("unsupported completion result from vmbus_client_core"),
+            other => {
+                // `CompletionResult` is `#[non_exhaustive]`, so adding
+                // a new variant to `vmbus_client_core` will silently
+                // compile past this match. Rate-limit rather than
+                // panic — the wrapper is a trust boundary and a
+                // future protocol addition should not kill the vmbus
+                // client task for the whole VM.
+                tracelimit::warn_ratelimited!(
+                    ?other,
+                    request_id = request_id.0,
+                    "unhandled completion from vmbus_client_core; ignoring"
+                );
+            }
         }
     }
 
