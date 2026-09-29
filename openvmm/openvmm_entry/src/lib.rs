@@ -941,16 +941,16 @@ async fn vm_config_from_command_line(
             ..PCIE_REMOTE_BASE_INSTANCE_ID
         };
 
-        pcie_devices.push(PcieDeviceConfig {
-            port_name: cli_cfg.port_name.clone(),
-            resource: pcie_remote_resources::PcieRemoteHandle {
+        pcie_devices.push(PcieDeviceConfig::new(
+            cli_cfg.port_name.clone(),
+            pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
                 socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }
             .into_resource(),
-        });
+        ));
     }
 
     #[cfg(windows)]
@@ -1030,20 +1030,17 @@ async fn vm_config_from_command_line(
     pcie_devices.extend(
         pcie_mana_nics
             .into_iter()
-            .map(|(pcie_port, handle)| PcieDeviceConfig {
-                port_name: pcie_port,
-                resource: handle.into_resource(),
-            }),
+            .map(|(pcie_port, handle)| PcieDeviceConfig::new(pcie_port, handle.into_resource())),
     );
 
     for cxl_test in &opt.cxl_test {
-        pcie_devices.push(PcieDeviceConfig {
-            port_name: cxl_test.pcie_port.clone(),
-            resource: CxlTestDeviceHandle {
+        pcie_devices.push(PcieDeviceConfig::new(
+            cxl_test.pcie_port.clone(),
+            CxlTestDeviceHandle {
                 hdm_size_bytes: cxl_test.hdm_size,
             }
             .into_resource(),
-        });
+        ));
     }
 
     let arch = cfg_select! {
@@ -1369,9 +1366,9 @@ async fn vm_config_from_command_line(
                         .open(&dev_path)
                         .with_context(|| format!("failed to open {}", dev_path.display()))?;
 
-                    Ok(PcieDeviceConfig {
-                        port_name: cli_cfg.port_name.clone(),
-                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                    Ok(PcieDeviceConfig::new_vfio_cdev(
+                        cli_cfg.port_name.clone(),
+                        vfio_assigned_device_resources::VfioCdevDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             cdev,
                             iommufd,
@@ -1380,9 +1377,8 @@ async fn vm_config_from_command_line(
                             direct_iommu: direct,
                             direct_pasid: direct_capabilities.pasid,
                             direct_ats: direct_capabilities.ats,
-                        }
-                        .into_resource(),
-                    })
+                        },
+                    ))
                 } else {
                     // Legacy group/container path
                     let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
@@ -1401,40 +1397,19 @@ async fn vm_config_from_command_line(
                         .open(format!("/dev/vfio/{group_id}"))
                         .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
 
-                    Ok(PcieDeviceConfig {
-                        port_name: cli_cfg.port_name.clone(),
-                        resource: vfio_assigned_device_resources::VfioDeviceHandle {
+                    Ok(PcieDeviceConfig::new(
+                        cli_cfg.port_name.clone(),
+                        vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
                             bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
-                    })
+                    ))
                 }
             })
             .collect::<anyhow::Result<Vec<_>>>()?
     };
-    #[cfg(target_os = "linux")]
-    let direct_iommus: Vec<String> = opt
-        .direct_iommu
-        .iter()
-        .map(|direct_iommu| direct_iommu.iommu_id.clone())
-        .collect();
-
-    #[cfg(target_os = "linux")]
-    let direct_assigned_devices = opt
-        .vfio
-        .iter()
-        .filter(|vfio| {
-            vfio.iommu
-                .as_ref()
-                .is_some_and(|iommu| direct_iommus.iter().any(|direct| direct == iommu))
-        })
-        .map(|vfio| openvmm_defs::config::DirectAssignedDeviceConfig {
-            port_name: vfio.port_name.clone(),
-            host_pci_id: vfio.pci_id.clone(),
-        })
-        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -2105,10 +2080,10 @@ async fn vm_config_from_command_line(
             }
             VirtioBusCli::Mmio => virtio_devices.push((VirtioBus::Mmio, resource)),
             VirtioBusCli::Pci => virtio_devices.push((VirtioBus::Pci, resource)),
-            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig {
+            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            }),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            )),
             VirtioBusCli::Vpci => vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
@@ -2130,10 +2105,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &cli_cfg.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2150,10 +2125,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
@@ -2168,10 +2143,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
@@ -2185,10 +2160,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2201,10 +2176,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &pmem_args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2214,10 +2189,10 @@ async fn vm_config_from_command_line(
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::rng::VirtioRngHandle.into_resource();
         if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_rng_bus.clone(), resource, &mut pcie_devices);
         }
@@ -2233,10 +2208,10 @@ async fn vm_config_from_command_line(
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
         if let Some(pcie_port) = &opt.virtio_console_pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2286,10 +2261,10 @@ async fn vm_config_from_command_line(
             .into_resource(),
         };
         if let Some(pcie_port) = &vhost_cli.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2336,10 +2311,6 @@ async fn vm_config_from_command_line(
         pcie_devices,
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
-        #[cfg(target_os = "linux")]
-        direct_iommus,
-        #[cfg(target_os = "linux")]
-        direct_assigned_devices,
         pcie_switches,
         pcie_generic_initiators,
         vpci_devices,
@@ -2474,9 +2445,9 @@ async fn vm_config_from_command_line(
     let mut pcie_port_names = HashSet::new();
     for device in &cfg.pcie_devices {
         anyhow::ensure!(
-            pcie_port_names.insert(&device.port_name),
+            pcie_port_names.insert(device.port_name()),
             "multiple devices use PCIe port '{}'",
-            device.port_name
+            device.port_name()
         );
     }
     resources.serial_driver = Some(serial_driver);
@@ -2519,7 +2490,7 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
     let only_virtio_pcie_devices = cfg
         .pcie_devices
         .iter()
-        .all(|device| device.resource.id() == "virtio");
+        .all(|device| device.resource_id() == "virtio");
     if !cfg.floppy_disks.is_empty()
         || !cfg.ide_disks.is_empty()
         || !cfg.virtio_devices.is_empty()
@@ -4122,7 +4093,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(config.pcie_devices.len(), 1);
-            assert_eq!(config.pcie_devices[0].port_name, "custom");
+            assert_eq!(config.pcie_devices[0].port_name(), "custom");
             mesh.shutdown().await;
         });
     }
@@ -4161,7 +4132,7 @@ mod tests {
             let port_names: Vec<_> = config
                 .pcie_devices
                 .iter()
-                .map(|device| device.port_name.as_str())
+                .map(PcieDeviceConfig::port_name)
                 .collect();
             assert_eq!(port_names, ["fs", "rng"]);
             mesh.shutdown().await;
