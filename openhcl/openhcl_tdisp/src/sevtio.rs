@@ -20,53 +20,6 @@ use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 use x86defs::snp::SevRmpAdjust;
 
-/// Records the PFNs marked immutable so they can be undone in a failure.
-struct ImmutablePfnGuard<'a> {
-    mshv: &'a MshvHvcall,
-    pfns: Vec<u64>,
-    armed: bool,
-}
-
-impl<'a> ImmutablePfnGuard<'a> {
-    fn new(mshv: &'a MshvHvcall, pfns: Vec<u64>) -> Self {
-        Self {
-            mshv,
-            pfns,
-            armed: true,
-        }
-    }
-
-    /// Cancel the rollback after immutability has been cleared normally.
-    fn disarm(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ImmutablePfnGuard<'_> {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-
-        tracing::warn!(
-            page_count = self.pfns.len(),
-            "rolling back immutable bit on PFNs after failed MMIO block/unblock"
-        );
-
-        if let Err((e, processed)) = self.mshv.modify_gpa_visibility_and_immutability(
-            HostVisibilityType::PRIVATE,
-            false,
-            &self.pfns,
-        ) {
-            // Leaving pages stuck immutable is unrecoverable.
-            panic!(
-                "failed to roll back immutable bit on {} PFNs ({processed} cleared before failure): {e:?}",
-                self.pfns.len()
-            );
-        }
-    }
-}
-
 /// AMD SEV-TIO implementation of [`TdispResourceValidationInterface`].
 ///
 /// Communicates with the SEV firmware via `/dev/sev-guest` to manage TDISP
@@ -122,21 +75,21 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // SEV-TIO has nothing to do before the bind.
-        tracing::info!(?target_vtl, device_id, "SEV-TIO on_pre_bind: no-op");
+        tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_pre_bind: no-op");
         Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // See `on_pre_bind`.
-        tracing::info!(?target_vtl, device_id, "SEV-TIO on_pre_start: no-op");
+        tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_pre_start: no-op");
         Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // See `on_pre_bind`.
-        tracing::info!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
+        tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
         Ok(())
     }
 
@@ -148,7 +101,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     ) -> anyhow::Result<Option<TdispTdiState>> {
         // TDISP TODO: SEV module does not properly support this functionality
         // yet. Pending support from the SEV firmware developers.
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             ?target_vtl,
             device_id,
             "SEV-TIO get_tsm_tdi_state: not implemented"
@@ -160,13 +113,13 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
         // SEV-TIO addresses MMIO ranges by range id, so it has no use for this
         // report.
-        tracing::info!(device_id, "SEV-TIO tdisp_set_tdi_report: no-op");
+        tracelimit::info_ratelimited!(device_id, "SEV-TIO tdisp_set_tdi_report: no-op");
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
         // See `tdisp_set_tdi_report`.
-        tracing::info!(device_id, "SEV-TIO tdisp_clear_tdi_report: no-op");
+        tracelimit::info_ratelimited!(device_id, "SEV-TIO tdisp_clear_tdi_report: no-op");
     }
 
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
@@ -196,7 +149,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             // Build the full list of PFNs covered by the MMIO range.
             let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 base_gpa = format_args!("{:#x}", base_gpa),
                 length_in_bytes,
                 page_count = pfns.len(),
@@ -216,7 +169,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             let validate = true;
             let force_validate = false;
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 %guest_device_id,
                 %subrange_base,
                 %subrange_page_count,
@@ -234,18 +187,21 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 true,
                 &pfns,
             ) {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracelimit::info_ratelimited!(
                     page_count = pfns.len(),
                     "successfully modified GPA page visibility to private + immutable for MMIO unblock"
                 ),
-                Err(e) => {
-                    tracing::error!(?e, "failed to modify GPA page visibility for MMIO unblock");
-                    anyhow::bail!("failed to modify GPA page visibility for MMIO unblock: {e:?}");
+                Err((e, processed)) => {
+                    // A partial failure leaves some pages private and immutable
+                    // with nothing recording which ones, so there is no state
+                    // left that the guest can safely run against.
+                    panic!(
+                        "failed to modify GPA page visibility for MMIO unblock, \
+                         {processed} of {} pages left private and immutable: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
-
-            // The pages are now immutable, be prepared on failure to clear the immutable bit.
-            let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
 
             // Initiate the guest request to mark the MMIO range as validated.
             // The firmware will verify all paging assignments from the host to
@@ -261,20 +217,27 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 force_validate,
             ) {
                 Ok(psp_response) => match psp_response.status {
-                    0 => tracing::info!("SEV-TIO MMIO validate request completed successfully"),
+                    0 => tracelimit::info_ratelimited!(
+                        "SEV-TIO MMIO validate request completed successfully"
+                    ),
                     _ => {
                         tracing::error!(
                             psp_status = psp_response.status,
                             "SEV firmware returned error status for MMIO validate request"
                         );
-                        anyhow::bail!(
-                            "SEV firmware returned error status for MMIO validate request: {psp_response:?}"
+                        panic!(
+                            "SEV firmware returned error status for MMIO validate request, \
+                             {} pages left immutable: {psp_response:?}",
+                            pfns.len()
                         );
                     }
                 },
                 Err(e) => {
                     tracing::error!(?e, "failed to send SEV-TIO MMIO validate request");
-                    anyhow::bail!("failed to send SEV-TIO MMIO validate request: {e:?}");
+                    panic!(
+                        "failed to send SEV-TIO MMIO validate request, {} pages left immutable: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
@@ -284,7 +247,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 false,
                 &pfns,
             ) {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracelimit::info_ratelimited!(
                     page_count = pfns.len(),
                     "successfully modified GPA page immutable=false after PSP call for MMIO unblock"
                 ),
@@ -293,16 +256,13 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                         ?e,
                         "failed to modify GPA page immutability=false for MMIO unblock"
                     );
-                    anyhow::bail!(
-                        "failed to modify GPA page immutability=false for MMIO unblock: {e:?}"
+                    panic!(
+                        "failed to clear GPA page immutability for MMIO unblock, {} pages \
+                         left immutable with the range already validated: {e:?}",
+                        pfns.len()
                     );
                 }
             }
-
-            // Disarm the immutable guard as the pages are now successfully
-            // validated. Range is now validated=true and immutable=false state
-            // in the RMP. We are free to RMPADJUST now.
-            immutable_guard.disarm();
 
             // RMPADJUST the page to be read/write to VTL0 so the guest can access them.
             match mshv_vtl.rmpadjust_pages(
@@ -314,10 +274,16 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                     .with_vmsa(false),
                 false,
             ) {
-                Ok(_) => tracing::info!("successfully rmpadjusted pages for MMIO unblock"),
+                Ok(_) => {
+                    tracelimit::info_ratelimited!("successfully rmpadjusted pages for MMIO unblock")
+                }
                 Err(e) => {
                     tracing::error!(?e, "failed to rmpadjust pages for MMIO unblock");
-                    anyhow::bail!("failed to rmpadjust pages for MMIO unblock: {e:?}");
+                    panic!(
+                        "failed to rmpadjust pages for MMIO unblock, {} pages left private \
+                         with the range already validated: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
@@ -353,11 +319,11 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             .sev_guest
             .tio_msg_sdte_write_req(device_id, true, vtom, Self::vtl_to_vmpl(target_vtl))
             .context("failed to send SDTE write request")?;
-        tracing::info!(response = ?accept_dma, "SDTE write request response");
+        tracelimit::info_ratelimited!(response = ?accept_dma, "SDTE write request response");
 
         match accept_dma.status {
             0 => {
-                tracing::info!("SEV-TIO DMA unblock request completed successfully");
+                tracelimit::info_ratelimited!("SEV-TIO DMA unblock request completed successfully");
             }
             _ => {
                 tracing::error!(
@@ -397,30 +363,34 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
             let mshv = Self::open_mshv_hvcall()?;
 
+            // Convert the page count before touching page state, so an
+            // unrepresentable range is rejected while it is still recoverable.
+            let subrange_base = base_gpa;
+            let subrange_page_count =
+                u32::try_from(length_in_pages).context("MMIO range is more than u32::MAX pages")?;
+
             // Modify the pages to private and immutable before de-validation.
             match mshv.modify_gpa_visibility_and_immutability(
                 HostVisibilityType::PRIVATE,
                 true,
                 &pfns,
             ) {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracelimit::info_ratelimited!(
                     page_count = pfns.len(),
                     "successfully modified GPA page visibility to private + immutable for MMIO block"
                 ),
-                Err(e) => {
-                    tracing::error!(?e, "failed to modify GPA page visibility for MMIO block");
-                    anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
+                Err((e, processed)) => {
+                    // As on the unblock path, a partial failure leaves pages
+                    // immutable with nothing recording which ones.
+                    panic!(
+                        "failed to modify GPA page visibility for MMIO block, \
+                         {processed} of {} pages left immutable: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
-            // Arm a guard that will clear the immutable bit if we bail before clearing it ourselves
-            // on the success path below. The pages are now immutable.
-            let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
-
             // Invalidate the TDI's record of the MMIO range on the PSP.
-            let subrange_base = base_gpa;
-            let subrange_page_count =
-                u32::try_from(length_in_pages).context("MMIO range is more than u32::MAX pages")?;
             match self.sev_guest.tio_msg_mmio_validate_req(
                 device_id,
                 subrange_base,
@@ -431,24 +401,31 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 /* force_validate = */ false,
             ) {
                 Ok(psp_response) => match psp_response.status {
-                    0 => tracing::info!("SEV-TIO MMIO invalidate request completed successfully"),
+                    0 => tracelimit::info_ratelimited!(
+                        "SEV-TIO MMIO invalidate request completed successfully"
+                    ),
                     _ => {
                         tracing::error!(
                             psp_status = psp_response.status,
                             "SEV firmware returned error status for MMIO invalidate request"
                         );
-                        anyhow::bail!(
-                            "SEV firmware returned error status for MMIO invalidate: {psp_response:?}"
+                        panic!(
+                            "SEV firmware returned error status for MMIO invalidate, \
+                             {} pages left immutable: {psp_response:?}",
+                            pfns.len()
                         );
                     }
                 },
                 Err(e) => {
                     tracing::error!(?e, "failed to send SEV-TIO MMIO invalidate request");
-                    anyhow::bail!("failed to send SEV-TIO MMIO invalidate request: {e:?}");
+                    panic!(
+                        "failed to send SEV-TIO MMIO invalidate request, {} pages left immutable: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 base_gpa = format_args!("{:#x}", base_gpa),
                 length_in_bytes,
                 page_count = pfns.len(),
@@ -461,21 +438,21 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 false,
                 &pfns,
             ) {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracelimit::info_ratelimited!(
                     page_count = pfns.len(),
                     "successfully flipped GPA pages back to shared for MMIO block"
                 ),
-                Err(e) => {
-                    tracing::error!(?e, "failed to modify GPA page visibility for MMIO block");
-                    anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
+                Err((e, processed)) => {
+                    panic!(
+                        "failed to clear GPA page immutability for MMIO block, {processed} of \
+                         {} pages left immutable: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
-            // Success, pages are now private and no longer immutable.
-            immutable_guard.disarm();
-
             // Flip the pages back to shared / host-visible.
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 base_gpa = format_args!("{:#x}", base_gpa),
                 length_in_bytes,
                 page_count = pfns.len(),
@@ -483,13 +460,16 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             );
 
             match mshv.modify_gpa_visibility(HostVisibilityType::SHARED, &pfns) {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracelimit::info_ratelimited!(
                     page_count = pfns.len(),
                     "successfully flipped GPA pages back to shared for MMIO block"
                 ),
-                Err(e) => {
-                    tracing::error!(?e, "failed to modify GPA page visibility for MMIO block");
-                    anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
+                Err((e, processed)) => {
+                    panic!(
+                        "failed to flip GPA pages back to shared for MMIO block, {processed} of \
+                         {} pages left private: {e:?}",
+                        pfns.len()
+                    );
                 }
             }
 
@@ -504,11 +484,11 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             .sev_guest
             .tio_msg_sdte_write_req(device_id, false, 0, Self::vtl_to_vmpl(target_vtl))
             .context("failed to send SDTE block request")?;
-        tracing::info!(response = ?block_dma, "SDTE block request response");
+        tracelimit::info_ratelimited!(response = ?block_dma, "SDTE block request response");
 
         match block_dma.status {
             0 => {
-                tracing::info!("SEV-TIO DMA block request completed successfully");
+                tracelimit::info_ratelimited!("SEV-TIO DMA block request completed successfully");
                 Ok(())
             }
             _ => {

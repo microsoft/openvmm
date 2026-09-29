@@ -56,7 +56,6 @@ use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
 use hvdef::hypercall::ModifyHostVisibilityWithImmutability;
-use inspect::Inspect;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -877,7 +876,7 @@ impl MshvHvcall {
     /// allowed.
     ///
     /// Returns on error, the hypervisor error and the number of pages
-    /// processed.
+    /// processed. It is the caller's responsibility to roll this back on failure.
     ///
     /// VBS FUTURE TODO: For defense in depth it could be useful to prevent usermode from
     /// changing visibility of a VTL2 kernel page in the kernel.
@@ -929,8 +928,9 @@ impl MshvHvcall {
     /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
     /// allowed.
     ///
-    /// Returns on error, the hypervisor error and the number of pages
-    /// processed.
+    /// Returns on error, the hypervisor error and the total number of pages
+    /// processed across the whole call. It is the caller's responsibility to
+    /// roll this back on failure.
     pub fn modify_gpa_visibility_and_immutability(
         &self,
         host_visibility: HostVisibilityType,
@@ -940,6 +940,8 @@ impl MshvHvcall {
         const GPNS_PER_CALL: usize = (HV_PAGE_SIZE as usize
             - size_of::<hvdef::hypercall::ModifySparsePageVisibilityWithImmutability>())
             / size_of::<u64>();
+
+        let mut processed_total = 0;
 
         while !gpns.is_empty() {
             let n = gpns.len().min(GPNS_PER_CALL);
@@ -966,8 +968,9 @@ impl MshvHvcall {
                     assert_eq!({ result.elements_processed() }, n);
                 }
                 Err(HvError::Timeout) => {}
-                Err(e) => return Err((e, result.elements_processed())),
+                Err(e) => return Err((e, processed_total + result.elements_processed())),
             }
+            processed_total += result.elements_processed();
             gpns = &gpns[result.elements_processed()..];
         }
         Ok(())
@@ -1464,12 +1467,6 @@ impl IsolationType {
     /// Returns whether the isolation type is hardware-backed.
     pub fn is_hardware_isolated(&self) -> bool {
         matches!(self, Self::Snp | Self::Tdx | Self::Cca)
-    }
-}
-
-impl Inspect for IsolationType {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(format!("{self:?}"))
     }
 }
 

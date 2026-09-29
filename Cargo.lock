@@ -5675,6 +5675,7 @@ dependencies = [
  "sev_guest_device",
  "tdisp",
  "tdisp_proto",
+ "tracelimit",
  "tracing",
  "virt",
  "x86defs",
