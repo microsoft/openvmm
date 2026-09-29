@@ -1691,7 +1691,9 @@ impl<'p> Processor for KvmProcessor<'p> {
                     self.runner.run()
                 };
                 // KVM reports the interrupt window for the current VP state
-                // whenever KVM_RUN returns.
+                // when KVM_RUN returns, unless it fails early (e.g., because
+                // the VM is dead or the thread is being killed), which leaves
+                // the VP unusable anyway.
                 self.interrupt_window_stale = false;
 
                 let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;

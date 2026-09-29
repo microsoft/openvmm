@@ -60,7 +60,7 @@ pub(super) fn inject(
     // KVM does not wake a halted VP (or a VP in an SEV-ES AP reset hold, which
     // KVM wakes the same way) for an interrupt in this slot, so make it
     // runnable, just as taking the interrupt would. Do this after setting the
-    // interrupt: reading the state makes KVM process a latched INIT, which
+    // interrupt: reading the state makes KVM process a pending INIT, which
     // resets the VP and discards the interrupt, as INIT would.
     if matches!(
         vp.get_mp_state().map_err(KvmRunVpError::ExtintInterrupt)?,
