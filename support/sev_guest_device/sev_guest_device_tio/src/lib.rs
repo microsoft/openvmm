@@ -52,12 +52,12 @@ pub struct TioMsgTdiInfoRsp {
     pub _reserved1: u64,
 }
 
-/// Encoding of the `tdi_status` field of [`TioMsgTdiInfoRsp`]. See
-/// "SEV-TIO Firmware Interface Specification", Revision 0.91, Table 61.
+/// Encoding of the `tdi_status` field of [`TioMsgTdiInfoRsp`]. See "SEV-TIO
+/// Firmware Interface Specification", Revision 0.91, Table 61.
 ///
-/// Despite the name, this is NOT the TDISP TDI state enumeration; it is a
-/// SEV-TIO firmware status code describing the outcome of the `TDI_INFO`
-/// lookup for the given guest device id.
+/// Despite the name, this is NOT the TDISP TDI state enumeration. It is a
+/// SEV-TIO firmware status code describing the outcome of the `TDI_INFO` lookup
+/// for the given guest device id.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TioMsgTdiStatus {

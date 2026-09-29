@@ -2235,11 +2235,8 @@ pub mod hypercall {
         pub reserved: u32,
     }
 
-    /// Visibility word for the private-hypervisor
-    /// `ModifySparsePageVisibilityWithImmutability` variant used during SEV-TIO
-    /// end-to-end bring-up. Layout matches `ModifyHostVisibility` plus a single
-    /// `immutability` bit reinterpreting one of the reserved bits. Only valid
-    /// on internal Hyper-V builds.
+    /// Layout of the `ModifySparsePageVisibility` hypercall on internal Hyper-V
+    /// builds. To be removed, used for SEV-TIO bringup.
     #[bitfield(u32)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyHostVisibilityWithImmutability {
@@ -2250,10 +2247,8 @@ pub mod hypercall {
         _reserved: u32,
     }
 
-    /// Input header for the private-hypervisor variant of
-    /// `HvCallModifySparseGpaPageHostVisibility` that also carries an
-    /// immutability flag. The hypercall code is unchanged; only the header
-    /// layout differs. Only valid on internal Hyper-V builds.
+    /// Layout for the `ModifySparsePageVisibility` hypercall on internal
+    /// Hyper-V builds. To be removed, used for SEV-TIO bringup.
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifySparsePageVisibilityWithImmutability {

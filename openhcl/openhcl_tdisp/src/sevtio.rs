@@ -20,14 +20,7 @@ use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
 use x86defs::snp::SevRmpAdjust;
 
-/// Records the PFNs marked immutable by a
-/// `modify_gpa_visibility_and_immutability(.., true, ..)` call, so the
-/// immutable bit can be undone if a later step fails before it is cleared on
-/// the normal path.
-///
-/// Armed on construction (i.e. immediately after a successful mark). Call
-/// [`Self::disarm`] once immutability has been cleared on the success path so
-/// `Drop` does not attempt a second, redundant clear.
+/// Records the PFNs marked immutable so they can be undone in a failure.
 struct ImmutablePfnGuard<'a> {
     mshv: &'a MshvHvcall,
     pfns: Vec<u64>,
@@ -65,8 +58,7 @@ impl Drop for ImmutablePfnGuard<'_> {
             false,
             &self.pfns,
         ) {
-            // Leaving pages stuck immutable is unrecoverable. Matches the
-            // PagesAccessibleToLowerVtl precedent in lower_vtl_permissions_guard.
+            // Leaving pages stuck immutable is unrecoverable.
             panic!(
                 "failed to roll back immutable bit on {} PFNs ({processed} cleared before failure): {e:?}",
                 self.pfns.len()
@@ -77,9 +69,8 @@ impl Drop for ImmutablePfnGuard<'_> {
 
 /// AMD SEV-TIO implementation of [`TdispResourceValidationInterface`].
 ///
-/// After a device has been attested and placed in the Run state, this struct
-/// communicates with the SEV firmware via `/dev/sev-guest` and issues
-/// hypercalls to make device resources (MMIO, DMA) accessible to the guest.
+/// Communicates with the SEV firmware via `/dev/sev-guest` to manage TDISP
+/// device resources for SEV guests.
 pub struct TdispSevTioResourceValidator {
     sev_guest: SevGuestDevice,
     vtom: u64,
@@ -89,9 +80,8 @@ impl TdispSevTioResourceValidator {
     /// Open a handle to the `/dev/sev-guest` device required for SEV-TIO
     /// operations.
     ///
-    /// Note: the `mshv` and `mshv_vtl` handles are intentionally not cached
-    /// here; they are (re)created on each request so that the VP servicing
-    /// the request is the same VP that created the handle.
+    /// Note: the `mshv` and `mshv_vtl` handles must be recreated for each
+    /// request to ensure they are created on the correct VP.
     ///
     /// * `vtom` - The address mask with the VTOM bit set to signify where VTOM
     ///   addresses start in the CVM.
@@ -101,9 +91,7 @@ impl TdispSevTioResourceValidator {
         Ok(Self { sev_guest, vtom })
     }
 
-    /// Open a fresh `MshvHvcall` handle for a single request. The handle must
-    /// be created on the VP that will use it, so we do not cache it on the
-    /// validator.
+    /// Open `MshvHvcall` handle for a single request.
     fn open_mshv_hvcall() -> anyhow::Result<MshvHvcall> {
         let mshv = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
         mshv.set_allowed_hypercalls(&[
@@ -112,9 +100,7 @@ impl TdispSevTioResourceValidator {
         Ok(mshv)
     }
 
-    /// Open a fresh `MshvVtl` handle for a single request. The handle must be
-    /// created on the VP that will use it, so we do not cache it on the
-    /// validator.
+    /// Open `MshvVtl` handle for a single request.
     fn open_mshv_vtl() -> anyhow::Result<MshvVtl> {
         let mshv_vtl_changer = Mshv::new().context("failed to create mshv")?;
         let mshv_vtl = mshv_vtl_changer
@@ -135,8 +121,7 @@ impl TdispSevTioResourceValidator {
 impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // SEV-TIO has nothing to do before the bind; the PSP work all happens
-        // once the device is running and its resources are being unblocked.
+        // SEV-TIO has nothing to do before the bind.
         tracing::info!(?target_vtl, device_id, "SEV-TIO on_pre_bind: no-op");
         Ok(())
     }
@@ -161,10 +146,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         target_vtl: Vtl,
         device_id: u16,
     ) -> anyhow::Result<Option<TdispTdiState>> {
-        // TDISP TODO: ask the PSP for the TDI's TDISP state so it can be
-        // checked against the host's claim, as the TDX Connect validator does.
-        // Until then this reports that SEV-TIO cannot answer, which leaves
-        // callers with only the host's view.
+        // TDISP TODO: SEV module does not properly support this functionality
+        // yet. Pending support from the SEV firmware developers.
         tracing::info!(
             ?target_vtl,
             device_id,
@@ -175,8 +158,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
     #[tracing::instrument(skip(self, _report), fields(device_id))]
     fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
-        // SEV-TIO addresses MMIO ranges by range id, so it has no use for the
-        // report's list ordering.
+        // SEV-TIO addresses MMIO ranges by range id, so it has no use for this
+        // report.
         tracing::info!(device_id, "SEV-TIO tdisp_set_tdi_report: no-op");
     }
 
@@ -222,9 +205,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "about to call modify_gpa_visibility(PRIVATE + IMMUTABLE)"
             );
 
-            // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
-            // cached because the VP that created the handle must be the one using
-            // it.
             let mshv = Self::open_mshv_hvcall()?;
             let mshv_vtl = Self::open_mshv_vtl()?;
 
@@ -247,8 +227,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 "sending SEV-TIO MMIO validate request"
             );
 
-            // Modify the pages to private before validation
-            // New SEV-TIO requirement: pages must be marked immutable in addition to private
+            // Modify the pages to private before validation.
+            // SEV-TIO requires pages be marked immutable in addition to private.
             match mshv.modify_gpa_visibility_and_immutability(
                 HostVisibilityType::PRIVATE,
                 true,
@@ -264,12 +244,13 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 }
             }
 
-            // The pages are now immutable. Arm a guard that clears the immutable bit
-            // if we bail before clearing it ourselves on the success path below.
+            // The pages are now immutable, be prepared on failure to clear the immutable bit.
             let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
 
-            // Initiate the guest request to mark the MMIO range as validated. The firmware will verify all paging assignments from
-            // the host to ensure the range is properly backed by expected guest pages before marking it as validated.
+            // Initiate the guest request to mark the MMIO range as validated.
+            // The firmware will verify all paging assignments from the host to
+            // ensure the range is properly backed by expected guest pages
+            // before marking it as validated.
             match self.sev_guest.tio_msg_mmio_validate_req(
                 guest_device_id,
                 subrange_base,
@@ -318,11 +299,10 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 }
             }
 
-            // Immutability has been cleared on the success path; cancel the rollback.
+            // Disarm the immutable guard as the pages are now successfully
+            // validated. Range is now validated=true and immutable=false state
+            // in the RMP. We are free to RMPADJUST now.
             immutable_guard.disarm();
-
-            // Page is now in the validated=true and immutable=false state in the RMP. We are free to RMPADJUST
-            // now.
 
             // RMPADJUST the page to be read/write to VTL0 so the guest can access them.
             match mshv_vtl.rmpadjust_pages(
@@ -410,14 +390,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
             let length_in_pages = length_in_bytes / hvdef::HV_PAGE_SIZE;
             let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
-
-            // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
-            // cached because the VP that created the handle must be the one using
-            // it.
             let mshv = Self::open_mshv_hvcall()?;
 
-            // Modify the pages to private and immutable before un-validation
-            // New SEV-TIO requirement: pages must be marked immutable in addition to private
+            // Modify the pages to private and immutable before de-validation.
             match mshv.modify_gpa_visibility_and_immutability(
                 HostVisibilityType::PRIVATE,
                 true,
@@ -433,8 +408,8 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 }
             }
 
-            // The pages are now immutable. Arm a guard that clears the immutable bit
-            // if we bail before clearing it ourselves on the success path below.
+            // Arm a guard that will clear the immutable bit if we bail before clearing it ourselves
+            // on the success path below. The pages are now immutable.
             let immutable_guard = ImmutablePfnGuard::new(&mshv, pfns.clone());
 
             // Invalidate the TDI's record of the MMIO range on the PSP.
@@ -468,7 +443,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 }
             }
 
-            // Flip the pages back to shared / host-visible.
             tracing::info!(
                 base_gpa = format_args!("{:#x}", base_gpa),
                 length_in_bytes,
@@ -492,7 +466,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 }
             }
 
-            // Immutability has been cleared on the success path; cancel the rollback.
+            // Success, pages are now private and no longer immutable.
             immutable_guard.disarm();
 
             // Flip the pages back to shared / host-visible.

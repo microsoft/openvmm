@@ -75,9 +75,8 @@ struct SnpGuestRequestIoctl {
 #[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
 static_assertions::const_assert_eq!(32, size_of::<SnpGuestRequestIoctl>());
 
-/// Ioctl struct defined by the TIO-capable Linux sev-guest driver. Always the
-/// argument to `TIO_GUEST_REQUEST`, and with `dev_snp_tio_guest_ioctl_abi` also
-/// the argument to `SNP_GET_REPORT` and `SNP_GET_DERIVED_KEY`.
+/// Ioctl struct defined by the TIO-capable Linux sev-guest driver for
+/// `TIO_GUEST_REQUEST`
 #[repr(C)]
 struct TioGuestRequestIoctl {
     /// Message version number (must be non-zero).
@@ -128,12 +127,7 @@ struct VmmErrorCode {
     vmm_error: u32,
 }
 
-// `nix` encodes the argument struct's size into the ioctl request number, so
-// the struct these two are declared over decides the number sent to the kernel.
-// The TIO-patched sev-guest driver widens the argument from 32 to 80 bytes,
-// which moves SNP_GET_REPORT from 0xC0205300 to 0xC0505300 and
-// SNP_GET_DERIVED_KEY from 0xC0205301 to 0xC0505301. Enable
-// `dev_snp_tio_guest_ioctl_abi` only against a kernel carrying that patch.
+// Ioctl definitions for the SNP and TIO-capable sev-guest driver.
 #[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
 nix::ioctl_readwrite!(
     /// `SNP_GET_REPORT` ioctl defined by Linux.
@@ -170,9 +164,8 @@ nix::ioctl_readwrite!(
     TioGuestRequestIoctl
 );
 
-// A distinct ioctl number, so declaring it does not disturb the two above.
 nix::ioctl_readwrite!(
-    /// `TIO_GUEST_REQUEST` ioctl defined by Linux.
+    /// `TIO_GUEST_REQUEST` ioctl defined by TIO compatible Linux sev-guest driver.
     tio_guest_request,
     SNP_GUEST_REQ_IOC_TYPE,
     0x3,
