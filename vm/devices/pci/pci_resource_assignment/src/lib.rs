@@ -51,6 +51,7 @@ pub trait PciConfigAccess {
 }
 
 pub use memory_range::MemoryRange;
+use std::ops::Range;
 
 /// Parameters for PCI resource assignment on a single host bridge.
 #[derive(Debug, Clone)]
@@ -71,14 +72,14 @@ pub struct AssignmentParams {
 }
 
 /// A final BAR assignment produced by PCI resource allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignedBar {
     /// Whether this is a function BAR or reserved SR-IOV VF BAR space.
     pub kind: AssignedBarKind,
     /// BAR register index.
     pub index: u8,
     /// Assigned MMIO range.
-    pub range: MemoryRange,
+    pub range: Range<u64>,
 }
 
 /// The source of an assigned BAR range.
@@ -142,7 +143,7 @@ fn collect_assignments(devices: &[enumerate::DiscoveredDevice]) -> Vec<AssignedD
                 AssignedBar {
                     kind: AssignedBarKind::Function,
                     index: bar.index,
-                    range: MemoryRange::new(address..address + bar.size),
+                    range: address..address + bar.size,
                 }
             })
             .collect::<Vec<_>>();
@@ -156,7 +157,7 @@ fn collect_assignments(devices: &[enumerate::DiscoveredDevice]) -> Vec<AssignedD
                 AssignedBar {
                     kind: AssignedBarKind::SriovVf,
                     index: bar.index,
-                    range: MemoryRange::new(address..address + size),
+                    range: address..address + size,
                 }
             }));
         }
@@ -182,7 +183,14 @@ mod assignment_report_tests {
             device: 0,
             function: 0,
             is_bridge: false,
-            bars: vec![],
+            bars: vec![enumerate::DiscoveredBar {
+                index: 0,
+                size: 0x100,
+                is_64bit: false,
+                is_prefetchable: false,
+                address: Some(0x1000),
+                pinned_address: None,
+            }],
             children: vec![],
             secondary_bus: None,
             subordinate_bus: None,
@@ -204,11 +212,18 @@ mod assignment_report_tests {
         let assignments = collect_assignments(&devices);
         assert_eq!(
             assignments[0].bars,
-            [AssignedBar {
-                kind: AssignedBarKind::SriovVf,
-                index: 2,
-                range: MemoryRange::new(0x1_0000_0000..0x1_0080_0000),
-            }]
+            [
+                AssignedBar {
+                    kind: AssignedBarKind::Function,
+                    index: 0,
+                    range: 0x1000..0x1100,
+                },
+                AssignedBar {
+                    kind: AssignedBarKind::SriovVf,
+                    index: 2,
+                    range: 0x1_0000_0000..0x1_0080_0000,
+                }
+            ]
         );
     }
 }

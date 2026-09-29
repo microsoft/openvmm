@@ -24,6 +24,7 @@ use petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_CCA_
 use std::collections::BTreeMap;
 use std::time::Duration;
 use vfio_assigned_device_resources::BarAddressConfig;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -196,7 +197,7 @@ async fn boot_no_vmbus_pcie(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
             b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
                 c.hypervisor.with_hv = false;
                 c.pcie_devices
-                    .push(openvmm_defs::config::PcieDeviceConfig::new_vfio_cdev(
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
                         "s0rc0rp1".into(),
                         vfio_assigned_device_resources::VfioCdevDeviceHandle {
                             pci_id: vfio_bdf,
@@ -207,7 +208,8 @@ async fn boot_no_vmbus_pcie(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
                             direct_iommu: false,
                             direct_pasid: false,
                             direct_ats: false,
-                        },
+                        }
+                        .into_resource(),
                     ));
             })
         })
@@ -314,7 +316,7 @@ async fn boot_no_vmbus_pcie_smmu_accel(
                         }
                     }
                     c.pcie_devices
-                        .push(openvmm_defs::config::PcieDeviceConfig::new_vfio_cdev(
+                        .push(openvmm_defs::config::PcieDeviceConfig::new(
                             "s0rc0rp1".into(),
                             vfio_assigned_device_resources::VfioCdevDeviceHandle {
                                 pci_id: vfio_bdf,
@@ -325,7 +327,8 @@ async fn boot_no_vmbus_pcie_smmu_accel(
                                 direct_iommu: false,
                                 direct_pasid: false,
                                 direct_ats: false,
-                            },
+                            }
+                            .into_resource(),
                         ));
                 })
         })
@@ -552,7 +555,7 @@ async fn assigned_device_peer_to_peer_dma(
             b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
                 c.hypervisor.with_hv = false;
                 c.pcie_devices
-                    .push(openvmm_defs::config::PcieDeviceConfig::new_vfio_cdev(
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
                         "s0rc0rp1".into(),
                         vfio_assigned_device_resources::VfioCdevDeviceHandle {
                             pci_id: edu_bdf_for_cfg.clone(),
@@ -563,10 +566,11 @@ async fn assigned_device_peer_to_peer_dma(
                             direct_iommu: false,
                             direct_pasid: false,
                             direct_ats: false,
-                        },
+                        }
+                        .into_resource(),
                     ));
                 c.pcie_devices
-                    .push(openvmm_defs::config::PcieDeviceConfig::new_vfio_cdev(
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
                         "s0rc0rp2".into(),
                         vfio_assigned_device_resources::VfioCdevDeviceHandle {
                             pci_id: ivshmem_bdf_for_cfg.clone(),
@@ -577,7 +581,8 @@ async fn assigned_device_peer_to_peer_dma(
                             direct_iommu: false,
                             direct_pasid: false,
                             direct_ats: false,
-                        },
+                        }
+                        .into_resource(),
                     ));
             })
         })
@@ -782,7 +787,7 @@ async fn assigned_device_smmu_accel_fault(
                         }
                     }
                     c.pcie_devices
-                        .push(openvmm_defs::config::PcieDeviceConfig::new_vfio_cdev(
+                        .push(openvmm_defs::config::PcieDeviceConfig::new(
                             "s0rc0rp1".into(),
                             vfio_assigned_device_resources::VfioCdevDeviceHandle {
                                 pci_id: edu_bdf,
@@ -793,7 +798,8 @@ async fn assigned_device_smmu_accel_fault(
                                 direct_iommu: false,
                                 direct_pasid: false,
                                 direct_ats: false,
-                            },
+                            }
+                            .into_resource(),
                         ));
                 })
         })
