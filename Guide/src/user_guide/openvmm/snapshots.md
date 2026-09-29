@@ -42,6 +42,15 @@ with sandbox blocks additionally requires
 workload-start snapshots are reusable clones; instance checkpoints are
 single-use resumes.
 
+Sandbox-block capture defaults to whole-file SHA-256 identity and private
+scratch copying. Storage owners may opt into
+`--snapshot-block-identity generation --snapshot-generation-id <32-HEX-DIGITS>`
+when an authenticated immutable generation already binds the supplied files.
+This avoids capture- and restore-time block scans; it does not authenticate
+bytes by itself. `--snapshot-scratch-restore-mode` records `private-copy`,
+reflink-only `copy-on-write` for workload-start clones, or `direct-claimed`
+for instance checkpoints.
+
 ```admonish warning
 Automatically allocated microVM RAM and the snapshot destination are on the
 same filesystem so OpenVMM can promote the exact RAM file by hard link. A
@@ -231,11 +240,13 @@ from the saved topology.
 Snapshots do not contain or validate embedded checksums for
 `state.bin` or `memory.bin`. Restore still requires regular files, bounded
 manifest and state decoding, exact artifact lengths, and a compatible machine
-contract, but same-length payload changes are not detected. Paired
-`scratch.img` does have an exact length and SHA-256 identity because it must
-match captured guest filesystem state. Protect snapshot directories with host
-access controls. Integrity or authentication for export and transport must be
-supplied outside the default snapshot format.
+contract, but same-length payload changes are not detected. Paired `scratch.img` always
+has an exact length and uses either the default SHA-256 identity or an explicit
+caller-authenticated storage generation. Generation mode avoids reading the
+file solely for verification and therefore relies on the storage owner to keep
+that generation immutable and correctly bound. Protect snapshot directories
+with host access controls. Integrity or authentication for export and
+transport must be supplied outside the default snapshot format.
 ```
 
 ```admonish note
