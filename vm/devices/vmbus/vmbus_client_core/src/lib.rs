@@ -492,6 +492,7 @@ pub enum Event<'a> {
     /// Restore an [`Opened`](ChannelPhase::Opened) channel from
     /// saved state (no wire message; only updates local state).
     RestoreChannel {
+        request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         params: RestoreChannelParams,
     },
@@ -575,9 +576,9 @@ pub enum CompletionResult {
     /// Result of [`Event::HvsockConnect`]. `None` means the host
     /// refused the connection.
     HvsockConnect(Option<OfferDescriptor>),
-    /// Result of [`Event::OpenChannel`].
-    OpenChannel(Result<u32, i32>),
-    /// Result of [`Event::ModifyChannel`].
+    /// Result of [`Event::OpenChannel`] or [`Event::RestoreChannel`].
+    OpenChannel(Result<OpenChannelSuccess, OpenChannelError>),
+    /// Result of [`Event::ModifyChannel`]. Host-returned NT status.
     ModifyChannel(i32),
     /// Result of [`Event::EstablishGpadl`].
     EstablishGpadl(Result<(), ()>),
@@ -585,6 +586,38 @@ pub enum CompletionResult {
     TeardownGpadl,
     /// Result of [`Event::ReleaseChannel`].
     ReleaseChannel,
+}
+
+/// Successful [`Event::OpenChannel`] or [`Event::RestoreChannel`]
+/// result: mirrors `vmbus_client::OpenOutput`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct OpenChannelSuccess {
+    /// The wrapper-allocated redirected-event flag, if the caller
+    /// requested one on the open.
+    pub redirected_event_flag: Option<u16>,
+}
+
+/// Reasons an [`Event::OpenChannel`] or [`Event::RestoreChannel`]
+/// can fail.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum OpenChannelError {
+    /// The channel is not currently in a state that allows opening
+    /// (e.g., already Opened, or in Opening / Restored waiting for
+    /// another event).
+    #[error("invalid channel state for open")]
+    InvalidState,
+    /// The channel was revoked by the host before the open completed.
+    #[error("channel was revoked by the host")]
+    Revoked,
+    /// The negotiated protocol version does not support the requested
+    /// interrupt-redirection or VTL2 connection-id feature.
+    #[error("negotiated protocol version does not support the requested interrupt feature")]
+    UnsupportedInterruptFeature,
+    /// The host completed `Message::OpenResult` with a non-success
+    /// NT status.
+    #[error("host reported open-channel status {0:#x}")]
+    HostFailed(i32),
 }
 
 /// Successful [`Event::Connect`] result — the negotiated
@@ -810,6 +843,20 @@ impl ClientCore {
         self.running
     }
 
+    /// Allocate a redirected-event flag from the internal pool.
+    ///
+    /// The wrapper calls this before firing [`Event::OpenChannel`]
+    /// (with `redirected_event_flag = Some(flag)`) or
+    /// [`Event::RestoreChannel`], and is responsible for registering
+    /// its `pal_event::Event` under the returned flag in its own
+    /// map. On close, rescind, or failed open, the core emits
+    /// [`Action::FreeEventFlag`] after returning the flag to this
+    /// pool — the wrapper only needs to drop its
+    /// `pal_event::Event` mapping.
+    pub fn allocate_event_flag(&mut self) -> Result<u16, FlagAllocError> {
+        self.flag_allocator.allocate()
+    }
+
     /// Feed one input event to the state machine. All resulting
     /// [`Action`]s are emitted through `sink` in order.
     ///
@@ -855,6 +902,33 @@ impl ClientCore {
             Event::RequestOffers { request_id } => {
                 self.handle_request_offers(request_id, sink);
             }
+            Event::OpenChannel {
+                request_id,
+                channel_id,
+                open,
+            } => {
+                self.handle_open_channel(request_id, channel_id, open, sink);
+            }
+            Event::RestoreChannel {
+                request_id,
+                channel_id,
+                params,
+            } => {
+                self.handle_restore_channel(request_id, channel_id, params, sink);
+            }
+            Event::CloseChannel { channel_id } => {
+                self.handle_close_channel(channel_id, sink);
+            }
+            Event::ModifyChannel {
+                request_id,
+                channel_id,
+                request,
+            } => {
+                self.handle_modify_channel(request_id, channel_id, request, sink);
+            }
+            Event::ReleaseChannel { channel_id } => {
+                self.handle_release_channel(channel_id, sink);
+            }
             // Pause/Resume are wire-only in the V5+ pause-resume
             // protocol; the wrapper generates them by posting the
             // corresponding messages directly. They arrive here as
@@ -867,17 +941,12 @@ impl ClientCore {
             Event::Resume => {
                 // Placeholder — phase 4b-v.
             }
-            // Caller-initiated requests, offer channel operations, and
-            // gpadl operations land in phase 4b-iii..v. Recorded here
-            // as unimplemented to keep the match exhaustive.
+            // Caller-initiated requests and gpadl operations land in
+            // phase 4b-iv and 4b-v. Recorded here as unimplemented to
+            // keep the match exhaustive.
             Event::Unload { .. }
             | Event::ModifyConnection { .. }
             | Event::HvsockConnect { .. }
-            | Event::OpenChannel { .. }
-            | Event::RestoreChannel { .. }
-            | Event::CloseChannel { .. }
-            | Event::ModifyChannel { .. }
-            | Event::ReleaseChannel { .. }
             | Event::EstablishGpadl { .. }
             | Event::TeardownGpadl { .. } => {
                 // Not yet implemented in this phase. See doc comment
@@ -921,9 +990,15 @@ impl ClientCore {
             Message::RescindChannelOffer(rescind, ..) => {
                 self.handle_rescind(rescind, sink);
             }
-            // Phase 4b-iii-b and later add per-channel / gpadl /
-            // hvsock / modify / unload handlers. Silently ignore any
-            // stale-phase deliveries in the meantime.
+            Message::OpenResult(result, ..) => {
+                self.handle_open_result(result, sink);
+            }
+            Message::ModifyChannelResponse(response, ..) => {
+                self.handle_modify_channel_response(response, sink);
+            }
+            // Phase 4b-iv and later add gpadl / hvsock / modify /
+            // unload handlers. Silently ignore any stale-phase
+            // deliveries in the meantime.
             _ => {}
         }
     }
@@ -1200,19 +1275,459 @@ impl ClientCore {
         rescind: vmbus_core::protocol::RescindChannelOffer,
         sink: &mut dyn ActionSink,
     ) {
-        let Some(entry) = self.channels.get_mut(&rescind.channel_id) else {
+        let channel_id = rescind.channel_id;
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
             // Rescind for an unknown channel: host protocol
             // violation. Drop.
             return;
         };
-        // Preserve any pending event flag so 4b-iii-b can free it
-        // once caller-side open flows land — for now only Opened /
-        // Opening carry one.
-        entry.phase = ChannelPhase::Revoked;
+        // Cancel any state that was mid-flight, then transition to
+        // Revoked. The old phase drives what cleanup we need to emit.
+        let old_phase = core::mem::replace(&mut entry.phase, ChannelPhase::Revoked);
         entry.connection_id = 0;
-        sink.emit(Action::OfferRescinded {
-            channel_id: rescind.channel_id,
+        // Also drop any pending ModifyChannel — the channel is gone,
+        // no response will arrive.
+        let modify_request_id = entry.modify_request_id.take();
+        match old_phase {
+            ChannelPhase::Offered | ChannelPhase::Restored | ChannelPhase::Revoked => {}
+            ChannelPhase::Opening {
+                request_id,
+                redirected_event_flag,
+            } => {
+                self.outstanding.remove(&request_id);
+                if let Some(flag) = redirected_event_flag {
+                    self.free_event_flag_and_notify(flag, sink);
+                }
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::OpenChannel(Err(OpenChannelError::Revoked)),
+                });
+            }
+            ChannelPhase::Opened {
+                redirected_event_flag,
+            } => {
+                if let Some(flag) = redirected_event_flag {
+                    self.free_event_flag_and_notify(flag, sink);
+                }
+            }
+        }
+        if let Some(request_id) = modify_request_id {
+            self.outstanding.remove(&request_id);
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyChannel(-1),
+            });
+        }
+        sink.emit(Action::OfferRescinded { channel_id });
+        self.try_release_channel(channel_id, sink);
+    }
+
+    /// Handle [`Event::OpenChannel`] — validate channel state,
+    /// verify feature-flag support for redirection / VTL2 conn id,
+    /// post `OpenChannel` or `OpenChannel2`, transition to
+    /// [`ChannelPhase::Opening`]. On failure the caller-supplied
+    /// (pre-allocated) `redirected_event_flag` is freed via
+    /// [`Action::FreeEventFlag`].
+    fn handle_open_channel(
+        &mut self,
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        params: OpenChannelParams,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get(&channel_id) else {
+            self.reject_open(
+                request_id,
+                params.redirected_event_flag,
+                OpenChannelError::InvalidState,
+                sink,
+            );
+            return;
+        };
+        match entry.phase {
+            ChannelPhase::Offered => {}
+            ChannelPhase::Revoked => {
+                self.reject_open(
+                    request_id,
+                    params.redirected_event_flag,
+                    OpenChannelError::Revoked,
+                    sink,
+                );
+                return;
+            }
+            _ => {
+                self.reject_open(
+                    request_id,
+                    params.redirected_event_flag,
+                    OpenChannelError::InvalidState,
+                    sink,
+                );
+                return;
+            }
+        }
+        let Some(version) = self.phase.version() else {
+            self.reject_open(
+                request_id,
+                params.redirected_event_flag,
+                OpenChannelError::InvalidState,
+                sink,
+            );
+            return;
+        };
+        let supports_redirection = version.feature_flags.guest_specified_signal_parameters()
+            || version.feature_flags.channel_interrupt_redirection();
+        if params.redirected_event_flag.is_some() && !supports_redirection {
+            self.reject_open(
+                request_id,
+                params.redirected_event_flag,
+                OpenChannelError::UnsupportedInterruptFeature,
+                sink,
+            );
+            return;
+        }
+        // For non-redirection-capable hosts, the wire-level event
+        // flag must equal channel_id (see vmbus_client). Otherwise
+        // the caller's requested flag can't be honoured.
+        if !supports_redirection && params.event_flag != channel_id.0 as u16 {
+            self.reject_open(
+                request_id,
+                params.redirected_event_flag,
+                OpenChannelError::UnsupportedInterruptFeature,
+                sink,
+            );
+            return;
+        }
+
+        let open_channel = vmbus_core::protocol::OpenChannel {
+            channel_id,
+            open_id: 0,
+            ring_buffer_gpadl_id: params.ring_gpadl_id,
+            target_vp: params
+                .target_vp
+                .unwrap_or(vmbus_core::protocol::VP_INDEX_DISABLE_INTERRUPT),
+            downstream_ring_buffer_page_offset: params.ring_offset,
+            user_data: params.user_data,
+        };
+        let mut flags = vmbus_core::protocol::OpenChannelFlags::new();
+        if params.redirected_event_flag.is_some() {
+            flags.set_redirect_interrupt(true);
+        }
+        let event_flag = params.redirected_event_flag.unwrap_or(params.event_flag);
+        if supports_redirection {
+            self.post_message(
+                &vmbus_core::protocol::OpenChannel2 {
+                    open_channel,
+                    connection_id: params.connection_id,
+                    event_flag,
+                    flags,
+                },
+                sink,
+            );
+        } else {
+            self.post_message(&open_channel, sink);
+        }
+
+        let entry = self.channels.get_mut(&channel_id).expect("validated above");
+        entry.connection_id = params.connection_id;
+        entry.phase = ChannelPhase::Opening {
+            request_id,
+            redirected_event_flag: params.redirected_event_flag,
+        };
+        self.outstanding
+            .insert(request_id, PendingRequest::OpenChannel { channel_id });
+    }
+
+    /// Complete a pending [`Event::OpenChannel`] with an error and
+    /// free any caller-supplied event flag.
+    fn reject_open(
+        &mut self,
+        request_id: RequestId,
+        redirected_event_flag: Option<u16>,
+        error: OpenChannelError,
+        sink: &mut dyn ActionSink,
+    ) {
+        if let Some(flag) = redirected_event_flag {
+            self.free_event_flag_and_notify(flag, sink);
+        }
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::OpenChannel(Err(error)),
         });
+    }
+
+    /// Handle host-originated `OpenResult` — complete the outstanding
+    /// [`Event::OpenChannel`] with success or failure, and emit the
+    /// per-channel observables for the wrapper's Arc<AtomicU32>
+    /// tracking.
+    fn handle_open_result(
+        &mut self,
+        result: vmbus_core::protocol::OpenResult,
+        sink: &mut dyn ActionSink,
+    ) {
+        let channel_id = result.channel_id;
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
+            return;
+        };
+        let old_phase = core::mem::replace(&mut entry.phase, ChannelPhase::Offered);
+        let ChannelPhase::Opening {
+            request_id,
+            redirected_event_flag,
+        } = old_phase
+        else {
+            // Stale response — restore and drop.
+            entry.phase = old_phase;
+            return;
+        };
+        self.outstanding.remove(&request_id);
+        let succeeded = result.status == vmbus_core::protocol::STATUS_SUCCESS as u32;
+        if !succeeded {
+            let entry = self.channels.get_mut(&channel_id).expect("validated above");
+            entry.connection_id = 0;
+            if let Some(flag) = redirected_event_flag {
+                self.free_event_flag_and_notify(flag, sink);
+            }
+            sink.emit(Action::ChannelObservable {
+                channel_id,
+                event: ChannelObservable::ConnectionIdCleared,
+            });
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::HostFailed(
+                    result.status as i32,
+                ))),
+            });
+            return;
+        }
+        // Success — transition to Opened.
+        let entry = self.channels.get_mut(&channel_id).expect("validated above");
+        entry.phase = ChannelPhase::Opened {
+            redirected_event_flag,
+        };
+        let connection_id = entry.connection_id;
+        sink.emit(Action::ChannelObservable {
+            channel_id,
+            event: ChannelObservable::ConnectionIdAssigned(connection_id),
+        });
+        sink.emit(Action::ChannelObservable {
+            channel_id,
+            event: ChannelObservable::Opened,
+        });
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::OpenChannel(Ok(OpenChannelSuccess {
+                redirected_event_flag,
+            })),
+        });
+    }
+
+    /// Handle [`Event::RestoreChannel`] — validate that the channel
+    /// was created in [`ChannelPhase::Restored`], apply the persisted
+    /// event flag / connection id, transition to
+    /// [`ChannelPhase::Opened`]. Emits its completion synchronously
+    /// (no wire message).
+    fn handle_restore_channel(
+        &mut self,
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        params: RestoreChannelParams,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
+            });
+            return;
+        };
+        if !matches!(entry.phase, ChannelPhase::Restored) {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
+            });
+            return;
+        }
+        entry.connection_id = params.connection_id;
+        entry.phase = ChannelPhase::Opened {
+            redirected_event_flag: params.redirected_event_flag,
+        };
+        sink.emit(Action::ChannelObservable {
+            channel_id,
+            event: ChannelObservable::ConnectionIdAssigned(params.connection_id),
+        });
+        sink.emit(Action::ChannelObservable {
+            channel_id,
+            event: ChannelObservable::Opened,
+        });
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::OpenChannel(Ok(OpenChannelSuccess {
+                redirected_event_flag: params.redirected_event_flag,
+            })),
+        });
+    }
+
+    /// Handle [`Event::CloseChannel`] — fire-and-forget from the
+    /// caller. Transitions [`ChannelPhase::Opened`] back to
+    /// [`ChannelPhase::Offered`], frees any redirected event flag,
+    /// and posts `CloseChannel`. No-op if the channel is already
+    /// [`ChannelPhase::Revoked`] (host has already dropped it).
+    fn handle_close_channel(
+        &mut self,
+        channel_id: vmbus_core::protocol::ChannelId,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
+            return;
+        };
+        match entry.phase {
+            ChannelPhase::Opened {
+                redirected_event_flag,
+            } => {
+                if let Some(flag) = redirected_event_flag {
+                    self.free_event_flag_and_notify(flag, sink);
+                }
+                let entry = self.channels.get_mut(&channel_id).expect("validated above");
+                entry.phase = ChannelPhase::Offered;
+                entry.connection_id = 0;
+                self.post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
+                sink.emit(Action::ChannelObservable {
+                    channel_id,
+                    event: ChannelObservable::ConnectionIdCleared,
+                });
+                sink.emit(Action::ChannelObservable {
+                    channel_id,
+                    event: ChannelObservable::Closed,
+                });
+            }
+            ChannelPhase::Revoked => {
+                // Host already dropped; no wire message needed.
+            }
+            _ => {
+                // Invalid phase — drop silently. The wrapper should
+                // gate close on Opened state; a warning here would
+                // fire on legitimate revoked-races.
+            }
+        }
+    }
+
+    /// Handle [`Event::ModifyChannel`] — post a `ModifyChannel` wire
+    /// message and stash the request id. Duplicates on the same
+    /// channel are rejected with a synthetic non-zero status.
+    fn handle_modify_channel(
+        &mut self,
+        request_id: RequestId,
+        channel_id: vmbus_core::protocol::ChannelId,
+        request: ModifyRequest,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyChannel(-1),
+            });
+            return;
+        };
+        if entry.modify_request_id.is_some() {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyChannel(-1),
+            });
+            return;
+        }
+        entry.modify_request_id = Some(request_id);
+        self.outstanding
+            .insert(request_id, PendingRequest::ModifyChannel { channel_id });
+        match request {
+            ModifyRequest::TargetVp { target_vp } => {
+                self.post_message(
+                    &vmbus_core::protocol::ModifyChannel {
+                        channel_id,
+                        target_vp,
+                    },
+                    sink,
+                );
+            }
+        }
+    }
+
+    /// Handle host-originated `ModifyChannelResponse` — complete the
+    /// outstanding [`Event::ModifyChannel`] for this channel.
+    fn handle_modify_channel_response(
+        &mut self,
+        response: vmbus_core::protocol::ModifyChannelResponse,
+        sink: &mut dyn ActionSink,
+    ) {
+        let channel_id = response.channel_id;
+        let Some(entry) = self.channels.get_mut(&channel_id) else {
+            return;
+        };
+        let Some(request_id) = entry.modify_request_id.take() else {
+            return;
+        };
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::ModifyChannel(response.status),
+        });
+        self.try_release_channel(channel_id, sink);
+    }
+
+    /// Handle [`Event::ReleaseChannel`] — mark the channel
+    /// as caller-released. If it's already `Revoked` with no
+    /// outstanding requests, [`Self::try_release_channel`] will
+    /// post `RelIdReleased` and drop the entry.
+    fn handle_release_channel(
+        &mut self,
+        channel_id: vmbus_core::protocol::ChannelId,
+        sink: &mut dyn ActionSink,
+    ) {
+        // If the caller drops a still-Opened channel, close it
+        // implicitly (matches vmbus_client's handle_device_removal).
+        if let Some(entry) = self.channels.get(&channel_id) {
+            if matches!(entry.phase, ChannelPhase::Opened { .. }) {
+                self.handle_close_channel(channel_id, sink);
+            }
+        }
+        if let Some(entry) = self.channels.get_mut(&channel_id) {
+            entry.is_client_released = true;
+        }
+        self.try_release_channel(channel_id, sink);
+    }
+
+    /// If the channel is caller-released, host-revoked, and has no
+    /// outstanding requests, post `RelIdReleased` and drop the entry.
+    /// Matches `vmbus_client`'s `Channel::try_release` semantics.
+    fn try_release_channel(
+        &mut self,
+        channel_id: vmbus_core::protocol::ChannelId,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get(&channel_id) else {
+            return;
+        };
+        let is_revoked = matches!(entry.phase, ChannelPhase::Revoked);
+        let has_pending = entry.modify_request_id.is_some()
+            || entry
+                .gpadls
+                .values()
+                .any(|g| !matches!(g, GpadlPhase::Created));
+        if entry.is_client_released && is_revoked && !has_pending {
+            self.post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
+            self.channels.remove(&channel_id);
+        }
+    }
+
+    /// Return the given event flag to the internal pool and notify
+    /// the wrapper via [`Action::FreeEventFlag`] so it can drop its
+    /// `pal_event::Event` mapping.
+    ///
+    /// The internal `FlagAllocator::free` asserts on double-free —
+    /// callers are expected to have obtained `flag` from a paired
+    /// [`Self::allocate_event_flag`] call and never emit
+    /// `FreeEventFlag` twice for the same flag.
+    fn free_event_flag_and_notify(&mut self, flag: u16, sink: &mut dyn ActionSink) {
+        self.flag_allocator.free(flag);
+        sink.emit(Action::FreeEventFlag(flag));
     }
 }
 
@@ -1844,5 +2359,576 @@ mod step_tests {
         });
         core.step(Event::HostMessage(&rescind_wire), &mut sink);
         assert!(sink.actions.is_empty());
+    }
+
+    // -- Phase 4b-iii-b: channel lifecycle --------------------------
+
+    /// Config whose negotiated feature set enables both the flags
+    /// vmbus_client checks for redirection support. Used for the
+    /// per-channel open/close/modify tests.
+    fn make_redirect_config() -> Config {
+        Config {
+            sint: vmbus_core::VMBUS_SINT,
+            vtl: 0,
+            supported_versions: &[Version::Copper],
+            supported_feature_flags: FeatureFlags::new()
+                .with_guest_specified_signal_parameters(true)
+                .with_channel_interrupt_redirection(true),
+        }
+    }
+
+    fn connect_with_flags(core: &mut ClientCore, sink: &mut Recording, offered: FeatureFlags) {
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            sink,
+        );
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 1,
+            },
+            supported_features: offered.into(),
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), sink);
+        sink.actions.clear();
+        assert!(matches!(core.phase(), ClientPhase::Connected { .. }));
+    }
+
+    /// Send RequestOffers, deliver one offer for `channel_id`, then
+    /// AllOffersDelivered so the core returns to Connected.
+    fn deliver_one_offer(core: &mut ClientCore, sink: &mut Recording, channel_id: u32) {
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(90 + channel_id as u64),
+            },
+            sink,
+        );
+        let offer_wire = make_host_message(&make_offer(channel_id));
+        core.step(Event::HostMessage(&offer_wire), sink);
+        let all_wire = make_host_message(&vmbus_core::protocol::AllOffersDelivered {});
+        core.step(Event::HostMessage(&all_wire), sink);
+        sink.actions.clear();
+    }
+
+    fn open_params_basic(channel_id: u32) -> OpenChannelParams {
+        OpenChannelParams {
+            target_vp: None,
+            ring_offset: 0,
+            ring_gpadl_id: vmbus_core::protocol::GpadlId(channel_id + 1),
+            event_flag: channel_id as u16,
+            connection_id: channel_id,
+            redirected_event_flag: None,
+            user_data: vmbus_core::protocol::UserDefinedData::default(),
+        }
+    }
+
+    #[test]
+    fn open_channel_from_offered_posts_wire_and_transitions_opening() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 5);
+
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(100),
+                channel_id: vmbus_core::protocol::ChannelId(5),
+                open: open_params_basic(5),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        let entry = &core.channels()[&vmbus_core::protocol::ChannelId(5)];
+        assert!(matches!(
+            entry.phase,
+            ChannelPhase::Opening {
+                request_id: RequestId(100),
+                redirected_event_flag: None,
+            }
+        ));
+        assert_eq!(entry.connection_id, 5);
+    }
+
+    #[test]
+    fn open_channel_on_unknown_channel_fails() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(101),
+                channel_id: vmbus_core::protocol::ChannelId(42),
+                open: open_params_basic(42),
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(101),
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
+            }
+        ));
+    }
+
+    #[test]
+    fn open_channel_on_revoked_channel_fails_with_revoked_error() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 5);
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(5),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        sink.actions.clear();
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(103),
+                channel_id: vmbus_core::protocol::ChannelId(5),
+                open: open_params_basic(5),
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(103),
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::Revoked)),
+            }
+        ));
+    }
+
+    #[test]
+    fn open_with_redirection_but_no_flag_support_fails_and_frees_flag() {
+        // Config accepts no redirection flags. But caller has
+        // pre-allocated a redirected_event_flag — the request must
+        // fail and the flag must come back through Action::FreeEventFlag.
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_with_flags(&mut core, &mut sink, FeatureFlags::new());
+        deliver_one_offer(&mut core, &mut sink, 6);
+        let flag = core.allocate_event_flag().unwrap();
+        let mut params = open_params_basic(6);
+        params.redirected_event_flag = Some(flag);
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(104),
+                channel_id: vmbus_core::protocol::ChannelId(6),
+                open: params,
+            },
+            &mut sink,
+        );
+        // Expect FreeEventFlag then Complete(Err).
+        assert!(matches!(sink.actions[0], Action::FreeEventFlag(f) if f == flag));
+        assert!(matches!(
+            &sink.actions[1],
+            Action::Complete {
+                request_id: RequestId(104),
+                result: CompletionResult::OpenChannel(Err(
+                    OpenChannelError::UnsupportedInterruptFeature,
+                )),
+            }
+        ));
+    }
+
+    #[test]
+    fn open_result_success_transitions_opened_and_completes() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 7);
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(200),
+                channel_id: vmbus_core::protocol::ChannelId(7),
+                open: open_params_basic(7),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let result = vmbus_core::protocol::OpenResult {
+            channel_id: vmbus_core::protocol::ChannelId(7),
+            open_id: 0,
+            status: vmbus_core::protocol::STATUS_SUCCESS as u32,
+        };
+        let wire = make_host_message(&result);
+        core.step(Event::HostMessage(&wire), &mut sink);
+
+        // Expected: ConnectionIdAssigned, Opened, Complete Ok.
+        assert_eq!(sink.actions.len(), 3);
+        assert!(matches!(
+            sink.actions[0],
+            Action::ChannelObservable {
+                event: ChannelObservable::ConnectionIdAssigned(7),
+                ..
+            }
+        ));
+        assert!(matches!(
+            sink.actions[1],
+            Action::ChannelObservable {
+                event: ChannelObservable::Opened,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &sink.actions[2],
+            Action::Complete {
+                request_id: RequestId(200),
+                result: CompletionResult::OpenChannel(Ok(_)),
+            }
+        ));
+        let entry = &core.channels()[&vmbus_core::protocol::ChannelId(7)];
+        assert!(matches!(entry.phase, ChannelPhase::Opened { .. }));
+    }
+
+    #[test]
+    fn open_result_failure_returns_to_offered_and_reports_status() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 8);
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(201),
+                channel_id: vmbus_core::protocol::ChannelId(8),
+                open: open_params_basic(8),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        // Non-zero status = failure.
+        let result = vmbus_core::protocol::OpenResult {
+            channel_id: vmbus_core::protocol::ChannelId(8),
+            open_id: 0,
+            status: 0xC0000001,
+        };
+        let wire = make_host_message(&result);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        // Expect ConnectionIdCleared + Complete(Err(HostFailed(_))).
+        assert!(matches!(
+            sink.actions[0],
+            Action::ChannelObservable {
+                event: ChannelObservable::ConnectionIdCleared,
+                ..
+            }
+        ));
+        let Action::Complete {
+            result: CompletionResult::OpenChannel(Err(OpenChannelError::HostFailed(status))),
+            ..
+        } = &sink.actions[1]
+        else {
+            panic!();
+        };
+        assert_eq!(*status as u32, 0xC0000001);
+        // Channel is back in Offered so a retry is possible.
+        let entry = &core.channels()[&vmbus_core::protocol::ChannelId(8)];
+        assert!(matches!(entry.phase, ChannelPhase::Offered));
+    }
+
+    #[test]
+    fn close_channel_frees_flag_posts_and_emits_observables() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 9);
+
+        let flag = core.allocate_event_flag().unwrap();
+        let mut params = open_params_basic(9);
+        params.redirected_event_flag = Some(flag);
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(300),
+                channel_id: vmbus_core::protocol::ChannelId(9),
+                open: params,
+            },
+            &mut sink,
+        );
+        // Simulate successful open.
+        let result = vmbus_core::protocol::OpenResult {
+            channel_id: vmbus_core::protocol::ChannelId(9),
+            open_id: 0,
+            status: vmbus_core::protocol::STATUS_SUCCESS as u32,
+        };
+        let wire = make_host_message(&result);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        sink.actions.clear();
+
+        // Now close.
+        core.step(
+            Event::CloseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(9),
+            },
+            &mut sink,
+        );
+        // Expected: FreeEventFlag, PostMessage, ConnectionIdCleared, Closed.
+        assert!(matches!(sink.actions[0], Action::FreeEventFlag(f) if f == flag));
+        let _ = expect_post(&sink.actions[1]);
+        assert!(matches!(
+            sink.actions[2],
+            Action::ChannelObservable {
+                event: ChannelObservable::ConnectionIdCleared,
+                ..
+            }
+        ));
+        assert!(matches!(
+            sink.actions[3],
+            Action::ChannelObservable {
+                event: ChannelObservable::Closed,
+                ..
+            }
+        ));
+        // Channel returns to Offered.
+        let entry = &core.channels()[&vmbus_core::protocol::ChannelId(9)];
+        assert!(matches!(entry.phase, ChannelPhase::Offered));
+    }
+
+    #[test]
+    fn close_on_revoked_is_no_op() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 10);
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(10),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        sink.actions.clear();
+
+        core.step(
+            Event::CloseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(10),
+            },
+            &mut sink,
+        );
+        assert!(sink.actions.is_empty());
+    }
+
+    #[test]
+    fn rescind_while_opening_completes_pending_open_with_revoked() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 11);
+        let flag = core.allocate_event_flag().unwrap();
+        let mut params = open_params_basic(11);
+        params.redirected_event_flag = Some(flag);
+        core.step(
+            Event::OpenChannel {
+                request_id: RequestId(400),
+                channel_id: vmbus_core::protocol::ChannelId(11),
+                open: params,
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(11),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        // Expected: FreeEventFlag, Complete(Err(Revoked)), OfferRescinded.
+        assert!(
+            sink.actions
+                .iter()
+                .any(|a| matches!(a, Action::FreeEventFlag(f) if *f == flag))
+        );
+        assert!(sink.actions.iter().any(|a| matches!(
+            a,
+            Action::Complete {
+                request_id: RequestId(400),
+                result: CompletionResult::OpenChannel(Err(OpenChannelError::Revoked)),
+            }
+        )));
+        assert!(
+            sink.actions
+                .iter()
+                .any(|a| matches!(a, Action::OfferRescinded { .. }))
+        );
+    }
+
+    #[test]
+    fn release_after_rescind_posts_relidreleased_and_drops_entry() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 12);
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(12),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        sink.actions.clear();
+
+        core.step(
+            Event::ReleaseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(12),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        assert!(
+            !core
+                .channels()
+                .contains_key(&vmbus_core::protocol::ChannelId(12))
+        );
+    }
+
+    #[test]
+    fn release_before_rescind_only_marks_flag() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 13);
+        core.step(
+            Event::ReleaseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(13),
+            },
+            &mut sink,
+        );
+        // No wire message yet — waiting for host rescind.
+        assert!(sink.actions.is_empty());
+        // Channel is still there but marked released.
+        assert!(
+            core.channels()
+                .get(&vmbus_core::protocol::ChannelId(13))
+                .unwrap()
+                .is_client_released
+        );
+    }
+
+    #[test]
+    fn modify_channel_posts_and_response_completes() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 14);
+        core.step(
+            Event::ModifyChannel {
+                request_id: RequestId(500),
+                channel_id: vmbus_core::protocol::ChannelId(14),
+                request: ModifyRequest::TargetVp { target_vp: 3 },
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        sink.actions.clear();
+
+        let response = vmbus_core::protocol::ModifyChannelResponse {
+            channel_id: vmbus_core::protocol::ChannelId(14),
+            status: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(500),
+                result: CompletionResult::ModifyChannel(0),
+            }
+        ));
+    }
+
+    #[test]
+    fn restore_channel_promotes_restored_to_opened() {
+        // Use the low-level fabricate-a-Restored-entry path since
+        // the crate doesn't yet expose a save/restore front end.
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        deliver_one_offer(&mut core, &mut sink, 15);
+        // Manually put the channel in Restored so we can drive
+        // RestoreChannel through step().
+        {
+            let entry = core
+                .channels
+                .get_mut(&vmbus_core::protocol::ChannelId(15))
+                .unwrap();
+            entry.phase = ChannelPhase::Restored;
+        }
+        core.step(
+            Event::RestoreChannel {
+                request_id: RequestId(600),
+                channel_id: vmbus_core::protocol::ChannelId(15),
+                params: RestoreChannelParams {
+                    redirected_event_flag: None,
+                    connection_id: 42,
+                },
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 3);
+        assert!(matches!(
+            sink.actions[0],
+            Action::ChannelObservable {
+                event: ChannelObservable::ConnectionIdAssigned(42),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &sink.actions[2],
+            Action::Complete {
+                request_id: RequestId(600),
+                result: CompletionResult::OpenChannel(Ok(_)),
+            }
+        ));
     }
 }
