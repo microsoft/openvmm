@@ -1748,7 +1748,7 @@ impl MshvProcessor<'_> {
             .vmfd
             .psp_issue_guest_request(&request)
             .map_err(|err| {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "MSHV SNP guest request failed"
                 );
