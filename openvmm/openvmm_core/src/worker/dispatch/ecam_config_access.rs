@@ -19,6 +19,7 @@ pub struct AssignedPciBar {
     pub bus: u8,
     pub device: u8,
     pub function: u8,
+    pub kind: pci_resource_assignment::AssignedBarKind,
     pub index: u8,
     pub range: MemoryRange,
 }
@@ -85,6 +86,7 @@ pub async fn assign_pci_resources_for_root_complexes(
                 bus: device.bus,
                 device: device.device,
                 function: device.function,
+                kind: bar.kind,
                 index: bar.index,
                 range: bar.range,
             })

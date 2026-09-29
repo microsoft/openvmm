@@ -73,10 +73,21 @@ pub struct AssignmentParams {
 /// A final BAR assignment produced by PCI resource allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignedBar {
+    /// Whether this is a function BAR or reserved SR-IOV VF BAR space.
+    pub kind: AssignedBarKind,
     /// BAR register index.
     pub index: u8,
     /// Assigned MMIO range.
     pub range: MemoryRange,
+}
+
+/// The source of an assigned BAR range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignedBarKind {
+    /// A BAR belonging to the enumerated PCI function.
+    Function,
+    /// The aggregate aperture reserved for all VFs of an SR-IOV PF.
+    SriovVf,
 }
 
 /// Final BAR assignments for one PCI function.
@@ -123,25 +134,83 @@ pub async fn assign_pci_resources_with_report(
 fn collect_assignments(devices: &[enumerate::DiscoveredDevice]) -> Vec<AssignedDevice> {
     let mut assignments = Vec::new();
     for device in devices {
+        let mut bars = device
+            .bars
+            .iter()
+            .map(|bar| {
+                let address = bar.address.expect("address assignment completed");
+                AssignedBar {
+                    kind: AssignedBarKind::Function,
+                    index: bar.index,
+                    range: MemoryRange::new(address..address + bar.size),
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(sriov) = &device.sriov {
+            bars.extend(sriov.vf_bars.iter().map(|bar| {
+                let address = bar.address.expect("VF BAR address assignment completed");
+                let size = bar
+                    .size
+                    .checked_mul(sriov.total_vfs as u64)
+                    .expect("VF BAR reservation size was validated");
+                AssignedBar {
+                    kind: AssignedBarKind::SriovVf,
+                    index: bar.index,
+                    range: MemoryRange::new(address..address + size),
+                }
+            }));
+        }
         assignments.push(AssignedDevice {
             bus: device.bus,
             device: device.device,
             function: device.function,
-            bars: device
-                .bars
-                .iter()
-                .map(|bar| {
-                    let address = bar.address.expect("address assignment completed");
-                    AssignedBar {
-                        index: bar.index,
-                        range: MemoryRange::new(address..address + bar.size),
-                    }
-                })
-                .collect(),
+            bars,
         });
         assignments.extend(collect_assignments(&device.children));
     }
     assignments
+}
+
+#[cfg(test)]
+mod assignment_report_tests {
+    use super::*;
+
+    #[test]
+    fn includes_total_sriov_vf_bar_reservation() {
+        let devices = [enumerate::DiscoveredDevice {
+            bus: 1,
+            device: 0,
+            function: 0,
+            is_bridge: false,
+            bars: vec![],
+            children: vec![],
+            secondary_bus: None,
+            subordinate_bus: None,
+            sriov: Some(enumerate::DiscoveredSriov {
+                cap_offset: 0x100,
+                total_vfs: 4,
+                vf_bars: vec![enumerate::DiscoveredBar {
+                    index: 2,
+                    size: 0x20_0000,
+                    is_64bit: true,
+                    is_prefetchable: true,
+                    address: Some(0x1_0000_0000),
+                    pinned_address: None,
+                }],
+            }),
+            bridge_assignment: None,
+        }];
+
+        let assignments = collect_assignments(&devices);
+        assert_eq!(
+            assignments[0].bars,
+            [AssignedBar {
+                kind: AssignedBarKind::SriovVf,
+                index: 2,
+                range: MemoryRange::new(0x1_0000_0000..0x1_0080_0000),
+            }]
+        );
+    }
 }
 
 /// Errors during resource assignment.
