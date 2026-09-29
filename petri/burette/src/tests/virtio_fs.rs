@@ -161,9 +161,9 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                     use vm_resource::IntoResource;
 
                     // erofs perf rootfs on port 0 (read-only).
-                    c.pcie_devices.push(PcieDeviceConfig {
-                        port_name: "s0rc0rp0".into(),
-                        resource: virtio_resources::VirtioPciDeviceHandle(
+                    c.pcie_devices.push(PcieDeviceConfig::new(
+                        "s0rc0rp0".into(),
+                        virtio_resources::VirtioPciDeviceHandle(
                             virtio_resources::blk::VirtioBlkHandle {
                                 disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                 read_only: true,
@@ -172,12 +172,12 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                             .into_resource(),
                         )
                         .into_resource(),
-                    });
+                    ));
 
                     // virtio-fs on port 1, backed by the host tempdir.
-                    c.pcie_devices.push(PcieDeviceConfig {
-                        port_name: "s0rc0rp1".into(),
-                        resource: virtio_resources::VirtioPciDeviceHandle(
+                    c.pcie_devices.push(PcieDeviceConfig::new(
+                        "s0rc0rp1".into(),
+                        virtio_resources::VirtioPciDeviceHandle(
                             virtio_resources::fs::VirtioFsHandle {
                                 tag: VFS_TAG.into(),
                                 fs: virtio_resources::fs::VirtioFsBackend::HostFs {
@@ -188,7 +188,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                             .into_resource(),
                         )
                         .into_resource(),
-                    });
+                    ));
                 })
         });
 
