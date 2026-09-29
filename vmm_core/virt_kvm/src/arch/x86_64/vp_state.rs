@@ -520,6 +520,14 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         self.vp.partition.write_tsc(self.vp.vpindex, tsc)
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.vp.partition.read_tsc_deadline(self.vp.vpindex)
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        self.vp.partition.write_tsc_deadline(self.vp.vpindex, value)
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         self.get_register_state()
     }

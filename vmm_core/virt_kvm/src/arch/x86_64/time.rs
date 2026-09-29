@@ -3,6 +3,8 @@
 
 //! Software freezing of KVM clocks and native LAPIC timers.
 
+use super::vp_state::get_msrs_state;
+use super::vp_state::set_msrs_state;
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
@@ -11,8 +13,6 @@ use virt::x86::vp;
 use x86defs::apic::Lvt;
 use x86defs::apic::TimerMode;
 use zerocopy::FromZeros;
-
-const IA32_TSC_DEADLINE: u32 = 0x6e0;
 
 pub(crate) struct PartitionTime {
     khz: Option<u32>,
@@ -27,8 +27,30 @@ struct FrozenTime {
 #[derive(Default)]
 struct FrozenVpTime {
     tsc: u64,
+    deadline: vp::TscDeadline,
     timer: Option<LapicTimer>,
     restored_stimers: Option<vp::SynicTimers>,
+}
+
+impl FrozenVpTime {
+    fn set_apic(&mut self, apic: &vp::Apic) {
+        self.timer = Some(LapicTimer::capture(apic));
+        // Switching out of deadline mode disarms the architectural MSR,
+        // just as KVM does for a live LAPIC mode change.
+        if !deadline_mode(apic) {
+            self.deadline = vp::TscDeadline::default();
+        }
+    }
+
+    fn set_deadline(&mut self, value: vp::TscDeadline) {
+        // KVM ignores deadline writes outside TSC-deadline mode.
+        if self
+            .timer
+            .is_some_and(|timer| Lvt::from(timer.lvt).timer_mode() == TimerMode::TSC_DEADLINE.0)
+        {
+            self.deadline = value;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +59,6 @@ struct LapicTimer {
     initial: u32,
     remaining: u32,
     divide: u32,
-    deadline: u64,
 }
 
 impl LapicTimer {
@@ -48,7 +69,6 @@ impl LapicTimer {
             initial: regs.timer_icr,
             remaining: regs.timer_ccr,
             divide: regs.timer_dcr,
-            deadline: apic.tsc_deadline,
         }
     }
 
@@ -59,7 +79,6 @@ impl LapicTimer {
         regs.timer_ccr = self.remaining;
         regs.timer_dcr = self.divide;
         apic.registers = *regs.as_array();
-        apic.tsc_deadline = self.deadline;
     }
 
     fn disarm(apic: &mut vp::Apic) {
@@ -67,7 +86,6 @@ impl LapicTimer {
         regs.timer_icr = 0;
         regs.timer_ccr = 0;
         apic.registers = *regs.as_array();
-        apic.tsc_deadline = 0;
     }
 }
 
@@ -80,25 +98,16 @@ fn read_apic(kvm: &kvm::Processor<'_>) -> Result<vp::Apic, kvm::Error> {
     kvm.get_msrs(&[x86defs::X86X_MSR_APIC_BASE], &mut base)?;
     let mut page = <[u8; 1024]>::new_zeroed();
     kvm.get_lapic(&mut page)?;
-    let mut apic = vp::Apic::new(base[0].into(), vp::ApicRegisters::from_page(&page), [0; 8]);
-    if deadline_mode(&apic) {
-        let mut deadline = [0];
-        kvm.get_msrs(&[IA32_TSC_DEADLINE], &mut deadline)?;
-        apic.tsc_deadline = deadline[0];
-    }
-    Ok(apic)
+    Ok(vp::Apic::new(
+        base[0].into(),
+        vp::ApicRegisters::from_page(&page),
+        [0; 8],
+    ))
 }
 
 fn write_apic(kvm: &kvm::Processor<'_>, apic: &vp::Apic) -> Result<(), kvm::Error> {
     kvm.set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, apic.apic_base)])?;
-    // SET_LAPIC can restart a deadline timer using its previous MSR value.
-    // Clear that value before replacing the page, then arm it after the page
-    // (and, at thaw, the TSC offset) has been restored.
-    kvm.set_msrs(&[(IA32_TSC_DEADLINE, 0)])?;
     kvm.set_lapic(&apic.registers().as_page())?;
-    if deadline_mode(apic) {
-        kvm.set_msrs(&[(IA32_TSC_DEADLINE, apic.tsc_deadline)])?;
-    }
     Ok(())
 }
 
@@ -220,6 +229,16 @@ impl PartitionTime {
             let processor = kvm.vp(apic_id);
             let mut apic = read_apic(&processor)?;
             let timer = LapicTimer::capture(&apic);
+            let deadline = if deadline_mode(&apic) {
+                let deadline = get_msrs_state::<vp::TscDeadline, 1>(&processor)?;
+                // SET_LAPIC can rearm the previous deadline. Clear the MSR
+                // before replacing the page and restore it only after thaw
+                // has installed both the APIC mode and the guest TSC offset.
+                set_msrs_state(&processor, &vp::TscDeadline::default())?;
+                deadline
+            } else {
+                vp::TscDeadline::default()
+            };
             // KVM cannot export its private timer-pending bit. For a
             // countdown one-shot, nonzero initial count with zero current
             // count can mean either pending or already delivered. Preserve
@@ -232,6 +251,7 @@ impl PartitionTime {
             write_apic(&processor, &apic)?;
             vps.push(FrozenVpTime {
                 timer: Some(timer),
+                deadline,
                 ..Default::default()
             });
         }
@@ -281,6 +301,9 @@ impl PartitionTime {
                 let mut apic = read_apic(&processor)?;
                 timer.apply(&mut apic);
                 write_apic(&processor, &apic)?;
+                if deadline_mode(&apic) {
+                    set_msrs_state(&processor, &saved.deadline)?;
+                }
             }
             if let Some(stimers) = &saved.restored_stimers {
                 write_stimers(&processor, stimers)?;
@@ -337,7 +360,7 @@ impl KvmPartitionInner {
                 value: frozen.vps[vp.index() as usize].tsc,
             });
         }
-        super::vp_state::get_msrs_state(&self.vp_kvm(vp))
+        get_msrs_state(&self.vp_kvm(vp))
     }
 
     pub(crate) fn write_tsc(&self, vp: VpIndex, value: &vp::Tsc) -> Result<(), KvmError> {
@@ -348,7 +371,7 @@ impl KvmPartitionInner {
             self.vp_kvm(vp)
                 .set_tsc_offset(value.value.wrapping_sub(host_tsc()))?;
         } else {
-            super::vp_state::set_msrs_state(&self.vp_kvm(vp), value)?;
+            set_msrs_state(&self.vp_kvm(vp), value)?;
         }
         Ok(())
     }
@@ -364,18 +387,39 @@ impl KvmPartitionInner {
         Ok(apic)
     }
 
+    pub(crate) fn read_tsc_deadline(&self, vp: VpIndex) -> Result<vp::TscDeadline, KvmError> {
+        let time = self.time.lock();
+        if let Some(frozen) = &time.frozen {
+            return Ok(frozen.vps[vp.index() as usize].deadline);
+        }
+        get_msrs_state(&self.vp_kvm(vp))
+    }
+
+    pub(crate) fn write_tsc_deadline(
+        &self,
+        vp: VpIndex,
+        value: &vp::TscDeadline,
+    ) -> Result<(), KvmError> {
+        let mut time = self.time.lock();
+        if let Some(frozen) = &mut time.frozen {
+            frozen.vps[vp.index() as usize].set_deadline(*value);
+        } else {
+            set_msrs_state(&self.vp_kvm(vp), value)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn write_apic(&self, vp: VpIndex, value: &vp::Apic) -> Result<(), KvmError> {
         let mut time = self.time.lock();
         let routing = self.gsi_routing.lock();
         routing.with_irqfds_suspended(&self.kvm, || {
             let mut apic = value.clone();
-            let timer = LapicTimer::capture(&apic);
             if time.frozen.is_some() {
                 LapicTimer::disarm(&mut apic);
             }
             write_apic(&self.vp_kvm(vp), &apic)?;
             if let Some(frozen) = &mut time.frozen {
-                frozen.vps[vp.index() as usize].timer = Some(timer);
+                frozen.vps[vp.index() as usize].set_apic(value);
             }
             Ok::<_, KvmError>(())
         })
@@ -486,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_countdown_and_deadline_survive_timer_staging() {
+    fn pending_countdown_survives_timer_staging() {
         let mut apic = timer_apic();
         let mut regs = *apic.registers();
         regs.timer_ccr = 0;
@@ -496,18 +540,72 @@ mod tests {
         pending.apply(&mut apic);
         assert_eq!(apic.registers().timer_icr, 1_000_000_000);
         assert_eq!(apic.registers().timer_ccr, 0);
+    }
 
+    #[test]
+    fn frozen_deadline_is_independent_of_apic_state_and_obeys_mode_changes() {
+        let mut apic = timer_apic();
+        let deadline = vp::TscDeadline {
+            value: 0x1234_5678_9abc,
+        };
+        let mut frozen = FrozenVpTime::default();
+        frozen.set_apic(&apic);
+        frozen.set_deadline(deadline);
+        assert_eq!(frozen.deadline.value, 0);
+
+        let mut regs = *apic.registers();
         regs.lvt_timer = Lvt::from(regs.lvt_timer)
             .with_timer_mode(TimerMode::TSC_DEADLINE.0)
             .into();
         apic.registers = *regs.as_array();
-        apic.tsc_deadline = 0x1234_5678_9abc;
-        let deadline = LapicTimer::capture(&apic);
-        LapicTimer::disarm(&mut apic);
-        assert_eq!(apic.tsc_deadline, 0);
-        deadline.apply(&mut apic);
-        assert!(deadline_mode(&apic));
-        assert_eq!(apic.tsc_deadline, 0x1234_5678_9abc);
+        frozen.set_apic(&apic);
+        frozen.set_deadline(deadline);
+        assert_eq!(frozen.deadline, deadline);
+
+        // An interrupt-state update in the same mode must not erase the MSR.
+        regs.irr[3] = 1 << 7;
+        apic.registers = *regs.as_array();
+        frozen.set_apic(&apic);
+        assert_eq!(frozen.deadline, deadline);
+
+        frozen.set_deadline(vp::TscDeadline::default());
+        assert_eq!(frozen.deadline.value, 0);
+        frozen.set_deadline(deadline);
+        frozen.set_apic(&timer_apic());
+        assert_eq!(frozen.deadline.value, 0);
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm with a stable TSC and KVM_VCPU_TSC_OFFSET"]
+    fn kvm_freezes_and_restores_separate_tsc_deadline() -> Result<(), KvmError> {
+        let kvm = kvm::Kvm::new()?;
+        let mut vm = kvm.new_vm(kvm::VmType::Default)?;
+        vm.enable_split_irqchip(24)?;
+        vm.add_vp(0)?;
+        let mut time = PartitionTime::new(&vm, 0, 1, false)?;
+        assert!(time.is_supported());
+        let mut apic = timer_apic();
+        let mut regs = *apic.registers();
+        regs.lvt_timer = Lvt::from(regs.lvt_timer)
+            .with_timer_mode(TimerMode::TSC_DEADLINE.0)
+            .into();
+        apic.registers = *regs.as_array();
+        write_apic(&vm.vp(0), &apic)?;
+        let deadline = vp::TscDeadline {
+            value: u64::from(time.khz.unwrap()) * 60_000,
+        };
+        let saved = &mut time.frozen.as_mut().unwrap().vps[0];
+        saved.set_apic(&apic);
+        saved.set_deadline(deadline);
+        assert_eq!(get_msrs_state::<vp::TscDeadline, 1>(&vm.vp(0))?.value, 0);
+        time.thaw(&vm, [0].into_iter())?;
+        assert_eq!(get_msrs_state::<vp::TscDeadline, 1>(&vm.vp(0))?, deadline);
+        time.freeze(&vm, [0].into_iter())?;
+        assert_eq!(time.frozen.as_ref().unwrap().vps[0].deadline, deadline);
+        assert_eq!(get_msrs_state::<vp::TscDeadline, 1>(&vm.vp(0))?.value, 0);
+        time.thaw(&vm, [0].into_iter())?;
+        assert_eq!(get_msrs_state::<vp::TscDeadline, 1>(&vm.vp(0))?, deadline);
+        Ok(())
     }
 
     #[test]
