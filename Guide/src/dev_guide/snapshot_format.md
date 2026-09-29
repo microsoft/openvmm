@@ -37,10 +37,13 @@ The default format is a local machine-state contract, not an authenticated
 container. Every snapshot receives the same regular-file, no-follow/no-reparse,
 bounded decoding, exact-length, inventory, and machine-contract validation,
 but the on-disk format does not authenticate same-length payload changes.
-A paired capture records the SHA-256 and exact length of `scratch.img`, because guest
-RAM and a mounted writable filesystem must be restored as one exact pair.
-Export or transport layers must provide broader integrity and authentication
-outside this format.
+By default, paired capture records SHA-256 and exact length for `scratch.img`,
+because guest RAM and a mounted writable filesystem must be restored as one
+exact pair. Version 6 also permits an explicit `generation` identity for all
+bound sandbox blocks. Generation identity is a caller-authenticated immutable
+storage version, not a byte digest; OpenVMM validates role, size, geometry, and
+the shared generation without scanning block contents. Export or transport
+layers must provide broader integrity and authentication outside this format.
 
 The optional microVM network contract stores a versioned SHA-256 digest of its
 bound egress policy. Encoding version 2 includes the static prefix, guest MAC,
@@ -90,12 +93,22 @@ stronger mode such as a lease, fs-verity, or a verified artifact broker.
 
 ## Scratch (`scratch.img`)
 
-The microVM block contract records every fixed role, access mode, geometry, and
-immutable read-only layer digest. A paired capture copies the exact opened
-writable scratch handle into the same staging directory after device queues
-drain, verifies its SHA-256, and publishes it atomically with VM state. Restore
-verifies the artifact before worker construction and makes a private copy for
-each process, so repeated restores cannot mutate the snapshot.
+The microVM block contract records every fixed role, access mode, geometry,
+identity kind, identity, and paired-scratch restore mode. A paired capture
+copies the exact opened writable scratch handle into the same staging
+directory after device queues drain and publishes it atomically with VM state.
+`sha256` identity verifies bytes before publication and restore. `generation`
+identity instead requires every bound block to carry the same nonzero
+caller-authenticated storage generation and performs structural and exact-size
+validation without whole-file rehashing.
+
+Paired scratch defaults to `private-copy`, which preserves existing behavior
+and may use a reflink or sparse copy. `copy-on-write` requires a filesystem
+reflink and is restricted to reusable clone snapshots. `direct-claimed`
+attaches the paired file only for a single-use resume snapshot after its
+durable claim; the claimed artifact is then continuation storage rather than
+an available snapshot. A missing restore-mode field retains `private-copy`
+behavior.
 
 A pre-mount capture instead records the `fresh` scratch policy and geometry,
 contains no `scratch.img`, and requires a new matching scratch file on restore.
