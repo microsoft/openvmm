@@ -3108,35 +3108,38 @@ impl InitializedVm {
         };
 
         // Start the VP backing threads.
-        try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
-            |(vp_index, (mut vp, runner))| {
-                let partition = partition.clone();
-                let chipset = chipset.clone();
-                let (send, recv) = mesh::oneshot();
-                thread::Builder::new()
-                    .name(format!("vp-{}", vp_index))
-                    .spawn(move || match vp.bind() {
-                        Ok(mut vp) => {
-                            send.send(Ok(()));
-                            block_on_vp(
-                                partition,
-                                VpIndex::new(vp_index as u32),
-                                vp.run(runner, &chipset),
-                            )
-                        }
-                        Err(err) => {
-                            send.send(Err(err));
-                        }
-                    })
-                    .unwrap();
+        async {
+            try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
+                |(vp_index, (mut vp, runner))| {
+                    let partition = partition.clone();
+                    let chipset = chipset.clone();
+                    let (send, recv) = mesh::oneshot();
+                    thread::Builder::new()
+                        .name(format!("vp-{}", vp_index))
+                        .spawn(move || match vp.bind() {
+                            Ok(mut vp) => {
+                                send.send(Ok(()));
+                                block_on_vp(
+                                    partition,
+                                    VpIndex::new(vp_index as u32),
+                                    vp.run(runner, &chipset),
+                                )
+                            }
+                            Err(err) => {
+                                send.send(Err(err));
+                            }
+                        })
+                        .unwrap();
 
-                async move {
-                    recv.await
-                        .unwrap()
-                        .with_context(|| format!("failed to bind vp {vp_index}"))
-                }
-            },
-        ))
+                    async move {
+                        recv.await
+                            .unwrap()
+                            .with_context(|| format!("failed to bind vp {vp_index}"))
+                    }
+                },
+            ))
+            .await
+        }
         .instrument(tracing::info_span!("bind_vps"))
         .await?;
         startup_milestone("vcpus_bound");
