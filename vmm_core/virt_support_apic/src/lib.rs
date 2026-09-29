@@ -1876,6 +1876,7 @@ impl LocalApic {
             apic_base,
             registers: _,
             auto_eoi,
+            ..
         } = state;
 
         self.set_apic_base_inner(*apic_base)?;

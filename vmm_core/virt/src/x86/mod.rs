@@ -57,6 +57,9 @@ pub struct X86PartitionCapabilities {
     pub hv1: bool,
     /// The reference TSC page is available.
     pub hv1_reference_tsc_page: bool,
+    /// The backend can save and restore partition reference time, independently
+    /// of whether it exposes Hyper-V enlightenments to the guest.
+    pub reference_time: bool,
     /// Xsave information.
     pub xsave: XsaveCapabilities,
     /// X2apic is supported.
@@ -119,6 +122,7 @@ impl X86PartitionCapabilities {
             vendor: Vendor([0; 12]),
             hv1: false,
             hv1_reference_tsc_page: false,
+            reference_time: false,
             xsave: XsaveCapabilities {
                 features: 0,
                 supervisor_features: 0,
@@ -222,6 +226,7 @@ impl X86PartitionCapabilities {
                 && f(hvdef::HV_CPUID_FUNCTION_HV_INTERFACE, 0)[0] == u32::from_le_bytes(*b"Hv#1")
             {
                 this.hv1 = true;
+                this.reference_time = true;
                 let result = f(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
                 let privs = hvdef::HvPartitionPrivilege::from(
                     result[0] as u64 | ((result[1] as u64) << 32),

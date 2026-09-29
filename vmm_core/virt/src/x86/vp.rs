@@ -973,6 +973,10 @@ pub struct Apic {
     #[inspect(iter_by_index)]
     #[mesh(3)]
     pub auto_eoi: [u32; 8],
+    /// Architectural deadline, when separately exposed by the backend.
+    /// KVM does not include IA32_TSC_DEADLINE in its LAPIC register page.
+    #[mesh(4)]
+    pub tsc_deadline: u64,
 }
 
 impl Debug for Apic {
@@ -981,11 +985,13 @@ impl Debug for Apic {
             apic_base,
             registers,
             auto_eoi,
+            tsc_deadline,
         } = self;
         f.debug_struct("Apic")
             .field("apic_base", &format_args!("{:#x}", apic_base))
             .field("registers", &format_args!("{:#x?}", registers))
             .field("registers", &format_args!("{:#x?}", auto_eoi))
+            .field("tsc_deadline", tsc_deadline)
             .finish()
     }
 }
@@ -996,6 +1002,7 @@ impl Apic {
             apic_base: apic_base.into(),
             registers: *registers.as_array(),
             auto_eoi,
+            tsc_deadline: 0,
         }
     }
 
