@@ -102,12 +102,13 @@ struct ConfigPatch {
     value: u32,
 }
 
-const SYNTHETIC_PASID_OFFSET: u16 = 0xff8;
 const PASID_CAP_EXEC: u16 = 1 << 1;
 const PASID_CAP_PRIV: u16 = 1 << 2;
 const PASID_CTRL_ENABLE: u16 = 1 << 0;
+const SYNTHETIC_PASID_LEN: u16 = 8;
 
-#[derive(Debug, Clone, Copy)]
+/// Guest-visible PASID features synthesized into PCI configuration space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PasidCapabilities {
     pub width: u8,
     pub exec: bool,
@@ -125,7 +126,7 @@ struct SyntheticPasidCapability {
 }
 
 impl SyntheticPasidCapability {
-    fn new(capabilities: PasidCapabilities) -> anyhow::Result<Self> {
+    fn new(offset: u16, capabilities: PasidCapabilities) -> anyhow::Result<Self> {
         anyhow::ensure!(
             capabilities.width <= 20,
             "PASID width {} exceeds the PCIe maximum of 20",
@@ -137,34 +138,45 @@ impl SyntheticPasidCapability {
             | (u16::from(capabilities.privileged) * PASID_CAP_PRIV);
 
         Ok(Self {
-            offset: SYNTHETIC_PASID_OFFSET,
+            offset,
             capability,
             control: 0,
         })
-    }
-
-    fn register(&self) -> u32 {
-        u32::from(self.capability) | (u32::from(self.control) << 16)
     }
 
     fn contains_offset(&self, offset: u16) -> bool {
         offset == self.offset || offset == self.offset + 4
     }
 
+    fn read(&self, offset: u16, mut value: ByteEnabledDwordRead<'_>) {
+        match offset {
+            offset if offset == self.offset => {
+                value.set_low_high(caps::ExtendedCapabilityId::PASID.0, 1)
+            }
+            offset if offset == self.offset + 4 => {
+                value.set_low_high(self.capability, self.control)
+            }
+            _ => value.set(!0),
+        }
+    }
+
     fn write(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
-        if offset == self.offset {
-            return;
+        match offset {
+            offset if offset == self.offset => {}
+            offset if offset == self.offset + 4 => {
+                let current = u32::from(self.capability) | (u32::from(self.control) << 16);
+                let requested = (value.merge(current) >> 16) as u16;
+                let mut writable = PASID_CTRL_ENABLE;
+                if self.capability & PASID_CAP_EXEC != 0 {
+                    writable |= PASID_CAP_EXEC;
+                }
+                if self.capability & PASID_CAP_PRIV != 0 {
+                    writable |= PASID_CAP_PRIV;
+                }
+                self.control = requested & writable;
+            }
+            _ => {}
         }
-        debug_assert_eq!(offset, self.offset + 4);
-        let requested = (value.merge(self.register()) >> 16) as u16;
-        let mut writable = PASID_CTRL_ENABLE;
-        if self.capability & PASID_CAP_EXEC != 0 {
-            writable |= PASID_CAP_EXEC;
-        }
-        if self.capability & PASID_CAP_PRIV != 0 {
-            writable |= PASID_CAP_PRIV;
-        }
-        self.control = requested & writable;
     }
 
     fn reset(&mut self) {
@@ -524,6 +536,7 @@ impl VfioAssignedPciDevice {
         let af_flr_control_offset = caps.af_flr_control_offset;
         let mut config_patches = caps.config_patches;
         let synthetic_pasid = synthesize_pasid_capability(
+            &vfio_device,
             &mut config_patches,
             caps.last_ext_cap_offset,
             caps.pasid_cap_offset,
@@ -1380,6 +1393,7 @@ fn discover_capabilities(
 }
 
 fn synthesize_pasid_capability(
+    config: &dyn ConfigSpaceRead,
     config_patches: &mut BTreeMap<u16, ConfigPatch>,
     last_ext_cap_offset: Option<u16>,
     existing_pasid_offset: Option<u16>,
@@ -1399,28 +1413,53 @@ fn synthesize_pasid_capability(
     );
     let last_ext_cap_offset = last_ext_cap_offset
         .context("cannot synthesize PASID capability without an extended-capability chain")?;
-    anyhow::ensure!(
-        last_ext_cap_offset < SYNTHETIC_PASID_OFFSET,
-        "cannot append PASID capability after extended capability at {last_ext_cap_offset:#x}"
-    );
+    let synthetic_pasid_offset =
+        find_synthetic_pasid_offset(config, config_patches, last_ext_cap_offset)?;
 
     let next_mask = 0xfff0_0000;
-    let next_value = u32::from(SYNTHETIC_PASID_OFFSET) << 20;
+    let next_value = u32::from(synthetic_pasid_offset) << 20;
     let tail_patch = config_patches
         .entry(last_ext_cap_offset)
         .or_insert(ConfigPatch { mask: 0, value: 0 });
     tail_patch.value = (tail_patch.value & !next_mask) | next_value;
     tail_patch.mask |= next_mask;
 
-    config_patches.insert(
-        SYNTHETIC_PASID_OFFSET,
-        ConfigPatch {
-            mask: u32::MAX,
-            value: u32::from(caps::ExtendedCapabilityId::PASID.0) | (1 << 16),
-        },
-    );
+    SyntheticPasidCapability::new(synthetic_pasid_offset, capabilities).map(Some)
+}
 
-    SyntheticPasidCapability::new(capabilities).map(Some)
+fn find_synthetic_pasid_offset(
+    config: &dyn ConfigSpaceRead,
+    config_patches: &BTreeMap<u16, ConfigPatch>,
+    last_ext_cap_offset: u16,
+) -> anyhow::Result<u16> {
+    let read_dword = |offset| -> anyhow::Result<u32> {
+        let mut value = 0;
+        config
+            .read_config(
+                offset,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .with_context(|| format!("failed to inspect PCI config space at offset {offset:#x}"))?;
+        Ok(value)
+    };
+
+    let mut candidate = caps::EXT_CAP_END - SYNTHETIC_PASID_LEN;
+    while candidate > last_ext_cap_offset {
+        let second_dword = candidate + 4;
+        if !config_patches.contains_key(&candidate)
+            && !config_patches.contains_key(&second_dword)
+            && read_dword(candidate)? == 0
+            && read_dword(second_dword)? == 0
+        {
+            return Ok(candidate);
+        }
+
+        candidate -= 4;
+    }
+
+    anyhow::bail!(
+        "cannot find an unused 8-byte PCI config-space slot after extended capability at {last_ext_cap_offset:#x}"
+    )
 }
 
 /// Read from the MSI-X emulator at the given offset, handling sub-DWORD
@@ -1627,9 +1666,10 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 if self
                     .synthetic_pasid
                     .as_ref()
-                    .is_some_and(|pasid| offset.0 == pasid.offset + 4) =>
+                    .is_some_and(|pasid| pasid.contains_offset(offset.0)) =>
             {
-                value.set(self.synthetic_pasid.as_ref().unwrap().register());
+                let pasid = self.synthetic_pasid.as_ref().unwrap();
+                pasid.read(offset.0, value);
             }
             // Everything else: read from physical device, applying any
             // config space patches.
@@ -1817,7 +1857,8 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                 .as_ref()
                 .is_some_and(|pasid| pasid.contains_offset(offset)) =>
             {
-                self.synthetic_pasid.as_mut().unwrap().write(offset, value);
+                let pasid = self.synthetic_pasid.as_mut().unwrap();
+                pasid.write(offset, value);
                 return IoResult::Ok;
             }
             // All other registers: pass through to physical device.
@@ -2363,14 +2404,26 @@ mod tests {
 
     #[test]
     fn synthetic_pasid_capability_is_linked_and_writable() {
-        let mut patches = BTreeMap::from([(
-            0x300,
-            ConfigPatch {
-                mask: 0x0000_ffff,
-                value: 0,
-            },
-        )]);
+        let mut cfg = MockConfigSpace::new(0x1000);
+        cfg.write_u32(0xff8, 0xdead_beef);
+        let mut patches = BTreeMap::from([
+            (
+                0x300,
+                ConfigPatch {
+                    mask: 0x0000_ffff,
+                    value: 0,
+                },
+            ),
+            (
+                0xff0,
+                ConfigPatch {
+                    mask: u32::MAX,
+                    value: 0,
+                },
+            ),
+        ]);
         let mut pasid = synthesize_pasid_capability(
+            &cfg,
             &mut patches,
             Some(0x300),
             None,
@@ -2384,36 +2437,48 @@ mod tests {
         .unwrap()
         .unwrap();
 
+        assert_eq!(pasid.offset, 0xfe8);
         let tail = patches.get(&0x300).unwrap();
         assert_eq!(tail.mask, 0xfff0_ffff);
-        assert_eq!(tail.value, u32::from(SYNTHETIC_PASID_OFFSET) << 20);
-        let header = patches.get(&SYNTHETIC_PASID_OFFSET).unwrap();
-        assert_eq!(header.mask, u32::MAX);
-        assert_eq!(header.value, 0x0001_001b);
-        assert_eq!(pasid.register(), 0x0000_0e04);
+        assert_eq!(tail.value, u32::from(pasid.offset) << 20);
 
-        assert!(pasid.contains_offset(SYNTHETIC_PASID_OFFSET));
+        let mut header = 0;
+        pasid.read(
+            pasid.offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut header),
+        );
+        assert_eq!(header, 0x0001_001b);
+        let mut register = 0;
+        pasid.read(
+            pasid.offset + 4,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut register),
+        );
+        assert_eq!(register, 0x0000_0e04);
+
+        assert!(pasid.contains_offset(pasid.offset));
         pasid.write(
-            SYNTHETIC_PASID_OFFSET,
+            pasid.offset,
             ByteEnabledDwordWrite::with_all_bytes_enabled(u32::MAX),
         );
         assert_eq!(pasid.control, 0);
 
-        assert!(pasid.contains_offset(SYNTHETIC_PASID_OFFSET + 4));
+        assert!(pasid.contains_offset(pasid.offset + 4));
         pasid.write(
-            SYNTHETIC_PASID_OFFSET + 4,
+            pasid.offset + 4,
             ByteEnabledDwordWrite::with_all_bytes_enabled(0x0007_0000),
         );
         assert_eq!(pasid.control, PASID_CTRL_ENABLE | PASID_CAP_PRIV);
-        assert!(!pasid.contains_offset(SYNTHETIC_PASID_OFFSET + 8));
+        assert!(!pasid.contains_offset(pasid.offset + SYNTHETIC_PASID_LEN));
         pasid.reset();
         assert_eq!(pasid.control, 0);
     }
 
     #[test]
     fn synthetic_pasid_capability_is_not_duplicated() {
+        let cfg = MockConfigSpace::new(0x1000);
         let mut patches = BTreeMap::new();
         let pasid = synthesize_pasid_capability(
+            &cfg,
             &mut patches,
             Some(0x300),
             Some(0x280),

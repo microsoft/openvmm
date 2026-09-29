@@ -19,6 +19,17 @@ use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::PciDeviceHandleKind;
 
+fn pasid_capabilities_for_guest(
+    ssid_bits: u8,
+    capabilities: crate::iommufd_nesting::DeviceIommuCaps,
+) -> Option<crate::PasidCapabilities> {
+    (ssid_bits != 0 && capabilities.max_pasid_log2 != 0).then_some(crate::PasidCapabilities {
+        width: capabilities.max_pasid_log2,
+        exec: capabilities.pasid_exec,
+        privileged: capabilities.pasid_priv,
+    })
+}
+
 /// Resource resolver for [`VfioDeviceHandle`].
 ///
 /// Spawns a `VfioContainerManager` task internally and communicates with it
@@ -239,13 +250,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 .bind_accel_viommu(host_caps, &nesting.accel_state)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
 
-            if nesting.device_caps.max_pasid_log2 != 0 {
-                pasid_capabilities = Some(crate::PasidCapabilities {
-                    width: nesting.device_caps.max_pasid_log2,
-                    exec: nesting.device_caps.pasid_exec,
-                    privileged: nesting.device_caps.pasid_priv,
-                });
-            }
+            pasid_capabilities =
+                pasid_capabilities_for_guest(ctx.shared.ssid_bits(), nesting.device_caps);
 
             accel_stream = Some(
                 crate::iommufd_nesting::AccelStream::new(
@@ -278,5 +284,35 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         .await?;
 
         Ok(assigned.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pasid_capabilities_require_guest_and_endpoint_support() {
+        let supported = crate::iommufd_nesting::DeviceIommuCaps {
+            max_pasid_log2: 14,
+            pasid_exec: true,
+            pasid_priv: true,
+        };
+        let unsupported = crate::iommufd_nesting::DeviceIommuCaps {
+            max_pasid_log2: 0,
+            pasid_exec: false,
+            pasid_priv: false,
+        };
+
+        assert!(pasid_capabilities_for_guest(0, supported).is_none());
+        assert!(pasid_capabilities_for_guest(14, unsupported).is_none());
+        assert_eq!(
+            pasid_capabilities_for_guest(14, supported),
+            Some(crate::PasidCapabilities {
+                width: 14,
+                exec: true,
+                privileged: true,
+            })
+        );
     }
 }
