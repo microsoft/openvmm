@@ -1446,6 +1446,8 @@ pub(crate) struct CdevPrepareRequest {
     /// only one `IoasManager`; a vSMMU cannot span independent IOAS contexts.
     pub vsmmu: Option<Arc<smmu::SmmuSharedState>>,
     pub direct_vm_fd: Option<File>,
+    /// Stable root-complex/vIOMMU identity for direct mode.
+    pub direct_context_id: Option<u32>,
     pub direct_hwpt_flags: u32,
 }
 
@@ -1576,8 +1578,23 @@ impl VsmmuAssociations {
 
 struct IommuManagerEntry {
     sender: mesh::Sender<IoasManagerRpc>,
-    /// Prevent mixing direct and IOAS devices under the same --iommu ID.
-    direct: bool,
+    /// Direct root-complex/vIOMMU identity, or `None` for ordinary IOAS mode.
+    direct_context_id: Option<u32>,
+}
+
+fn validate_manager_context(
+    iommu_id: &str,
+    existing: Option<u32>,
+    requested: Option<u32>,
+) -> anyhow::Result<()> {
+    match (existing, requested) {
+        (None, None) => Ok(()),
+        (Some(existing), Some(requested)) if existing == requested => Ok(()),
+        (Some(existing), Some(requested)) => {
+            anyhow::bail!("iommu={iommu_id} cannot span direct contexts {existing} and {requested}")
+        }
+        _ => anyhow::bail!("iommu={iommu_id} cannot mix direct and IOAS cdev devices"),
+    }
 }
 
 /// Client handle for the `VfioCdevManager` dispatcher.
@@ -1671,8 +1688,16 @@ impl VfioCdevManager {
             iommu_id,
             vsmmu,
             direct_vm_fd,
+            direct_context_id,
             direct_hwpt_flags,
         } = req;
+
+        if direct_vm_fd.is_some() != direct_context_id.is_some() {
+            respond.fail(anyhow::anyhow!(
+                "direct VM fd and context identity must be supplied together"
+            ));
+            return;
+        }
 
         if let Some(vsmmu) = &vsmmu {
             if let Err(error) = self.vsmmu_associations.begin(vsmmu, &iommu_id) {
@@ -1680,17 +1705,16 @@ impl VfioCdevManager {
                 return;
             }
         }
-        let direct = direct_vm_fd.is_some();
         let sender = match self.managers.entry(iommu_id.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => {
                 let entry = e.into_mut();
-                if entry.direct != direct {
+                if let Err(error) =
+                    validate_manager_context(&iommu_id, entry.direct_context_id, direct_context_id)
+                {
                     if let Some(vsmmu) = &vsmmu {
                         self.vsmmu_associations.complete(vsmmu, &iommu_id, false);
                     }
-                    respond.fail(anyhow::anyhow!(
-                        "iommu={iommu_id} cannot mix direct and IOAS cdev devices"
-                    ));
+                    respond.fail(error);
                     return;
                 }
                 &mut entry.sender
@@ -1725,7 +1749,12 @@ impl VfioCdevManager {
                     .spawner
                     .spawn(format!("vfio-ioas-{iommu_id}"), mgr.run());
                 self.tasks.push(task);
-                &mut e.insert(IommuManagerEntry { sender, direct }).sender
+                &mut e
+                    .insert(IommuManagerEntry {
+                        sender,
+                        direct_context_id,
+                    })
+                    .sender
             }
         };
 
@@ -1879,6 +1908,16 @@ mod tests {
         associations.begin(&second, "iommu0").unwrap();
         associations.complete(&second, "iommu0", true);
         assert!(associations.begin(&first, "iommu0").is_err());
+    }
+
+    #[test]
+    fn manager_context_rejects_cross_root_reuse() {
+        validate_manager_context("iommu0", None, None).unwrap();
+        validate_manager_context("iommu0", Some(7), Some(7)).unwrap();
+        assert!(validate_manager_context("iommu0", Some(7), Some(8)).is_err());
+        assert!(validate_manager_context("iommu0", None, Some(7)).is_err());
+        assert!(validate_manager_context("iommu0", Some(7), None).is_err());
+        validate_manager_context("iommu1", Some(8), Some(8)).unwrap();
     }
 
     #[test]

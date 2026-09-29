@@ -197,22 +197,24 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             direct_ats,
         } = resource;
 
-        let direct_vm_fd = if direct_iommu {
+        let (direct_vm_fd, direct_context_id) = if direct_iommu {
             #[cfg(target_os = "linux")]
             {
-                let vm_fd = input
-                    .direct_iommu_vm_fd
-                    .context("direct VFIO cdev attach requires a hypervisor backend VM fd")?
+                let direct = input
+                    .direct_iommu
+                    .context("direct VFIO cdev attach requires a hypervisor backend VM fd")?;
+                let vm_fd = direct
+                    .vm_fd
                     .try_clone_to_owned()
                     .context("failed to dup hypervisor VM fd for direct iommufd attach")?;
-                Some(std::fs::File::from(vm_fd))
+                (Some(std::fs::File::from(vm_fd)), Some(direct.context_id))
             }
             #[cfg(not(target_os = "linux"))]
             {
                 anyhow::bail!("direct VFIO cdev attach is only supported on Linux")
             }
         } else {
-            None
+            (None, None)
         };
 
         let nesting_ctx: Option<smmu::SmmuNestingContext> = match input.dma_target.passthrough() {
@@ -251,6 +253,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
                 iommu_id,
                 vsmmu,
                 direct_vm_fd,
+                direct_context_id,
                 direct_hwpt_flags: direct_hwpt_flags(direct_pasid, direct_ats)?,
             })
             .await
