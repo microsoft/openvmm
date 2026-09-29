@@ -852,6 +852,9 @@ impl ClientCore {
             Event::Connect { request_id, params } => {
                 self.handle_connect(request_id, params, sink);
             }
+            Event::RequestOffers { request_id } => {
+                self.handle_request_offers(request_id, sink);
+            }
             // Pause/Resume are wire-only in the V5+ pause-resume
             // protocol; the wrapper generates them by posting the
             // corresponding messages directly. They arrive here as
@@ -867,8 +870,7 @@ impl ClientCore {
             // Caller-initiated requests, offer channel operations, and
             // gpadl operations land in phase 4b-iii..v. Recorded here
             // as unimplemented to keep the match exhaustive.
-            Event::RequestOffers { .. }
-            | Event::Unload { .. }
+            Event::Unload { .. }
             | Event::ModifyConnection { .. }
             | Event::HvsockConnect { .. }
             | Event::OpenChannel { .. }
@@ -910,7 +912,16 @@ impl ClientCore {
             Message::VersionResponse(v, ..) => {
                 self.handle_version_response(v.into(), sink);
             }
-            // Phase 4b-iii and later add offer / gpadl / channel /
+            Message::OfferChannel(offer, ..) => {
+                self.handle_offer(offer, sink);
+            }
+            Message::AllOffersDelivered(..) => {
+                self.handle_offers_delivered(sink);
+            }
+            Message::RescindChannelOffer(rescind, ..) => {
+                self.handle_rescind(rescind, sink);
+            }
+            // Phase 4b-iii-b and later add per-channel / gpadl /
             // hvsock / modify / unload handlers. Silently ignore any
             // stale-phase deliveries in the meantime.
             _ => {}
@@ -1089,6 +1100,119 @@ impl ClientCore {
             params,
         };
         self.send_initiate_contact(next_version, &params, sink);
+    }
+
+    /// Handle [`Event::RequestOffers`] — validate phase, post a
+    /// `RequestOffers` message, and transition to `RequestingOffers`.
+    fn handle_request_offers(&mut self, request_id: RequestId, sink: &mut dyn ActionSink) {
+        let ClientPhase::Connected { version } = *self.phase() else {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::RequestOffers(Err(ConnectError::InvalidState)),
+            });
+            return;
+        };
+        self.outstanding
+            .insert(request_id, PendingRequest::RequestOffers);
+        self.phase = ClientPhase::RequestingOffers {
+            version,
+            request_id,
+            offer_count: 0,
+        };
+        self.post_message(&vmbus_core::protocol::RequestOffers {}, sink);
+    }
+
+    /// Handle a host-originated `OfferChannel` — record the channel
+    /// in the core's map and forward it to the wrapper.
+    fn handle_offer(
+        &mut self,
+        offer: vmbus_core::protocol::OfferChannel,
+        sink: &mut dyn ActionSink,
+    ) {
+        // Duplicate offer for a live channel is a host protocol
+        // violation; drop it rather than panicking.
+        if self.channels.contains_key(&offer.channel_id) {
+            return;
+        }
+        self.channels.insert(
+            offer.channel_id,
+            ChannelEntry {
+                offer,
+                phase: ChannelPhase::Offered,
+                connection_id: 0,
+                gpadls: alloc::collections::BTreeMap::new(),
+                is_client_released: false,
+                modify_request_id: None,
+            },
+        );
+        // Bump the count so the wrapper's caller-side receiver can
+        // reason about the RequestingOffers accumulation length. The
+        // count is informational only; the wrapper doesn't need to
+        // observe it directly.
+        if let ClientPhase::RequestingOffers { offer_count, .. } = &mut self.phase {
+            *offer_count = offer_count.saturating_add(1);
+        }
+        sink.emit(Action::OfferReceived(OfferDescriptor {
+            offer,
+            connection_id: 0,
+        }));
+    }
+
+    /// Handle `AllOffersDelivered` — complete the outstanding
+    /// [`Event::RequestOffers`] and transition back to
+    /// [`ClientPhase::Connected`].
+    fn handle_offers_delivered(&mut self, sink: &mut dyn ActionSink) {
+        let old_phase = core::mem::replace(&mut self.phase, ClientPhase::Disconnected);
+        let ClientPhase::RequestingOffers {
+            version,
+            request_id,
+            ..
+        } = old_phase
+        else {
+            self.phase = old_phase;
+            return;
+        };
+        self.phase = ClientPhase::Connected { version };
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::RequestOffers(Ok(())),
+        });
+    }
+
+    /// Handle a host-originated `RescindChannelOffer` — mark the
+    /// channel as [`ChannelPhase::Revoked`] and forward the rescind
+    /// to the wrapper. The wrapper is responsible for issuing
+    /// [`Event::ReleaseChannel`] once the caller acknowledges.
+    ///
+    /// # Phase 4b-iii-a coverage
+    ///
+    /// Rescind at this phase deals with channels in
+    /// [`ChannelPhase::Offered`], [`ChannelPhase::Restored`], and
+    /// (idempotently) [`ChannelPhase::Revoked`]. Rescinds that arrive
+    /// while a channel is [`ChannelPhase::Opening`] or
+    /// [`ChannelPhase::Opened`] gain their pending-open-cancellation
+    /// and event-flag-cleanup logic in phase 4b-iii-b, along with
+    /// the caller-side `OpenChannel` flow that puts the channel in
+    /// those states in the first place.
+    fn handle_rescind(
+        &mut self,
+        rescind: vmbus_core::protocol::RescindChannelOffer,
+        sink: &mut dyn ActionSink,
+    ) {
+        let Some(entry) = self.channels.get_mut(&rescind.channel_id) else {
+            // Rescind for an unknown channel: host protocol
+            // violation. Drop.
+            return;
+        };
+        // Preserve any pending event flag so 4b-iii-b can free it
+        // once caller-side open flows land — for now only Opened /
+        // Opening carry one.
+        entry.phase = ChannelPhase::Revoked;
+        entry.connection_id = 0;
+        sink.emit(Action::OfferRescinded {
+            channel_id: rescind.channel_id,
+        });
     }
 }
 
@@ -1495,5 +1619,230 @@ mod step_tests {
         core.step(Event::HostMessage(&wire), &mut sink);
         assert!(sink.actions.is_empty());
         assert!(matches!(core.phase(), ClientPhase::Disconnected));
+    }
+
+    // -- Phase 4b-iii-a: offer bookkeeping --------------------------
+
+    /// Advance `core` all the way to [`ClientPhase::Connected`] so a
+    /// per-channel test can start from a stable base.
+    fn connect_to_copper(core: &mut ClientCore, sink: &mut Recording) {
+        core.step(
+            Event::Connect {
+                request_id: RequestId(1),
+                params: connect_params(),
+            },
+            sink,
+        );
+        let response = vmbus_core::protocol::VersionResponse2 {
+            version_response: vmbus_core::protocol::VersionResponse {
+                version_supported: 1,
+                connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+                padding: 0,
+                selected_version_or_connection_id: 1,
+            },
+            supported_features: 0,
+        };
+        let wire = make_host_message(&response);
+        core.step(Event::HostMessage(&wire), sink);
+        sink.actions.clear();
+        assert!(matches!(core.phase(), ClientPhase::Connected { .. }));
+    }
+
+    fn make_offer(id: u32) -> vmbus_core::protocol::OfferChannel {
+        vmbus_core::protocol::OfferChannel {
+            interface_id: Guid::ZERO,
+            instance_id: Guid::ZERO,
+            rsvd: [0; 4],
+            flags: vmbus_core::protocol::OfferFlags::new(),
+            mmio_megabytes: 0,
+            user_defined: vmbus_core::protocol::UserDefinedData::default(),
+            subchannel_index: 0,
+            mmio_megabytes_optional: 0,
+            channel_id: vmbus_core::protocol::ChannelId(id),
+            monitor_id: 0,
+            monitor_allocated: 0,
+            is_dedicated: 0,
+            connection_id: 0,
+        }
+    }
+
+    #[test]
+    fn request_offers_from_wrong_phase_is_rejected() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(5),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(5),
+                result: CompletionResult::RequestOffers(Err(ConnectError::InvalidState)),
+            }
+        ));
+    }
+
+    #[test]
+    fn request_offers_posts_and_transitions_to_requesting_offers() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(42),
+            },
+            &mut sink,
+        );
+        assert_eq!(sink.actions.len(), 1);
+        let _ = expect_post(&sink.actions[0]);
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::RequestingOffers {
+                request_id: RequestId(42),
+                offer_count: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn offer_channel_is_recorded_and_forwarded() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(1),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let wire = make_host_message(&make_offer(7));
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert_eq!(sink.actions.len(), 1);
+        let Action::OfferReceived(descriptor) = &sink.actions[0] else {
+            panic!("unexpected: {:?}", sink.actions[0]);
+        };
+        assert_eq!(descriptor.offer.channel_id.0, 7);
+        // Recorded in the channel map.
+        let entry = core
+            .channels()
+            .get(&vmbus_core::protocol::ChannelId(7))
+            .expect("channel entry");
+        assert!(matches!(entry.phase, ChannelPhase::Offered));
+        // Offer count bumped.
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::RequestingOffers { offer_count: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn duplicate_offer_is_dropped_without_panic() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(1),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+        let wire = make_host_message(&make_offer(9));
+        core.step(Event::HostMessage(&wire), &mut sink);
+        core.step(Event::HostMessage(&wire), &mut sink);
+        // Only one OfferReceived — the second was suppressed.
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(sink.actions[0], Action::OfferReceived(_)));
+    }
+
+    #[test]
+    fn all_offers_delivered_completes_and_returns_to_connected() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(11),
+            },
+            &mut sink,
+        );
+        let wire_offer = make_host_message(&make_offer(1));
+        core.step(Event::HostMessage(&wire_offer), &mut sink);
+        sink.actions.clear();
+
+        let wire = make_host_message(&vmbus_core::protocol::AllOffersDelivered {});
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(11),
+                result: CompletionResult::RequestOffers(Ok(())),
+            }
+        ));
+        assert!(matches!(core.phase(), ClientPhase::Connected { .. }));
+    }
+
+    #[test]
+    fn stray_all_offers_delivered_is_dropped() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        let wire = make_host_message(&vmbus_core::protocol::AllOffersDelivered {});
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(sink.actions.is_empty());
+        assert!(matches!(core.phase(), ClientPhase::Connected { .. }));
+    }
+
+    #[test]
+    fn rescind_marks_channel_revoked_and_forwards() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(1),
+            },
+            &mut sink,
+        );
+        let offer_wire = make_host_message(&make_offer(3));
+        core.step(Event::HostMessage(&offer_wire), &mut sink);
+        sink.actions.clear();
+
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(3),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        assert_eq!(sink.actions.len(), 1);
+        assert!(matches!(
+            &sink.actions[0],
+            Action::OfferRescinded {
+                channel_id: vmbus_core::protocol::ChannelId(3),
+            }
+        ));
+        let entry = core
+            .channels()
+            .get(&vmbus_core::protocol::ChannelId(3))
+            .expect("channel entry survives rescind");
+        assert!(matches!(entry.phase, ChannelPhase::Revoked));
+    }
+
+    #[test]
+    fn rescind_for_unknown_channel_is_dropped_without_panic() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        connect_to_copper(&mut core, &mut sink);
+        let rescind_wire = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(999),
+        });
+        core.step(Event::HostMessage(&rescind_wire), &mut sink);
+        assert!(sink.actions.is_empty());
     }
 }
