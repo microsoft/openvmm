@@ -564,7 +564,9 @@ impl BackingPrivate for CcaBacked {
                     match cca_exit.esr_el2_class() {
                         ExceptionClass::DataAbort => {
                             // get the address that caused the data abort
-                            let address = cca_exit.far_el2();
+                            let far = cca_exit.far_el2();
+                            let hpfar = cca_exit.hpfar_el2();
+                            let address = (hpfar.fipa() << 12) | (far & 0xfff);
                             let iss = IssDataAbort::from(esr_el2.iss());
                             if !iss.isv() {
                                 tracing::warn!(
