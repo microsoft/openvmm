@@ -404,7 +404,6 @@ pub struct RsiRealmConfig {
     hash_algo: u64,
     #[expect(unused)]
     num_aux_planes: u64,
-    #[expect(unused)]
     gicv3_vtr: u64,
 }
 
@@ -412,6 +411,11 @@ impl RsiRealmConfig {
     /// Get the IPA width of the realm
     pub fn ipa_width(&self) -> u64 {
         self.ipa_width
+    }
+
+    /// Get the GICv3 virtual type register reported for the realm.
+    pub fn gicv3_vtr(&self) -> u64 {
+        self.gicv3_vtr
     }
 }
 
