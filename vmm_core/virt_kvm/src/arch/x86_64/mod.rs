@@ -1678,9 +1678,9 @@ impl<'p> Processor for KvmProcessor<'p> {
                     || stop.check().is_err()
                 {
                     // Break out of the loop as soon as there is no pending exit
-                    // (and KVM has reported the current interrupt window, if
-                    // needed).
-                    if !pending_exit && !(refresh_interrupt_window && self.interrupt_window_stale) {
+                    // and no pending refresh of the interrupt window.
+                    let refresh_pending = refresh_interrupt_window && self.interrupt_window_stale;
+                    if !pending_exit && !refresh_pending {
                         self.inner.eval.store(false, Ordering::Relaxed);
                         break;
                     }
