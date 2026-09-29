@@ -33,6 +33,8 @@ pub enum TestContentConfig {
         built_artifacts: VmmTestsBuiltArtifacts,
         /// Artifacts to download that are pre-built as part of OpenVMM deps
         prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
+        /// Override the UEFI firmware flavor used by the tests
+        uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
 
         // TODO: refactor these last two to use one artifact per arch so that
         // they can be part of `VmmTestsPreBuiltArtifactsSelections`.
@@ -160,6 +162,7 @@ impl SimpleFlowNode for Node {
                     test_content_dir,
                     built_artifacts,
                     prebuilt_artifacts,
+                    uefi_firmware_flavor,
                     needs_virtio_win_drivers,
                     needs_release_igvm,
                 } => {
@@ -184,6 +187,7 @@ impl SimpleFlowNode for Node {
                         built_artifacts,
                         Some((
                             prebuilt_artifacts,
+                            uefi_firmware_flavor,
                             needs_virtio_win_drivers,
                             needs_release_igvm,
                         )),
@@ -241,8 +245,12 @@ impl SimpleFlowNode for Node {
             .ok()
             .and_then(|a| a.clone());
 
-        if let Some((prebuilt_artifacts, needs_virtio_win_drivers, needs_release_igvm)) =
-            prebuilt_artifacts
+        if let Some((
+            prebuilt_artifacts,
+            uefi_firmware_flavor,
+            needs_virtio_win_drivers,
+            needs_release_igvm,
+        )) = prebuilt_artifacts
         {
             let initialized: ReadVar<()> =
                 ctx.reqv(|v| crate::init_vmm_tests_content_dir::Request {
@@ -250,6 +258,7 @@ impl SimpleFlowNode for Node {
                     vmm_tests_target: target.clone(),
                     built_artifacts,
                     prebuilt_artifacts,
+                    uefi_firmware_flavor,
                     is_repo_root: test_content_dir_as_repo_root,
                     needs_incubator_profiles: needs_incubator,
                     needs_virtio_win_drivers,

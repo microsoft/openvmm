@@ -8,7 +8,7 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 /// Firmware core and toolchain used by the RELEASE build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum FirmwareFlavor {
     LegacyVs2022,
     LegacyClangPdb,
@@ -48,8 +48,6 @@ flowey_config! {
     pub struct Config {
         /// Specify version of mu_msvm to use
         pub version: Option<String>,
-        /// Override the firmware core and toolchain for an architecture
-        pub flavors: BTreeMap<CommonArch, FirmwareFlavor>,
         /// Use a local MSVM.fd path, keyed by architecture
         pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
@@ -60,6 +58,12 @@ flowey_request! {
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: CommonArch,
+            msvm_fd: WriteVar<PathBuf>
+        },
+        /// Download a specific mu_msvm firmware flavor for the given arch
+        GetCustomMsvmFd {
+            arch: CommonArch,
+            flavor: FirmwareFlavor,
             msvm_fd: WriteVar<PathBuf>
         }
     }
@@ -82,13 +86,21 @@ impl FlowNodeWithConfig for Node {
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
         let version = config.version;
-        let flavors = config.flavors;
         let local_paths = config.local_paths;
-        let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
+        let mut reqs: BTreeMap<(CommonArch, FirmwareFlavor), Vec<WriteVar<PathBuf>>> =
+            BTreeMap::new();
 
         for req in requests {
             match req {
-                Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
+                Request::GetMsvmFd { arch, msvm_fd } => reqs
+                    .entry((arch, FirmwareFlavor::default_for_arch(arch)))
+                    .or_default()
+                    .push(msvm_fd),
+                Request::GetCustomMsvmFd {
+                    arch,
+                    flavor,
+                    msvm_fd,
+                } => reqs.entry((arch, flavor)).or_default().push(msvm_fd),
             }
         }
 
@@ -114,7 +126,7 @@ impl FlowNodeWithConfig for Node {
                     .map(|(arch, var)| (arch, var.claim(ctx)))
                     .collect();
                 move |rt| {
-                    for (arch, out_vars) in reqs {
+                    for ((arch, _flavor), out_vars) in reqs {
                         let msvm_fd_var = local_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })?;
@@ -141,11 +153,7 @@ impl FlowNodeWithConfig for Node {
         let version = version.expect("local paths handled above");
         let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
-        for (arch, out_vars) in reqs {
-            let flavor = flavors
-                .get(&arch)
-                .copied()
-                .unwrap_or_else(|| FirmwareFlavor::default_for_arch(arch));
+        for ((arch, flavor), out_vars) in reqs {
             let file_name = flavor.file_name(arch)?;
 
             let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {

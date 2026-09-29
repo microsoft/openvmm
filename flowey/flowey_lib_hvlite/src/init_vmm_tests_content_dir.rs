@@ -584,6 +584,8 @@ flowey_request! {
         pub built_artifacts: VmmTestsBuiltArtifacts,
         /// Artifacts to download that are pre-built as part of OpenVMM deps
         pub prebuilt_artifacts: VmmTestsPreBuiltArtifactsSelections,
+        /// Override the UEFI firmware flavor used by the tests
+        pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
         /// Copy files necessary to use the test content dir as a minimal repo root.
         ///
         /// This is useful for running tests on machines without a local clone.
@@ -621,6 +623,7 @@ impl SimpleFlowNode for Node {
             vmm_tests_target,
             built_artifacts,
             prebuilt_artifacts,
+            uefi_firmware_flavor,
             is_repo_root,
             needs_incubator_profiles,
             needs_virtio_win_drivers,
@@ -671,15 +674,29 @@ impl SimpleFlowNode for Node {
         });
 
         let uefi_x64 = prebuilt_artifacts.uefi_x64.then(|| {
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                arch: CommonArch::X86_64,
-                msvm_fd: v,
+            ctx.reqv(|msvm_fd| match uefi_firmware_flavor {
+                Some(flavor) => crate::download_uefi_mu_msvm::Request::GetCustomMsvmFd {
+                    arch: CommonArch::X86_64,
+                    flavor,
+                    msvm_fd,
+                },
+                None => crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                    arch: CommonArch::X86_64,
+                    msvm_fd,
+                },
             })
         });
         let uefi_aarch64 = prebuilt_artifacts.uefi_aarch64.then(|| {
-            ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                arch: CommonArch::Aarch64,
-                msvm_fd: v,
+            ctx.reqv(|msvm_fd| match uefi_firmware_flavor {
+                Some(flavor) => crate::download_uefi_mu_msvm::Request::GetCustomMsvmFd {
+                    arch: CommonArch::Aarch64,
+                    flavor,
+                    msvm_fd,
+                },
+                None => crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                    arch: CommonArch::Aarch64,
+                    msvm_fd,
+                },
             })
         });
 

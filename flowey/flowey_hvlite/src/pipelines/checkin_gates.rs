@@ -25,6 +25,7 @@ use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonProfile;
 use flowey_lib_hvlite::common::CommonTriple;
+use flowey_lib_hvlite::download_uefi_mu_msvm::FirmwareFlavor;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::ResolveVmmTestsBuiltArtifacts;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::vmm_tests_artifact_builders;
@@ -55,6 +56,8 @@ enum PipelineConfig {
     Ci,
     /// Release variant of the `Pr` pipeline.
     PrRelease,
+    /// Nightly check-in gates with Patina ClangPDB firmware.
+    PatinaNightly,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -76,8 +79,13 @@ impl IntoPipeline for CheckinGatesCli {
             local_run_args,
         } = self;
 
+        let patina_nightly = matches!(config, PipelineConfig::PatinaNightly);
+        if patina_nightly && !matches!(backend_hint, PipelineBackendHint::Github) {
+            anyhow::bail!("Patina nightly requires the GitHub backend");
+        }
+
         let release = match config {
-            PipelineConfig::Ci | PipelineConfig::PrRelease => true,
+            PipelineConfig::Ci | PipelineConfig::PrRelease | PipelineConfig::PatinaNightly => true,
             PipelineConfig::Pr => false,
         };
 
@@ -130,6 +138,14 @@ impl IntoPipeline for CheckinGatesCli {
                     pipeline
                         .gh_set_pr_triggers(triggers)
                         .gh_set_name("[Optional] OpenVMM Release PR");
+                }
+                PipelineConfig::PatinaNightly => {
+                    pipeline
+                        .gh_set_name("OpenVMM Patina Nightly")
+                        .gh_add_schedule_trigger(GhScheduleTriggers {
+                            cron: "0 19 * * *".into(),
+                            timezone: Some("America/Los_Angeles".into()),
+                        });
                 }
             }
         }
@@ -1178,6 +1194,8 @@ impl IntoPipeline for CheckinGatesCli {
                                         } else {
                                             BTreeSet::new()
                                         },
+                                        uefi_firmware_flavor: patina_nightly
+                                            .then_some(FirmwareFlavor::PatinaClangPdb),
                                         // mi secure uses release_cfg=false to select dev manifests (with larger
                                         // VTL2 memory) since mi-secure adds overhead that may not fit in
                                         // the tighter release memory budget.
@@ -1838,6 +1856,8 @@ impl IntoPipeline for CheckinGatesCli {
                         test_content_dir: None,
                         built_artifacts: resolve_vmm_tests_artifacts(ctx),
                         prebuilt_artifacts,
+                        uefi_firmware_flavor: patina_nightly
+                            .then_some(FirmwareFlavor::PatinaClangPdb),
                         needs_virtio_win_drivers: true,
                         needs_release_igvm: !matches!(backend_hint, PipelineBackendHint::Ado),
                     },
