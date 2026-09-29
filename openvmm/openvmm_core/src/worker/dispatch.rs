@@ -1086,6 +1086,8 @@ struct LoadedVmInner {
     /// Each holds the port's live bus-range handle, read at ACPI-build time
     /// (after PCI resource assignment) to derive the device bus.
     generic_initiator_sources: Vec<GenericInitiatorSource>,
+    /// Final BAR assignments from the most recent PCI resource assignment.
+    assigned_pci_bars: Vec<ecam_config_access::AssignedPciBar>,
     pcie_hotplug_devices: Vec<(
         String,
         vmotherboard::DynamicDeviceUnit,
@@ -1222,6 +1224,104 @@ struct GenericInitiatorSource {
     vnode: u32,
     /// Optional coherent-memory range associated with the device.
     memory_range: Option<MemoryRange>,
+}
+
+fn validate_generic_initiator_memory_ranges(
+    generic_initiators: &[GenericInitiator],
+    assigned_bars: &[ecam_config_access::AssignedPciBar],
+    ram_ranges: impl IntoIterator<Item = MemoryRange>,
+) -> anyhow::Result<()> {
+    let ram_ranges = ram_ranges.into_iter().collect::<Vec<_>>();
+    let mut coherent_ranges = Vec::new();
+
+    for initiator in generic_initiators {
+        let Some(memory_range) = initiator.memory_range else {
+            continue;
+        };
+        let is_initiator = |bar: &ecam_config_access::AssignedPciBar| {
+            bar.segment == initiator.segment
+                && bar.bus == initiator.bus
+                && bar.device == initiator.device
+                && bar.function == initiator.function
+        };
+        let bar4 = assigned_bars
+            .iter()
+            .filter(|bar| is_initiator(bar))
+            .find(|bar| bar.index == 4)
+            .with_context(|| {
+                format!(
+                    "generic initiator {:04x}:{:02x}:{:02x}.{} has coherent memory {} but no assigned BAR4",
+                    initiator.segment,
+                    initiator.bus,
+                    initiator.device,
+                    initiator.function,
+                    memory_range
+                )
+            })?;
+
+        anyhow::ensure!(
+            bar4.range.contains(&memory_range),
+            "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} is outside assigned BAR4 {}",
+            initiator.segment,
+            initiator.bus,
+            initiator.device,
+            initiator.function,
+            memory_range,
+            bar4.range
+        );
+
+        if let Some(ram) = ram_ranges.iter().find(|ram| ram.overlaps(&memory_range)) {
+            anyhow::bail!(
+                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps guest RAM {}",
+                initiator.segment,
+                initiator.bus,
+                initiator.device,
+                initiator.function,
+                memory_range,
+                ram
+            );
+        }
+
+        if let Some(bar) = assigned_bars
+            .iter()
+            .filter(|bar| !(is_initiator(bar) && bar.index == 4))
+            .find(|bar| bar.range.overlaps(&memory_range))
+        {
+            anyhow::bail!(
+                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps BAR{} {} of {:04x}:{:02x}:{:02x}.{}",
+                initiator.segment,
+                initiator.bus,
+                initiator.device,
+                initiator.function,
+                memory_range,
+                bar.index,
+                bar.range,
+                bar.segment,
+                bar.bus,
+                bar.device,
+                bar.function
+            );
+        }
+
+        if let Some(other) = coherent_ranges
+            .iter()
+            .find(|other: &&MemoryRange| other.overlaps(&memory_range))
+        {
+            anyhow::bail!(
+                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps another coherent-memory range {}",
+                initiator.segment,
+                initiator.bus,
+                initiator.device,
+                initiator.function,
+                memory_range,
+                other
+            );
+        }
+
+        coherent_ranges.push(memory_range);
+    }
+
+    Ok(())
 }
 
 impl InitializedVm {
@@ -3509,6 +3609,7 @@ impl InitializedVm {
                 pcie_host_bridges,
                 pcie_root_complexes,
                 generic_initiator_sources,
+                assigned_pci_bars: Vec::new(),
                 pcie_hotplug_devices: Vec::new(),
                 dynamic_vpci_devices: Vec::new(),
             },
@@ -3595,6 +3696,15 @@ impl LoadedVmInner {
                 }
             })
             .collect();
+        validate_generic_initiator_memory_ranges(
+            &generic_initiators,
+            &self.assigned_pci_bars,
+            self.mem_layout
+                .ram()
+                .iter()
+                .map(|ram| ram.range)
+                .chain(self.mem_layout.vtl2_range()),
+        )?;
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
@@ -4155,7 +4265,8 @@ impl LoadedVm {
         self.state_units.stop().await;
         drop(stop_guard);
 
-        result
+        self.inner.assigned_pci_bars = result?;
+        Ok(())
     }
 
     pub async fn run(
@@ -5074,6 +5185,123 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
                 .supports_pci()?
                 .pci_cfg_write_with_routing(access_type, address, value),
         )
+    }
+}
+
+#[cfg(test)]
+mod generic_initiator_memory_tests {
+    use super::*;
+
+    fn initiator(memory_range: MemoryRange) -> GenericInitiator {
+        GenericInitiator {
+            segment: 0,
+            bus: 1,
+            device: 0,
+            function: 0,
+            vnode: 1,
+            memory_range: Some(memory_range),
+        }
+    }
+
+    fn bar(
+        bus: u8,
+        device: u8,
+        index: u8,
+        range: MemoryRange,
+    ) -> ecam_config_access::AssignedPciBar {
+        ecam_config_access::AssignedPciBar {
+            segment: 0,
+            bus,
+            device,
+            function: 0,
+            index,
+            range,
+        }
+    }
+
+    #[test]
+    fn accepts_gb200_coherent_memory_inside_bar4() {
+        validate_generic_initiator_memory_ranges(
+            &[initiator(MemoryRange::new(0x8000_0000_00..0xae41_f000_00))],
+            &[bar(
+                1,
+                0,
+                4,
+                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+            )],
+            [MemoryRange::new(0..0x20_0000_0000)],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_coherent_memory_outside_bar4() {
+        let error = validate_generic_initiator_memory_ranges(
+            &[initiator(MemoryRange::new(0x8000_0000_00..0xc000_0010_00))],
+            &[bar(
+                1,
+                0,
+                4,
+                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+            )],
+            [],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outside assigned BAR4"));
+    }
+
+    #[test]
+    fn rejects_coherent_memory_overlapping_ram() {
+        let range = MemoryRange::new(0x8000_0000_00..0x8000_1000_00);
+        let error = validate_generic_initiator_memory_ranges(
+            &[initiator(range)],
+            &[bar(
+                1,
+                0,
+                4,
+                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+            )],
+            [range],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("overlaps guest RAM"));
+    }
+
+    #[test]
+    fn rejects_coherent_memory_overlapping_another_bar() {
+        let range = MemoryRange::new(0x8000_0000_00..0x8000_1000_00);
+        let error = validate_generic_initiator_memory_ranges(
+            &[initiator(range)],
+            &[
+                bar(1, 0, 4, MemoryRange::new(0x8000_0000_00..0xc000_0000_00)),
+                bar(2, 0, 0, range),
+            ],
+            [],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("overlaps BAR0"));
+    }
+
+    #[test]
+    fn rejects_overlapping_coherent_memory_ranges() {
+        let first = MemoryRange::new(0x8000_0000_00..0x8000_2000_00);
+        let second = MemoryRange::new(0x8000_1000_00..0x8000_3000_00);
+        let error = validate_generic_initiator_memory_ranges(
+            &[initiator(first), initiator(second)],
+            &[bar(
+                1,
+                0,
+                4,
+                MemoryRange::new(0x8000_0000_00..0xc000_0000_00),
+            )],
+            [],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("overlaps another coherent-memory range")
+        );
     }
 }
 

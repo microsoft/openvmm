@@ -70,6 +70,28 @@ pub struct AssignmentParams {
     pub preserve_bars: bool,
 }
 
+/// A final BAR assignment produced by PCI resource allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssignedBar {
+    /// BAR register index.
+    pub index: u8,
+    /// Assigned MMIO range.
+    pub range: MemoryRange,
+}
+
+/// Final BAR assignments for one PCI function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedDevice {
+    /// Assigned bus number.
+    pub bus: u8,
+    /// Device number.
+    pub device: u8,
+    /// Function number.
+    pub function: u8,
+    /// Assigned endpoint or bridge BARs.
+    pub bars: Vec<AssignedBar>,
+}
+
 /// Assign PCI resources (bus numbers and BAR addresses) for a host bridge.
 ///
 /// This walks the PCI topology starting at `params.start_bus`, assigns bus
@@ -79,10 +101,47 @@ pub async fn assign_pci_resources(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
+    assign_pci_resources_with_report(cfg, params)
+        .await
+        .map(drop)
+}
+
+/// Assign PCI resources and return the final BAR map.
+///
+/// The report contains the exact addresses and sizes already discovered by
+/// the allocator, avoiding a second destructive BAR-probing cycle.
+pub async fn assign_pci_resources_with_report(
+    cfg: &mut impl PciConfigAccess,
+    params: &AssignmentParams,
+) -> Result<Vec<AssignedDevice>, AssignmentError> {
     let mut devices = enumerate::enumerate_and_probe(cfg, params).await?;
     assign::assign_addresses(&mut devices, params)?;
     assign::program_assignments(cfg, &devices).await;
-    Ok(())
+    Ok(collect_assignments(&devices))
+}
+
+fn collect_assignments(devices: &[enumerate::DiscoveredDevice]) -> Vec<AssignedDevice> {
+    let mut assignments = Vec::new();
+    for device in devices {
+        assignments.push(AssignedDevice {
+            bus: device.bus,
+            device: device.device,
+            function: device.function,
+            bars: device
+                .bars
+                .iter()
+                .map(|bar| {
+                    let address = bar.address.expect("address assignment completed");
+                    AssignedBar {
+                        index: bar.index,
+                        range: MemoryRange::new(address..address + bar.size),
+                    }
+                })
+                .collect(),
+        });
+        assignments.extend(collect_assignments(&device.children));
+    }
+    assignments
 }
 
 /// Errors during resource assignment.
