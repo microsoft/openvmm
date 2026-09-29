@@ -1605,8 +1605,18 @@ impl<'p> Processor for KvmProcessor<'p> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
         // The VP state may have changed while the VP was stopped (e.g., by a
-        // restore), so the interrupt window that KVM last reported is stale.
+        // restore or a debugger), so the interrupt window that KVM last
+        // reported is stale.
         self.interrupt_window_stale = true;
+        // KVM does not wake a halted VP just to report an open interrupt
+        // window, so if a PIC interrupt was still waiting for the window when
+        // the VP stopped, check the window again: the new VP state may have
+        // opened it.
+        if self.runner.interrupt_window_requested() {
+            self.inner
+                .request_interrupt_window
+                .store(true, Ordering::Relaxed);
+        }
 
         loop {
             self.inner.needs_yield.maybe_yield().await;

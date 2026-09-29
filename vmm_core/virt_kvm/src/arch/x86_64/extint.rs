@@ -254,12 +254,13 @@ mod tests {
         });
     }
 
-    #[test]
-    #[ignore = "requires access to /dev/kvm"]
-    fn stale_interrupt_window_is_refreshed() {
-        check_extint(false, |runner, vp| {
+    /// Checks that KVM reports the interrupt window for the current state of a
+    /// VP (halted, if `halted` is set) once any pending exit is completed.
+    fn check_stale_interrupt_window(halted: bool) {
+        check_extint(halted, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
+            assert!(!runner.interrupt_window_requested());
 
             // Disable interrupts from user mode, as a restore might.
             let mut regs = vp.get_regs().unwrap();
@@ -267,12 +268,29 @@ mod tests {
             vp.set_regs(&regs).unwrap();
             refresh_interrupt_window(runner);
             assert!(!runner.check_or_request_interrupt_window());
+            assert!(runner.interrupt_window_requested());
 
+            // Enable them again, as a debugger might. The window request is
+            // still registered, but KVM would not wake a halted VP to report
+            // that the window is now open, so check the window again.
             regs.rflags |= RFLAGS_IF;
             vp.set_regs(&regs).unwrap();
+            assert!(runner.interrupt_window_requested());
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
             inject(vp, VECTOR).unwrap();
         });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn stale_interrupt_window_is_refreshed() {
+        check_stale_interrupt_window(false);
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn stale_interrupt_window_is_refreshed_while_halted() {
+        check_stale_interrupt_window(true);
     }
 }

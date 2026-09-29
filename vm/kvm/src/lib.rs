@@ -2058,6 +2058,15 @@ impl<'a> VpRunner<'a> {
         }
     }
 
+    /// Returns whether an exit is requested for when the interrupt window
+    /// opens (see [`Self::check_or_request_interrupt_window`]).
+    ///
+    /// The request stays registered until [`Self::run`] returns
+    /// [`Exit::InterruptWindow`].
+    pub fn interrupt_window_requested(&mut self) -> bool {
+        self.run_data().request_interrupt_window != 0
+    }
+
     /// Queues an extint interrupt with `KVM_INTERRUPT`.
     ///
     /// KVM delivers the interrupt once the guest can take it, exiting from a
