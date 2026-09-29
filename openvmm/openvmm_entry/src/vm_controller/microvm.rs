@@ -29,6 +29,13 @@ pub(crate) struct MicrovmController {
     pub(crate) snapshot_destination: Option<PathBuf>,
     /// Sandbox capture tier of a guest-requested snapshot.
     pub(crate) snapshot_tier: Option<crate::cli_args::microvm::SnapshotTierCli>,
+    /// Sandbox-block identity policy recorded in a captured snapshot.
+    pub(crate) snapshot_block_identity: crate::cli_args::microvm::SnapshotBlockIdentityCli,
+    /// Caller-authenticated immutable storage generation.
+    pub(crate) snapshot_generation_id: Option<[u8; 16]>,
+    /// Restore-time materialization policy recorded for paired scratch.
+    pub(crate) snapshot_scratch_restore_mode:
+        crate::cli_args::microvm::SnapshotScratchRestoreModeCli,
     /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
     pub(crate) snapshot_quiesce_timeout: Duration,
     /// Hypervisor backend recorded in captured machine contracts.
@@ -288,9 +295,12 @@ impl VmController {
                     (filesystem, root_path.as_path(), attachment.clone())
                 })
                 .collect();
-            let mut blocks = crate::storage_builder::microvm::snapshot_block_contract(
+            let mut blocks = crate::storage_builder::microvm::capture_snapshot_block_contract(
                 &self.microvm.resources.sandbox_block_sources,
                 scratch_policy,
+                self.microvm.snapshot_block_identity,
+                self.microvm.snapshot_generation_id,
+                self.microvm.snapshot_scratch_restore_mode.manifest_name(),
             )?;
             if self.microvm.snapshot_tier
                 == Some(crate::cli_args::microvm::SnapshotTierCli::Platform)

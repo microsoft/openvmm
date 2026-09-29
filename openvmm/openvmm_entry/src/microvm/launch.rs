@@ -10,6 +10,8 @@ use super::restore::ExpectedRestoreContract;
 use super::validate_microvm_filesystem_private_storage;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
+use crate::cli_args::microvm::SnapshotBlockIdentityCli;
+use crate::cli_args::microvm::SnapshotScratchRestoreModeCli;
 use crate::vm_controller::MicrovmController;
 use anyhow::Context;
 use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
@@ -35,6 +37,9 @@ pub(crate) struct MicrovmLaunch {
     filesystem_slot: bool,
     filesystems: Vec<MicrovmFilesystemConfig>,
     snapshot_destination: Option<PathBuf>,
+    snapshot_block_identity: SnapshotBlockIdentityCli,
+    snapshot_generation_id: Option<[u8; 16]>,
+    snapshot_scratch_restore_mode: SnapshotScratchRestoreModeCli,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
     snapshot_memory_handle: Option<std::fs::File>,
     restore: MicrovmRestore,
@@ -139,6 +144,18 @@ impl MicrovmLaunch {
             filesystem_slot,
             filesystems: vm_config.microvm.filesystems.clone(),
             snapshot_destination,
+            snapshot_block_identity: opt
+                .microvm
+                .snapshot_block_identity
+                .unwrap_or(SnapshotBlockIdentityCli::Sha256),
+            snapshot_generation_id: opt
+                .microvm
+                .snapshot_generation_id
+                .map(|generation| generation.0),
+            snapshot_scratch_restore_mode: opt
+                .microvm
+                .snapshot_scratch_restore_mode
+                .unwrap_or(SnapshotScratchRestoreModeCli::PrivateCopy),
             snapshot_memory_file,
             snapshot_memory_handle,
             restore,
@@ -224,9 +241,16 @@ impl MicrovmLaunch {
         } else {
             MicrovmSnapshotScratchPolicy::Fresh
         };
-        let sandbox_blocks = crate::storage_builder::microvm::snapshot_block_contract(
+        let saved_blocks = manifest
+            .machine_contract
+            .as_ref()
+            .context("microVM restore requires a machine contract")?
+            .microvm_sandbox_blocks
+            .as_slice();
+        let sandbox_blocks = crate::storage_builder::microvm::restore_snapshot_block_contract(
             &self.resources.sandbox_block_sources,
             scratch_policy,
+            saved_blocks,
         )?;
         let resources = &self.resources;
         Ok(Some((
@@ -277,6 +301,9 @@ impl MicrovmLaunch {
             snapshot_requests,
             snapshot_destination: self.snapshot_destination,
             snapshot_tier: opt.microvm.snapshot_tier,
+            snapshot_block_identity: self.snapshot_block_identity,
+            snapshot_generation_id: self.snapshot_generation_id,
+            snapshot_scratch_restore_mode: self.snapshot_scratch_restore_mode,
             snapshot_quiesce_timeout: Duration::from_millis(
                 opt.microvm.snapshot_quiesce_timeout_ms,
             ),
