@@ -244,15 +244,16 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                     page_count = pfns.len(),
                     "successfully modified GPA page immutable=false after PSP call for MMIO unblock"
                 ),
-                Err(e) => {
+                Err((e, processed)) => {
                     tracing::error!(
                         ?e,
                         "failed to modify GPA page immutability=false for MMIO unblock"
                     );
                     panic!(
-                        "failed to clear GPA page immutability for MMIO unblock, {} pages \
-                         left immutable with the range already validated: {e:?}",
-                        pfns.len()
+                        "failed to clear GPA page immutability for MMIO unblock, {processed} of \
+                         {} pages cleared, {} left immutable with the range already validated: {e:?}",
+                        pfns.len(),
+                        pfns.len() - processed
                     );
                 }
             }
@@ -436,8 +437,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 Err((e, processed)) => {
                     panic!(
                         "failed to clear GPA page immutability for MMIO block, {processed} of \
-                         {} pages left immutable: {e:?}",
-                        pfns.len()
+                         {} pages cleared, {} left immutable: {e:?}",
+                        pfns.len(),
+                        pfns.len() - processed
                     );
                 }
             }
@@ -458,8 +460,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
                 Err((e, processed)) => {
                     panic!(
                         "failed to flip GPA pages back to shared for MMIO block, {processed} of \
-                         {} pages left private: {e:?}",
-                        pfns.len()
+                         {} pages flipped, {} left private: {e:?}",
+                        pfns.len(),
+                        pfns.len() - processed
                     );
                 }
             }
