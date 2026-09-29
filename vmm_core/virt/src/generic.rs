@@ -640,13 +640,17 @@ pub trait AcceptInitialPages {
 pub trait PartitionTimeControl {
     /// Freezes partition time until [`Self::thaw_time`] is called.
     ///
-    /// All VPs must be stopped. This is a no-op if time is already frozen.
+    /// The caller must ensure that all VPs are stopped. Violating this
+    /// precondition has backend-specific behavior; implementations need not
+    /// check it. This is a no-op if time is already frozen.
     fn freeze_time(&self);
 
     /// Resumes partition time, including any time state replaced by reset or
     /// VTL scrub.
     ///
-    /// All VPs must be stopped. This is a no-op for time that is already running.
+    /// The caller must ensure that all VPs are stopped. Violating this
+    /// precondition has backend-specific behavior; implementations need not
+    /// check it. This is a no-op for time that is already running.
     fn thaw_time(&self);
 }
 

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tests for partition time control across VM lifecycle transitions.
+
 use super::*;
 use futures::executor::block_on;
 use parking_lot::Mutex;

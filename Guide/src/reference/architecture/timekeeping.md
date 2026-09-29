@@ -84,10 +84,10 @@ Monotonicity does not extend across reset or restore of an older snapshot.
 ## Partition reference time and processor counters
 
 [`ReferenceTimeSource`][reference-time] is a read interface, not a clock
-controller. Its result contains a reference count and optionally a UTC
-timestamp sampled with it. A missing UTC value means that the source
-cannot cheaply provide a correlated sample; it does not mean that the
-reference count itself represents UTC.
+controller. A read returns a reference count and may also return a UTC
+timestamp captured at the same instant, allowing the two values to be
+correlated. The reference count is not itself UTC. A missing UTC value means
+that the source cannot cheaply provide the correlated timestamp.
 
 For Hyper-V-compatible guests, the reference counter is a partition-wide
 elapsed-time interface. On x86, guests can read `HV_X64_MSR_TIME_REF_COUNT`.
