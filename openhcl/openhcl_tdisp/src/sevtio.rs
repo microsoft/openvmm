@@ -334,7 +334,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
     fn tdisp_block_mmio<'a>(
         &'a self,
-        _target_vtl: Vtl,
+        target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
@@ -354,12 +354,38 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             let length_in_pages = length_in_bytes / hvdef::HV_PAGE_SIZE;
             let pfns: Vec<u64> = (0..length_in_pages).map(|i| base_pfn + i).collect();
             let mshv = Self::open_mshv_hvcall()?;
+            let mshv_vtl = Self::open_mshv_vtl()?;
 
             // Convert the page count before touching page state, so an
             // unrepresentable range is rejected while it is still recoverable.
             let subrange_base = base_gpa;
             let subrange_page_count =
                 u32::try_from(length_in_pages).context("MMIO range is more than u32::MAX pages")?;
+
+            // Take the guest's access away before anything else, so it cannot
+            // reach the range while the firmware is invalidating it.
+            match mshv_vtl.rmpadjust_pages(
+                MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + length_in_pages)),
+                SevRmpAdjust::new()
+                    .with_enable_read(false)
+                    .with_enable_write(false)
+                    .with_target_vmpl(Self::vtl_to_vmpl(target_vtl))
+                    .with_vmsa(false),
+                false,
+            ) {
+                Ok(_) => tracelimit::info_ratelimited!(
+                    page_count = pfns.len(),
+                    "successfully revoked guest RMP permissions for MMIO block"
+                ),
+                Err(e) => {
+                    tracing::error!(?e, "failed to revoke guest RMP permissions for MMIO block");
+                    panic!(
+                        "failed to revoke guest RMP permissions for MMIO block, the guest may \
+                         retain access to {} pages: {e:?}",
+                        pfns.len()
+                    );
+                }
+            }
 
             // Modify the pages to private and immutable before de-validation.
             match mshv.modify_gpa_visibility_and_immutability(
