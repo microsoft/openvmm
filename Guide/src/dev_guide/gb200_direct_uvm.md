@@ -8,6 +8,31 @@ PASID/SVA and PCIe ATS are independent capabilities. A guest SSID width
 requests kernel-owned PASID support without enabling endpoint ATS. ATS is an
 additional, explicit opt-in and remains disabled by default.
 
+## Host preparation
+
+The DIRECT path uses VFIO cdev and iommufd, not the legacy VFIO type1
+container. On ARM64 MSHV, the platform does not currently advertise isolated
+MSI support to iommufd even though assigned-device interrupts are delivered
+through the Hyper-V/GICv2m path. Consequently, iommufd rejects
+`VFIO_DEVICE_BIND_IOMMUFD` with `EPERM` unless its explicit unsafe-interrupt
+override is enabled.
+
+Enable it once per host boot, after loading iommufd and before launching
+OpenVMM:
+
+```sh
+sudo modprobe iommufd
+echo Y | sudo tee /sys/module/iommufd/parameters/allow_unsafe_interrupts
+```
+
+This is `iommufd.allow_unsafe_interrupts`, not the legacy
+`vfio_iommu_type1.allow_unsafe_interrupts` parameter. The setting weakens the
+kernel interrupt-isolation safety check and must be limited to platforms where
+the VMM/Hyper-V interrupt path has been separately validated. It is a runtime
+module parameter and resets on reboot. A persistent deployment may instead use
+the kernel command line `iommufd.allow_unsafe_interrupts=1`, subject to the same
+security qualification.
+
 ## Command line
 
 PASID/SVA-only is the default mode:
