@@ -219,8 +219,9 @@ mod gicd {
         pending: Vec<u32>,
         /// Bitmap of 32-INTID words that contain pending or asserted SPIs.
         pending_word_summary: u32,
-        /// SPIs reserved for injection or represented in a CCA GIC list
-        /// register, indexed by INTID.
+        /// SPIs reserved for injection or represented in the CCA virtual
+        /// active/pending list, indexed by INTID. Some entries in that list can
+        /// live outside the implemented hardware list registers.
         #[inspect(iter_by_index)]
         in_flight: Vec<Option<u32>>,
         /// Reserved or in-flight SPI INTIDs owned by each VP.
