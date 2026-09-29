@@ -99,7 +99,7 @@ pub async fn build_dynamic_vpci_device(
                             doorbell_registration: ctx.doorbell_registration,
                             shared_mem_mapper: ctx.shared_mem_mapper,
                             #[cfg(target_os = "linux")]
-                            direct_iommu_vm_fd: None,
+                            direct_iommu: None,
                         },
                     )
                     .await
@@ -245,7 +245,7 @@ pub async fn build_pcie_device(
     chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
     dma_target: &DmaTarget,
-    #[cfg(target_os = "linux")] direct_iommu_vm_fd: Option<std::os::fd::BorrowedFd<'_>>,
+    #[cfg(target_os = "linux")] direct_iommu: Option<pci_resources::DirectIommuResolveContext<'_>>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, ctx.resource.id());
     let device_builder = chipset_builder
@@ -257,7 +257,7 @@ pub async fn build_pcie_device(
         ctx,
         dma_target,
         #[cfg(target_os = "linux")]
-        direct_iommu_vm_fd,
+        direct_iommu,
     )
     .await?;
 
@@ -270,7 +270,7 @@ pub async fn resolve_and_add_pci_device(
     device_builder: ArcMutexChipsetDeviceBuilder<'_, '_, ErasedChipsetDevice>,
     ctx: PciDeviceResolveContext<'_>,
     dma_target: &DmaTarget,
-    #[cfg(target_os = "linux")] direct_iommu_vm_fd: Option<std::os::fd::BorrowedFd<'_>>,
+    #[cfg(target_os = "linux")] direct_iommu: Option<pci_resources::DirectIommuResolveContext<'_>>,
 ) -> anyhow::Result<Arc<closeable_mutex::CloseableMutex<ErasedChipsetDevice>>> {
     let device = device_builder
         .try_add_async(async |services| {
@@ -284,7 +284,7 @@ pub async fn resolve_and_add_pci_device(
                         doorbell_registration: ctx.doorbell_registration,
                         shared_mem_mapper: ctx.shared_mem_mapper,
                         #[cfg(target_os = "linux")]
-                        direct_iommu_vm_fd,
+                        direct_iommu,
                     },
                 )
                 .await
