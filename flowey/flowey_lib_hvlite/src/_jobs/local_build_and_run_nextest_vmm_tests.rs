@@ -230,11 +230,6 @@ impl SimpleFlowNode for Node {
                 recipe: custom_recipe,
                 custom_target: None,
                 extra_features: BTreeSet::new(),
-                extra_command_line: (build.vmfirmwareigvm_cvm
-                    && recipe == OpenhclIgvmRecipe::X64Cvm)
-                    .then(|| {
-                        petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER.into()
-                    }),
                 disable_secure_avic,
                 confidential_debug: true,
                 openhcl_igvm,

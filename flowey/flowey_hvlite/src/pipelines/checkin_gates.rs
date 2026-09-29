@@ -1136,7 +1136,6 @@ impl IntoPipeline for CheckinGatesCli {
                                     OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
                                         recipe,
-                                        extra_command_line: None,
                                         custom_target: Some(CommonTriple::Custom(
                                             openhcl_musl_target(arch),
                                         )),

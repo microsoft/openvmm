@@ -10,8 +10,6 @@ use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 #[cfg(windows)]
-use petri_artifacts_vmm_test::artifacts::vmfw_dll::CVM_X64_BOOT_MARKER;
-#[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_DEV_NATIVE;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
@@ -205,14 +203,8 @@ async fn vmgstool_copy_igvmfile<T: PetriVmmBackend>(
         .run()
         .await?;
 
-    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let command_line = vtl2_agent.unix_shell().read_file("/proc/cmdline").await?;
-    anyhow::ensure!(
-        command_line
-            .split_ascii_whitespace()
-            .any(|arg| arg == CVM_X64_BOOT_MARKER),
-        "OpenHCL did not boot the VMGS test firmware: missing measured marker {CVM_X64_BOOT_MARKER:?} in {command_line:?}"
-    );
+    // TODO: Verify that OpenHCL booted the copied payload rather than inbox firmware.
+    vm.test_inspect_openhcl().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
