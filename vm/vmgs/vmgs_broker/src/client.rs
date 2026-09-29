@@ -25,6 +25,9 @@ pub enum VmgsClientError {
     /// VMGS error
     #[error("vmgs error")]
     Vmgs(#[source] VmgsBrokerError),
+    /// The broker returned a key with an unexpected size.
+    #[error("invalid active encryption key length: {0}")]
+    InvalidActiveKeyLength(usize),
 }
 
 impl From<RpcError> for VmgsClientError {
@@ -99,7 +102,8 @@ impl VmgsClient {
             .control
             .call_failable(VmgsBrokerRpc::ActiveEncryptionKey, ())
             .await?;
-        Ok(key)
+        key.try_into()
+            .map_err(|key: Vec<u8>| VmgsClientError::InvalidActiveKeyLength(key.len()))
     }
 
     /// Writes plaintext `buf` only if `expected_key` is still the active root key.
@@ -121,14 +125,18 @@ impl VmgsClient {
         buf: Vec<u8>,
         expected_key: [u8; 32],
     ) -> Result<bool, VmgsClientError> {
-        let written = self
+        match self
             .control
             .call_failable(
                 VmgsBrokerRpc::WriteFileIfActiveKeyMatches,
                 (file_id.into(), buf, expected_key),
             )
-            .await?;
-        Ok(written)
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(RpcError::Call(VmgsBrokerError::ActiveKeyMismatch)) => Ok(false),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Deletes the specified `file_id`.
