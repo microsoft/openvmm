@@ -5980,6 +5980,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tpm_resources",
  "unix_socket",
+ "vfio_assigned_device_resources",
  "virt",
  "virt_whp",
  "vm_resource",

@@ -16,6 +16,8 @@ use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
 use tpm_resources::TpmVersion;
+#[cfg(target_os = "linux")]
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -66,10 +68,6 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
-    #[cfg(target_os = "linux")]
-    pub direct_iommus: Vec<String>,
-    #[cfg(target_os = "linux")]
-    pub direct_assigned_devices: Vec<DirectAssignedDeviceConfig>,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -329,15 +327,85 @@ pub struct PcieGenericInitiatorConfig {
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieDeviceConfig {
-    pub port_name: String,
-    pub resource: Resource<PciDeviceHandleKind>,
+    port_name: String,
+    resource: Resource<PciDeviceHandleKind>,
+    #[cfg(target_os = "linux")]
+    direct_host_pci_id: Option<String>,
 }
 
-/// Identity metadata for a VFIO device using the DIRECT iommufd path.
-#[derive(Debug, MeshPayload, Clone)]
-pub struct DirectAssignedDeviceConfig {
-    pub port_name: String,
-    pub host_pci_id: String,
+impl PcieDeviceConfig {
+    pub fn new(port_name: String, resource: Resource<PciDeviceHandleKind>) -> Self {
+        Self {
+            port_name,
+            resource,
+            #[cfg(target_os = "linux")]
+            direct_host_pci_id: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn new_vfio_cdev(
+        port_name: String,
+        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle,
+    ) -> Self {
+        let direct_host_pci_id = resource.direct_iommu.then(|| resource.pci_id.clone());
+        Self {
+            port_name,
+            resource: resource.into_resource(),
+            direct_host_pci_id,
+        }
+    }
+
+    pub fn port_name(&self) -> &str {
+        &self.port_name
+    }
+
+    pub fn resource_id(&self) -> &str {
+        self.resource.id()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn direct_host_pci_id(&self) -> Option<&str> {
+        self.direct_host_pci_id.as_deref()
+    }
+
+    pub fn into_parts(self) -> (String, Resource<PciDeviceHandleKind>) {
+        (self.port_name, self.resource)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod pcie_device_config_tests {
+    use super::*;
+    use vfio_assigned_device_resources::BarAddressConfig;
+    use vfio_assigned_device_resources::VfioCdevDeviceHandle;
+
+    fn cdev_handle(direct_iommu: bool) -> VfioCdevDeviceHandle {
+        VfioCdevDeviceHandle {
+            pci_id: "0008:06:00.0".to_owned(),
+            cdev: File::open("/dev/null").unwrap(),
+            iommufd: File::open("/dev/null").unwrap(),
+            iommu_id: "iommu0".to_owned(),
+            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+            direct_iommu,
+            direct_pasid: direct_iommu,
+            direct_ats: direct_iommu,
+        }
+    }
+
+    #[test]
+    fn direct_identity_is_derived_from_typed_vfio_resource() {
+        let config = PcieDeviceConfig::new_vfio_cdev("rp0".to_owned(), cdev_handle(true));
+        assert_eq!(config.port_name(), "rp0");
+        assert_eq!(config.direct_host_pci_id(), Some("0008:06:00.0"));
+        assert_eq!(config.resource_id(), "vfio-cdev");
+    }
+
+    #[test]
+    fn ordinary_vfio_cdev_has_no_direct_identity() {
+        let config = PcieDeviceConfig::new_vfio_cdev("rp0".to_owned(), cdev_handle(false));
+        assert_eq!(config.direct_host_pci_id(), None);
+    }
 }
 
 #[derive(Debug, MeshPayload)]

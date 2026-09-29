@@ -212,11 +212,6 @@ impl Manifest {
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
-            // Preserve direct-IOMMU names across restart.
-            #[cfg(target_os = "linux")]
-            direct_iommus: config.direct_iommus,
-            #[cfg(target_os = "linux")]
-            direct_assigned_devices: config.direct_assigned_devices,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
             vpci_devices: config.vpci_devices,
@@ -289,11 +284,6 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
-    /// Direct iommufd context names.
-    #[cfg(target_os = "linux")]
-    direct_iommus: Vec<String>,
-    #[cfg(target_os = "linux")]
-    direct_assigned_devices: Vec<openvmm_defs::config::DirectAssignedDeviceConfig>,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -2826,19 +2816,27 @@ impl InitializedVm {
         // and MSI writes through the emulated SMMUv3.
         #[cfg(all(guest_arch = "aarch64", target_os = "linux"))]
         let direct_iommu_rc_indices = cfg
-            .direct_assigned_devices
+            .pcie_devices
             .iter()
-            .map(|device| {
-                let port = port_info.get(device.port_name.as_str()).with_context(|| {
+            .filter_map(|device| {
+                device
+                    .direct_host_pci_id()
+                    .map(|host_pci_id| (device, host_pci_id))
+            })
+            .map(|(device, host_pci_id)| {
+                let port = port_info.get(device.port_name()).with_context(|| {
                     format!(
                         "direct device {} references unknown port {}",
-                        device.host_pci_id, device.port_name
+                        host_pci_id,
+                        device.port_name()
                     )
                 })?;
                 let bridge = pcie_host_bridges.get(port.rc_idx).with_context(|| {
                     format!(
                         "direct device {} port {} references invalid root complex index {}",
-                        device.host_pci_id, device.port_name, port.rc_idx
+                        host_pci_id,
+                        device.port_name(),
+                        port.rc_idx
                     )
                 })?;
                 Ok(bridge.index)
@@ -2846,24 +2844,22 @@ impl InitializedVm {
             .collect::<anyhow::Result<Vec<_>>>()?;
         #[cfg(all(guest_arch = "aarch64", target_os = "linux"))]
         for device in &cfg.pcie_devices {
-            let port = port_info.get(device.port_name.as_str()).with_context(|| {
-                format!("PCIe device references unknown port {}", device.port_name)
+            let port = port_info.get(device.port_name()).with_context(|| {
+                format!("PCIe device references unknown port {}", device.port_name())
             })?;
             let rc_index = pcie_host_bridges
                 .get(port.rc_idx)
                 .with_context(|| {
                     format!(
                         "PCIe device on port {} references invalid root complex index {}",
-                        device.port_name, port.rc_idx
+                        device.port_name(),
+                        port.rc_idx
                     )
                 })?
                 .index;
             anyhow::ensure!(
                 !direct_iommu_rc_indices.contains(&rc_index)
-                    || cfg
-                        .direct_assigned_devices
-                        .iter()
-                        .any(|direct| direct.port_name == device.port_name),
+                    || device.direct_host_pci_id().is_some(),
                 "root complex {} cannot mix direct and non-direct PCIe devices",
                 rc_index
             );
@@ -3009,13 +3005,19 @@ impl InitializedVm {
                 IommuDevices::Smmu(devices) => &devices.virt_iommus,
                 _ => &[],
             };
-            cfg.direct_assigned_devices
+            cfg.pcie_devices
                 .iter()
-                .map(|device| {
-                    let port = port_info.get(device.port_name.as_str()).with_context(|| {
+                .filter_map(|device| {
+                    device
+                        .direct_host_pci_id()
+                        .map(|host_pci_id| (device, host_pci_id))
+                })
+                .map(|(device, host_pci_id)| {
+                    let port = port_info.get(device.port_name()).with_context(|| {
                         format!(
                             "direct device {} references unknown port {}",
-                            device.host_pci_id, device.port_name
+                            host_pci_id,
+                            device.port_name()
                         )
                     })?;
                     let rc_index = pcie_host_bridges
@@ -3023,7 +3025,9 @@ impl InitializedVm {
                         .with_context(|| {
                             format!(
                                 "direct device {} port {} references invalid root complex index {}",
-                                device.host_pci_id, device.port_name, port.rc_idx
+                                host_pci_id,
+                                device.port_name(),
+                                port.rc_idx
                             )
                         })?
                         .index;
@@ -3033,11 +3037,12 @@ impl InitializedVm {
                         .with_context(|| {
                             format!(
                                 "direct device {} on port {} has no accelerated virtual IOMMU",
-                                device.host_pci_id, device.port_name
+                                host_pci_id,
+                                device.port_name()
                             )
                         })?;
                     Ok(VirtIommuBinding {
-                        host_pci_id: device.host_pci_id.clone(),
+                        host_pci_id: host_pci_id.to_owned(),
                         bus_range: port.bus_range.clone(),
                         virt_iommu_id: viommu.virt_iommu_id,
                         rc_index,
@@ -3047,13 +3052,6 @@ impl InitializedVm {
         };
         #[cfg(all(guest_arch = "aarch64", not(target_os = "linux")))]
         let virt_iommu_bindings = Vec::new();
-
-        #[cfg(target_os = "linux")]
-        let direct_device_ports: std::collections::HashSet<String> = cfg
-            .direct_assigned_devices
-            .iter()
-            .map(|device| device.port_name.clone())
-            .collect();
 
         try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
             let chipset_builder = &chipset_builder;
@@ -3067,10 +3065,11 @@ impl InitializedVm {
             let pcie_host_bridges = &pcie_host_bridges;
             let processor_topology = &processor_topology;
             let iommu_devices = &iommu_devices;
-            #[cfg(target_os = "linux")]
-            let direct_device_ports = &direct_device_ports;
             async move {
-                let port_name: Arc<str> = dev_cfg.port_name.into();
+                #[cfg(target_os = "linux")]
+                let is_direct = dev_cfg.direct_host_pci_id().is_some();
+                let (port_name, resource) = dev_cfg.into_parts();
+                let port_name: Arc<str> = port_name.into();
                 let pi = port_info.get(&port_name).ok_or_else(|| {
                     anyhow::anyhow!(
                         "device port '{}' not found in any root complex or switch",
@@ -3100,7 +3099,7 @@ impl InitializedVm {
                     vmm_core::device_builder::PciDeviceResolveContext {
                         driver_source,
                         resolver,
-                        resource: dev_cfg.resource,
+                        resource,
                         doorbell_registration: partition
                             .clone()
                             .into_doorbell_registration(Vtl::Vtl0),
@@ -3110,7 +3109,7 @@ impl InitializedVm {
                     port_name.clone(),
                     &pcie_ctx.dma_target,
                     #[cfg(target_os = "linux")]
-                    if !direct_device_ports.contains(port_name.as_ref()) {
+                    if !is_direct {
                         None
                     } else {
                         Some(pci_resources::DirectIommuResolveContext {
@@ -4894,15 +4893,11 @@ impl LoadedVm {
 
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
-            floppy_disks: vec![],        // TODO
-            ide_disks: vec![],           // TODO
-            pcie_root_complexes: vec![], // TODO
-            pcie_ecam_below_4gb: false,  // TODO
-            pcie_devices: vec![],        // TODO
-            #[cfg(target_os = "linux")]
-            direct_iommus: vec![],
-            #[cfg(target_os = "linux")]
-            direct_assigned_devices: vec![],
+            floppy_disks: vec![],            // TODO
+            ide_disks: vec![],               // TODO
+            pcie_root_complexes: vec![],     // TODO
+            pcie_ecam_below_4gb: false,      // TODO
+            pcie_devices: vec![],            // TODO
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
             vpci_devices: vec![],            // TODO

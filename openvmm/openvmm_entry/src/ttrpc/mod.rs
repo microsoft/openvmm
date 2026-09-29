@@ -1126,10 +1126,6 @@ impl VmService {
             pcie_root_complexes: pcie.root_complexes,
             pcie_ecam_below_4gb: false,
             pcie_devices: pcie.devices,
-            #[cfg(target_os = "linux")]
-            direct_iommus: vec![],
-            #[cfg(target_os = "linux")]
-            direct_assigned_devices: vec![],
             pcie_switches: pcie.switches,
             pcie_generic_initiators: pcie.generic_initiators,
             vpci_devices: vec![],
@@ -2036,10 +2032,7 @@ async fn build_pcie_topology(
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
         let resource = build_pci_device(device, registry, iommufds).await?;
-        devices.push(PcieDeviceConfig {
-            port_name,
-            resource,
-        });
+        devices.push(PcieDeviceConfig::new(port_name, resource));
     }
 
     let generic_initiators = generic_initiators
