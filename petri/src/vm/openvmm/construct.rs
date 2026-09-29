@@ -290,9 +290,9 @@ impl PetriVmConfigOpenVmm {
                 )
             })?;
             let disk = petri_disk_to_openvmm(&disk).await?;
-            pcie_devices.push(PcieDeviceConfig {
+            pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: NvmeControllerHandle {
+                NvmeControllerHandle {
                     subsystem_id: Guid::new_random(),
                     max_io_queues: 64,
                     msix_count: 64,
@@ -304,7 +304,7 @@ impl PetriVmConfigOpenVmm {
                     requests: None,
                 }
                 .into_resource(),
-            });
+            ));
         }
 
         for PcieVirtioBlkDrive {
@@ -316,9 +316,9 @@ impl PetriVmConfigOpenVmm {
                 anyhow::anyhow!("missing disk for PCIe virtio-blk drive on port '{port_name}'")
             })?;
             let disk = petri_disk_to_openvmm(&disk).await?;
-            pcie_devices.push(PcieDeviceConfig {
+            pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: VirtioPciDeviceHandle(
+                VirtioPciDeviceHandle(
                     VirtioBlkHandle {
                         disk,
                         read_only: false,
@@ -327,7 +327,7 @@ impl PetriVmConfigOpenVmm {
                     .into_resource(),
                 )
                 .into_resource(),
-            });
+            ));
         }
 
         if !storvsp_ide_handles.is_empty() {
@@ -746,10 +746,6 @@ impl PetriVmConfigOpenVmm {
             pcie_root_complexes: vec![],
             pcie_ecam_below_4gb: false,
             pcie_devices,
-            #[cfg(target_os = "linux")]
-            direct_iommus: vec![],
-            #[cfg(target_os = "linux")]
-            direct_assigned_devices: vec![],
             pcie_switches: vec![],
             pcie_generic_initiators: vec![],
             vpci_devices,
