@@ -24,7 +24,6 @@ use petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_CCA_
 use std::collections::BTreeMap;
 use std::time::Duration;
 use vfio_assigned_device_resources::BarAddressConfig;
-use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
