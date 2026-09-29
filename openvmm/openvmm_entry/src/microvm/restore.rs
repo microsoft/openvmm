@@ -278,24 +278,57 @@ pub(crate) fn prepare_restore(
                 let source = snapshot
                     .open_paired_scratch_file()?
                     .context("paired snapshot is missing scratch.img")?;
-                let parent = snapshot_dir
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(Path::new("."));
-                let temp_dir = tempfile::Builder::new()
-                    .prefix(".openvmm-private-scratch-")
-                    .tempdir_in(parent)
-                    .context("failed to create private restore scratch directory")?;
-                let private_path = temp_dir
-                    .path()
-                    .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
-                openvmm_helpers::snapshot::restore::copy_verified_file(
-                    &source,
-                    &private_path,
-                    scratch.length,
-                    &scratch.identity,
-                    openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME,
-                )?;
+                let restore_mode = if scratch.restore_mode.is_empty() {
+                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
+                } else {
+                    scratch.restore_mode.as_str()
+                };
+                let (private_path, temp_dir) = match restore_mode {
+                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED => {
+                        anyhow::ensure!(
+                            manifest.restore_policy
+                                == openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME,
+                            "direct-claimed scratch requires a resume snapshot"
+                        );
+                        (
+                            snapshot_dir.join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME),
+                            None,
+                        )
+                    }
+                    mode => {
+                        let parent = snapshot_dir
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or(Path::new("."));
+                        let temp_dir = tempfile::Builder::new()
+                            .prefix(".openvmm-private-scratch-")
+                            .tempdir_in(parent)
+                            .context("failed to create private restore scratch directory")?;
+                        let private_path = temp_dir
+                            .path()
+                            .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                        match mode {
+                            openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY => {
+                                openvmm_helpers::snapshot::restore::copy_paired_scratch_file(
+                                    &source,
+                                    &private_path,
+                                    scratch,
+                                )?;
+                            }
+                            openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_COPY_ON_WRITE => {
+                                openvmm_helpers::snapshot::restore::clone_paired_scratch_file(
+                                    &source,
+                                    &private_path,
+                                    scratch,
+                                )?;
+                            }
+                            _ => anyhow::bail!(
+                                "snapshot scratch restore mode '{mode}' is unsupported"
+                            ),
+                        }
+                        (private_path, Some(temp_dir))
+                    }
+                };
                 opt.microvm
                     .microvm_sandbox_block
                     .push(cli_args::microvm::MicrovmSandboxBlockCli {
@@ -317,7 +350,7 @@ pub(crate) fn prepare_restore(
                             relay: None,
                         },
                     });
-                private_scratch_dir = Some(temp_dir);
+                private_scratch_dir = temp_dir;
             } else {
                 anyhow::ensure!(
                     opt.microvm.microvm_sandbox_block.iter().any(|block| {

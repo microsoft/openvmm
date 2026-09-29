@@ -29,7 +29,6 @@ use super::fs::rename_no_replace;
 use super::fs::snapshot_parent;
 use super::fs::sync_directory;
 use super::fs::validate_directory;
-use super::fs::verify_file_digest;
 use super::fs::verify_hard_link_identity;
 use super::fs::write_bytes;
 use super::microvm;
@@ -276,10 +275,9 @@ fn stage_snapshot(
                     "scratch backing file",
                     "snapshot scratch",
                 )?;
-                verify_file_digest(
+                super::restore::verify_sandbox_block_identity(
                     &open_file_with_length(&scratch_path, scratch.length, SCRATCH_FILE_NAME)?,
-                    scratch.length,
-                    &scratch.identity,
+                    scratch,
                     "scratch.img",
                 )?;
                 scratch_publish.complete(
@@ -611,6 +609,43 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("incomplete"));
+    }
+
+    #[test]
+    fn generation_identity_uses_structure_without_rehashing_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let memory_path = dir.path().join("memory.bin");
+        let scratch_path = dir.path().join("scratch.img");
+        std::fs::write(&memory_path, vec![0_u8; 1024]).unwrap();
+        std::fs::write(&scratch_path, vec![0x5a_u8; 1024]).unwrap();
+        let memory_file = std::fs::File::open(memory_path).unwrap();
+        let scratch_file = std::fs::File::open(scratch_path).unwrap();
+        let mut manifest = paired_scratch_manifest(&[0x5a; 1024]);
+        for block in &mut manifest
+            .machine_contract
+            .as_mut()
+            .unwrap()
+            .microvm_sandbox_blocks
+        {
+            block.identity_kind = microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned();
+            block.identity = vec![0x42; microvm::SNAPSHOT_GENERATION_ID_SIZE];
+        }
+
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &manifest,
+            b"state",
+            &memory_file,
+            Some(&scratch_file),
+        )
+        .unwrap();
+
+        let read_manifest = read_snapshot_manifest(&snap_dir).unwrap();
+        std::fs::write(snap_dir.join(SCRATCH_FILE_NAME), vec![0xa5_u8; 1024]).unwrap();
+        open_paired_scratch_file(&snap_dir, &read_manifest)
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

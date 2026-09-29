@@ -431,14 +431,26 @@ describes the source definitions.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
+* `--snapshot-block-identity <MODE>`: Select `sha256` (the default) or
+  `generation`. SHA-256 computes and verifies every bound block. Generation
+  mode requires `--snapshot-generation-id <32-HEX-DIGITS>` and records that
+  caller-authenticated immutable storage generation instead of scanning block
+  bytes. The caller must keep the generation bound to the exact immutable
+  artifacts supplied at restore.
+* `--snapshot-scratch-restore-mode <MODE>`: Record `private-copy`,
+  `copy-on-write`, or `direct-claimed` for paired scratch. Private copy is the
+  default and may fall back to sparse copying. Copy-on-write is valid only for
+  workload-start clones and fails if the destination filesystem cannot
+  reflink. Direct-claimed is valid only for single-use instance checkpoints.
 
 A committed snapshot contains `manifest.bin`, `state.bin`, `memory.bin`, and
 optionally the manifest-declared `scratch.img`. Restore rejects unknown files,
-symlinks, malformed or oversized data, length or scratch-digest mismatches, and
-incompatible machine contracts before starting a vCPU. `memory.bin` uses a
-private writable copy-on-write mapping and paired scratch is privately copied,
-so clone-policy snapshots can be restored repeatedly without modifying
-artifacts. Instance-checkpoint snapshots permit one restore attempt.
+symlinks, malformed or oversized data, length or applicable scratch-digest
+mismatches, and incompatible machine contracts before starting a vCPU.
+`memory.bin` uses a private writable copy-on-write mapping. Paired scratch uses
+the materialization policy recorded at capture; clone-policy snapshots never
+attach the source artifact writable, while direct attachment requires an
+atomic single-use resume claim.
 
 Versions 3 through 6 do not embed or validate checksums for `state.bin` or `memory.bin`;
 legacy version 2 checksum fields are accepted without re-hashing their
