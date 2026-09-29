@@ -55,7 +55,6 @@ use hvdef::hypercall::HvInterceptType;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use hvdef::hypercall::ModifyHostVisibilityWithImmutability;
 use inspect::Inspect;
 use memory_range::MemoryRange;
@@ -932,7 +931,6 @@ impl MshvHvcall {
     ///
     /// Returns on error, the hypervisor error and the number of pages
     /// processed.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn modify_gpa_visibility_and_immutability(
         &self,
         host_visibility: HostVisibilityType,

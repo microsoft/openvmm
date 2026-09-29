@@ -6,20 +6,11 @@ name = "openhcl_tdisp"
 rust-version.workspace = true
 edition.workspace = true
 
-[features]
-dev_snp_ohcl_tio_support = [
-    "hcl/dev_snp_ohcl_tio_support",
-    "hvdef/dev_snp_ohcl_tio_support",
-    "sev_guest_device/dev_snp_ohcl_tio_support",
-]
-
 [dependencies]
-hcl.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
 parking_lot.workspace = true
-sev_guest_device.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
 virt.workspace = true
@@ -28,6 +19,11 @@ x86defs.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 tracing.workspace = true
+
+# The SEV-TIO validator talks to /dev/mshv_vtl and /dev/sev-guest.
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl.workspace = true
+sev_guest_device.workspace = true
 
 [lints]
 workspace = true

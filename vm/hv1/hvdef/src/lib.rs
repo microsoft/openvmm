@@ -2240,7 +2240,6 @@ pub mod hypercall {
     /// end-to-end bring-up. Layout matches `ModifyHostVisibility` plus a single
     /// `immutability` bit reinterpreting one of the reserved bits. Only valid
     /// on internal Hyper-V builds.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[bitfield(u32)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyHostVisibilityWithImmutability {
@@ -2255,7 +2254,6 @@ pub mod hypercall {
     /// `HvCallModifySparseGpaPageHostVisibility` that also carries an
     /// immutability flag. The hypercall code is unchanged; only the header
     /// layout differs. Only valid on internal Hyper-V builds.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifySparsePageVisibilityWithImmutability {

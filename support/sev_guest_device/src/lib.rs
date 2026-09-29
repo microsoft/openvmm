@@ -6,15 +6,10 @@
 // UNSAFETY: unsafe needed to make ioctl calls.
 #![expect(unsafe_code)]
 
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgMmioConfigReqFlags;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgMmioConfigRsp;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgMmioValidateRsp;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgSdteWriteRsp;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgTdiInfoRsp;
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -48,10 +43,8 @@ pub enum Error {
     SnpGetReportIoctl(#[source] nix::Error),
     #[error("SNP_GET_DERIVED_KEY ioctl failed")]
     SnpGetDerivedKeyIoctl(#[source] nix::Error),
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[error("TIO_GUEST_REQUEST ioctl failed")]
     TioGuestRequestIoctl(#[source] nix::Error),
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[error(
         "TIO_GUEST_REQUEST reported an ASP/VMM error: msg_type={msg_type} exitinfo1={{fw_error={fw_error:#x}, vmm_error={vmm_error:#x}}} exitinfo2={exitinfo2:#x}"
     )]
@@ -66,7 +59,7 @@ pub enum Error {
 }
 
 /// Ioctl struct defined by Linux.
-#[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+#[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
 #[repr(C)]
 struct SnpGuestRequestIoctl {
     /// Message version number (must be non-zero).
@@ -79,9 +72,12 @@ struct SnpGuestRequestIoctl {
     exitinfo: VmmErrorCode,
 }
 
-/// TioGuestRequestIoctl struct defined by Linux. In the case of TIO support feature enablement,
-/// this structure replaces the SnpGuestRequestIoctl structure.
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
+static_assertions::const_assert_eq!(32, size_of::<SnpGuestRequestIoctl>());
+
+/// Ioctl struct defined by the TIO-capable Linux sev-guest driver. Always the
+/// argument to `TIO_GUEST_REQUEST`, and with `dev_snp_tio_guest_ioctl_abi` also
+/// the argument to `SNP_GET_REPORT` and `SNP_GET_DERIVED_KEY`.
 #[repr(C)]
 struct TioGuestRequestIoctl {
     /// Message version number (must be non-zero).
@@ -106,8 +102,9 @@ struct TioGuestRequestIoctl {
     additional_arg: u64,
 }
 
+static_assertions::const_assert_eq!(80, size_of::<TioGuestRequestIoctl>());
+
 /// Message type IDs for the `TIO_GUEST_REQUEST` ioctl.
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
 #[repr(u64)]
 #[expect(clippy::enum_variant_names)]
 pub enum TioGuestMessageId {
@@ -131,7 +128,13 @@ struct VmmErrorCode {
     vmm_error: u32,
 }
 
-#[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+// `nix` encodes the argument struct's size into the ioctl request number, so
+// the struct these two are declared over decides the number sent to the kernel.
+// The TIO-patched sev-guest driver widens the argument from 32 to 80 bytes,
+// which moves SNP_GET_REPORT from 0xC0205300 to 0xC0505300 and
+// SNP_GET_DERIVED_KEY from 0xC0205301 to 0xC0505301. Enable
+// `dev_snp_tio_guest_ioctl_abi` only against a kernel carrying that patch.
+#[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
 nix::ioctl_readwrite!(
     /// `SNP_GET_REPORT` ioctl defined by Linux.
     snp_get_report,
@@ -140,7 +143,7 @@ nix::ioctl_readwrite!(
     SnpGuestRequestIoctl
 );
 
-#[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+#[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
 nix::ioctl_readwrite!(
     /// `SNP_GET_DERIVED_KEY` ioctl defined by Linux.
     snp_get_derived_key,
@@ -149,10 +152,7 @@ nix::ioctl_readwrite!(
     SnpGuestRequestIoctl
 );
 
-// Feature `dev_snp_ohcl_tio_support` changes the structure definition
-// of the sev guest device IOCTL interface to support the TIO_GUEST_REQUEST
-// ioctl.
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[cfg(feature = "dev_snp_tio_guest_ioctl_abi")]
 nix::ioctl_readwrite!(
     /// `SNP_GET_REPORT` ioctl defined by Linux.
     snp_get_report,
@@ -161,7 +161,7 @@ nix::ioctl_readwrite!(
     TioGuestRequestIoctl
 );
 
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[cfg(feature = "dev_snp_tio_guest_ioctl_abi")]
 nix::ioctl_readwrite!(
     /// `SNP_GET_DERIVED_KEY` ioctl defined by Linux.
     snp_get_derived_key,
@@ -170,7 +170,7 @@ nix::ioctl_readwrite!(
     TioGuestRequestIoctl
 );
 
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+// A distinct ioctl number, so declaring it does not disturb the two above.
 nix::ioctl_readwrite!(
     /// `TIO_GUEST_REQUEST` ioctl defined by Linux.
     tio_guest_request,
@@ -221,7 +221,7 @@ impl SevGuestDevice {
 
         let resp = SnpReportIoctlResp::new_zeroed();
 
-        #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+        #[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
         let mut snp_guest_request = SnpGuestRequestIoctl {
             msg_version: SNP_GUEST_REQ_MSG_VERSION,
             req_data: req.as_bytes().as_ptr() as u64,
@@ -229,7 +229,7 @@ impl SevGuestDevice {
             exitinfo: VmmErrorCode::new_zeroed(),
         };
 
-        #[cfg(feature = "dev_snp_ohcl_tio_support")]
+        #[cfg(feature = "dev_snp_tio_guest_ioctl_abi")]
         let mut snp_guest_request = TioGuestRequestIoctl {
             msg_version: SNP_GUEST_REQ_MSG_VERSION,
             req_data: req.as_bytes().as_ptr() as u64,
@@ -272,7 +272,7 @@ impl SevGuestDevice {
 
         let resp = SnpDerivedKeyResp::new_zeroed();
 
-        #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+        #[cfg(not(feature = "dev_snp_tio_guest_ioctl_abi"))]
         let mut snp_guest_request = SnpGuestRequestIoctl {
             msg_version: SNP_GUEST_REQ_MSG_VERSION,
             req_data: req.as_bytes().as_ptr() as u64,
@@ -280,7 +280,7 @@ impl SevGuestDevice {
             exitinfo: VmmErrorCode::new_zeroed(),
         };
 
-        #[cfg(feature = "dev_snp_ohcl_tio_support")]
+        #[cfg(feature = "dev_snp_tio_guest_ioctl_abi")]
         let mut snp_guest_request = TioGuestRequestIoctl {
             msg_version: SNP_GUEST_REQ_MSG_VERSION,
             req_data: req.as_bytes().as_ptr() as u64,
@@ -304,7 +304,6 @@ impl SevGuestDevice {
     }
 
     /// Invoke the `TIO_GUEST_REQUEST` ioctl via the device.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     fn tio_guest_request<RequestType, ResponseType>(
         &self,
         msg_type: TioGuestMessageId,
@@ -370,7 +369,6 @@ impl SevGuestDevice {
     }
 
     /// Invoke the `TIO_MSG_TDI_INFO_REQ` to a given TDISP guest device ID.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_tdi_info_req(&self, guest_device_id: u16) -> Result<TioMsgTdiInfoRsp, Error> {
         use sev_guest_device_tio::TioMsgTdiInfoReq;
 
@@ -385,7 +383,6 @@ impl SevGuestDevice {
     }
 
     /// Invoke the `TIO_MSG_MMIO_CONFIG_REQ` to a given TDISP guest device ID.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_mmio_config_req(
         &self,
         guest_device_id: u16,
@@ -416,7 +413,6 @@ impl SevGuestDevice {
     }
 
     /// Invoke the `TIO_MSG_MMIO_VALIDATE_REQ` to a given TDISP guest device ID.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_mmio_validate_req(
         &self,
         guest_device_id: u16,
@@ -447,7 +443,6 @@ impl SevGuestDevice {
         self.tio_guest_request(msg_type, guest_device_id, req)
     }
     /// Invoke the `TIO_MSG_SDTE_WRITE_REQ` to update the SDTE to allow DMA to the guest.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_sdte_write_req(
         &self,
         guest_device_id: u16,

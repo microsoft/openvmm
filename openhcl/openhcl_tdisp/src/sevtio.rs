@@ -96,9 +96,7 @@ impl TdispSevTioResourceValidator {
     /// * `vtom` - The address mask with the VTOM bit set to signify where VTOM
     ///   addresses start in the CVM.
     pub fn new(vtom: u64) -> anyhow::Result<Self> {
-        let sev_guest = SevGuestDevice::open()
-            .context("failed to open /dev/sev-guest")
-            .unwrap();
+        let sev_guest = SevGuestDevice::open().context("failed to open /dev/sev-guest")?;
 
         Ok(Self { sev_guest, vtom })
     }
@@ -328,7 +326,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
             // RMPADJUST the page to be read/write to VTL0 so the guest can access them.
             match mshv_vtl.rmpadjust_pages(
-                MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
+                MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + length_in_pages)),
                 SevRmpAdjust::new()
                     .with_enable_read(true)
                     .with_enable_write(true)
@@ -351,17 +349,26 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // Take the high order bits of the vtom address (the lower 15 bits are always 0 as vtom is 2MB aligned)
         const SHIFT_2MB: u32 = 15;
-        let vtom_high = (self.vtom >> SHIFT_2MB) as u32;
+        let vtom_high: u32 = (self.vtom >> SHIFT_2MB).try_into().with_context(|| {
+            format!(
+                "VTOM {:#x} does not fit the SDTE field once shifted by {SHIFT_2MB}",
+                self.vtom
+            )
+        })?;
 
         // Subtract 1 to create the mask for the non-VTOM bit parts of the address
-        let vtom = vtom_high - 1;
+        let vtom = vtom_high.checked_sub(1).with_context(|| {
+            format!(
+                "VTOM {:#x} is too small to form an SDTE address mask",
+                self.vtom
+            )
+        })?;
 
         let accept_dma = self
             .sev_guest
             .tio_msg_sdte_write_req(device_id, true, vtom, Self::vtl_to_vmpl(target_vtl))
-            .context("failed to send SDTE write request")
-            .unwrap();
-        tracing::info!(msg = format!("SDTE write request response"), response = ?accept_dma);
+            .context("failed to send SDTE write request")?;
+        tracing::info!(response = ?accept_dma, "SDTE write request response");
 
         match accept_dma.status {
             0 => {
@@ -517,8 +524,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         let block_dma = self
             .sev_guest
             .tio_msg_sdte_write_req(device_id, false, 0, Self::vtl_to_vmpl(target_vtl))
-            .context("failed to send SDTE block request")
-            .unwrap();
+            .context("failed to send SDTE block request")?;
         tracing::info!(response = ?block_dma, "SDTE block request response");
 
         match block_dma.status {

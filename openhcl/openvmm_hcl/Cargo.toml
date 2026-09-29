@@ -34,8 +34,8 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 nvme = ["openvmm_hcl_resources/nvme", "vpci"]
 vpci = ["underhill_entry/vpci"]
 
-# Enable TIO support for SEV-SNP
-dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
+# Use the TIO variant of the sev-guest ioctl ABI
+dev_snp_tio_guest_ioctl_abi = ["underhill_entry/dev_snp_tio_guest_ioctl_abi"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true

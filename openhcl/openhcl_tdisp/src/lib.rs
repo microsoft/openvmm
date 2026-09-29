@@ -10,7 +10,7 @@
 
 pub mod client;
 pub mod noop;
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[cfg(target_os = "linux")]
 mod sevtio;
 
 pub use client::TdispClient;
@@ -43,9 +43,11 @@ pub use tdisp_proto::TdispMmioRangeAction;
 pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
 
-#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[cfg(target_os = "linux")]
 pub use sevtio::TdispSevTioResourceValidator;
 
+#[cfg(target_os = "linux")]
+use anyhow::Context;
 use hvdef::Vtl;
 use std::future::Future;
 use std::pin::Pin;
@@ -225,14 +227,10 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
-    // An `if` rather than a `match` arm: with the feature off this block is
-    // compiled out, and a `match` whose only remaining arm is the wildcard
-    // trips `clippy::match_single_binding`.
-    #[cfg(feature = "dev_snp_ohcl_tio_support")]
+    #[cfg(target_os = "linux")]
     if matches!(isolation, IsolationType::Snp) {
-        return Ok(Arc::new(TdispSevTioResourceValidator::new(
-            vtom.unwrap_or(0),
-        )?));
+        let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
+        return Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?));
     }
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))

@@ -7,7 +7,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio", "dep:tracing"]
+# Declare SNP_GET_REPORT and SNP_GET_DERIVED_KEY over the 80-byte TIO ioctl
+# struct, which changes their ioctl request numbers. Only for a kernel whose
+# sev-guest driver carries the matching TIO patch.
+dev_snp_tio_guest_ioctl_abi = []
 
 [dependencies]
 static_assertions.workspace = true
@@ -16,9 +19,9 @@ zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["ioctl"] }
 thiserror.workspace = true
-tracing = { workspace = true, optional = true }
+tracing.workspace = true
 x86defs.workspace = true
-sev_guest_device_tio = { workspace = true, optional = true }
+sev_guest_device_tio.workspace = true
 
 [lints]
 workspace = true
