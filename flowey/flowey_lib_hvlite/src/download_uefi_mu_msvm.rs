@@ -7,11 +7,49 @@ use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
+/// Firmware core and toolchain used by the RELEASE build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirmwareFlavor {
+    LegacyVs2022,
+    LegacyClangPdb,
+    PatinaClangPdb,
+}
+
+impl FirmwareFlavor {
+    fn default_for_arch(arch: CommonArch) -> Self {
+        match arch {
+            CommonArch::X86_64 => Self::LegacyVs2022,
+            CommonArch::Aarch64 => Self::LegacyClangPdb,
+        }
+    }
+
+    fn file_name(self, arch: CommonArch) -> anyhow::Result<&'static str> {
+        Ok(match (self, arch) {
+            (Self::LegacyVs2022, CommonArch::X86_64) => "firmware-RELEASE-X64-VS2022.tar.gz",
+            (Self::LegacyVs2022, CommonArch::Aarch64) => {
+                anyhow::bail!("mu_msvm does not support AARCH64 with VS2022")
+            }
+            (Self::LegacyClangPdb, CommonArch::X86_64) => "firmware-RELEASE-X64-CLANGPDB.tar.gz",
+            (Self::LegacyClangPdb, CommonArch::Aarch64) => {
+                "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::X86_64) => {
+                "firmware-RELEASE-X64-CLANGPDB-patina.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::Aarch64) => {
+                "firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz"
+            }
+        })
+    }
+}
+
 flowey_config! {
     /// Config for the download_uefi_mu_msvm node.
     pub struct Config {
         /// Specify version of mu_msvm to use
         pub version: Option<String>,
+        /// Override the firmware core and toolchain for an architecture
+        pub flavors: BTreeMap<CommonArch, FirmwareFlavor>,
         /// Use a local MSVM.fd path, keyed by architecture
         pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
@@ -44,6 +82,7 @@ impl FlowNodeWithConfig for Node {
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
         let version = config.version;
+        let flavors = config.flavors;
         let local_paths = config.local_paths;
         let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
@@ -103,10 +142,11 @@ impl FlowNodeWithConfig for Node {
         let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {
-            let file_name = match arch {
-                CommonArch::X86_64 => "firmware-RELEASE-X64-VS2022.tar.gz",
-                CommonArch::Aarch64 => "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz",
-            };
+            let flavor = flavors
+                .get(&arch)
+                .copied()
+                .unwrap_or_else(|| FirmwareFlavor::default_for_arch(arch));
+            let file_name = flavor.file_name(arch)?;
 
             let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                 repo_owner: "microsoft".into(),
