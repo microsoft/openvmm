@@ -327,22 +327,27 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
     #[tracing::instrument(skip(self), fields(device_id, base_gpa, range_id))]
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // Take the high order bits of the vtom address (the lower 15 bits are always 0 as vtom is 2MB aligned)
-        const SHIFT_2MB: u32 = 15;
-        let vtom_high: u32 = (self.vtom >> SHIFT_2MB).try_into().with_context(|| {
-            format!(
-                "VTOM {:#x} does not fit the SDTE field once shifted by {SHIFT_2MB}",
-                self.vtom
-            )
-        })?;
+        // The SDTE address field holds VTOM address bits [46:16]. Shift the mask
+        // down to bit 16 and subtract one, turning the VTOM bit into a mask of
+        // every address bit below it, so a bit-47 VTOM encodes as 0x7fff_ffff.
+        // The subtraction stays in u64 so the intermediate cannot truncate.
+        const VTOM_SHIFT: u32 = 16;
+        const SDTE_VTOM_BITS: u32 = 31;
 
-        // Subtract 1 to create the mask for the non-VTOM bit parts of the address
-        let vtom = vtom_high.checked_sub(1).with_context(|| {
+        let mask = (self.vtom >> VTOM_SHIFT).checked_sub(1).with_context(|| {
             format!(
                 "VTOM {:#x} is too small to form an SDTE address mask",
                 self.vtom
             )
         })?;
+
+        anyhow::ensure!(
+            mask >> SDTE_VTOM_BITS == 0,
+            "VTOM {:#x} does not fit the {SDTE_VTOM_BITS}-bit SDTE address field",
+            self.vtom
+        );
+
+        let vtom = mask as u32;
 
         let accept_dma = self
             .sev_guest
