@@ -2953,6 +2953,7 @@ impl InitializedVm {
             let partition = &partition;
             let mapper = &mapper;
             let port_info = &port_info;
+            #[cfg(target_os = "linux")]
             let pcie_host_bridges = &pcie_host_bridges;
             let processor_topology = &processor_topology;
             let iommu_devices = &iommu_devices;
