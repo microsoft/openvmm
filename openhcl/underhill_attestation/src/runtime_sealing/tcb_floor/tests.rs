@@ -189,6 +189,380 @@ fn assert_floor(floor: &RuntimeTcbFloor, svn: KeyDerivationSvn) {
     assert!(svn_equal(floor.snapshot.svn, svn));
 }
 
+fn protobuf_roundtrip(state: SavedRuntimeTcbFloor) -> SavedRuntimeTcbFloor {
+    let bytes = mesh::payload::encode(state.clone());
+    let decoded = mesh::payload::decode(&bytes).unwrap();
+    assert_eq!(state, decoded);
+    decoded
+}
+
+#[test]
+fn saved_floor_roundtrip_preserves_exact_metadata_without_hardware_calls() {
+    // Known layouts, v2 without CPUID, and unknown versions/models must all
+    // retain their original domain, including reserved raw TCB bytes.
+    for (version, family, model) in [
+        (0, 0x19, 0),
+        (1, 0x19, 0),
+        (2, 0x19, 0),
+        (3, 0x19, 0),
+        (4, 0x1a, 0x90),
+        (5, 0x1a, 0xc0),
+        (3, 0xff, 0xfe),
+        (6, 0x19, 0),
+        (u32::MAX, 0xff, 0xfe),
+    ] {
+        let tcb = [1, 2, 3, 4, 5, 6, 7, 8];
+        let tee = MutableTee::snp(version, family, model, tcb);
+        let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let saved = protobuf_roundtrip(floor.save());
+        assert_eq!(saved.version, 1);
+        assert_eq!(
+            saved.svn,
+            Some(SavedRuntimeTcbFloorSvn::Snp {
+                tcb_version: u64::from_le_bytes(tcb),
+                report_version: version,
+                cpuid: (version >= 3).then_some(vec![family, model]),
+            })
+        );
+        tee.state.lock().fail_report = true;
+        tee.state.lock().fail_derivation = true;
+        let restored = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        assert_eq!(restored.save(), saved);
+        floor.check_restored_successor(&restored).unwrap();
+        restored.check_restored_successor(&floor).unwrap();
+        let state = tee.state.lock();
+        assert_eq!(state.report_calls, 1);
+        assert!(state.derivations.is_empty());
+    }
+
+    let tee = MutableTee::tdx();
+    let tee_tcb_svn = std::array::from_fn(|i| i as u8);
+    let cpu_svn = std::array::from_fn(|i| (31 - i) as u8);
+    tee.set_svn(KeyDerivationSvn::Tdx {
+        tee_tcb_svn,
+        cpu_svn,
+    });
+    let floor = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+    let saved = protobuf_roundtrip(floor.save());
+    assert_eq!(
+        saved.svn,
+        Some(SavedRuntimeTcbFloorSvn::Tdx {
+            tee_tcb_svn: tee_tcb_svn.to_vec(),
+            cpu_svn: cpu_svn.to_vec(),
+        })
+    );
+    tee.state.lock().fail_report = true;
+    tee.state.lock().fail_derivation = true;
+    let restored = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+    assert_eq!(restored.save(), saved);
+    floor.check_restored_successor(&restored).unwrap();
+    assert_eq!(tee.state.lock().report_calls, 1);
+    assert!(tee.state.lock().derivations.is_empty());
+}
+
+#[test]
+fn saved_floor_rejects_invalid_shapes_and_tee_mismatch_without_io() {
+    let snp = MutableTee::snp(3, 0x19, 0, BASE_TCB);
+    let tdx = MutableTee::tdx();
+    let snp_state = SavedRuntimeTcbFloor {
+        version: 1,
+        svn: Some(SavedRuntimeTcbFloorSvn::Snp {
+            tcb_version: u64::from_le_bytes(BASE_TCB),
+            report_version: 3,
+            cpuid: Some(vec![0x19, 0]),
+        }),
+    };
+    let mut invalid = Vec::new();
+    for version in [0, 2, u32::MAX] {
+        invalid.push(SavedRuntimeTcbFloor {
+            version,
+            ..snp_state.clone()
+        });
+    }
+    invalid.push(SavedRuntimeTcbFloor {
+        version: 1,
+        svn: None,
+    });
+    for (report_version, cpuid) in [
+        (0, Some(vec![0x19, 0])),
+        (2, Some(vec![])),
+        (2, Some(vec![0x19, 0])),
+        (3, None),
+        (3, Some(vec![])),
+        (3, Some(vec![0x19])),
+        (3, Some(vec![0x19, 0, 0])),
+        (u32::MAX, None),
+    ] {
+        invalid.push(SavedRuntimeTcbFloor {
+            version: 1,
+            svn: Some(SavedRuntimeTcbFloorSvn::Snp {
+                tcb_version: 0,
+                report_version,
+                cpuid,
+            }),
+        });
+    }
+    for saved in invalid {
+        assert!(matches!(
+            RuntimeTcbFloor::restore(protobuf_roundtrip(saved), &snp, &config()),
+            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+        ));
+    }
+    for (tee_len, cpu_len) in [(0, 16), (15, 16), (17, 16), (16, 0), (16, 15), (16, 17)] {
+        let saved = SavedRuntimeTcbFloor {
+            version: 1,
+            svn: Some(SavedRuntimeTcbFloorSvn::Tdx {
+                tee_tcb_svn: vec![3; tee_len],
+                cpu_svn: vec![5; cpu_len],
+            }),
+        };
+        assert!(matches!(
+            RuntimeTcbFloor::restore(protobuf_roundtrip(saved), &tdx, &config()),
+            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+        ));
+    }
+    assert!(matches!(
+        RuntimeTcbFloor::restore(snp_state, &tdx, &config()),
+        Err(Error(ErrorInner::InvalidSavedTcbFloor))
+    ));
+    let tdx_state = SavedRuntimeTcbFloor {
+        version: 1,
+        svn: Some(SavedRuntimeTcbFloorSvn::Tdx {
+            tee_tcb_svn: vec![3; 16],
+            cpu_svn: vec![5; 16],
+        }),
+    };
+    assert!(matches!(
+        RuntimeTcbFloor::restore(tdx_state, &snp, &config()),
+        Err(Error(ErrorInner::InvalidSavedTcbFloor))
+    ));
+
+    // Empty message, version only, empty nested oneof, and unknown oneof tag.
+    // Invalid nested enums may fail at protobuf decoding rather than restore.
+    for bytes in [&[][..], &[8, 1], &[8, 1, 18, 0], &[8, 1, 18, 2, 26, 0]] {
+        if let Ok(saved) = mesh::payload::decode::<SavedRuntimeTcbFloor>(bytes) {
+            assert!(matches!(
+                RuntimeTcbFloor::restore(saved, &snp, &config()),
+                Err(Error(ErrorInner::InvalidSavedTcbFloor))
+            ));
+        }
+    }
+    for tee in [&snp, &tdx] {
+        let state = tee.state.lock();
+        assert_eq!(state.report_calls, 0);
+        assert!(state.derivations.is_empty());
+    }
+}
+
+#[test]
+fn restore_checks_policy_and_capabilities_without_io() {
+    for mut tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
+        let saved = RuntimeTcbFloor::new(&tee, &config()).unwrap().save();
+        let mut config = config();
+        config.hardware_sealing_policy = HardwareSealingPolicy::None;
+        assert!(matches!(
+            RuntimeTcbFloor::restore(saved.clone(), &tee, &config),
+            Err(Error(ErrorInner::DisabledPolicy))
+        ));
+        config.hardware_sealing_policy = HardwareSealingPolicy::Signer;
+        let result = RuntimeTcbFloor::restore(saved.clone(), &tee, &config);
+        if tee.is_tdx {
+            assert!(matches!(
+                result,
+                Err(Error(ErrorInner::TdxSignerPolicyUnsupported))
+            ));
+        } else {
+            assert!(result.is_ok());
+        }
+        config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+        tee.supports_derivation = false;
+        assert!(matches!(
+            RuntimeTcbFloor::restore(saved, &tee, &config),
+            Err(Error(ErrorInner::UnsupportedTee))
+        ));
+        let state = tee.state.lock();
+        assert_eq!(state.report_calls, 1);
+        assert!(state.derivations.is_empty());
+    }
+}
+
+#[test]
+fn restored_floor_preserves_ratchet_after_failures_and_rejects_older_restore() {
+    for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
+        let config = config();
+        let initial = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let mut floor =
+            RuntimeTcbFloor::restore(protobuf_roundtrip(initial.save()), &tee, &config).unwrap();
+        let low = tee.state.lock().svn.unwrap();
+        let high = match low {
+            KeyDerivationSvn::Snp { tcb_version } => {
+                let mut tcb = tcb_version.to_le_bytes();
+                tcb[7] += 1;
+                snp_svn(tcb)
+            }
+            KeyDerivationSvn::Tdx {
+                tee_tcb_svn,
+                mut cpu_svn,
+            } => {
+                cpu_svn[15] += 1;
+                KeyDerivationSvn::Tdx {
+                    tee_tcb_svn,
+                    cpu_svn,
+                }
+            }
+        };
+        tee.set_svn(high);
+        tee.state.lock().fail_derivation = true;
+        assert!(matches!(
+            floor.create_protector(&tee, &config, &DEK),
+            Err(Error(ErrorInner::Derive(_)))
+        ));
+        let saved_high = protobuf_roundtrip(floor.save());
+        floor = RuntimeTcbFloor::restore(saved_high.clone(), &tee, &config).unwrap();
+        let mut invalid = saved_high.clone();
+        invalid.version = 0;
+        assert!(matches!(
+            RuntimeTcbFloor::restore(invalid, &tee, &config),
+            Err(Error(ErrorInner::InvalidSavedTcbFloor))
+        ));
+        assert_eq!(floor.save(), saved_high);
+        initial.check_restored_successor(&floor).unwrap();
+        assert!(matches!(
+            floor.check_restored_successor(&initial),
+            Err(Error(ErrorInner::TcbLowered))
+        ));
+        assert_eq!(floor.save(), saved_high);
+        tee.state.lock().fail_report = true;
+        assert!(matches!(
+            floor.create_protector(&tee, &config, &DEK),
+            Err(Error(ErrorInner::Report(_)))
+        ));
+        tee.state.lock().fail_report = false;
+        tee.state.lock().fail_derivation = false;
+        tee.set_svn(low);
+        assert!(matches!(
+            floor.create_protector(&tee, &config, &DEK),
+            Err(Error(ErrorInner::TcbLowered))
+        ));
+        tee.set_svn(high);
+        assert!(!floor.verify_protector(&tee, &config, &[], &DEK).unwrap());
+        assert_eq!(floor.save(), saved_high);
+        assert_eq!(tee.state.lock().derivations.len(), 1);
+    }
+}
+
+#[test]
+fn restored_unknown_snp_domains_remain_equality_only() {
+    for (version, family, model) in [(2, 0x19, 0), (3, 0x19, 0x20), (6, 0x1a, 0x90)] {
+        let tee = MutableTee::snp(version, family, model, BASE_TCB);
+        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let saved = protobuf_roundtrip(initial.save());
+        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        assert!(!floor.verify_protector(&tee, &config(), &[], &DEK).unwrap());
+        let mut changed = BASE_TCB;
+        changed[7] += 1;
+        tee.set_svn(snp_svn(changed));
+        assert!(matches!(
+            floor.create_protector(&tee, &config(), &DEK),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        let changed = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        assert!(matches!(
+            floor.check_restored_successor(&changed),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert_eq!(floor.save(), saved);
+        assert!(tee.state.lock().derivations.is_empty());
+    }
+}
+
+#[test]
+fn restored_floor_rejects_changed_comparison_domains() {
+    let tees = [
+        MutableTee::snp(2, 0x19, 0, BASE_TCB),
+        MutableTee::snp(3, 0x19, 0, BASE_TCB),
+        MutableTee::snp(6, 0xff, 0xfe, BASE_TCB),
+        MutableTee::tdx(),
+    ];
+    for tee in tees {
+        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let saved = protobuf_roundtrip(initial.save());
+        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let mut changed = saved.clone();
+        match changed.svn.as_mut().unwrap() {
+            SavedRuntimeTcbFloorSvn::Snp {
+                report_version,
+                cpuid,
+                ..
+            } => {
+                if let Some(cpuid) = cpuid {
+                    cpuid[1] ^= 1;
+                    tee.state.lock().report[0x189] ^= 1;
+                } else {
+                    *report_version = 1;
+                    tee.state.lock().report[..4].copy_from_slice(&1u32.to_le_bytes());
+                }
+            }
+            SavedRuntimeTcbFloorSvn::Tdx { tee_tcb_svn, .. } => {
+                tee_tcb_svn[1] += 1;
+                tee.set_svn(KeyDerivationSvn::Tdx {
+                    tee_tcb_svn: tee_tcb_svn.clone().try_into().unwrap(),
+                    cpu_svn: [5; 16],
+                });
+            }
+        }
+        let changed =
+            RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
+        assert!(matches!(
+            floor.check_restored_successor(&changed),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert!(matches!(
+            floor.create_protector(&tee, &config(), &DEK),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert_eq!(floor.save(), saved);
+        assert!(tee.state.lock().derivations.is_empty());
+    }
+}
+
+#[test]
+fn restored_floor_keeps_reserved_bytes_in_comparisons() {
+    for tee in [
+        MutableTee::snp(3, 0x19, 0, [2; 8]),
+        MutableTee::snp(5, 0x1a, 0xc0, [2; 8]),
+        MutableTee::tdx(),
+    ] {
+        let initial = RuntimeTcbFloor::new(&tee, &config()).unwrap();
+        let saved = protobuf_roundtrip(initial.save());
+        let mut floor = RuntimeTcbFloor::restore(saved.clone(), &tee, &config()).unwrap();
+        let mut changed = saved.clone();
+        match changed.svn.as_mut().unwrap() {
+            SavedRuntimeTcbFloorSvn::Snp { tcb_version, .. } => {
+                let mut bytes = tcb_version.to_le_bytes();
+                bytes[4] += 1; // Reserved in both supported SNP layouts.
+                *tcb_version = u64::from_le_bytes(bytes);
+            }
+            SavedRuntimeTcbFloorSvn::Tdx { tee_tcb_svn, .. } => {
+                tee_tcb_svn[3] += 1; // Reserved, not an ordered component.
+            }
+        }
+        let changed =
+            RuntimeTcbFloor::restore(protobuf_roundtrip(changed), &tee, &config()).unwrap();
+        assert!(matches!(
+            floor.check_restored_successor(&changed),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        tee.set_svn(changed.snapshot.svn);
+        assert!(matches!(
+            floor.create_protector(&tee, &config(), &DEK),
+            Err(Error(ErrorInner::TcbIncompatible))
+        ));
+        assert_eq!(floor.save(), saved);
+        assert!(tee.state.lock().derivations.is_empty());
+    }
+}
+
 #[test]
 fn boot_collection_reuses_first_report_without_hardware_calls() {
     for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
