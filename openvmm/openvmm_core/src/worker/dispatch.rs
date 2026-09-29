@@ -1247,7 +1247,9 @@ fn validate_generic_initiator_memory_ranges(
         let bar4 = assigned_bars
             .iter()
             .filter(|bar| is_initiator(bar))
-            .find(|bar| bar.index == 4)
+            .find(|bar| {
+                bar.kind == pci_resource_assignment::AssignedBarKind::Function && bar.index == 4
+            })
             .with_context(|| {
                 format!(
                     "generic initiator {:04x}:{:02x}:{:02x}.{} has coherent memory {} but no assigned BAR4",
@@ -1284,11 +1286,19 @@ fn validate_generic_initiator_memory_ranges(
 
         if let Some(bar) = assigned_bars
             .iter()
-            .filter(|bar| !(is_initiator(bar) && bar.index == 4))
+            .filter(|bar| {
+                !(is_initiator(bar)
+                    && bar.kind == pci_resource_assignment::AssignedBarKind::Function
+                    && bar.index == 4)
+            })
             .find(|bar| bar.range.overlaps(&memory_range))
         {
+            let kind = match bar.kind {
+                pci_resource_assignment::AssignedBarKind::Function => "BAR",
+                pci_resource_assignment::AssignedBarKind::SriovVf => "SR-IOV VF BAR",
+            };
             anyhow::bail!(
-                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps BAR{} {} of {:04x}:{:02x}:{:02x}.{}",
+                "generic initiator {:04x}:{:02x}:{:02x}.{} coherent memory {} overlaps {kind}{} {} of {:04x}:{:02x}:{:02x}.{}",
                 initiator.segment,
                 initiator.bus,
                 initiator.device,
@@ -5214,8 +5224,21 @@ mod generic_initiator_memory_tests {
             bus,
             device,
             function: 0,
+            kind: pci_resource_assignment::AssignedBarKind::Function,
             index,
             range,
+        }
+    }
+
+    fn vf_bar(
+        bus: u8,
+        device: u8,
+        index: u8,
+        range: MemoryRange,
+    ) -> ecam_config_access::AssignedPciBar {
+        ecam_config_access::AssignedPciBar {
+            kind: pci_resource_assignment::AssignedBarKind::SriovVf,
+            ..bar(bus, device, index, range)
         }
     }
 
@@ -5289,6 +5312,26 @@ mod generic_initiator_memory_tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("overlaps BAR0"));
+    }
+
+    #[test]
+    fn rejects_coherent_memory_overlapping_sriov_vf_bar() {
+        let range = MemoryRange::new(0x0080_0000_0000..0x0080_0010_0000);
+        let error = validate_generic_initiator_memory_ranges(
+            &[initiator(range)],
+            &[
+                bar(
+                    1,
+                    0,
+                    4,
+                    MemoryRange::new(0x0080_0000_0000..0x00c0_0000_0000),
+                ),
+                vf_bar(1, 0, 4, range),
+            ],
+            [],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("overlaps SR-IOV VF BAR4"));
     }
 
     #[test]
