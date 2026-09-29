@@ -674,29 +674,17 @@ impl SimpleFlowNode for Node {
         });
 
         let uefi_x64 = prebuilt_artifacts.uefi_x64.then(|| {
-            ctx.reqv(|msvm_fd| match uefi_firmware_flavor {
-                Some(flavor) => crate::download_uefi_mu_msvm::Request::GetCustomMsvmFd {
-                    arch: CommonArch::X86_64,
-                    flavor,
-                    msvm_fd,
-                },
-                None => crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                    arch: CommonArch::X86_64,
-                    msvm_fd,
-                },
+            ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: CommonArch::X86_64,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
             })
         });
         let uefi_aarch64 = prebuilt_artifacts.uefi_aarch64.then(|| {
-            ctx.reqv(|msvm_fd| match uefi_firmware_flavor {
-                Some(flavor) => crate::download_uefi_mu_msvm::Request::GetCustomMsvmFd {
-                    arch: CommonArch::Aarch64,
-                    flavor,
-                    msvm_fd,
-                },
-                None => crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                    arch: CommonArch::Aarch64,
-                    msvm_fd,
-                },
+            ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: CommonArch::Aarch64,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
             })
         });
 

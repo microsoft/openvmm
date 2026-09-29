@@ -48,6 +48,7 @@ impl FlowNode for Node {
                     (
                         ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
                             arch,
+                            flavor: None,
                             msvm_fd: v,
                         }),
                         dones,

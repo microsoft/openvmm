@@ -58,12 +58,7 @@ flowey_request! {
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: CommonArch,
-            msvm_fd: WriteVar<PathBuf>
-        },
-        /// Download a specific mu_msvm firmware flavor for the given arch
-        GetCustomMsvmFd {
-            arch: CommonArch,
-            flavor: FirmwareFlavor,
+            flavor: Option<FirmwareFlavor>,
             msvm_fd: WriteVar<PathBuf>
         }
     }
@@ -92,15 +87,17 @@ impl FlowNodeWithConfig for Node {
 
         for req in requests {
             match req {
-                Request::GetMsvmFd { arch, msvm_fd } => reqs
-                    .entry((arch, FirmwareFlavor::default_for_arch(arch)))
-                    .or_default()
-                    .push(msvm_fd),
-                Request::GetCustomMsvmFd {
+                Request::GetMsvmFd {
                     arch,
                     flavor,
                     msvm_fd,
-                } => reqs.entry((arch, flavor)).or_default().push(msvm_fd),
+                } => reqs
+                    .entry((
+                        arch,
+                        flavor.unwrap_or_else(|| FirmwareFlavor::default_for_arch(arch)),
+                    ))
+                    .or_default()
+                    .push(msvm_fd),
             }
         }
 

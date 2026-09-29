@@ -710,13 +710,10 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource: Option<UefiResource> = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx.reqv(|msvm_fd| match uefi_firmware_flavor {
-                Some(flavor) => crate::download_uefi_mu_msvm::Request::GetCustomMsvmFd {
-                    arch,
-                    flavor,
-                    msvm_fd,
-                },
-                None => crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd },
+            msvm_fd: ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
             }),
         });
 
