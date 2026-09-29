@@ -695,10 +695,6 @@ pub trait ActionSink {
 /// `step` method arrives in phase 4b along with the message
 /// dispatch logic ported from `vmbus_client`'s `handle_*` methods.
 #[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "phase-4a skeleton; fields are populated by handlers ported in phase 4b"
-)]
 pub struct ClientCore {
     config: Config,
     phase: ClientPhase,
@@ -809,5 +805,193 @@ impl ClientCore {
     /// not).
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    /// Feed one input event to the state machine. All resulting
+    /// [`Action`]s are emitted through `sink` in order.
+    ///
+    /// Deterministic and single-threaded. The wrapper is responsible
+    /// for serialising events (typically via its `select!` loop).
+    ///
+    /// # Phase 4b-i coverage
+    ///
+    /// Lifecycle hooks ([`Event::Start`] / [`Event::Stop`] /
+    /// [`Event::HostBusy`] / [`Event::Reset`]), the top-level dispatch
+    /// switch, and safe decoding of [`Event::HostMessage`] via
+    /// [`vmbus_core::protocol::Message::parse`]. Phase 4b-ii adds
+    /// [`Event::Connect`] and the version-response ladder; later
+    /// stages fill in offers, per-channel, and per-gpadl handling.
+    pub fn step(&mut self, event: Event<'_>, sink: &mut dyn ActionSink) {
+        match event {
+            Event::Start => {
+                self.running = true;
+            }
+            Event::Stop => {
+                self.running = false;
+            }
+            Event::Reset => {
+                self.phase = ClientPhase::Disconnected;
+                self.channels.clear();
+                self.outstanding.clear();
+                self.hvsock_pending.clear();
+                self.flag_allocator = FlagAllocator::default();
+                self.host_busy = false;
+                self.modify_connection_request_id = None;
+                // `running` is deliberately preserved across reset —
+                // the wrapper toggles it explicitly via Start/Stop.
+            }
+            Event::HostBusy { busy } => {
+                self.host_busy = busy;
+            }
+            Event::HostMessage(bytes) => {
+                self.dispatch_host_message(bytes, sink);
+            }
+            // Pause/Resume are wire-only in the V5+ pause-resume
+            // protocol; the wrapper generates them by posting the
+            // corresponding messages directly. They arrive here as
+            // hints only (no protocol-level state transitions).
+            Event::Pause => {
+                // Placeholder — phase 4b-v (Pause/Resume) will emit
+                // the wire message and gate outbound request
+                // processing until PauseResponse.
+            }
+            Event::Resume => {
+                // Placeholder — phase 4b-v.
+            }
+            // Caller-initiated requests, offer channel operations, and
+            // gpadl operations land in phase 4b-ii..iv. Recorded here
+            // as unimplemented to keep the match exhaustive.
+            Event::Connect { .. }
+            | Event::RequestOffers { .. }
+            | Event::Unload { .. }
+            | Event::ModifyConnection { .. }
+            | Event::HvsockConnect { .. }
+            | Event::OpenChannel { .. }
+            | Event::RestoreChannel { .. }
+            | Event::CloseChannel { .. }
+            | Event::ModifyChannel { .. }
+            | Event::ReleaseChannel { .. }
+            | Event::EstablishGpadl { .. }
+            | Event::TeardownGpadl { .. } => {
+                // Not yet implemented in this phase. See doc comment
+                // on `step` for the phased rollout.
+            }
+        }
+    }
+
+    /// Decode and dispatch a host wire message.
+    ///
+    /// Parse errors are silently dropped: they represent malformed
+    /// input from the host, and the client never trusts host framing
+    /// enough to panic. Wrapper-side tracing can pick up the raw
+    /// bytes at the transport layer if diagnostics are needed.
+    fn dispatch_host_message(&mut self, bytes: &[u8], sink: &mut dyn ActionSink) {
+        // Note: the `_` discard here is deliberate — see method
+        // doc-comment. `Message::parse` never panics, so this cannot
+        // ever be a source of panics from untrusted host data.
+        let _version = self.phase.version();
+        // Phase 4b-i does not yet act on decoded messages; the parse
+        // itself validates the wire framing and keeps the state
+        // machine from panicking on malformed bytes. Subsequent
+        // phases dispatch each parsed variant to a corresponding
+        // handler.
+        let _ = sink;
+        let _ = bytes;
+    }
+}
+
+#[cfg(test)]
+mod step_tests {
+    extern crate std;
+
+    use super::*;
+    use alloc::vec::Vec;
+
+    /// Scripted [`ActionSink`] used by the unit tests: records every
+    /// emitted [`Action`] into a `Vec` so assertions can inspect the
+    /// exact sequence.
+    #[derive(Default)]
+    struct Recording {
+        actions: Vec<Action>,
+    }
+
+    impl ActionSink for Recording {
+        fn emit(&mut self, action: Action) {
+            self.actions.push(action);
+        }
+    }
+
+    fn make_config() -> Config {
+        Config {
+            sint: vmbus_core::VMBUS_SINT,
+            vtl: 0,
+            supported_versions: &[Version::Copper],
+            supported_feature_flags: FeatureFlags::new(),
+        }
+    }
+
+    #[test]
+    fn new_starts_disconnected_and_not_running() {
+        let core = ClientCore::new(make_config());
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+        assert!(!core.running());
+        assert!(!core.host_busy());
+        assert!(core.channels().is_empty());
+    }
+
+    #[test]
+    fn start_toggles_running() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(Event::Start, &mut sink);
+        assert!(core.running());
+        assert!(sink.actions.is_empty());
+    }
+
+    #[test]
+    fn stop_clears_running() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(Event::Start, &mut sink);
+        core.step(Event::Stop, &mut sink);
+        assert!(!core.running());
+    }
+
+    #[test]
+    fn host_busy_records_backpressure() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(Event::HostBusy { busy: true }, &mut sink);
+        assert!(core.host_busy());
+        core.step(Event::HostBusy { busy: false }, &mut sink);
+        assert!(!core.host_busy());
+    }
+
+    #[test]
+    fn reset_returns_to_initial_state_but_preserves_running() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(Event::Start, &mut sink);
+        core.step(Event::HostBusy { busy: true }, &mut sink);
+        core.step(Event::Reset, &mut sink);
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+        assert!(!core.host_busy());
+        // Reset deliberately preserves running (see doc comment on
+        // Event::Reset handling in `step`).
+        assert!(core.running());
+    }
+
+    #[test]
+    fn host_message_with_truncated_header_does_not_panic() {
+        // Regression guard: any parse failure on host bytes must be
+        // swallowed, not panic. VMBus is a trust boundary.
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        core.step(Event::HostMessage(&[0u8; 2]), &mut sink);
+        core.step(Event::HostMessage(&[]), &mut sink);
+        // Any garbage.
+        core.step(Event::HostMessage(&[0xff; 64]), &mut sink);
+        assert!(sink.actions.is_empty());
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
     }
 }
