@@ -215,6 +215,19 @@ enum ProvenanceError {
     ParseVmgsid(#[source] guid::ParseError),
 }
 
+/// Failure to confirm boot-time hardware protector identity or durability.
+#[derive(Debug, Error)]
+enum FinalizeHardwareSealingError {
+    #[error("no hardware protector was sealed for this unlock attempt")]
+    MissingSealedKey,
+    #[error("active VMGS encryption key is unavailable")]
+    ActiveKey(#[source] ::vmgs::Error),
+    #[error("sealed DEK does not match the active VMGS encryption key")]
+    ActiveKeyMismatch,
+    #[error("failed to flush the hardware protector and VMGS metadata")]
+    Flush(#[source] ::vmgs::Error),
+}
+
 // Operation types for provisioning telemetry.
 #[derive(Debug)]
 enum LogOpType {
@@ -592,18 +605,6 @@ async fn try_unlock_vmgs(
             .state_refresh_request(),
         hardware_sealed,
     })
-}
-
-#[derive(Debug, Error)]
-enum FinalizeHardwareSealingError {
-    #[error("no hardware protector was sealed for this unlock attempt")]
-    MissingSealedKey,
-    #[error("active VMGS encryption key is unavailable")]
-    ActiveKey(#[source] ::vmgs::Error),
-    #[error("sealed DEK does not match the active VMGS encryption key")]
-    ActiveKeyMismatch,
-    #[error("failed to flush the hardware protector and VMGS metadata")]
-    Flush(#[source] ::vmgs::Error),
 }
 
 /// Check that the sealed DEK is active, then flush completed boot writes.
@@ -1550,7 +1551,7 @@ async fn get_derived_keys(
         });
     }
 
-    // GSP By Id derives keys differently,
+    // GSP By Id derives
     // because key is shared across VMs different context must be used (Id GUID)
     if (no_kek && no_gsp) || requires_gsp_by_id {
         let derived_keys_by_id =
