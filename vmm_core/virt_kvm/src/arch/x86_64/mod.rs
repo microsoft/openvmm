@@ -1100,24 +1100,27 @@ impl KvmProcessor<'_> {
     /// The VP must be known to be stopped and must have an open interrupt
     /// window.
     fn deliver_pic_interrupt(&mut self, dev: &impl CpuIo) -> Result<(), KvmRunVpError> {
-        if let Some(vector) = dev.acknowledge_pic_interrupt() {
-            if self.partition.caps.nested_virt {
-                // Let KVM decide whether the interrupt must first exit a nested
-                // guest. A queued interrupt is missing from the saved state,
-                // but KVM partitions cannot save nested state either.
+        if self.partition.caps.nested_virt {
+            // Let KVM decide whether the interrupt must first exit a nested
+            // guest. A queued interrupt is missing from the saved state, but
+            // KVM partitions cannot save nested state either.
+            if let Some(vector) = dev.acknowledge_pic_interrupt() {
                 self.runner
                     .queue_extint_interrupt(vector)
                     .map_err(KvmRunVpError::ExtintInterrupt)?;
-            } else {
-                // Keep the interrupt in the saved VP state until the guest
-                // takes it. KVM delivers it without checking whether the guest
-                // can take it, so KVM must have reported the open window for
-                // the current VP state.
-                assert!(
-                    !self.interrupt_window_stale,
-                    "extint injected without a current interrupt window"
-                );
-                extint::inject(&self.kvm, vector)?;
+            }
+        } else {
+            // Keep the interrupt in the saved VP state until the guest takes
+            // it. KVM delivers it without checking whether the guest can take
+            // it, so KVM must have reported the open window for the current VP
+            // state.
+            assert!(
+                !self.interrupt_window_stale,
+                "extint injected without a current interrupt window"
+            );
+            // Acknowledge the PIC only once the VP is known to be able to take
+            // the interrupt.
+            if extint::inject(&self.kvm, || dev.acknowledge_pic_interrupt())? {
                 // The VP state changed, so the window that KVM reported no
                 // longer applies.
                 self.interrupt_window_stale = true;

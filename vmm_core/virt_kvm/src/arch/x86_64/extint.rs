@@ -8,6 +8,12 @@ use crate::KvmRunVpError;
 
 /// Injects an extint interrupt through the VP's injected-interrupt slot.
 ///
+/// Calls `acknowledge` for the vector to inject only once the VP is known to
+/// be able to take the interrupt, so that the PIC never acknowledges an
+/// interrupt that then cannot be injected, which would leave it in service and
+/// block its line and every lower-priority one. Returns whether an interrupt
+/// was injected, which is not the case if `acknowledge` returns `None`.
+///
 /// Unlike an interrupt queued with [`kvm::VpRunner::queue_extint_interrupt`],
 /// KVM reports this interrupt through `KVM_GET_VCPU_EVENTS` until the guest
 /// takes it, so it is saved and restored along with the rest of the VP state.
@@ -20,7 +26,10 @@ use crate::KvmRunVpError;
 /// interrupt window for the current VP state. KVM also cannot turn this
 /// interrupt into an exit from a nested guest, so queue the interrupt instead
 /// if the VP may be running one.
-pub(super) fn inject(vp: &kvm::Processor<'_>, vector: u8) -> Result<(), KvmRunVpError> {
+pub(super) fn inject(
+    vp: &kvm::Processor<'_>,
+    acknowledge: impl FnOnce() -> Option<u8>,
+) -> Result<bool, KvmRunVpError> {
     let mut events = vp
         .get_vcpu_events()
         .map_err(KvmRunVpError::ExtintInterrupt)?;
@@ -34,8 +43,11 @@ pub(super) fn inject(vp: &kvm::Processor<'_>, vector: u8) -> Result<(), KvmRunVp
         || events.interrupt.injected != 0
         || events.interrupt.shadow != 0
     {
-        return Err(KvmRunVpError::ExtintNotInjectable(vector));
+        return Err(KvmRunVpError::ExtintNotInjectable);
     }
+    let Some(vector) = acknowledge() else {
+        return Ok(false);
+    };
     events.interrupt.injected = 1;
     events.interrupt.nr = vector;
     events.interrupt.soft = 0;
@@ -57,17 +69,20 @@ pub(super) fn inject(vp: &kvm::Processor<'_>, vector: u8) -> Result<(), KvmRunVp
         vp.set_mp_state(kvm::KVM_MP_STATE_RUNNABLE)
             .map_err(KvmRunVpError::ExtintInterrupt)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Tests for extint delivery, which run a real-mode guest in a KVM VM.
 #[cfg(test)]
 mod tests {
     use super::inject;
+    use crate::KvmRunVpError;
     use kvm::Exit;
     use kvm::KVM_MP_STATE_AP_RESET_HOLD;
     use kvm::KVM_MP_STATE_HALTED;
     use kvm::KVM_MP_STATE_RUNNABLE;
+    use kvm::KVM_VCPUEVENT_VALID_SHADOW;
+    use kvm::KVM_X86_SHADOW_INT_MOV_SS;
     use kvm::Kvm;
     use kvm::Processor;
     use kvm::VmType;
@@ -232,7 +247,7 @@ mod tests {
         check_extint(KVM_MP_STATE_HALTED, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
-            inject(vp, VECTOR).unwrap();
+            assert!(inject(vp, || Some(VECTOR)).unwrap());
 
             // The interrupt is part of the saved state until the guest takes
             // it, and the VP is no longer halted.
@@ -249,8 +264,39 @@ mod tests {
         check_extint(KVM_MP_STATE_AP_RESET_HOLD, |runner, vp| {
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
-            inject(vp, VECTOR).unwrap();
+            assert!(inject(vp, || Some(VECTOR)).unwrap());
             assert_eq!(vp.get_mp_state().unwrap(), KVM_MP_STATE_RUNNABLE);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn extint_is_acknowledged_only_if_injectable() {
+        check_extint(KVM_MP_STATE_RUNNABLE, |runner, vp| {
+            refresh_interrupt_window(runner);
+            assert!(runner.check_or_request_interrupt_window());
+
+            // Block interrupts with an interrupt shadow after the window was
+            // reported, which only a bug in the caller could do.
+            let mut events = vp.get_vcpu_events().unwrap();
+            events.interrupt.shadow = KVM_X86_SHADOW_INT_MOV_SS as u8;
+            events.flags = KVM_VCPUEVENT_VALID_SHADOW;
+            vp.set_vcpu_events(&events).unwrap();
+            let mut acknowledged = false;
+            let result = inject(vp, || {
+                acknowledged = true;
+                Some(VECTOR)
+            });
+            assert!(matches!(result, Err(KvmRunVpError::ExtintNotInjectable)));
+            assert!(!acknowledged);
+
+            // Nothing is injected if there is nothing to acknowledge.
+            events.interrupt.shadow = 0;
+            vp.set_vcpu_events(&events).unwrap();
+            assert!(!inject(vp, || None).unwrap());
+            assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
+
+            assert!(inject(vp, || Some(VECTOR)).unwrap());
         });
     }
 
@@ -291,7 +337,7 @@ mod tests {
             assert!(runner.interrupt_window_requested());
             refresh_interrupt_window(runner);
             assert!(runner.check_or_request_interrupt_window());
-            inject(vp, VECTOR).unwrap();
+            assert!(inject(vp, || Some(VECTOR)).unwrap());
         });
     }
 
