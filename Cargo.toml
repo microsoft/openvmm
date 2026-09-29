@@ -64,8 +64,6 @@ members = [
   "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
-  # bootstrapping — remove from members once vmbus_client depends on this crate
-  "vm/devices/vmbus/vmbus_client_core",
 ]
 exclude = [
   "xsync",
@@ -409,6 +407,7 @@ vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
 vmbus_async = { path = "vm/devices/vmbus/vmbus_async" }
 vmbus_channel = { path = "vm/devices/vmbus/vmbus_channel" }
 vmbus_client = { path = "vm/devices/vmbus/vmbus_client" }
+vmbus_client_core = { path = "vm/devices/vmbus/vmbus_client_core" }
 vmbus_client_hcl = { path = "vm/devices/vmbus/vmbus_client_hcl" }
 vmbus_core = { path = "vm/devices/vmbus/vmbus_core" }
 vmbus_proxy = { path = "vm/devices/vmbus/vmbus_proxy" }

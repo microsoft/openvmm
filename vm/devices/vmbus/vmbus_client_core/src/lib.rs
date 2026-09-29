@@ -700,6 +700,8 @@ pub enum Action {
         channel_id: vmbus_core::protocol::ChannelId,
         event: ChannelObservable,
     },
+    /// The host acknowledged a previously posted [`Event::Pause`].
+    PauseComplete,
 }
 
 // -- ActionSink ------------------------------------------------------------
@@ -764,6 +766,63 @@ pub struct ChannelEntry {
     /// [`RequestId`] of a currently-outstanding `ModifyChannel`, if
     /// any.
     pub modify_request_id: Option<RequestId>,
+}
+
+/// Runtime-independent saved state for [`ClientCore`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedState {
+    /// Negotiated protocol version, or `None` when disconnected.
+    pub version: Option<VersionInfo>,
+    /// Channels that can be restored.
+    pub channels: alloc::vec::Vec<SavedChannel>,
+    /// Revoked channels omitted from `channels` that need a deferred
+    /// `RelIdReleased` message after restore.
+    pub released_channel_ids: alloc::vec::Vec<vmbus_core::protocol::ChannelId>,
+}
+
+/// Saved protocol state for one channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedChannel {
+    /// Original host offer.
+    pub offer: vmbus_core::protocol::OfferChannel,
+    /// Saved channel phase.
+    pub phase: SavedChannelPhase,
+    /// GPADLs associated with the channel.
+    pub gpadls: alloc::vec::Vec<SavedGpadl>,
+}
+
+/// Channel phases that are valid at a save boundary.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SavedChannelPhase {
+    Offered,
+    Opened,
+}
+
+/// Saved state for one GPADL.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SavedGpadl {
+    pub id: vmbus_core::protocol::GpadlId,
+    pub phase: SavedGpadlPhase,
+}
+
+/// GPADL phases that are valid at a save boundary.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SavedGpadlPhase {
+    Created,
+    TearingDown,
+}
+
+/// Errors returned while restoring [`SavedState`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RestoreError {
+    #[error("unsupported protocol version {0:#x}")]
+    UnsupportedVersion(u32),
+    #[error("unsupported feature flags {0:#x}")]
+    UnsupportedFeatureFlags(u32),
+    #[error("duplicate channel id {0}")]
+    DuplicateChannelId(u32),
+    #[error("duplicate gpadl id {0}")]
+    DuplicateGpadlId(u32),
 }
 
 /// A caller-initiated request the core is waiting for the host to
@@ -855,6 +914,192 @@ impl ClientCore {
     /// `pal_event::Event` mapping.
     pub fn allocate_event_flag(&mut self) -> Result<u16, FlagAllocError> {
         self.flag_allocator.allocate()
+    }
+
+    /// Reserve a specific redirected-event flag while restoring a channel.
+    pub fn reserve_event_flag(&mut self, flag: u16) -> Result<(), FlagAllocError> {
+        self.flag_allocator.reserve(flag)
+    }
+
+    /// Return an allocated redirected-event flag after wrapper-side setup fails.
+    pub fn free_event_flag(&mut self, flag: u16) {
+        self.flag_allocator.free(flag);
+    }
+
+    /// Capture the protocol state at a quiesced save boundary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a caller attempts to save while a protocol request is in
+    /// flight. The wrapper must stop and drain the client before saving.
+    pub fn save(&self) -> SavedState {
+        let version = match self.phase {
+            ClientPhase::Disconnected => None,
+            ClientPhase::Connected { version } => Some(version),
+            _ => panic!("cannot save while a client request is in flight"),
+        };
+
+        let mut channels = alloc::vec::Vec::new();
+        let mut released_channel_ids = alloc::vec::Vec::new();
+        for (&channel_id, entry) in &self.channels {
+            assert!(
+                entry.modify_request_id.is_none(),
+                "cannot save a channel that is being modified"
+            );
+            let phase = match entry.phase {
+                ChannelPhase::Offered => SavedChannelPhase::Offered,
+                ChannelPhase::Restored | ChannelPhase::Opened { .. } => SavedChannelPhase::Opened,
+                ChannelPhase::Opening { .. } => {
+                    panic!("cannot save a channel that is being opened")
+                }
+                ChannelPhase::Revoked => {
+                    assert!(
+                        entry
+                            .gpadls
+                            .values()
+                            .all(|phase| matches!(phase, GpadlPhase::Created)),
+                        "revoked channel has a pending GPADL request"
+                    );
+                    released_channel_ids.push(channel_id);
+                    continue;
+                }
+            };
+            let gpadls = entry
+                .gpadls
+                .iter()
+                .map(|(&id, phase)| SavedGpadl {
+                    id,
+                    phase: match phase {
+                        GpadlPhase::Created => SavedGpadlPhase::Created,
+                        GpadlPhase::TearingDown { .. } => SavedGpadlPhase::TearingDown,
+                        GpadlPhase::Offered { .. } => {
+                            panic!("cannot save a GPADL that is being established")
+                        }
+                    },
+                })
+                .collect();
+            channels.push(SavedChannel {
+                offer: entry.offer,
+                phase,
+                gpadls,
+            });
+        }
+        SavedState {
+            version,
+            channels,
+            released_channel_ids,
+        }
+    }
+
+    /// Replace the protocol state with a previously captured snapshot.
+    pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
+        if let Some(version) = saved.version {
+            if !self.config.supported_versions.contains(&version.version) {
+                return Err(RestoreError::UnsupportedVersion(version.version as u32));
+            }
+            if !self
+                .config
+                .supported_feature_flags
+                .contains(version.feature_flags)
+            {
+                return Err(RestoreError::UnsupportedFeatureFlags(
+                    version.feature_flags.into(),
+                ));
+            }
+        }
+
+        let mut channels = alloc::collections::BTreeMap::new();
+        for channel in saved.channels {
+            let channel_id = channel.offer.channel_id;
+            let mut gpadls = alloc::collections::BTreeMap::new();
+            for gpadl in channel.gpadls {
+                let phase = match gpadl.phase {
+                    SavedGpadlPhase::Created => GpadlPhase::Created,
+                    SavedGpadlPhase::TearingDown => GpadlPhase::TearingDown {
+                        request_ids: alloc::vec::Vec::new(),
+                    },
+                };
+                if gpadls.insert(gpadl.id, phase).is_some() {
+                    return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
+                }
+            }
+            let phase = match channel.phase {
+                SavedChannelPhase::Offered => ChannelPhase::Offered,
+                SavedChannelPhase::Opened => ChannelPhase::Restored,
+            };
+            if channels
+                .insert(
+                    channel_id,
+                    ChannelEntry {
+                        offer: channel.offer,
+                        phase,
+                        connection_id: 0,
+                        gpadls,
+                        is_client_released: false,
+                        modify_request_id: None,
+                    },
+                )
+                .is_some()
+            {
+                return Err(RestoreError::DuplicateChannelId(channel_id.0));
+            }
+        }
+
+        self.phase = match saved.version {
+            Some(version) => ClientPhase::Connected { version },
+            None => ClientPhase::Disconnected,
+        };
+        self.channels = channels;
+        self.outstanding.clear();
+        self.hvsock_pending.clear();
+        self.flag_allocator = FlagAllocator::default();
+        self.host_busy = false;
+        self.modify_connection_request_id = None;
+        Ok(())
+    }
+
+    /// Close restored channels that were not reclaimed and tear down their GPADLs.
+    pub fn post_restore(&mut self, sink: &mut dyn ActionSink) {
+        let restored = self
+            .channels
+            .iter()
+            .filter_map(|(&channel_id, entry)| {
+                matches!(entry.phase, ChannelPhase::Restored).then_some(channel_id)
+            })
+            .collect::<alloc::vec::Vec<_>>();
+
+        for channel_id in restored {
+            self.post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
+            let gpadls = {
+                let entry = self.channels.get_mut(&channel_id).expect("collected above");
+                entry.phase = ChannelPhase::Offered;
+                entry
+                    .gpadls
+                    .iter_mut()
+                    .filter_map(|(&gpadl_id, phase)| match phase {
+                        GpadlPhase::Created => {
+                            *phase = GpadlPhase::TearingDown {
+                                request_ids: alloc::vec::Vec::new(),
+                            };
+                            Some(gpadl_id)
+                        }
+                        GpadlPhase::TearingDown { .. } => None,
+                        GpadlPhase::Offered { .. } => {
+                            unreachable!("restore never creates offered GPADLs")
+                        }
+                    })
+                    .collect::<alloc::vec::Vec<_>>()
+            };
+            for gpadl_id in gpadls {
+                self.post_message(
+                    &vmbus_core::protocol::GpadlTeardown {
+                        channel_id,
+                        gpadl_id,
+                    },
+                    sink,
+                );
+            }
+        }
     }
 
     /// Feed one input event to the state machine. All resulting
@@ -1849,15 +2094,6 @@ impl ClientCore {
             });
             return;
         }
-        // Reject requests on a revoked channel: the host will never
-        // return GpadlCreated for one.
-        if matches!(entry.phase, ChannelPhase::Revoked) {
-            sink.emit(Action::Complete {
-                request_id,
-                result: CompletionResult::EstablishGpadl(Err(())),
-            });
-            return;
-        }
         entry
             .gpadls
             .insert(gpadl_id, GpadlPhase::Offered { request_id });
@@ -2236,11 +2472,8 @@ impl ClientCore {
     /// per-request tracking; the wrapper uses this as a hint to
     /// stop draining its incoming-message queue until the next
     /// [`Event::Resume`].
-    fn handle_pause_response(&mut self, _sink: &mut dyn ActionSink) {
-        // Reserved for future use if the wrapper needs a
-        // ChannelObservable-style hook. For now, dropping is fine —
-        // pause is an outbound-message gating hint, not a
-        // completable operation.
+    fn handle_pause_response(&mut self, sink: &mut dyn ActionSink) {
+        sink.emit(Action::PauseComplete);
     }
 }
 
@@ -3806,7 +4039,7 @@ mod step_tests {
     }
 
     #[test]
-    fn establish_gpadl_on_revoked_channel_fails() {
+    fn establish_gpadl_on_revoked_channel_is_allowed_to_finish() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
         connect_and_offer(&mut core, &mut sink, 35);
@@ -3825,8 +4058,17 @@ mod step_tests {
             },
             &mut sink,
         );
+        assert!(matches!(&sink.actions[0], Action::PostMessage(_)));
+
+        sink.actions.clear();
+        let created = make_host_message(&vmbus_core::protocol::GpadlCreated {
+            channel_id: vmbus_core::protocol::ChannelId(35),
+            gpadl_id: gid,
+            status: vmbus_core::protocol::STATUS_UNSUCCESSFUL,
+        });
+        core.step(Event::HostMessage(&created), &mut sink);
         assert!(matches!(
-            &sink.actions[0],
+            sink.actions.last().unwrap(),
             Action::Complete {
                 request_id: RequestId(1500),
                 result: CompletionResult::EstablishGpadl(Err(())),

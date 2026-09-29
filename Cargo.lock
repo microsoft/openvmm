@@ -10397,6 +10397,7 @@ dependencies = [
  "user_driver",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client_core",
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
