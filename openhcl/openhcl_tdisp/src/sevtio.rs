@@ -72,28 +72,24 @@ impl TdispSevTioResourceValidator {
 }
 
 impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // SEV-TIO has nothing to do before the bind.
         tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_pre_bind: no-op");
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // See `on_pre_bind`.
         tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_pre_start: no-op");
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // See `on_pre_bind`.
         tracelimit::info_ratelimited!(?target_vtl, device_id, "SEV-TIO on_post_start: no-op");
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn get_tsm_tdi_state(
         &self,
         target_vtl: Vtl,
@@ -109,20 +105,17 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         Ok(None)
     }
 
-    #[tracing::instrument(skip(self, _report), fields(device_id))]
     fn tdisp_set_tdi_report(&self, device_id: u16, _report: &TdiReportStruct) {
         // SEV-TIO addresses MMIO ranges by range id, so it has no use for this
         // report.
         tracelimit::info_ratelimited!(device_id, "SEV-TIO tdisp_set_tdi_report: no-op");
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
         // See `tdisp_set_tdi_report`.
         tracelimit::info_ratelimited!(device_id, "SEV-TIO tdisp_clear_tdi_report: no-op");
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -291,7 +284,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         })
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, base_gpa, range_id))]
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // The SDTE address field holds VTOM address bits [46:16]. Shift the mask
         // down to bit 16 and subtract one, turning the VTOM bit into a mask of
@@ -339,10 +331,9 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_block_mmio<'a>(
         &'a self,
-        target_vtl: Vtl,
+        _target_vtl: Vtl,
         device_id: u16,
         base_gpa: u64,
         base_offset: u32,
@@ -477,7 +468,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         })
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // Write a zero-valued SDTE so the IOMMU blocks DMA from this device.
         let block_dma = self
