@@ -77,6 +77,9 @@ pub struct X86PartitionCapabilities {
     pub sgx: bool,
     /// TSC_AUX is supported
     pub tsc_aux: bool,
+    /// Architectural TSC-deadline state is available. Backends without access
+    /// to this MSR must clear this even if guest CPUID advertises the feature.
+    pub tsc_deadline: bool,
     /// The address of the virtual top of memory, for encrypted VMs.
     ///
     /// This is computed from the Hyper-V isolation leaf. It is guaranteed to be
@@ -137,6 +140,7 @@ impl X86PartitionCapabilities {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            tsc_deadline: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
             snp_c_bit: snp_c_bit_from_cpuid(&mut *f),
@@ -160,6 +164,7 @@ impl X86PartitionCapabilities {
             this.reset_rdx = result[0].into();
             let features = result[2] as u64 | ((result[3] as u64) << 32);
             this.x2apic = features & (1 << 21) != 0;
+            this.tsc_deadline = features & (1 << 24) != 0;
             xsave = features & (1 << 26) != 0;
             hypervisor = features & (1 << 31) != 0;
         }

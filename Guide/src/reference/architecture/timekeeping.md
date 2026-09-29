@@ -219,11 +219,11 @@ have different stop/start anchors.
 | Snapshot restore | Restores stopped software time and the state supported by each backend/device. A time-state setter must not implicitly thaw a supporting backend. |
 | VTL scrub | May reset and freeze a backing VTL clock. The partition unit thaws it before restarting VPs; this is not a freeze of every VTL. |
 
-The x86 `virt` saved-state model separates reference time, reference-page
-configuration, TSC, and APIC state. Reference time requires backend state
-support, including KVM without Hyper-V enlightenments; lifecycle freezing
-is independent. `can_freeze_time` gates exact TSC/APIC/reference-time state
-comparison and requires more than reference-clock rebasing.
+The x86 `virt` model separates reference time/page, TSC, APIC, and TSC deadline.
+Deadline state requires guest/backend support and restores after APIC/TSC:
+zero disarms; absent state is not restored. Native MSHV/WHP and KVM support
+it, unlike software APICs. Reference time is independent of Hyper-V on KVM.
+Lifecycle freeze is separate; `can_freeze_time` gates exact state comparison.
 
 Arm state coverage differs: the generic `virt` partition-state schema is
 empty and its VP schema does not currently include architectural
@@ -288,9 +288,9 @@ This assumes identity TSC scaling, not different-frequency host migration.
 Reference time is saved/reset without Hyper-V too, rounded up to 100 ns for
 snapshots. `KVM_SET_CLOCK` flags zero exclude UTC downtime.
 
-Freeze disarms LAPIC timers; thaw merges remaining countdowns/TSC deadlines
-into live LAPIC state, preserving IRQs. Injection is serialized and irqfds
-briefly detached during read/modify/write. KVM's UAPI has limitations:
+Freeze caches deadlines privately and disarms LAPIC timers. Thaw merges
+countdowns into live APIC state, preserving IRQs, then restores the deadline
+MSR. Injection is serialized and irqfds briefly detached. UAPI limitations:
 
 - Clock/timer capture is not atomic; countdown skew delays expiration.
 - Zero remaining countdown cannot distinguish pending from delivered
@@ -305,11 +305,9 @@ briefly detached during read/modify/write. KVM's UAPI has limitations:
 
 Thus `can_freeze_time` remains false despite lifecycle freeze support.
 
-On Arm, KVM manages architectural counters/timers and the in-kernel
-interrupt controller. OpenVMM configures the virtual timer PPI from the
-topology; the physical timer PPI required by KVM is not advertised to
-the guest. There is no Hyper-V reference-time source or SynIC support
-in this backend, and no software pause compensation for the counters.
+On Arm, KVM owns counters/timers and the interrupt controller. OpenVMM sets
+the topology's virtual timer PPI; KVM's required physical PPI is not exposed.
+There is no Hyper-V time/SynIC support or software pause compensation.
 
 ### HVF
 
