@@ -3,6 +3,8 @@
 
 //! Functionality to prepare VTL0 to run.
 
+use self::acpi::GetAcpiSources;
+use self::acpi::SlitSelection;
 use self::vtl2_config::RuntimeParameters;
 use crate::loader::vtl0_config::LinuxInfo;
 use crate::worker::ChipsetMmioRanges;
@@ -26,12 +28,15 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+#[cfg(guest_arch = "x86_64")]
+use vmm_core::acpi_builder::SlitInfo;
 use vmotherboard::options::VmChipsetCapabilities;
-use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+mod acpi;
 pub mod vtl0_config;
 pub mod vtl2_config;
+pub(crate) use acpi::select_load_kind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadKind {
@@ -77,6 +82,14 @@ pub enum Error {
     Finalize(#[source] vtl0_config::Error),
     #[error("invalid acpi table: too short")]
     InvalidAcpiTableLength,
+    #[error("duplicate ACPI override {0:?}")]
+    DuplicateAcpiTable([u8; 4]),
+    #[error("SLIT representation does not match the selected ACPI sources")]
+    InvalidSlitRepresentation,
+    #[error("SLIT locality count exceeds the supported table size")]
+    InvalidSlitSize,
+    #[error("SRAT proximity domain {domain} is outside {localities} SLIT localities")]
+    InvalidSlitDomain { domain: u32, localities: usize },
     #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
@@ -183,6 +196,12 @@ pub fn load(
 
             let command_line = CString::new(command_line).expect("constructed from valid CStrings");
 
+            let slit_info =
+                match acpi::select_slit(runtime_params.slit(), GetAcpiSources::default())? {
+                    SlitSelection::Generate(info) => Some(info),
+                    SlitSelection::None => None,
+                    SlitSelection::Passthrough(_) => return Err(Error::InvalidSlitRepresentation),
+                };
             load_linux(LoadLinuxParams {
                 gm,
                 mem_layout,
@@ -194,6 +213,7 @@ pub fn load(
                 kernel_entrypoint: *kernel_entrypoint,
                 initrd: *initrd,
                 command_line,
+                slit_info,
             })?
         }
         LoadKind::Pcat => {
@@ -247,6 +267,7 @@ struct LoadLinuxParams<'a> {
     initrd: Option<(u64, u64)>,
     /// The command line to pass to the kernel.
     command_line: CString,
+    slit_info: Option<&'a SlitInfo>,
 }
 
 /// Load Linux into VTL0.
@@ -263,14 +284,18 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         kernel_entrypoint,
         initrd,
         command_line,
+        slit_info,
     } = params;
 
+    if let Some(info) = slit_info {
+        acpi::validate_slit(info, processor_topology, mem_layout, true)?;
+    }
     let acpi_builder = AcpiTablesBuilder {
         processor_topology,
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        slit_info: None,
+        slit_info,
         generic_initiators: &[],
         arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
             with_ioapic: true, // openhcl always runs with ioapic
@@ -464,9 +489,10 @@ pub fn write_uefi_config(
         entropy
     }));
 
-    // We will generate these tables unless trusted tables are passed via DevicePlatformSettings
-    let mut build_madt = true;
-    let mut build_srat = true;
+    let sources = GetAcpiSources::new(&platform_config.acpi_tables, LoadKind::Uefi, isolated)?;
+    let build_madt = !sources.madt;
+    let build_srat = !sources.srat;
+    let slit = acpi::select_slit(igvm_parameters.slit(), sources)?;
 
     #[cfg(not(guest_arch = "x86_64"))]
     let _ = chipset_capabilities;
@@ -475,14 +501,9 @@ pub fn write_uefi_config(
     // We can only trust these tables from the host if this is not an isolated VM
     if !isolated {
         for table in &platform_config.acpi_tables {
-            let header = acpi_spec::Header::ref_from_prefix(table)
-                .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                .0;
-            match &header.signature {
-                b"APIC" => build_madt = false,
-                b"SRAT" => build_srat = false,
-                _ => {}
-            };
+            if !acpi::expose_get_table(table) {
+                continue;
+            }
             cfg.add_raw(config::BlobStructureType::AcpiTable, table);
         }
     }
@@ -490,12 +511,19 @@ pub fn write_uefi_config(
     // - Data that comes from the IGVM parameters
 
     if build_madt || build_srat {
+        let slit_info = match &slit {
+            SlitSelection::Generate(info) => {
+                acpi::validate_slit(info, processor_topology, mem_layout, build_srat)?;
+                Some(*info)
+            }
+            _ => None,
+        };
         let acpi_builder = AcpiTablesBuilder {
             processor_topology,
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            slit_info: None,
+            slit_info,
             generic_initiators: &[],
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
@@ -529,6 +557,9 @@ pub fn write_uefi_config(
                 config::BlobStructureType::AcpiTable,
                 &acpi_builder.build_srat(),
             );
+        }
+        if let Some(slit) = acpi_builder.build_slit() {
+            cfg.add_raw(config::BlobStructureType::AcpiTable, &slit);
         }
     }
 
@@ -568,13 +599,16 @@ pub fn write_uefi_config(
             },
         });
 
-        if let Some(slit) = igvm_parameters.slit() {
-            cfg.add_raw(config::BlobStructureType::AcpiTable, slit);
+        if let SlitSelection::Passthrough(bytes) = slit {
+            // TODO: Remove IGVM SLIT passthrough once the host supplies SLIT via GET.
+            cfg.add_raw(config::BlobStructureType::AcpiTable, bytes);
         }
 
-        // TODO: reconstruct this instead of getting it from the host.
-        if let Some(pptt) = igvm_parameters.pptt() {
-            cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
+        #[cfg(guest_arch = "aarch64")]
+        if !isolated && !sources.pptt {
+            if let Some(pptt) = igvm_parameters.pptt() {
+                cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
+            }
         }
     }
 

@@ -8,6 +8,7 @@
 //! runtime, unlike measured config. Parameters provided by openhcl_boot are
 //! expected to be already validated by the bootloader.
 
+pub use super::acpi::RuntimeSlit;
 use crate::nvme_manager::save_restore_helpers::VPInterruptState;
 use anyhow::Context;
 use bootloader_fdt_parser::IsolationType;
@@ -15,8 +16,6 @@ use bootloader_fdt_parser::ParsedBootDtInfo;
 use cvm_tracing::CVM_ALLOWED;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
-use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
-use loader_defs::paravisor::PARAVISOR_CONFIG_SLIT_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
@@ -41,7 +40,9 @@ use zerocopy::KnownLayout;
 #[derive(Debug, Inspect)]
 pub struct RuntimeParameters {
     parsed_openhcl_boot: ParsedBootDtInfo,
-    slit: Option<Vec<u8>>,
+    #[inspect(skip)]
+    slit: Option<RuntimeSlit>,
+    #[cfg(guest_arch = "aarch64")]
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
@@ -68,11 +69,12 @@ impl RuntimeParameters {
     }
 
     /// The VM's ACPI SLIT table provided by the host.
-    pub fn slit(&self) -> Option<&[u8]> {
-        self.slit.as_deref()
+    pub fn slit(&self) -> Option<&RuntimeSlit> {
+        self.slit.as_ref()
     }
 
     /// The VM's ACPI PPTT table provided by the host.
+    #[cfg(guest_arch = "aarch64")]
     pub fn pptt(&self) -> Option<&[u8]> {
         self.pptt.as_deref()
     }
@@ -300,54 +302,25 @@ pub fn write_persisted_info(
 }
 
 /// Reads the VTL 2 parameters from the config region and VTL2 reserved region.
-pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
+pub fn read_vtl2_params(
+    platform_config: &guest_emulation_transport::api::platform_settings::DevicePlatformSettings,
+    load_kind: super::LoadKind,
+) -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info)> {
     let parsed_openhcl_boot = ParsedBootDtInfo::new().context("failed to parse openhcl_boot dt")?;
 
     let mapping = Vtl2ParamsMap::new(&parsed_openhcl_boot.config_ranges, true)
         .context("failed to map igvm parameters")?;
 
-    // For the various ACPI tables, read the header to see how big the table
-    // is, then read the exact table.
-
-    let slit = {
-        let table_header: acpi_spec::Header = mapping
-            .read_plain((PARAVISOR_CONFIG_SLIT_PAGE_INDEX * HV_PAGE_SIZE) as usize)
-            .context("failed to read slit header")?;
-        tracing::trace!(?table_header, "Read SLIT ACPI header");
-
-        if table_header.length.get() == 0 {
-            None
-        } else {
-            let mut slit: Vec<u8> = vec![0; table_header.length.get() as usize];
-            mapping
-                .read_at(
-                    (PARAVISOR_CONFIG_SLIT_PAGE_INDEX * HV_PAGE_SIZE) as usize,
-                    slit.as_mut_slice(),
-                )
-                .context("failed to read slit")?;
-            Some(slit)
-        }
-    };
-
-    let pptt = {
-        let table_header: acpi_spec::Header = mapping
-            .read_plain((PARAVISOR_CONFIG_PPTT_PAGE_INDEX * HV_PAGE_SIZE) as usize)
-            .context("failed to read pptt header")?;
-        tracing::trace!(?table_header, "Read PPTT ACPI header");
-
-        if table_header.length.get() == 0 {
-            None
-        } else {
-            let mut pptt: Vec<u8> = vec![0; table_header.length.get() as usize];
-            mapping
-                .read_at(
-                    (PARAVISOR_CONFIG_PPTT_PAGE_INDEX * HV_PAGE_SIZE) as usize,
-                    pptt.as_mut_slice(),
-                )
-                .context("failed to read pptt")?;
-            Some(pptt)
-        }
-    };
+    let isolated = parsed_openhcl_boot.isolation != IsolationType::None;
+    let sources =
+        super::acpi::GetAcpiSources::new(&platform_config.acpi_tables, load_kind, isolated)
+            .context("selecting GET ACPI sources")?;
+    let acpi_parameters = super::acpi::read_parameters(
+        |offset, bytes| mapping.read_at(offset, bytes),
+        sources,
+        isolated,
+    )
+    .context("reading ACPI parameters")?;
 
     // Read SNP specific information from the reserved region.
     let (cvm_cpuid_info, snp_secrets) = {
@@ -482,8 +455,9 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
 
     let runtime_params = RuntimeParameters {
         parsed_openhcl_boot,
-        slit,
-        pptt,
+        slit: acpi_parameters.slit,
+        #[cfg(guest_arch = "aarch64")]
+        pptt: acpi_parameters.pptt,
         cvm_cpuid_info,
         snp_secrets,
         bootshim_logs,
