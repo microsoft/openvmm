@@ -15,6 +15,7 @@ use crate::spec::events::EventId;
 use crate::spec::events::EvtEntry;
 use crate::spec::pt::ApBits;
 use crate::spec::pt::PtDesc;
+use crate::spec::ste::S1Fmt;
 use crate::spec::ste::STE_SIZE;
 use crate::spec::ste::Ste;
 use crate::spec::ste::SteConfig;
@@ -32,10 +33,10 @@ pub enum SteAction {
     Bypass,
     /// Stage 1 translation — proceed to CD lookup.
     S1Translate,
-    /// The `STE.Config` selects a translation stage this SMMU does not
-    /// implement (`0b110`/`0b111` while `IDR0.S2P == 0`). Per SMMUv3 such an
-    /// STE is ILLEGAL and "behaves as described for `STE.V == 0`": the
-    /// transaction is terminated and a `C_BAD_STE` event is recorded.
+    /// The STE selects a translation stage or substream configuration this
+    /// SMMU does not support. Per SMMUv3 such an STE is ILLEGAL and
+    /// "behaves as described for `STE.V == 0`": the transaction is terminated
+    /// and a `C_BAD_STE` event is recorded.
     Illegal,
 }
 
@@ -125,15 +126,32 @@ pub fn lookup_ste(
     Ok(ste)
 }
 
-/// Determine the translation action from an STE's Config field.
+/// Determine the translation action from an STE and the advertised SSID width.
 ///
 /// This SMMU is stage-1 only (`IDR0.S2P == 0`), so any `Config` that selects
 /// stage 2 (`0b110`/`0b111`) is ILLEGAL and must fault with `C_BAD_STE`. Per
 /// the SMMUv3 `STE.Config` table, `Config[2] == 0` (the `0b000` encoding and
 /// the reserved `0b0xx` encodings) aborts the transaction with **no** event.
-pub fn ste_config_action(ste: &Ste) -> SteAction {
+///
+/// IHI 0070H.a §5.2.2 checks S1CDMax against SSIDSIZE when substreams are
+/// supported, and rejects two-level formats when substreams are enabled but
+/// CD2L is zero. S1Fmt=0b11 behaves as linear, not ILLEGAL. These are STE-wide
+/// checks, before considering the transaction's SubstreamID or S1DSS policy.
+/// Host-specific acceptance is left to the backend.
+pub fn ste_config_action(ste: &Ste, ssid_bits: u8) -> SteAction {
     match ste.config() {
         SteConfig::BYPASS => SteAction::Bypass,
+        SteConfig::S1_TRANS
+            if ssid_bits != 0
+                && (ste.s1_cd_max() > ssid_bits
+                    || (ste.s1_cd_max() != 0
+                        && matches!(
+                            S1Fmt(ste.s1_fmt()),
+                            S1Fmt::TWO_LEVEL_4K | S1Fmt::TWO_LEVEL_64K
+                        ))) =>
+        {
+            SteAction::Illegal
+        }
         SteConfig::S1_TRANS => SteAction::S1Translate,
         SteConfig::S2_TRANS | SteConfig::S1S2_TRANS => SteAction::Illegal,
         // 0b000 and the reserved 0b001/0b010/0b011 encodings ("behave as
@@ -155,8 +173,13 @@ pub fn lookup_cd(
     ssid: u32,
     oas_mask: u64,
 ) -> Result<Cd, SmmuFault> {
-    // Only linear CD tables are supported. Reject non-linear S1Fmt.
-    if ste.s1_fmt() != crate::spec::ste::S1Fmt::LINEAR.0 {
+    // S1Fmt is ignored for a single CD; 0b11 behaves as linear (§5.2).
+    if ste.s1_cd_max() != 0
+        && matches!(
+            S1Fmt(ste.s1_fmt()),
+            S1Fmt::TWO_LEVEL_4K | S1Fmt::TWO_LEVEL_64K
+        )
+    {
         return Err(SmmuFault::bad_ste(sid));
     }
 
@@ -451,6 +474,7 @@ mod tests {
     use crate::spec::cd::CdDw1;
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
+    use test_with_tracing::test;
 
     const STRTAB_BASE: u64 = 0x10_0000;
     const CD_BASE: u64 = 0x20_0000;
@@ -569,19 +593,19 @@ mod tests {
     #[test]
     fn test_ste_config_abort() {
         let ste = make_abort_ste();
-        assert_eq!(ste_config_action(&ste), SteAction::Abort);
+        assert_eq!(ste_config_action(&ste, 0), SteAction::Abort);
     }
 
     #[test]
     fn test_ste_config_bypass() {
         let ste = make_bypass_ste();
-        assert_eq!(ste_config_action(&ste), SteAction::Bypass);
+        assert_eq!(ste_config_action(&ste, 0), SteAction::Bypass);
     }
 
     #[test]
     fn test_ste_config_s1_trans() {
         let ste = make_s1_ste(CD_BASE);
-        assert_eq!(ste_config_action(&ste), SteAction::S1Translate);
+        assert_eq!(ste_config_action(&ste, 0), SteAction::S1Translate);
     }
 
     #[test]
@@ -593,7 +617,7 @@ mod tests {
             qw1: SteDw1::new(),
             _qw2_7: [0; 6],
         };
-        assert_eq!(ste_config_action(&ste), SteAction::Abort);
+        assert_eq!(ste_config_action(&ste, 0), SteAction::Abort);
     }
 
     #[test]
@@ -606,7 +630,7 @@ mod tests {
                 qw1: SteDw1::new(),
                 _qw2_7: [0; 6],
             };
-            assert_eq!(ste_config_action(&ste), SteAction::Illegal);
+            assert_eq!(ste_config_action(&ste, 0), SteAction::Illegal);
         }
     }
 
