@@ -333,8 +333,10 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
         // KVM can neither report nor withdraw an extint queued with
         // KVM_INTERRUPT, so a restored one would be missing from the next save,
         // and a reset could not discard it. Reject it before changing any
-        // state. KVM's own saved state never has one: injected PIC interrupts
-        // are saved as pending interruptions, and queued ones are not saved.
+        // activity state. KVM's own saved state never has one: injected PIC
+        // interrupts are saved as pending interruptions, and queued ones are
+        // not saved. Like any other restore error, this does not undo what
+        // restore_all restored before the activity, such as the registers.
         if let Some(vp::PendingEvent::ExtInt { .. }) = pending_event {
             return Err(KvmError::InvalidState(
                 "restoring a pending ExtINT is not supported",
