@@ -1346,8 +1346,12 @@ impl Worker {
         }
 
         for ready_id in state.data.rx_ready[..n].iter() {
-            state.stats.rx_packets.increment();
-            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
+            if dropped {
+                state.stats.rx_dropped.increment();
+            } else {
+                state.stats.rx_packets.increment();
+            }
             self.virtio_state.rx_in_order.complete(
                 &mut self.virtio_state.rx_queue,
                 work.into_completion(),

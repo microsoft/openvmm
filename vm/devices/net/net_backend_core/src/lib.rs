@@ -114,6 +114,10 @@ pub enum RxGsoProtocol {
 }
 
 /// Receive offloads that a frontend negotiated with the guest.
+///
+/// Backends must enable only these capabilities on their host transport.
+/// Enabling additional receive offloads can expose packet metadata or
+/// oversized aggregate frames that the frontend cannot safely represent.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct RxOffloadSupport {
     /// The guest can complete a partial transport checksum.
