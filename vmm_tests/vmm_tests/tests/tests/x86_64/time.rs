@@ -14,7 +14,7 @@ use vmm_test_macros::vmm_test_with;
 
 /// Guest monotonic time excludes stopped time, and a pending guest OS timer
 /// survives both a pause and a save/reset/restore while already paused.
-#[vmm_test_with(openvmm, requires(windows_partition_reset), configs(linux_direct_x64))]
+#[vmm_test_with(openvmm, configs(linux_direct_x64))]
 async fn partition_time_freeze_lifecycle(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
