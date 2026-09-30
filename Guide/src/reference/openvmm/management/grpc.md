@@ -117,12 +117,10 @@ cannot exceed the physical SMMU's width with acceleration.
 
 `SmmuConfig.ssid_bits` selects a fixed SubstreamID width from 0 to 20.
 Explicit zero disables substreams. Omitting the field selects `ssidsize=auto`:
-zero in software mode, or the host SMMU's width discovered during accelerated
-cold-plug binding. A fixed value is also supported in software mode; under
-acceleration it cannot exceed the host's width. The width is frozen at device
-start and does not add PASID support to endpoints.
+zero in software mode, or the cold-plug host SMMU's width under acceleration.
+A fixed width must not exceed the host's width under acceleration.
 
-SMMU configuration cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
-SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+SMMU configuration cannot be changed at runtime. See [the CLI reference](cli.md)
+and [Arm SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

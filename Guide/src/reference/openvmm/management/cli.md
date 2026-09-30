@@ -568,22 +568,17 @@ The syntax is a comma-separated key/value list:
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
   `auto` (the default) starts at 48 bits, which covers typical configurations.
   Under `accel`, a cold-plug device changes it to the physical SMMU's OAS.
-  Device start (including PCI resource assignment before firmware loading)
-  freezes the value, so later hotplug validates against it rather than
-  changing it. Very large RAM or an explicitly pinned
+  Device start freezes the value, so later hotplug validates against it rather
+  than changing it. Very large RAM or an explicitly pinned
   high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
   (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
   `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
   SMMU's OAS under `accel`.
 - `ssidsize=auto|N` (optional): the SMMU's SubstreamID width in bits,
-  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode;
-  under `accel`, a cold-plug device supplies the host SMMU's width before
-  device start freezes the capabilities. A fixed `N` must be from 0 to 20,
-  where 0 disables substreams, and cannot exceed the host's width under
-  `accel`. Later hotplug validates against the frozen width rather than
-  changing it. This controls the SMMU's SSID width, not an endpoint's PASID
-  capability or limit. ATS remains host-derived under `accel`; there is no
-  separate ATS option.
+  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode
+  or the cold-plug host SMMU's width under `accel`. A fixed `N` is 0–20,
+  where 0 disables substreams, and must not exceed the host's width under
+  `accel`. The advertised width is fixed at device start.
 
 ```bash
 # Enable an emulated SMMU on root complex rc0
