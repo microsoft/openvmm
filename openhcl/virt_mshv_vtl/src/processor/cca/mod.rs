@@ -34,7 +34,6 @@ use hv1_structs::VtlArray;
 use hvdef::HvRegisterCrInterceptControl;
 use inspect::Inspect;
 use inspect::InspectMut;
-use std::cmp::min;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::vp;
@@ -86,10 +85,12 @@ const CNTV_CTL_ENABLE: u64 = 1 << 0;
 const CNTV_CTL_IMASK: u64 = 1 << 1;
 const CNTV_CTL_ISTATUS: u64 = 1 << 2;
 
+// ICH_HCR_EL2.En enables the virtual CPU interface. Without it, LRs cannot
+// deliver virtual interrupts.
+const ICH_HCR_EN: u64 = 1 << 0;
 const ICH_HCR_UIE: u64 = 1 << 1;
 const ICH_HCR_LRENPIE: u64 = 1 << 2;
 const ICH_HCR_NPIE: u64 = 1 << 3;
-const ICH_HCR_TC: u64 = 1 << 10;
 const ICH_HCR_TDIR: u64 = 1 << 14;
 const ICH_HCR_EOI_COUNT_MASK: u64 = 0x1f << 27;
 const ICH_HCR_EOI_COUNT_SHIFT: u32 = 27;
@@ -139,8 +140,6 @@ struct CcaVtl {
     sp_el0: u64,
     sp_el1: u64,
     cpsr: u64,
-    /// Guest-programmed GIC priority mask from ICC_PMR_EL1.
-    priority_mask: u8,
     /// Virtual interrupts that did not fit in the implemented LRs.
     ///
     /// These are the tail of the KVM-style active/pending list. They remain
@@ -157,7 +156,6 @@ impl CcaVtl {
             sp_el0: 0,
             sp_el1: 0,
             cpsr: 0,
-            priority_mask: u8::MAX,
             gic_lr_overflow: Vec::new(),
             gic_vmcr: 0,
         }
@@ -177,7 +175,7 @@ impl CcaBackedShared {
         Ok(Self {
             cvm: params.cvm_state.unwrap(),
             virt_timer_ppi,
-            gic_num_lrs: gic_num_lrs(realm_config.gicv3_vtr()),
+            gic_num_lrs: gic_num_lrs(realm_config.gicv3_vtr())?,
         })
     }
 }
@@ -300,10 +298,17 @@ impl<'a> CcaExit<'a> {
 ///
 /// The RSI run page has room for 16 LRs, but that is only the ABI capacity.
 /// ICH_VTR_EL2.ListRegs contains the zero-based implemented count. The GIC
-/// architecture limits the usable count to 16 even though the field is wider.
-fn gic_num_lrs(gicv3_vtr: u64) -> usize {
-    (((gicv3_vtr & ICH_VTR_LIST_REGS_MASK) + 1) as usize)
-        .min(aarch64defs::rsi::RSI_PLANE_GIC_NUM_LRS)
+/// architecture limits the usable count to 16. Reject configurations that
+/// exceed the RSI ABI rather than silently dropping the excess LRs.
+fn gic_num_lrs(gicv3_vtr: u64) -> Result<usize, Error> {
+    let reported = ((gicv3_vtr & ICH_VTR_LIST_REGS_MASK) + 1) as usize;
+    let maximum = aarch64defs::rsi::RSI_PLANE_GIC_NUM_LRS;
+
+    if reported > maximum {
+        return Err(Error::UnsupportedCcaGicListRegisterCount { reported, maximum });
+    }
+
+    Ok(reported)
 }
 
 fn lr_is_valid(lr: u64) -> bool {
@@ -424,27 +429,6 @@ fn queue_virtual_interrupt(candidates: &mut Vec<u64>, interrupt: PendingInterrup
             | if interrupt.group1 { ICH_LR_GROUP1 } else { 0 }
             | ICH_LR_PENDING,
     );
-}
-
-fn running_priority(lrs: &[u64]) -> u8 {
-    let mut running = 0xff;
-
-    for &lr in lrs {
-        // Pending interrupts are not running and therefore do not constrain
-        // which interrupt can be injected next.
-        if lr & ICH_LR_ACTIVE == 0 {
-            continue;
-        }
-
-        let priority = ((lr & ICH_LR_PRIORITY_MASK) >> ICH_LR_PRIORITY_SHIFT) as u8;
-        running = min(running, priority);
-    }
-
-    running
-}
-
-fn interrupt_priority_threshold(priority_mask: u8, lrs: &[u64]) -> u8 {
-    min(priority_mask, running_priority(lrs))
 }
 
 fn extend_mmio_read(data: [u8; size_of::<u64>()], len: usize, sign_extend: bool, sf: bool) -> u64 {
@@ -783,7 +767,11 @@ impl UhProcessor<'_, CcaBacked> {
 
     fn set_plane_enter(&mut self) {
         self.runner.cca_set_plane_enter();
-        self.runner.cca_rsi_plane_entry().gicv3_hcr |= ICH_HCR_TC;
+        // Do not set TC: it traps every EL1 access to common ICC/ICV
+        // registers, while only SGI generation needs software handling. With
+        // the virtual CPU interface enabled, SGI writes trap independently and
+        // the virtual interface owns PMR, CTLR, RPR, and ICV accesses.
+        self.runner.cca_rsi_plane_entry().gicv3_hcr |= ICH_HCR_EN;
     }
 
     /// Records interrupt sources reported by a CCA local IRQ exit.
@@ -824,10 +812,10 @@ impl UhProcessor<'_, CcaBacked> {
 
     /// Emulates a trapped write to a supported ICC register.
     ///
-    /// SGI generation writes are forwarded to the software GIC. ICC_PMR_EL1
-    /// writes update the per-plane priority mask used when selecting pending
-    /// interrupts. Successful emulation advances the plane-entry PC past the
-    /// trapped instruction; it does not modify the guest GPR state.
+    /// With TC clear, SGI generation writes and DIR writes requested by TDIR
+    /// are the only common ICC accesses that should trap. Successful emulation
+    /// advances the plane-entry PC past the trapped instruction; it does not
+    /// modify the guest GPR state.
     fn handle_system_register_trap(
         &mut self,
         vtl: GuestVtl,
@@ -845,10 +833,6 @@ impl UhProcessor<'_, CcaBacked> {
         }
 
         let handled = match system_reg {
-            SystemReg::ICC_PMR_EL1 => {
-                self.backing.vtls[vtl].priority_mask = value as u8;
-                true
-            }
             SystemReg::ICC_DIR_EL1 => {
                 // TDIR is set whenever active interrupts live outside LRs.
                 // DIR only performs deactivation in EOImode == 1; in mode 0,
@@ -862,17 +846,25 @@ impl UhProcessor<'_, CcaBacked> {
                 }
                 true
             }
-            SystemReg::ICC_SGI0R_EL1 | SystemReg::ICC_SGI1R_EL1 => self
-                .shared
-                .cvm
-                .gic
-                .write_sysreg(self.vp_index(), system_reg, value, |target_vp| {
-                    tracing::trace!(
-                        target_vp,
-                        ?system_reg,
-                        "GIC sysreg write raised an interrupt"
-                    );
-                }),
+            // The software GIC does not distinguish the SGI1 aliases.
+            SystemReg::ICC_SGI0R_EL1 | SystemReg::ICC_SGI1R_EL1 | SystemReg::ICC_ASGI1R_EL1 => {
+                self.shared.cvm.gic.write_sysreg(
+                    self.vp_index(),
+                    if system_reg == SystemReg::ICC_ASGI1R_EL1 {
+                        SystemReg::ICC_SGI1R_EL1
+                    } else {
+                        system_reg
+                    },
+                    value,
+                    |target_vp| {
+                        tracing::trace!(
+                            target_vp,
+                            ?system_reg,
+                            "GIC sysreg write raised an interrupt"
+                        );
+                    },
+                )
+            }
             _ => false,
         };
 
@@ -935,13 +927,11 @@ impl UhProcessor<'_, CcaBacked> {
             .collect::<Vec<_>>();
 
         loop {
-            let priority_threshold =
-                interrupt_priority_threshold(self.backing.vtls[vtl].priority_mask, &candidates);
             let Some(interrupt) = self
                 .shared
                 .cvm
                 .gic
-                .next_pending_private_interrupt(vp, priority_threshold)
+                .next_pending_private_interrupt(vp, u8::MAX)
             else {
                 break;
             };
@@ -963,13 +953,11 @@ impl UhProcessor<'_, CcaBacked> {
         // Device SPIs belong to VTL0.
         if vtl == GuestVtl::Vtl0 {
             loop {
-                let priority_threshold =
-                    interrupt_priority_threshold(self.backing.vtls[vtl].priority_mask, &candidates);
                 let Some(interrupt) = self
                     .shared
                     .cvm
                     .gic
-                    .reserve_pending_spi_interrupt(vp, priority_threshold)
+                    .reserve_pending_spi_interrupt(vp, u8::MAX)
                 else {
                     break;
                 };
@@ -1360,26 +1348,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_mask_defaults_to_allow_all_priorities() {
-        assert_eq!(CcaVtl::new().priority_mask, u8::MAX);
-    }
-
-    #[test]
-    fn priority_threshold_obeys_pmr_and_running_priority() {
-        const ACTIVE_PRIORITY: u64 = 0x40 << ICH_LR_PRIORITY_SHIFT;
-        let lrs = [ICH_LR_ACTIVE | ACTIVE_PRIORITY];
-
-        assert_eq!(interrupt_priority_threshold(0x80, &lrs), 0x40);
-        assert_eq!(interrupt_priority_threshold(0x20, &lrs), 0x20);
-        assert_eq!(interrupt_priority_threshold(0x80, &[0]), 0x80);
-    }
-
-    #[test]
-    fn lr_count_comes_from_vtr_and_is_capped_by_rsi_capacity() {
-        assert_eq!(gic_num_lrs(0), 1);
-        assert_eq!(gic_num_lrs(3), 4);
-        assert_eq!(gic_num_lrs(15), 16);
-        assert_eq!(gic_num_lrs(31), 16);
+    fn lr_count_comes_from_vtr_and_is_validated_against_rsi_capacity() {
+        assert!(matches!(gic_num_lrs(0), Ok(1)));
+        assert!(matches!(gic_num_lrs(3), Ok(4)));
+        assert!(matches!(gic_num_lrs(15), Ok(16)));
+        assert!(matches!(
+            gic_num_lrs(31),
+            Err(Error::UnsupportedCcaGicListRegisterCount {
+                reported: 32,
+                maximum: 16
+            })
+        ));
     }
 
     #[test]
@@ -1391,7 +1370,7 @@ mod tests {
 
     #[test]
     fn overflow_recomputes_maintenance_controls() {
-        let mut hcr = ICH_HCR_TC | ICH_HCR_LRENPIE | ICH_HCR_EOI_COUNT_MASK;
+        let mut hcr = ICH_HCR_EN | ICH_HCR_LRENPIE | ICH_HCR_EOI_COUNT_MASK;
 
         configure_gic_maintenance(&mut hcr, true, false, true);
 
@@ -1403,7 +1382,7 @@ mod tests {
             hcr & (ICH_HCR_LRENPIE | ICH_HCR_TDIR | ICH_HCR_EOI_COUNT_MASK),
             0
         );
-        assert_ne!(hcr & ICH_HCR_TC, 0);
+        assert_ne!(hcr & ICH_HCR_EN, 0);
 
         let mut active_only_hcr = 0;
         configure_gic_maintenance(&mut active_only_hcr, false, true, true);
@@ -1419,7 +1398,7 @@ mod tests {
             hcr & (ICH_HCR_UIE | ICH_HCR_NPIE | ICH_HCR_LRENPIE | ICH_HCR_TDIR),
             0
         );
-        assert_ne!(hcr & ICH_HCR_TC, 0);
+        assert_ne!(hcr & ICH_HCR_EN, 0);
     }
 
     #[test]

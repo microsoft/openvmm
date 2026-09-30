@@ -193,6 +193,10 @@ pub enum Error {
     GetReg(#[source] hcl::ioctl::register::GetRegError),
     #[error("failed to set register")]
     SetReg(#[source] hcl::ioctl::register::SetRegError),
+    #[error(
+        "CCA realm reports {reported} GIC list registers, but the RSI plane ABI supports at most {maximum}"
+    )]
+    UnsupportedCcaGicListRegisterCount { reported: usize, maximum: usize },
 }
 
 /// Error revoking guest VSM.
