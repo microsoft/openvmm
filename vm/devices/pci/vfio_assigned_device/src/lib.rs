@@ -852,6 +852,25 @@ impl VfioAssignedPciDevice {
         // configured host-assigned or fixed physical addresses.
         let bars = apply_bar_addresses(&pci_id, &bar_flags, &bar_masks, &bar_addresses)?;
         let bar_reset_defaults = bars;
+        if let Some(bar4_base) = BarMappings::parse(&bars, &bar_masks)
+            .get(4)
+            .filter(|base| *base != 0)
+        {
+            for area in &bar_mmap_areas[4] {
+                if let Some(memory_base) = bar4_base.checked_add(area.start()) {
+                    tracing::info!(
+                        pci_id = pci_id.as_str(),
+                        memory_base,
+                        memory_length = area.len(),
+                        memory_base_hex = format_args!("{memory_base:#x}"),
+                        memory_length_hex = format_args!("{:#x}", area.len()),
+                        cli_values =
+                            format_args!("memory_base={memory_base},memory_length={}", area.len()),
+                        "VFIO BAR4 sparse mmap area; coherent-memory CLI candidate"
+                    );
+                }
+            }
+        }
 
         let kernel_owned_ats = direct_capabilities.direct && direct_capabilities.ats;
         let ats_drop_guard = if kernel_owned_ats {
