@@ -74,6 +74,32 @@ install an ISR for a vector, enable interrupts, and let the scope restore its
 handler state before returning. This keeps one test's interrupt setup from
 leaking into another test implementation.
 
+## Frozen clock and timer tests
+
+The x86 tests `frozen_clock`, `frozen_countdown_xapic`,
+`frozen_countdown_x2apic`, `frozen_deadline_xapic`, and
+`frozen_deadline_x2apic` exercise native partition time control without Hyper-V
+enlightenments. Each covers ordinary pause/resume, serialized save/reset/restore,
+and serialized restore into a fresh partition.
+
+The guest calibrates its TSC against a host wait before testing. The host then
+holds partition time frozen for one second at each rendezvous. Assertions check
+actual guest RDTSC continuity, partially elapsed one-shot countdowns rather than
+just initial counts, absolute TSC deadlines, disarmed deadlines, and an unrelated
+MSI injected while frozen. Scheduling tolerance is 250 ms, substantially less
+than either the stopped interval or an erroneous full countdown restart.
+
+These tests use `#[tmk_test(time_control)]`; deadline tests also specify
+`tsc_deadline`. The executor reports a skip for unavailable capabilities,
+software-APIC configurations, or OpenHCL, which does not own outer partition
+time. Test each available native backend explicitly with `--hv kvm`,
+`--hv mshv`, or `--hv whp`, rather than relying on automatic backend selection.
+
+KVM does not expose enough state to distinguish an expired, consumed countdown
+one-shot from an expired timer awaiting delivery. These tests deliberately
+freeze nonzero remaining countdowns; they do not require exact pending periodic
+tick preservation or prove that consumed one-shots cannot be duplicated.
+
 ## Running and listing
 
 After building both binaries:

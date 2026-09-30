@@ -52,12 +52,25 @@ pub enum PipetteRequest {
     WriteFile(FailableRpc<WriteFileRequest, u64>),
     /// Get the current time in the guest.
     GetTime(Rpc<(), Timestamp>),
+    /// Starts or samples a monotonic timer probe, retained across reconnections.
+    TimerProbe(FailableRpc<Option<std::time::Duration>, TimerProbe>),
     /// Crash the agent.
     Crash(FailableRpc<(), ()>),
     /// Crash the kernel.
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
+}
+
+/// Guest monotonic clock samples for a timer that survives agent reconnections.
+#[derive(Debug, MeshPayload)]
+pub struct TimerProbe {
+    /// Clock value when the timer was armed, in nanoseconds.
+    pub started_ns: u64,
+    /// Clock value at this sample, in nanoseconds.
+    pub now_ns: u64,
+    /// Clock value when the timer completed, if it has fired.
+    pub fired_ns: Option<u64>,
 }
 
 /// A request to execute a command inside the guest.

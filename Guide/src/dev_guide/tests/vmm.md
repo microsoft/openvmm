@@ -24,6 +24,25 @@ operating systems, firmwares, and VMMs (including Hyper-V, which is useful
 for testing certain OpenHCL features that aren't supported when using
 OpenVMM as the host VMM).
 
+### Partition-time lifecycle coverage
+
+`partition_time_freeze_lifecycle` boots a Linux-direct x86_64 guest on native
+OpenVMM backends (KVM, WHP, or MSHV). It checks that guest monotonic time excludes
+ten-second host pauses, both before and after a save/reset/restore pulse while
+paused. A pending guest OS timer must fire after resuming, without firing early.
+The pipette probe retains its clock samples and timer across reconnections; the
+test subtracts measured stopped time from its host-time budget, including RPC and
+reconnection overhead in the remaining budget.
+
+This is not ARM or OpenHCL freeze coverage, nor a test of every hardware timer
+mode. The Windows variant requires partition reset support. To compile its
+artifacts without starting a VM:
+
+```bash
+cargo xflowey vmm-tests-run --build-only \
+    --filter "test(partition_time_freeze_lifecycle)"
+```
+
 ### "heavy" tests
 
 The global [nextest.toml](https://github.com/microsoft/openvmm/blob/main/.config/nextest.toml)

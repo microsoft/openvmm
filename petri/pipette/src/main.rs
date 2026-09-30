@@ -30,6 +30,8 @@ mod mount;
 #[cfg(any(target_os = "linux", windows))]
 mod shutdown;
 #[cfg(any(target_os = "linux", windows))]
+mod timer_probe;
+#[cfg(any(target_os = "linux", windows))]
 mod trace;
 #[cfg(windows)]
 mod winsvc;

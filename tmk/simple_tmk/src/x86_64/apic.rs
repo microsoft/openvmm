@@ -38,13 +38,13 @@ fn enable_x2apic(t: TestContext<'_>) {
     );
 }
 
-enum ApicMode {
+pub(super) enum ApicMode {
     XApic(u32),
     X2Apic,
 }
 
 impl ApicMode {
-    fn init(&self, s: &mut Scope<'_, '_>) {
+    pub(super) fn init(&self, s: &mut Scope<'_, '_>) {
         match self {
             &ApicMode::XApic(base) => {
                 let mut msr = ApicBase::from(s.read_msr(x86defs::X86X_MSR_APIC_BASE).unwrap());
@@ -79,7 +79,7 @@ impl ApicMode {
         );
     }
 
-    fn read(&self, s: &mut Scope<'_, '_>, reg: x86defs::apic::ApicRegister) -> u32 {
+    pub(super) fn read(&self, s: &mut Scope<'_, '_>, reg: x86defs::apic::ApicRegister) -> u32 {
         match self {
             &ApicMode::XApic(base) => {
                 let p = (base + reg.0 as u32 * 0x10) as *const u32;
@@ -91,7 +91,12 @@ impl ApicMode {
         }
     }
 
-    fn write(&self, s: &mut Scope<'_, '_>, reg: x86defs::apic::ApicRegister, value: u32) {
+    pub(super) fn write(
+        &self,
+        s: &mut Scope<'_, '_>,
+        reg: x86defs::apic::ApicRegister,
+        value: u32,
+    ) {
         match self {
             &ApicMode::XApic(base) => {
                 let p = (base + reg.0 as u32 * 0x10) as *mut u32;

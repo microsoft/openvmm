@@ -7,6 +7,7 @@ mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
 mod storage;
+mod time;
 
 use anyhow::Context;
 use guid::Guid;

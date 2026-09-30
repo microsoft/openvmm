@@ -21,6 +21,8 @@ pub fn tmk_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut expected_failure = false;
     let mut linux_only = false;
+    let mut time_control = false;
+    let mut tsc_deadline = false;
 
     let parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("expected_failure") {
@@ -28,6 +30,12 @@ pub fn tmk_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             Ok(())
         } else if meta.path.is_ident("linux_only") {
             linux_only = true;
+            Ok(())
+        } else if meta.path.is_ident("time_control") {
+            time_control = true;
+            Ok(())
+        } else if meta.path.is_ident("tsc_deadline") {
+            tsc_deadline = true;
             Ok(())
         } else {
             let ident = meta
@@ -52,6 +60,8 @@ pub fn tmk_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         ::tmk_protocol::TestFlags64::new()
             .with_expected_failure(#expected_failure)
             .with_linux_only(#linux_only)
+            .with_time_control(#time_control)
+            .with_tsc_deadline(#tsc_deadline)
     };
 
     quote! {

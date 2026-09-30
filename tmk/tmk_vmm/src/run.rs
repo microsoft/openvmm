@@ -10,6 +10,7 @@ use futures::StreamExt as _;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use pal_async::DefaultDriver;
+use std::cell::Cell;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use user_driver::DmaClient;
@@ -186,6 +187,7 @@ pub struct RunContext<'a> {
 pub enum TestResult {
     Passed,
     Failed,
+    Skipped(&'static str),
     Faulted {
         vp_index: VpIndex,
         reason: String,
@@ -297,6 +299,9 @@ impl CommonState {
             vmtime_keeper.stop().await;
 
             match (r, test.expected_failure) {
+                (TestResult::Skipped(reason), _) => {
+                    tracing::info!(target: "test", name = test.name, reason, "test skipped");
+                }
                 (TestResult::Passed, false) => {
                     tracing::info!(target: "test", name = test.name, "test passed");
                 }
@@ -454,6 +459,7 @@ struct IoHandler<'a> {
     guest_memory: &'a GuestMemory,
     event_send: &'a mesh::Sender<VpEvent>,
     stop: &'a StopVpSource,
+    checkpoint: &'a Cell<Option<tmk_protocol::TimeCheckpoint>>,
 }
 
 fn widen(d: &[u8]) -> u64 {
@@ -490,6 +496,9 @@ impl CpuIo for IoHandler<'_> {
                     p,
                     "failed to handle command"
                 );
+                self.event_send
+                    .send(VpEvent::TestComplete { success: false });
+                self.stop.stop();
             }
         } else {
             tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");
@@ -557,6 +566,14 @@ impl IoHandler<'_> {
                 self.event_send.send(VpEvent::TestComplete { success });
                 self.stop.stop();
             }
+            tmk_protocol::Command::TimeCheckpoint(request) => {
+                anyhow::ensure!(
+                    request.interrupt_vector == 0 || (32..=255).contains(&request.interrupt_vector),
+                    "invalid checkpoint interrupt vector"
+                );
+                self.checkpoint.set(Some(request));
+                self.stop.stop();
+            }
         }
         Ok(())
     }
@@ -619,15 +636,25 @@ impl RunnerBuilder {
 }
 
 pub struct Runner<'a, P> {
-    vp: P,
+    pub(crate) vp: P,
     vp_index: VpIndex,
-    guest_memory: &'a GuestMemory,
+    pub(crate) guest_memory: &'a GuestMemory,
     event_send: &'a mesh::Sender<VpEvent>,
 }
 
 impl<P: Processor> Runner<'_, P> {
+    #[cfg(target_os = "linux")]
     pub async fn run_vp(&mut self) {
+        if self.run_once().await.is_some() {
+            tracing::error!("time checkpoints are not supported by this executor");
+            self.event_send
+                .send(VpEvent::TestComplete { success: false });
+        }
+    }
+
+    pub(crate) async fn run_once(&mut self) -> Option<tmk_protocol::TimeCheckpoint> {
         let stop = StopVpSource::new();
+        let checkpoint = Cell::new(None);
         let Err(err) = self
             .vp
             .run_vp(
@@ -636,9 +663,15 @@ impl<P: Processor> Runner<'_, P> {
                     guest_memory: self.guest_memory,
                     event_send: self.event_send,
                     stop: &stop,
+                    checkpoint: &checkpoint,
                 },
             )
             .await;
+        if matches!(err, virt::VpHaltReason::Stop(_)) {
+            if let Some(request) = checkpoint.get() {
+                return Some(request);
+            }
+        }
         let regs = self
             .vp
             .access_state(Vtl::Vtl0)
@@ -650,5 +683,6 @@ impl<P: Processor> Runner<'_, P> {
             reason: format!("{:?}", err),
             regs,
         });
+        None
     }
 }

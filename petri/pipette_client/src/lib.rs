@@ -11,6 +11,7 @@ pub mod shell;
 
 pub use pipette_protocol::PIPETTE_PORT;
 pub use pipette_protocol::PIPETTE_READY_MARKER;
+pub use pipette_protocol::TimerProbe;
 
 use crate::send::PipetteSender;
 use anyhow::Context;
@@ -290,6 +291,18 @@ impl PipetteClient {
             .call(PipetteRequest::GetTime, ())
             .await
             .context("failed to get time")
+    }
+
+    /// Arms a guest monotonic timer, or samples the existing probe with `None`.
+    ///
+    /// The timer and its samples survive a pipette transport reconnection.
+    /// A new timer may only replace a completed probe. Durations must be
+    /// between one and sixty seconds.
+    pub async fn timer_probe(&self, duration: Option<Duration>) -> anyhow::Result<TimerProbe> {
+        self.send
+            .call_failable(PipetteRequest::TimerProbe, duration)
+            .await
+            .context("failed to sample guest timer")
     }
 
     /// Tell the agent to crash itself.

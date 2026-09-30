@@ -243,6 +243,10 @@ async fn handle_request(
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
+        PipetteRequest::TimerProbe(rpc) => {
+            rpc.handle_failable(async |duration| crate::timer_probe::probe(driver, duration).await)
+                .await
+        }
         PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
         PipetteRequest::KernelCrash(rpc) => {
             rpc.handle_failable(async |()| {
