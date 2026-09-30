@@ -621,6 +621,16 @@ impl ClientTask {
         rpc: FailableRpc<OpenRequest, OpenOutput>,
     ) {
         let (request, rpc) = rpc.split();
+        let supports_interrupt_redirection = self.core.phase().version().is_some_and(|version| {
+            version.feature_flags.guest_specified_signal_parameters()
+                || version.feature_flags.channel_interrupt_redirection()
+        });
+        if request.use_vtl2_connection_id && !supports_interrupt_redirection {
+            rpc.fail(anyhow::anyhow!(
+                "host does not support specifying the connection ID"
+            ));
+            return;
+        }
         let connection_id = if request.use_vtl2_connection_id {
             protocol::ConnectionId::new(channel_id.0, 2.try_into().unwrap(), 7).0
         } else {
@@ -1967,6 +1977,67 @@ mod tests {
     }
 
     #[async_test]
+    async fn test_vtl2_connection_id_requires_interrupt_redirection(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
+        let server_connect = async {
+            let _ = server.next().await.unwrap();
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse2 {
+                    version_response: protocol::VersionResponse {
+                        version_supported: 1,
+                        connection_state: ConnectionState::SUCCESSFUL,
+                        padding: 0,
+                        selected_version_or_connection_id: 0,
+                    },
+                    supported_features: 0,
+                },
+            ));
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(
+                MessageType::OFFER_CHANNEL,
+                protocol::OfferChannel {
+                    interface_id: Guid::new_random(),
+                    instance_id: Guid::new_random(),
+                    rsvd: [0; 4],
+                    flags: OfferFlags::new(),
+                    mmio_megabytes: 0,
+                    user_defined: UserDefinedData::new_zeroed(),
+                    subchannel_index: 0,
+                    mmio_megabytes_optional: 0,
+                    channel_id: ChannelId(0),
+                    monitor_id: 0,
+                    monitor_allocated: 0,
+                    is_dedicated: 0,
+                    connection_id: 0,
+                },
+            ));
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+        };
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let [channel] = connection.unwrap().offers.try_into().unwrap();
+
+        let recv = channel.request_send.call(
+            ChannelRequest::Open,
+            OpenRequest {
+                open_data: OpenData {
+                    target_vp: Some(0),
+                    ring_offset: 0,
+                    ring_gpadl_id: GpadlId(0),
+                    event_flag: 0,
+                    connection_id: 0,
+                    user_data: UserDefinedData::new_zeroed(),
+                },
+                incoming_event: None,
+                use_vtl2_connection_id: true,
+            },
+        );
+
+        recv.await.unwrap().unwrap_err();
+    }
+
+    #[async_test]
     async fn test_modify_channel(driver: DefaultDriver) {
         let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
@@ -2011,6 +2082,48 @@ mod tests {
         let s1 = client.save().await;
 
         assert_eq!(s0, s1);
+    }
+
+    #[async_test]
+    async fn test_restore_disconnected_discards_stale_protocol_state(driver: DefaultDriver) {
+        let (_server, client) = test_init(&driver);
+        let builder = client.sever().await;
+        let mut client = builder.build(&driver);
+        let offer = protocol::OfferChannel {
+            interface_id: Guid::new_random(),
+            instance_id: Guid::new_random(),
+            rsvd: [0; 4],
+            flags: OfferFlags::new(),
+            mmio_megabytes: 0,
+            user_defined: UserDefinedData::new_zeroed(),
+            subchannel_index: 0,
+            mmio_megabytes_optional: 0,
+            channel_id: ChannelId(7),
+            monitor_id: 0,
+            monitor_allocated: 0,
+            is_dedicated: 0,
+            connection_id: 0,
+        };
+        let state = SavedState {
+            client_state: saved_state::ClientState::Disconnected,
+            channels: vec![saved_state::Channel {
+                id: 7,
+                state: saved_state::ChannelState::Offered,
+                offer: offer.into(),
+            }],
+            gpadls: vec![saved_state::Gpadl {
+                gpadl_id: 1,
+                channel_id: 7,
+                state: saved_state::GpadlState::Created,
+            }],
+            pending_messages: vec![saved_state::PendingMessage { data: vec![0xff] }],
+        };
+
+        assert!(client.restore(state).await.unwrap().is_none());
+        let restored = client.save().await;
+        assert!(restored.channels.is_empty());
+        assert!(restored.gpadls.is_empty());
+        assert!(restored.pending_messages.is_empty());
     }
 
     #[async_test]
