@@ -29,6 +29,7 @@ use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::RxOffloadSupport;
 use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
@@ -273,6 +274,8 @@ impl VirtioDevice for Device {
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -389,7 +392,7 @@ impl VirtioDevice for Device {
                 };
 
                 if first_pair {
-                    self.insert_coordinator(self.pairs.len() as u16);
+                    self.insert_coordinator(self.pairs.len() as u16, negotiated_features);
                 }
 
                 let virtio_state = VirtioState {
@@ -630,7 +633,7 @@ impl InspectMut for Device {
 }
 
 impl Device {
-    fn insert_coordinator(&mut self, num_queues: u16) {
+    fn insert_coordinator(&mut self, num_queues: u16, negotiated_features: NetworkFeaturesBank0) {
         self.coordinator.insert(
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
@@ -639,6 +642,11 @@ impl Device {
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
+                rx_offload_support: RxOffloadSupport {
+                    checksum: negotiated_features.guest_csum(),
+                    tcpv4_gso: negotiated_features.guest_tso4(),
+                    tcpv6_gso: negotiated_features.guest_tso6(),
+                },
                 restart: true,
             },
         );
@@ -686,6 +694,7 @@ impl Device {
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
+    rx_offload_support: RxOffloadSupport,
     restart: bool,
 }
 
@@ -777,6 +786,7 @@ impl Coordinator {
         let queue_config = (0..self.workers.len())
             .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
+                rx_offload_support: self.rx_offload_support,
             })
             .collect::<Vec<_>>();
 

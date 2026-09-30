@@ -392,6 +392,7 @@ impl BasicNic {
                                 .get_queues(
                                     vec![QueueConfig {
                                         driver: Box::new(state.queues.driver.clone()),
+                                        rx_offload_support: Default::default(),
                                     }],
                                     None,
                                     &mut queues,
