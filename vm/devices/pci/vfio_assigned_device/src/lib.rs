@@ -826,7 +826,7 @@ impl VfioAssignedPciDevice {
                         // best-effort VA mapping; device assignment still works
                         // for everything except P2P into this BAR.
                         Err(e) => {
-                            tracing::warn!(
+                            tracelimit::warn_ratelimited!(
                                 error = e.as_ref() as &dyn std::error::Error,
                                 pci_id = pci_id.as_str(),
                                 bar = i,
@@ -1919,7 +1919,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
                 }
             }
             Err(err) => {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     pci_id = self.pci_id.as_str(),
                     error = err.as_ref() as &dyn std::error::Error,
                     "ATS state read failed; continuing device stop for kernel quarantine"

@@ -810,11 +810,11 @@ impl DirectDeviceObjects {
         match action {
             DirectCleanupAction::Detach => self.attached = false,
             DirectCleanupAction::DestroyHwpt(id) => {
-                debug_assert_eq!(self.hwpt_id, Some(id));
+                assert_eq!(self.hwpt_id, Some(id));
                 self.hwpt_id = None;
             }
             DirectCleanupAction::DestroyVdevice(id) => {
-                debug_assert_eq!(self.vdevice_id, Some(id));
+                assert_eq!(self.vdevice_id, Some(id));
                 self.vdevice_id = None;
             }
             DirectCleanupAction::Complete => {}
