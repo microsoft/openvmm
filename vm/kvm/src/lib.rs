@@ -2073,8 +2073,7 @@ impl<'a> VpRunner<'a> {
     ///
     /// KVM delivers the interrupt once the guest can take it, exiting from a
     /// nested guest first if needed. But KVM has no way to report or withdraw
-    /// a queued extint, so `KVM_GET_VCPU_EVENTS` does not report it until the
-    /// guest takes it.
+    /// a queued extint; `KVM_GET_VCPU_EVENTS` never exposes the queued vector.
     ///
     /// Caller must ensure that either it has received a
     /// [`Exit::InterruptWindow`] exit, or that
