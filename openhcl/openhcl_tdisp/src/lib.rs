@@ -241,9 +241,8 @@ pub fn new_resource_validator(
 
     #[cfg(target_os = "linux")]
     if matches!(isolation, IsolationType::Tdx) {
-        return Ok(Arc::new(TdispTdxConnectResourceValidator::new(
-            vtom.unwrap_or(0),
-        )?));
+        let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
+        return Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?));
     }
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
