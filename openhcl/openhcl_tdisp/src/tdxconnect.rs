@@ -264,7 +264,6 @@ impl TdispTdxConnectResourceValidator {
 }
 
 impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // Nothing for the TD to do before the host binds the TDI: until the
         // bind completes there is no TDI control structure for the Connect
@@ -273,7 +272,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         let mshv_vtl = Self::open_mshv_vtl()?;
 
@@ -317,7 +315,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // The host says the TDI is running. Per the TDX Connect ABI EAS, the
         // Known RUN state is reliable after TDG.TDI.START, so this is the TDX
@@ -338,7 +335,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn get_tsm_tdi_state(
         &self,
         target_vtl: Vtl,
@@ -423,7 +419,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(Some(state))
     }
 
-    #[tracing::instrument(skip(self, report), fields(device_id))]
     fn tdisp_set_tdi_report(&self, device_id: u16, report: &TdiReportStruct) {
         // Only the MMIO range list is needed, to resolve a range_id to the
         // report-relative index TDG.TDI.MMIO.ACCEPT wants.
@@ -439,7 +434,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         *self.tdi_mmio_ranges.lock() = Some(ranges);
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
         let removed = self.tdi_mmio_ranges.lock().take().is_some();
         tracing::info!(
@@ -448,7 +442,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         );
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -646,7 +639,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         })
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         let mshv_vtl = Self::open_mshv_vtl()?;
         Self::ensure_tdx_connect(&mshv_vtl)?;
@@ -691,7 +683,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     /// Does nothing on TDX Connect.
     ///
     /// TDX Connect gives the guest no way to re-block an MMIO range it has
@@ -726,7 +717,6 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         })
     }
 
-    #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // TDISP TODO: this should call TDG.DMAR.RELEASE (ABI EAS 0.61 4.3.2),
         // which still needs a `DMAR_RELEASE` entry in `TdCallLeaf` plus
