@@ -2101,16 +2101,12 @@ async fn mana_nic_servicing_both_boot_with_mana_only(
     configure_mana_nic(&agent).await?;
     validate_mana_nic(&agent).await?;
 
-    let error = vm
-        .restart_openhcl(igvm_file, flags)
-        .await
-        .expect_err("NVMe allocations should fail DMA manager restore validation");
-    assert!(
-        format!("{error:#}").contains("unrestored allocations found"),
-        "unexpected servicing error: {error:#}"
-    );
+    vm.restart_openhcl(igvm_file, flags).await?;
 
-    // No graceful shutdown.
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }

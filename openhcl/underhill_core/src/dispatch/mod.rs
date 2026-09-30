@@ -717,7 +717,7 @@ impl LoadedVm {
                     nvme_manager
                         .shutdown(nvme_keepalive_enabled)
                         .instrument(tracing::info_span!(
-                            "shutdown_nvme_vfio",
+                            "shutdown_nvme_manager",
                             CVM_ALLOWED,
                             correlation_id = %correlation_id,
                             nvme_keep_alive_enabled = nvme_keepalive_enabled
