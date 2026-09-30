@@ -1328,6 +1328,24 @@ fn validate_generic_initiator_memory_ranges(
             );
         }
 
+        tracing::info!(
+            segment = initiator.segment,
+            bus = initiator.bus,
+            device = initiator.device,
+            function = initiator.function,
+            vnode = initiator.vnode,
+            memory_base = memory_range.start(),
+            memory_length = memory_range.len(),
+            memory_base_hex = format_args!("{:#x}", memory_range.start()),
+            memory_length_hex = format_args!("{:#x}", memory_range.len()),
+            cli_values = format_args!(
+                "memory_base={},memory_length={}",
+                memory_range.start(),
+                memory_range.len()
+            ),
+            "validated PCIe generic-initiator coherent memory; reusable CLI values"
+        );
+
         coherent_ranges.push(memory_range);
     }
 
