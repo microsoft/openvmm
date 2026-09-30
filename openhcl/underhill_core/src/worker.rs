@@ -398,11 +398,6 @@ fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
     }
 }
 
-// Order NetVSP channel offers first by the adapter index, then by vport index.
-fn netvsp_vmbus_offer_order(base_adapter_index: u32, vport_index: usize) -> u64 {
-    (u64::from(base_adapter_index) << 32) | vport_index as u64
-}
-
 impl Worker for UnderhillVmWorker {
     type Parameters = UnderhillWorkerParameters;
     type State = RestartState;
@@ -921,11 +916,6 @@ impl UhVmNetworkSettings {
         let ready_ports = Arc::new(futures::lock::Mutex::new(
             (0..endpoints.len()).map(|_| false).collect::<Vec<bool>>(),
         ));
-        let minimum_adapter_index = endpoints
-            .iter()
-            .map(|endpoint| endpoint.adapter_index)
-            .min()
-            .unwrap_or_default();
         let vf_manager = Arc::new(vf_manager);
         for (
             i,
@@ -937,7 +927,8 @@ impl UhVmNetworkSettings {
         ) in endpoints.into_iter().enumerate()
         {
             let vmbus_instance_id = netvsp_vmbus_instance_id(i, mac_address.to_bytes());
-            let offer_order = netvsp_vmbus_offer_order(minimum_adapter_index, i);
+            // `adapter_index` is unique across all MANA endpoints and assigned in order.
+            let offer_order = adapter_index.into();
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
