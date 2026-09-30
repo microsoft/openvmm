@@ -265,6 +265,8 @@ describes the source definitions.
 * `--virtio-rtc-bus <BUS>`: Select the bus for the virtio-rtc device. Accepted
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rtc-pcie-port` overrides this option.
+* `--virtio-rtc-pcie-port <PORT>`: Attach the virtio-rtc device to the named
+  PCIe port. Requires `--virtio-rtc` and overrides `--virtio-rtc-bus`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
