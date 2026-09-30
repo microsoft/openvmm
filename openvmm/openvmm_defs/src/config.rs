@@ -407,6 +407,8 @@ pub enum PcieIommuConfig {
         accel: bool,
         /// Output address size (OAS) resolution policy.
         oas: SmmuOas,
+        /// SubstreamID width (SSIDSIZE) resolution policy.
+        ssidsize: SmmuSsidSize,
     },
     /// Intel VT-d for x86_64 guests.
     IntelVtd,
@@ -419,6 +421,17 @@ pub enum SmmuOas {
     /// sizing policy and its limits.
     Auto,
     /// Use a fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+    Fixed(u8),
+}
+
+/// SubstreamID width (SSIDSIZE) policy for an emulated SMMUv3.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum SmmuSsidSize {
+    /// Disable substreams in software mode; under acceleration, adopt the
+    /// host's width before device start freezes the capabilities.
+    Auto,
+    /// Use a fixed width in bits (0..=20). Zero disables substreams.
+    /// Under acceleration, this cannot exceed the host's width.
     Fixed(u8),
 }
 

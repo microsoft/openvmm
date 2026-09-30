@@ -82,19 +82,28 @@ pub(super) struct SmmuDevicesResult {
     /// Per-RC SMMU shared state, indexed parallel to `pcie_host_bridges`.
     /// `None` for root complexes without an SMMU.
     pub shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>>,
-    /// ACPI IORT configuration for each SMMU instance.
-    pub configs: Vec<vmm_core::acpi_builder::AcpiSmmuConfig>,
-    /// Shared states corresponding one-to-one with `configs`.
-    config_states: Vec<Arc<smmu::SmmuSharedState>>,
+    /// Firmware wiring paired with the corresponding device state.
+    devices: Vec<SmmuFirmwareDevice>,
+}
+
+struct SmmuFirmwareDevice {
+    config: vmm_core::acpi_builder::AcpiSmmuConfig,
+    shared_state: Arc<smmu::SmmuSharedState>,
 }
 
 impl SmmuDevicesResult {
-    /// Refreshes host-derived ACPI capabilities after cold-plug devices bind.
-    pub fn refresh_acpi_capabilities(&mut self) {
-        assert_eq!(self.configs.len(), self.config_states.len());
-        for (config, state) in self.configs.iter_mut().zip(&self.config_states) {
-            config.ats_supported = state.ats_supported();
-        }
+    /// Builds firmware configuration after PCI assignment has started the
+    /// devices and frozen their capabilities.
+    pub fn firmware_configs(&self) -> Vec<vmm_core::acpi_builder::AcpiSmmuConfig> {
+        self.devices
+            .iter()
+            .map(|device| vmm_core::acpi_builder::AcpiSmmuConfig {
+                // Platform policy: offer ATS on the RC when its SMMU supports
+                // it. IORT describes RC support, not the SMMU's IDR0 bit.
+                ats_supported: device.shared_state.ats_supported(),
+                ..device.config.clone()
+            })
+            .collect()
     }
 }
 
@@ -130,21 +139,22 @@ pub(super) fn setup_smmu(
     // Instantiate SMMU chipset devices.
     let mut shared_states: Vec<Option<Arc<smmu::SmmuSharedState>>> =
         vec![None; pcie_host_bridges.len()];
-    let mut configs = Vec::new();
-    let mut config_states = Vec::new();
+    let mut devices = Vec::new();
 
     // Iterate RCs with SMMU enabled, zipping with resolved MMIO+SPI resources.
     let smmu_rcs = root_complexes
         .iter()
         .enumerate()
         .filter_map(|(rc_pos, rc)| match &rc.iommu {
-            Some(openvmm_defs::config::PcieIommuConfig::Smmu { accel, oas }) => {
-                Some((rc_pos, rc, *accel, *oas))
-            }
+            Some(openvmm_defs::config::PcieIommuConfig::Smmu {
+                accel,
+                oas,
+                ssidsize,
+            }) => Some((rc_pos, rc, *accel, *oas, *ssidsize)),
             _ => None,
         });
 
-    for ((rc_pos, rc, accel, oas), smmu) in smmu_rcs.zip(&resolved.instances) {
+    for ((rc_pos, rc, accel, oas, ssidsize), smmu) in smmu_rcs.zip(&resolved.instances) {
         anyhow::ensure!(
             !accel || acpi_available,
             "SMMU on root complex {}: accelerated translation requires ACPI",
@@ -179,6 +189,8 @@ pub(super) fn setup_smmu(
         let smmu_config = smmu::SmmuConfig {
             sidsize: 16,
             oas_policy,
+            ssid_policy: resolve_ssid_policy(ssidsize)
+                .with_context(|| format!("SMMU on root complex {}", rc.name))?,
             accel,
         };
         let smmu_device =
@@ -209,30 +221,145 @@ pub(super) fn setup_smmu(
             pcie_host_bridges[rc_pos].preserve_boot_config = true;
         }
 
-        configs.push(vmm_core::acpi_builder::AcpiSmmuConfig {
-            rc_index: pcie_host_bridges[rc_pos].index,
-            segment: pcie_host_bridges[rc_pos].segment,
-            base: smmu.base,
-            event_gsiv: smmu.evtq_intid,
-            gerr_gsiv: smmu.gerr_intid,
-            ats_supported: false,
-            reserved_iova_ranges,
+        devices.push(SmmuFirmwareDevice {
+            config: vmm_core::acpi_builder::AcpiSmmuConfig {
+                rc_index: pcie_host_bridges[rc_pos].index,
+                segment: pcie_host_bridges[rc_pos].segment,
+                base: smmu.base,
+                event_gsiv: smmu.evtq_intid,
+                gerr_gsiv: smmu.gerr_intid,
+                ats_supported: false,
+                reserved_iova_ranges,
+            },
+            shared_state,
         });
-        config_states.push(shared_state);
     }
 
     Ok(SmmuDevicesResult {
         shared_states,
-        configs,
-        config_states,
+        devices,
     })
+}
+
+fn resolve_ssid_policy(
+    ssidsize: openvmm_defs::config::SmmuSsidSize,
+) -> anyhow::Result<smmu::SmmuSsidPolicy> {
+    match ssidsize {
+        openvmm_defs::config::SmmuSsidSize::Auto => Ok(smmu::SmmuSsidPolicy::Auto),
+        openvmm_defs::config::SmmuSsidSize::Fixed(bits) => {
+            anyhow::ensure!(bits <= 20, "SSID width {bits} exceeds the maximum of 20");
+            Ok(smmu::SmmuSsidPolicy::Fixed(bits))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chipset_device::mmio::MmioIntercept;
+    use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
 
     const TEST_RANGE: memory_range::MemoryRange = memory_range::MemoryRange::new(0x1000..0x20_0000);
+
+    #[test]
+    fn ssid_policy_rejects_invalid_programmatic_configuration() {
+        use openvmm_defs::config::SmmuSsidSize;
+
+        for bits in [21, 31, u8::MAX] {
+            assert!(resolve_ssid_policy(SmmuSsidSize::Fixed(bits)).is_err());
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn firmware_capabilities_follow_device_start() {
+        struct Viommu;
+        impl smmu::Invalidate for Viommu {
+            fn invalidate(&self, _: &[[u64; 2]]) -> Result<(), usize> {
+                Ok(())
+            }
+        }
+
+        fn read_idr(device: &mut smmu::SmmuDevice, index: u64) -> u32 {
+            let mut bytes = [0; 4];
+            assert!(matches!(
+                device.mmio_read(index * 4, &mut bytes),
+                chipset_device::io::IoResult::Ok
+            ));
+            u32::from_le_bytes(bytes)
+        }
+
+        const IDR0_ATS: u32 = 1 << 10;
+        for cold_plug_ats in [None, Some(false), Some(true)] {
+            let mut device = smmu::SmmuDevice::new(
+                0,
+                GuestMemory::empty(),
+                &smmu::SmmuConfig {
+                    sidsize: 16,
+                    oas_policy: smmu::SmmuOasPolicy::Fixed(40),
+                    ssid_policy: smmu::SmmuSsidPolicy::Auto,
+                    accel: true,
+                },
+                None,
+                None,
+            );
+            let state = device.shared_state().clone();
+            let viommu = Arc::new(Viommu);
+            let mut idr = std::array::from_fn(|index| read_idr(&mut device, index as u64));
+            // The physical SMMU supports 14-bit SSIDs.
+            idr[1] |= 14 << 6;
+            let devices = SmmuDevicesResult {
+                shared_states: vec![Some(state.clone())],
+                devices: vec![SmmuFirmwareDevice {
+                    shared_state: state.clone(),
+                    config: vmm_core::acpi_builder::AcpiSmmuConfig {
+                        rc_index: 7,
+                        segment: 2,
+                        base: 0,
+                        event_gsiv: 35,
+                        gerr_gsiv: 36,
+                        ats_supported: false,
+                        reserved_iova_ranges: Vec::new(),
+                    },
+                }],
+            };
+            // Reading firmware configuration must not freeze discovery.
+            assert!(!devices.firmware_configs()[0].ats_supported);
+            if let Some(ats) = cold_plug_ats {
+                if ats {
+                    idr[0] |= IDR0_ATS;
+                }
+                state
+                    .bind_accel_viommu(smmu::HostSmmuCaps::from_idr(idr), &viommu)
+                    .unwrap();
+            }
+            // PCI resource assignment starts and stops device state units
+            // before firmware is built, without running guest VPs.
+            device.start();
+            device.stop().await;
+            let configs = devices.firmware_configs();
+            let advertised_idr0 = read_idr(&mut device, 0);
+            let advertised_idr1 = read_idr(&mut device, 1);
+            assert_eq!(configs[0].ats_supported, cold_plug_ats == Some(true));
+            assert_eq!(configs[0].ats_supported, advertised_idr0 & IDR0_ATS != 0);
+
+            if cold_plug_ats.is_none() {
+                idr[0] |= IDR0_ATS;
+                state
+                    .bind_accel_viommu(smmu::HostSmmuCaps::from_idr(idr), &viommu)
+                    .unwrap();
+            }
+            device.reset().await;
+            device.start();
+            device.stop().await;
+            let reloaded = devices.firmware_configs();
+            assert_eq!(reloaded.len(), 1);
+            assert_eq!(reloaded[0].rc_index, 7);
+            assert_eq!(reloaded[0].ats_supported, configs[0].ats_supported);
+            assert_eq!(read_idr(&mut device, 0), advertised_idr0);
+            assert_eq!(read_idr(&mut device, 1), advertised_idr1);
+        }
+    }
 
     #[test]
     fn accelerated_smmu_uses_device_assignment_msi_iova_range() {

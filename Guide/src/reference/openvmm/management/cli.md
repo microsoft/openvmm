@@ -555,8 +555,8 @@ translation for DMA and MSI addresses. See
 
 The syntax is a comma-separated key/value list:
 
-```sh
---smmu rc=<name>[,accel][,oas=auto|N]
+```bash
+--smmu rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
@@ -567,15 +567,25 @@ The syntax is a comma-separated key/value list:
   Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
   `auto` (the default) starts at 48 bits, which covers typical configurations.
-  Under `accel`, a device attached before VM start changes it to the physical
-  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
-  against it rather than changing it. Very large RAM or an explicitly pinned
+  Under `accel`, a cold-plug device changes it to the physical SMMU's OAS.
+  Device start (including PCI resource assignment before firmware loading)
+  freezes the value, so later hotplug validates against it rather than
+  changing it. Very large RAM or an explicitly pinned
   high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
   (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
   `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
   SMMU's OAS under `accel`.
+- `ssidsize=auto|N` (optional): the SMMU's SubstreamID width in bits,
+  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode;
+  under `accel`, a cold-plug device supplies the host SMMU's width before
+  device start freezes the capabilities. A fixed `N` must be from 0 to 20,
+  where 0 disables substreams, and cannot exceed the host's width under
+  `accel`. Later hotplug validates against the frozen width rather than
+  changing it. This controls the SMMU's SSID width, not an endpoint's PASID
+  capability or limit. ATS remains host-derived under `accel`; there is no
+  separate ATS option.
 
-```sh
+```bash
 # Enable an emulated SMMU on root complex rc0
 --smmu rc=rc0
 
@@ -584,6 +594,9 @@ The syntax is a comma-separated key/value list:
 
 # Pin the output address size to 48 bits
 --smmu rc=rc0,oas=48
+
+# Disable substreams even when the host supports them
+--smmu rc=rc0,accel,ssidsize=0
 
 # Assign a VFIO device behind an accelerated SMMU
 --smmu rc=rc0,accel --iommu id=iommu0 \

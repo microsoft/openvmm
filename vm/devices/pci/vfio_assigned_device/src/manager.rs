@@ -1398,6 +1398,7 @@ mod tests {
             &smmu::SmmuConfig {
                 sidsize: 16,
                 oas_policy: smmu::SmmuOasPolicy::Fixed(40),
+                ssid_policy: smmu::SmmuSsidPolicy::Auto,
                 accel: true,
             },
             None,
