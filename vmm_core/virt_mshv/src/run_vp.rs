@@ -22,6 +22,12 @@ std::thread_local! {
     static CANCELLED: AtomicBool = const { AtomicBool::new(false) };
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static SYSCALL_ENTRY_NOTIFICATION: std::cell::Cell<*mut bool> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
 fn signal() -> i32 {
     // KVM owns SIGRTMIN and has a different signal-handler contract.
     libc::SIGRTMIN() + 1
@@ -125,6 +131,7 @@ unsafe extern "C" fn guarded_syscall(
     _arg1: usize,
     _arg2: usize,
     _cancelled: *const bool,
+    #[cfg(test)] _entry_notification: *mut bool,
 ) -> libc::c_long {
     core::arch::naked_asm!(
         "mov rax, rdi",
@@ -133,6 +140,14 @@ unsafe extern "C" fn guarded_syscall(
         "mov rdx, rcx",
         "cmp byte ptr [r8], 0",
         "jne 2f",
+        #[cfg(test)]
+        "test r9, r9",
+        #[cfg(test)]
+        "jz 3f",
+        #[cfg(test)]
+        "mov byte ptr [r9], 1",
+        #[cfg(test)]
+        "3:",
         "syscall",
         ".global openvmm_mshv_syscall_return",
         ".hidden openvmm_mshv_syscall_return",
@@ -157,6 +172,7 @@ unsafe extern "C" fn guarded_syscall(
     _arg1: usize,
     _arg2: usize,
     _cancelled: *const bool,
+    #[cfg(test)] _entry_notification: *mut bool,
 ) -> libc::c_long {
     core::arch::naked_asm!(
         "mov x8, x0",
@@ -165,6 +181,14 @@ unsafe extern "C" fn guarded_syscall(
         "mov x2, x3",
         "ldarb w9, [x4]",
         "cbnz w9, 2f",
+        #[cfg(test)]
+        "cbz x5, 3f",
+        #[cfg(test)]
+        "mov w10, #1",
+        #[cfg(test)]
+        "stlrb w10, [x5]",
+        #[cfg(test)]
+        "3:",
         "svc #0",
         ".global openvmm_mshv_syscall_return",
         ".hidden openvmm_mshv_syscall_return",
@@ -186,8 +210,24 @@ unsafe fn syscall(number: libc::c_long, args: [usize; 3]) -> io::Result<libc::c_
         }
         // SAFETY: the caller provides the syscall arguments; the cancellation
         // flag is live and is read atomically by the guarded assembly.
+        #[cfg(not(test))]
         let result =
             unsafe { guarded_syscall(number, args[0], args[1], args[2], cancelled.as_ptr()) };
+        #[cfg(test)]
+        let result = {
+            // SAFETY: the test notification is null or points to a live
+            // AtomicBool owned by the calling thread.
+            unsafe {
+                guarded_syscall(
+                    number,
+                    args[0],
+                    args[1],
+                    args[2],
+                    cancelled.as_ptr(),
+                    SYSCALL_ENTRY_NOTIFICATION.with(|notification| notification.get()),
+                )
+            }
+        };
         if result < 0 {
             Err(io::Error::from_raw_os_error(-result as i32))
         } else {
@@ -227,8 +267,9 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use test_with_tracing::test;
 
     fn initialize() {
@@ -334,8 +375,13 @@ mod tests {
         let (reader, mut writer) = UnixStream::pair().unwrap();
         let (ready_send, ready_recv) = mpsc::channel();
         let (done_send, done_recv) = mpsc::channel();
+        let entered = Arc::new(AtomicBool::new(false));
+        let entered_send = Arc::clone(&entered);
         let task = std::thread::spawn(move || {
             initialize();
+            SYSCALL_ENTRY_NOTIFICATION.with(|notification| {
+                assert!(notification.replace(entered_send.as_ptr()).is_null());
+            });
             ready_send.send(Pthread::current()).unwrap();
             let mut byte = 0u8;
             // SAFETY: the socket stays open and the byte is a live output
@@ -350,9 +396,20 @@ mod tests {
                     ],
                 )
             };
+            SYSCALL_ENTRY_NOTIFICATION.with(|notification| notification.set(std::ptr::null_mut()));
             done_send.send(result).unwrap();
         });
-        cancel(ready_recv.recv().unwrap()).unwrap();
+        let thread = ready_recv.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !entered.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                writer.write_all(&[0]).unwrap();
+                task.join().unwrap();
+                panic!("worker did not reach the guarded read");
+            }
+            std::thread::yield_now();
+        }
+        cancel(thread).unwrap();
         let result = done_recv.recv_timeout(Duration::from_secs(2));
         if matches!(result, Err(mpsc::RecvTimeoutError::Timeout)) {
             // Release a regressed read before failing instead of leaking a
