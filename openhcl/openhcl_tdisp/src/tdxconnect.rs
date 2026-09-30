@@ -7,7 +7,6 @@
 //! security and resource management policies for TDs. The guest makes calls
 //! directly to the TDX Module in the form of "TDCALL" instructions dispatched
 //! through mshv driver ioctls.
-//!
 
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
@@ -43,8 +42,8 @@ pub struct TdispTdxConnectResourceValidator {
     /// start in the CVM.
     vtom: u64,
 
-    /// The MMIO range list from the device's TDI interface report, recorded by
-    /// [`Self::tdisp_set_tdi_report`]. `None` until a report arrives.
+    /// The MMIO range list from the TDI interface report, or `None` until
+    /// [`Self::tdisp_set_tdi_report`] records one.
     tdi_mmio_ranges: Mutex<Option<Vec<TdispTdiReportMmioInterfaceInfo>>>,
 }
 
@@ -62,6 +61,9 @@ impl TdispTdxConnectResourceValidator {
 
     /// Resolve a `range_id` to its position in the device's reported MMIO range
     /// list, which is what TDG.TDI.MMIO.ACCEPT takes as `MMIO_RANGE_IDX`.
+    ///
+    /// * `device_id` - The guest device id the host reported for this TDI.
+    /// * `range_id` - The identifier of the MMIO range within the device's report.
     fn mmio_range_index(&self, device_id: u16, range_id: u16) -> anyhow::Result<u16> {
         let ranges = self.tdi_mmio_ranges.lock();
         let ranges = ranges.as_ref().with_context(|| {
@@ -87,10 +89,8 @@ impl TdispTdxConnectResourceValidator {
         })
     }
 
-    /// Open a fresh `MshvVtl` handle for a single request.
-    ///
-    /// The handle must be created on the VP that will service the request, so
-    /// it cannot be cached on the validator and shared across VPs.
+    /// Open a fresh `MshvVtl` handle for a single request. The handle only
+    /// works on the VP that created it, so it cannot be cached and shared.
     fn open_mshv_vtl() -> anyhow::Result<MshvVtl> {
         use anyhow::Context;
         let mshv = Mshv::new().context("failed to create mshv")?;
@@ -98,14 +98,11 @@ impl TdispTdxConnectResourceValidator {
         Ok(mshv_vtl)
     }
 
-    /// Build the TDISP `FUNCTION_ID` used to address a TDI in the Connect
-    /// TDCALLs.
+    /// Build the TDISP `FUNCTION_ID` that addresses a TDI. The segment is left
+    /// zero and invalid, which only suits a single-segment host.
     ///
-    /// `device_id` is the guest device id the host reported for this TDI, not a
-    /// VPCI slot id, and is used directly as the TDISP requester ID. The requester
-    /// segment is left zero and marked invalid, which is correct for a
-    /// single-segment host; multi-segment support needs the segment plumbed
-    /// down from the host alongside the device id.
+    /// * `device_id` - The guest device id the host reported for this TDI, used
+    ///   directly as the TDISP requester ID.
     fn function_id(device_id: u16) -> TdxFunctionId {
         TdxFunctionId::new()
             .with_requester_id(device_id)
@@ -114,7 +111,7 @@ impl TdispTdxConnectResourceValidator {
     }
 
     /// Format a failed TDCALL status for tracing, naming the codes that carry
-    /// specific meaning for a TDI read.
+    /// specific meaning for a TDI read..
     fn describe_status(result: TdCallResult) -> String {
         format!(
             "{}, raw rax {:#x}",
@@ -123,12 +120,12 @@ impl TdispTdxConnectResourceValidator {
         )
     }
 
-    /// Format a bare TDCALL status code, for the leaves whose wrappers return
+    /// Format a bare TDCALL status code for the leaves whose wrappers return
     /// the code rather than the full `TdCallResult`.
     fn describe_status_code(code: TdCallResultCode) -> String {
         let meaning = match code {
             TdCallResultCode::TDI_NOT_PRESENT | TdCallResultCode::TDI_INVALID_METADATA => {
-                " (TDI is unbound; its control structure was removed or reassigned)"
+                " (TDI is unbound, its control structure was removed or reassigned)"
             }
             TdCallResultCode::TDI_INVALID_STATE => {
                 " (TDI is unbound, in the TDISP error state, or not in the state the leaf requires)"
@@ -165,15 +162,8 @@ impl TdispTdxConnectResourceValidator {
         format!("{code:?}{meaning}")
     }
 
-    /// Name the L1 Secure EPT leaf state implied by a TDG.MEM.PAGE.ATTR.RD
-    /// result, using the state names from the TDX Module ABI spec table
-    /// "Secure L1 EPT Entry TDX State Returned by TDX Interface Functions".
-    ///
-    /// The leaf only exposes the MMIO and PENDING bits, so the blocked states
-    /// (MMIO_BLOCKED, BLOCKED) cannot be told apart from their mapped
-    /// counterparts here. A page in a state the leaf rejects outright does not
-    /// reach this function at all: it produces an EPT violation TD exit
-    /// instead of a result.
+    /// Describe the L1 Secure EPT state returned by a call to PAGE.ATTR.RD.
+    /// Blocked states cannot be told apart from mapped ones here.
     fn describe_page_state(mapping: TdgMemPageAttrGpaMappingReadRcxResult) -> String {
         let state = match (mapping.mmio(), mapping.pending()) {
             (true, false) => "MMIO_MAPPED (private MMIO, accepted by the TD)",
@@ -193,23 +183,7 @@ impl TdispTdxConnectResourceValidator {
         )
     }
 
-    /// Read back the L1 Secure EPT state of one MMIO page and confirm it is in
-    /// the state TDG.MEM.PAGE.ATTR.WR needs before it will create the VTL0
-    /// alias: MMIO_MAPPED, at 4K.
-    ///
-    /// This exists because TDG.MEM.PAGE.ATTR.WR answers a page in the wrong
-    /// state with an EPT violation TD exit rather than a status code (ABI spec
-    /// 5.5.5.3.3 and 5.5.5.3.4), so the failure surfaces on the host as an
-    /// unattributed exit instead of an error here. Reading first turns the
-    /// common cases into a message naming the state the page is actually in.
-    ///
-    /// The read carries a weaker form of the same hazard: per ABI spec
-    /// 5.5.4.3.3, TDG.MEM.PAGE.ATTR.RD also causes an EPT violation on a page
-    /// that is neither guest-readable nor pending. It does not walk the L2
-    /// tree to create an alias, though, so an EPT violation on the read
-    /// implicates the L1 entry (the host has not finished TDH.MMIO.MT.SET /
-    /// TDH.MMIO.MAP) while one on the write implicates the L2 alias (a missing
-    /// non-leaf L2 SEPT page the host must add with TDH.MEM.SEPT.ADD).
+    /// Confirm one MMIO page is MMIO_MAPPED at 4K.
     fn check_mmio_page_accepted(
         mshv_vtl: &MshvVtl,
         device_id: u16,
@@ -246,15 +220,8 @@ impl TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    /// Issue TDG.TDI.RD for one of the hash field codes, which write their
-    /// result into a private page instead of returning it in RCX. `field` must
-    /// be `GET_TDISP_REPORT_HASH` or `GET_DEVICE_ATTESTATION_INFO_HASH`, the
-    /// only two codes that take a nonzero output buffer gpa.
-    /// Fails unless this TD has TDX Connect enabled.
-    ///
-    /// The TDI-scoped leaves only exist on a TD that turned the feature on, so
-    /// callers check first rather than attributing the resulting TDCALL status
-    /// back to a missing feature.
+    /// Fail unless this TD has TDX Connect enabled, since the TDI-scoped
+    /// leaves do not exist without it.
     fn ensure_tdx_connect(mshv_vtl: &MshvVtl) -> anyhow::Result<()> {
         if !mshv_vtl.tdx_get_config_flags().tdx_connect() {
             anyhow::bail!("TDX Connect is not enabled on this TD; cannot issue TDI TDCALLs");
@@ -265,9 +232,7 @@ impl TdispTdxConnectResourceValidator {
 
 impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // Nothing for the TD to do before the host binds the TDI: until the
-        // bind completes there is no TDI control structure for the Connect
-        // TDCALLs to address.
+        // Nothing to do before the bind.
         tracing::info!(?target_vtl, device_id, "TDX Connect on_pre_bind: no-op");
         Ok(())
     }
@@ -275,9 +240,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         let mshv_vtl = Self::open_mshv_vtl()?;
 
-        // The TDI is bound but not yet running, which is the first point in the
-        // flow where TDG.TDI.RD should succeed. Probe it to confirm the Connect
-        // TDCALLs reach this TDI.
+        // The TDI is bound but not running, the first point where TDG.TDI.RD
+        // should succeed.
         Self::ensure_tdx_connect(&mshv_vtl)?;
 
         let function_id = Self::function_id(device_id);
@@ -293,9 +257,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 )
             })?;
 
-        // This only authorizes the start; the TDISP transition to RUN happens
-        // on the host's subsequent TDH.TDI.START, which `on_post_start`
-        // confirms.
+        // This only authorizes the start. The host's TDH.TDI.START performs the
+        // transition to RUN, which `on_post_start` confirms.
         mshv_vtl
             .tdx_tdi_start(function_id, bind_session)
             .map_err(|e| {
@@ -316,9 +279,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     }
 
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // The host says the TDI is running. Per the TDX Connect ABI EAS, the
-        // Known RUN state is reliable after TDG.TDI.START, so this is the TDX
-        // Module's own view rather than the host's claim.
+        // Read the state from the TDX Module rather than trusting the host,
+        // which the ABI EAS says is reliable after TDG.TDI.START.
         let state = self.get_tsm_tdi_state(target_vtl, device_id)?;
         if state != Some(TdispTdiState::Run) {
             anyhow::bail!(
@@ -342,8 +304,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     ) -> anyhow::Result<Option<TdispTdiState>> {
         let mshv_vtl = Self::open_mshv_vtl()?;
 
-        // The Connect leaves only exist on a TD that enabled the feature, so a
-        // TD without it cannot answer rather than having failed to.
+        // A TD without the feature cannot answer, rather than having failed to.
         if !mshv_vtl.tdx_get_config_flags().tdx_connect() {
             tracing::info!(
                 ?target_vtl,
@@ -355,20 +316,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
         let function_id = Self::function_id(device_id);
 
-        // GET_TDISP_STATE returns its value in RCX. Only the two hash field
-        // codes take an output buffer, so the gpa argument must be zero.
+        // GET_TDISP_STATE returns its value in RCX, so the output buffer gpa
+        // must be zero.
         let raw = match mshv_vtl.tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0) {
             Ok(raw) => raw,
             Err(e) => {
-                // A GET_TDISP_STATE read only succeeds while the TDI is bound,
-                // so these three statuses report an unbound TDI rather than a
-                // malformed call. That is a state, not a failure to answer:
-                // reporting it as `Unlocked` is what lets a caller catch a host
-                // claiming this TDI reached Locked or Run when it never bound.
-                //
-                // TDI_INVALID_STATE is documented as ambiguous between unbound
-                // and the TDISP error state. Both mean the TDI is not where the
-                // host said it was, so treat it the same way.
+                // These statuses mean the TDI is unbound rather than the call
+                // being malformed, so report it as `Unlocked`.
                 let code = e.code();
                 if matches!(
                     code,
@@ -392,10 +346,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             }
         };
 
-        // The encodings do not line up with `TdispTdiState` and TDISP's ERROR
-        // has no counterpart there, so this has to be an explicit match rather
-        // than a cast. `TdispInterfaceState` is an open enum, hence the
-        // catch-all.
+        // The encodings do not line up with `TdispTdiState` and ERROR has no
+        // counterpart, so map them explicitly.
         let state = TdispInterfaceState(raw);
         let state = match state {
             TdispInterfaceState::CONFIG_UNLOCKED => TdispTdiState::Unlocked,
@@ -474,32 +426,19 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             );
 
             let function_id = Self::function_id(device_id);
-            // The leaf addresses the range by its position in the interface
-            // report's MMIO list, not by the report's `range_id` field, so
-            // resolve it against the report recorded at attestation.
+            // The leaf addresses the range by its position in the report's MMIO
+            // list, not by the report's `range_id` field.
             let mmio_range_index = self.mmio_range_index(device_id, range_id)?;
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
-            // Both accept loops, `TdgTdiMmioAcceptR9`'s page-count fields, and
-            // the diagnostics below are all u32 page counts, so narrow once
-            // here rather than casting at each use. A u32 page count reaches
-            // 16TiB, so this is a limit of the TDX Connect ABI rather than one
-            // this code imposes.
+            // Narrow once here, as the accept loops and the diagnostics below
+            // all take u32 page counts.
             let page_count = u32::try_from(length_in_bytes / HV_PAGE_SIZE)
                 .context("MMIO range is more than u32::MAX pages")?;
             let base_offset_pages = base_offset / HV_PAGE_SIZE as u32;
             let mut already_accepted = 0u32;
 
-            // The host has put the range's pages in MMIO_PENDING, so accept
-            // them into the TD before anything else touches their mappings.
-            //
-            // Accept comes first because TDG.TDI.MMIO.ACCEPT is what moves the
-            // L1 Secure EPT entry from MMIO_PENDING to MMIO_MAPPED, and only
-            // then can TDG.MEM.PAGE.ATTR.WR create the VTL0 alias below: the
-            // L2 states the ABI spec defines for MMIO are L2_MMIO_MAPPED and
-            // L2_MMIO_BLOCKED, with no pending counterpart, so there is no
-            // state for an alias over a page the TD has not accepted yet. This
-            // also matches how ordinary private memory is handled, where
-            // `tdcall::accept_pages` accepts first and sets attributes after.
+            // Accept the pages first, moving them from MMIO_PENDING to
+            // MMIO_MAPPED so the VTL0 alias below can be created.
             //
             // TDISP TODO: this accepts one 4K page per call because
             // `tdcall_tdi_mmio_accept` requires it: the leaf reports its resume
@@ -523,7 +462,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                     .with_level(TdgMemPageLevel::Size4k)
                     .with_gpa_page_number(base_pfn + u64::from(i));
 
-                // RANGE_OFFSET is in pages from the start of the MMIO range,
+                // RANGE_OFFSET counts pages from the start of the MMIO range,
                 // not from `base_gpa`.
                 let range = TdgTdiMmioAcceptR9::new()
                     .with_range_size(1)
@@ -572,15 +511,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 page_count - already_accepted
             );
 
-            // Grant the range to L2 VM1, which is VTL0, so the guest can
-            // actually drive the device. Done page by page, after the pages
-            // have been accepted above.
-            //
-            // Read and write only: MMIO is not executable, so both execute bits
-            // stay clear, and the mask leaves them alone rather than writing
-            // them. Note `GpaVmAttributesMask` has no `valid` bit to select --
-            // bit 15 of the mask is `inv_ept`, not `valid` -- so the mask covers
-            // read and write only.
+            // Grant the range to L2 VM1, which is VTL0, so the guest can drive
+            // the device. Read and write only, as MMIO is not executable.
             let vm_attributes = GpaVmAttributes::new()
                 .with_valid(true)
                 .with_read(true)
@@ -601,10 +533,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 let page_gpa = base_gpa + (u64::from(i) << hvdef::HV_PAGE_SHIFT);
                 let range = MemoryRange::from_4k_gpn_range(pfn..pfn + 1);
 
-                // Confirm the page reached MMIO_MAPPED before writing its
-                // attributes, so a page the accept above did not actually
-                // promote fails here by name instead of as an EPT violation
-                // TD exit inside TDG.MEM.PAGE.ATTR.WR.
+                // Confirm the page reached MMIO_MAPPED, so a failure names the
+                // page instead of surfacing as an EPT violation.
                 Self::check_mmio_page_accepted(
                     &mshv_vtl, device_id, range_id, page_gpa, i, page_count,
                 )
@@ -643,9 +573,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         let mshv_vtl = Self::open_mshv_vtl()?;
         Self::ensure_tdx_connect(&mshv_vtl)?;
 
-        // VM_IDX 0 is the non-partitioned TD or L1; 1-3 select L2 VM1-VM3.
-        // OpenHCL is the L1 paravisor with the guest in an L2 VM, so the DMA
-        // target follows the same `vtl + 1` convention `hcl` uses for VP enter.
+        // VM_IDX 0 is L1 and 1-3 select L2 VM1-VM3, so the target follows the
+        // same `vtl + 1` convention `hcl` uses for VP enter.
         let target = DmarTarget::new().with_vm_idx(target_vtl as u8 + 1);
 
         tracing::info!(
@@ -683,16 +612,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         Ok(())
     }
 
-    /// Does nothing on TDX Connect.
-    ///
-    /// TDX Connect gives the guest no way to re-block an MMIO range it has
-    /// accepted. The ABI has TDG.TDI.MMIO.ACCEPT but no inverse, so once a
-    /// range's pages are MMIO_MAPPED in the L1 Secure EPT the TD cannot walk
-    /// that back itself. Releasing them is the host's job, via the TDH-side
-    /// teardown that follows the unbind the caller has already sent.
-    ///
-    /// This is therefore a permanent property of the platform rather than
-    /// something left to implement.
+    /// Does nothing, as TDX Connect gives the guest no inverse for
+    /// TDG.TDI.MMIO.ACCEPT. Releasing the pages is the host's job.
     fn tdisp_block_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
