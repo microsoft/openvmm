@@ -834,6 +834,18 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_rng"))]
     pub virtio_rng_pcie_port: Option<String>,
 
+    /// add a virtio real-time clock device
+    #[clap(long)]
+    pub virtio_rtc: bool,
+
+    /// add a virtio-rtc device under the selected bus (auto | mmio | pci | pcie:port | vpci)
+    #[clap(long, value_name = "BUS", default_value = "auto")]
+    pub virtio_rtc_bus: VirtioBusCli,
+
+    /// attach the virtio-rtc device to the specified PCIe port (overrides --virtio-rtc-bus)
+    #[clap(long, value_name = "PORT", requires("virtio_rtc"))]
+    pub virtio_rtc_pcie_port: Option<String>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |

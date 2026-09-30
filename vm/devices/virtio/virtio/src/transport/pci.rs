@@ -104,6 +104,7 @@ fn virtio_class_code(device_id: VirtioDeviceType) -> (ClassCode, Subclass) {
         // generic base system peripheral.
         VirtioDeviceType::RNG
         | VirtioDeviceType::P9
+        | VirtioDeviceType::RTC
         | VirtioDeviceType::VSOCK
         | VirtioDeviceType::FS
         | VirtioDeviceType::PMEM => (
