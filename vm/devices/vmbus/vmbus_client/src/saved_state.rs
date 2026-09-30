@@ -121,6 +121,11 @@ impl super::ClientTask {
             }
         };
 
+        let (channels, gpadls, pending_messages) = if version.is_none() {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            (channels, gpadls, pending_messages)
+        };
         let mut core_channels = channels
             .into_iter()
             .map(|channel| vmbus_client_core::SavedChannel {

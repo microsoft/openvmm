@@ -738,7 +738,12 @@ pub struct ClientCore {
     phase: ClientPhase,
     channels: alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry>,
     outstanding: alloc::collections::BTreeMap<RequestId, PendingRequest>,
-    hvsock_pending: alloc::collections::BTreeMap<(Guid, Guid), RequestId>,
+    hvsock_pending:
+        alloc::collections::BTreeMap<(Guid, Guid), alloc::collections::VecDeque<RequestId>>,
+    teardown_gpadls: alloc::collections::BTreeMap<
+        vmbus_core::protocol::GpadlId,
+        vmbus_core::protocol::ChannelId,
+    >,
     flag_allocator: FlagAllocator,
     running: bool,
     host_busy: bool,
@@ -865,6 +870,7 @@ impl ClientCore {
             channels: alloc::collections::BTreeMap::new(),
             outstanding: alloc::collections::BTreeMap::new(),
             hvsock_pending: alloc::collections::BTreeMap::new(),
+            teardown_gpadls: alloc::collections::BTreeMap::new(),
             flag_allocator: FlagAllocator::default(),
             running: false,
             host_busy: false,
@@ -1008,16 +1014,27 @@ impl ClientCore {
             }
         }
 
+        let saved_channels = if saved.version.is_some() {
+            saved.channels
+        } else {
+            alloc::vec::Vec::new()
+        };
         let mut channels = alloc::collections::BTreeMap::new();
-        for channel in saved.channels {
+        let mut teardown_gpadls = alloc::collections::BTreeMap::new();
+        for channel in saved_channels {
             let channel_id = channel.offer.channel_id;
             let mut gpadls = alloc::collections::BTreeMap::new();
             for gpadl in channel.gpadls {
                 let phase = match gpadl.phase {
                     SavedGpadlPhase::Created => GpadlPhase::Created,
-                    SavedGpadlPhase::TearingDown => GpadlPhase::TearingDown {
-                        request_ids: alloc::vec::Vec::new(),
-                    },
+                    SavedGpadlPhase::TearingDown => {
+                        if teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
+                            return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
+                        }
+                        GpadlPhase::TearingDown {
+                            request_ids: alloc::vec::Vec::new(),
+                        }
+                    }
                 };
                 if gpadls.insert(gpadl.id, phase).is_some() {
                     return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
@@ -1052,6 +1069,7 @@ impl ClientCore {
         self.channels = channels;
         self.outstanding.clear();
         self.hvsock_pending.clear();
+        self.teardown_gpadls = teardown_gpadls;
         self.flag_allocator = FlagAllocator::default();
         self.host_busy = false;
         self.modify_connection_request_id = None;
@@ -1075,14 +1093,9 @@ impl ClientCore {
                 entry.phase = ChannelPhase::Offered;
                 entry
                     .gpadls
-                    .iter_mut()
+                    .iter()
                     .filter_map(|(&gpadl_id, phase)| match phase {
-                        GpadlPhase::Created => {
-                            *phase = GpadlPhase::TearingDown {
-                                request_ids: alloc::vec::Vec::new(),
-                            };
-                            Some(gpadl_id)
-                        }
+                        GpadlPhase::Created => Some(gpadl_id),
                         GpadlPhase::TearingDown { .. } => None,
                         GpadlPhase::Offered { .. } => {
                             unreachable!("restore never creates offered GPADLs")
@@ -1091,13 +1104,25 @@ impl ClientCore {
                     .collect::<alloc::vec::Vec<_>>()
             };
             for gpadl_id in gpadls {
-                self.post_message(
-                    &vmbus_core::protocol::GpadlTeardown {
-                        channel_id,
-                        gpadl_id,
-                    },
-                    sink,
-                );
+                let entry = self.channels.get_mut(&channel_id).expect("collected above");
+                let Some(phase @ GpadlPhase::Created) = entry.gpadls.get_mut(&gpadl_id) else {
+                    continue;
+                };
+                *phase = GpadlPhase::TearingDown {
+                    request_ids: alloc::vec::Vec::new(),
+                };
+                if let alloc::collections::btree_map::Entry::Vacant(entry) =
+                    self.teardown_gpadls.entry(gpadl_id)
+                {
+                    entry.insert(channel_id);
+                    self.post_message(
+                        &vmbus_core::protocol::GpadlTeardown {
+                            channel_id,
+                            gpadl_id,
+                        },
+                        sink,
+                    );
+                }
             }
         }
     }
@@ -1129,6 +1154,7 @@ impl ClientCore {
                 self.channels.clear();
                 self.outstanding.clear();
                 self.hvsock_pending.clear();
+                self.teardown_gpadls.clear();
                 self.flag_allocator = FlagAllocator::default();
                 self.host_busy = false;
                 self.modify_connection_request_id = None;
@@ -1502,6 +1528,15 @@ impl ClientCore {
         if self.channels.contains_key(&offer.channel_id) {
             return;
         }
+        let hvsock_request_id = self.match_hvsock_offer(&offer);
+        if hvsock_request_id.is_none()
+            && !matches!(
+                self.phase,
+                ClientPhase::Connected { .. } | ClientPhase::RequestingOffers { .. }
+            )
+        {
+            return;
+        }
         self.channels.insert(
             offer.channel_id,
             ChannelEntry {
@@ -1524,7 +1559,7 @@ impl ClientCore {
         // pending HvsockConnect, complete that instead of raising a
         // regular OfferReceived. Matches vmbus_client's
         // hvsock_tracker::check_offer semantics.
-        if let Some(request_id) = self.match_hvsock_offer(&offer) {
+        if let Some(request_id) = hvsock_request_id {
             self.outstanding.remove(&request_id);
             sink.emit(Action::Complete {
                 request_id,
@@ -1562,8 +1597,7 @@ impl ClientCore {
         }
         // Wrapper's check_offer matches (service_id, endpoint_id)
         // against offer.interface_id + offer.instance_id.
-        self.hvsock_pending
-            .remove(&(offer.interface_id, offer.instance_id))
+        self.pop_hvsock_request((offer.interface_id, offer.instance_id))
     }
 
     /// Handle `AllOffersDelivered` — complete the outstanding
@@ -1618,9 +1652,6 @@ impl ClientCore {
         // Revoked. The old phase drives what cleanup we need to emit.
         let old_phase = core::mem::replace(&mut entry.phase, ChannelPhase::Revoked);
         entry.connection_id = 0;
-        // Also drop any pending ModifyChannel — the channel is gone,
-        // no response will arrive.
-        let modify_request_id = entry.modify_request_id.take();
         match old_phase {
             ChannelPhase::Offered | ChannelPhase::Restored | ChannelPhase::Revoked => {}
             ChannelPhase::Opening {
@@ -1643,13 +1674,6 @@ impl ClientCore {
                     self.free_event_flag_and_notify(flag, sink);
                 }
             }
-        }
-        if let Some(request_id) = modify_request_id {
-            self.outstanding.remove(&request_id);
-            sink.emit(Action::Complete {
-                request_id,
-                result: CompletionResult::ModifyChannel(-1),
-            });
         }
         sink.emit(Action::OfferRescinded { channel_id });
         self.try_release_channel(channel_id, sink);
@@ -1865,20 +1889,19 @@ impl ClientCore {
         params: RestoreChannelParams,
         sink: &mut dyn ActionSink,
     ) {
-        let Some(entry) = self.channels.get_mut(&channel_id) else {
-            sink.emit(Action::Complete {
+        if !matches!(
+            self.channels.get(&channel_id).map(|entry| &entry.phase),
+            Some(ChannelPhase::Restored)
+        ) {
+            self.reject_open(
                 request_id,
-                result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
-            });
-            return;
-        };
-        if !matches!(entry.phase, ChannelPhase::Restored) {
-            sink.emit(Action::Complete {
-                request_id,
-                result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
-            });
+                params.redirected_event_flag,
+                OpenChannelError::InvalidState,
+                sink,
+            );
             return;
         }
+        let entry = self.channels.get_mut(&channel_id).expect("validated above");
         entry.connection_id = params.connection_id;
         entry.phase = ChannelPhase::Opened {
             redirected_event_flag: params.redirected_event_flag,
@@ -2080,6 +2103,13 @@ impl ClientCore {
         request: GpadlRequest,
         sink: &mut dyn ActionSink,
     ) {
+        let Ok(len_bytes) = size_of_val(request.buf.as_slice()).try_into() else {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::EstablishGpadl(Err(())),
+            });
+            return;
+        };
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             sink.emit(Action::Complete {
                 request_id,
@@ -2115,10 +2145,7 @@ impl ClientCore {
             (buf, [].as_slice())
         };
         // `len` is the total number of GPA-value bytes, not GpadlHeader
-        // fields — matches `vmbus_client::handle_gpadl`. A caller that
-        // supplies more than u16::MAX / 8 GPAs is buggy; saturate to
-        // avoid panicking, and the host will simply reject the request.
-        let len_bytes: u16 = size_of_val(buf).try_into().unwrap_or(u16::MAX);
+        // fields — matches `vmbus_client::handle_gpadl`.
         let header = vmbus_core::protocol::GpadlHeader {
             channel_id,
             gpadl_id,
@@ -2170,10 +2197,8 @@ impl ClientCore {
                 request_id,
                 result: CompletionResult::EstablishGpadl(Err(())),
             });
-            // A failed gpadl removes the last "pending request" for
-            // release accounting.
-            self.try_release_channel(channel_id, sink);
         }
+        self.try_release_channel(channel_id, sink);
     }
 
     /// Handle [`Event::TeardownGpadl`] — post `GpadlTeardown` if the
@@ -2224,13 +2249,18 @@ impl ClientCore {
                         gpadl_id,
                     },
                 );
-                self.post_message(
-                    &vmbus_core::protocol::GpadlTeardown {
-                        channel_id,
-                        gpadl_id,
-                    },
-                    sink,
-                );
+                if let alloc::collections::btree_map::Entry::Vacant(entry) =
+                    self.teardown_gpadls.entry(gpadl_id)
+                {
+                    entry.insert(channel_id);
+                    self.post_message(
+                        &vmbus_core::protocol::GpadlTeardown {
+                            channel_id,
+                            gpadl_id,
+                        },
+                        sink,
+                    );
+                }
             }
             GpadlPhase::TearingDown { request_ids } => {
                 // Coalesce: multiple callers racing to tear down the
@@ -2256,24 +2286,25 @@ impl ClientCore {
         sink: &mut dyn ActionSink,
     ) {
         let gpadl_id = torndown.gpadl_id;
-        // vmbus_client tracks channel_id via a teardown_gpadls map;
-        // we can just scan the channels since the state carries the
-        // TearingDown marker.
-        let channel_id = match self.find_gpadl_owner(gpadl_id) {
-            Some(id) => id,
+        let channel_id = match self.teardown_gpadls.get(&gpadl_id).copied() {
+            Some(channel_id) => channel_id,
             None => return,
         };
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             return;
         };
-        let Some(gpadl_state) = entry.gpadls.remove(&gpadl_id) else {
+        if !matches!(
+            entry.gpadls.get(&gpadl_id),
+            Some(GpadlPhase::TearingDown { .. })
+        ) {
             return;
+        }
+        let GpadlPhase::TearingDown { request_ids } =
+            entry.gpadls.remove(&gpadl_id).expect("validated above")
+        else {
+            unreachable!("validated above")
         };
-        let GpadlPhase::TearingDown { request_ids } = gpadl_state else {
-            // A GpadlTorndown for a gpadl not in teardown state is a
-            // host protocol violation. Drop without state change.
-            return;
-        };
+        self.teardown_gpadls.remove(&gpadl_id);
         for request_id in request_ids {
             self.outstanding.remove(&request_id);
             sink.emit(Action::Complete {
@@ -2281,19 +2312,32 @@ impl ClientCore {
                 result: CompletionResult::TeardownGpadl,
             });
         }
+        self.start_next_gpadl_teardown(gpadl_id, sink);
         self.try_release_channel(channel_id, sink);
     }
 
-    /// Look up the channel that owns a gpadl by id. Used by
-    /// [`Self::handle_gpadl_torndown`] since the host message
-    /// carries only the gpadl id.
-    fn find_gpadl_owner(
-        &self,
+    fn start_next_gpadl_teardown(
+        &mut self,
         gpadl_id: vmbus_core::protocol::GpadlId,
-    ) -> Option<vmbus_core::protocol::ChannelId> {
-        self.channels
-            .iter()
-            .find_map(|(cid, entry)| entry.gpadls.contains_key(&gpadl_id).then_some(*cid))
+        sink: &mut dyn ActionSink,
+    ) {
+        let next_channel_id = self.channels.iter().find_map(|(&channel_id, entry)| {
+            matches!(
+                entry.gpadls.get(&gpadl_id),
+                Some(GpadlPhase::TearingDown { .. })
+            )
+            .then_some(channel_id)
+        });
+        if let Some(channel_id) = next_channel_id {
+            self.teardown_gpadls.insert(gpadl_id, channel_id);
+            self.post_message(
+                &vmbus_core::protocol::GpadlTeardown {
+                    channel_id,
+                    gpadl_id,
+                },
+                sink,
+            );
+        }
     }
 
     /// Handle [`Event::Unload`] — post `Unload` and transition to
@@ -2418,7 +2462,9 @@ impl ClientCore {
             silo_id: request.silo_id,
         };
         self.hvsock_pending
-            .insert((request.service_id, request.endpoint_id), request_id);
+            .entry((request.service_id, request.endpoint_id))
+            .or_default()
+            .push_back(request_id);
         self.outstanding.insert(
             request_id,
             PendingRequest::HvsockConnect {
@@ -2442,9 +2488,7 @@ impl ClientCore {
         if result.status >= 0 {
             return;
         }
-        let Some(request_id) = self
-            .hvsock_pending
-            .remove(&(result.service_id, result.endpoint_id))
+        let Some(request_id) = self.pop_hvsock_request((result.service_id, result.endpoint_id))
         else {
             return;
         };
@@ -2453,6 +2497,15 @@ impl ClientCore {
             request_id,
             result: CompletionResult::HvsockConnect(None),
         });
+    }
+
+    fn pop_hvsock_request(&mut self, key: (Guid, Guid)) -> Option<RequestId> {
+        let request_ids = self.hvsock_pending.get_mut(&key)?;
+        let request_id = request_ids.pop_front();
+        if request_ids.is_empty() {
+            self.hvsock_pending.remove(&key);
+        }
+        request_id
     }
 
     /// Handle [`Event::Pause`] — post `Pause` wire message. Only
@@ -3107,6 +3160,25 @@ mod step_tests {
         assert!(sink.actions.is_empty());
     }
 
+    #[test]
+    fn offer_outside_connected_phase_is_not_recorded() {
+        let mut core = ClientCore::new(make_config());
+        let mut sink = Recording::default();
+        let offer_wire = make_host_message(&make_offer(4));
+
+        core.step(Event::HostMessage(&offer_wire), &mut sink);
+        assert!(sink.actions.is_empty());
+        assert!(core.channels().is_empty());
+
+        connect_to_copper(&mut core, &mut sink);
+        core.step(Event::HostMessage(&offer_wire), &mut sink);
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::OfferReceived(OfferDescriptor { offer, .. })]
+                if offer.channel_id == vmbus_core::protocol::ChannelId(4)
+        ));
+    }
+
     // -- Phase 4b-iii-b: channel lifecycle --------------------------
 
     /// Config whose negotiated feature set enables both the flags
@@ -3295,6 +3367,103 @@ mod step_tests {
                 )),
             }
         ));
+    }
+
+    #[test]
+    fn invalid_restore_channel_frees_reserved_event_flag() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+
+        for channel_id in [42, 43] {
+            if channel_id == 43 {
+                deliver_one_offer(&mut core, &mut sink, channel_id);
+            }
+            let flag = core.allocate_event_flag().unwrap();
+            core.step(
+                Event::RestoreChannel {
+                    request_id: RequestId(150 + channel_id as u64),
+                    channel_id: vmbus_core::protocol::ChannelId(channel_id),
+                    params: RestoreChannelParams {
+                        redirected_event_flag: Some(flag),
+                        connection_id: channel_id,
+                    },
+                },
+                &mut sink,
+            );
+            assert!(matches!(sink.actions[0], Action::FreeEventFlag(f) if f == flag));
+            assert!(matches!(
+                sink.actions[1],
+                Action::Complete {
+                    result: CompletionResult::OpenChannel(Err(OpenChannelError::InvalidState)),
+                    ..
+                }
+            ));
+            assert_eq!(core.flag_allocator.used_count(), 0);
+            sink.actions.clear();
+        }
+    }
+
+    #[test]
+    fn rescind_waits_for_pending_modify_before_release() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 18);
+        core.step(
+            Event::ModifyChannel {
+                request_id: RequestId(1800),
+                channel_id: vmbus_core::protocol::ChannelId(18),
+                request: ModifyRequest::TargetVp { target_vp: 1 },
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let rescind = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(18),
+        });
+        core.step(Event::HostMessage(&rescind), &mut sink);
+        core.step(
+            Event::ReleaseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(18),
+            },
+            &mut sink,
+        );
+        assert!(
+            core.channels()
+                .contains_key(&vmbus_core::protocol::ChannelId(18))
+        );
+        assert!(!sink.actions.iter().any(|action| matches!(
+            action,
+            Action::Complete {
+                request_id: RequestId(1800),
+                ..
+            }
+        )));
+        sink.actions.clear();
+
+        let response = make_host_message(&vmbus_core::protocol::ModifyChannelResponse {
+            channel_id: vmbus_core::protocol::ChannelId(18),
+            status: vmbus_core::protocol::STATUS_SUCCESS,
+        });
+        core.step(Event::HostMessage(&response), &mut sink);
+        assert!(matches!(
+            sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(1800),
+                result: CompletionResult::ModifyChannel(vmbus_core::protocol::STATUS_SUCCESS),
+            }
+        ));
+        assert!(matches!(sink.actions[1], Action::PostMessage(_)));
+        assert!(
+            !core
+                .channels()
+                .contains_key(&vmbus_core::protocol::ChannelId(18))
+        );
     }
 
     #[test]
@@ -3818,6 +3987,42 @@ mod step_tests {
     }
 
     #[test]
+    fn establish_oversized_gpadl_is_rejected_without_state_change() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 23);
+        let gpadl_id = vmbus_core::protocol::GpadlId(10);
+        let request = GpadlRequest {
+            id: gpadl_id,
+            count: 1,
+            buf: alloc::vec![0; usize::from(u16::MAX) / size_of::<u64>() + 1],
+        };
+        core.step(
+            Event::EstablishGpadl {
+                request_id: RequestId(901),
+                channel_id: vmbus_core::protocol::ChannelId(23),
+                gpadl_id,
+                request,
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(901),
+                result: CompletionResult::EstablishGpadl(Err(())),
+            }]
+        ));
+        assert!(
+            core.channels()[&vmbus_core::protocol::ChannelId(23)]
+                .gpadls
+                .is_empty()
+        );
+        assert!(!core.outstanding.contains_key(&RequestId(901)));
+    }
+
+    #[test]
     fn gpadl_created_success_transitions_to_created() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
@@ -3886,6 +4091,55 @@ mod step_tests {
             !core.channels()[&vmbus_core::protocol::ChannelId(31)]
                 .gpadls
                 .contains_key(&gid)
+        );
+    }
+
+    #[test]
+    fn successful_gpadl_creation_retries_revoked_channel_release() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 31);
+        let (gpadl_id, request) = small_gpadl(9);
+        core.step(
+            Event::EstablishGpadl {
+                request_id: RequestId(1150),
+                channel_id: vmbus_core::protocol::ChannelId(31),
+                gpadl_id,
+                request,
+            },
+            &mut sink,
+        );
+        let rescind = make_host_message(&vmbus_core::protocol::RescindChannelOffer {
+            channel_id: vmbus_core::protocol::ChannelId(31),
+        });
+        core.step(Event::HostMessage(&rescind), &mut sink);
+        core.step(
+            Event::ReleaseChannel {
+                channel_id: vmbus_core::protocol::ChannelId(31),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        let created = make_host_message(&vmbus_core::protocol::GpadlCreated {
+            channel_id: vmbus_core::protocol::ChannelId(31),
+            gpadl_id,
+            status: vmbus_core::protocol::STATUS_SUCCESS,
+        });
+        core.step(Event::HostMessage(&created), &mut sink);
+
+        assert!(matches!(
+            sink.actions[0],
+            Action::Complete {
+                request_id: RequestId(1150),
+                result: CompletionResult::EstablishGpadl(Ok(())),
+            }
+        ));
+        assert!(matches!(sink.actions[1], Action::PostMessage(_)));
+        assert!(
+            !core
+                .channels()
+                .contains_key(&vmbus_core::protocol::ChannelId(31))
         );
     }
 
@@ -4013,6 +4267,107 @@ mod step_tests {
         assert_eq!(completed.len(), 2);
         assert!(completed.contains(&RequestId(1301)));
         assert!(completed.contains(&RequestId(1302)));
+    }
+
+    #[test]
+    fn gpadl_torndown_uses_the_in_flight_channel_owner() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 36);
+        deliver_one_offer(&mut core, &mut sink, 37);
+        let gpadl_id = vmbus_core::protocol::GpadlId(12);
+
+        for (channel_id, request_id) in [(36, 1360), (37, 1370)] {
+            core.step(
+                Event::EstablishGpadl {
+                    request_id: RequestId(request_id),
+                    channel_id: vmbus_core::protocol::ChannelId(channel_id),
+                    gpadl_id,
+                    request: GpadlRequest {
+                        id: gpadl_id,
+                        count: 1,
+                        buf: alloc::vec![0x1000],
+                    },
+                },
+                &mut sink,
+            );
+            let created = make_host_message(&vmbus_core::protocol::GpadlCreated {
+                channel_id: vmbus_core::protocol::ChannelId(channel_id),
+                gpadl_id,
+                status: vmbus_core::protocol::STATUS_SUCCESS,
+            });
+            core.step(Event::HostMessage(&created), &mut sink);
+        }
+        sink.actions.clear();
+
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1371),
+                channel_id: vmbus_core::protocol::ChannelId(37),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            core.channels()[&vmbus_core::protocol::ChannelId(36)].gpadls[&gpadl_id],
+            GpadlPhase::Created
+        ));
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1361),
+                channel_id: vmbus_core::protocol::ChannelId(36),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+        assert_eq!(
+            sink.actions
+                .iter()
+                .filter(|action| matches!(action, Action::PostMessage(_)))
+                .count(),
+            1
+        );
+        sink.actions.clear();
+
+        let torndown = make_host_message(&vmbus_core::protocol::GpadlTorndown { gpadl_id });
+        core.step(Event::HostMessage(&torndown), &mut sink);
+
+        assert!(matches!(
+            core.channels()[&vmbus_core::protocol::ChannelId(36)].gpadls[&gpadl_id],
+            GpadlPhase::TearingDown { .. }
+        ));
+        assert!(
+            !core.channels()[&vmbus_core::protocol::ChannelId(37)]
+                .gpadls
+                .contains_key(&gpadl_id)
+        );
+        assert!(sink.actions.iter().any(|action| matches!(
+            action,
+            Action::Complete {
+                request_id: RequestId(1371),
+                result: CompletionResult::TeardownGpadl,
+            }
+        )));
+        assert!(
+            sink.actions
+                .iter()
+                .any(|action| matches!(action, Action::PostMessage(_)))
+        );
+        sink.actions.clear();
+
+        core.step(Event::HostMessage(&torndown), &mut sink);
+        assert!(sink.actions.iter().any(|action| matches!(
+            action,
+            Action::Complete {
+                request_id: RequestId(1361),
+                result: CompletionResult::TeardownGpadl,
+            }
+        )));
+        assert!(
+            !core.channels()[&vmbus_core::protocol::ChannelId(36)]
+                .gpadls
+                .contains_key(&gpadl_id)
+        );
     }
 
     #[test]
@@ -4382,6 +4737,90 @@ mod step_tests {
                 result: CompletionResult::HvsockConnect(None),
             }
         ));
+    }
+
+    #[test]
+    fn duplicate_hvsock_connects_complete_one_at_a_time() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        let service = Guid {
+            data1: 0xface,
+            ..Guid::ZERO
+        };
+        let endpoint = Guid {
+            data1: 0xcafe,
+            ..Guid::ZERO
+        };
+        let request = HvsockConnectRequest {
+            service_id: service,
+            endpoint_id: endpoint,
+            silo_id: Guid::ZERO,
+            hosted_silo_unaware: false,
+        };
+        for request_id in [2800, 2801] {
+            core.step(
+                Event::HvsockConnect {
+                    request_id: RequestId(request_id),
+                    request,
+                },
+                &mut sink,
+            );
+        }
+        sink.actions.clear();
+
+        let mut offer = make_offer(61);
+        offer.interface_id = service;
+        offer.instance_id = endpoint;
+        offer.flags = vmbus_core::protocol::OfferFlags::new().with_tlnpi_provider(true);
+        core.step(Event::HostMessage(&make_host_message(&offer)), &mut sink);
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(2800),
+                result: CompletionResult::HvsockConnect(Some(_)),
+            }]
+        ));
+        sink.actions.clear();
+
+        let result = vmbus_core::protocol::TlConnectResult {
+            endpoint_id: endpoint,
+            service_id: service,
+            status: -1,
+        };
+        core.step(Event::HostMessage(&make_host_message(&result)), &mut sink);
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(2801),
+                result: CompletionResult::HvsockConnect(None),
+            }]
+        ));
+    }
+
+    #[test]
+    fn disconnected_restore_discards_saved_channels() {
+        let mut core = ClientCore::new(make_redirect_config());
+        core.restore(SavedState {
+            version: None,
+            channels: alloc::vec![SavedChannel {
+                offer: make_offer(70),
+                phase: SavedChannelPhase::Offered,
+                gpadls: alloc::vec![SavedGpadl {
+                    id: vmbus_core::protocol::GpadlId(1),
+                    phase: SavedGpadlPhase::Created,
+                }],
+            }],
+            released_channel_ids: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+        assert!(core.channels().is_empty());
     }
 
     #[test]
