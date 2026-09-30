@@ -811,6 +811,197 @@ mod tests {
         assert_eq!(nvram_command_buffer_len(u32::MAX), None);
     }
 
+    /// Guest-controlled NVRAM lengths must be rejected before the host allocates.
+    ///
+    /// `data_bytes == u32::MAX` used to execute `vec![0; command.data_bytes as usize]`
+    /// (~4 GiB) and only then try to read guest memory. A missing check either OOMs
+    /// or reports [`EfiStatus::DEVICE_ERROR`] after that read fails. The length gate
+    /// returns [`EfiStatus::INVALID_PARAMETER`] without allocating.
+    #[async_test]
+    async fn oversized_guest_nvram_buffers_are_rejected(driver: pal_async::DefaultDriver) {
+        use firmware_uefi_resources::platform::UefiEvent;
+        use firmware_uefi_resources::platform::UefiLogger;
+        use guestmem::GuestMemory;
+        use std::mem::size_of;
+        use uefi_specs::hyperv::nvram::NvramCommand;
+        use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
+        use uefi_specs::hyperv::nvram::NvramDebugStringCommand;
+        use uefi_specs::hyperv::nvram::NvramVariableCommand;
+        use uefi_specs::uefi::nvram::EfiVariableAttributes;
+        use vmcore::vmtime::VmTime;
+        use vmcore::vmtime::VmTimeKeeper;
+        use watchdog_core::platform::WatchdogCallback;
+        use watchdog_core::platform::WatchdogPlatform;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        struct TestLogger;
+        impl UefiLogger for TestLogger {
+            fn log_event(&self, _event: UefiEvent) {}
+        }
+
+        struct TestWatchdog;
+        #[async_trait::async_trait]
+        impl WatchdogPlatform for TestWatchdog {
+            async fn on_timeout(&mut self) {}
+            async fn read_and_clear_boot_status(&mut self) -> bool {
+                false
+            }
+            fn add_callback(&mut self, _callback: Box<dyn WatchdogCallback>) {}
+        }
+
+        let gm = GuestMemory::allocate(64 * 1024);
+        let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = keeper.builder().build(&driver).await.unwrap();
+        let (_genid_send, generation_id_recv) = mesh::channel();
+        let (_watchdog_send, watchdog_recv) = mesh::channel();
+
+        let mut dev = UefiDevice {
+            use_mmio: false,
+            command_set: firmware_uefi_resources::UefiCommandSet::X64,
+            diagnostics_rate_limit: None,
+            gm: gm.clone(),
+            address: 0,
+            watchdog_recv,
+            service: crate::UefiDeviceServices {
+                nvram: nvram_services(InMemoryNvram::new()),
+                event_log: crate::service::event_log::EventLogServices::new(Box::new(TestLogger)),
+                uefi_watchdog: crate::service::uefi_watchdog::UefiWatchdogServices::new(
+                    vmtime.access("uefi-watchdog"),
+                    Box::new(TestWatchdog),
+                    false,
+                )
+                .await,
+                generation_id: generation_id::GenerationId::new(
+                    [0; 16],
+                    generation_id::GenerationIdRuntimeDeps {
+                        gm: gm.clone(),
+                        generation_id_recv,
+                        notify_interrupt: vmcore::line_interrupt::LineInterrupt::detached(),
+                    },
+                ),
+                time: crate::service::time::TimeServices::new(Box::new(
+                    local_clock::MockLocalClock::new(),
+                )),
+                diagnostics: crate::service::diagnostics::DiagnosticsServices::new(
+                    firmware_uefi_resources::LogLevel::make_default(),
+                ),
+            },
+        };
+        // The watchdog time source is backed by this keeper.
+        let _keeper = keeper;
+
+        async fn issue(
+            dev: &mut UefiDevice,
+            gm: &GuestMemory,
+            command: NvramCommand,
+            cmd: &(impl IntoBytes + Immutable + KnownLayout),
+        ) -> EfiStatus {
+            let desc_addr = 0x1000;
+            gm.write_plain(
+                desc_addr,
+                &NvramCommandDescriptor {
+                    command,
+                    // Sentinel: a missing write-back must not look like success.
+                    status: EfiStatus::DEVICE_ERROR.into(),
+                },
+            )
+            .unwrap();
+            gm.write_plain(desc_addr + size_of::<NvramCommandDescriptor>() as u64, cmd)
+                .unwrap();
+            dev.nvram_handle_command(desc_addr).await;
+            EfiStatus::from(
+                gm.read_plain::<NvramCommandDescriptor>(desc_addr)
+                    .unwrap()
+                    .status,
+            )
+        }
+
+        let oversized_set = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0.into(),
+            name_bytes: 0,
+            vendor_guid: Guid::default(),
+            data_address: 0x2000.into(),
+            data_bytes: u32::MAX,
+        };
+        assert_eq!(
+            issue(&mut dev, &gm, NvramCommand::SET_VARIABLE, &oversized_set).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        let mut just_over_cap = oversized_set;
+        just_over_cap.data_bytes = MAX_NVRAM_COMMAND_BUFFER_SIZE + 1;
+        assert_eq!(
+            issue(&mut dev, &gm, NvramCommand::SET_VARIABLE, &just_over_cap).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        let oversized_name = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0x2000.into(),
+            name_bytes: u32::MAX,
+            vendor_guid: Guid::default(),
+            data_address: 0.into(),
+            data_bytes: 0,
+        };
+        assert_eq!(
+            issue(&mut dev, &gm, NvramCommand::GET_VARIABLE, &oversized_name).await,
+            EfiStatus::INVALID_PARAMETER
+        );
+        assert_eq!(
+            issue(
+                &mut dev,
+                &gm,
+                NvramCommand::GET_NEXT_VARIABLE_NAME,
+                &oversized_name
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        assert_eq!(
+            issue(
+                &mut dev,
+                &gm,
+                NvramCommand::DEBUG_STRING,
+                &NvramDebugStringCommand {
+                    padding: 0,
+                    address: 0x2000.into(),
+                    len: u32::MAX,
+                },
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
+        // A legal request still passes the gate and is stored.
+        let name = wchz!(u16, "TestVar");
+        let name_addr = 0x2000;
+        let data_addr = 0x2200;
+        let data = b"test";
+        gm.write_at(name_addr, name.as_bytes()).unwrap();
+        gm.write_at(data_addr, data).unwrap();
+        assert_eq!(
+            issue(
+                &mut dev,
+                &gm,
+                NvramCommand::SET_VARIABLE,
+                &NvramVariableCommand {
+                    attributes: EfiVariableAttributes::DEFAULT_ATTRIBUTES.into(),
+                    name_address: name_addr.into(),
+                    name_bytes: name.as_bytes().len().try_into().unwrap(),
+                    vendor_guid: Guid::default(),
+                    data_address: data_addr.into(),
+                    data_bytes: data.len().try_into().unwrap(),
+                },
+            )
+            .await,
+            EfiStatus::SUCCESS
+        );
+    }
+
     #[async_test]
     async fn missing_secure_boot_variable_is_reported_as_not_present() {
         let mut nvram = nvram_services(InMemoryNvram::new());
