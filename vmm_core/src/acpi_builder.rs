@@ -25,6 +25,10 @@ use vm_topology::processor::x86::X86Topology;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::IntoBytes;
 
+mod slit;
+pub use slit::ParseSlitError;
+pub use slit::SlitInfo;
+
 /// Configuration for the SMMUv3 ACPI IORT node.
 #[derive(Debug, Clone)]
 pub struct AcpiSmmuConfig {
@@ -55,15 +59,6 @@ pub struct BuiltAcpiTables {
     pub rsdp: Vec<u8>,
     /// The remaining tables pointed to by the RSDP.
     pub tables: Vec<u8>,
-}
-
-/// NUMA distance information for SLIT generation.
-pub struct SlitInfo {
-    /// Number of NUMA nodes (system localities).
-    pub num_nodes: usize,
-    /// Explicit distance entries (src, dst, distance).
-    /// Entries not specified default to 10 (self) or 20 (cross-node).
-    pub distances: Vec<(u32, u32, u8)>,
 }
 
 /// A PCI generic initiator to expose in the SRAT.
