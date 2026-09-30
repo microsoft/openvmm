@@ -19,6 +19,7 @@ impl super::ClientTask {
     pub fn handle_save(&mut self) -> SavedState {
         assert!(!self.running);
 
+        self.drive_core(vmbus_client_core::Event::PrepareSave);
         let core_state = self.core.save();
         let mut pending_messages = self
             .inner
@@ -74,15 +75,21 @@ impl super::ClientTask {
                 .channels
                 .iter()
                 .flat_map(|channel| {
-                    channel.gpadls.iter().map(|gpadl| Gpadl {
-                        gpadl_id: gpadl.id.0,
-                        channel_id: channel.offer.channel_id.0,
-                        state: match gpadl.phase {
-                            vmbus_client_core::SavedGpadlPhase::Created => GpadlState::Created,
-                            vmbus_client_core::SavedGpadlPhase::TearingDown => {
-                                GpadlState::TearingDown
+                    channel.gpadls.iter().map(|gpadl| {
+                        let (state, teardown_queued) = match gpadl.phase {
+                            vmbus_client_core::SavedGpadlPhase::Created => {
+                                (GpadlState::Created, false)
                             }
-                        },
+                            vmbus_client_core::SavedGpadlPhase::TearingDown { queued } => {
+                                (GpadlState::TearingDown, queued)
+                            }
+                        };
+                        Gpadl {
+                            gpadl_id: gpadl.id.0,
+                            channel_id: channel.offer.channel_id.0,
+                            state,
+                            teardown_queued,
+                        }
                     })
                 })
                 .collect(),
@@ -151,7 +158,9 @@ impl super::ClientTask {
                 id: gpadl_id,
                 phase: match gpadl.state {
                     GpadlState::Created => vmbus_client_core::SavedGpadlPhase::Created,
-                    GpadlState::TearingDown => vmbus_client_core::SavedGpadlPhase::TearingDown,
+                    GpadlState::TearingDown => vmbus_client_core::SavedGpadlPhase::TearingDown {
+                        queued: gpadl.teardown_queued,
+                    },
                 },
             });
         }
@@ -305,6 +314,8 @@ pub struct Gpadl {
     pub channel_id: u32,
     #[mesh(3)]
     pub state: GpadlState,
+    #[mesh(4)]
+    pub teardown_queued: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf)]
