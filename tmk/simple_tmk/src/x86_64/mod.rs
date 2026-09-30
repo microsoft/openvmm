@@ -6,6 +6,7 @@
 #![cfg(target_arch = "x86_64")]
 
 mod apic;
+mod time;
 
 use crate::prelude::*;
 use core::sync::atomic::AtomicBool;

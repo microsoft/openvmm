@@ -13,6 +13,7 @@ use anyhow::Context as _;
 use futures::executor::block_on;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
+use pal_async::DefaultDriver;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
@@ -20,23 +21,101 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Context;
 use std::task::Waker;
+use std::time::Duration;
 use virt::BindProcessor;
 use virt::Hypervisor;
 use virt::Partition;
+use virt::PartitionAccessState;
 use virt::PartitionConfig;
 use virt::PartitionMemoryMapper;
 use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
 use virt::VpIndex;
 
+#[cfg(guest_arch = "x86_64")]
+mod time;
+
+#[cfg(guest_arch = "x86_64")]
+type Snapshot = time::Snapshot;
+#[cfg(guest_arch = "aarch64")]
+type Snapshot = ();
+
 impl RunContext<'_> {
-    pub async fn run_host_vmm<H: Hypervisor>(
+    pub async fn run_host_vmm<H: Hypervisor, B: BindProcessor + Send + 'static>(
         &mut self,
         mut hv: H,
         test: &crate::load::TestInfo,
     ) -> anyhow::Result<TestResult>
     where
+        H::Partition: Partition + PartitionMemoryMapper + PartitionAccessState,
+        for<'a> H::ProtoPartition<'a>: ProtoPartition<ProcessorBinder = B>,
+    {
+        let guest_memory = GuestMemory::allocate(self.state.memory_layout.end_of_ram() as usize);
+        let (partition, vp) = self.build_host_partition(&mut hv, &guest_memory)?;
+        if test.time_control
+            && (partition.supports_time_control().is_none() || self.state.opts.disable_offloads)
+        {
+            return Ok(TestResult::Skipped(
+                "requires native APIC and partition time control",
+            ));
+        }
+        if test.time_control && partition.supports_reset().is_none() {
+            return Ok(TestResult::Skipped("partition reset is unavailable"));
+        }
+        #[cfg(guest_arch = "x86_64")]
+        if test.tsc_deadline && !partition.caps().tsc_deadline {
+            return Ok(TestResult::Skipped("TSC deadline is unavailable"));
+        }
+        #[cfg(guest_arch = "aarch64")]
+        if test.tsc_deadline {
+            return Ok(TestResult::Skipped("TSC deadline requires x86"));
+        }
+
+        let initial_partition = partition.clone();
+        let result = self
+            .run(
+                &guest_memory,
+                initial_partition.caps(),
+                test,
+                async |this, mut runner| {
+                    let mut partition = partition;
+                    let mut vp = vp;
+                    let mut snapshot = None;
+                    loop {
+                        let (returned_runner, next_snapshot) = start_vp(
+                            partition.clone(),
+                            vp,
+                            runner,
+                            snapshot,
+                            this.state.driver.clone(),
+                            test.time_control,
+                        )
+                        .await?;
+                        runner = returned_runner;
+                        let Some(saved) = next_snapshot else {
+                            break;
+                        };
+                        // The old VP thread has exited; the replacement partition
+                        // has entirely new backend state and frozen-time caches.
+                        (partition, vp) = this.build_host_partition(&mut hv, &guest_memory)?;
+                        snapshot = Some(saved);
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        Arc::into_inner(initial_partition).expect("partition is no longer referenced");
+        Ok(result)
+    }
+
+    fn build_host_partition<H: Hypervisor, B: BindProcessor + Send + 'static>(
+        &self,
+        hv: &mut H,
+        guest_memory: &GuestMemory,
+    ) -> anyhow::Result<(Arc<H::Partition>, B)>
+    where
         H::Partition: Partition + PartitionMemoryMapper,
+        for<'a> H::ProtoPartition<'a>: ProtoPartition<ProcessorBinder = B>,
     {
         let proto = hv
             .new_partition(ProtoPartitionConfig {
@@ -50,12 +129,10 @@ impl RunContext<'_> {
             })
             .context("failed to create proto partition")?;
 
-        let guest_memory = GuestMemory::allocate(self.state.memory_layout.end_of_ram() as usize);
-
         let (partition, vps) = proto
             .build(PartitionConfig {
                 mem_layout: &self.state.memory_layout,
-                guest_memory: &guest_memory,
+                guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
                 fault_resolver: None,
@@ -87,30 +164,8 @@ impl RunContext<'_> {
             }?;
         }
 
-        let mut threads = Vec::new();
-        let r = self
-            .run(
-                &guest_memory,
-                partition.caps(),
-                test,
-                async |_this, runner| {
-                    let [vp] = vps.try_into().ok().unwrap();
-                    if let Some(time) = partition.supports_time_control() {
-                        time.thaw_time();
-                    }
-                    threads.push(start_vp(partition.clone(), vp, runner).await?);
-                    Ok(())
-                },
-            )
-            .await?;
-        for thread in threads {
-            thread.join().unwrap();
-        }
-
-        // Ensure the partition has not leaked.
-        Arc::into_inner(partition).expect("partition is no longer referenced");
-
-        Ok(r)
+        let [vp] = vps.try_into().ok().context("TMK requires exactly one VP")?;
+        Ok((partition, vp))
     }
 }
 
@@ -155,39 +210,85 @@ impl std::task::Wake for VpWaker {
     }
 }
 
-async fn start_vp(
-    partition: Arc<dyn RequestYield>,
+async fn start_vp<T: Partition + PartitionAccessState>(
+    partition: Arc<T>,
     mut vp: impl 'static + BindProcessor + Send,
     mut runner: RunnerBuilder,
-) -> anyhow::Result<std::thread::JoinHandle<()>> {
-    let (bind_result_send, bind_result_recv) = mesh::oneshot();
+    snapshot: Option<Snapshot>,
+    driver: DefaultDriver,
+    time_test: bool,
+) -> anyhow::Result<(RunnerBuilder, Option<Snapshot>)> {
+    let (result_send, result_recv) = mesh::oneshot();
     let vp_thread = std::thread::spawn(move || {
         let vp_index = VpIndex::BSP;
-        let r = vp
-            .bind()
-            .context("failed to bind vp")
-            .and_then(|vp| runner.build(vp));
-        let (vp, r) = match r {
-            Ok(vp) => (Some(vp), Ok(())),
-            Err(err) => (None, Err(err)),
-        };
-
-        bind_result_send.send(r);
-        let Some(mut vp) = vp else { return };
-        block_on(async {
-            let mut run = pin!(vp.run_vp());
-            poll_fn(|cx| {
-                let waker = Waker::from(Arc::new(VpWaker::new(
-                    Arc::downgrade(&partition),
-                    vp_index,
-                    cx.waker().clone(),
-                )));
-                run.as_mut().poll(&mut Context::from_waker(&waker))
+        let result = (|| {
+            let vp = vp.bind().context("failed to bind vp")?;
+            let mut vp = runner.build(vp)?;
+            #[cfg(guest_arch = "x86_64")]
+            if let Some(snapshot) = snapshot {
+                time::check_initial_time(&*partition, &mut vp)?;
+                time::restore(&*partition, &mut vp, snapshot)?;
+            } else if let Some(time) = partition.supports_time_control() {
+                if time_test {
+                    time::check_initial_time(&*partition, &mut vp)?;
+                }
+                time.thaw_time();
+            }
+            #[cfg(guest_arch = "aarch64")]
+            {
+                let _ = (snapshot, time_test);
+                if let Some(time) = partition.supports_time_control() {
+                    time.thaw_time();
+                }
+            }
+            let yield_partition: Arc<dyn RequestYield> = partition.clone();
+            block_on(async {
+                let run = async {
+                    while let Some(request) = vp.run_once().await {
+                        #[cfg(guest_arch = "x86_64")]
+                        if let Some(snapshot) = time::checkpoint(&*partition, &mut vp, request)? {
+                            return Ok(Some(snapshot));
+                        }
+                        #[cfg(guest_arch = "aarch64")]
+                        {
+                            let _ = request;
+                            anyhow::bail!("time checkpoints require x86");
+                        }
+                    }
+                    Ok(None)
+                };
+                let timeout = async {
+                    if !time_test {
+                        std::future::pending::<()>().await;
+                    }
+                    pal_async::timer::PolledTimer::new(&driver)
+                        .sleep(Duration::from_secs(60))
+                        .await;
+                    anyhow::bail!("TMK VP exceeded the 60-second host watchdog")
+                };
+                let run = pin!(run);
+                let timeout = pin!(timeout);
+                // Arm the watchdog before entering a potentially blocking VP poll.
+                let mut run = pin!(futures::future::select(timeout, run));
+                poll_fn(|cx| {
+                    let waker = Waker::from(Arc::new(VpWaker::new(
+                        Arc::downgrade(&yield_partition),
+                        vp_index,
+                        cx.waker().clone(),
+                    )));
+                    run.as_mut().poll(&mut Context::from_waker(&waker))
+                })
+                .await
+                .factor_first()
+                .0
             })
-            .await
-        })
+        })();
+        result_send.send(result.map(|snapshot| (runner, snapshot)));
     });
 
-    bind_result_recv.await.unwrap()?;
-    Ok(vp_thread)
+    let result = result_recv.await.context("TMK VP thread terminated")?;
+    vp_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("TMK VP thread panicked"))?;
+    result
 }

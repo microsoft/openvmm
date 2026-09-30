@@ -21,6 +21,11 @@ impl RunContext<'_> {
         isolation: virt::IsolationType,
         test: &crate::load::TestInfo,
     ) -> anyhow::Result<TestResult> {
+        if test.time_control {
+            return Ok(TestResult::Skipped(
+                "outer partition time is not owned by OpenHCL",
+            ));
+        }
         let params = UhPartitionNewParams {
             isolation,
             hide_isolation: false,
