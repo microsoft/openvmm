@@ -109,6 +109,32 @@ host memory, but the `Queue` interface avoids any extra copies
 between the frontend and backend layers — the backend reads/writes
 guest RAM directly.
 
+### Receive offload invariants
+
+Receive checksum and segmentation offloads must be enabled end to end.
+The frontend reports only capabilities negotiated with the guest in
+`QueueConfig::rx_offload_support`; the backend must not enable additional
+host transport offloads.
+
+This is especially important for Linux TAP. Enabling `TUN_F_CSUM`,
+`TUN_F_TSO4`, or `TUN_F_TSO6` changes the packet format returned by the
+TAP file descriptor: frames can carry partial-checksum metadata and can
+be much larger than the configured network MTU. A frontend that did not
+negotiate the corresponding guest feature cannot safely represent those
+frames.
+
+TAP receive metadata is therefore validated before it crosses the backend
+boundary. Checksum offsets and GSO header lengths must be within the frame,
+the segment size must be nonzero, and the protocol must match a negotiated
+capability. Unsupported ECN or GSO formats are dropped rather than
+forwarded with incomplete metadata.
+
+Frontends must also publish a receive completion only after the packet
+payload and frontend-specific header have both been written successfully.
+For virtio-net, a capacity or guest-memory write failure leaves the
+descriptor as a dropped receive and increments an explicit drop counter;
+it is never counted as a successfully received packet.
+
 ## Lifecycle
 
 1. The frontend creates a
