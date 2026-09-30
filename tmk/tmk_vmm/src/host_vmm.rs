@@ -71,40 +71,35 @@ impl RunContext<'_> {
             return Ok(TestResult::Skipped("TSC deadline requires x86"));
         }
 
-        let initial_partition = partition.clone();
+        let regs = self.load_test(&guest_memory, partition.caps(), test)?;
         let result = self
-            .run(
-                &guest_memory,
-                initial_partition.caps(),
-                test,
-                async |this, mut runner| {
-                    let mut partition = partition;
-                    let mut vp = vp;
-                    let mut snapshot = None;
-                    loop {
-                        let (returned_runner, next_snapshot) = start_vp(
-                            partition.clone(),
-                            vp,
-                            runner,
-                            snapshot,
-                            this.state.driver.clone(),
-                            test.time_control,
-                        )
-                        .await?;
-                        runner = returned_runner;
-                        let Some(saved) = next_snapshot else {
-                            break;
-                        };
-                        // The old VP thread has exited; the replacement partition
-                        // has entirely new backend state and frozen-time caches.
-                        (partition, vp) = this.build_host_partition(&mut hv, &guest_memory)?;
-                        snapshot = Some(saved);
-                    }
-                    Ok(())
-                },
-            )
+            .run(&guest_memory, regs, async |this, mut runner| {
+                let mut partition = partition;
+                let mut vp = vp;
+                let mut snapshot = None;
+                loop {
+                    let (returned_runner, next_snapshot) = start_vp(
+                        partition.clone(),
+                        vp,
+                        runner,
+                        snapshot,
+                        this.state.driver.clone(),
+                        test.time_control,
+                    )
+                    .await?;
+                    runner = returned_runner;
+                    // The VP thread and binder are gone. Release the old
+                    // partition's RAM mappings before mapping a replacement.
+                    drop(Arc::into_inner(partition).expect("partition is no longer referenced"));
+                    let Some(saved) = next_snapshot else {
+                        break;
+                    };
+                    (partition, vp) = this.build_host_partition(&mut hv, &guest_memory)?;
+                    snapshot = Some(saved);
+                }
+                Ok(())
+            })
             .await?;
-        Arc::into_inner(initial_partition).expect("partition is no longer referenced");
         Ok(result)
     }
 
@@ -226,12 +221,8 @@ async fn start_vp<T: Partition + PartitionAccessState>(
             let mut vp = runner.build(vp)?;
             #[cfg(guest_arch = "x86_64")]
             if let Some(snapshot) = snapshot {
-                time::check_initial_time(&*partition, &mut vp)?;
                 time::restore(&*partition, &mut vp, snapshot)?;
             } else if let Some(time) = partition.supports_time_control() {
-                if time_test {
-                    time::check_initial_time(&*partition, &mut vp)?;
-                }
                 time.thaw_time();
             }
             #[cfg(guest_arch = "aarch64")]
@@ -244,16 +235,15 @@ async fn start_vp<T: Partition + PartitionAccessState>(
             let yield_partition: Arc<dyn RequestYield> = partition.clone();
             block_on(async {
                 let run = async {
+                    #[cfg(guest_arch = "x86_64")]
                     while let Some(request) = vp.run_once().await {
-                        #[cfg(guest_arch = "x86_64")]
                         if let Some(snapshot) = time::checkpoint(&*partition, &mut vp, request)? {
                             return Ok(Some(snapshot));
                         }
-                        #[cfg(guest_arch = "aarch64")]
-                        {
-                            let _ = request;
-                            anyhow::bail!("time checkpoints require x86");
-                        }
+                    }
+                    #[cfg(guest_arch = "aarch64")]
+                    if vp.run_once().await.is_some() {
+                        anyhow::bail!("time checkpoints require x86");
                     }
                     Ok(None)
                 };

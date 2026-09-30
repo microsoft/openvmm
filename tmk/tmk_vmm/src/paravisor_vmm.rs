@@ -88,10 +88,11 @@ impl RunContext<'_> {
             .await?;
 
         let partition = Arc::new(partition);
+        let regs = self.load_test(m.vtl0(), partition.caps(), test)?;
 
         let mut threads = Vec::new();
         let r = self
-            .run(m.vtl0(), partition.caps(), test, async |_this, runner| {
+            .run(m.vtl0(), regs, async |_this, runner| {
                 let [vp] = vps.try_into().ok().unwrap();
                 threads.push(start_vp(vp, runner, isolation).await?);
                 Ok(())

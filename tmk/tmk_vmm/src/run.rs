@@ -373,15 +373,12 @@ impl CommonState {
 }
 
 impl RunContext<'_> {
-    pub async fn run(
-        &mut self,
+    pub fn load_test(
+        &self,
         guest_memory: &GuestMemory,
         caps: &PartitionCapabilities,
         test: &load::TestInfo,
-        start_vp: impl AsyncFnOnce(&mut Self, RunnerBuilder) -> anyhow::Result<()>,
-    ) -> anyhow::Result<TestResult> {
-        let (event_send, mut event_recv) = mesh::channel();
-
+    ) -> anyhow::Result<Arc<virt::InitialRegs>> {
         // Load the TMK.
         let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
         let regs = {
@@ -408,15 +405,19 @@ impl RunContext<'_> {
                 )?
             }
         };
+        Ok(regs)
+    }
 
+    pub async fn run(
+        &mut self,
+        guest_memory: &GuestMemory,
+        regs: Arc<virt::InitialRegs>,
+        start_vp: impl AsyncFnOnce(&mut Self, RunnerBuilder) -> anyhow::Result<()>,
+    ) -> anyhow::Result<TestResult> {
+        let (event_send, mut event_recv) = mesh::channel();
         start_vp(
             self,
-            RunnerBuilder::new(
-                VpIndex::BSP,
-                Arc::clone(&regs),
-                guest_memory.clone(),
-                event_send.clone(),
-            ),
+            RunnerBuilder::new(VpIndex::BSP, regs, guest_memory.clone(), event_send.clone()),
         )
         .await?;
 
