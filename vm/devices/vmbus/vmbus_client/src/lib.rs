@@ -782,12 +782,12 @@ impl ClientTask {
     fn handle_start(&mut self) {
         assert!(!self.running);
         self.msg_source.resume_message_stream();
-        self.inner.messages.resume();
-        self.drive_core(vmbus_client_core::Event::Start);
         if self.paused_via_message {
-            self.drive_core(vmbus_client_core::Event::Resume);
+            self.queue_resume();
             self.paused_via_message = false;
         }
+        self.inner.messages.resume();
+        self.drive_core(vmbus_client_core::Event::Start);
         self.running = true;
     }
 
@@ -965,6 +965,15 @@ impl ClientTask {
         outcome
     }
 
+    fn queue_resume(&mut self) {
+        let mut sink = ActionBuffer::default();
+        self.core.step(vmbus_client_core::Event::Resume, &mut sink);
+        let [vmbus_client_core::Action::PostMessage(data)] = sink.actions.as_mut_slice() else {
+            panic!("resume must emit exactly one message");
+        };
+        self.inner.messages.queue_raw_front(core::mem::take(data));
+    }
+
     fn handle_action(&mut self, action: vmbus_client_core::Action, outcome: &mut StepOutcome) {
         use vmbus_client_core::Action;
         match action {
@@ -1140,7 +1149,7 @@ impl ClientTask {
                 };
                 match result {
                     Ok(()) => rpc.complete(Ok(())),
-                    Err(()) => rpc.fail(anyhow::anyhow!("gpadl creation failed")),
+                    Err(error) => rpc.fail(anyhow::Error::new(error)),
                 }
             }
             CompletionResult::TeardownGpadl => {
@@ -1248,6 +1257,13 @@ impl OutgoingMessages {
         }
         tracing::trace!("queueing message");
         self.queued.push_back(msg);
+    }
+
+    fn queue_raw_front(&mut self, data: Vec<u8>) {
+        assert_eq!(self.state, OutgoingMessageState::Paused);
+        let msg = OutgoingMessage::from_message(&data)
+            .expect("vmbus_client_core emitted an invalid outgoing message");
+        self.queued.push_front(msg);
     }
 
     async fn flush_messages(&mut self) {
@@ -1383,6 +1399,37 @@ mod tests {
     use zerocopy::KnownLayout;
 
     const VMBUS_TEST_CLIENT_ID: Guid = guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
+
+    struct PendingPoster;
+
+    impl PollPostMessage for PendingPoster {
+        fn poll_post_message(
+            &mut self,
+            _cx: &mut Context<'_>,
+            _connection_id: u32,
+            _typ: u32,
+            _msg: &[u8],
+        ) -> Poll<()> {
+            Poll::Pending
+        }
+    }
+
+    #[test]
+    fn resume_is_queued_before_paused_work() {
+        let work = OutgoingMessage::new(&protocol::RelIdReleased {
+            channel_id: ChannelId(7),
+        });
+        let resume = OutgoingMessage::new(&protocol::Resume);
+        let mut messages = OutgoingMessages {
+            poster: Box::new(PendingPoster),
+            queued: VecDeque::from([work]),
+            state: OutgoingMessageState::Paused,
+        };
+
+        messages.queue_raw_front(resume.data().to_vec());
+
+        assert_eq!(messages.queued.pop_front().unwrap().data(), resume.data());
+    }
 
     fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();
@@ -2115,6 +2162,7 @@ mod tests {
                 gpadl_id: 1,
                 channel_id: 7,
                 state: saved_state::GpadlState::Created,
+                teardown_queued: false,
             }],
             pending_messages: vec![saved_state::PendingMessage { data: vec![0xff] }],
         };

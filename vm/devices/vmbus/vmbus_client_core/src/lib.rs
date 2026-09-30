@@ -536,6 +536,8 @@ pub enum Event<'a> {
     /// Pause new request processing while still draining outstanding
     /// completions.
     Stop,
+    /// Complete requests that cannot be represented in saved state.
+    PrepareSave,
     /// Post `Pause` (V5+ pause/resume protocol).
     Pause,
     /// Post `Resume`.
@@ -581,7 +583,7 @@ pub enum CompletionResult {
     /// Result of [`Event::ModifyChannel`]. Host-returned NT status.
     ModifyChannel(i32),
     /// Result of [`Event::EstablishGpadl`].
-    EstablishGpadl(Result<(), ()>),
+    EstablishGpadl(Result<(), EstablishGpadlError>),
     /// Result of [`Event::TeardownGpadl`].
     TeardownGpadl,
     /// Result of [`Event::ReleaseChannel`].
@@ -618,6 +620,24 @@ pub enum OpenChannelError {
     /// NT status.
     #[error("host reported open-channel status {0:#x}")]
     HostFailed(i32),
+}
+
+/// Reasons an [`Event::EstablishGpadl`] can fail.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EstablishGpadlError {
+    /// The GPADL payload is too large for the wire format.
+    #[error("gpadl request is too large")]
+    RequestTooLarge,
+    /// The channel is not known to the client.
+    #[error("gpadl request references an unknown channel")]
+    UnknownChannel,
+    /// The channel already has a GPADL with this ID.
+    #[error("gpadl ID is already in use")]
+    DuplicateId,
+    /// The host rejected the GPADL with the supplied status.
+    #[error("gpadl creation failed: {0:#x}")]
+    HostRejected(i32),
 }
 
 /// Successful [`Event::Connect`] result — the negotiated
@@ -744,6 +764,7 @@ pub struct ClientCore {
         vmbus_core::protocol::GpadlId,
         vmbus_core::protocol::ChannelId,
     >,
+    released_channel_ids: alloc::vec::Vec<vmbus_core::protocol::ChannelId>,
     flag_allocator: FlagAllocator,
     running: bool,
     host_busy: bool,
@@ -814,7 +835,10 @@ pub struct SavedGpadl {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SavedGpadlPhase {
     Created,
-    TearingDown,
+    TearingDown {
+        /// Another channel currently owns the in-flight teardown for this ID.
+        queued: bool,
+    },
 }
 
 /// Errors returned while restoring [`SavedState`].
@@ -871,6 +895,7 @@ impl ClientCore {
             outstanding: alloc::collections::BTreeMap::new(),
             hvsock_pending: alloc::collections::BTreeMap::new(),
             teardown_gpadls: alloc::collections::BTreeMap::new(),
+            released_channel_ids: alloc::vec::Vec::new(),
             flag_allocator: FlagAllocator::default(),
             running: false,
             host_busy: false,
@@ -939,6 +964,14 @@ impl ClientCore {
     /// Panics if a caller attempts to save while a protocol request is in
     /// flight. The wrapper must stop and drain the client before saving.
     pub fn save(&self) -> SavedState {
+        assert!(
+            self.modify_connection_request_id.is_none(),
+            "cannot save while a connection modification is in flight"
+        );
+        assert!(
+            self.hvsock_pending.is_empty(),
+            "cannot save while an hvsock connection is in flight"
+        );
         let version = match self.phase {
             ClientPhase::Disconnected => None,
             ClientPhase::Connected { version } => Some(version),
@@ -946,7 +979,7 @@ impl ClientCore {
         };
 
         let mut channels = alloc::vec::Vec::new();
-        let mut released_channel_ids = alloc::vec::Vec::new();
+        let mut released_channel_ids = self.released_channel_ids.clone();
         for (&channel_id, entry) in &self.channels {
             assert!(
                 entry.modify_request_id.is_none(),
@@ -977,7 +1010,9 @@ impl ClientCore {
                     id,
                     phase: match phase {
                         GpadlPhase::Created => SavedGpadlPhase::Created,
-                        GpadlPhase::TearingDown { .. } => SavedGpadlPhase::TearingDown,
+                        GpadlPhase::TearingDown { .. } => SavedGpadlPhase::TearingDown {
+                            queued: self.teardown_gpadls.get(&id) != Some(&channel_id),
+                        },
                         GpadlPhase::Offered { .. } => {
                             panic!("cannot save a GPADL that is being established")
                         }
@@ -1014,8 +1049,14 @@ impl ClientCore {
             }
         }
 
-        let saved_channels = if saved.version.is_some() {
+        let connected = saved.version.is_some();
+        let saved_channels = if connected {
             saved.channels
+        } else {
+            alloc::vec::Vec::new()
+        };
+        let released_channel_ids = if connected {
+            saved.released_channel_ids
         } else {
             alloc::vec::Vec::new()
         };
@@ -1027,8 +1068,8 @@ impl ClientCore {
             for gpadl in channel.gpadls {
                 let phase = match gpadl.phase {
                     SavedGpadlPhase::Created => GpadlPhase::Created,
-                    SavedGpadlPhase::TearingDown => {
-                        if teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
+                    SavedGpadlPhase::TearingDown { queued } => {
+                        if !queued && teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
                             return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
                         }
                         GpadlPhase::TearingDown {
@@ -1070,6 +1111,7 @@ impl ClientCore {
         self.outstanding.clear();
         self.hvsock_pending.clear();
         self.teardown_gpadls = teardown_gpadls;
+        self.released_channel_ids = released_channel_ids;
         self.flag_allocator = FlagAllocator::default();
         self.host_busy = false;
         self.modify_connection_request_id = None;
@@ -1078,6 +1120,10 @@ impl ClientCore {
 
     /// Close restored channels that were not reclaimed and tear down their GPADLs.
     pub fn post_restore(&mut self, sink: &mut dyn ActionSink) {
+        for channel_id in core::mem::take(&mut self.released_channel_ids) {
+            self.post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
+        }
+
         let restored = self
             .channels
             .iter()
@@ -1149,12 +1195,16 @@ impl ClientCore {
             Event::Stop => {
                 self.running = false;
             }
+            Event::PrepareSave => {
+                self.handle_prepare_save(sink);
+            }
             Event::Reset => {
                 self.phase = ClientPhase::Disconnected;
                 self.channels.clear();
                 self.outstanding.clear();
                 self.hvsock_pending.clear();
                 self.teardown_gpadls.clear();
+                self.released_channel_ids.clear();
                 self.flag_allocator = FlagAllocator::default();
                 self.host_busy = false;
                 self.modify_connection_request_id = None;
@@ -2106,21 +2156,21 @@ impl ClientCore {
         let Ok(len_bytes) = size_of_val(request.buf.as_slice()).try_into() else {
             sink.emit(Action::Complete {
                 request_id,
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::RequestTooLarge)),
             });
             return;
         };
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             sink.emit(Action::Complete {
                 request_id,
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::UnknownChannel)),
             });
             return;
         };
         if entry.gpadls.contains_key(&gpadl_id) {
             sink.emit(Action::Complete {
                 request_id,
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::DuplicateId)),
             });
             return;
         }
@@ -2195,7 +2245,9 @@ impl ClientCore {
             entry.gpadls.remove(&gpadl_id);
             sink.emit(Action::Complete {
                 request_id,
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::HostRejected(
+                    created.status,
+                ))),
             });
         }
         self.try_release_channel(channel_id, sink);
@@ -2506,6 +2558,28 @@ impl ClientCore {
             self.hvsock_pending.remove(&key);
         }
         request_id
+    }
+
+    fn handle_prepare_save(&mut self, sink: &mut dyn ActionSink) {
+        if let Some(request_id) = self.modify_connection_request_id.take() {
+            self.outstanding.remove(&request_id);
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyConnection(
+                    vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
+                ),
+            });
+        }
+
+        for request_ids in core::mem::take(&mut self.hvsock_pending).into_values() {
+            for request_id in request_ids {
+                self.outstanding.remove(&request_id);
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::HvsockConnect(None),
+                });
+            }
+        }
     }
 
     /// Handle [`Event::Pause`] — post `Pause` wire message. Only
@@ -3917,7 +3991,7 @@ mod step_tests {
             &sink.actions[0],
             Action::Complete {
                 request_id: RequestId(701),
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::UnknownChannel)),
             }
         ));
     }
@@ -3951,7 +4025,7 @@ mod step_tests {
             &sink.actions[0],
             Action::Complete {
                 request_id: RequestId(802),
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::DuplicateId)),
             }
         ));
     }
@@ -4011,7 +4085,7 @@ mod step_tests {
             sink.actions.as_slice(),
             [Action::Complete {
                 request_id: RequestId(901),
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::RequestTooLarge)),
             }]
         ));
         assert!(
@@ -4084,7 +4158,9 @@ mod step_tests {
             &sink.actions[0],
             Action::Complete {
                 request_id: RequestId(1100),
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::HostRejected(
+                    -1
+                ))),
             }
         ));
         assert!(
@@ -4371,6 +4447,81 @@ mod step_tests {
     }
 
     #[test]
+    fn save_restore_preserves_duplicate_gpadl_teardown_order() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 38);
+        deliver_one_offer(&mut core, &mut sink, 39);
+        let gpadl_id = vmbus_core::protocol::GpadlId(13);
+
+        for (channel_id, request_id) in [(38, 1380), (39, 1390)] {
+            core.step(
+                Event::EstablishGpadl {
+                    request_id: RequestId(request_id),
+                    channel_id: vmbus_core::protocol::ChannelId(channel_id),
+                    gpadl_id,
+                    request: GpadlRequest {
+                        id: gpadl_id,
+                        count: 1,
+                        buf: alloc::vec![0x1000],
+                    },
+                },
+                &mut sink,
+            );
+            core.step(
+                Event::HostMessage(&make_host_message(&vmbus_core::protocol::GpadlCreated {
+                    channel_id: vmbus_core::protocol::ChannelId(channel_id),
+                    gpadl_id,
+                    status: vmbus_core::protocol::STATUS_SUCCESS,
+                })),
+                &mut sink,
+            );
+        }
+
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1391),
+                channel_id: vmbus_core::protocol::ChannelId(39),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1381),
+                channel_id: vmbus_core::protocol::ChannelId(38),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+
+        let saved = core.save();
+        let mut restored = ClientCore::new(make_redirect_config());
+        restored.restore(saved).unwrap();
+        assert_eq!(
+            restored.teardown_gpadls.get(&gpadl_id),
+            Some(&vmbus_core::protocol::ChannelId(39))
+        );
+
+        sink.actions.clear();
+        restored.step(
+            Event::HostMessage(&make_host_message(&vmbus_core::protocol::GpadlTorndown {
+                gpadl_id,
+            })),
+            &mut sink,
+        );
+        assert_eq!(
+            restored.teardown_gpadls.get(&gpadl_id),
+            Some(&vmbus_core::protocol::ChannelId(38))
+        );
+        assert!(
+            sink.actions
+                .iter()
+                .any(|action| matches!(action, Action::PostMessage(_)))
+        );
+    }
+
+    #[test]
     fn teardown_unknown_gpadl_is_no_op() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
@@ -4426,7 +4577,9 @@ mod step_tests {
             sink.actions.last().unwrap(),
             Action::Complete {
                 request_id: RequestId(1500),
-                result: CompletionResult::EstablishGpadl(Err(())),
+                result: CompletionResult::EstablishGpadl(Err(EstablishGpadlError::HostRejected(
+                    vmbus_core::protocol::STATUS_UNSUCCESSFUL
+                ))),
             }
         ));
     }
@@ -4636,6 +4789,65 @@ mod step_tests {
     }
 
     #[test]
+    fn prepare_save_completes_unsaveable_requests() {
+        let mut core = ClientCore::new(make_multi_version_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            FeatureFlags::new().with_modify_connection(true),
+        );
+        core.step(
+            Event::ModifyConnection {
+                request_id: RequestId(2510),
+                monitor_page: MonitorPageGpas::default(),
+            },
+            &mut sink,
+        );
+        core.step(
+            Event::HvsockConnect {
+                request_id: RequestId(2511),
+                request: HvsockConnectRequest {
+                    service_id: Guid {
+                        data1: 0xdead,
+                        ..Guid::ZERO
+                    },
+                    endpoint_id: Guid {
+                        data1: 0xbeef,
+                        ..Guid::ZERO
+                    },
+                    silo_id: Guid::ZERO,
+                    hosted_silo_unaware: false,
+                },
+            },
+            &mut sink,
+        );
+
+        sink.actions.clear();
+        core.step(Event::PrepareSave, &mut sink);
+
+        assert!(sink.actions.iter().any(|action| matches!(
+            action,
+            Action::Complete {
+                request_id: RequestId(2510),
+                result: CompletionResult::ModifyConnection(
+                    vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE
+                ),
+            }
+        )));
+        assert!(sink.actions.iter().any(|action| matches!(
+            action,
+            Action::Complete {
+                request_id: RequestId(2511),
+                result: CompletionResult::HvsockConnect(None),
+            }
+        )));
+        assert!(core.modify_connection_request_id.is_none());
+        assert!(core.hvsock_pending.is_empty());
+        let _ = core.save();
+    }
+
+    #[test]
     fn hvsock_offer_completes_pending_connect() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
@@ -4821,6 +5033,32 @@ mod step_tests {
 
         assert!(matches!(core.phase(), ClientPhase::Disconnected));
         assert!(core.channels().is_empty());
+    }
+
+    #[test]
+    fn post_restore_replays_deferred_channel_releases() {
+        let config = make_redirect_config();
+        let version = VersionInfo {
+            version: Version::Copper,
+            feature_flags: config.supported_feature_flags,
+        };
+        let mut core = ClientCore::new(config);
+        let channel_id = vmbus_core::protocol::ChannelId(71);
+        core.restore(SavedState {
+            version: Some(version),
+            channels: Vec::new(),
+            released_channel_ids: alloc::vec![channel_id],
+        })
+        .unwrap();
+
+        let mut sink = Recording::default();
+        core.post_restore(&mut sink);
+
+        assert_eq!(
+            expect_post(&sink.actions[0]),
+            make_host_message(&vmbus_core::protocol::RelIdReleased { channel_id })
+        );
+        assert!(core.save().released_channel_ids.is_empty());
     }
 
     #[test]
