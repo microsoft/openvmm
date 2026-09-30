@@ -18,7 +18,6 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
@@ -44,9 +43,9 @@ pub struct TdispTdxConnectResourceValidator {
     /// start in the CVM.
     vtom: u64,
 
-    /// The MMIO range list from the device's TDI interface report, keyed by TDI
-    /// device id and recorded by [`Self::tdisp_set_tdi_report`].
-    tdi_mmio_ranges: Mutex<HashMap<u16, Vec<TdispTdiReportMmioInterfaceInfo>>>,
+    /// The MMIO range list from the device's TDI interface report, recorded by
+    /// [`Self::tdisp_set_tdi_report`]. `None` until a report arrives.
+    tdi_mmio_ranges: Mutex<Option<Vec<TdispTdiReportMmioInterfaceInfo>>>,
 }
 
 impl TdispTdxConnectResourceValidator {
@@ -57,7 +56,7 @@ impl TdispTdxConnectResourceValidator {
     pub fn new(vtom: u64) -> anyhow::Result<Self> {
         Ok(Self {
             vtom,
-            tdi_mmio_ranges: Mutex::new(HashMap::new()),
+            tdi_mmio_ranges: Mutex::new(None),
         })
     }
 
@@ -65,7 +64,7 @@ impl TdispTdxConnectResourceValidator {
     /// list, which is what TDG.TDI.MMIO.ACCEPT takes as `MMIO_RANGE_IDX`.
     fn mmio_range_index(&self, device_id: u16, range_id: u16) -> anyhow::Result<u16> {
         let ranges = self.tdi_mmio_ranges.lock();
-        let ranges = ranges.get(&device_id).with_context(|| {
+        let ranges = ranges.as_ref().with_context(|| {
             format!(
                 "no TDI interface report recorded for device {device_id:#x}; cannot resolve the \
                  MMIO range index for range {range_id}"
@@ -437,12 +436,12 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             ranges.iter().map(|r| r.range_id).collect::<Vec<_>>()
         );
 
-        self.tdi_mmio_ranges.lock().insert(device_id, ranges);
+        *self.tdi_mmio_ranges.lock() = Some(ranges);
     }
 
     #[tracing::instrument(skip(self), fields(device_id))]
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
-        let removed = self.tdi_mmio_ranges.lock().remove(&device_id).is_some();
+        let removed = self.tdi_mmio_ranges.lock().take().is_some();
         tracing::info!(
             "TDX Connect tdisp_clear_tdi_report: dropped the TDI MMIO range list: \
              device_id={device_id:#x}, removed={removed}"
