@@ -35,9 +35,12 @@ use vmotherboard::ChipsetBuilder;
 /// host SMMU's OAS when a device attaches.
 const DEFAULT_AUTO_OAS_BITS: u8 = 48;
 
-/// Resolved resources for a single SMMUv3 instance, combining MMIO and SPI
-/// allocations.
+/// Resources for a single SMMUv3 instance, identified by root complex.
 pub(super) struct ResolvedSmmuResources {
+    /// Position in the unfiltered root-complex and host-bridge arrays.
+    pub rc_pos: usize,
+    /// Root-complex identity, not a position in a filtered list.
+    pub rc_index: u32,
     /// MMIO base address (from the memory layout allocator).
     pub base: u64,
     /// GIC INTID for the event queue interrupt (from the SPI allocator).
@@ -55,23 +58,38 @@ pub(super) struct ResolvedSmmu {
     pub device_assignment_msi_iova_range: Option<memory_range::MemoryRange>,
 }
 
-/// Combines SMMU MMIO ranges from the memory layout with SPI assignments from
-/// the SPI layout into resolved resources.
+/// Associates the allocators' ordered MMIO and SPI slots with root complexes
+/// once, preserving allocation order. Consumers use the recorded RC identity.
 pub(super) fn resolve_smmu_resources(
+    root_complexes: &[openvmm_defs::config::PcieRootComplexConfig],
     smmu_ranges: &[memory_range::MemoryRange],
     spi_layout: &crate::worker::spi_layout::ResolvedSpiLayout,
     device_assignment_msi_iova_range: Option<memory_range::MemoryRange>,
 ) -> ResolvedSmmu {
+    assert_eq!(smmu_ranges.len(), spi_layout.smmu.len());
+    let mut allocations = smmu_ranges.iter().zip(&spi_layout.smmu);
+    let mut instances = Vec::new();
+    for (rc_pos, rc) in root_complexes.iter().enumerate() {
+        if !matches!(
+            rc.iommu,
+            Some(openvmm_defs::config::PcieIommuConfig::Smmu { .. })
+        ) {
+            continue;
+        }
+        let (range, spis) = allocations
+            .next()
+            .expect("resources allocated for every SMMU");
+        instances.push(ResolvedSmmuResources {
+            rc_pos,
+            rc_index: rc.index,
+            base: range.start(),
+            evtq_intid: spis.evtq_intid,
+            gerr_intid: spis.gerr_intid,
+        });
+    }
+    assert!(allocations.next().is_none(), "unused SMMU allocations");
     ResolvedSmmu {
-        instances: smmu_ranges
-            .iter()
-            .zip(&spi_layout.smmu)
-            .map(|(range, spis)| ResolvedSmmuResources {
-                base: range.start(),
-                evtq_intid: spis.evtq_intid,
-                gerr_intid: spis.gerr_intid,
-            })
-            .collect(),
+        instances,
         device_assignment_msi_iova_range,
     }
 }
@@ -122,9 +140,7 @@ fn reserved_iova_ranges(
 /// Instantiate SMMU chipset devices for root complexes that have SMMU
 /// configured.
 ///
-/// This is the single entry point for all SMMU setup in dispatch. It
-/// iterates root complex configs, creates one `SmmuDevice` per RC with
-/// `iommu: Some(Smmu)`, and wires up interrupts.
+/// Creates one device per resolved instance and wires up its interrupts.
 ///
 /// `acpi_available` gates accelerated SMMUs, which need IORT RMR nodes to
 /// reserve the host's MSI IOVA window in the guest.
@@ -141,28 +157,39 @@ pub(super) fn setup_smmu(
         vec![None; pcie_host_bridges.len()];
     let mut devices = Vec::new();
 
-    let mut resources = resolved.instances.iter();
-    for (rc_pos, rc) in root_complexes.iter().enumerate() {
+    for smmu in &resolved.instances {
+        let rc_pos = smmu.rc_pos;
+        let rc = &root_complexes[rc_pos];
+        let bridge = &mut pcie_host_bridges[rc_pos];
+        assert_eq!(
+            rc.index, smmu.rc_index,
+            "SMMU root-complex identity changed"
+        );
+        assert_eq!(
+            bridge.index, smmu.rc_index,
+            "SMMU host-bridge identity mismatch"
+        );
+        let rc_name = &rc.name;
         let Some(openvmm_defs::config::PcieIommuConfig::Smmu {
             accel,
             oas,
             ssidsize,
         }) = rc.iommu
         else {
-            continue;
+            anyhow::bail!("root complex {rc_name} no longer has an SMMU");
         };
-        let smmu = resources.next().expect("resources resolved for every SMMU");
-
+        anyhow::ensure!(
+            shared_states[rc_pos].is_none(),
+            "duplicate SMMU for root complex {rc_name}"
+        );
         anyhow::ensure!(
             !accel || acpi_available,
-            "SMMU on root complex {}: accelerated translation requires ACPI",
-            rc.name
+            "SMMU on root complex {rc_name}: accelerated translation requires ACPI"
         );
 
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
-        let device_name = format!("smmu:{}", rc.name);
-
+        let device_name = format!("smmu:{rc_name}");
         let smmu_config = smmu::SmmuConfig {
             sidsize: 16,
             oas_policy: match oas {
@@ -192,25 +219,25 @@ pub(super) fn setup_smmu(
                     Some(gerror_irq),
                 )
             })
-            .with_context(|| format!("SMMU on root complex {}", rc.name))?;
+            .with_context(|| format!("SMMU on root complex {rc_name}"))?;
 
         let shared_state = smmu_device.lock().shared_state().clone();
         shared_states[rc_pos] = Some(shared_state.clone());
         let reserved_iova_ranges =
             reserved_iova_ranges(accel, resolved.device_assignment_msi_iova_range)
-                .with_context(|| format!("SMMU on root complex {}", rc.name))?;
+                .with_context(|| format!("SMMU on root complex {rc_name}"))?;
         if accel {
             // These reserved IOVA ranges become IORT RMR entries. Mark the
             // root complex so the SSDT emits a PCI Firmware _DSM (function 5,
             // preserve boot config); Linux skips RMR entries for root
             // complexes without this flag.
-            pcie_host_bridges[rc_pos].preserve_boot_config = true;
+            bridge.preserve_boot_config = true;
         }
 
         devices.push(SmmuFirmwareDevice {
             config: vmm_core::acpi_builder::AcpiSmmuConfig {
-                rc_index: pcie_host_bridges[rc_pos].index,
-                segment: pcie_host_bridges[rc_pos].segment,
+                rc_index: bridge.index,
+                segment: bridge.segment,
                 base: smmu.base,
                 event_gsiv: smmu.evtq_intid,
                 gerr_gsiv: smmu.gerr_intid,
@@ -220,8 +247,6 @@ pub(super) fn setup_smmu(
             shared_state,
         });
     }
-
-    assert!(resources.next().is_none(), "unused SMMU resources");
 
     Ok(SmmuDevicesResult {
         shared_states,
@@ -237,6 +262,61 @@ mod tests {
     use vmcore::device_state::ChangeDeviceState;
 
     const TEST_RANGE: memory_range::MemoryRange = memory_range::MemoryRange::new(0x1000..0x20_0000);
+
+    #[test]
+    fn resolved_resources_retain_root_complex_identity() {
+        use crate::worker::spi_layout::SpiLayoutInput;
+        use crate::worker::spi_layout::resolve_spi_layout;
+        use memory_range::MemoryRange;
+        use openvmm_defs::config::PcieIommuConfig;
+        use openvmm_defs::config::PcieMmioRangeConfig;
+        use openvmm_defs::config::PcieRootComplexConfig;
+        use openvmm_defs::config::SmmuOas;
+        use openvmm_defs::config::SmmuSsidSize;
+
+        let root_complexes =
+            [(9, Some(14)), (2, None), (7, Some(0))].map(|(index, ssid)| PcieRootComplexConfig {
+                index,
+                name: format!("rc{index}"),
+                segment: index as u16,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
+                high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
+                ports: Vec::new(),
+                cxl: None,
+                iommu: ssid.map(|bits| PcieIommuConfig::Smmu {
+                    accel: false,
+                    oas: SmmuOas::Auto,
+                    ssidsize: SmmuSsidSize::Fixed(bits),
+                }),
+                vnode: None,
+                preserve_bars: false,
+            });
+        let ranges = [
+            MemoryRange::new(0x100_0000..0x102_0000),
+            MemoryRange::new(0x102_0000..0x104_0000),
+        ];
+        let spi_layout = resolve_spi_layout(&SpiLayoutInput {
+            gic_nr_irqs: 256,
+            v2m_spi_count: None,
+            smmu_count: 2,
+        })
+        .unwrap();
+        let resolved = resolve_smmu_resources(&root_complexes, &ranges, &spi_layout, None);
+
+        assert_eq!(resolved.instances.len(), 2);
+        // The middle RC consumes no allocation; RC identity is neither its
+        // input position nor its position in the SMMU-only list.
+        for (allocation, rc_pos) in [(0, 0), (1, 2)] {
+            let instance = &resolved.instances[allocation];
+            assert_eq!(instance.rc_pos, rc_pos);
+            assert_eq!(instance.rc_index, root_complexes[rc_pos].index);
+            assert_eq!(instance.base, ranges[allocation].start());
+            assert_eq!(instance.evtq_intid, spi_layout.smmu[allocation].evtq_intid);
+            assert_eq!(instance.gerr_intid, spi_layout.smmu[allocation].gerr_intid);
+        }
+    }
 
     #[pal_async::async_test]
     async fn firmware_capabilities_follow_device_start() {
