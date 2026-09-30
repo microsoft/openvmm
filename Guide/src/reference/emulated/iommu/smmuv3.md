@@ -26,7 +26,7 @@ listed here reads as unsupported in the IDR registers:
 | Translation granule | 4 KiB only | |
 | Stream table format | linear only | no 2-level tables |
 | StreamID size | 16 bits | |
-| Substreams (`IDR1.SSIDSIZE`) | configurable with `ssidsize=auto|N` | `auto`: host-derived with `accel`, otherwise 0 |
+| Substreams (`IDR1.SSIDSIZE`) | configurable with `ssidsize` | `auto`: host-derived with `accel`, otherwise 0 |
 | ATS (`IDR0.ATS`) | host-derived with `accel` | otherwise `ATC_INV` is illegal |
 | Range invalidation (`IDR3.RIL`) | not supported | |
 | Fault model | terminate | `STALL_MODEL` = 1, no stalling |
@@ -57,11 +57,6 @@ Once enabled, each transaction's `STE.Config` decides:
 
 An invalid STE (`V` = 0) or an out-of-range StreamID also aborts and records
 an event, per the SMMUv3 architecture.
-
-Bypass still checks address size. An address exceeding `IDR5.OAS` aborts
-without an event when the SMMU is disabled. With the SMMU enabled, STE bypass
-or default-substream bypass (`S1DSS = 1`) instead records a stage-1
-`F_ADDR_SIZE` event. The default-substream bypass does not fetch a CD.
 
 ## Software translation
 
@@ -108,75 +103,17 @@ Invalidation is scoped to the vIOMMU rather than to individual devices, so a
 guest command is forwarded once regardless of how many devices sit behind
 the SMMU.
 
-### Host-derived capabilities
+### Substreams and ATS
 
-The `ssidsize=auto|N` option controls the advertised SubstreamID width
-(`IDR1.SSIDSIZE`). `auto` is the default: software mode uses 0, while
-cold-plug VFIO binding under `accel` adopts the physical SMMU's width.
-A fixed `N` must be from 0 to 20; 0 disables substreams, and a nonzero value
-advertises that width even in software mode. Under `accel`, a fixed width
-must not exceed the host SMMU's width.
+Accelerated SMMUs derive ATS support and the automatic SSID width from
+cold-plug devices. Without one, ATS and automatic substream support remain
+disabled. Capabilities are fixed at the first device start; later hotplug
+must be compatible. Restore requires matching capabilities.
 
-Cold-plug VFIO binding also discovers the physical SMMU's ATS support.
-ATS has no separate configuration option.
-The first device start freezes the capabilities. PCI resource
-assignment already starts and stops devices with guest VPs held stopped,
-before firmware construction, so firmware reads stable capabilities without
-a separate finalization step.
-
-IORT describes the root complex's ATS support, independently of the SMMU's
-`IDR0.ATS`. OpenVMM's current platform policy advertises ATS on a root complex
-when its SMMU advertises it. Firmware construction derives this attribute
-from the SMMU state; it does not change or freeze capabilities.
-Firmware reloads use the same frozen capabilities rather than rediscovering
-the host.
-
-With `ssidsize=auto`, an accelerated SMMU with no cold-plug device keeps SSID
-disabled. Without a cold-plug device, ATS also stays disabled. Later
-attachment validates against the frozen capabilities; it cannot enable a
-feature the guest was not initially offered.
-Failed capability validation leaves the contract unchanged.
-
-SMMU SSID width is not an endpoint's PASID capability. Endpoints have their
-own limits and PCI capability discovery; SMMU advertisement does not fabricate
-an endpoint capability.
-
-When substreams are advertised, software DMA from emulated devices still
-carries no SubstreamID. With `S1CDMax > 0`, it honors the STE's default-substream
-policy: terminate, bypass stage 1, or translate through CD 0. With `S1CDMax = 0`,
-the format and default-substream fields are ignored and translation uses the
-single CD. The reserved `S1Fmt = 3` encoding behaves as linear, and
-`S1DSS = 3` behaves as terminate.
-
-The `smmu_software_ssidsize_aarch64_tcg` VMM test boots Linux with a software
-SMMU advertising 14 SSID bits, checks the guest-visible width, and exercises
-emulated NVMe DMA in a translating domain. It runs in the AArch64 TCG
-incubator without an SSID-capable host SMMU. The endpoints do not advertise
-PASID, so this covers untagged, single-CD DMA with nonzero `SSIDSIZE`, not
-selection between PASID-tagged substreams.
-
-As required by SMMUv3's STE validity rules, both software and nested paths
-reject a CD table size exceeding the advertised SSID width, or a two-level
-CD format when substreams are enabled (`CD2L` is not advertised). These are
-STE-wide configuration errors, including for untagged transactions; they
-are checked before the default-substream policy.
-
-With ATS, nested STEs retain `EATS` and the emulator forwards `ATC_INV` in
-command-queue order. The Linux backend supports Full ATS and ATS UR, not
-S1-only ATS. That restriction is enforced by the backend, not by the shared
-STE classifier: a rejected nested attachment is left aborting, while
-software DMA does not acquire a host-specific ATS restriction.
-Linux enables physical `CR0.ATSCHK` when ATS is supported;
-iommufd controls per-stream ATS through `EATS`. The virtual register
-acknowledges ATSCHK, but clearing it cannot disable the host's checking.
-Emulated devices do not issue ATS requests or cache ATS translations.
-
-Reset preserves the frozen capabilities. Saved state records them, and
-restore rejects a different capability contract before restoring registers.
-A successful restore freezes the capabilities without starting devices or
-reassigning PCI resources.
-Snapshots predating capability recording are accepted only when SSID and ATS
-remain disabled.
+OpenVMM also reports ATS in IORT for root complexes whose SMMU supports it.
+Endpoint PASID capabilities are separate from the SMMU's SSID width.
+Software devices issue untagged DMA and honor the default-substream policy;
+they do not generate PASID-tagged requests. Only linear CD tables are supported.
 
 ### StreamID binding
 
@@ -211,12 +148,10 @@ re-establishes it afterwards.
 
 The advertised output address size (`IDR5.OAS`) cannot exceed the physical
 SMMU's. With `oas=auto`, a cold-plug accelerated device causes the emulated
-SMMU to adopt the host's OAS. Device start freezes the advertised value,
-including the temporary start for PCI resource assignment before firmware
-construction. A device hotplugged after that point must support the frozen
-OAS; attachment fails rather than changing a capability the guest may
-already have observed. With a fixed `oas=N`, a value larger than the host's
-is rejected.
+SMMU to adopt the host's OAS. Device start freezes the advertised value.
+A device hotplugged after that point must support the frozen OAS; attachment
+fails rather than changing a capability the guest may already have observed.
+With a fixed `oas=N`, a value larger than the host's is rejected.
 
 ### Fault reporting
 
