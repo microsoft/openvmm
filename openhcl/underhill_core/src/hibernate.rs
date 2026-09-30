@@ -29,14 +29,7 @@ pub enum Token {
 
 impl Token {
     /// Written when the current firmware hibernates; bump per release.
-    #[cfg(guest_arch = "aarch64")]
     pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 8 };
-    /// Written when the current firmware hibernates; bump per release.
-    // TODO: On x86_64 the 1.8 branch starts with the 1.7-era uefi firmware (in
-    // internal builds) to maintain hibernation compat. This will be changed
-    // later in servicing.
-    #[cfg(guest_arch = "x86_64")]
-    pub const CURRENT: Self = Self::Hibernated { major: 1, minor: 7 };
     /// Written when the firmware version is unknown, e.g. after servicing from
     /// a previous build that didn't write the token.
     pub const UNKNOWN: Self = Self::Hibernated { major: 1, minor: 0 };
@@ -204,10 +197,7 @@ mod tests {
     #[test]
     fn constants_encode_as_expected() {
         assert_eq!(u64::from(Token::NotHibernated), 0);
-        #[cfg(guest_arch = "aarch64")]
         assert_eq!(u64::from(Token::CURRENT), 0x0108);
-        #[cfg(guest_arch = "x86_64")]
-        assert_eq!(u64::from(Token::CURRENT), 0x0107);
         assert_eq!(u64::from(Token::UNKNOWN), 0x0100);
     }
 
