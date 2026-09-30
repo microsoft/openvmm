@@ -8,7 +8,6 @@
 
 pub mod driver;
 pub mod filter;
-mod hvsock;
 pub mod saved_state;
 
 pub use self::saved_state::SavedState;
@@ -29,12 +28,9 @@ use pal_async::task::Task;
 use pal_event::Event;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::collections::hash_map;
 use std::convert::TryInto;
 use std::future::Future;
 use std::future::poll_fn;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -47,7 +43,6 @@ use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_channel::TaggedStream;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
-use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
@@ -57,14 +52,11 @@ use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::ConnectionState;
 use vmbus_core::protocol::FeatureFlags;
-use vmbus_core::protocol::Message;
+#[cfg(test)]
 use vmbus_core::protocol::OpenChannelFlags;
 use vmbus_core::protocol::Version;
 use vmcore::interrupt::Interrupt;
 use vmcore::synic::MonitorPageGpas;
-use zerocopy::Immutable;
-use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 const SINT: u8 = 2;
 const VTL: u8 = 0;
@@ -128,6 +120,19 @@ pub enum ConnectError {
     FailedToConnect(ConnectionState),
 }
 
+impl From<vmbus_client_core::ConnectError> for ConnectError {
+    fn from(error: vmbus_client_core::ConnectError) -> Self {
+        match error {
+            vmbus_client_core::ConnectError::InvalidState => Self::InvalidState,
+            vmbus_client_core::ConnectError::VersionNotSupported => Self::NoSupportedVersions,
+            vmbus_client_core::ConnectError::FailedToConnect(status) => {
+                Self::FailedToConnect(status)
+            }
+            _ => Self::InvalidState,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct VmbusClientAccess {
     client_request_send: mesh::Sender<ClientRequest>,
@@ -165,24 +170,30 @@ impl VmbusClientBuilder {
                 queued: VecDeque::new(),
                 state: OutgoingMessageState::Paused,
             },
-            teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
             synic: SynicState {
-                event_flag_state: Vec::new(),
+                events: HashMap::new(),
                 event_client: self.event_client,
             },
         };
 
         let mut task = ClientTask {
             inner,
-            channels: ChannelList::default(),
+            core: vmbus_client_core::ClientCore::new(vmbus_client_core::Config {
+                sint: SINT,
+                vtl: VTL,
+                supported_versions: SUPPORTED_VERSIONS,
+                supported_feature_flags: SUPPORTED_FEATURE_FLAGS,
+            }),
+            runtime_channels: HashMap::new(),
+            dispatched_requests: HashMap::new(),
+            offer_send: None,
+            next_request_id: 0,
             task_recv,
             running: false,
+            paused_via_message: false,
             msg_source: self.msg_source,
             client_request_recv,
-            state: ClientState::Disconnected,
-            modify_request: None,
-            hvsock_tracker: hvsock::HvsockRequestTracker::new(),
         };
 
         let task = spawner.spawn("vmbus client", async move {
@@ -419,66 +430,6 @@ enum TaskRequest {
     Stop(Rpc<(), ()>),
 }
 
-/// The overall state machine used to drive which actions the client can legally
-/// take. This primarily pertains to overall client activity but has a
-/// side-effect of limiting whether or not channels can perform actions.
-#[derive(Inspect)]
-#[inspect(external_tag)]
-enum ClientState {
-    /// The client has yet to connect to the server.
-    Disconnected,
-    /// The client has initiated contact with the server.
-    Connecting {
-        version: Version,
-        #[inspect(skip)]
-        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
-    },
-    /// The client has negotiated the protocol version with the server.
-    Connected {
-        version: VersionInfo,
-        #[inspect(skip)]
-        offer_send: mesh::Sender<OfferInfo>,
-    },
-    /// The client has requested offers from the server.
-    RequestingOffers {
-        version: VersionInfo,
-        #[inspect(skip)]
-        rpc: Rpc<(), Result<ConnectResult, ConnectError>>,
-        #[inspect(skip)]
-        offers: Vec<OfferInfo>,
-    },
-    /// The client has initiated an unload from the server.
-    Disconnecting {
-        version: VersionInfo,
-        #[inspect(skip)]
-        rpc: Rpc<(), ()>,
-    },
-}
-
-impl ClientState {
-    fn get_version(&self) -> Option<VersionInfo> {
-        match self {
-            ClientState::Connected { version, .. } => Some(*version),
-            ClientState::RequestingOffers { version, .. } => Some(*version),
-            ClientState::Disconnecting { version, .. } => Some(*version),
-            ClientState::Disconnected | ClientState::Connecting { .. } => None,
-        }
-    }
-}
-
-impl std::fmt::Display for ClientState {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            ClientState::Disconnected => "Disconnected",
-            ClientState::Connecting { .. } => "Connecting",
-            ClientState::Connected { .. } => "Connected",
-            ClientState::RequestingOffers { .. } => "RequestingOffers",
-            ClientState::Disconnecting { .. } => "Disconnecting",
-        };
-        fmt.pad(s)
-    }
-}
-
 #[derive(Copy, Clone, Debug, Default)]
 struct ConnectRequest {
     target_message_vp: u32,
@@ -502,85 +453,57 @@ impl From<ModifyConnectionRequest> for protocol::ModifyConnection {
     }
 }
 
-/// The per-channel state which dictates which whether or not a channel can
-/// request an Open/Close. As GPADLs can happen outside this loop there is no
-/// state tied to GPADL actions.
-#[derive(Debug, Inspect)]
-#[inspect(external_tag)]
-enum ChannelState {
-    /// The channel has been offered to the client.
-    Offered,
-    /// The channel has requested the server to be opened.
-    Opening {
-        redirected_event_flag: Option<u16>,
-        #[inspect(skip)]
-        redirected_event: Option<Event>,
-        #[inspect(skip)]
-        rpc: FailableRpc<(), OpenOutput>,
-    },
-    /// The channel has been restored but not claimed.
-    Restored,
-    /// The channel has been successfully opened.
-    Opened {
-        redirected_event_flag: Option<u16>,
-        #[inspect(skip)]
-        redirected_event: Option<Event>,
-    },
-    /// The channel has been revoked by the server.
-    Revoked,
-}
-
-impl std::fmt::Display for ChannelState {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            ChannelState::Opening { .. } => "Opening",
-            ChannelState::Offered => "Offered",
-            ChannelState::Opened { .. } => "Opened",
-            ChannelState::Restored => "Restored",
-            ChannelState::Revoked => "Revoked",
-        };
-        fmt.pad(s)
-    }
-}
-
-#[derive(Debug, Inspect)]
-struct Channel {
-    offer: protocol::OfferChannel,
-    // When dropped, notifies the caller the channel has been revoked.
-    #[inspect(skip)]
+struct RuntimeChannel {
     revoke_send: Option<mesh::OneshotSender<()>>,
-    state: ChannelState,
-    #[inspect(with = "|x| x.is_some()")]
-    modify_response_send: Option<Rpc<(), i32>>,
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
-    gpadls: HashMap<GpadlId, GpadlState>,
-    is_client_released: bool,
     connection_id: Arc<AtomicU32>,
 }
 
-impl Channel {
-    fn pending_request(&self) -> Option<&'static str> {
-        if self.modify_response_send.is_some() {
-            return Some("modify");
-        }
-        self.gpadls.iter().find_map(|(_, gpadl)| match gpadl {
-            GpadlState::Offered(_) => Some("creating gpadl"),
-            GpadlState::Created => None,
-            GpadlState::TearingDown { .. } => Some("tearing down gpadl"),
-        })
+enum DispatchedRequest {
+    Connect {
+        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
+        version: Option<VersionInfo>,
+        offers: Vec<OfferInfo>,
+    },
+    Unload(Rpc<(), ()>),
+    ModifyConnection(Rpc<ModifyConnectionRequest, ConnectionState>),
+    HvsockConnect(Rpc<HvsockConnectRequest, Option<OfferInfo>>),
+    Open(FailableRpc<(), OpenOutput>),
+    ModifyChannel(Rpc<(), i32>),
+    EstablishGpadl(FailableRpc<(), ()>),
+    TeardownGpadl(Rpc<(), ()>),
+}
+
+#[derive(Default)]
+struct ActionBuffer {
+    actions: Vec<vmbus_client_core::Action>,
+}
+
+impl vmbus_client_core::ActionSink for ActionBuffer {
+    fn emit(&mut self, action: vmbus_client_core::Action) {
+        self.actions.push(action);
     }
+}
+
+#[derive(Default)]
+struct StepOutcome {
+    pause_complete: bool,
 }
 
 #[derive(Inspect)]
 struct ClientTask {
     #[inspect(flatten)]
     inner: ClientTaskInner,
-    channels: ChannelList,
-    state: ClientState,
-    hvsock_tracker: hvsock::HvsockRequestTracker,
+    #[inspect(skip)]
+    core: vmbus_client_core::ClientCore,
+    #[inspect(skip)]
+    runtime_channels: HashMap<ChannelId, RuntimeChannel>,
+    #[inspect(skip)]
+    dispatched_requests: HashMap<vmbus_client_core::RequestId, DispatchedRequest>,
+    #[inspect(skip)]
+    offer_send: Option<mesh::Sender<OfferInfo>>,
+    next_request_id: u64,
     running: bool,
-    #[inspect(with = "|x| x.is_some()")]
-    modify_request: Option<Rpc<ModifyConnectionRequest, ConnectionState>>,
+    paused_via_message: bool,
     #[inspect(skip)]
     msg_source: Box<dyn VmbusMessageSource>,
     #[inspect(skip)]
@@ -590,182 +513,92 @@ struct ClientTask {
 }
 
 impl ClientTask {
-    fn handle_initiate_contact(
-        &mut self,
-        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
-        version: Version,
-    ) {
-        let ClientState::Disconnected = self.state else {
-            tracing::warn!(client_state = %self.state, "invalid client state for InitiateContact");
-            rpc.complete(Err(ConnectError::InvalidState));
-            return;
-        };
-        let feature_flags = if version >= Version::Copper {
-            SUPPORTED_FEATURE_FLAGS
-        } else {
-            FeatureFlags::new()
-        };
-
-        let request = rpc.input();
-
-        tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
-        let target_info = protocol::TargetInfo::new()
-            .with_sint(SINT)
-            .with_vtl(VTL)
-            .with_feature_flags(feature_flags.into());
-        let monitor_page = request.monitor_page.unwrap_or_default();
-        let msg = protocol::InitiateContact2 {
-            initiate_contact: protocol::InitiateContact {
-                version_requested: version as u32,
-                target_message_vp: request.target_message_vp,
-                interrupt_page_or_target_info: target_info.into(),
-                parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
-                child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
-            },
-            client_id: request.client_id,
-        };
-
-        self.state = ClientState::Connecting { version, rpc };
-        if version < Version::Copper {
-            self.inner.messages.send(&msg.initiate_contact)
-        } else {
-            self.inner.messages.send(&msg);
+    fn next_request_id(&mut self) -> vmbus_client_core::RequestId {
+        loop {
+            let request_id = vmbus_client_core::RequestId(self.next_request_id);
+            self.next_request_id = self.next_request_id.wrapping_add(1);
+            if !self.dispatched_requests.contains_key(&request_id) {
+                return request_id;
+            }
         }
-    }
-
-    fn handle_unload(&mut self, rpc: Rpc<(), ()>) {
-        tracing::debug!(%self.state, "VmBus client disconnecting");
-        self.state = ClientState::Disconnecting {
-            version: self.state.get_version().expect("invalid state for unload"),
-            rpc,
-        };
-
-        self.inner.messages.send(&protocol::Unload {});
-    }
-
-    fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected { version, .. }
-            if version.feature_flags.modify_connection())
-        {
-            tracing::warn!("ModifyConnection not supported");
-            request.complete(ConnectionState::FAILED_UNKNOWN_FAILURE);
-            return;
-        }
-
-        if self.modify_request.is_some() {
-            tracing::warn!("Duplicate ModifyConnection request");
-            request.complete(ConnectionState::FAILED_UNKNOWN_FAILURE);
-            return;
-        }
-
-        let message = protocol::ModifyConnection::from(*request.input());
-        self.modify_request = Some(request);
-        self.inner.messages.send(&message);
-    }
-
-    fn handle_tl_connect(&mut self, rpc: Rpc<HvsockConnectRequest, Option<OfferInfo>>) {
-        // The client only supports protocol versions which use the newer message format.
-        // The host will not send a TlConnectRequestResult message on success, so a response to this
-        // message is not guaranteed.
-        let message = protocol::TlConnectRequest2::from(*rpc.input());
-        self.hvsock_tracker.add_request(rpc);
-        self.inner.messages.send(&message);
     }
 
     fn handle_client_request(&mut self, request: ClientRequest) {
         match request {
             ClientRequest::Connect(rpc) => {
-                self.handle_initiate_contact(rpc, *SUPPORTED_VERSIONS.last().unwrap());
+                let params = *rpc.input();
+                let request_id = self.next_request_id();
+                self.dispatched_requests.insert(
+                    request_id,
+                    DispatchedRequest::Connect {
+                        rpc,
+                        version: None,
+                        offers: Vec::new(),
+                    },
+                );
+                self.drive_core(vmbus_client_core::Event::Connect {
+                    request_id,
+                    params: vmbus_client_core::ConnectParams {
+                        target_message_vp: params.target_message_vp,
+                        monitor_page: params.monitor_page.map(|pages| {
+                            vmbus_client_core::MonitorPageGpas {
+                                parent_to_child: pages.parent_to_child,
+                                child_to_parent: pages.child_to_parent,
+                            }
+                        }),
+                        client_id: params.client_id,
+                    },
+                });
             }
             ClientRequest::Unload(rpc) => {
-                self.handle_unload(rpc);
+                let request_id = self.next_request_id();
+                self.dispatched_requests
+                    .insert(request_id, DispatchedRequest::Unload(rpc));
+                self.drive_core(vmbus_client_core::Event::Unload { request_id });
             }
-            ClientRequest::Modify(request) => self.handle_modify(request),
-            ClientRequest::HvsockConnect(request) => self.handle_tl_connect(request),
+            ClientRequest::Modify(rpc) => {
+                let monitor_page = rpc.input().monitor_page.unwrap_or_default();
+                let request_id = self.next_request_id();
+                self.dispatched_requests
+                    .insert(request_id, DispatchedRequest::ModifyConnection(rpc));
+                self.drive_core(vmbus_client_core::Event::ModifyConnection {
+                    request_id,
+                    monitor_page: vmbus_client_core::MonitorPageGpas {
+                        parent_to_child: monitor_page.parent_to_child,
+                        child_to_parent: monitor_page.child_to_parent,
+                    },
+                });
+            }
+            ClientRequest::HvsockConnect(rpc) => {
+                let request = *rpc.input();
+                let request_id = self.next_request_id();
+                self.dispatched_requests
+                    .insert(request_id, DispatchedRequest::HvsockConnect(rpc));
+                self.drive_core(vmbus_client_core::Event::HvsockConnect {
+                    request_id,
+                    request: vmbus_client_core::HvsockConnectRequest {
+                        service_id: request.service_id,
+                        endpoint_id: request.endpoint_id,
+                        silo_id: request.silo_id,
+                        hosted_silo_unaware: request.hosted_silo_unaware,
+                    },
+                });
+            }
         }
     }
 
-    fn handle_version_response(&mut self, msg: protocol::VersionResponse2) {
-        let old_state = std::mem::replace(&mut self.state, ClientState::Disconnected);
-        let ClientState::Connecting { version, rpc } = old_state else {
-            self.state = old_state;
-            tracing::warn!(
-                client_state = %self.state,
-                "invalid client state to handle VersionResponse"
-            );
-            return;
-        };
-        if msg.version_response.version_supported > 0 {
-            if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
-                rpc.complete(Err(ConnectError::FailedToConnect(
-                    msg.version_response.connection_state,
-                )));
-                return;
-            }
-
-            let feature_flags = if version >= Version::Copper {
-                FeatureFlags::from(msg.supported_features)
-            } else {
-                FeatureFlags::new()
-            };
-
-            let version = VersionInfo {
-                version,
-                feature_flags,
-            };
-
-            self.inner.messages.send(&protocol::RequestOffers {});
-            self.state = ClientState::RequestingOffers {
-                version,
-                rpc: rpc.split().1,
-                offers: Vec::new(),
-            };
-            tracing::info!(?version, "VmBus client connected, requesting offers");
-        } else {
-            let index = SUPPORTED_VERSIONS
-                .iter()
-                .position(|v| *v == version)
-                .unwrap();
-
-            if index == 0 {
-                rpc.complete(Err(ConnectError::NoSupportedVersions));
-                return;
-            }
-            let next_version = SUPPORTED_VERSIONS[index - 1];
-            tracing::debug!(
-                version = version as u32,
-                next_version = next_version as u32,
-                "Unsupported version, retrying"
-            );
-            self.handle_initiate_contact(rpc, next_version);
-        }
-    }
-
-    fn create_channel(&mut self, offer: protocol::OfferChannel) -> Result<OfferInfo> {
-        self.create_channel_core(offer, ChannelState::Offered)
-    }
-
-    fn create_channel_core(
-        &mut self,
-        offer: protocol::OfferChannel,
-        state: ChannelState,
-    ) -> Result<OfferInfo> {
-        if self.channels.0.contains_key(&offer.channel_id) {
+    fn create_offer_info(&mut self, offer: protocol::OfferChannel) -> Result<OfferInfo> {
+        if self.runtime_channels.contains_key(&offer.channel_id) {
             anyhow::bail!("channel {:?} exists", offer.channel_id);
         }
         let (request_send, request_recv) = mesh::channel();
         let (revoke_send, revoke_recv) = mesh::oneshot();
 
         let connection_id = Arc::new(AtomicU32::new(0));
-        self.channels.0.insert(
+        self.runtime_channels.insert(
             offer.channel_id,
-            Channel {
+            RuntimeChannel {
                 revoke_send: Some(revoke_send),
-                offer,
-                state,
-                modify_response_send: None,
-                gpadls: HashMap::new(),
-                is_client_released: false,
                 connection_id: connection_id.clone(),
             },
         );
@@ -782,601 +615,136 @@ impl ClientTask {
         })
     }
 
-    fn handle_offer(&mut self, offer: protocol::OfferChannel) {
-        let offer_info = self
-            .create_channel(offer)
-            .expect("channel should not exist");
-
-        tracing::info!(
-                state = %self.state,
-                channel_id = offer.channel_id.0,
-                interface_id = %offer.interface_id,
-                instance_id = %offer.instance_id,
-                subchannel_index = offer.subchannel_index,
-                "received offer");
-
-        if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
-            offer.complete(Some(offer_info));
-        } else {
-            match &mut self.state {
-                ClientState::Connected { offer_send, .. } => {
-                    offer_send.send(offer_info);
-                }
-                ClientState::RequestingOffers { offers, .. } => {
-                    offers.push(offer_info);
-                }
-                state => unreachable!("invalid client state for OfferChannel: {state}"),
-            }
-        }
-    }
-
-    fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) -> TriedRelease {
-        let mut channel = self.channels.get_mut(rescind.channel_id);
-        tracing::info!(
-            state = %self.state,
-            channel_id = rescind.channel_id.0,
-            key = %OfferKey::from(&channel.offer),
-            "received rescind"
-        );
-        let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Revoked) {
-            ChannelState::Offered => None,
-            ChannelState::Opening {
-                redirected_event_flag,
-                redirected_event: _,
-                rpc,
-            } => {
-                rpc.fail(anyhow::anyhow!("channel revoked"));
-                redirected_event_flag
-            }
-            ChannelState::Restored => None,
-            ChannelState::Opened {
-                redirected_event_flag,
-                redirected_event: _,
-            } => redirected_event_flag,
-            ChannelState::Revoked => {
-                panic!("channel id {:?} already revoked", rescind.channel_id);
-            }
-        };
-        if let Some(event_flag) = event_flag {
-            self.inner.synic.free_event_flag(event_flag);
-        }
-
-        // Drop the channel and send the revoked message to the client.
-        channel.revoke_send.take().unwrap().send(());
-
-        channel.try_release(&mut self.inner.messages)
-    }
-
-    fn handle_offers_delivered(&mut self) {
-        match std::mem::replace(&mut self.state, ClientState::Disconnected) {
-            ClientState::RequestingOffers {
-                version,
-                rpc,
-                offers,
-            } => {
-                tracing::info!(version = ?version, "VmBus client connected, offers delivered");
-                let (offer_send, offer_recv) = mesh::channel();
-                self.state = ClientState::Connected {
-                    version,
-                    offer_send,
-                };
-                rpc.complete(Ok(ConnectResult {
-                    version,
-                    offers,
-                    offer_recv,
-                }));
-            }
-            state => {
-                tracing::warn!(client_state = %state, "invalid client state for OffersDelivered");
-                self.state = state;
-            }
-        }
-    }
-
-    fn handle_gpadl_created(&mut self, request: protocol::GpadlCreated) -> TriedRelease {
-        let mut channel = self.channels.get_mut(request.channel_id);
-        let Some(gpadl_state) = channel.gpadls.get_mut(&request.gpadl_id) else {
-            panic!("GpadlCreated for unknown gpadl {:#x}", request.gpadl_id.0);
-        };
-
-        let rpc = match std::mem::replace(gpadl_state, GpadlState::Created) {
-            GpadlState::Offered(rpc) => rpc,
-            old_state => {
-                panic!(
-                    "invalid state {old_state:?} for gpadl {:#x}:{:#x}",
-                    request.channel_id.0, request.gpadl_id.0
-                );
-            }
-        };
-
-        let gpadl_created = request.status == protocol::STATUS_SUCCESS;
-        if gpadl_created {
-            rpc.complete(Ok(()));
-        } else {
-            channel.gpadls.remove(&request.gpadl_id).unwrap();
-            rpc.fail(anyhow::anyhow!(
-                "gpadl creation failed: {:#x}",
-                request.status
-            ));
-        };
-        channel.try_release(&mut self.inner.messages)
-    }
-
-    fn handle_open_result(&mut self, result: protocol::OpenResult) {
-        let mut channel = self.channels.get_mut(result.channel_id);
-        tracing::debug!(
-            channel_id = result.channel_id.0,
-            key = %OfferKey::from(&channel.offer),
-            result = result.status,
-            "received open result"
-        );
-
-        let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
-        let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
-        let ChannelState::Opening {
-            redirected_event_flag,
-            redirected_event,
-            rpc,
-        } = old_state
-        else {
-            tracing::warn!(
-                key = %OfferKey::from(&channel.offer),
-                old_state = ?channel.state,
-                channel_opened,
-                "invalid state for open result"
-            );
-            channel.state = old_state;
-            return;
-        };
-
-        if !channel_opened {
-            if let Some(event_flag) = redirected_event_flag {
-                self.inner.synic.free_event_flag(event_flag);
-            }
-            rpc.fail(anyhow::anyhow!("open failed: {:#x}", result.status));
-            return;
-        }
-
-        channel.state = ChannelState::Opened {
-            redirected_event_flag,
-            redirected_event,
-        };
-
-        rpc.complete(Ok(OpenOutput {
-            redirected_event_flag,
-        }));
-    }
-
-    fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) -> TriedRelease {
-        let Some(channel_id) = self.inner.teardown_gpadls.remove(&request.gpadl_id) else {
-            panic!("gpadl {:#x} not in teardown list", request.gpadl_id.0);
-        };
-
-        let mut channel = self.channels.get_mut(channel_id);
-        tracing::debug!(
-            gpadl_id = request.gpadl_id.0,
-            channel_id = channel_id.0,
-            key = %OfferKey::from(&channel.offer),
-            "Received GpadlTorndown"
-        );
-
-        let gpadl_state = channel
-            .gpadls
-            .remove(&request.gpadl_id)
-            .expect("gpadl validated above");
-
-        let GpadlState::TearingDown { rpcs } = gpadl_state else {
-            panic!("gpadl should be tearing down if in teardown list, state = {gpadl_state:?}");
-        };
-
-        for rpc in rpcs {
-            rpc.complete(());
-        }
-        channel.try_release(&mut self.inner.messages)
-    }
-
-    fn handle_unload_complete(&mut self) {
-        match std::mem::replace(&mut self.state, ClientState::Disconnected) {
-            ClientState::Disconnecting { version: _, rpc } => {
-                tracing::info!("VmBus client disconnected");
-                rpc.complete(());
-            }
-            state => {
-                tracing::warn!(client_state = %state, "invalid client state for UnloadComplete");
-            }
-        }
-    }
-
-    fn handle_modify_complete(&mut self, response: protocol::ModifyConnectionResponse) {
-        if let Some(request) = self.modify_request.take() {
-            request.complete(response.connection_state)
-        } else {
-            tracing::warn!("Unexpected modify complete request");
-        }
-    }
-
-    fn handle_modify_channel_response(
-        &mut self,
-        response: protocol::ModifyChannelResponse,
-    ) -> TriedRelease {
-        let mut channel = self.channels.get_mut(response.channel_id);
-        let Some(sender) = channel.modify_response_send.take() else {
-            panic!(
-                "unexpected modify channel response for channel {:#x}",
-                response.channel_id.0
-            );
-        };
-
-        sender.complete(response.status);
-        channel.try_release(&mut self.inner.messages)
-    }
-
-    fn handle_tl_connect_result(&mut self, response: protocol::TlConnectResult) {
-        if let Some(rpc) = self.hvsock_tracker.check_result(&response) {
-            rpc.complete(None);
-        }
-    }
-
-    /// Returns false if the message was a pause complete message.
-    fn handle_synic_message(&mut self, data: &[u8]) -> bool {
-        let msg = Message::parse(data, self.state.get_version()).unwrap();
-        tracing::trace!(?msg, "received client message from synic");
-
-        match msg {
-            Message::VersionResponse3(version_response, ..) => {
-                // The client never sends the server-specified monitor pages feature flag, but
-                // since version response messages are distinguished only by size, the response can
-                // still look like `VersionResponse3` if the size was not set exactly by the server.
-                // Since the feature flag can't be set, the extra data can be ignored.
-                self.handle_version_response(version_response.version_response2);
-            }
-            Message::VersionResponse2(version_response, ..) => {
-                self.handle_version_response(version_response);
-            }
-            Message::VersionResponse(version_response, ..) => {
-                self.handle_version_response(version_response.into());
-            }
-            Message::OfferChannel(offer, ..) => {
-                self.handle_offer(offer);
-            }
-            Message::AllOffersDelivered(..) => {
-                self.handle_offers_delivered();
-            }
-            Message::UnloadComplete(..) => {
-                self.handle_unload_complete();
-            }
-            Message::ModifyConnectionResponse(response, ..) => {
-                self.handle_modify_complete(response);
-            }
-            Message::GpadlCreated(gpadl, ..) => {
-                self.handle_gpadl_created(gpadl);
-            }
-            Message::OpenResult(result, ..) => {
-                self.handle_open_result(result);
-            }
-            Message::GpadlTorndown(gpadl, ..) => {
-                self.handle_gpadl_torndown(gpadl);
-            }
-            Message::RescindChannelOffer(rescind, ..) => {
-                self.handle_rescind(rescind);
-            }
-            Message::ModifyChannelResponse(response, ..) => {
-                self.handle_modify_channel_response(response);
-            }
-            Message::TlConnectResult(response, ..) => self.handle_tl_connect_result(response),
-            // Unsupported messages.
-            Message::CloseReservedChannelResponse(..) => {
-                todo!("Unsupported message {msg:?}")
-            }
-            Message::PauseResponse(..) => {
-                return false;
-            }
-            // Messages that should only be received by a vmbus server.
-            Message::RequestOffers(..)
-            | Message::OpenChannel2(..)
-            | Message::OpenChannel(..)
-            | Message::CloseChannel(..)
-            | Message::GpadlHeader(..)
-            | Message::GpadlBody(..)
-            | Message::GpadlTeardown(..)
-            | Message::RelIdReleased(..)
-            | Message::InitiateContact(..)
-            | Message::InitiateContact2(..)
-            | Message::Unload(..)
-            | Message::OpenReservedChannel(..)
-            | Message::CloseReservedChannel(..)
-            | Message::TlConnectRequest2(..)
-            | Message::TlConnectRequest(..)
-            | Message::ModifyChannel(..)
-            | Message::ModifyConnection(..)
-            | Message::Pause(..)
-            | Message::Resume(..) => {
-                unreachable!("Client received server message {msg:?}");
-            }
-        }
-        true
-    }
-
     fn handle_open_channel(
         &mut self,
         channel_id: ChannelId,
         rpc: FailableRpc<OpenRequest, OpenOutput>,
     ) {
-        let mut channel = self.channels.get_mut(channel_id);
-        match &channel.state {
-            ChannelState::Offered => {}
-            ChannelState::Revoked => {
-                rpc.fail(anyhow::anyhow!("channel revoked"));
-                return;
-            }
-            state => {
-                rpc.fail(anyhow::anyhow!("invalid channel state: {}", state));
-                return;
-            }
-        }
-
-        tracing::info!(
-            channel_id = channel_id.0,
-            key = %OfferKey::from(&channel.offer),
-            "opening channel on host"
-        );
-
         let (request, rpc) = rpc.split();
-        let open_data = &request.open_data;
-
-        let supports_interrupt_redirection =
-            if let ClientState::Connected { version, .. } = self.state {
-                version.feature_flags.guest_specified_signal_parameters()
-                    || version.feature_flags.channel_interrupt_redirection()
-            } else {
-                false
-            };
-
-        if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
-            rpc.fail(anyhow::anyhow!(
-                "host does not support specifying the event flag"
-            ));
-            return;
-        }
-
-        let open_channel = protocol::OpenChannel {
-            channel_id,
-            open_id: 0,
-            ring_buffer_gpadl_id: open_data.ring_gpadl_id,
-            target_vp: open_data
-                .target_vp
-                .unwrap_or(protocol::VP_INDEX_DISABLE_INTERRUPT),
-            downstream_ring_buffer_page_offset: open_data.ring_offset,
-            user_data: open_data.user_data,
-        };
-
         let connection_id = if request.use_vtl2_connection_id {
-            if !supports_interrupt_redirection {
-                rpc.fail(anyhow::anyhow!(
-                    "host does not support specfiying the connection ID"
-                ));
-                return;
-            }
             protocol::ConnectionId::new(channel_id.0, 2.try_into().unwrap(), 7).0
         } else {
-            open_data.connection_id
+            request.open_data.connection_id
         };
-
-        // No failure paths after the one for allocating the event flag, since
-        // otherwise we would need to free the event flag.
-        let mut flags = OpenChannelFlags::new();
-        let event_flag = if let Some(event) = &request.incoming_event {
-            if !supports_interrupt_redirection {
-                rpc.fail(anyhow::anyhow!(
-                    "host does not support redirecting interrupts"
-                ));
-                return;
-            }
-
-            flags.set_redirect_interrupt(true);
-            match self.inner.synic.allocate_event_flag(event) {
+        let redirected_event_flag = if let Some(event) = &request.incoming_event {
+            match self.allocate_event_flag(event) {
                 Ok(flag) => flag,
                 Err(err) => {
                     rpc.fail(err.context("failed to allocate event flag"));
                     return;
                 }
             }
+            .into()
         } else {
-            open_data.event_flag
+            None
         };
-
-        if supports_interrupt_redirection {
-            self.inner.messages.send(&protocol::OpenChannel2 {
-                open_channel,
+        let request_id = self.next_request_id();
+        self.dispatched_requests
+            .insert(request_id, DispatchedRequest::Open(rpc));
+        self.drive_core(vmbus_client_core::Event::OpenChannel {
+            request_id,
+            channel_id,
+            open: vmbus_client_core::OpenChannelParams {
+                target_vp: request.open_data.target_vp,
+                ring_offset: request.open_data.ring_offset,
+                ring_gpadl_id: request.open_data.ring_gpadl_id,
+                event_flag: request.open_data.event_flag,
                 connection_id,
-                event_flag,
-                flags,
-            });
-        } else {
-            self.inner.messages.send(&open_channel);
-        }
-
-        channel
-            .connection_id
-            .store(connection_id, Ordering::Release);
-        channel.state = ChannelState::Opening {
-            redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
-            redirected_event: request.incoming_event,
-            rpc,
-        }
+                redirected_event_flag,
+                user_data: request.open_data.user_data,
+            },
+        });
     }
 
     fn handle_restore_channel(
         &mut self,
         channel_id: ChannelId,
-        request: RestoreRequest,
-    ) -> Result<OpenOutput> {
-        let mut channel = self.channels.get_mut(channel_id);
-        if !matches!(channel.state, ChannelState::Restored) {
-            anyhow::bail!("invalid channel state: {}", channel.state);
-        }
-
+        rpc: FailableRpc<RestoreRequest, OpenOutput>,
+    ) {
+        let (request, rpc) = rpc.split();
         if request.incoming_event.is_some() != request.redirected_event_flag.is_some() {
-            anyhow::bail!("incoming event and redirected event flag must both be set or unset");
+            rpc.fail(anyhow::anyhow!(
+                "incoming event and redirected event flag must both be set or unset"
+            ));
+            return;
         }
-
         if let Some((flag, event)) = request
             .redirected_event_flag
             .zip(request.incoming_event.as_ref())
         {
-            self.inner.synic.restore_event_flag(flag, event)?;
+            if let Err(err) = self.restore_event_flag(flag, event) {
+                rpc.fail(err.context("failed to restore event flag"));
+                return;
+            }
         }
-
-        channel
-            .connection_id
-            .store(request.connection_id, Ordering::Release);
-        channel.state = ChannelState::Opened {
-            redirected_event_flag: request.redirected_event_flag,
-            redirected_event: request.incoming_event,
-        };
-        Ok(OpenOutput {
-            redirected_event_flag: request.redirected_event_flag,
-        })
+        let request_id = self.next_request_id();
+        self.dispatched_requests
+            .insert(request_id, DispatchedRequest::Open(rpc));
+        self.drive_core(vmbus_client_core::Event::RestoreChannel {
+            request_id,
+            channel_id,
+            params: vmbus_client_core::RestoreChannelParams {
+                redirected_event_flag: request.redirected_event_flag,
+                connection_id: request.connection_id,
+            },
+        });
     }
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
-        let mut channel = self.channels.get_mut(channel_id);
-        if channel
-            .gpadls
-            .insert(request.id, GpadlState::Offered(rpc))
-            .is_some()
-        {
-            panic!(
-                "duplicate gpadl ID {:?} for channel {:?}.",
-                request.id, channel_id
-            );
-        }
-
-        tracing::trace!(
-            channel_id = channel_id.0,
-            key = %OfferKey::from(&channel.offer),
-            gpadl_id = request.id.0,
-            count = request.count,
-            len = request.buf.len(),
-            "received gpadl request"
-        );
-
-        // Split off the values that fit in the header.
-        let (first, remaining) = if request.buf.len() > protocol::GpadlHeader::MAX_DATA_VALUES {
-            request.buf.split_at(protocol::GpadlHeader::MAX_DATA_VALUES)
-        } else {
-            (request.buf.as_slice(), [].as_slice())
-        };
-
-        let message = protocol::GpadlHeader {
+        let request_id = self.next_request_id();
+        self.dispatched_requests
+            .insert(request_id, DispatchedRequest::EstablishGpadl(rpc));
+        self.drive_core(vmbus_client_core::Event::EstablishGpadl {
+            request_id,
             channel_id,
             gpadl_id: request.id,
-            len: (request.buf.len() * size_of::<u64>())
-                .try_into()
-                .expect("Too many GPA values"),
-            count: request.count,
-        };
-
-        self.inner
-            .messages
-            .send_with_data(&message, first.as_bytes());
-
-        // Send GpadlBody messages for the remaining values.
-        let message = protocol::GpadlBody {
-            rsvd: 0,
-            gpadl_id: request.id,
-        };
-        for chunk in remaining.chunks(protocol::GpadlBody::MAX_DATA_VALUES) {
-            self.inner
-                .messages
-                .send_with_data(&message, chunk.as_bytes());
-        }
+            request: vmbus_client_core::GpadlRequest {
+                id: request.id,
+                count: request.count,
+                buf: request.buf,
+            },
+        });
     }
 
     fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlId, ()>) {
         let (gpadl_id, rpc) = rpc.split();
-        let mut channel = self.channels.get_mut(channel_id);
-        let Some(gpadl_state) = channel.gpadls.get_mut(&gpadl_id) else {
-            tracing::warn!(
-                gpadl_id = gpadl_id.0,
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&channel.offer),
-                "Gpadl teardown for unknown gpadl or revoked channel"
-            );
-            return;
-        };
-
-        match gpadl_state {
-            GpadlState::Offered(_) => {
-                tracing::warn!(
-                    gpadl_id = gpadl_id.0,
-                    channel_id = channel_id.0,
-                    key = %OfferKey::from(&channel.offer),
-                    "gpadl teardown for offered gpadl"
-                );
-            }
-            GpadlState::Created => {
-                *gpadl_state = GpadlState::TearingDown { rpcs: vec![rpc] };
-                // The caller must guarantee that GPADL teardown requests are only made
-                // for unique GPADL IDs. This is currently enforced in vmbus_server by
-                // blocking GPADL teardown messages for reserved channels.
-                assert!(
-                    self.inner
-                        .teardown_gpadls
-                        .insert(gpadl_id, channel_id)
-                        .is_none(),
-                    "Gpadl state validated above"
-                );
-
-                self.inner.messages.send(&protocol::GpadlTeardown {
-                    channel_id,
-                    gpadl_id,
-                });
-            }
-            GpadlState::TearingDown { rpcs } => {
-                rpcs.push(rpc);
-            }
-        }
-    }
-
-    fn handle_close_channel(&mut self, channel_id: ChannelId) {
-        let mut channel = self.channels.get_mut(channel_id);
-        self.inner.close_channel(channel_id, &mut channel);
+        let request_id = self.next_request_id();
+        self.dispatched_requests
+            .insert(request_id, DispatchedRequest::TeardownGpadl(rpc));
+        self.drive_core(vmbus_client_core::Event::TeardownGpadl {
+            request_id,
+            channel_id,
+            gpadl_id,
+        });
     }
 
     fn handle_modify_channel(&mut self, channel_id: ChannelId, rpc: Rpc<ModifyRequest, i32>) {
-        // The client doesn't support versions below Iron, so we always expect the host to send a
-        // ModifyChannelResponse. This means we don't need to worry about sending a ChannelResponse
-        // if that weren't supported.
-        assert!(self.check_version(Version::Iron));
-        let mut channel = self.channels.get_mut(channel_id);
-        if channel.modify_response_send.is_some() {
-            panic!("duplicate channel modify request {channel_id:?}");
-        }
-
         let (request, response) = rpc.split();
-        channel.modify_response_send = Some(response);
-        let payload = match request {
-            ModifyRequest::TargetVp { target_vp } => protocol::ModifyChannel {
-                channel_id,
-                target_vp,
-            },
+        let request = match request {
+            ModifyRequest::TargetVp { target_vp } => {
+                vmbus_client_core::ModifyRequest::TargetVp { target_vp }
+            }
         };
-
-        self.inner.messages.send(&payload);
+        let request_id = self.next_request_id();
+        self.dispatched_requests
+            .insert(request_id, DispatchedRequest::ModifyChannel(response));
+        self.drive_core(vmbus_client_core::Event::ModifyChannel {
+            request_id,
+            channel_id,
+            request,
+        });
     }
 
     fn handle_channel_request(&mut self, channel_id: ChannelId, request: ChannelRequest) {
         match request {
             ChannelRequest::Open(rpc) => self.handle_open_channel(channel_id, rpc),
-            ChannelRequest::Restore(rpc) => {
-                rpc.handle_failable_sync(|request| self.handle_restore_channel(channel_id, request))
-            }
+            ChannelRequest::Restore(rpc) => self.handle_restore_channel(channel_id, rpc),
             ChannelRequest::Gpadl(req) => self.handle_gpadl(channel_id, req),
             ChannelRequest::TeardownGpadl(req) => self.handle_gpadl_teardown(channel_id, req),
             ChannelRequest::Close(req) => {
-                req.handle_sync(|()| self.handle_close_channel(channel_id))
+                self.drive_core(vmbus_client_core::Event::CloseChannel { channel_id });
+                req.complete(());
             }
             ChannelRequest::Modify(req) => self.handle_modify_channel(channel_id, req),
         }
@@ -1397,31 +765,19 @@ impl ClientTask {
         }
     }
 
-    /// Makes sure a channel is closed if the channel request stream was dropped.
-    fn handle_device_removal(&mut self, channel_id: ChannelId) -> TriedRelease {
-        let mut channel = self.channels.get_mut(channel_id);
-        channel.is_client_released = true;
-        // Close the channel if it is still open.
-        if let ChannelState::Opened { .. } = channel.state {
-            tracing::warn!(
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&channel.offer),
-                "Channel dropped without closing first"
-            );
-            self.inner.close_channel(channel_id, &mut channel);
-        }
-        channel.try_release(&mut self.inner.messages)
-    }
-
-    /// Determines if the client is connected with at least the specified version.
-    fn check_version(&self, version: Version) -> bool {
-        matches!(self.state, ClientState::Connected { version: v, .. } if v.version >= version)
+    fn handle_device_removal(&mut self, channel_id: ChannelId) {
+        self.drive_core(vmbus_client_core::Event::ReleaseChannel { channel_id });
     }
 
     fn handle_start(&mut self) {
         assert!(!self.running);
         self.msg_source.resume_message_stream();
         self.inner.messages.resume();
+        self.drive_core(vmbus_client_core::Event::Start);
+        if self.paused_via_message {
+            self.drive_core(vmbus_client_core::Event::Resume);
+            self.paused_via_message = false;
+        }
         self.running = true;
     }
 
@@ -1433,7 +789,7 @@ impl ClientTask {
             // responses. This is necessary to ensure that the saved state does
             // not have to support encoding revoked channels for which we are
             // waiting for GPADL or modify responses.
-            while let Some((id, request)) = self.channels.revoked_channel_with_pending_request() {
+            while let Some((id, request)) = self.revoked_channel_with_pending_request() {
                 tracelimit::info_ratelimited!(
                     channel_id = id.0,
                     request,
@@ -1443,7 +799,9 @@ impl ClientTask {
             }
 
             if self.can_pause_resume() {
+                self.drive_core(vmbus_client_core::Event::Pause);
                 self.inner.messages.pause();
+                self.paused_via_message = true;
             } else {
                 // Mask the sint to pause the message stream. The host will
                 // retry any queued messages after the sint is unmasked.
@@ -1457,11 +815,7 @@ impl ClientTask {
 
             // Ensure there are still no pending requests. If there are, resume
             // and go around again.
-            if self
-                .channels
-                .revoked_channel_with_pending_request()
-                .is_none()
-            {
+            if self.revoked_channel_with_pending_request().is_none() {
                 break;
             }
             if !self.can_pause_resume() {
@@ -1471,7 +825,7 @@ impl ClientTask {
         }
 
         tracing::debug!("messages drained");
-        // Because the run loop awaits all async operations, there is no need for rundown.
+        self.drive_core(vmbus_client_core::Event::Stop);
         self.running = false;
     }
 
@@ -1491,7 +845,9 @@ impl ClientTask {
         if size == 0 {
             return false;
         }
-        self.handle_synic_message(&buf[..size])
+        !self
+            .drive_core(vmbus_client_core::Event::HostMessage(&buf[..size]))
+            .pause_complete
     }
 
     /// Returns whether the server supports in-band messages to pause/resume the
@@ -1503,16 +859,21 @@ impl ClientTask {
     /// the message queue while the sint is masked (due to the use of
     /// HvPostMessageDirect).
     fn can_pause_resume(&self) -> bool {
-        if let ClientState::Connected { version, .. } = self.state {
-            version.feature_flags.pause_resume()
-        } else {
-            false
-        }
+        self.core
+            .phase()
+            .version()
+            .is_some_and(|version| version.feature_flags.pause_resume())
     }
 
     async fn run(&mut self) {
         let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
         loop {
+            let host_backed_up = !self.inner.messages.is_empty();
+            if self.core.host_busy() != host_backed_up {
+                self.drive_core(vmbus_client_core::Event::HostBusy {
+                    busy: host_backed_up,
+                });
+            }
             let mut message_recv =
                 OptionFuture::from(self.running.then(|| self.msg_source.recv(&mut buf).fuse()));
 
@@ -1525,7 +886,6 @@ impl ClientTask {
             // even though they may generate additional outgoing messages, to
             // avoid a deadlock with the host. The host can always DoS the
             // guest, so this is not an attack vector.
-            let host_backed_up = !self.inner.messages.is_empty();
             let flush_messages = OptionFuture::from(
                 (self.running && host_backed_up)
                     .then(|| self.inner.messages.flush_messages().fuse()),
@@ -1571,7 +931,7 @@ impl ClientTask {
                                 panic!("Unexpected end of file reading messages from synic.");
                             }
 
-                            self.handle_synic_message(&buf[..size]);
+                            self.drive_core(vmbus_client_core::Event::HostMessage(&buf[..size]));
                         }
                         Err(err) => {
                             panic!("Error reading messages from synic: {err:?}");
@@ -1582,56 +942,267 @@ impl ClientTask {
             }
         }
     }
-}
 
-impl ClientTaskInner {
-    fn close_channel(&mut self, channel_id: ChannelId, channel: &mut Channel) {
-        if let ChannelState::Opened {
-            redirected_event_flag,
-            ..
-        } = channel.state
-        {
-            if let Some(flag) = redirected_event_flag {
-                self.synic.free_event_flag(flag);
+    fn drive_core(&mut self, event: vmbus_client_core::Event<'_>) -> StepOutcome {
+        let mut sink = ActionBuffer::default();
+        self.core.step(event, &mut sink);
+        let mut outcome = StepOutcome::default();
+        for action in sink.actions {
+            self.handle_action(action, &mut outcome);
+        }
+        self.runtime_channels
+            .retain(|channel_id, _| self.core.channels().contains_key(channel_id));
+        outcome
+    }
+
+    fn handle_action(&mut self, action: vmbus_client_core::Action, outcome: &mut StepOutcome) {
+        use vmbus_client_core::Action;
+        match action {
+            Action::PostMessage(data) => self.inner.messages.send_raw(data),
+            Action::SignalEvent {
+                connection_id,
+                event_flag,
+            } => {
+                if let Err(err) = self
+                    .inner
+                    .synic
+                    .event_client
+                    .signal_event(connection_id, event_flag)
+                {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to signal event"
+                    );
+                }
             }
-            tracing::info!(
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&channel.offer),
-                "closing channel on host"
-            );
-
-            self.messages.send(&protocol::CloseChannel { channel_id });
-            channel.state = ChannelState::Offered;
-            channel.connection_id.store(0, Ordering::Release);
-        } else if matches!(channel.state, ChannelState::Revoked) {
-            tracing::debug!(
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&channel.offer),
-                "close for channel already revoked by the server"
-            );
-        } else {
-            tracing::warn!(
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&channel.offer),
-                channel_state = %channel.state,
-                "invalid channel state for close channel"
-            );
+            Action::FreeEventFlag(flag) => self.inner.synic.free_event_flag(flag),
+            Action::Complete { request_id, result } => {
+                self.handle_completion(request_id, result);
+            }
+            Action::OfferReceived(descriptor) => {
+                let offer = descriptor.offer;
+                let offer_info = self
+                    .create_offer_info(offer)
+                    .expect("core rejects duplicate channel offers");
+                if let vmbus_client_core::ClientPhase::RequestingOffers { request_id, .. } =
+                    self.core.phase()
+                {
+                    let Some(DispatchedRequest::Connect { offers, .. }) =
+                        self.dispatched_requests.get_mut(request_id)
+                    else {
+                        panic!("missing connect request while collecting offers");
+                    };
+                    offers.push(offer_info);
+                } else if let Some(offer_send) = &mut self.offer_send {
+                    offer_send.send(offer_info);
+                }
+            }
+            Action::OfferRescinded { channel_id } => {
+                if let Some(channel) = self.runtime_channels.get_mut(&channel_id) {
+                    if let Some(revoke_send) = channel.revoke_send.take() {
+                        revoke_send.send(());
+                    }
+                }
+            }
+            Action::ChannelObservable { channel_id, event } => {
+                if let Some(channel) = self.runtime_channels.get(&channel_id) {
+                    match event {
+                        vmbus_client_core::ChannelObservable::ConnectionIdAssigned(id) => {
+                            channel.connection_id.store(id, Ordering::Release);
+                        }
+                        vmbus_client_core::ChannelObservable::ConnectionIdCleared => {
+                            channel.connection_id.store(0, Ordering::Release);
+                        }
+                        vmbus_client_core::ChannelObservable::Opened
+                        | vmbus_client_core::ChannelObservable::Closed
+                        | vmbus_client_core::ChannelObservable::Revoked => {}
+                        _ => {}
+                    }
+                }
+            }
+            Action::PauseComplete => outcome.pause_complete = true,
+            _ => {}
         }
     }
-}
 
-#[derive(Debug, Inspect)]
-#[inspect(external_tag)]
-enum GpadlState {
-    /// GpadlHeader has been sent to the host.
-    Offered(#[inspect(skip)] FailableRpc<(), ()>),
-    /// Host has responded with GpadlCreated.
-    Created,
-    /// GpadlTeardown message has been sent to the host.
-    TearingDown {
-        #[inspect(skip)]
-        rpcs: Vec<Rpc<(), ()>>,
-    },
+    fn handle_completion(
+        &mut self,
+        request_id: vmbus_client_core::RequestId,
+        result: vmbus_client_core::CompletionResult,
+    ) {
+        use vmbus_client_core::CompletionResult;
+        match result {
+            CompletionResult::Connect(result) => match result {
+                Ok(success) => {
+                    let Some(DispatchedRequest::Connect { version, .. }) =
+                        self.dispatched_requests.get_mut(&request_id)
+                    else {
+                        panic!("missing connect request");
+                    };
+                    *version = Some(success.version);
+                    self.drive_core(vmbus_client_core::Event::RequestOffers { request_id });
+                }
+                Err(error) => {
+                    let Some(DispatchedRequest::Connect { rpc, .. }) =
+                        self.dispatched_requests.remove(&request_id)
+                    else {
+                        panic!("missing connect request");
+                    };
+                    rpc.complete(Err(error.into()));
+                }
+            },
+            CompletionResult::RequestOffers(result) => {
+                let Some(DispatchedRequest::Connect {
+                    rpc,
+                    version,
+                    offers,
+                }) = self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing request-offers request");
+                };
+                match result {
+                    Ok(()) => {
+                        let (offer_send, offer_recv) = mesh::channel();
+                        self.offer_send = Some(offer_send);
+                        rpc.complete(Ok(ConnectResult {
+                            version: version.expect("connect completed first"),
+                            offers,
+                            offer_recv,
+                        }));
+                    }
+                    Err(error) => rpc.complete(Err(error.into())),
+                }
+            }
+            CompletionResult::Unload => {
+                let Some(DispatchedRequest::Unload(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing unload request");
+                };
+                rpc.complete(());
+            }
+            CompletionResult::ModifyConnection(result) => {
+                let Some(DispatchedRequest::ModifyConnection(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing modify-connection request");
+                };
+                rpc.complete(result);
+            }
+            CompletionResult::HvsockConnect(descriptor) => {
+                let Some(DispatchedRequest::HvsockConnect(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing hvsock request");
+                };
+                let offer = descriptor.map(|descriptor| {
+                    self.create_offer_info(descriptor.offer)
+                        .expect("core rejects duplicate channel offers")
+                });
+                rpc.complete(offer);
+            }
+            CompletionResult::OpenChannel(result) => {
+                let Some(DispatchedRequest::Open(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing open request");
+                };
+                match result {
+                    Ok(result) => rpc.complete(Ok(OpenOutput {
+                        redirected_event_flag: result.redirected_event_flag,
+                    })),
+                    Err(error) => rpc.fail(anyhow::Error::new(error)),
+                }
+            }
+            CompletionResult::ModifyChannel(result) => {
+                let Some(DispatchedRequest::ModifyChannel(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing modify-channel request");
+                };
+                rpc.complete(result);
+            }
+            CompletionResult::EstablishGpadl(result) => {
+                let Some(DispatchedRequest::EstablishGpadl(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing establish-gpadl request");
+                };
+                match result {
+                    Ok(()) => rpc.complete(Ok(())),
+                    Err(()) => rpc.fail(anyhow::anyhow!("gpadl creation failed")),
+                }
+            }
+            CompletionResult::TeardownGpadl => {
+                let Some(DispatchedRequest::TeardownGpadl(rpc)) =
+                    self.dispatched_requests.remove(&request_id)
+                else {
+                    panic!("missing teardown-gpadl request");
+                };
+                rpc.complete(());
+            }
+            CompletionResult::ReleaseChannel => {}
+            other => {
+                // `CompletionResult` is `#[non_exhaustive]`, so adding
+                // a new variant to `vmbus_client_core` will silently
+                // compile past this match. Rate-limit rather than
+                // panic — the wrapper is a trust boundary and a
+                // future protocol addition should not kill the vmbus
+                // client task for the whole VM.
+                tracelimit::warn_ratelimited!(
+                    ?other,
+                    request_id = request_id.0,
+                    "unhandled completion from vmbus_client_core; ignoring"
+                );
+            }
+        }
+    }
+
+    fn allocate_event_flag(&mut self, event: &Event) -> Result<u16> {
+        let flag = self
+            .core
+            .allocate_event_flag()
+            .map_err(anyhow::Error::new)?;
+        if let Err(err) = self.inner.synic.map_event(flag, event) {
+            self.core.free_event_flag(flag);
+            return Err(err);
+        }
+        Ok(flag)
+    }
+
+    fn restore_event_flag(&mut self, flag: u16, event: &Event) -> Result<()> {
+        self.core
+            .reserve_event_flag(flag)
+            .map_err(anyhow::Error::new)?;
+        if let Err(err) = self.inner.synic.map_event(flag, event) {
+            self.core.free_event_flag(flag);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn revoked_channel_with_pending_request(&self) -> Option<(ChannelId, &'static str)> {
+        self.core
+            .channels()
+            .iter()
+            .find_map(|(&channel_id, entry)| {
+                if !matches!(entry.phase, vmbus_client_core::ChannelPhase::Revoked) {
+                    return None;
+                }
+                if entry.modify_request_id.is_some() {
+                    return Some((channel_id, "modify"));
+                }
+                entry.gpadls.values().find_map(|phase| match phase {
+                    vmbus_client_core::GpadlPhase::Offered { .. } => {
+                        Some((channel_id, "creating gpadl"))
+                    }
+                    vmbus_client_core::GpadlPhase::TearingDown { .. } => {
+                        Some((channel_id, "tearing down gpadl"))
+                    }
+                    vmbus_client_core::GpadlPhase::Created => None,
+                })
+            })
+    }
 }
 
 #[derive(Inspect)]
@@ -1651,22 +1222,9 @@ enum OutgoingMessageState {
 }
 
 impl OutgoingMessages {
-    fn send<T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout>(
-        &mut self,
-        msg: &T,
-    ) {
-        self.send_with_data(msg, &[])
-    }
-
-    fn send_with_data<
-        T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
-    >(
-        &mut self,
-        msg: &T,
-        data: &[u8],
-    ) {
-        tracing::trace!(typ = ?T::MESSAGE_TYPE, "Sending message to host");
-        let msg = OutgoingMessage::with_data(msg, data);
+    fn send_raw(&mut self, data: Vec<u8>) {
+        let msg = OutgoingMessage::from_message(&data)
+            .expect("vmbus_client_core emitted an invalid outgoing message");
         if self.queued.is_empty() && self.state == OutgoingMessageState::Running {
             let r = self.poster.poll_post_message(
                 &mut Context::from_waker(std::task::Waker::noop()),
@@ -1703,8 +1261,11 @@ impl OutgoingMessages {
                 }
             }
             OutgoingMessageState::SendingPauseMessage => {
-                send(&OutgoingMessage::new(&protocol::Pause)).await;
-                tracing::trace!("sent pause message");
+                while let Some(msg) = self.queued.front() {
+                    send(msg).await;
+                    tracing::trace!("sent queued message while pausing");
+                    self.queued.pop_front();
+                }
                 self.state = OutgoingMessageState::Paused;
             }
             OutgoingMessageState::Paused => {}
@@ -1716,9 +1277,6 @@ impl OutgoingMessages {
     fn pause(&mut self) {
         assert_eq!(self.state, OutgoingMessageState::Running);
         self.state = OutgoingMessageState::SendingPauseMessage;
-        // Queue a resume message to be sent later.
-        self.queued
-            .push_front(OutgoingMessage::new(&protocol::Resume));
     }
 
     /// Force a pause by setting the state to Paused. This is used when the
@@ -1742,8 +1300,6 @@ impl OutgoingMessages {
 #[derive(Inspect)]
 struct ClientTaskInner {
     messages: OutgoingMessages,
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
-    teardown_gpadls: HashMap<GpadlId, ChannelId>,
     #[inspect(skip)]
     channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
     synic: SynicState,
@@ -1753,81 +1309,8 @@ struct ClientTaskInner {
 struct SynicState {
     #[inspect(skip)]
     event_client: Arc<dyn SynicEventClient>,
-    #[inspect(iter_by_index)]
-    event_flag_state: Vec<bool>,
-}
-
-#[derive(Inspect, Default)]
-#[inspect(transparent)]
-struct ChannelList(
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")] HashMap<ChannelId, Channel>,
-);
-
-/// A reference to a channel that can be used to remove the channel from the map
-/// as well.
-struct ChannelRef<'a>(hash_map::OccupiedEntry<'a, ChannelId, Channel>);
-
-/// A tag value used to indicate that [`ChannelRef::try_release`] has been called.
-/// This is useful as a return value for methods that might transition a channel
-/// into a fully released state.
-struct TriedRelease(());
-
-impl ChannelRef<'_> {
-    /// If the channel has been fully released (revoked, released by the client,
-    /// no pending requests), notifies the server and removes this channel from
-    /// the map.
-    fn try_release(self, messages: &mut OutgoingMessages) -> TriedRelease {
-        if self.is_client_released
-            && matches!(self.state, ChannelState::Revoked)
-            && self.pending_request().is_none()
-        {
-            let channel_id = *self.0.key();
-            tracelimit::info_ratelimited!(
-                channel_id = channel_id.0,
-                key = %OfferKey::from(&self.offer),
-                "releasing channel"
-            );
-
-            messages.send(&protocol::RelIdReleased { channel_id });
-            self.0.remove();
-        }
-        TriedRelease(())
-    }
-}
-
-impl Deref for ChannelRef<'_> {
-    type Target = Channel;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.get()
-    }
-}
-
-impl DerefMut for ChannelRef<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.get_mut()
-    }
-}
-
-impl ChannelList {
-    fn revoked_channel_with_pending_request(&self) -> Option<(ChannelId, &'static str)> {
-        self.0.iter().find_map(|(&id, channel)| {
-            if !matches!(channel.state, ChannelState::Revoked) {
-                return None;
-            }
-            Some((id, channel.pending_request()?))
-        })
-    }
-
-    #[track_caller]
-    fn get_mut(&mut self, channel_id: ChannelId) -> ChannelRef<'_> {
-        match self.0.entry(channel_id) {
-            hash_map::Entry::Occupied(entry) => ChannelRef(entry),
-            hash_map::Entry::Vacant(_) => {
-                panic!("channel {:?} not found", channel_id);
-            }
-        }
-    }
+    #[inspect(with = "|x| x.len()")]
+    events: HashMap<u16, Event>,
 }
 
 impl SynicState {
@@ -1851,54 +1334,17 @@ impl SynicState {
         })
     }
 
-    const MAX_EVENT_FLAGS: u16 = 2047;
-
-    fn allocate_event_flag(&mut self, event: &Event) -> Result<u16> {
-        let i = self
-            .event_flag_state
-            .iter()
-            .position(|&used| !used)
-            .ok_or(())
-            .or_else(|()| {
-                if self.event_flag_state.len() >= Self::MAX_EVENT_FLAGS as usize {
-                    anyhow::bail!("out of event flags");
-                }
-                self.event_flag_state.push(false);
-                Ok(self.event_flag_state.len() - 1)
-            })?;
-
-        let event_flag = (i + 1) as u16;
+    fn map_event(&mut self, event_flag: u16, event: &Event) -> Result<()> {
         self.event_client
             .map_event(event_flag, event)
             .context("failed to map event")?;
-        self.event_flag_state[i] = true;
-        Ok(event_flag)
-    }
-
-    fn restore_event_flag(&mut self, flag: u16, event: &Event) -> Result<()> {
-        let i = (flag as usize)
-            .checked_sub(1)
-            .context("invalid event flag")?;
-        if i >= Self::MAX_EVENT_FLAGS as usize {
-            anyhow::bail!("invalid event flag");
-        }
-        if self.event_flag_state.len() <= i {
-            self.event_flag_state.resize(i + 1, false);
-        }
-        if self.event_flag_state[i] {
-            anyhow::bail!("event flag already in use");
-        }
-        self.event_client
-            .map_event(flag, event)
-            .context("failed to map event")?;
-        self.event_flag_state[i] = true;
+        assert!(self.events.insert(event_flag, event.clone()).is_none());
         Ok(())
     }
 
     fn free_event_flag(&mut self, flag: u16) {
-        let i = flag as usize - 1;
-        assert!(i < self.event_flag_state.len());
-        self.event_flag_state[i] = false;
+        assert!(self.events.remove(&flag).is_some());
+        self.event_client.unmap_event(flag);
     }
 }
 
@@ -3087,8 +2533,7 @@ mod tests {
     }
 
     #[async_test]
-    #[should_panic(expected = "channel should not exist")]
-    async fn test_reoffer_in_use_rel_id(driver: DefaultDriver) {
+    async fn test_reoffer_in_use_rel_id_is_dropped(driver: DefaultDriver) {
         let (mut server, mut client) = test_init(&driver);
         let mut connection = server.get_channels(&mut client, 1).await;
         let [channel] = connection.offers.try_into().unwrap();
@@ -3102,8 +2547,8 @@ mod tests {
 
         channel.revoke_recv.await.unwrap();
 
-        // This offer will cause a panic since the rel id is still in use.
-        let offer = protocol::OfferChannel {
+        // This offer is invalid because the rel id is still in use.
+        let duplicate_offer = protocol::OfferChannel {
             interface_id: Guid::new_random(),
             instance_id: Guid::new_random(),
             rsvd: [0; 4],
@@ -3119,9 +2564,16 @@ mod tests {
             connection_id: 0,
         };
 
-        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+        server.send(in_msg(MessageType::OFFER_CHANNEL, duplicate_offer));
 
-        connection.offer_recv.next().await;
+        let valid_offer = protocol::OfferChannel {
+            channel_id: ChannelId(1),
+            ..duplicate_offer
+        };
+        server.send(in_msg(MessageType::OFFER_CHANNEL, valid_offer));
+
+        let received = connection.offer_recv.next().await.unwrap();
+        assert_eq!(received.offer, valid_offer);
     }
 
     #[async_test]
