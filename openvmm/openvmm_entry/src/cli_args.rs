@@ -3640,6 +3640,13 @@ impl FromStr for PcieGenericInitiatorCli {
         if args.memory_base.is_some() != args.memory_length.is_some() {
             anyhow::bail!("memory_base and memory_length must be specified together");
         }
+        if args
+            .memory_length
+            .as_ref()
+            .is_some_and(|length| length.0 == 0)
+        {
+            anyhow::bail!("memory_length must be nonzero");
+        }
 
         Ok(PcieGenericInitiatorCli {
             port_name: args.port_name,
@@ -5182,6 +5189,12 @@ mod tests {
         assert!(PcieGenericInitiatorCli::from_str("rp0=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=,node=1").is_err());
         assert!(PcieGenericInitiatorCli::from_str("port=rp0,node=x").is_err());
+        assert!(
+            PcieGenericInitiatorCli::from_str(
+                "port=rp0,node=1,memory_base=0x8000000000,memory_length=0"
+            )
+            .is_err()
+        );
         assert!(
             PcieGenericInitiatorCli::from_str("port=rp0,node=1,memory_base=0x8000000000").is_err()
         );
