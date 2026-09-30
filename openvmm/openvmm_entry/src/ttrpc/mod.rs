@@ -2356,11 +2356,10 @@ async fn build_virtio_device(
             socket_path,
             guest_cid,
         }) => {
-            let guest_cid = virtio_vsock_guest_cid(guest_cid)?;
             let listener = UnixListener::bind(&socket_path)
                 .with_context(|| format!("failed to bind virtio-vsock socket: {socket_path}"))?;
             virtio_resources::vsock::VirtioVsockHandle {
-                guest_cid,
+                guest_cid: guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID),
                 base_path: socket_path,
                 listener,
             }
@@ -2376,17 +2375,6 @@ async fn build_virtio_device(
 }
 
 const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
-
-fn virtio_vsock_guest_cid(guest_cid: Option<u64>) -> anyhow::Result<u64> {
-    let guest_cid = guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID);
-    anyhow::ensure!(
-        (OPENVMM_DEFAULT_VSOCK_GUEST_CID..u64::from(u32::MAX)).contains(&guest_cid),
-        "virtio-vsock guest CID must be between {} and {}",
-        OPENVMM_DEFAULT_VSOCK_GUEST_CID,
-        u32::MAX - 1
-    );
-    Ok(guest_cid)
-}
 
 fn build_virtio_fs(
     config: vmservice::VirtioFs,
@@ -2607,25 +2595,6 @@ mod tests {
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());
-    }
-
-    #[test]
-    fn validates_virtio_vsock_guest_cid() {
-        assert_eq!(
-            virtio_vsock_guest_cid(None).unwrap(),
-            OPENVMM_DEFAULT_VSOCK_GUEST_CID
-        );
-        assert_eq!(
-            virtio_vsock_guest_cid(Some(OPENVMM_DEFAULT_VSOCK_GUEST_CID)).unwrap(),
-            OPENVMM_DEFAULT_VSOCK_GUEST_CID
-        );
-        assert_eq!(
-            virtio_vsock_guest_cid(Some(u64::from(u32::MAX - 1))).unwrap(),
-            u64::from(u32::MAX - 1)
-        );
-        assert!(virtio_vsock_guest_cid(Some(2)).is_err());
-        assert!(virtio_vsock_guest_cid(Some(u64::from(u32::MAX))).is_err());
-        assert!(virtio_vsock_guest_cid(Some(u64::from(u32::MAX) + 1)).is_err());
     }
 
     #[test]
