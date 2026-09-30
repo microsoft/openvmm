@@ -33,6 +33,7 @@ dependencies = [
  "cxl_spec",
  "guid",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -9140,6 +9141,7 @@ name = "underhill_core"
 version = "0.0.0"
 dependencies = [
  "aarch64defs",
+ "acpi",
  "acpi_spec",
  "anyhow",
  "async-trait",
