@@ -55,6 +55,11 @@ pub mod spec_services;
 mod spec_services;
 
 const WIN_CERT_REVISION_2_0: u16 = 0x0200;
+const MAX_NVRAM_COMMAND_BUFFER_SIZE: u32 = 4 * 1024 * 1024;
+
+fn nvram_command_buffer_len(len: u32) -> Option<usize> {
+    (len <= MAX_NVRAM_COMMAND_BUFFER_SIZE).then_some(len as usize)
+}
 
 /// A Secure Boot signature's type, owner, and payload used for set comparison.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -793,6 +798,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nvram_command_buffer_size_is_bounded() {
+        assert_eq!(
+            nvram_command_buffer_len(MAX_NVRAM_COMMAND_BUFFER_SIZE),
+            Some(MAX_NVRAM_COMMAND_BUFFER_SIZE as usize)
+        );
+        assert_eq!(
+            nvram_command_buffer_len(MAX_NVRAM_COMMAND_BUFFER_SIZE + 1),
+            None
+        );
+        assert_eq!(nvram_command_buffer_len(u32::MAX), None);
+    }
+
     #[async_test]
     async fn missing_secure_boot_variable_is_reported_as_not_present() {
         let mut nvram = nvram_services(InMemoryNvram::new());
@@ -1068,7 +1086,10 @@ impl UefiDevice {
                 let mut command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
 
                 let name = if command.name_address.get() != 0 {
-                    let mut buf = vec![0; command.name_bytes as usize];
+                    let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                        return Ok(EfiStatus::INVALID_PARAMETER);
+                    };
+                    let mut buf = vec![0; name_len];
                     self.gm
                         .read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
@@ -1105,7 +1126,10 @@ impl UefiDevice {
                 let command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
 
                 let name = if command.name_address.get() != 0 {
-                    let mut buf = vec![0; command.name_bytes as usize];
+                    let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                        return Ok(EfiStatus::INVALID_PARAMETER);
+                    };
+                    let mut buf = vec![0; name_len];
                     self.gm
                         .read_at(command.name_address.into(), buf.as_mut_slice())?;
                     Some(buf)
@@ -1114,7 +1138,10 @@ impl UefiDevice {
                 };
 
                 let data = if command.data_address.get() != 0 {
-                    let mut buf = vec![0; command.data_bytes as usize];
+                    let Some(data_len) = nvram_command_buffer_len(command.data_bytes) else {
+                        return Ok(EfiStatus::INVALID_PARAMETER);
+                    };
+                    let mut buf = vec![0; data_len];
                     self.gm
                         .read_at(command.data_address.into(), buf.as_mut_slice())?;
                     Some(buf)
@@ -1142,7 +1169,10 @@ impl UefiDevice {
 
                 let name = if desc.command == NvramCommand::GET_NEXT_VARIABLE_NAME {
                     if command.name_address.get() != 0 {
-                        let mut buf = vec![0; command.name_bytes as usize];
+                        let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                            return Ok(EfiStatus::INVALID_PARAMETER);
+                        };
+                        let mut buf = vec![0; name_len];
                         self.gm
                             .read_at(command.name_address.into(), buf.as_mut_slice())?;
                         Some(buf)
@@ -1202,7 +1232,10 @@ impl UefiDevice {
                 let command: uefi_specs::hyperv::nvram::NvramDebugStringCommand =
                     self.gm.read_plain(command_addr)?;
 
-                let mut data = vec![0u16; command.len as usize / 2];
+                let Some(data_len) = nvram_command_buffer_len(command.len) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
+                let mut data = vec![0u16; data_len / 2];
                 self.gm
                     .read_at(command.address.into(), data.as_mut_bytes())?;
 
