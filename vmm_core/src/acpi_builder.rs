@@ -681,12 +681,18 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             iort_extra.extend_from_slice(&id.to_ne_bytes());
         }
 
+        struct SmmuNode<'a> {
+            config: &'a AcpiSmmuConfig,
+            offset: u32,
+        }
+
         // SMMUv3 nodes come after ITS Group (if present).
-        // Build a map from RC index → SMMU node offset for RC routing.
-        let mut smmu_rc_offsets: Vec<(u32, u32, bool)> = Vec::new();
+        let mut smmu_nodes = Vec::new();
         for cfg in smmu_configs {
-            let smmu_node_offset = iort::IORT_NODE_OFFSET + iort_extra.len() as u32;
-            smmu_rc_offsets.push((cfg.rc_index, smmu_node_offset, cfg.ats_supported));
+            smmu_nodes.push(SmmuNode {
+                config: cfg,
+                offset: iort::IORT_NODE_OFFSET + iort_extra.len() as u32,
+            });
 
             if has_its {
                 // The SMMUv3 node needs two ID mappings when ITS is present:
@@ -753,35 +759,28 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             // - If this RC has an SMMU, route to the SMMU node.
             // - Otherwise, if an ITS is present, route directly to the ITS.
             // - Otherwise, no mapping (mapping_count = 0).
-            let smmu_offset = smmu_rc_offsets
+            let smmu = smmu_nodes
                 .iter()
-                .find(|(idx, _, _)| *idx == bridge.index)
-                .map(|(_, off, ats_supported)| (*off, *ats_supported));
-
-            let (rc_mapping_count, rc_target_offset, rc_has_smmu, ats_supported) =
-                if let Some((off, ats_supported)) = smmu_offset {
-                    (1, off, true, ats_supported)
-                } else if has_its {
-                    (1, its_group_offset, false, false)
-                } else {
-                    (0, 0, false, false)
-                };
+                .find(|node| node.config.rc_index == bridge.index);
+            let target_offset = smmu
+                .map(|node| node.offset)
+                .or_else(|| has_its.then_some(its_group_offset));
 
             let rc = iort::IortPciRootComplex::new(
                 bridge.index,
                 bridge.segment,
-                rc_mapping_count,
-                ats_supported,
+                u32::from(target_offset.is_some()),
+                smmu.is_some_and(|node| node.config.ats_supported),
             );
             iort_extra.extend_from_slice(rc.as_bytes());
 
-            if rc_mapping_count > 0 {
+            if let Some(target_offset) = target_offset {
                 // When the RC has an SMMU, output_base is 0 because stream
                 // IDs are plain BDFs within the per-RC SMMU. The segment
                 // offset is applied in the SMMU→ITS mapping instead.
                 // When the RC goes directly to the ITS, output_base embeds
                 // the segment for globally unique ITS device IDs.
-                let output_base = if rc_has_smmu {
+                let output_base = if smmu.is_some() {
                     0
                 } else {
                     (bridge.segment as u32) << 16
@@ -789,11 +788,11 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
                 iort_extra.extend_from_slice(
                     iort::IortIdMapping::new(
-                        0,                // input_base
-                        0xFFFF,           // id_count (full 16-bit BDF range)
-                        output_base,      // output_base
-                        rc_target_offset, // output_reference
-                        0,                // flags
+                        0,             // input_base
+                        0xFFFF,        // id_count (full 16-bit BDF range)
+                        output_base,   // output_base
+                        target_offset, // output_reference
+                        0,             // flags
                     )
                     .as_bytes(),
                 );
@@ -803,15 +802,11 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         // RMR (Reserved Memory Range) nodes for SMMUs with reserved IOVA
         // ranges (e.g., MSI windows). Each RMR node tells the guest kernel
         // to identity-map the reserved ranges in S1 page tables.
-        for (cfg_idx, cfg) in smmu_configs.iter().enumerate() {
+        for (cfg_idx, node) in smmu_nodes.iter().enumerate() {
+            let cfg = node.config;
             if cfg.reserved_iova_ranges.is_empty() {
                 continue;
             }
-            let smmu_offset = smmu_rc_offsets
-                .iter()
-                .find(|(idx, _, _)| *idx == cfg.rc_index)
-                .map(|(_, off, _)| *off)
-                .expect("RMR config references a valid SMMU");
 
             let rmr_count = cfg.reserved_iova_ranges.len() as u32;
             // One ID mapping pointing to the SMMUv3 node, covering the
@@ -832,7 +827,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                     0,           // input_base
                     0xFFFF,      // id_count (full 16-bit BDF range)
                     0,           // output_base
-                    smmu_offset, // output_reference → SMMUv3 node
+                    node.offset, // output_reference → SMMUv3 node
                     0,           // flags
                 )
                 .as_bytes(),

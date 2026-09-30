@@ -533,11 +533,6 @@ impl SmmuSharedState {
         self.accel
     }
 
-    /// Returns the currently advertised output address size in bits.
-    pub(crate) fn oas_bits(&self) -> u8 {
-        self.capabilities().oas_bits
-    }
-
     /// Returns the currently advertised SubstreamID size in bits.
     pub fn ssid_bits(&self) -> u8 {
         self.capabilities().ssid_bits
@@ -552,10 +547,12 @@ impl SmmuSharedState {
         self.inner.read().capabilities
     }
 
-    /// Freezes guest-visible capabilities on start or successful restore.
+    /// Freezes and returns guest-visible capabilities on start or successful restore.
     /// Later binds only validate compatibility.
-    pub(crate) fn freeze_capabilities(&self) {
-        self.inner.write().capabilities_frozen = true;
+    pub(crate) fn freeze_capabilities(&self) -> SmmuCapabilities {
+        let mut inner = self.inner.write();
+        inner.capabilities_frozen = true;
+        inner.capabilities
     }
 
     /// Binds this vSMMU to the physical SMMU and host vIOMMU backing an
@@ -2940,7 +2937,7 @@ mod tests {
             ..compatible_host_caps()
         };
         state.resolve_host_caps(caps).unwrap();
-        assert_eq!(state.oas_bits(), 48);
+        assert_eq!(state.capabilities().oas_bits, 48);
     }
 
     #[test]
@@ -2949,14 +2946,14 @@ mod tests {
         state.freeze_capabilities();
 
         state.resolve_host_caps(compatible_host_caps()).unwrap();
-        assert_eq!(state.oas_bits(), 40);
-        assert_eq!(state.ssid_bits(), 0);
+        assert_eq!(state.capabilities().oas_bits, 40);
+        assert_eq!(state.capabilities().ssid_bits, 0);
         assert!(!state.ats_supported());
 
         // A later device with the same physical-SMMU capabilities is accepted
         // without changing the guest-visible OAS.
         state.resolve_host_caps(compatible_host_caps()).unwrap();
-        assert_eq!(state.oas_bits(), 40);
+        assert_eq!(state.capabilities().oas_bits, 40);
     }
 
     #[test]
@@ -2970,7 +2967,7 @@ mod tests {
 
         let err = state.resolve_host_caps(caps).unwrap_err().to_string();
         assert!(err.contains("advertised SMMU OAS 40 exceeds host SMMU OAS 36"));
-        assert_eq!(state.oas_bits(), 40);
+        assert_eq!(state.capabilities().oas_bits, 40);
     }
 
     #[test]
@@ -2982,9 +2979,9 @@ mod tests {
         };
         let err = state.resolve_host_caps(caps).unwrap_err().to_string();
         assert!(err.contains("exceeds host SMMU OAS"), "{err}");
-        assert_eq!(state.ssid_bits(), 0);
+        assert_eq!(state.capabilities().ssid_bits, 0);
         assert!(!state.ats_supported());
-        assert_eq!(state.oas_bits(), 52);
+        assert_eq!(state.capabilities().oas_bits, 52);
         assert!(state.inner.read().resolved_host_caps.is_none());
     }
 

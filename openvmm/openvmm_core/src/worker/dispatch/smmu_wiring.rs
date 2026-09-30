@@ -165,48 +165,36 @@ pub(super) fn setup_smmu(
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);
 
-        // Resolve the requested OAS into a backend policy. Both policy variants
-        // carry a concrete OAS: `Fixed` the requested value, `Auto` the
-        // provisional default (see `DEFAULT_AUTO_OAS_BITS`) advertised until,
-        // for accel, the host SMMU's OAS is adopted at device attach.
-        let oas_policy = match oas {
-            openvmm_defs::config::SmmuOas::Auto => smmu::SmmuOasPolicy::Auto {
-                provisional: DEFAULT_AUTO_OAS_BITS,
-            },
-            openvmm_defs::config::SmmuOas::Fixed(bits) => {
-                if !smmu::VALID_OAS_BITS.contains(&bits) {
-                    anyhow::bail!(
-                        "SMMU on root complex {}: OAS {bits} is not a valid SMMUv3 output \
-                         address size (expected one of {:?})",
-                        rc.name,
-                        smmu::VALID_OAS_BITS
-                    );
-                }
-                smmu::SmmuOasPolicy::Fixed(bits)
-            }
-        };
-
         let smmu_config = smmu::SmmuConfig {
             sidsize: 16,
-            oas_policy,
-            ssid_policy: resolve_ssid_policy(ssidsize)
-                .with_context(|| format!("SMMU on root complex {}", rc.name))?,
+            oas_policy: match oas {
+                openvmm_defs::config::SmmuOas::Auto => smmu::SmmuOasPolicy::Auto {
+                    provisional: DEFAULT_AUTO_OAS_BITS,
+                },
+                openvmm_defs::config::SmmuOas::Fixed(bits) => smmu::SmmuOasPolicy::Fixed(bits),
+            },
+            ssid_policy: match ssidsize {
+                openvmm_defs::config::SmmuSsidSize::Auto => smmu::SmmuSsidPolicy::Auto,
+                openvmm_defs::config::SmmuSsidSize::Fixed(bits) => {
+                    smmu::SmmuSsidPolicy::Fixed(bits)
+                }
+            },
             accel,
         };
-        let smmu_device =
-            chipset_builder
-                .arc_mutex_device(device_name.as_str())
-                .add(|services| {
-                    let evtq_irq = services.new_line(IRQ_LINE_SET, "evtq", evtq_irq_vector);
-                    let gerror_irq = services.new_line(IRQ_LINE_SET, "gerror", gerror_irq_vector);
-                    smmu::SmmuDevice::new(
-                        smmu.base,
-                        gm.clone(),
-                        &smmu_config,
-                        Some(evtq_irq),
-                        Some(gerror_irq),
-                    )
-                })?;
+        let smmu_device = chipset_builder
+            .arc_mutex_device(device_name.as_str())
+            .try_add(|services| {
+                let evtq_irq = services.new_line(IRQ_LINE_SET, "evtq", evtq_irq_vector);
+                let gerror_irq = services.new_line(IRQ_LINE_SET, "gerror", gerror_irq_vector);
+                smmu::SmmuDevice::new(
+                    smmu.base,
+                    gm.clone(),
+                    &smmu_config,
+                    Some(evtq_irq),
+                    Some(gerror_irq),
+                )
+            })
+            .with_context(|| format!("SMMU on root complex {}", rc.name))?;
 
         let shared_state = smmu_device.lock().shared_state().clone();
         shared_states[rc_pos] = Some(shared_state.clone());
@@ -241,18 +229,6 @@ pub(super) fn setup_smmu(
     })
 }
 
-fn resolve_ssid_policy(
-    ssidsize: openvmm_defs::config::SmmuSsidSize,
-) -> anyhow::Result<smmu::SmmuSsidPolicy> {
-    match ssidsize {
-        openvmm_defs::config::SmmuSsidSize::Auto => Ok(smmu::SmmuSsidPolicy::Auto),
-        openvmm_defs::config::SmmuSsidSize::Fixed(bits) => {
-            anyhow::ensure!(bits <= 20, "SSID width {bits} exceeds the maximum of 20");
-            Ok(smmu::SmmuSsidPolicy::Fixed(bits))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,15 +237,6 @@ mod tests {
     use vmcore::device_state::ChangeDeviceState;
 
     const TEST_RANGE: memory_range::MemoryRange = memory_range::MemoryRange::new(0x1000..0x20_0000);
-
-    #[test]
-    fn ssid_policy_rejects_invalid_programmatic_configuration() {
-        use openvmm_defs::config::SmmuSsidSize;
-
-        for bits in [21, 31, u8::MAX] {
-            assert!(resolve_ssid_policy(SmmuSsidSize::Fixed(bits)).is_err());
-        }
-    }
 
     #[pal_async::async_test]
     async fn firmware_capabilities_follow_device_start() {
@@ -302,7 +269,8 @@ mod tests {
                 },
                 None,
                 None,
-            );
+            )
+            .unwrap();
             let state = device.shared_state().clone();
             let viommu = Arc::new(Viommu);
             let mut idr = std::array::from_fn(|index| read_idr(&mut device, index as u64));
