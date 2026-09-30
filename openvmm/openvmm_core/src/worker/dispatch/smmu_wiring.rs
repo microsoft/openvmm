@@ -141,20 +141,18 @@ pub(super) fn setup_smmu(
         vec![None; pcie_host_bridges.len()];
     let mut devices = Vec::new();
 
-    // Iterate RCs with SMMU enabled, zipping with resolved MMIO+SPI resources.
-    let smmu_rcs = root_complexes
-        .iter()
-        .enumerate()
-        .filter_map(|(rc_pos, rc)| match &rc.iommu {
-            Some(openvmm_defs::config::PcieIommuConfig::Smmu {
-                accel,
-                oas,
-                ssidsize,
-            }) => Some((rc_pos, rc, *accel, *oas, *ssidsize)),
-            _ => None,
-        });
+    let mut resources = resolved.instances.iter();
+    for (rc_pos, rc) in root_complexes.iter().enumerate() {
+        let Some(openvmm_defs::config::PcieIommuConfig::Smmu {
+            accel,
+            oas,
+            ssidsize,
+        }) = rc.iommu
+        else {
+            continue;
+        };
+        let smmu = resources.next().expect("resources resolved for every SMMU");
 
-    for ((rc_pos, rc, accel, oas, ssidsize), smmu) in smmu_rcs.zip(&resolved.instances) {
         anyhow::ensure!(
             !accel || acpi_available,
             "SMMU on root complex {}: accelerated translation requires ACPI",
@@ -222,6 +220,8 @@ pub(super) fn setup_smmu(
             shared_state,
         });
     }
+
+    assert!(resources.next().is_none(), "unused SMMU resources");
 
     Ok(SmmuDevicesResult {
         shared_states,
