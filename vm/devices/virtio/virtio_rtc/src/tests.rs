@@ -234,6 +234,62 @@ async fn rtc_reports_clock_capabilities(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rtc_handles_cross_requests(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    for (msg_type, response_size, known_counter_status) in [
+        (
+            spec::REQ_CROSS_CAP,
+            size_of::<spec::RespCrossCap>(),
+            spec::S_OK,
+        ),
+        (
+            spec::REQ_READ_CROSS,
+            size_of::<spec::RespReadCross>(),
+            spec::S_EOPNOTSUPP,
+        ),
+    ] {
+        for (counter, expected_status) in [
+            (spec::COUNTER_ARM_VCT, known_counter_status),
+            (spec::COUNTER_X86_TSC, known_counter_status),
+            (spec::COUNTER_INVALID, spec::S_EINVAL),
+            (2, spec::S_EOPNOTSUPP),
+        ] {
+            let request = spec::ReqCross {
+                head: head(msg_type),
+                clock_id: virtio::spec::u16_le::new(0),
+                hw_counter: counter,
+                reserved: [0; 5],
+            };
+            harness
+                .mem
+                .write_at(REQUEST_ADDR, request.as_bytes())
+                .unwrap();
+            let (written, response) = harness
+                .submit_and_wait(
+                    REQUEST_ADDR,
+                    size_of::<spec::ReqCross>() as u32,
+                    response_size as u32,
+                )
+                .await;
+            assert_eq!(written, response_size as u32);
+            assert_eq!(
+                response[0], expected_status,
+                "message {msg_type:#06x}, counter {counter:#04x}"
+            );
+            if msg_type == spec::REQ_CROSS_CAP && expected_status == spec::S_OK {
+                let response = spec::RespCrossCap::read_from_bytes(&response).unwrap();
+                assert_eq!(response.flags, 0);
+                assert_eq!(response.head.reserved, [0; 7]);
+                assert_eq!(response.reserved, [0; 7]);
+            }
+        }
+    }
+    harness.device.stop_queue(0).await.unwrap();
+}
+
+#[async_test]
 async fn rtc_rejects_unknown_clock(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
