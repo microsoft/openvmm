@@ -23,7 +23,9 @@
 mod prepare;
 mod ready;
 
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use prepare::prepare_snapshot_restore_for_config;
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use ready::connect_restore_ready_sink;
 pub(crate) use ready::restore_ready_sink;
 
