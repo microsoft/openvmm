@@ -415,31 +415,14 @@ pub(super) fn vp_index_for_apic_id(
         .find_map(|(vp_index, candidate)| (candidate == apic_id).then_some(vp_index))
 }
 
-pub(super) fn snp_host_access_flags(visibility: u32) -> Option<u8> {
-    let acquire = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE;
-    let readable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE;
-    let writable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE;
-    match visibility {
-        0 => Some(0),
-        // The current MSHV kernel tests the readable flag when setting
-        // writable access, so a read-only request would become read-write.
-        1 => None,
-        3 => Some(acquire | readable | writable),
-        _ => None,
-    }
-}
-
 pub(crate) fn acquire_snp_host_access(
     partition: &MshvPartitionInner,
     addr: u64,
     size: u64,
 ) -> anyhow::Result<()> {
-    // TODO: The current prototype implementation does not coordinate
-    // acquisition with guest visibility changes. In particular, there is no
-    // per-page state preventing a fault on another thread from acquiring
-    // access while a GPA attribute intercept is revoking it. A complete
-    // implementation must serialize acquisition with revocation and block or
-    // fail this request if the guest is making the page private.
+    // TODO: Coordinate acquisition with guest visibility changes using
+    // per-page state before supporting revocation. GPA attribute intercepts
+    // currently halt the VP rather than revoke host access.
     anyhow::ensure!(
         addr.is_multiple_of(hvdef::HV_PAGE_SIZE)
             && size.is_multiple_of(hvdef::HV_PAGE_SIZE)
@@ -468,40 +451,6 @@ pub(crate) fn acquire_snp_host_access(
     };
     partition.vmfd.modify_gpa_host_access(args)?;
     Ok(())
-}
-
-pub(super) fn parse_snp_gpa_range(
-    range: hvdef::hypercall::HvGpaRange,
-) -> Result<(u64, u64), VpHaltReason> {
-    const PAGES_PER_2MB: u64 = 512;
-    const PAGES_PER_1GB: u64 = 512 * PAGES_PER_2MB;
-
-    let page = range.as_extended();
-    let unit_count = page
-        .additional_pages()
-        .checked_add(1)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    if !page.large_page() {
-        return Ok((page.gpa_page_number(), unit_count));
-    }
-
-    let page = range.as_extended_large_page();
-    let pages_per_unit = if page.page_size() {
-        PAGES_PER_1GB
-    } else {
-        PAGES_PER_2MB
-    };
-    if page.page_size() && !page.gpa_large_page_number().is_multiple_of(PAGES_PER_2MB) {
-        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-    }
-    let start_pfn = page
-        .gpa_large_page_number()
-        .checked_mul(PAGES_PER_2MB)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    let page_count = unit_count
-        .checked_mul(pages_per_unit)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    Ok((start_pfn, page_count))
 }
 
 pub(super) fn sanitize_snp_cpuid(
@@ -1109,7 +1058,7 @@ impl MshvProcessor<'_> {
                 Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
             }
             HvMessageType::HvMessageTypeGpaAttributeIntercept => {
-                self.handle_snp_gpa_attribute_intercept(exit)
+                Self::handle_snp_gpa_attribute_intercept(exit)
             }
             HvMessageType::HvMessageTypeHypercallIntercept => {
                 tracing::trace!("HYPERCALL_INTERCEPT");
@@ -1175,92 +1124,36 @@ impl MshvProcessor<'_> {
         Ok(())
     }
 
-    pub(super) fn modify_gpa_host_access(
-        &self,
-        gpas: &[u64],
-        flags: u8,
-    ) -> Result<(), VpHaltReason> {
-        if gpas.is_empty() {
-            return Ok(());
-        }
-
-        let mut buf =
-            HeaderVec::<ModifyGpaHostAccessHeader, u64, 0>::new(ModifyGpaHostAccessHeader {
-                flags,
-                rsvd: [0; 7],
-                page_count: gpas.len() as u64,
-            });
-        buf.extend_tail_from_slice(gpas);
-        // SAFETY: The custom header matches `mshv_modify_gpa_host_access`
-        // followed by `page_count` contiguous GPA values. Despite the UAPI
-        // field name `guest_pfns`, the kernel converts each entry with
-        // `HVPFN_DOWN`, so the variable array contains byte GPAs.
-        let args = unsafe {
-            &*buf
-                .as_ptr()
-                .cast::<mshv_bindings::mshv_modify_gpa_host_access>()
-        };
-        self.partition
-            .vmfd
-            .modify_gpa_host_access(args)
-            .map_err(|err| {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    first_gpa = gpas[0],
-                    page_count = gpas.len(),
-                    flags,
-                    "failed to modify SNP GPA host access"
-                );
-                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
-            })
-    }
-
     pub(super) fn handle_snp_gpa_attribute_intercept(
-        &self,
         message: &HvMessage,
     ) -> Result<(), VpHaltReason> {
-        const BATCH_PAGES: usize = 256;
         let info = message.as_message::<hvdef::HvX64GpaAttributeInterceptMessage>();
         let range_count = info.flags.range_count() as usize;
-        let ranges = &info.ranges;
-        if range_count == 0 || range_count > ranges.len() {
-            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-        }
-
-        let flags = snp_host_access_flags(info.flags.host_visibility())
-            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
         if info.flags.adjust() || info.flags.memory_type() != 0 {
+            // Normal guest visibility changes require adjust permission.
+            // TODO: Support host-access revocation by blocking new acquisitions
+            // and draining active host/device users before releasing access and
+            // resuming the VP. Until then, fail closed.
+            tracelimit::warn_ratelimited!(
+                vp_index = info.vp_index,
+                adjust = info.flags.adjust(),
+                host_visibility = info.flags.host_visibility(),
+                memory_type = info.flags.memory_type(),
+                range_count,
+                ranges = ?info.ranges.get(..range_count),
+                "unsupported SNP GPA attribute change; halting VP"
+            );
             return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
         }
 
-        // TODO: The current prototype implementation assumes that no
-        // virtstack component is using these pages. Before revoking host
-        // access, mark the ranges as revoking so that new GuestMemory faults
-        // cannot reacquire them, then drain active GuestMemory accesses,
-        // acquisitions already in progress, locked ranges, and device/DMA
-        // users. Only after the release ioctl succeeds should the ranges be
-        // marked private and the VP resumed, allowing the pending guest
-        // visibility hypercall to be re-executed. If the accesses cannot be
-        // drained, deny the intercept instead of reporting success.
-        let mut gpas = Vec::with_capacity(BATCH_PAGES);
-        for range in &ranges[..range_count] {
-            let (start_pfn, page_count) = parse_snp_gpa_range(*range)?;
-            let end_pfn = start_pfn
-                .checked_add(page_count)
-                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-
-            for pfn in start_pfn..end_pfn {
-                gpas.push(
-                    pfn.checked_mul(hvdef::HV_PAGE_SIZE)
-                        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?,
-                );
-                if gpas.len() == BATCH_PAGES {
-                    self.modify_gpa_host_access(&gpas, flags)?;
-                    gpas.clear();
-                }
-            }
-        }
-        self.modify_gpa_host_access(&gpas, flags)
+        tracelimit::warn_ratelimited!(
+            vp_index = info.vp_index,
+            host_visibility = info.flags.host_visibility(),
+            range_count,
+            ranges = ?info.ranges.get(..range_count),
+            "unsupported SNP GPA attribute intercept; halting VP"
+        );
+        Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
     }
 
     pub(super) fn sev_set_reg(
@@ -2321,56 +2214,30 @@ mod tests {
     }
 
     #[test]
-    fn builds_snp_host_access_flags() {
-        assert_eq!(snp_host_access_flags(0), Some(0));
-        assert_eq!(snp_host_access_flags(1), None);
-        assert_eq!(
-            snp_host_access_flags(3),
-            Some(
-                1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE
-                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE
-                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE
-            )
-        );
-        assert_eq!(snp_host_access_flags(2), None);
-    }
-
-    #[test]
-    fn parses_snp_gpa_ranges() {
-        let mut range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtended::new()
-                .with_additional_pages(2)
-                .with_gpa_page_number(0x1234)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x1234, 3));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_additional_pages(1)
-                .with_large_page(true)
-                .with_gpa_large_page_number(1)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x200, 1024));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_large_page(true)
-                .with_page_size(true)
-                .with_gpa_large_page_number(512)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (512 * 512, 512 * 512));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_large_page(true)
-                .with_page_size(true)
-                .with_gpa_large_page_number(1)
-                .into_bits(),
-        );
-        assert!(parse_snp_gpa_range(range).is_err());
+    fn rejects_snp_gpa_attribute_intercepts() {
+        for adjust in [false, true] {
+            for memory_type in [0, 1] {
+                for host_visibility in 0..4 {
+                    for range_count in [0, 1, 29, 30, 31] {
+                        let mut info = hvdef::HvX64GpaAttributeInterceptMessage::new_zeroed();
+                        info.flags = hvdef::HvX64GpaAttributeInterceptMessageFlags::new()
+                            .with_adjust(adjust)
+                            .with_memory_type(memory_type)
+                            .with_host_visibility(host_visibility)
+                            .with_range_count(range_count);
+                        let message = HvMessage::new(
+                            HvMessageType::HvMessageTypeGpaAttributeIntercept,
+                            0,
+                            info.as_bytes(),
+                        );
+                        assert!(matches!(
+                            MshvProcessor::handle_snp_gpa_attribute_intercept(&message),
+                            Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
