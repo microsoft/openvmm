@@ -938,6 +938,25 @@ mod tests {
             EfiStatus::INVALID_PARAMETER
         );
 
+        let oversized_data_with_unreadable_name = NvramVariableCommand {
+            attributes: 0,
+            name_address: 0x1_0000.into(),
+            name_bytes: 2,
+            vendor_guid: Guid::default(),
+            data_address: 0x2000.into(),
+            data_bytes: u32::MAX,
+        };
+        assert_eq!(
+            issue(
+                &mut dev,
+                &gm,
+                NvramCommand::SET_VARIABLE,
+                &oversized_data_with_unreadable_name
+            )
+            .await,
+            EfiStatus::INVALID_PARAMETER
+        );
+
         let oversized_name = NvramVariableCommand {
             attributes: 0,
             name_address: 0x2000.into(),
@@ -1316,10 +1335,14 @@ impl UefiDevice {
             NvramCommand::SET_VARIABLE => {
                 let command: NvramVariableCommand = self.gm.read_plain(command_addr)?;
 
+                let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
+                let Some(data_len) = nvram_command_buffer_len(command.data_bytes) else {
+                    return Ok(EfiStatus::INVALID_PARAMETER);
+                };
+
                 let name = if command.name_address.get() != 0 {
-                    let Some(name_len) = nvram_command_buffer_len(command.name_bytes) else {
-                        return Ok(EfiStatus::INVALID_PARAMETER);
-                    };
                     let mut buf = vec![0; name_len];
                     self.gm
                         .read_at(command.name_address.into(), buf.as_mut_slice())?;
@@ -1329,9 +1352,6 @@ impl UefiDevice {
                 };
 
                 let data = if command.data_address.get() != 0 {
-                    let Some(data_len) = nvram_command_buffer_len(command.data_bytes) else {
-                        return Ok(EfiStatus::INVALID_PARAMETER);
-                    };
                     let mut buf = vec![0; data_len];
                     self.gm
                         .read_at(command.data_address.into(), buf.as_mut_slice())?;
