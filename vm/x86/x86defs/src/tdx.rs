@@ -312,10 +312,6 @@ open_enum! {
     }
 }
 
-/// `FUNCTION_ID`, the TDISP identifier for a TDI. Passed zero-extended in RCX
-/// as `GFUNCTION_ID` to the TDI-scoped guest leaves (TDG.TDI.RD, TDG.TDI.START,
-/// TDG.DMAR.ACCEPT, TDG.TDI.MMIO.ACCEPT).
-///
 /// Defined by the TDISP standard; see the FUNCTION_ID table in the TDX Connect
 /// ABI EAS and [PCI-SIG, TDISP] v1.0.
 #[bitfield(u32)]

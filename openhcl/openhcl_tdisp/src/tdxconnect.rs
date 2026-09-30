@@ -3,15 +3,11 @@
 
 //! Intel TDX Connect implementation of [`TdispResourceValidationInterface`].
 //!
-//! Issues the guest-side TDCALLs that gate a TDI and hand its resources to the
-//! guest, through the `hcl` `MshvVtl` handle: TDG.TDI.START authorizes the host
-//! to start a bound TDI, a post-start TDG.TDI.RD confirms the TDX Module sees
-//! it in TDISP RUN, and TDG.TDI.MMIO.ACCEPT plus TDG.DMAR.ACCEPT accept its
-//! MMIO and DMA into the TD.
+//! The TSM on Intel TDX is implemented by the TDX Module, which enforces the
+//! security and resource management policies for TDs. The guest makes calls
+//! directly to the TDX Module in the form of "TDCALL" instructions dispatched
+//! through mshv driver ioctls.
 //!
-//! The block direction is asymmetric: TDX Connect gives the guest no inverse
-//! for either accept leaf, so re-blocking a resource is the host's job and the
-//! block methods here do nothing.
 
 use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
@@ -43,24 +39,13 @@ use x86defs::tdx::TdispInterfaceState;
 use x86defs::tdx::TdxFunctionId;
 
 /// Intel TDX Connect implementation of [`TdispResourceValidationInterface`].
-///
-/// After a device has been attested and placed in the Run state, this struct
-/// will issue guest-side TDCALLs to the TDX Module to make device resources
-/// (MMIO, DMA) accessible to the guest. Note that the unblock paths are
-/// currently stubs that validate the TDI but do not yet issue the accept
-/// TDCALLs, so no resource is actually made accessible.
 pub struct TdispTdxConnectResourceValidator {
     /// The address mask with the VTOM bit set, signifying where VTOM addresses
-    /// start in the CVM. Retained for the forthcoming TDCALL work (shared-GPA
-    /// boundary masking) and referenced in the stub trace output.
+    /// start in the CVM.
     vtom: u64,
-    /// The MMIO range list from each device's TDI interface report, keyed by
-    /// TDI device id and recorded by [`Self::tdisp_set_tdi_report`].
-    ///
-    /// TDG.TDI.MMIO.ACCEPT addresses a range by its position in this list,
-    /// while callers identify a range by its `range_id` field, so the position
-    /// has to be looked up here. One validator serves every device, hence the
-    /// map.
+
+    /// The MMIO range list from the device's TDI interface report, keyed by TDI
+    /// device id and recorded by [`Self::tdisp_set_tdi_report`].
     tdi_mmio_ranges: Mutex<HashMap<u16, Vec<TdispTdiReportMmioInterfaceInfo>>>,
 }
 

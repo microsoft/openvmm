@@ -231,21 +231,21 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
-    // A standalone `if` per platform rather than `match` arms, so that each
-    // platform's validator can be added independently of the others.
-    #[cfg(target_os = "linux")]
-    if matches!(isolation, IsolationType::Snp) {
-        let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
-        return Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?));
+    match isolation {
+        #[cfg(target_os = "linux")]
+        IsolationType::Snp => {
+            let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
+            Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?))
+        }
+        #[cfg(target_os = "linux")]
+        IsolationType::Tdx => {
+            let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
+            Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?))
+        }
+        // Isolation types with no validator of their own, and every type at all
+        // on a platform whose validators are Linux only.
+        _ => Ok(Arc::new(noop::TdispNoopResourceValidator::new())),
     }
-
-    #[cfg(target_os = "linux")]
-    if matches!(isolation, IsolationType::Tdx) {
-        let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
-        return Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?));
-    }
-
-    Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
