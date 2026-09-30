@@ -1502,27 +1502,9 @@ async fn new_underhill_vm(
         }
     }
 
-    let load_kind = crate::loader::select_load_kind(
-        servicing_state.is_some(),
-        env_cfg.force_load_vtl0_image.as_deref(),
-        dps.general.firmware_mode_is_pcat,
-    )?;
-    if load_kind != LoadKind::None && env_cfg.force_load_vtl0_image.is_some() {
-        tracing::info!(CVM_ALLOWED, ?load_kind, "overriding dps load type");
-    }
-    let acpi_load_kind =
-        servicing_state.as_ref().map_or(load_kind, |state| {
-            match FirmwareType::from(state.firmware_type) {
-                FirmwareType::Uefi => LoadKind::Uefi,
-                FirmwareType::Pcat => LoadKind::Pcat,
-                FirmwareType::None => LoadKind::None,
-            }
-        });
-
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
-        crate::loader::vtl2_config::read_vtl2_params(&dps, acpi_load_kind)
-            .context("failed to read load parameters")?;
+        crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
 
     // Log information about VTL2 memory
     let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
@@ -2095,6 +2077,20 @@ async fn new_underhill_vm(
         } else {
             let config = MeasuredVtl0Info::read_from_memory(gm.vtl0())
                 .context("failed to read measured vtl0 info")?;
+            let load_kind = if let Some(kind) = env_cfg.force_load_vtl0_image {
+                tracing::info!(CVM_ALLOWED, kind, "overriding dps load type");
+                match kind.as_str() {
+                    "pcat" => LoadKind::Pcat,
+                    "uefi" => LoadKind::Uefi,
+                    "linux" => LoadKind::Linux,
+                    _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
+                }
+            } else if dps.general.firmware_mode_is_pcat {
+                LoadKind::Pcat
+            } else {
+                LoadKind::Uefi
+            };
+
             let firmware_type: FirmwareType = load_kind.into();
             (firmware_type, Some(config), load_kind)
         }

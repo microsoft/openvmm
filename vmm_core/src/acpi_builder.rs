@@ -25,10 +25,6 @@ use vm_topology::processor::x86::X86Topology;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::IntoBytes;
 
-mod slit;
-pub use slit::ParseSlitError;
-pub use slit::SlitInfo;
-
 /// Configuration for the SMMUv3 ACPI IORT node.
 #[derive(Debug, Clone)]
 pub struct AcpiSmmuConfig {
@@ -59,6 +55,24 @@ pub struct BuiltAcpiTables {
     pub rsdp: Vec<u8>,
     /// The remaining tables pointed to by the RSDP.
     pub tables: Vec<u8>,
+}
+
+/// NUMA distance information for SLIT generation.
+pub struct SlitInfo {
+    /// Number of NUMA nodes (system localities).
+    pub num_nodes: usize,
+    /// Explicit distance entries (src, dst, distance).
+    /// Entries not specified default to 10 (self) or 20 (cross-node).
+    pub distances: Vec<(u32, u32, u8)>,
+}
+
+impl From<&acpi::slit::Slit> for SlitInfo {
+    fn from(slit: &acpi::slit::Slit) -> Self {
+        Self {
+            num_nodes: slit.num_nodes(),
+            distances: slit.distances().collect(),
+        }
+    }
 }
 
 /// A PCI generic initiator to expose in the SRAT.
@@ -1469,12 +1483,156 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use acpi::slit::Slit;
     use acpi_spec::madt::MadtParser;
     use acpi_spec::mcfg::parse_mcfg;
+    use test_with_tracing::test;
     use virt::VpIndex;
     use virt::VpInfo;
+    use vm_topology::memory::MemoryRangeWithNode;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X86VpInfo;
+
+    const LIMIT: usize = 20 * 4096;
+
+    fn fixture(count: u64, matrix: &[u8]) -> Vec<u8> {
+        let mut table = vec![0; 44];
+        table[..4].copy_from_slice(b"SLIT");
+        table[8] = 1;
+        table[10..16].copy_from_slice(b"HOST  ");
+        table[36..44].copy_from_slice(&count.to_le_bytes());
+        table.extend_from_slice(matrix);
+        let len = table.len() as u32;
+        table[4..8].copy_from_slice(&len.to_le_bytes());
+        table[9] = 0u8.wrapping_sub(table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)));
+        table
+    }
+
+    fn new_memory(vnode: u32) -> MemoryLayout {
+        MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..4096),
+                vnode,
+            }],
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn builder<'a>(
+        info: Option<&'a SlitInfo>,
+        topology: &'a ProcessorTopology<X86Topology>,
+        memory: &'a MemoryLayout,
+        pcie: &'a Vec<PcieHostBridge>,
+        initiators: &'a [GenericInitiator],
+    ) -> AcpiTablesBuilder<'a, X86Topology> {
+        AcpiTablesBuilder {
+            processor_topology: topology,
+            mem_layout: memory,
+            cache_topology: None,
+            pcie_host_bridges: pcie,
+            slit_info: info,
+            generic_initiators: initiators,
+            arch: AcpiArchConfig::X86 {
+                with_ioapic: false,
+                with_pic: false,
+                with_pit: false,
+                with_psp: false,
+                pm_base: 0,
+                acpi_irq: 0,
+                iommu: None,
+            },
+        }
+    }
+
+    fn build(info: &SlitInfo) -> Vec<u8> {
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
+        let memory = new_memory(0);
+        builder(Some(info), &topology, &memory, &vec![], &[])
+            .build_slit()
+            .unwrap()
+    }
+
+    fn assert_wire(table: &[u8], count: u64, matrix: &[u8]) {
+        assert_eq!(&table[..4], b"SLIT");
+        assert_eq!(&table[4..8], &(table.len() as u32).to_le_bytes());
+        assert_eq!(table[8], 1);
+        assert_eq!(table.len(), 44 + matrix.len());
+        assert_eq!(&table[10..16], b"HVLITE");
+        assert_eq!(&table[16..24], b"HVLITETB");
+        assert_eq!(&table[28..32], b"MSHV");
+        assert_eq!(&table[36..44], &count.to_le_bytes());
+        assert_eq!(&table[44..], matrix);
+        assert_eq!(table.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)), 0);
+    }
+
+    #[test]
+    fn fixture_parse_build_parse() {
+        for (count, matrix, overrides) in [
+            (1, vec![10], vec![]),
+            (2, vec![10, 20, 20, 10], vec![]),
+            (2, vec![10, 17, 29, 10], vec![(0, 1, 17), (1, 0, 29)]),
+            (2, vec![10, 10, 255, 10], vec![(0, 1, 10), (1, 0, 255)]),
+        ] {
+            let input = fixture(count, &matrix);
+            let parsed = Slit::parse(&input, LIMIT).unwrap();
+            let info = SlitInfo::from(&parsed);
+            assert_eq!(info.num_nodes, count as usize);
+            assert_eq!(info.distances, overrides);
+            let output = build(&info);
+            assert_wire(&output, count, &matrix);
+            let parsed = Slit::parse(&output, LIMIT).unwrap();
+            assert_eq!(parsed.distances().collect::<Vec<_>>(), overrides);
+        }
+    }
+
+    #[test]
+    fn generate_parse_generate() {
+        for (info, matrix) in [
+            (
+                SlitInfo {
+                    num_nodes: 1,
+                    distances: vec![],
+                },
+                vec![10],
+            ),
+            (
+                SlitInfo {
+                    num_nodes: 2,
+                    distances: vec![],
+                },
+                vec![10, 20, 20, 10],
+            ),
+            (
+                SlitInfo {
+                    num_nodes: 2,
+                    distances: vec![(0, 1, 17), (1, 0, 29)],
+                },
+                vec![10, 17, 29, 10],
+            ),
+            (
+                SlitInfo {
+                    num_nodes: 2,
+                    distances: vec![(0, 1, 10), (1, 0, 255)],
+                },
+                vec![10, 10, 255, 10],
+            ),
+        ] {
+            let output = build(&info);
+            assert_wire(&output, info.num_nodes as u64, &matrix);
+            let parsed = Slit::parse(&output, LIMIT).unwrap();
+            assert_eq!(build(&SlitInfo::from(&parsed)), output);
+        }
+    }
+
+    #[test]
+    fn absent_slit_info_builds_no_table() {
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
+        let memory = new_memory(0);
+        let pcie = vec![];
+        let b = builder(None, &topology, &memory, &pcie, &[]);
+        assert_eq!(b.build_slit(), None);
+    }
 
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

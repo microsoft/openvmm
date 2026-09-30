@@ -10,4 +10,5 @@ mod aml;
 pub mod builder;
 pub mod cedt;
 pub mod dsdt;
+pub mod slit;
 pub mod ssdt;
