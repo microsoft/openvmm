@@ -1403,7 +1403,8 @@ mod tests {
             },
             None,
             None,
-        );
+        )
+        .unwrap();
         device.shared_state().clone()
     }
 

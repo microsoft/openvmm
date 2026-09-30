@@ -15,6 +15,7 @@ mod translate;
 
 pub use emulator::HostSmmuCaps;
 pub use emulator::SmmuConfig;
+pub use emulator::SmmuConfigError;
 pub use emulator::SmmuDevice;
 pub use emulator::SmmuOasPolicy;
 pub use emulator::SmmuSsidPolicy;
