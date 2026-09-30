@@ -933,7 +933,8 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 // offloading.
                 self.ensure_state_local();
                 // Accumulate any requested interrupts before changing the
-                // enable state.
+                // enable state. `pull_irr` holds them in the IRR regardless of
+                // the enable state, so they survive a software enable/disable.
                 self.apic.pull_irr();
                 self.apic.svr = value & u32::from(Svr::new().with_vector(0xff).with_enable(true));
                 if !self.apic.software_enabled() {
@@ -1720,8 +1721,12 @@ impl LocalApic {
             .into();
 
         self.reset_registers();
-        // Drop any pending requests.
+        // Drop any pending requests, including interrupts that were staged in
+        // `new_irr` but not yet pulled into the local register state.
         self.shared.work.store(0, Ordering::Relaxed);
+        for new_irr in &self.shared.new_irr {
+            new_irr.store(0, Ordering::Relaxed);
+        }
     }
 
     fn reset_registers(&mut self) {
@@ -1766,9 +1771,10 @@ impl LocalApic {
         *esr = 0;
         *icr = 0;
         *next_irr = None;
-        // Note that any bits in `shared.new_irr` will be cleared and ignored by
-        // the next call to `pull_irr` since the APIC is now in a software
-        // disabled state.
+        // Leave any interrupts staged in `shared.new_irr` in place. On a
+        // transient hardware disable they are held: the next `pull_irr`
+        // accumulates them into the IRR, and they become deliverable once the
+        // APIC is software-enabled. A full `reset` clears them separately.
         *irr = [0; 8];
         *needs_offload_reeval = false;
         *scan_irr = false;
@@ -1987,15 +1993,18 @@ impl LocalApic {
             let irr = remote_irr.swap(0, Ordering::Acquire);
             let tmr = remote_tmr.load(Ordering::Relaxed);
             let auto_eoi = remote_auto_eoi.load(Ordering::Relaxed);
-            if Svr::from(self.svr).enable() {
-                *local_irr |= irr;
-                *local_tmr &= !irr;
-                *local_tmr |= tmr & irr;
-                *local_auto_eoi &= !irr;
-                *local_auto_eoi |= auto_eoi & irr;
-                self.active_auto_eoi |= auto_eoi != 0;
-                self.needs_offload_reeval = true;
-            }
+            // Always accumulate staged interrupts into the IRR, even while the
+            // APIC is software-disabled. Delivery is gated separately:
+            // `next_irr` and `push_to_offload` both check the software-enable
+            // state, so held interrupts only become deliverable once the APIC
+            // is software-enabled again.
+            *local_irr |= irr;
+            *local_tmr &= !irr;
+            *local_tmr |= tmr & irr;
+            *local_auto_eoi &= !irr;
+            *local_auto_eoi |= auto_eoi & irr;
+            self.active_auto_eoi |= (auto_eoi & irr) != 0;
+            self.needs_offload_reeval = true;
         }
         self.recompute_next_irr();
         self.scan_irr = false;
@@ -2018,5 +2027,197 @@ impl LocalApic {
         } else {
             self.ldr
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use vm_topology::processor::VpInfo;
+
+    /// Minimal [`ApicClient`] for driving register accesses in tests.
+    #[derive(Default)]
+    struct TestClient {
+        cr8: u32,
+    }
+
+    impl ApicClient for TestClient {
+        fn cr8(&mut self) -> u32 {
+            self.cr8
+        }
+
+        fn set_cr8(&mut self, value: u32) {
+            self.cr8 = value;
+        }
+
+        fn set_apic_base(&mut self, _value: u64) {}
+
+        fn wake(&mut self, _vp_index: VpIndex) {}
+
+        fn eoi(&mut self, _vector: u8) {}
+
+        fn now(&mut self) -> VmTime {
+            VmTime::from_100ns(0)
+        }
+
+        fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
+            unreachable!()
+        }
+    }
+
+    // MMIO address of the spurious-interrupt-vector register (offset 0xf0).
+    const SVR_ADDR: u64 = ((APIC_BASE_PAGE as u64) << 12) | 0xf0;
+    // SVR value with the APIC software-enabled and spurious vector 0xff.
+    const SVR_ENABLED: u32 = 0x1ff;
+    const TEST_VECTOR: u8 = 0xd1;
+
+    fn new_apic() -> (LocalApicSet, LocalApic) {
+        let set = LocalApicSet::builder().build();
+        let vp = X86VpInfo {
+            base: VpInfo {
+                vp_index: VpIndex::new(0),
+                vnode: 0,
+            },
+            apic_id: 0,
+        };
+        let apic = set.add_apic(&vp, false);
+        (set, apic)
+    }
+
+    fn apic_base(enable: bool) -> u64 {
+        ApicBase::new()
+            .with_base_page(APIC_BASE_PAGE)
+            .with_enable(enable)
+            .into()
+    }
+
+    fn software_enable(apic: &mut LocalApic, client: &mut TestClient) {
+        apic.access(client)
+            .mmio_write(SVR_ADDR, &SVR_ENABLED.to_le_bytes());
+    }
+
+    /// A FIXED interrupt that is requested before the guest transiently disables
+    /// (and then re-enables) its APIC must still be delivered once the APIC is
+    /// software-enabled again, rather than being silently discarded.
+    ///
+    /// Regression test for a lost-interrupt hang: the staged interrupt's
+    /// `new_irr` bit survives a hardware disable, and re-enabling the APIC in
+    /// software must accumulate it into the IRR rather than dropping it.
+    #[test]
+    fn irr_retained_across_transient_disable() {
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+
+        // Stage an interrupt while the APIC is fully enabled.
+        set.synic_interrupt(VpIndex::new(0), TEST_VECTOR, false, |_| {});
+
+        // The guest hardware-disables and then re-enables the APIC. The staged
+        // interrupt's `new_irr` bit is preserved across the disable.
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+
+        // Re-enabling in software must accumulate the staged interrupt.
+        software_enable(&mut apic, &mut client);
+
+        assert_eq!(apic.next_irr(), Some(TEST_VECTOR));
+    }
+
+    /// A full reset must discard interrupts that were staged before the reset,
+    /// rather than redelivering them once the APIC is re-enabled.
+    #[test]
+    fn reset_discards_staged_irr() {
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+        set.synic_interrupt(VpIndex::new(0), TEST_VECTOR, false, |_| {});
+
+        // A full reset clears the staged interrupt.
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+
+        assert_eq!(apic.next_irr(), None);
+    }
+
+    /// `pull_irr` can run while the APIC is software-disabled via paths other
+    /// than the `SVR` write (e.g. a guest reading the IRR, or `save`). Those
+    /// paths must also hold staged interrupts rather than discarding them.
+    #[test]
+    fn staged_irr_survives_pull_while_software_disabled() {
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+        set.synic_interrupt(VpIndex::new(0), TEST_VECTOR, false, |_| {});
+
+        // Hardware-disable then re-enable, leaving the APIC software-disabled
+        // with the interrupt still staged in `new_irr`.
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+
+        // A guest read of the IRR pulls staged interrupts while the APIC is
+        // still software-disabled; this must not drop the staged interrupt.
+        let irr_bank = u64::from(TEST_VECTOR) / 32;
+        let irr_addr = ((APIC_BASE_PAGE as u64) << 12) | (0x200 + irr_bank * 0x10);
+        let mut buf = [0u8; 4];
+        apic.access(&mut client).mmio_read(irr_addr, &mut buf);
+
+        // Re-enabling in software must still deliver the held interrupt.
+        software_enable(&mut apic, &mut client);
+        assert_eq!(apic.next_irr(), Some(TEST_VECTOR));
+    }
+
+    /// `active_auto_eoi` must reflect only the interrupts that were actually
+    /// pulled, not stale auto-EOI configuration left in `shared.auto_eoi`.
+    /// Otherwise a pending non-auto-EOI interrupt could spuriously block APIC
+    /// offload (`push_to_offload` returning `OffloadNotSupported`).
+    #[test]
+    fn active_auto_eoi_tracks_only_pulled_interrupts() {
+        // Reading an IRR register triggers `pull_irr` for all banks.
+        fn pull(apic: &mut LocalApic, client: &mut TestClient) {
+            let mut buf = [0u8; 4];
+            apic.access(client)
+                .mmio_read(((APIC_BASE_PAGE as u64) << 12) | 0x200, &mut buf);
+        }
+
+        const VEC_AUTO: u8 = 0xd0; // auto-EOI
+        const VEC_NORMAL: u8 = 0xd1; // not auto-EOI, same IRR bank
+
+        let (set, mut apic) = new_apic();
+        let mut client = TestClient::default();
+
+        apic.reset();
+        software_enable(&mut apic, &mut client);
+
+        // Request and deliver an auto-EOI interrupt. Its auto-EOI bit persists
+        // in `shared.auto_eoi` even though no auto-EOI interrupt stays pending.
+        set.synic_interrupt(VpIndex::new(0), VEC_AUTO, true, |_| {});
+        pull(&mut apic, &mut client);
+        assert_eq!(apic.next_irr(), Some(VEC_AUTO));
+        apic.acknowledge_interrupt(VEC_AUTO);
+        assert_eq!(apic.next_irr(), None);
+
+        // Request a normal (non-auto-EOI) interrupt in the same bank and pull it.
+        set.synic_interrupt(VpIndex::new(0), VEC_NORMAL, false, |_| {});
+        pull(&mut apic, &mut client);
+
+        // Only the non-auto-EOI interrupt is pending, so offload must still be
+        // supported; the stale auto-EOI bit must not block it.
+        apic.enable_offload();
+        assert!(apic.push_to_offload(|_, _, _| {}).is_ok());
     }
 }

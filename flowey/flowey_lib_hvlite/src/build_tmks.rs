@@ -13,7 +13,7 @@ pub struct TmksOutput {
     #[serde(rename = "simple_tmk")]
     pub bin: PathBuf,
     #[serde(rename = "simple_tmk.dbg")]
-    pub dbg: PathBuf,
+    pub dbg: Option<PathBuf>,
 }
 
 impl Artifact for TmksOutput {}
@@ -83,10 +83,7 @@ impl FlowNode for Node {
                 move |rt| {
                     let output = match rt.read(output) {
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            TmksOutput {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            TmksOutput { bin, dbg }
                         }
                         _ => unreachable!(),
                     };

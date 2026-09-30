@@ -11,15 +11,22 @@ use crate::VirtioBlkDevice;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use futures::future::Either;
+use futures::future::select;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
+use std::future::Future;
+use std::pin::pin;
+use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
@@ -70,13 +77,28 @@ struct TestHarness {
 impl TestHarness {
     /// Create a harness with a RAM disk of the given size.
     fn new(driver: &DefaultDriver, disk: Disk, read_only: bool) -> Self {
+        Self::with_device_driver(driver, driver, disk, read_only, None)
+    }
+
+    /// Like [`TestHarness::new`], but runs the device's worker task on
+    /// `device_driver` rather than on the test's own executor. A test that
+    /// must stay responsive while the worker misbehaves puts the device on a
+    /// separate thread's executor.
+    fn with_device_driver(
+        driver: &DefaultDriver,
+        device_driver: &DefaultDriver,
+        disk: Disk,
+        read_only: bool,
+        serial: Option<String>,
+    ) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
         init_avail_ring(&mem, AVAIL_ADDR);
         init_used_ring(&mem, USED_ADDR);
 
-        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioBlkDevice::new(&driver_source, disk, read_only);
+        let driver_source =
+            VmTaskDriverSource::new(SingleDriverBackend::new(device_driver.clone()));
+        let device = VirtioBlkDevice::new(&driver_source, disk, read_only, serial).unwrap();
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -510,6 +532,20 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
     disklayer_ram::ram_disk(size, read_only).unwrap()
 }
 
+/// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
+async fn with_timeout<F: Future>(
+    driver: &DefaultDriver,
+    timeout: Duration,
+    msg: &str,
+    fut: F,
+) -> F::Output {
+    let mut timer = PolledTimer::new(driver);
+    match select(pin!(fut), pin!(timer.sleep(timeout))).await {
+        Either::Left((output, _)) => output,
+        Either::Right(_) => panic!("{msg}"),
+    }
+}
+
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
 #[async_test]
 async fn write_then_read_roundtrip(driver: DefaultDriver) {
@@ -646,6 +682,48 @@ async fn get_id_returns_identifier(driver: DefaultDriver) {
     assert_eq!(&id_buf, b"openvmm-virtio-blk\0\0");
 }
 
+#[async_test]
+async fn get_id_returns_disk_id(driver: DefaultDriver) {
+    let disk =
+        Disk::new(TestDisk4K::new(64 * 1024, 512).with_disk_id(*b"backing-disk-id!")).unwrap();
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    let id_gpa = harness.post_get_id_request(0);
+    let (used_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, VIRTIO_BLK_ID_BYTES as u32 + 1);
+
+    let mut id_buf = [0u8; VIRTIO_BLK_ID_BYTES];
+    harness.mem.read_at(id_gpa, &mut id_buf).unwrap();
+    assert_eq!(&id_buf, b"6261636b696e672d6469");
+}
+
+#[async_test]
+async fn get_id_returns_configured_serial(driver: DefaultDriver) {
+    let disk =
+        Disk::new(TestDisk4K::new(64 * 1024, 512).with_disk_id(*b"backing-disk-id!")).unwrap();
+    let mut serial = [0; VIRTIO_BLK_ID_BYTES];
+    serial[..13].copy_from_slice(b"custom-serial");
+    let mut harness = TestHarness::with_device_driver(
+        &driver,
+        &driver,
+        disk,
+        false,
+        Some("custom-serial".into()),
+    );
+    harness.enable().await;
+
+    let id_gpa = harness.post_get_id_request(0);
+    let (used_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, VIRTIO_BLK_ID_BYTES as u32 + 1);
+
+    let mut id_buf = [0u8; VIRTIO_BLK_ID_BYTES];
+    harness.mem.read_at(id_gpa, &mut id_buf).unwrap();
+    assert_eq!(id_buf, serial);
+}
+
 /// Unsupported request type should return UNSUPP status.
 #[async_test]
 async fn unsupported_request_type(driver: DefaultDriver) {
@@ -767,6 +845,7 @@ async fn sector_offset_correctness(driver: DefaultDriver) {
 #[derive(Inspect)]
 struct TestDisk4K {
     sector_size: u32,
+    disk_id: Option<[u8; 16]>,
     #[inspect(skip)]
     storage: Mutex<Vec<u8>>,
     #[inspect(skip)]
@@ -779,9 +858,15 @@ impl TestDisk4K {
         assert_eq!(total_bytes % sector_size as usize, 0);
         Self {
             sector_size,
+            disk_id: None,
             storage: Mutex::new(vec![0u8; total_bytes]),
             supports_discard: false,
         }
+    }
+
+    fn with_disk_id(mut self, disk_id: [u8; 16]) -> Self {
+        self.disk_id = Some(disk_id);
+        self
     }
 
     fn with_discard(mut self) -> Self {
@@ -804,7 +889,7 @@ impl DiskIo for TestDisk4K {
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
-        None
+        self.disk_id
     }
 
     fn physical_sector_size(&self) -> u32 {
@@ -1283,4 +1368,63 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         .read_at(read_status_gpa, &mut read_status)
         .unwrap();
     assert_eq!(read_status[0], VIRTIO_BLK_S_OK, "read should succeed");
+}
+
+/// A descriptor whose `next` link points back at itself forms a chain that
+/// never terminates, and the queue rejects it without consuming it — the
+/// available index does not move, so the same chain is still there on the next
+/// poll. A worker that logs the error and keeps polling therefore spins inside
+/// a single `poll` call, never returning `Pending`. That burns a CPU forever
+/// and, because the cancel future is only polled once the work future returns
+/// `Pending`, leaves the worker task impossible to stop — wedging device
+/// teardown, reset, save/restore, and inspect.
+///
+/// The device runs on its own executor thread so that a spinning worker wedges
+/// only that thread, letting this test fail on a timeout instead of hanging.
+#[async_test]
+async fn cyclic_descriptor_chain_does_not_wedge_worker(driver: DefaultDriver) {
+    let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-device");
+    let disk = ram_disk(64 * 1024, false);
+    let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false, None);
+    harness.enable().await;
+
+    // Run one valid request first, so the worker is known to be up and parked
+    // waiting for a kick by the time the bad chain arrives.
+    harness.post_flush_request(0);
+    let (used_id, _) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+
+    // Descriptor 4 chains to itself.
+    let gpa = harness.alloc_data(REQ_HEADER_SIZE);
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        4,
+        gpa,
+        REQ_HEADER_SIZE,
+        DescriptorFlags::new().with_next(true),
+        4,
+    );
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        4,
+        &mut harness.avail_idx,
+    );
+    harness.queue_event.signal();
+
+    // Give the worker time to wake on the kick and reject the chain.
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_millis(250))
+        .await;
+
+    // A worker spinning on the bad chain never observes the stop request.
+    with_timeout(
+        &driver,
+        Duration::from_secs(5),
+        "virtio-blk worker could not be stopped after an invalid descriptor chain",
+        harness.device.stop_queue(0),
+    )
+    .await;
 }

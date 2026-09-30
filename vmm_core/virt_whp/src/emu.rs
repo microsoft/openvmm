@@ -220,7 +220,51 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         gva: u64,
         mode: TranslateMode,
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
-        emulate_translate_gva(self, gva, mode)
+        // When nested virtualization is enabled, the software page table walker
+        // cannot account for the hypervisor's nested paging state, so defer the
+        // translation to the hypervisor via `WHvTranslateGva`.
+        if self.vp.vp.partition.caps.nested_virt {
+            let mut flags = whp::abi::WHvTranslateGvaFlagSetPageTableBits;
+            flags |= match mode {
+                TranslateMode::Read => whp::abi::WHvTranslateGvaFlagValidateRead,
+                TranslateMode::Write => {
+                    whp::abi::WHvTranslateGvaFlagValidateRead
+                        | whp::abi::WHvTranslateGvaFlagValidateWrite
+                }
+                TranslateMode::Execute => whp::abi::WHvTranslateGvaFlagValidateExecute,
+            };
+            let vtl = self.vp.state.active_vtl;
+            match self.vp.translate_gva_via_hypervisor(vtl, gva, flags) {
+                Ok(gpa) => Ok(EmuTranslateResult {
+                    gpa,
+                    overlay_page: None,
+                }),
+                // `event_info` is `None` because `WHvTranslateGva` cannot
+                // surface the hypervisor's pending event. In particular, a
+                // nested page-table violation (a page table page missing from
+                // the L1's SLAT while translating an L2 GVA) reports
+                // `INTERCEPT` here with no way to reconstruct the nested memory
+                // intercept that should be reflected to L1. With no event, the
+                // emulator declines to inject a fault and the emulation aborts
+                // (the VP halts). This is acceptable for now because the
+                // condition is rare.
+                //
+                // The proper fix requires WHP to expose the pending event, so
+                // that we can reflect the nested intercept to L1 and resume.
+                // Until then, if this abort is actually hit, an interim
+                // alternative that needs no WHP change is to resume the VP
+                // without injecting anything and let it re-fault, giving L1 a
+                // chance to repopulate its SLAT. That risks looping forever if
+                // the fault is not transient (e.g. an L1 that keeps the page
+                // unmapped), so it would need a bound on retries.
+                Err(code) => Err(EmuTranslateError {
+                    code,
+                    event_info: None,
+                }),
+            }
+        } else {
+            emulate_translate_gva(self, gva, mode)
+        }
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
@@ -471,5 +515,30 @@ impl WhpProcessor<'_> {
             ss: from_seg_reg(&ss),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
         }
+    }
+
+    /// Translates a GVA to a GPA using the hypervisor's `WHvTranslateGva` API.
+    ///
+    /// This must be used instead of the software page table walker
+    /// ([`translate_gva_to_gpa`](virt_support_x86emu::translate::translate_gva_to_gpa))
+    /// when nested virtualization is enabled, so that the hypervisor's nested
+    /// paging state is taken into account.
+    ///
+    /// On success, returns the full byte GPA with the page offset from `gva`
+    /// preserved.
+    pub(crate) fn translate_gva_via_hypervisor(
+        &self,
+        vtl: Vtl,
+        gva: u64,
+        flags: whp::abi::WHV_TRANSLATE_GVA_FLAGS,
+    ) -> Result<u64, hvdef::hypercall::TranslateGvaResultCode> {
+        // `WHvTranslateGva` already returns the full byte GPA with the page
+        // offset from `gva` preserved, and its result codes match the
+        // hypervisor's `TranslateGvaResultCode`.
+        self.vp
+            .whp(vtl)
+            .translate_gva(gva, flags)
+            .expect("translate gva should not fail")
+            .map_err(|code| hvdef::hypercall::TranslateGvaResultCode(code.0))
     }
 }

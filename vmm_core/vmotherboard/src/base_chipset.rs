@@ -652,6 +652,10 @@ mod weak_mutex_pci {
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
+    use chipset_device::pci::PciConfigAccessType;
+    use chipset_device::pci::PciConfigAddress;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;
@@ -662,7 +666,11 @@ mod weak_mutex_pci {
     pub struct WeakMutexPciDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
 
     impl GenericPciBusDevice for WeakMutexPciDeviceWrapper {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+        fn pci_cfg_read(
+            &mut self,
+            offset: u16,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
             Some(
                 self.0
                     .upgrade()?
@@ -673,7 +681,7 @@ mod weak_mutex_pci {
             )
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> Option<IoResult> {
             Some(
                 self.0
                     .upgrade()?
@@ -686,11 +694,9 @@ mod weak_mutex_pci {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: &mut u32,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
             Some(
                 self.0
@@ -698,17 +704,15 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+                    .pci_cfg_read_with_routing(access_type, address, value),
             )
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
-            value: u32,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
             Some(
                 self.0
@@ -716,7 +720,7 @@ mod weak_mutex_pci {
                     .lock()
                     .supports_pci()
                     .expect("builder code ensures supports_pci.is_some()")
-                    .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+                    .pci_cfg_write_with_routing(access_type, address, value),
             )
         }
     }
@@ -1053,7 +1057,6 @@ pub mod options {
     pub mod dev {
         use super::*;
         use crate::BusIdPci;
-        use chipset_resources::battery::HostBatteryUpdate;
 
         macro_rules! feature_gated {
             (
@@ -1084,9 +1087,6 @@ pub mod options {
             /// Drives attached to the secondary IDE channel
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
-
-        /// Generic dual 8237A ISA DMA controllers
-        pub struct GenericIsaDmaDeps;
 
         /// AMD Platform Security Processor (PSP)
         pub struct GenericPspDeps;
@@ -1189,18 +1189,6 @@ pub mod options {
             /// Whether enlightened interrupts are enabled. Needed when
             /// advertised by ACPI WAET table.
             pub enlightened_interrupts: bool,
-        }
-
-        /// Hyper-V specific ACPI-compatible battery device
-        pub struct HyperVBatteryDeps {
-            /// Base MMIO address for the battery device
-            pub base_addr: u64,
-            /// Whether to use gpe0 for battery status updates
-            pub use_gpe0: bool,
-            /// The line interrupt number to use for battery status updates
-            pub line_interrupt_no: u32,
-            /// Channel to receive updated battery state
-            pub battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
         }
 
         /// Hyper-V specific UEFI Helper Device

@@ -65,8 +65,8 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
 
         let device = GdmaDevice::new(
             input.driver_source,
-            input.guest_memory.clone(),
-            input.msi_target,
+            input.dma_target.guest_memory().clone(),
+            input.dma_target.msi_target(),
             vports,
             input.register_mmio,
         );

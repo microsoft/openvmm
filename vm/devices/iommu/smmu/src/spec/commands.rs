@@ -39,6 +39,8 @@ open_enum! {
         TLBI_S12_VMALL = 0x28,
         /// Invalidate all non-secure non-Hyp TLB entries.
         TLBI_NSNH_ALL = 0x30,
+        /// Invalidate PCIe ATC (ATS address translation cache) entries.
+        ATC_INV = 0x40,
         /// Synchronization command.
         CMD_SYNC = 0x46,
     }

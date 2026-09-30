@@ -37,10 +37,7 @@ impl FlowNode for Node {
         let cargo_nextest_bin = ctx.platform().binary("cargo-nextest");
 
         let nextest_path = ctx.reqv(|v| {
-            crate::download_cargo_nextest::Request::Get(
-                ReadVar::from_static(target_lexicon::Triple::host()),
-                v,
-            )
+            crate::download_cargo_nextest::Request::Get(target_lexicon::Triple::host(), v)
         });
         let cargo_home = ctx.reqv(crate::install_rust::Request::GetCargoHome);
         let rust_installed = ctx.reqv(crate::install_rust::Request::EnsureInstalled);

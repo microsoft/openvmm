@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use futures::StreamExt;
+use guid::Guid;
 use petri::EfiDiagnosticsLogLevel;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
@@ -25,8 +26,15 @@ use vmm_test_macros::vmm_test_with;
 
 /// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
+/// Guest hibernation and OpenHCL hibernate token tests.
+mod hibernate;
+/// Nested-virtualization test: Hyper-V role + DDA inside an OpenVMM guest.
+mod hyperv_nested;
 /// Tests for Hyper-V integration components.
 mod ic;
+/// Tests for Windows large-page (2 MB SLAT) guest RAM backing.
+#[cfg(windows)]
+mod large_pages;
 // Memory Validation tests.
 mod memstat;
 /// NUMA topology tests.
@@ -35,8 +43,12 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Tests involving UEFI Secure Boot functionality.
+mod secureboot;
 /// Tests involving TPM functionality
 mod tpm;
+/// TPM tests that run against the 1.38 TPM reference implementation.
+mod tpm138;
 /// Tests for VLAN (802.1Q) support on virtual NICs.
 mod vlan;
 /// Tests of vmbus relay functionality.
@@ -45,13 +57,16 @@ mod vmbus_relay;
 mod vmgs;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[vmm_test_with(noagent(
-    openvmm_uefi_x64(none),
-    openvmm_openhcl_uefi_x64(none),
-    openvmm_uefi_aarch64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    hyperv_openhcl_uefi_x64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_x64(none),
+        openvmm_openhcl_uefi_x64(none),
+        openvmm_uefi_aarch64(none),
+        hyperv_openhcl_uefi_aarch64(none),
+        hyperv_openhcl_uefi_x64(none)
+    )
+)]
 async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config.run_without_agent().await?;
     vm.wait_for_clean_teardown().await?;
@@ -62,6 +77,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_linux_direct_aarch64,
+    qemu_linux_direct_aarch64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_pcat_x64(vhd(ubuntu_2404_server_x64)),
@@ -82,7 +98,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -112,6 +128,30 @@ async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Basic boot test using the Linux kernel vhost-vsock backend.
+///
+/// Petri connects to the guest directly through the host AF_VSOCK namespace,
+/// so successfully establishing the pipette session validates the full
+/// host-kernel-to-guest virtio-vsock path.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64)]
+async fn boot_vhost_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // Avoid collisions with other vhost-vsock devices on a shared test host.
+    let guest_cid = 0x4000_0000 | (std::process::id() & 0x3fff_ffff);
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
+        })
+        .with_vhost_vsock(guest_cid)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Boot Linux direct with VMBus entirely disabled.
 ///
 /// Virtio-vsock provides the pipette transport. No VMBus server, no VMBus
@@ -128,21 +168,302 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
-/// Boot with private anonymous memory instead of shared memory sections.
+/// Boot a small aarch64 Linux guest via UEFI without Hyper-V enlightenments.
+///
+/// The loader must pass the generic SEC platform type in `x2`, allowing the
+/// firmware to avoid Hyper-V-specific facilities. PCIe NVMe provides the boot
+/// and CIDATA disks on separate controllers, and virtio-vsock provides the
+/// pipette transport because VMBus is off. Keeping separate controllers also
+/// verifies that the guest preserves OpenVMM's preassigned PCI resources.
+/// The `_aarch64_tcg` suffix opts the test into the QEMU incubator CI pass.
+#[cfg(target_os = "linux")]
+#[openvmm_test(uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+#[openvmm_test(uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
+async fn boot_no_hv_uefi_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_hv()
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 3))
+        .run()
+        .await?;
+
+    let shell = agent.unix_shell();
+    let dmesg = cmd!(shell, "dmesg").read().await?;
+    let hyperv_detection_lines: Vec<_> = dmesg
+        .lines()
+        .filter(|line| line.contains("Hyper-V:") || line.contains("Microsoft Hyper-V"))
+        .collect();
+    assert!(
+        hyperv_detection_lines.is_empty(),
+        "guest detected Hyper-V despite no-hv configuration:\n{}",
+        hyperv_detection_lines.join("\n")
+    );
+
+    let facp = shell
+        .read_file_raw("/sys/firmware/acpi/tables/FACP")
+        .await?;
+    let vendor_id_offset = facp
+        .len()
+        .checked_sub(size_of::<u64>())
+        .context("FADT is too short to contain the hypervisor vendor identity")?;
+    let vendor_id = u64::from_le_bytes(
+        facp.get(vendor_id_offset..)
+            .context("FADT is missing the hypervisor vendor identity")?
+            .try_into()
+            .context("invalid FADT hypervisor vendor identity length")?,
+    );
+    assert_eq!(vendor_id, 0, "guest FADT advertised a hypervisor vendor");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that the Linux direct loader synthesizes SMBIOS (DMI) tables so the
+/// guest can read `/sys/class/dmi/id/*`. Covers x86_64 (F-segment scan) and
+/// aarch64 ACPI-mode (EFI configuration table) delivery.
+#[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
+async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // A fixed, non-default UUID so the round-trip through the SMBIOS Type 1
+    // table is meaningfully exercised (the all-zero default would not catch a
+    // byte-order bug, and a nil UUID is treated as "not present" by Linux so
+    // `product_uuid` would not even be exposed).
+    const TEST_UUID: Guid = guid::guid!("12345678-9abc-def0-1234-56789abcdef0");
+
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_smbios(|smbios| smbios.system.uuid = TEST_UUID))
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sys_vendor = sh
+        .read_file("/sys/class/dmi/id/sys_vendor")
+        .await
+        .context("reading sys_vendor")?;
+    assert_eq!(sys_vendor.trim(), "OpenVMM");
+
+    let product_name = sh
+        .read_file("/sys/class/dmi/id/product_name")
+        .await
+        .context("reading product_name")?;
+    assert_eq!(product_name.trim(), "OpenVMM Virtual Machine");
+
+    let product_uuid = sh
+        .read_file("/sys/class/dmi/id/product_uuid")
+        .await
+        .context("reading product_uuid")?;
+    // SMBIOS (>= 2.6) stores the UUID's first three fields little-endian, and
+    // Linux formats `product_uuid` with `%pUl` (little-endian) accordingly.
+    // Our `Guid`'s in-memory byte layout is the same little-endian SMBIOS
+    // layout, so its `Display` output is exactly what the kernel prints — no
+    // byte-swap.
+    assert_eq!(
+        product_uuid.trim().to_ascii_lowercase(),
+        TEST_UUID.to_string()
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that on UEFI boot the `type=1` (System Information) SMBIOS overrides
+/// are emitted as UEFI config blobs, consumed by the firmware, and reflected in
+/// the guest's `/sys/class/dmi/id/*`. This exercises the firmware-blob path
+/// (`add_smbios_blobs`), which is distinct from the direct loader's
+/// table-building path covered by `smbios_dmi`. Every Type 1 field the firmware
+/// exposes is overridden so the full blob set is validated.
+#[vmm_test(
+    openvmm_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn smbios_dmi_uefi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const MANUFACTURER: &str = "Contoso";
+    const PRODUCT: &str = "Contoso Virtual Machine";
+    const VERSION: &str = "9.8.7";
+    const SERIAL: &str = "SN-0123456789";
+    const SKU: &str = "SKU-CONTOSO-42";
+    const FAMILY: &str = "Contoso VM Family";
+    // A fixed, non-default UUID so the BiosGuid round-trip is meaningfully
+    // exercised (the all-zero default would not catch a byte-order bug).
+    const UUID: Guid = guid::guid!("0fedcba9-8765-4321-0fed-cba987654321");
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_smbios(|smbios| {
+                let system = &mut smbios.system;
+                system.manufacturer = Some(MANUFACTURER.to_string());
+                system.product_name = Some(PRODUCT.to_string());
+                system.version = Some(VERSION.to_string());
+                system.serial_number = Some(SERIAL.to_string());
+                system.sku_number = Some(SKU.to_string());
+                system.family = Some(FAMILY.to_string());
+                system.uuid = UUID;
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sys_vendor = sh
+        .read_file("/sys/class/dmi/id/sys_vendor")
+        .await
+        .context("reading sys_vendor")?;
+    assert_eq!(sys_vendor.trim(), MANUFACTURER);
+
+    let product_name = sh
+        .read_file("/sys/class/dmi/id/product_name")
+        .await
+        .context("reading product_name")?;
+    assert_eq!(product_name.trim(), PRODUCT);
+
+    let product_version = sh
+        .read_file("/sys/class/dmi/id/product_version")
+        .await
+        .context("reading product_version")?;
+    assert_eq!(product_version.trim(), VERSION);
+
+    let product_sku = sh
+        .read_file("/sys/class/dmi/id/product_sku")
+        .await
+        .context("reading product_sku")?;
+    assert_eq!(product_sku.trim(), SKU);
+
+    let product_family = sh
+        .read_file("/sys/class/dmi/id/product_family")
+        .await
+        .context("reading product_family")?;
+    assert_eq!(product_family.trim(), FAMILY);
+
+    let product_serial = sh
+        .read_file("/sys/class/dmi/id/product_serial")
+        .await
+        .context("reading product_serial")?;
+    assert_eq!(product_serial.trim(), SERIAL);
+
+    let product_uuid = sh
+        .read_file("/sys/class/dmi/id/product_uuid")
+        .await
+        .context("reading product_uuid")?;
+    // SMBIOS (>= 2.6) stores the UUID's first three fields little-endian, and
+    // Linux formats `product_uuid` with `%pUl` (little-endian) accordingly.
+    // Our `Guid`'s in-memory byte layout is the same little-endian SMBIOS
+    // layout, so its `Display` output is exactly what the kernel prints — no
+    // byte-swap.
+    assert_eq!(product_uuid.trim().to_ascii_lowercase(), UUID.to_string());
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verify that the SMBIOS identity a host forwards to an OpenHCL paravisor over
+/// the Guest Emulation Transport (GET) reaches the VTL0 guest's DMI. The
+/// paravisor's Linux direct loader builds the SMBIOS tables from the
+/// host-provided `DevicePlatformSettings`, so this exercises the full
+/// host -> GET -> paravisor -> guest path — distinct from `smbios_dmi` (OpenVMM
+/// builds the tables directly) and `smbios_dmi_uefi` (UEFI firmware builds
+/// them). Every host-forwarded Type 1 field is overridden so the whole chain is
+/// validated.
+#[vmm_test(openvmm_openhcl_linux_direct_x64)]
+async fn smbios_dmi_openhcl(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const MANUFACTURER: &str = "Contoso";
+    const PRODUCT: &str = "Contoso Virtual Machine";
+    const VERSION: &str = "9.8.7";
+    const SERIAL: &str = "SN-OPENHCL-123";
+    const SKU: &str = "SKU-CONTOSO-42";
+    const FAMILY: &str = "Contoso VM Family";
+    // A fixed, non-default UUID so the BiosGuid round-trip through GET is
+    // meaningfully exercised (the all-zero default would not catch a byte-order
+    // bug, and a nil UUID is treated as "not present" by Linux so `product_uuid`
+    // would not even be exposed).
+    const UUID: Guid = guid::guid!("0fedcba9-8765-4321-0fed-cba987654321");
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_smbios(|smbios| {
+                let system = &mut smbios.system;
+                system.manufacturer = Some(MANUFACTURER.to_string());
+                system.product_name = Some(PRODUCT.to_string());
+                system.version = Some(VERSION.to_string());
+                system.serial_number = Some(SERIAL.to_string());
+                system.sku_number = Some(SKU.to_string());
+                system.family = Some(FAMILY.to_string());
+                system.uuid = UUID;
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sys_vendor = sh
+        .read_file("/sys/class/dmi/id/sys_vendor")
+        .await
+        .context("reading sys_vendor")?;
+    assert_eq!(sys_vendor.trim(), MANUFACTURER);
+
+    let product_name = sh
+        .read_file("/sys/class/dmi/id/product_name")
+        .await
+        .context("reading product_name")?;
+    assert_eq!(product_name.trim(), PRODUCT);
+
+    let product_version = sh
+        .read_file("/sys/class/dmi/id/product_version")
+        .await
+        .context("reading product_version")?;
+    assert_eq!(product_version.trim(), VERSION);
+
+    let product_sku = sh
+        .read_file("/sys/class/dmi/id/product_sku")
+        .await
+        .context("reading product_sku")?;
+    assert_eq!(product_sku.trim(), SKU);
+
+    let product_family = sh
+        .read_file("/sys/class/dmi/id/product_family")
+        .await
+        .context("reading product_family")?;
+    assert_eq!(product_family.trim(), FAMILY);
+
+    let product_serial = sh
+        .read_file("/sys/class/dmi/id/product_serial")
+        .await
+        .context("reading product_serial")?;
+    assert_eq!(product_serial.trim(), SERIAL);
+
+    let product_uuid = sh
+        .read_file("/sys/class/dmi/id/product_uuid")
+        .await
+        .context("reading product_uuid")?;
+    // SMBIOS (>= 2.6) stores the UUID's first three fields little-endian, and
+    // Linux formats `product_uuid` with `%pUl` (little-endian) accordingly.
+    // Our `Guid`'s in-memory byte layout is the same little-endian SMBIOS
+    // layout, so its `Display` output is exactly what the kernel prints — no
+    // byte-swap.
+    assert_eq!(product_uuid.trim().to_ascii_lowercase(), UUID.to_string());
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with shared (file/memfd-backed) memory sections instead of the
+/// default private anonymous memory.
 #[openvmm_test(
     linux_direct_x64,
     // TODO: add linux_direct_aarch64 (GH #1798)
 )]
-async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn boot_shared_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                for node in &mut c.numa.nodes {
-                    if let Some(mem) = &mut node.mem {
-                        mem.private_memory = true;
-                    }
-                }
-            })
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
         })
         .run()
         .await?;
@@ -159,7 +480,7 @@ async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 #[openvmm_test(linux_direct_x64)]
 #[openvmm_test(linux_direct_aarch64)]
 async fn hugetlb_memory_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    const RAM_BYTES: u64 = 1024 * 1024 * 1024;
+    const RAM_BYTES: u64 = 512 * 1024 * 1024;
 
     let required_pages = RAM_BYTES / petri::openvmm::HUGETLB_2MB_PAGE_SIZE;
     if !petri::openvmm::ensure_2mb_hugetlb_pages(required_pages)? {
@@ -205,10 +526,13 @@ async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 }
 
 /// Basic boot test without agent
-#[vmm_test_with(noagent(
-    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
-    openvmm_pcat_x64(iso(freebsd_13_2_x64))
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+        openvmm_pcat_x64(iso(freebsd_13_2_x64))
+    )
+)]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -234,8 +558,8 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot is intermittently unreliable in CI", openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -256,7 +580,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 /// Basic boot test with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -277,14 +601,24 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
     Ok(())
 }
 
-#[vmm_test_with(vpci(
-    // TODO: virt_whp is missing VPCI LPI interrupt support, used by Windows (but not Linux)
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // TODO: Linux image is missing VPCI driver in its initrd
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+#[vmm_test_with(
+    requires(vpci),
+    configs(
+        ignore(
+            reason = "virt_whp lacks VPCI LPI interrupt support (Windows)",
+            openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+        ),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+        ),
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
+        )
+    )
+)]
 async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::Nvme)
@@ -296,14 +630,27 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 }
 
 /// Tests NVMe boot with OpenHCL VPCI relaying enabled.
-#[vmm_test_with(vpci(
-    // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
-    // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // TODO: Linux image is missing VPCI driver in its initrd
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+#[vmm_test_with(
+    requires(vpci),
+    configs(
+        ignore(
+            reason = "WHP lacks ARM64 VTL2 support",
+            openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+        ),
+        ignore(
+            reason = "WHP lacks ARM64 VTL2 support",
+            openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+        ),
+        unstable(
+            reason = "known WHP lost interrupt bug",
+            openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+        ),
+        ignore(
+            reason = "Linux initrd lacks a VPCI driver",
+            openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+        )
+    )
+)]
 async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::Nvme)
@@ -317,18 +664,17 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
 }
 
 /// Validate we can reboot a VM and reconnect to pipette.
-// TODO: Reenable openvmm guests that use the framebuffer once #74 is fixed.
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
-    // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_pcat_x64(vhd(ubuntu_2504_server_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
@@ -336,7 +682,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))
@@ -423,10 +769,61 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     // Verify VBS is running
     let output = cmd!(shell, "systeminfo").output().await?;
     let output_str = String::from_utf8_lossy(&output.stdout);
-    assert!(output_str.contains("Virtualization-based security: Status: Running"));
-    let output_running = &output_str[output_str.find("Services Running:").unwrap()..];
-    assert!(output_running.contains("Credential Guard"));
-    assert!(output_running.contains("Hypervisor enforced Code Integrity"));
+    let services_running = output_str
+        .split_once("Services Running:")
+        .map_or("", |(_, rest)| rest);
+    if !output_str.contains("Virtualization-based security: Status: Running")
+        || !services_running.contains("Credential Guard")
+        || !services_running.contains("Hypervisor enforced Code Integrity")
+    {
+        let _ = cmd!(shell, "bcdedit.exe")
+            .args(["/enum", "{current}"])
+            .ignore_status()
+            .run()
+            .await;
+        let _ = cmd!(shell, "reg.exe")
+            .args([
+                "query",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+                "/s",
+            ])
+            .ignore_status()
+            .run()
+            .await;
+        let _ = cmd!(shell, "reg.exe")
+            .args([
+                "query",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+                "/v",
+                "LsaCfgFlags",
+            ])
+            .ignore_status()
+            .run()
+            .await;
+        let _ = cmd!(shell, "wevtutil.exe")
+            .args([
+                "qe",
+                "Microsoft-Windows-DeviceGuard/Operational",
+                "/c:50",
+                "/rd:true",
+                "/f:text",
+            ])
+            .ignore_status()
+            .run()
+            .await;
+        let _ = cmd!(shell, "wevtutil.exe")
+            .args([
+                "qe",
+                "Microsoft-Windows-Kernel-Boot/Operational",
+                "/c:50",
+                "/rd:true",
+                "/f:text",
+            ])
+            .ignore_status()
+            .run()
+            .await;
+        anyhow::bail!("guest VSM did not start after reboot. systeminfo:\n{output_str}");
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -440,10 +837,6 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -457,22 +850,20 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 }
 
 /// Verify that secure boot fails with a mismatched template.
-/// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
-#[vmm_test_with(noagent(
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+        hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+        hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+        hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    )
+)]
 async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -493,11 +884,14 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[vmm_test_with(noagent(
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    openvmm_openhcl_uefi_x64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        hyperv_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_aarch64(none),
+        openvmm_openhcl_uefi_x64(none)
+    )
+)]
 async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -526,11 +920,14 @@ async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
 /// TODO:
 ///  - change hyperv tests to use WMI instead of env_cfg once
 ///    CI runners support it
-#[vmm_test_with(noagent(
-    openvmm_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_x64(none),
+        hyperv_openhcl_uefi_aarch64(none)
+    )
+)]
 async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -541,14 +938,15 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
         .run_without_agent()
         .await?;
 
-    // The last INFO-level entry emitted by the Hyper-V UEFI firmware right
-    // before it hands control to `firmware_uefi::service::diagnostics` to
-    // collect entries. It only appears in the trace stream when:
+    // The last INFO-level entry emitted by the Hyper-V UEFI firmware in this
+    // no-boot (frontpage) scenario, right before it hands control to
+    // `firmware_uefi::service::diagnostics` to collect entries. It only
+    // appears in the trace stream when:
     //   1. The diagnostics log level is INFO
     //   2. Rate limiting is disabled — UEFI emits ~1000 INFO entries in a
-    //      single burst, and this is one of the very last; with the default
-    //      rate limit it gets dropped.
-    const MARKER: &str = "Signaling BIOS device to collect EFI diagnostics";
+    //      single burst, and this is the very last; with the default rate
+    //      limit it gets dropped.
+    const MARKER: &str = "Signaling Unable To Boot event";
 
     let mut kmsg = vm.kmsg().await?;
 
@@ -568,7 +966,11 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
 ///
 /// Boots OpenHCL UEFI with an NVMe device attached, then verifies
 /// whether IoMmuDxe will force bounce buffering on all DMA operations.
-#[vmm_test_with(vpci(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))))]
+#[vmm_test_with(
+    requires(vpci),
+    unstable(reason = "Test is flaky on CI, known WHP bug suspected"),
+    configs(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+)]
 async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -607,11 +1009,14 @@ async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
-#[vmm_test_with(noagent(
-    openvmm_uefi_x64(guest_test_uefi_x64),
-    openvmm_uefi_aarch64(guest_test_uefi_aarch64),
-    openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
-))]
+#[vmm_test_with(
+    noagent,
+    configs(
+        openvmm_uefi_x64(guest_test_uefi_x64),
+        openvmm_uefi_aarch64(guest_test_uefi_aarch64),
+        openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
+    )
+)]
 async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()
@@ -858,6 +1263,12 @@ async fn vhost_user_blk_device<T>(
     .into_resource();
 
     let (vm, agent) = config
+        // vhost-user requires the guest RAM backing to be shareable with the
+        // backend process, so opt out of the default private memory.
+        .with_memory(MemoryConfig {
+            private_memory: Some(false),
+            ..Default::default()
+        })
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));

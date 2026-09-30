@@ -18,7 +18,7 @@ uefi_nvram_storage.workspace = true
 vmcore = { workspace = true, optional = true }
 
 cvm_tracing.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect = { workspace = true, optional = true }
 open_enum.workspace = true
 ucs2.workspace = true

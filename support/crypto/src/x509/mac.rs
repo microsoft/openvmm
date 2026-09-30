@@ -12,6 +12,7 @@
 #![expect(unsafe_code)]
 
 use super::X509Error;
+use super::X509PublicKey;
 use crate::mac::*;
 use der::Decode;
 use der::Encode;
@@ -41,8 +42,10 @@ fn err(e: crate::BackendError) -> X509Error {
     X509Error(e)
 }
 
-fn rsa_err(e: crate::BackendError) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(e)
+/// Extract the backend error from an [`X509Error`] produced by this backend,
+/// which always wraps a backend error.
+pub(crate) fn backend_err(e: X509Error) -> crate::BackendError {
+    e.0
 }
 
 fn der_err(e: der::Error, op: &'static str) -> X509Error {
@@ -57,10 +60,6 @@ fn null_err(op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Null(op))
 }
 
-fn rsa_null_err(op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Null(op))
-}
-
 /// A SecCertificate paired with the parsed ASN.1 view of the same DER
 /// bytes. The Security.framework handle is used for public-key extraction
 /// and DN normalization; the parsed view is used for everything else.
@@ -72,12 +71,12 @@ pub struct X509CertificateInner {
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
         let parsed =
-            Certificate::from_der(data).map_err(|e| der_err(e, "parsing DER certificate"))?;
-        let cf = cf_data(data, "CFDataCreate for certificate").map_err(err)?;
+            Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
+        let cf = cf_data(data, "creating a CFData for the certificate").map_err(err)?;
         // SAFETY: cf.0 is a valid CFDataRef.
         let cert = unsafe { SecCertificateCreateWithData(kCFAllocatorDefault, cf.0) };
         if cert.is_null() {
-            return Err(null_err("SecCertificateCreateWithData"));
+            return Err(null_err("creating the certificate"));
         }
         Ok(Self {
             cert: CfHandle(cert),
@@ -85,11 +84,11 @@ impl X509CertificateInner {
         })
     }
 
-    pub fn public_key(&self) -> Result<crate::rsa::RsaPublicKey, crate::rsa::RsaError> {
+    pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         // SAFETY: self.cert.0 is a valid SecCertificateRef.
         let key = unsafe { SecCertificateCopyKey(self.cert.0) };
         if key.is_null() {
-            return Err(rsa_null_err("SecCertificateCopyKey"));
+            return Err(null_err("copying the certificate public key"));
         }
         let key = CfHandle(key);
         let mut error: CFErrorRef = ptr::null();
@@ -97,19 +96,21 @@ impl X509CertificateInner {
         let data = unsafe { SecKeyCopyExternalRepresentation(key.0, &mut error) };
         if data.is_null() {
             // SAFETY: error is null or a valid CFErrorRef.
-            return Err(rsa_err(unsafe {
-                sec_err(error, "SecKeyCopyExternalRepresentation")
+            return Err(err(unsafe {
+                sec_err(error, "exporting the certificate public key")
             }));
         }
         let data = CfHandle(data);
         // SAFETY: data.0 is a valid CFDataRef.
         let pkcs1_der = unsafe { cf_data_to_vec(data.0) };
         let pk = pkcs1::RsaPublicKey::from_der(&pkcs1_der)
-            .map_err(|e| rsa_der_err(e, "parsing PKCS#1 RSA public key"))?;
-        crate::rsa::RsaPublicKey::from_components(
+            .map_err(|e| der_err(e, "parsing the PKCS#1 RSA public key"))?;
+        let rsa = crate::rsa::RsaPublicKey::from_components(
             pk.modulus.as_bytes(),
             pk.public_exponent.as_bytes(),
         )
+        .map_err(|crate::rsa::RsaError(e)| X509Error(e))?;
+        Ok(X509PublicKey::Rsa(rsa))
     }
 
     pub fn verify(
@@ -118,13 +119,13 @@ impl X509CertificateInner {
     ) -> Result<bool, crate::rsa::RsaError> {
         let oid = self.parsed.signature_algorithm().oid;
         let hash = crate::HashAlgorithm::try_from(oid)
-            .map_err(|e| rsa_der_err(e, "unrecognized signature algorithm OID"))?;
+            .map_err(|e| rsa_der_err(e, "reading the certificate signature algorithm"))?;
 
         let tbs_der = self
             .parsed
             .tbs_certificate()
             .to_der()
-            .map_err(|e| rsa_der_err(e, "encoding TBS certificate"))?;
+            .map_err(|e| rsa_der_err(e, "encoding the TBS certificate"))?;
         let signature = self.parsed.signature().raw_bytes();
         issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)
     }
@@ -148,7 +149,7 @@ impl X509CertificateInner {
 
         if let Some((_crit, ku)) = issuer_tbs
             .get_extension::<KeyUsage>()
-            .map_err(|e| der_err(e, "parsing KeyUsage extension"))?
+            .map_err(|e| der_err(e, "parsing the KeyUsage extension"))?
             && !ku.key_cert_sign()
         {
             return Ok(false);
@@ -156,12 +157,12 @@ impl X509CertificateInner {
 
         if let Some((_crit, akid)) = subject_tbs
             .get_extension::<AuthorityKeyIdentifier>()
-            .map_err(|e| der_err(e, "parsing AuthorityKeyIdentifier extension"))?
+            .map_err(|e| der_err(e, "parsing the AuthorityKeyIdentifier extension"))?
         {
             if let Some(akid_key_id) = &akid.key_identifier {
                 let skid = issuer_tbs
                     .get_extension::<SubjectKeyIdentifier>()
-                    .map_err(|e| der_err(e, "parsing SubjectKeyIdentifier extension"))?;
+                    .map_err(|e| der_err(e, "parsing the SubjectKeyIdentifier extension"))?;
                 match skid {
                     Some((_crit, ski)) => {
                         if akid_key_id != &ski.0 {
@@ -197,7 +198,7 @@ impl X509CertificateInner {
     pub fn to_der(&self) -> Result<Vec<u8>, X509Error> {
         self.parsed
             .to_der()
-            .map_err(|e| der_err(e, "encoding certificate as DER"))
+            .map_err(|e| der_err(e, "encoding the certificate as DER"))
     }
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
@@ -220,7 +221,7 @@ impl X509CertificateInner {
         if status.0 != 0 {
             return Err(err(crate::BackendError::OsStatus(
                 status,
-                "SecCertificateCopyCommonName",
+                "reading the subject common name",
             )));
         }
         if cn.is_null() {
@@ -266,9 +267,11 @@ fn copy_normalized(cert: SecCertificateRef, subject: bool) -> Result<Vec<u8>, X5
         }
     };
     if data.is_null() {
-        return Err(null_err(
-            "SecCertificateCopyNormalized{Subject,Issuer}Sequence",
-        ));
+        return Err(null_err(if subject {
+            "copying the normalized subject name"
+        } else {
+            "copying the normalized issuer name"
+        }));
     }
     let data = CfHandle(data);
     // SAFETY: data.0 is a valid CFDataRef.

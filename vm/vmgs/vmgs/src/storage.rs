@@ -3,6 +3,7 @@
 
 //! VMGS storage implementation on top of [`Disk`].
 
+use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use guestmem::GuestMemory;
@@ -40,13 +41,15 @@ impl VmgsStorage {
         let sector_size = disk.sector_size();
         // Max IO size. Balance between performance and memory usage.
         let mem_size = 64 * 1024;
-        Self {
+        let storage = Self {
             mem: GuestMemory::allocate(mem_size),
             mem_size,
             sector_size,
             sector_shift: sector_size.trailing_zeros(),
             disk,
-        }
+        };
+        tracing::info!(CVM_ALLOWED, vmgs_capacity = storage.capacity());
+        storage
     }
 
     pub fn new_validated(disk: Disk) -> Result<Self, StorageError> {
@@ -157,11 +160,13 @@ impl VmgsStorage {
         self.disk.sector_count()
     }
 
+    fn capacity(&self) -> u64 {
+        (self.sector_count() * self.sector_size() as u64).min(vmgs_format::VMGS_MAX_CAPACITY_BYTES)
+    }
+
     /// Capacity in VMGS blocks.
     pub fn block_capacity(&self) -> u32 {
-        ((self.sector_count() * self.sector_size() as u64)
-            .min(vmgs_format::VMGS_MAX_CAPACITY_BYTES)
-            / vmgs_format::VMGS_BYTES_PER_BLOCK as u64) as u32
+        (self.capacity() / vmgs_format::VMGS_BYTES_PER_BLOCK as u64) as u32
     }
 
     pub fn aligned_header_size(&self) -> u64 {

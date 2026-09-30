@@ -24,7 +24,6 @@ use net_backend::VlanMetadata;
 use net_backend::loopback::LoopbackEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::bus_range::AssignedBusRange;
 use pci_core::msi::MsiConnection;
 use std::future::poll_fn;
 use std::time::Duration;
@@ -549,11 +548,11 @@ async fn test_multi_mixed_packet(driver: DefaultDriver) {
 async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let pages = 512; // 2MB
     let mem = DeviceTestMemory::new(pages, false, "test_vport_with_query_filter_state");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
@@ -613,11 +612,11 @@ async fn test_link_speed_default(driver: DefaultDriver) {
 
     let pages = 512; // 2MB
     let mem = DeviceTestMemory::new(pages, false, "test_link_speed_default");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
@@ -677,11 +676,11 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
 
     let pages = 512;
     let mem = DeviceTestMemory::new(pages, false, "test_link_speed_expected");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new_with_config(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
@@ -941,11 +940,11 @@ async fn test_endpoint(
     let data_to_send = pkt_builder.packet_data();
     let tx_segments = pkt_builder.segments();
 
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
@@ -1115,11 +1114,11 @@ async fn new_test_queue(
 ) {
     let pages = 256;
     let mem = DeviceTestMemory::new(pages * 2, true, "test queue");
-    let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_conn.target(),
+        &msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),

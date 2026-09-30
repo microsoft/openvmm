@@ -31,6 +31,7 @@ pub mod platform_settings {
     use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
     use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
+    use get_protocol::dps_json::HardwareSealingPolicy;
     use get_protocol::dps_json::ManagementVtlFeatures;
     use guid::Guid;
     use inspect::Inspect;
@@ -47,19 +48,21 @@ pub mod platform_settings {
     /// All available SMBIOS related config.
     #[derive(Debug, Inspect)]
     pub struct Smbios {
-        pub serial_number: Vec<u8>,
-        pub base_board_serial_number: Vec<u8>,
-        pub chassis_serial_number: Vec<u8>,
-        pub chassis_asset_tag: Vec<u8>,
+        pub serial_number: String,
+        pub base_board_serial_number: String,
+        pub chassis_serial_number: String,
+        pub chassis_asset_tag: String,
 
-        pub system_manufacturer: Vec<u8>,
-        pub system_product_name: Vec<u8>,
-        pub system_version: Vec<u8>,
-        pub system_sku_number: Vec<u8>,
-        pub system_family: Vec<u8>,
-        pub bios_lock_string: Vec<u8>,
-        pub memory_device_serial_number: Vec<u8>,
+        pub system_manufacturer: String,
+        pub system_product_name: String,
+        pub system_version: String,
+        pub system_sku_number: String,
+        pub system_family: String,
+        pub bios_lock_string: String,
+        pub memory_device_serial_number: String,
 
+        // These two arrive base64-encoded as raw bytes in the DPS JSON, so they
+        // are kept as `Vec<u8>` rather than forcing a UTF-8 conversion.
         pub processor_manufacturer: Vec<u8>,
         pub processor_version: Vec<u8>,
         pub processor_id: u64,
@@ -86,6 +89,7 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+        pub ipmi_enabled: bool,
 
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,
@@ -136,6 +140,8 @@ pub mod platform_settings {
         #[inspect(debug)]
         pub management_vtl_features: ManagementVtlFeatures,
         pub force_dma_bounce_enabled: bool,
+        #[inspect(debug)]
+        pub hardware_sealing_policy: HardwareSealingPolicy,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]
@@ -180,6 +186,18 @@ pub struct GuestStateProtection {
     /// Randomized new_gsp sent in the GuestStateProtectionRequest message to
     /// the host
     pub new_gsp: GspCleartextContent,
+}
+
+impl GuestStateProtection {
+    /// Construct a blank instance of `GuestStateProtection`
+    pub fn new_zeroed() -> GuestStateProtection {
+        GuestStateProtection {
+            encrypted_gsp: GspCiphertextContent::new_zeroed(),
+            decrypted_gsp: [GspCleartextContent::new_zeroed(); NUMBER_GSP as usize],
+            extended_status_flags: GspExtendedStatusFlags::new_zeroed(),
+            new_gsp: GspCleartextContent::new_zeroed(),
+        }
+    }
 }
 
 /// Response fields for Guest State Protection by ID from the host

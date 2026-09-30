@@ -162,6 +162,10 @@ impl MockConfigSpace {
         let sriov_id: u16 = 0x10;
         inner.regs.insert(key(0x100), sriov_id as u32); // cap_id=0x10, version=0, next=0
 
+        // SR-IOV Control (low u16) | SR-IOV Status (high u16) at cap + 0x08,
+        // initialized to 0 (ARI Capable Hierarchy clear).
+        inner.regs.insert(key(0x100 + 0x08), 0);
+
         // InitialVFs (low u16) | TotalVFs (high u16) at cap + 0x0C.
         inner.regs.insert(
             key(0x100 + 0x0C),
@@ -195,6 +199,70 @@ impl MockConfigSpace {
                 inner.bar_masks.insert(key(upper_offset), upper_mask);
             }
         }
+    }
+
+    /// Write a raw extended-capability header dword at `at`, with the given
+    /// capability ID (version 1) and a pointer to the next capability (`next`,
+    /// 0 to terminate).
+    fn add_ext_cap_header(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        cap_id: u16,
+        at: u16,
+        next: u16,
+    ) {
+        let mut inner = self.inner.lock();
+        let header = (cap_id as u32) | (0x1u32 << 16) | ((next as u32) << 20);
+        inner.regs.insert((bus, device, function, at), header);
+    }
+
+    /// Add an ARI extended capability at `at` (chaining to `next`), advertising
+    /// `next_function_number` in bits 15:8 of its ARI Capability register.
+    fn add_ari_cap(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        at: u16,
+        next: u16,
+        next_function_number: u8,
+    ) {
+        self.add_ext_cap_header(bus, device, function, 0x0E, at, next);
+        let mut inner = self.inner.lock();
+        // ARI Capability register at at + 0x04; Next Function Number is bits 15:8.
+        inner.regs.insert(
+            (bus, device, function, at + 0x04),
+            (next_function_number as u32) << 8,
+        );
+    }
+
+    /// Add a PCI Express capability to a device's standard capability list at
+    /// offset 0x40, optionally advertising ARI Forwarding Supported in Device
+    /// Capabilities 2. Device Control 2 (which holds ARI Forwarding Enable) is
+    /// readable/writable at offset 0x68.
+    fn add_pcie_cap(&self, bus: u8, device: u8, function: u8, ari_forwarding_supported: bool) {
+        let mut inner = self.inner.lock();
+        let key = |off: u16| (bus, device, function, off);
+        // Set the Capabilities List bit (bit 4) in the Status register (high
+        // 16 bits of the Status/Command dword at 0x04).
+        let sc = inner.regs.get(&key(0x04)).copied().unwrap_or(0);
+        inner.regs.insert(key(0x04), sc | (1u32 << (16 + 4)));
+        // Capabilities Pointer (low byte of 0x34) -> 0x40.
+        inner.regs.insert(key(0x34), 0x40);
+        // PCI Express capability header at 0x40: cap id 0x10, next 0.
+        inner.regs.insert(key(0x40), 0x10);
+        // Device Capabilities 2 at 0x40 + 0x24 = 0x64: bit 5 = ARI Forwarding
+        // Supported.
+        let dev_caps2 = if ari_forwarding_supported {
+            1u32 << 5
+        } else {
+            0
+        };
+        inner.regs.insert(key(0x64), dev_caps2);
+        // Device Control/Status 2 at 0x40 + 0x28 = 0x68: initially 0.
+        inner.regs.insert(key(0x68), 0);
     }
 
     fn read_reg(&self, bus: u8, device: u8, function: u8, offset: u16) -> u32 {
@@ -310,6 +378,19 @@ fn read_vf_bar64(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8, bar_idx: u8
 }
 
 // ---- Tests ----
+
+/// Read the ARI Forwarding Enable bit (Device Control 2, bit 5) from a
+/// bridge's PCI Express capability (located at offset 0x40, so Device
+/// Control 2 is at 0x68).
+fn ari_forwarding_enabled(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8) -> bool {
+    mock.read_reg(bus, dev, func, 0x68) & (1 << 5) != 0
+}
+
+/// Read the ARI Capable Hierarchy bit (SR-IOV Control, bit 4) from a PF's
+/// SR-IOV capability (located at offset 0x100, so SR-IOV Control is at 0x108).
+fn ari_capable_hierarchy(mock: &MockConfigSpace, bus: u8, dev: u8, func: u8) -> bool {
+    mock.read_reg(bus, dev, func, 0x108) & (1 << 4) != 0
+}
 
 #[async_test]
 async fn single_endpoint_32bit_bar() {
@@ -2408,5 +2489,303 @@ async fn pinned_bar_near_u64_max_no_overflow() {
     assert!(
         matches!(err, crate::AssignmentError::PinnedBarOutOfAperture { .. }),
         "expected PinnedBarOutOfAperture, got {err}"
+    );
+}
+
+// ---- ARI enablement tests ----
+
+/// An SR-IOV device behind a bridge that supports ARI Forwarding should get
+/// ARI Forwarding enabled in the bridge and ARI Capable Hierarchy set in its
+/// PF.
+#[async_test]
+async fn ari_enabled_for_sriov_device() {
+    let mock = MockConfigSpace::new();
+
+    // Bridge on bus 0 that supports ARI Forwarding.
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, true);
+
+    // SR-IOV endpoint on bus 1.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(1, 0, 0, 4, 1, 1);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding should be enabled in the bridge above an SR-IOV device"
+    );
+    assert!(
+        ari_capable_hierarchy(&mock, 1, 0, 0),
+        "ARI Capable Hierarchy should be set in the SR-IOV PF"
+    );
+}
+
+/// If the bridge does not advertise ARI Forwarding Supported, ARI Forwarding
+/// must not be enabled.
+#[async_test]
+async fn ari_not_enabled_when_unsupported() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, false); // ARI Forwarding NOT supported
+
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(1, 0, 0, 4, 1, 1);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        !ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding must not be enabled when the bridge does not support it"
+    );
+    assert!(
+        !ari_capable_hierarchy(&mock, 1, 0, 0),
+        "ARI Capable Hierarchy must not be set when ARI Forwarding is not enabled"
+    );
+}
+
+/// An SIOV device (SIOV Extended Capability, no SR-IOV) should still trigger
+/// ARI Forwarding in the bridge, but there is no ARI Capable Hierarchy to set.
+#[async_test]
+async fn ari_enabled_for_siov_device() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, true);
+
+    // SIOV endpoint on bus 1: SIOV Extended Capability (0x38) at 0x100.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_ext_cap_header(1, 0, 0, 0x38, 0x100, 0);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding should be enabled in the bridge above an SIOV device"
+    );
+}
+
+/// A device that only has an ARI Extended Capability (no SR-IOV / SIOV) still
+/// triggers ARI Forwarding in the bridge.
+#[async_test]
+async fn ari_enabled_for_ari_cap_only() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, true);
+
+    // Endpoint on bus 1 with a single Function and an ARI cap terminating the
+    // Function list (Next Function Number = 0).
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_ari_cap(1, 0, 0, 0x100, 0, 0);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding should be enabled for a device with an ARI capability"
+    );
+}
+
+/// An ARI device with sparse Extended Functions (Function Numbers 0, 1, 8, 9)
+/// must be fully enumerated via the ARI Next-Function-Number linked list, and
+/// each Function's BAR programmed. Functions 8 and 9 (accessed via raw devfn
+/// bytes 8 and 9) map to mock (device 1, function 0/1).
+#[async_test]
+async fn ari_function_list_walk() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, true);
+
+    // Function 0 (devfn 0 -> mock 0,0): ARI cap, next function 1.
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    mock.add_ari_cap(1, 0, 0, 0x100, 0, 1);
+
+    // Function 1 (devfn 1 -> mock 0,1): ARI cap, next function 8.
+    mock.add_endpoint(1, 0, 1, &[(0, 0x1000, false, false)]);
+    mock.add_ari_cap(1, 0, 1, 0x100, 0, 8);
+
+    // Function 8 (devfn 8 -> mock 1,0): ARI cap, next function 9.
+    mock.add_endpoint(1, 1, 0, &[(0, 0x1000, false, false)]);
+    mock.add_ari_cap(1, 1, 0, 0x100, 0, 9);
+
+    // Function 9 (devfn 9 -> mock 1,1): ARI cap, terminates the list.
+    mock.add_endpoint(1, 1, 1, &[(0, 0x1000, false, false)]);
+    mock.add_ari_cap(1, 1, 1, 0x100, 0, 0);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding should be enabled for the ARI device"
+    );
+
+    // All four Extended Functions must have their BARs programmed to distinct,
+    // valid addresses. The raw devfn byte decomposes into the mock's
+    // (device, function): devfn 0->(0,0), 1->(0,1), 8->(1,0), 9->(1,1).
+    let f0 = read_bar32(&mock, 1, 0, 0, 0) & !0xF;
+    let f1 = read_bar32(&mock, 1, 0, 1, 0) & !0xF;
+    let f8 = read_bar32(&mock, 1, 1, 0, 0) & !0xF;
+    let f9 = read_bar32(&mock, 1, 1, 1, 0) & !0xF;
+    for (name, addr) in [("f0", f0), ("f1", f1), ("f8", f8), ("f9", f9)] {
+        assert!(addr >= 0x1000_0000, "{name} BAR not programmed: {addr:#x}");
+    }
+    let mut addrs = [f0, f1, f8, f9];
+    addrs.sort_unstable();
+    for w in addrs.windows(2) {
+        assert_ne!(w[0], w[1], "ARI function BARs must be distinct");
+    }
+}
+
+/// ARI Capable Hierarchy must be set in the lowest-numbered PF even when that
+/// PF is not Function 0. Here Function 0 has no SR-IOV; PFs are at Functions
+/// 2 and 4, so the lowest PF is Function 2.
+#[async_test]
+async fn ari_capable_hierarchy_lowest_pf() {
+    let mock = MockConfigSpace::new();
+
+    mock.add_bridge(0, 0, 0);
+    mock.add_pcie_cap(0, 0, 0, true);
+
+    // Multi-function device: Function 0 is a plain endpoint (no SR-IOV).
+    mock.add_endpoint(1, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.set_multi_function(1, 0);
+    // Function 2: SR-IOV PF (lowest-numbered PF).
+    mock.add_endpoint(1, 0, 2, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(1, 0, 2, 2, 1, 1);
+    // Function 4: another SR-IOV PF.
+    mock.add_endpoint(1, 0, 4, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(1, 0, 4, 2, 1, 1);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    assert!(
+        ari_forwarding_enabled(&mock, 0, 0, 0),
+        "ARI Forwarding should be enabled"
+    );
+    assert!(
+        ari_capable_hierarchy(&mock, 1, 0, 2),
+        "ARI Capable Hierarchy should be set in the lowest-numbered PF (Function 2)"
+    );
+    assert!(
+        !ari_capable_hierarchy(&mock, 1, 0, 4),
+        "ARI Capable Hierarchy should not be set in the higher-numbered PF (Function 4)"
+    );
+}
+
+/// A top-level SR-IOV device directly on the root bus (no downstream port
+/// above) must not fault; there is no port on which to enable ARI Forwarding.
+#[async_test]
+async fn ari_no_port_at_root_bus() {
+    let mock = MockConfigSpace::new();
+
+    // SR-IOV endpoint directly on bus 0 (no bridge above).
+    mock.add_endpoint(0, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_sriov(0, 0, 0, 2, 1, 1);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    // Should succeed without attempting to enable ARI Forwarding on a
+    // non-existent downstream port.
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+}
+
+/// An ARI-capable device at Device 0 on the root bus (no upstream port, so ARI
+/// Forwarding cannot be enabled) must not cause real, independent devices at
+/// higher Device Numbers to be skipped. The Device-Number -> Function-Number
+/// aliasing only applies once ARI Forwarding is enabled upstream.
+#[async_test]
+async fn ari_cap_without_forwarding_does_not_skip_real_devices() {
+    let mock = MockConfigSpace::new();
+
+    // Device 0 on the root bus: has an ARI capability but no upstream port to
+    // enable ARI Forwarding on. ARI cap terminates the Function list.
+    mock.add_endpoint(0, 0, 0, &[(0, 0x1000, false, false)]);
+    mock.add_ari_cap(0, 0, 0, 0x100, 0, 0);
+
+    // Device 1 on the root bus: a real, independent endpoint.
+    mock.add_endpoint(0, 1, 0, &[(0, 0x2000, false, false)]);
+
+    let params = AssignmentParams {
+        start_bus: 0,
+        end_bus: 255,
+        low_mmio: MemoryRange::new(0x1000_0000..0x1000_0000 + 0x1000_0000),
+        high_mmio: MemoryRange::EMPTY,
+        preserve_bars: false,
+    };
+
+    let mut cfg = mock.clone();
+    assign_pci_resources(&mut cfg, &params).await.unwrap();
+
+    // Device 1's BAR must have been programmed into the low MMIO aperture
+    // (it was not skipped). An unscanned device would leave its BAR at 0.
+    let dev1_bar = read_bar32(&mock, 0, 1, 0, 0) & !0xF;
+    assert!(
+        (0x1000_0000..0x2000_0000).contains(&dev1_bar),
+        "device 1 BAR should be programmed into the aperture, got {dev1_bar:#x}"
     );
 }

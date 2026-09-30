@@ -19,7 +19,7 @@ use thiserror::Error;
 
 /// An error for HMAC-SHA-256 operations.
 #[derive(Clone, Debug, Error)]
-#[error("HMAC-SHA-256 error")]
+#[error("HMAC-SHA-256 operation failed")]
 pub struct HmacSha256Error(#[source] super::BackendError);
 
 /// Compute the HMAC-SHA-256 of `data` using `key`.

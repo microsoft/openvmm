@@ -53,6 +53,17 @@ mod state {
         pub nvme_state: crate::nvme_manager::save_restore::NvmeManagerSavedState,
     }
 
+    /// Servicing state for hibernation.
+    #[derive(Protobuf)]
+    #[mesh(package = "underhill")]
+    pub struct HibernateSavedState {
+        /// The hibernate token pinned for this VM, carried across servicing so
+        /// it is not re-read from VMGS (where it was already consumed) on
+        /// restore.
+        #[mesh(1)]
+        pub token: u64,
+    }
+
     /// Servicing state needed to create the LoadedVm object.
     #[derive(Protobuf)]
     #[mesh(package = "underhill")]
@@ -82,6 +93,9 @@ mod state {
         /// Intercept the host-provided shutdown IC device.
         #[mesh(7)]
         pub overlay_shutdown_device: bool,
+        /// Hibernation servicing state.
+        #[mesh(8)]
+        pub hibernate: Option<HibernateSavedState>,
         /// NVMe saved state.
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
@@ -209,6 +223,7 @@ pub mod transposed {
             disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         )>,
         pub overlay_shutdown_device: Option<bool>,
+        pub hibernate: Option<Option<HibernateSavedState>>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
@@ -242,6 +257,7 @@ pub mod transposed {
                     flush_logs_result,
                     vmgs,
                     overlay_shutdown_device,
+                    hibernate,
                     nvme_state,
                     mana_state,
                     dma_manager_state,
@@ -260,6 +276,7 @@ pub mod transposed {
                     flush_logs_result: Some(flush_logs_result),
                     vmgs,
                     overlay_shutdown_device: Some(overlay_shutdown_device),
+                    hibernate: Some(hibernate),
                     nvme_state: Some(nvme_state),
                     mana_state,
                     dma_manager_state: Some(dma_manager_state),

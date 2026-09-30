@@ -15,6 +15,7 @@ inspect.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+powershell_builder.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["wrap_help"] }

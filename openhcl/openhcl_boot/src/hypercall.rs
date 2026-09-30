@@ -387,7 +387,8 @@ impl HvCall {
         };
 
         // Split the call up to avoid exceeding the hypercall input/output size limits.
-        const MAX_PER_CALL: usize = 512;
+        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetVpIndexFromApicId>();
+        const MAX_PER_CALL: usize = (HV_PAGE_SIZE as usize - HEADER_SIZE) / size_of::<HwId>();
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
             // PANIC: Infallable, since the hypercall header is less than the size of a page
@@ -396,10 +397,8 @@ impl HvCall {
                 .unwrap();
             // PANIC: Infallable, since the hypercall parameters are chunked to be less
             // than the remaining size (after the header) of the input page.
-            // todo: This is *not true* for aarch64, where the hw_ids are u64s. Tracked via
-            // https://github.com/microsoft/openvmm/issues/745
             hw_ids
-                .write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..])
+                .write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
                 .unwrap();
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.

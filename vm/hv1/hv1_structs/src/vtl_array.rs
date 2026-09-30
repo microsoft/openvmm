@@ -201,6 +201,12 @@ impl VtlSet {
             .rev()
             .map(|i| Vtl::try_from(i as u8).unwrap())
     }
+
+    /// Sets the given [`Vtl`] in the set and returns self.
+    pub fn with_vtl(mut self, vtl: Vtl) -> Self {
+        self.set(vtl);
+        self
+    }
 }
 
 impl Inspect for VtlSet {
@@ -214,6 +220,12 @@ impl From<u16> for VtlSet {
         VtlSet {
             bits: BitArray::new(bits),
         }
+    }
+}
+
+impl From<VtlSet> for u16 {
+    fn from(set: VtlSet) -> Self {
+        set.bits.into_inner()
     }
 }
 

@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Menu } from "./menu";
-import { Link, useParams, useLocation, useNavigate } from "react-router-dom";
+import { Link, useParams, useLocation, useNavigate } from "react-router";
 import { VirtualizedTable } from "./virtualized_table";
 import { fetchProcessedLog } from "./utils/fetch_logs_data";
 import { useQuery } from "@tanstack/react-query";

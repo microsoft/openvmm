@@ -21,6 +21,7 @@ pub use reply::ReplySender;
 pub use request::FuseOperation;
 pub use request::Request;
 pub use request::RequestReader;
+pub use request::check_name;
 pub use session::Session;
 pub use session::SessionInfo;
 
@@ -29,6 +30,7 @@ use lx::LxString;
 use protocol::*;
 use std::time::Duration;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -435,6 +437,13 @@ impl fuse_entry_out {
             attr_valid_nsec: attr_valid.subsec_nanos(),
             attr,
         }
+    }
+
+    pub fn new_dot(ino: u64, mode: u32) -> Self {
+        let mut entry = Self::new_zeroed();
+        entry.attr.ino = ino;
+        entry.attr.mode = mode;
+        entry
     }
 }
 

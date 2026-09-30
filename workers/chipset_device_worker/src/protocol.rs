@@ -4,6 +4,7 @@
 //! The internal protocol for communications between the proxy and the device wrapper.
 
 use chipset_device::io::IoError;
+use chipset_device::pci::PciConfigByteEnable;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
@@ -55,9 +56,9 @@ pub(crate) enum DeviceRequest {
     /// Perform a PIO write operation.
     PioWrite(WriteRequest<u16, Vec<u8>>),
     /// Perform a PCI config space read.
-    PciConfigRead(ReadRequest<u16>),
+    PciConfigRead(ReadRequest<u16>, PciConfigByteEnable),
     /// Perform a PCI config space write.
-    PciConfigWrite(WriteRequest<u16, u32>),
+    PciConfigWrite(WriteRequest<u16, u32>, PciConfigByteEnable),
     /// Start the device
     Start,
     /// Stop the device

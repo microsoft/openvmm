@@ -4,10 +4,15 @@
 //! PCI configuration space access
 
 use crate::ChipsetDevice;
+use crate::io::IoError;
 use crate::io::IoResult;
+use inspect::Inspect;
+use inspect::InspectMut;
+use mesh::MeshPayload;
+use zerocopy::IntoBytes;
 
 /// Byte enables for the four lanes of a PCI configuration DWORD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, MeshPayload)]
 pub struct PciConfigByteEnable(u8);
 
 impl PciConfigByteEnable {
@@ -37,19 +42,30 @@ impl PciConfigByteEnable {
     }
 
     /// Create byte enables for an access at `offset` with byte length `len`.
-    pub const fn from_offset_len(offset: u16, len: usize) -> Option<Self> {
+    pub const fn from_offset_len(offset: u16, len: usize) -> Result<Self, IoError> {
         let lane = (offset & 0x3) as u8;
         match len {
-            1 => Some(Self(1 << lane)),
-            2 if lane & 1 == 0 && lane <= 2 => Some(Self(0x3 << lane)),
-            4 if lane == 0 => Some(Self::FULL),
-            _ => None,
+            1 => Ok(Self(1 << lane)),
+            2 if lane & 1 == 0 && lane <= 2 => Ok(Self(0x3 << lane)),
+            4 if lane == 0 => Ok(Self::FULL),
+            2 | 4 => Err(IoError::UnalignedAccess),
+            _ => Err(IoError::InvalidAccessSize),
         }
+    }
+
+    /// Returns the byte offset of the first enabled byte in the DWORD and the number of enabled bytes.
+    pub const fn to_byte_offset_len(self) -> (u16, usize) {
+        (self.0.trailing_zeros() as u16, self.0.count_ones() as usize)
     }
 
     /// Raw byte-lane bits.
     pub const fn bits(self) -> u8 {
         self.0
+    }
+
+    /// Returns true if all byte lanes are enabled.
+    pub const fn is_full(self) -> bool {
+        self.0 == 0xf
     }
 
     /// `u32` mask corresponding to the enabled byte lanes.
@@ -90,7 +106,7 @@ impl PciConfigByteEnable {
 }
 
 /// A DWORD value with byte enables for PCI configuration space write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
 pub struct ByteEnabledDwordWrite {
     value: u32,
     byte_enable: PciConfigByteEnable,
@@ -108,6 +124,33 @@ impl ByteEnabledDwordWrite {
     /// Create a full-DWORD value with all byte lanes enabled.
     pub const fn with_all_bytes_enabled(value: u32) -> Self {
         Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Create a byte-enabled DWORD value from a slice of bytes.
+    pub fn from_intercept_buffer(byte_enable: PciConfigByteEnable, buffer: &[u8]) -> Self {
+        let mut temp: u32 = 0;
+        let (byte_offset, len) = byte_enable.to_byte_offset_len();
+        assert!(len <= buffer.len());
+        let byte_offset = byte_offset as usize;
+        temp.as_mut_bytes()[byte_offset..byte_offset + len].copy_from_slice(buffer);
+        Self::new(temp, byte_enable)
+    }
+
+    /// Retrieve a mutable slice of the enabled byte lanes of the DWORD.
+    pub fn as_valid_byte_slice(&self) -> &[u8] {
+        let (byte_offset, len) = self.byte_enable.to_byte_offset_len();
+        let byte_offset = byte_offset as usize;
+        &self.value.as_bytes()[byte_offset..byte_offset + len]
+    }
+
+    /// Returns true if all byte lanes are enabled.
+    pub const fn is_full(self) -> bool {
+        self.byte_enable.is_full()
+    }
+
+    /// Retrieve the underlying byte enable.
+    pub const fn byte_enable(&self) -> PciConfigByteEnable {
+        self.byte_enable
     }
 
     /// Get the mask of valid bytes.
@@ -154,7 +197,7 @@ impl ByteEnabledDwordWrite {
 }
 
 /// A DWORD value with byte enables for PCI configuration space read.
-#[derive(Debug)]
+#[derive(Debug, InspectMut)]
 pub struct ByteEnabledDwordRead<'a> {
     value: &'a mut u32,
     byte_enable: PciConfigByteEnable,
@@ -169,6 +212,29 @@ impl<'a> ByteEnabledDwordRead<'a> {
     /// Create a full-DWORD value with all byte lanes enabled.
     pub const fn with_all_bytes_enabled(value: &'a mut u32) -> Self {
         Self::new(value, PciConfigByteEnable::FULL)
+    }
+
+    /// Retrieve the underlying byte enable.
+    pub const fn byte_enable(&self) -> PciConfigByteEnable {
+        self.byte_enable
+    }
+
+    /// Fill the intercept buffer with the enabled byte lanes of the DWORD.
+    pub fn fill_intercept_buffer(self, buffer: &mut [u8]) {
+        let src = self.into_valid_byte_slice();
+        buffer.copy_from_slice(src);
+    }
+
+    /// Retrieve a mutable slice of the enabled byte lanes of the DWORD.
+    pub fn into_valid_byte_slice(self) -> &'a mut [u8] {
+        let (byte_offset, len) = self.byte_enable.to_byte_offset_len();
+        let byte_offset = byte_offset as usize;
+        &mut self.value.as_mut_bytes()[byte_offset..byte_offset + len]
+    }
+
+    /// Get the mask of valid bytes.
+    pub const fn valid_mask(&self) -> u32 {
+        self.byte_enable.mask()
     }
 
     /// Update the value of the DWORD, honoring byte enables.
@@ -231,37 +297,37 @@ impl<'a> ByteEnabledDwordRead<'a> {
 }
 
 /// A PCI configuration space request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
 pub struct PciConfigAddress {
     /// Target bus number.
     pub bus: u8,
     /// Target packed device/function number (`device << 3 | function`).
-    pub device_function: u8,
+    pub devfn: u8,
     /// Aligned DWORD register number in configuration space.
     dword_number: u16,
 }
 
 impl PciConfigAddress {
     /// Create a new PCI configuration-space request.
-    pub const fn new(bus: u8, device_function: u8, dword_number: u16) -> Option<Self> {
+    pub const fn new(bus: u8, devfn: u8, dword_number: u16) -> Option<Self> {
         if dword_number >= 1024 {
             return None;
         }
         Some(Self {
             bus,
-            device_function,
+            devfn,
             dword_number,
         })
     }
 
     /// Target device number.
     pub const fn device(self) -> u8 {
-        self.device_function >> 3
+        self.devfn >> 3
     }
 
     /// Target function number.
     pub const fn function(self) -> u8 {
-        self.device_function & 0x7
+        self.devfn & 0x7
     }
 
     /// Aligned byte offset of the addressed DWORD in configuration space.
@@ -270,100 +336,94 @@ impl PciConfigAddress {
     }
 }
 
+/// Represents the type of PCI configuration space access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
+pub enum PciConfigAccessType {
+    /// Type 0 PCI configuration space access. Type 0 accesses have
+    /// been fully routed to the target bus number.
+    Type0,
+    /// Type 1 PCI configuration space access. Type 1 accesses have
+    /// not been fully routed to the target bus number.
+    Type1,
+}
+
 /// Implemented by devices which have a PCI config space.
 pub trait PciConfigSpace: ChipsetDevice {
     /// Dispatch a PCI config space read to the device with the given address.
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult;
-    /// Dispatch a PCI config space write to the device with the given address.
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult;
+    ///
+    /// This function serves as a shorthand that single-function endpoint devices
+    /// can implement directly. More advanced routing components (switches, bridges)
+    /// and multi-function devices should instead implement
+    /// [`pci_cfg_read_with_routing`](Self::pci_cfg_read_with_routing) for full
+    /// routing context.
+    ///
+    /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
+    fn pci_cfg_read(&mut self, byte_offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult;
 
-    /// Handle a PCI configuration space read with full routing context.
+    /// Dispatch a PCI config space write to the device with the given address.
     ///
-    /// This method receives configuration space accesses with the target bus
-    /// and function number. The interpretation of `function` depends on the
-    /// bus topology: on a legacy PCI bus it carries packed device/function
-    /// bits (0..=255), while downstream of a PCIe port the device number is
-    /// always zero so all 8 bits represent functions within a single
-    /// endpoint.
+    /// This function serves as a shorthand that single-function endpoint devices
+    /// can implement directly. More advanced routing components (switches, bridges)
+    /// and multi-function devices should instead implement
+    /// [`pci_cfg_write_with_routing`](Self::pci_cfg_write_with_routing) for full
+    /// routing context.
     ///
-    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
-    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
-    /// when they are equal the access targets this device directly (Type 0),
-    /// otherwise it should be routed downstream (Type 1). An SR-IOV
-    /// capable device can use `secondary_bus` together with `target_bus` and
-    /// `function` to compute the VF number.
+    /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
+    fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult;
+
+    /// Dispatch a PCI configuration space read with full routing context.
     ///
-    /// The default implementation dispatches function 0 to
+    /// This method receives configuration space read with the access type,
+    /// target bus, target device/function number, and DWORD offset.
+    ///
+    /// The default implementation dispatches type 0 access to function 0 to
     /// [`pci_cfg_read`](Self::pci_cfg_read) and returns all-1s for other
     /// functions (the standard "no device present" response). Routing
     /// components (switches, bridges) and multi-function devices should
     /// override this method.
     ///
     /// # Parameters
-    /// - `secondary_bus`: The secondary bus number of the downstream port
-    ///   that forwarded this access
-    /// - `target_bus`: The bus number targeted by the configuration access
-    /// - `function`: Device/function identifier — packed device/function on
-    ///   a legacy bus, or flat function number on PCIe
-    /// - `offset`: Configuration space offset
-    /// - `value`: Pointer to receive the read value
+    /// - `access_type`: The type of PCI configuration space access (Type 0 or Type 1)
+    /// - `address`: The target address (BDF + offset) being accessed
+    /// - `value`: Byte-enabled DWORD value to receive the read
     fn pci_cfg_read_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: &mut u32,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        mut value: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
-        if secondary_bus == target_bus && function == 0 {
-            self.pci_cfg_read(offset, value)
-        } else {
-            *value = !0;
-            IoResult::Ok
+        match (access_type, address.devfn) {
+            (PciConfigAccessType::Type0, 0) => self.pci_cfg_read(address.byte_offset(), value),
+            _ => {
+                value.set(!0);
+                IoResult::Ok
+            }
         }
     }
 
-    /// Handle a PCI configuration space write with full routing context.
+    /// Dispatch a PCI configuration space write with full routing context.
     ///
-    /// This method receives configuration space accesses with the target bus
-    /// and function number. The interpretation of `function` depends on the
-    /// bus topology: on a legacy PCI bus it carries packed device/function
-    /// bits (0..=255), while downstream of a PCIe port the device number is
-    /// always zero so all 8 bits represent functions within a single
-    /// endpoint.
+    /// This method receives configuration space write with the access type,
+    /// target bus, target device/function number, and DWORD offset.
     ///
-    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
-    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
-    /// when they are equal the access targets this device directly (Type 0),
-    /// otherwise it should be routed downstream (Type 1). An SR-IOV
-    /// capable device can use `secondary_bus` together with `target_bus` and
-    /// `function` to compute the VF number.
-    ///
-    /// The default implementation dispatches function 0 to
+    /// The default implementation dispatches type 0 access to function 0 to
     /// [`pci_cfg_write`](Self::pci_cfg_write) and silently drops writes to
     /// other functions. Routing components (switches, bridges) and
     /// multi-function devices should override this method.
     ///
     /// # Parameters
-    /// - `secondary_bus`: The secondary bus number of the downstream port
-    ///   that forwarded this access
-    /// - `target_bus`: The bus number targeted by the configuration access
-    /// - `function`: Device/function identifier — packed device/function on
-    ///   a legacy bus, or flat function number on PCIe
-    /// - `offset`: Configuration space offset
-    /// - `value`: Value to write
+    /// - `access_type`: The type of PCI configuration space access (Type 0 or Type 1)
+    /// - `address`: The target address (BDF + offset) being accessed
+    /// - `value`: Byte-enabled DWORD value to write
     fn pci_cfg_write_with_routing(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
-        value: u32,
+        access_type: PciConfigAccessType,
+        address: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
     ) -> IoResult {
-        if secondary_bus == target_bus && function == 0 {
-            self.pci_cfg_write(offset, value)
-        } else {
-            IoResult::Ok
+        match (access_type, address.devfn) {
+            (PciConfigAccessType::Type0, 0) => self.pci_cfg_write(address.byte_offset(), value),
+            _ => IoResult::Ok,
         }
     }
 
@@ -434,10 +494,22 @@ mod tests {
             0b1111
         );
 
-        assert_eq!(PciConfigByteEnable::from_offset_len(1, 2), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(3, 2), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(1, 4), None);
-        assert_eq!(PciConfigByteEnable::from_offset_len(0, 3), None);
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(1, 2),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(3, 2),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(1, 4),
+            Err(IoError::UnalignedAccess)
+        ));
+        assert!(matches!(
+            PciConfigByteEnable::from_offset_len(0, 3),
+            Err(IoError::InvalidAccessSize)
+        ));
     }
 
     #[test]
@@ -462,11 +534,27 @@ mod tests {
     }
 
     #[test]
+    fn byte_enabled_intercept_buffers_copy_selected_lanes() {
+        let write = ByteEnabledDwordWrite::from_intercept_buffer(
+            PciConfigByteEnable::HIGH_WORD,
+            &[0x22, 0x11],
+        );
+        assert_eq!(write.extract(), 0x1122_0000);
+        assert_eq!(write.merge(0xaabb_ccdd), 0x1122_ccdd);
+
+        let mut value = 0x5566_7788;
+        let read = ByteEnabledDwordRead::new(&mut value, PciConfigByteEnable::HIGH_WORD);
+        let mut buffer = [0; 2];
+        read.fill_intercept_buffer(&mut buffer);
+        assert_eq!(buffer, [0x66, 0x55]);
+    }
+
+    #[test]
     fn config_request_decodes_bdf() {
         let address = PciConfigAddress::new(0x12, 0x1d, 0x40).unwrap();
 
         assert_eq!(address.bus, 0x12);
-        assert_eq!(address.device_function, 0x1d);
+        assert_eq!(address.devfn, 0x1d);
         assert_eq!(address.device(), 3);
         assert_eq!(address.function(), 5);
         assert_eq!(address.byte_offset(), 0x100);

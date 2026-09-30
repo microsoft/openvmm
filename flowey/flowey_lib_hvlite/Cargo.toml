@@ -10,9 +10,12 @@ rust-version.workspace = true
 flowey.workspace = true
 flowey_lib_common.workspace = true
 
+petri_artifacts_common.workspace = true
+petri_artifacts_core.workspace = true
+petri_artifacts_vmm_test.workspace = true
 powershell_builder.workspace = true
 igvmfilegen_config.workspace = true
-vmm_test_images = { workspace = true, features = ["serde"] }
+opentmk_disk.workspace = true
 
 anyhow.workspace = true
 crossterm = { workspace = true, features = ["events"] }
@@ -20,8 +23,13 @@ log.workspace = true
 paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
+toml_edit.workspace = true
 which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }

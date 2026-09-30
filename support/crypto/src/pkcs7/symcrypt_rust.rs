@@ -26,20 +26,21 @@ pub struct Pkcs7SignedDataInner(SignedData);
 
 impl Pkcs7SignedDataInner {
     pub fn from_der(data: &[u8]) -> Result<Self, Pkcs7Error> {
-        let ci = ContentInfo::from_der(data).map_err(|e| err(e, "parsing PKCS#7 ContentInfo"))?;
+        let ci =
+            ContentInfo::from_der(data).map_err(|e| err(e, "parsing the PKCS#7 ContentInfo"))?;
         if ci.content_type != ID_SIGNED_DATA {
             return Err(err(
                 der::ErrorKind::OidUnknown {
                     oid: ci.content_type,
                 }
                 .to_error(),
-                "unrecognized content type OID",
+                "checking that the PKCS#7 content type is signedData",
             ));
         }
         let signed_data = ci
             .content
             .decode_as::<SignedData>()
-            .map_err(|e| err(e, "decoding PKCS#7 SignedData"))?;
+            .map_err(|e| err(e, "decoding the PKCS#7 SignedData"))?;
         Ok(Self(signed_data))
     }
 
@@ -49,15 +50,15 @@ impl Pkcs7SignedDataInner {
         let sd_der = self
             .0
             .to_der()
-            .map_err(|e| err(e, "encoding PKCS#7 SignedData"))?;
+            .map_err(|e| err(e, "encoding the PKCS#7 SignedData"))?;
         let content = der::AnyRef::try_from(sd_der.as_slice())
-            .map_err(|e| err(e, "wrapping SignedData in Any"))?;
+            .map_err(|e| err(e, "wrapping the SignedData in an ANY"))?;
         let ci = ContentInfo {
             content_type: ID_SIGNED_DATA,
             content: content.into(),
         };
         ci.to_der()
-            .map_err(|e| err(e, "encoding PKCS#7 ContentInfo"))
+            .map_err(|e| err(e, "encoding the PKCS#7 ContentInfo"))
     }
 
     #[cfg(any(test, feature = "test_helpers"))]

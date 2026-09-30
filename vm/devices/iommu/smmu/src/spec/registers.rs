@@ -174,6 +174,37 @@ pub struct Idr0 {
     _reserved2: u32,
 }
 
+/// IDR0.TTF — translation table formats supported.
+///
+/// The two bits are independent capability flags, not an ordered value:
+/// `aarch32` (LPAE) and `aarch64` may each be set independently.
+#[bitfield(u8)]
+#[derive(PartialEq, Eq)]
+pub struct Idr0Ttf {
+    /// AArch32 (LPAE) translation tables supported.
+    pub aarch32: bool,
+    /// AArch64 translation tables supported.
+    pub aarch64: bool,
+    #[bits(6)]
+    _reserved: u8,
+}
+
+open_enum! {
+    /// IDR0.TTENDIAN — translation table endianness support.
+    ///
+    /// These are distinct configurations, not an ordered range: `MIXED`
+    /// supports both endiannesses, while `LE`/`BE` are single-endian only.
+    /// Test for `MIXED | LE` rather than comparing values.
+    pub enum Idr0TtEndian: u8 {
+        /// Mixed endianness (both little- and big-endian supported).
+        MIXED = 0b00,
+        /// Little-endian only.
+        LE = 0b10,
+        /// Big-endian only.
+        BE = 0b11,
+    }
+}
+
 /// SMMU_IDR1: Queue and stream size identification.
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, Inspect)]
@@ -213,7 +244,7 @@ pub struct Idr1 {
 pub struct Idr5 {
     /// Output address size.
     #[bits(3)]
-    pub oas: u8,
+    pub oas: super::AddrSize,
     #[bits(1)]
     _reserved0: u32,
     /// 4KB granule supported.
@@ -464,6 +495,34 @@ impl QueueBase {
     pub fn addr(&self) -> u64 {
         self.addr_bits() << 5
     }
+}
+
+/// SMMU_EVENTQ_PROD: Event queue producer index (§6.3.130).
+#[bitfield(u32)]
+#[derive(PartialEq, Eq, Inspect)]
+pub struct EventqProd {
+    /// Write index with wrap bit (bits `[19:0]`).
+    #[bits(20)]
+    pub wr: u32,
+    #[bits(11)]
+    _reserved: u32,
+    /// Event queue overflowed flag. An overflow condition is present while
+    /// this differs from `EventqCons.ovackflg` (§7.4).
+    pub ovflg: bool,
+}
+
+/// SMMU_EVENTQ_CONS: Event queue consumer index (§6.3.131).
+#[bitfield(u32)]
+#[derive(PartialEq, Eq, Inspect)]
+pub struct EventqCons {
+    /// Read index with wrap bit (bits `[19:0]`).
+    #[bits(20)]
+    pub rd: u32,
+    #[bits(11)]
+    _reserved: u32,
+    /// Overflow acknowledge flag, written by software to match
+    /// `EventqProd.ovflg` once it is safe to report another overflow.
+    pub ovackflg: bool,
 }
 
 /// SMMU_CMDQ_CONS: Command queue consumer index.

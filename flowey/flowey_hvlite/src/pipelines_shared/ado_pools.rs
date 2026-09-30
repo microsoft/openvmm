@@ -6,10 +6,10 @@
 use flowey::pipeline::prelude::*;
 
 use super::gh_pools::LINUX_IMAGE_AMD64;
-use super::gh_pools::WINDOWS_IMAGE_AMD64;
+use super::gh_pools::WINDOWS_IMAGE_AMD64_V2;
 
-pub const AMD_POOL_1ES: &str = "openvmm-ado-amd-westus2";
-pub const INTEL_POOL_1ES: &str = "openvmm-ado-intel-centralus";
+pub const AMD_V6_POOL_1ES: &str = "openvmm-ado-amd-westus2-v6";
+pub const INTEL_V6_POOL_1ES: &str = "openvmm-ado-intel-westus3-v6";
 pub const INTEL_TDX_POOL: &str = "openvmm-ado-intel-tdx";
 
 fn ado_pool_with_image_1es(pool: &str, image: &str) -> AdoPool {
@@ -26,22 +26,22 @@ pub fn windows_intel_tdx() -> AdoPool {
     }
 }
 
-pub fn windows_amd_1es() -> AdoPool {
-    ado_pool_with_image_1es(AMD_POOL_1ES, WINDOWS_IMAGE_AMD64)
+pub fn windows_amd_v6_1es() -> AdoPool {
+    ado_pool_with_image_1es(AMD_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
-pub fn windows_intel_1es() -> AdoPool {
-    ado_pool_with_image_1es(INTEL_POOL_1ES, WINDOWS_IMAGE_AMD64)
+pub fn windows_intel_v6_1es() -> AdoPool {
+    ado_pool_with_image_1es(INTEL_V6_POOL_1ES, WINDOWS_IMAGE_AMD64_V2)
 }
 
-pub fn linux_amd_1es() -> AdoPool {
-    ado_pool_with_image_1es(AMD_POOL_1ES, LINUX_IMAGE_AMD64)
+pub fn linux_amd_v6_1es() -> AdoPool {
+    ado_pool_with_image_1es(AMD_V6_POOL_1ES, LINUX_IMAGE_AMD64)
 }
 
 pub fn default_windows() -> AdoPool {
-    windows_amd_1es()
+    windows_amd_v6_1es()
 }
 
 pub fn default_linux() -> AdoPool {
-    linux_amd_1es()
+    linux_amd_v6_1es()
 }

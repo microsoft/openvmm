@@ -30,26 +30,26 @@ impl Aes256CbcInner {
 
     pub fn enc_ctx(&self) -> Result<Aes256CbcEncCtxInner<'_>, Aes256CbcError> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating encrypt context"))?;
+            .map_err(|e| err(e, "creating the encryption context"))?;
         ctx.encrypt_init(
             Some(openssl::cipher::Cipher::aes_256_cbc()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "encrypt init"))?;
+        .map_err(|e| err(e, "initializing the encryption context"))?;
         ctx.set_padding(false);
         Ok(Aes256CbcEncCtxInner { ctx, _dummy: &() })
     }
 
     pub fn dec_ctx(&self) -> Result<Aes256CbcDecCtxInner<'_>, Aes256CbcError> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating decrypt context"))?;
+            .map_err(|e| err(e, "creating the decryption context"))?;
         ctx.decrypt_init(
             Some(openssl::cipher::Cipher::aes_256_cbc()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "decrypt init"))?;
+        .map_err(|e| err(e, "initializing the decryption context"))?;
         ctx.set_padding(false);
         Ok(Aes256CbcDecCtxInner { ctx, _dummy: &() })
     }
@@ -61,7 +61,7 @@ impl Aes256CbcEncCtxInner<'_> {
             vec![0u8; data.len() + openssl::cipher::Cipher::aes_256_cbc().block_size()]; // block size padding room
         self.ctx
             .encrypt_init(None, None, Some(iv))
-            .map_err(|e| err(e, "setting iv for encryption"))?;
+            .map_err(|e| err(e, "setting the encryption IV"))?;
         let count = self
             .ctx
             .cipher_update(data, Some(&mut output))
@@ -81,7 +81,7 @@ impl Aes256CbcDecCtxInner<'_> {
             vec![0u8; data.len() + openssl::cipher::Cipher::aes_256_cbc().block_size()]; // block size padding room
         self.ctx
             .decrypt_init(None, None, Some(iv))
-            .map_err(|e| err(e, "setting iv for decryption"))?;
+            .map_err(|e| err(e, "setting the decryption IV"))?;
         let count = self
             .ctx
             .cipher_update(data, Some(&mut output))

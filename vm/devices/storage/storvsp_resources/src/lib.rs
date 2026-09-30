@@ -81,3 +81,24 @@ pub enum ScsiControllerRequest {
     /// Remove a device.
     RemoveDevice(FailableRpc<ScsiPath, ()>),
 }
+
+/// Handle for a storvsp IDE accelerator device.
+///
+/// Each handle represents a single IDE disk offered as a VMBus accelerator
+/// channel, mapping IDE addressing (channel/device) to SCSI addressing
+/// (path/target/LUN 0).
+#[derive(MeshPayload)]
+pub struct StorvspIdeDeviceHandle {
+    /// The IDE channel (maps to SCSI path).
+    pub channel_id: u8,
+    /// The IDE device number (maps to SCSI target).
+    pub device_id: u8,
+    /// The SCSI device backing the IDE disk.
+    pub disk: Resource<ScsiDeviceHandleKind>,
+    /// The I/O queue depth per channel.
+    pub io_queue_depth: Option<u32>,
+}
+
+impl ResourceId<VmbusDeviceHandleKind> for StorvspIdeDeviceHandle {
+    const ID: &'static str = "storvsp-ide";
+}

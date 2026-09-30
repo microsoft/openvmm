@@ -56,6 +56,7 @@ pub mod resolve {
     use super::ReleaseOutput;
     use crate::common::CommonArch;
     use flowey::node::prelude::*;
+    use flowey_lib_common::gh_workflow_id;
 
     flowey_request! {
         pub struct Request {
@@ -72,22 +73,24 @@ pub mod resolve {
 
         fn imports(ctx: &mut ImportCtx<'_>) {
             ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
-            ctx.import::<flowey_lib_common::gh_latest_completed_workflow_id::Node>();
+            ctx.import::<gh_workflow_id::Node>();
         }
 
         fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
             let branch_name: ReadVar<String> =
                 ReadVar::from_static(request.release_version.branch_name());
 
-            let run_id =
-                ctx.reqv(
-                    |v| flowey_lib_common::gh_latest_completed_workflow_id::Request {
-                        repo: "microsoft/openvmm".into(),
-                        branch: branch_name.clone(),
-                        pipeline_name: "openvmm-ci.yaml".into(),
-                        gh_workflow_id: v,
-                    },
-                );
+            let run = ctx.reqv(|v| gh_workflow_id::Request {
+                repo_owner: "microsoft".into(),
+                repo_name: "openvmm".into(),
+                commit_or_branch: gh_workflow_id::GitCommitOrBranch::Branch(branch_name),
+                pipeline_name: "openvmm-ci.yaml".into(),
+                require_run_status: Some(gh_workflow_id::GhRunStatus::Success),
+                require_successful_job_with_name: None,
+                gh_workflow: v,
+            });
+            let run_id = run.map(ctx, |r| r.id);
+
             let output = request.release_igvm_files;
 
             let arch_str = match request.arch {
@@ -110,6 +113,7 @@ pub mod resolve {
                 let write_release_output = output.claim(ctx);
 
                 move |rt| {
+                    let downloaded_artifact = rt.read(downloaded_artifact);
                     let mut openhcl_direct = None;
                     let mut openhcl = None;
                     let mut openhcl_aarch64 = None;
@@ -117,14 +121,11 @@ pub mod resolve {
                     match arch {
                         CommonArch::X86_64 => {
                             // x64 build contains both openhcl.bin and openhcl-direct.bin
-                            let x64_dir = rt.read(downloaded_artifact).join("x64-openhcl-igvm");
-                            openhcl_direct = Some(x64_dir.join("openhcl-direct.bin"));
-                            openhcl = Some(x64_dir.join("openhcl.bin"));
+                            openhcl_direct = Some(downloaded_artifact.join("openhcl-direct.bin"));
+                            openhcl = Some(downloaded_artifact.join("openhcl.bin"));
                         }
                         CommonArch::Aarch64 => {
-                            let aarch64_dir =
-                                rt.read(downloaded_artifact).join("aarch64-openhcl-igvm");
-                            openhcl_aarch64 = Some(aarch64_dir.join("openhcl-aarch64.bin"));
+                            openhcl_aarch64 = Some(downloaded_artifact.join("openhcl-aarch64.bin"));
                         }
                     }
 

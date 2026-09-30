@@ -38,6 +38,29 @@ pub enum SecureAvic {
     Disabled,
 }
 
+#[derive(Debug, Copy, Clone)]
+enum SnpContextKind {
+    Standard,
+    LinuxDirect { c_bit_mask: u64 },
+}
+
+fn table_register(reg: TableRegister) -> SevSelector {
+    SevSelector {
+        limit: reg.limit.into(),
+        base: reg.base,
+        ..FromZeros::new_zeroed()
+    }
+}
+
+fn segment_register(reg: SegmentRegister) -> SevSelector {
+    SevSelector {
+        limit: reg.limit,
+        base: reg.base,
+        selector: reg.selector,
+        attrib: (reg.attributes & 0xff) | ((reg.attributes >> 4) & 0xf00),
+    }
+}
+
 /// A hardware SNP VP context, that is imported as a VMSA.
 #[derive(Debug)]
 pub struct SnpHardwareContext {
@@ -48,6 +71,7 @@ pub struct SnpHardwareContext {
     page_number: Option<u64>,
     /// The VMSA for this VP.
     vmsa: SevVmsa,
+    kind: SnpContextKind,
 }
 
 impl SnpHardwareContext {
@@ -123,7 +147,52 @@ impl SnpHardwareContext {
             accept_lower_1mb: enlightened_uefi,
             page_number: None,
             vmsa,
+            kind: SnpContextKind::Standard,
         }
+    }
+
+    /// Create a VMSA builder for a Linux-direct guest using the C-bit model.
+    pub fn new_linux_direct(c_bit_mask: u64, injection_type: InjectionType) -> Self {
+        let mut vmsa: SevVmsa = FromZeros::new_zeroed();
+        vmsa.efer = X64_EFER_SVME;
+        vmsa.sev_features.set_snp(true);
+        vmsa.sev_features
+            .set_restrict_injection(injection_type == InjectionType::Restricted);
+        vmsa.xcr0 = x86defs::xsave::XFEATURE_X87;
+        vmsa.rflags = u64::from(x86defs::RFlags::at_reset());
+        vmsa.dr6 = 0xffff_0ff0;
+        vmsa.dr7 = 0x400;
+        vmsa.tr = segment_register(SegmentRegister {
+            base: 0,
+            limit: 0xffff,
+            selector: 0,
+            attributes: 0x8b,
+        });
+        vmsa.ldtr = segment_register(SegmentRegister {
+            base: 0,
+            limit: 0xffff,
+            selector: 0,
+            attributes: 0x82,
+        });
+        vmsa.idtr = table_register(TableRegister {
+            base: 0,
+            limit: 0xffff,
+        });
+        vmsa.x87_fcw = x86defs::xsave::INIT_FCW;
+        vmsa.mxcsr = x86defs::xsave::DEFAULT_MXCSR;
+
+        Self {
+            accept_lower_1mb: false,
+            page_number: None,
+            vmsa,
+            kind: SnpContextKind::LinuxDirect { c_bit_mask },
+        }
+    }
+
+    /// Returns the VMSA under construction.
+    #[cfg(test)]
+    pub fn vmsa(&self) -> &SevVmsa {
+        &self.vmsa
     }
 }
 
@@ -131,36 +200,37 @@ impl VpContextBuilder for SnpHardwareContext {
     type Register = X86Register;
 
     fn import_vp_register(&mut self, register: X86Register) {
-        let create_vmsa_table_register = |reg: TableRegister| -> SevSelector {
-            SevSelector {
-                limit: reg.limit as u32,
-                base: reg.base,
-                ..FromZeros::new_zeroed()
-            }
-        };
-
-        let create_vmsa_segment_register = |reg: SegmentRegister| -> SevSelector {
-            SevSelector {
-                limit: reg.limit,
-                base: reg.base,
-                selector: reg.selector,
-                attrib: (reg.attributes & 0xFF) | ((reg.attributes >> 4) & 0xF00),
-            }
-        };
-
         match register {
-            X86Register::Gdtr(reg) => self.vmsa.gdtr = create_vmsa_table_register(reg),
-            X86Register::Idtr(_) => panic!("Idtr not allowed for SNP"),
-            X86Register::Ds(reg) => self.vmsa.ds = create_vmsa_segment_register(reg),
-            X86Register::Es(reg) => self.vmsa.es = create_vmsa_segment_register(reg),
-            X86Register::Fs(reg) => self.vmsa.fs = create_vmsa_segment_register(reg),
-            X86Register::Gs(reg) => self.vmsa.gs = create_vmsa_segment_register(reg),
-            X86Register::Ss(reg) => self.vmsa.ss = create_vmsa_segment_register(reg),
-            X86Register::Cs(reg) => self.vmsa.cs = create_vmsa_segment_register(reg),
-            X86Register::Tr(reg) => self.vmsa.tr = create_vmsa_segment_register(reg),
-            X86Register::Cr0(reg) => self.vmsa.cr0 = reg,
-            X86Register::Cr3(reg) => self.vmsa.cr3 = reg,
-            X86Register::Cr4(reg) => self.vmsa.cr4 = reg,
+            X86Register::Gdtr(reg) => self.vmsa.gdtr = table_register(reg),
+            X86Register::Idtr(reg) => match self.kind {
+                SnpContextKind::Standard => panic!("Idtr not allowed for SNP"),
+                SnpContextKind::LinuxDirect { .. } => self.vmsa.idtr = table_register(reg),
+            },
+            X86Register::Ds(reg) => self.vmsa.ds = segment_register(reg),
+            X86Register::Es(reg) => self.vmsa.es = segment_register(reg),
+            X86Register::Fs(reg) => self.vmsa.fs = segment_register(reg),
+            X86Register::Gs(reg) => self.vmsa.gs = segment_register(reg),
+            X86Register::Ss(reg) => self.vmsa.ss = segment_register(reg),
+            X86Register::Cs(reg) => self.vmsa.cs = segment_register(reg),
+            X86Register::Tr(reg) => self.vmsa.tr = segment_register(reg),
+            X86Register::Cr0(reg) => {
+                self.vmsa.cr0 = match self.kind {
+                    SnpContextKind::Standard => reg,
+                    SnpContextKind::LinuxDirect { .. } => reg | x86defs::X64_CR0_ET,
+                }
+            }
+            X86Register::Cr3(reg) => {
+                self.vmsa.cr3 = match self.kind {
+                    SnpContextKind::Standard => reg,
+                    SnpContextKind::LinuxDirect { c_bit_mask } => reg | c_bit_mask,
+                }
+            }
+            X86Register::Cr4(reg) => {
+                self.vmsa.cr4 = match self.kind {
+                    SnpContextKind::Standard => reg,
+                    SnpContextKind::LinuxDirect { .. } => reg | x86defs::X64_CR4_MCE,
+                }
+            }
             X86Register::Efer(reg) => {
                 // All SEV guests require EFER.SVME for the VMSA to be valid.
                 self.vmsa.efer = reg | X64_EFER_SVME;
@@ -169,13 +239,19 @@ impl VpContextBuilder for SnpHardwareContext {
             X86Register::Rbp(reg) => self.vmsa.rbp = reg,
             X86Register::Rip(reg) => self.vmsa.rip = reg,
             X86Register::Rsi(reg) => self.vmsa.rsi = reg,
-            X86Register::Rsp(_) => panic!("rsp not allowed for SNP"),
+            X86Register::Rsp(reg) => match self.kind {
+                SnpContextKind::Standard => panic!("rsp not allowed for SNP"),
+                SnpContextKind::LinuxDirect { .. } => self.vmsa.rsp = reg,
+            },
             X86Register::R8(reg) => self.vmsa.r8 = reg,
             X86Register::R9(reg) => self.vmsa.r9 = reg,
             X86Register::R10(reg) => self.vmsa.r10 = reg,
             X86Register::R11(reg) => self.vmsa.r11 = reg,
             X86Register::R12(reg) => self.vmsa.r12 = reg,
-            X86Register::Rflags(_) => panic!("rflags not allowed for SNP"),
+            X86Register::Rflags(reg) => match self.kind {
+                SnpContextKind::Standard => panic!("rflags not allowed for SNP"),
+                SnpContextKind::LinuxDirect { .. } => self.vmsa.rflags = reg,
+            },
 
             X86Register::MtrrDefType(_)
             | X86Register::MtrrPhysBase0(_)

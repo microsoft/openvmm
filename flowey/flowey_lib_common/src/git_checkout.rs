@@ -399,8 +399,11 @@ impl Node {
             did_checkouts.push(did_checkout);
         }
 
+        let workspace = ctx.get_ado_variable(AdoRuntimeVar::PIPELINE_WORKSPACE);
+
         ctx.emit_rust_step("report cloned repo directories", move |ctx| {
             did_checkouts.claim(ctx);
+            let workspace = workspace.claim(ctx);
             let mut registered_repos = registered_repos.into_iter().map(|(k, (a, b))| (k, (a, b.claim(ctx)))).collect::<BTreeMap<_, _>>();
             let checkout_repo = checkout_repo
                 .into_iter()
@@ -410,6 +413,7 @@ impl Node {
                 .collect::<Vec<_>>();
 
             move |rt| {
+                let workspace = PathBuf::from(rt.read(workspace));
                 let mut checkout_reqs = BTreeMap::<(String, bool), Vec<ClaimedWriteVar<PathBuf>>>::new();
                 for (repo_id, repo_path, persist_credentials) in checkout_repo {
                     checkout_reqs
@@ -426,13 +430,7 @@ impl Node {
 
                     let path = match repo_src {
                         RepoSource::AdoResource(_) => {
-                            // HACK: this should be using something like AGENT_WORKDIR
-                            if cfg!(windows) {
-                                Path::new(r#"D:\a\_work\1\"#)
-                            } else {
-                                Path::new("/mnt/vss/_work/1/")
-                            }
-                            .join(format!("repo{idx}"))
+                            workspace.join(format!("repo{idx}"))
                         },
                         RepoSource::GithubRepo{ .. } | RepoSource::GithubSelf => anyhow::bail!("repo source for ADO backend must be an `AdoResource` or `ExistingClone`"),
                         RepoSource::ExistingClone(path) => {
@@ -523,8 +521,12 @@ impl Node {
                 repo_src,
                 RepoSource::GithubSelf | RepoSource::GithubRepo { .. }
             ) {
+                // actions/checkout v6.1.0
                 let mut step = ctx
-                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v6")
+                    .emit_gh_step(
+                        format!("checkout repo {repo_id}"),
+                        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+                    )
                     .condition(active.clone())
                     .with("path", format!("repo{idx}"))
                     .with("fetch-depth", depth.unwrap_or(0).to_string())

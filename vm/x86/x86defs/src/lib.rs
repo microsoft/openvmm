@@ -36,6 +36,9 @@ pub const X64_CR0_NW: u64 = 0x0000000020000000; // not write-through
 pub const X64_CR0_CD: u64 = 0x0000000040000000; // cache disable
 pub const X64_CR0_PG: u64 = 0x0000000080000000; // paging
 
+/// Reserved bits in the low 32 of CR0 (bits 6-15, 17, 19-28).
+pub const X64_CR0_RSVDZ_MASK: u64 = 0x1FFA_FFC0;
+
 pub const X64_CR4_VME: u64 = 0x0000000000000001; // Virtual 8086 mode extensions
 pub const X64_CR4_PVI: u64 = 0x0000000000000002; // Protected mode virtual interrupts
 pub const X64_CR4_TSD: u64 = 0x0000000000000004; // Time stamp disable
@@ -63,11 +66,20 @@ pub const X64_EFER_LMA: u64 = 0x0000000000000400; // Long Mode Active
 pub const X64_EFER_NXE: u64 = 0x0000000000000800; // No-execute Enable
 pub const X64_EFER_SVME: u64 = 0x0000000000001000; // SVM enable
 pub const X64_EFER_FFXSR: u64 = 0x0000000000004000; // Fast save/restore enabled
+pub const X64_EFER_TCE: u64 = 0x0000000000008000; // Translation Cache Extension enable
 
 pub const X86X_MSR_DEFAULT_PAT: u64 = 0x0007040600070406;
 pub const X64_EMPTY_DR7: u64 = 0x0000000000000400;
 
 pub const USER_MODE_DPL: u8 = 3;
+
+/// Returns true if `v` is a canonical linear address for a paging mode with
+/// `bits` effective virtual address bits (48 or 57): the top `64 - bits` bits
+/// must be a sign-extension of the highest used bit.
+pub fn is_canonical_address(v: u64, bits: u32) -> bool {
+    let high = (v as i64) >> (bits - 1);
+    high == 0 || high == -1
+}
 
 pub const X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttributes::new()
     .with_granularity(true)
@@ -214,6 +226,44 @@ pub const X86X_MSR_SYSENTER_ESP: u32 = 0x175;
 pub const X86X_MSR_SYSENTER_EIP: u32 = 0x176;
 pub const X86X_MSR_MCG_CAP: u32 = 0x179;
 pub const X86X_MSR_MCG_STATUS: u32 = 0x17a;
+
+/// [`X86X_MSR_MCG_CAP`] (MSR 0x179): global machine-check capability register.
+///
+/// Layout per the Intel SDM Volume 3B, Section 18.3.1.1 / Figure 18-2
+/// (doc 325384-092).
+#[bitfield(u64)]
+#[derive(PartialEq, Eq)]
+pub struct McgCap {
+    /// Number of hardware unit error-reporting banks.
+    pub count: u8,
+    /// `MCG_CTL_P`: `IA32_MCG_CTL` MSR is present.
+    pub ctl_p: bool,
+    /// `MCG_EXT_P`: extended machine-check state MSRs (at 0x180) are present.
+    pub ext_p: bool,
+    /// `MCG_CMCI_P`: corrected MC error counting/signaling extension present.
+    pub cmci_p: bool,
+    /// `MCG_TES_P`: threshold-based error status present.
+    pub tes_p: bool,
+    /// `MCG_SEAM_NR_P`: `IA32_MCG_STATUS.SEAM_NR` (bit 12) is supported.
+    pub seam_nr_p: bool,
+    #[bits(3)]
+    _reserved: u8,
+    /// `MCG_EXT_CNT`: number of extended machine-check state registers
+    /// (meaningful only when `ext_p` is set).
+    pub ext_cnt: u8,
+    /// `MCG_SER_P`: software error recovery is supported.
+    pub ser_p: bool,
+    /// `MCG_EMC_P`: enhanced machine-check capability (firmware-first
+    /// signaling) is supported.
+    pub emc_p: bool,
+    /// `MCG_ELOG_P`: extended error logging is supported.
+    pub elog_p: bool,
+    /// `MCG_LMCE_P`: local machine-check exception is supported.
+    pub lmce_p: bool,
+    #[bits(36)]
+    _reserved2: u64,
+}
+
 pub const X86X_IA32_MSR_MISC_ENABLE: u32 = 0x1a0;
 pub const X86X_MSR_MTRR_PHYSBASE0: u32 = 0x200;
 pub const X86X_MSR_MTRR_FIX64K_00000: u32 = 0x0250;
@@ -273,6 +323,7 @@ pub const X86X_AMD_MSR_SYSCFG: u32 = 0xC0010010;
 pub const X86X_AMD_MSR_HW_CFG: u32 = 0xC0010015;
 pub const X86X_AMD_MSR_NB_CFG: u32 = 0xC001001F;
 pub const X86X_AMD_MSR_VM_CR: u32 = 0xC0010114;
+pub const X86X_AMD_MSR_IGNNE: u32 = 0xC0010115;
 pub const X86X_AMD_MSR_GHCB: u32 = 0xC0010130;
 pub const X86X_AMD_MSR_SEV: u32 = 0xC0010131;
 pub const X86X_AMD_MSR_SECURE_AVIC_CONTROL: u32 = 0xc0010138;

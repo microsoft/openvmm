@@ -30,6 +30,10 @@ pub struct OpenhclIgvmBuildParams {
     pub extra_features: BTreeSet<OpenvmmHclFeature>,
     /// Whether to use release configuration (release manifests, no gdb, etc.).
     pub release_cfg: bool,
+    /// Add the confidential debug flag to the measured OpenHCL command line,
+    /// enabling confidential diagnostics on CVM builds. Used by the
+    /// VMM tests so that release CVM IGVMs still emit diagnostics.
+    pub confidential_debug: bool,
 }
 
 flowey_request! {
@@ -81,6 +85,7 @@ impl SimpleFlowNode for Node {
                 custom_target,
                 extra_features,
                 release_cfg,
+                confidential_debug,
             },
             openhcl_igvm,
             openhcl_igvm_extras,
@@ -93,6 +98,7 @@ impl SimpleFlowNode for Node {
                 recipe: OpenhclIgvmRecipeType::WellKnown(recipe.clone()),
                 extra_features: extra_features.clone(),
                 disable_secure_avic: false,
+                confidential_debug,
                 openhcl_igvm,
                 openhcl_igvm_extras,
             });

@@ -5,6 +5,7 @@
 
 use crate::Error;
 use crate::IdentityMapSize;
+use core::ops::RangeInclusive;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -21,6 +22,13 @@ const PAGE_TABLE_ENTRY_SIZE: usize = 8;
 
 const X64_PAGE_SHIFT: u64 = 12;
 const X64_PTE_BITS: u64 = 9;
+const X64_PTE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const X64_PTE_ADDRESS_LAST_BIT: u8 = (u64::BITS - X64_PTE_ADDRESS_MASK.leading_zeros() - 1) as u8;
+
+/// Inclusive bit positions occupied by the physical address in an x64 page
+/// table entry.
+pub const X64_PTE_ADDRESS_BIT_RANGE: RangeInclusive<u8> =
+    X64_PAGE_SHIFT as u8..=X64_PTE_ADDRESS_LAST_BIT;
 
 /// Number of bytes in a page for X64.
 pub const X64_PAGE_SIZE: u64 = 4096;
@@ -328,8 +336,7 @@ pub struct PageTableBuilder<'a> {
 
 impl PageTableBuilderInner {
     fn get_addr_mask(&self) -> u64 {
-        const ALL_ADDR_BITS: u64 = 0x000f_ffff_ffff_f000;
-        ALL_ADDR_BITS & !self.get_confidential_mask()
+        X64_PTE_ADDRESS_MASK & !self.get_confidential_mask()
     }
 
     fn get_confidential_mask(&self) -> u64 {
@@ -575,6 +582,7 @@ struct IdentityMapBuilderParams {
     identity_map_size: IdentityMapSize,
     address_bias: u64,
     pml4e_link: Option<(u64, u64)>,
+    confidential_bit: Option<u32>,
 }
 
 /// An IdentityMap Builder, which builds either a 4GB or 8GB identity map of the lower address space
@@ -613,6 +621,7 @@ impl<'a> IdentityMapBuilder<'a> {
                     identity_map_size,
                     address_bias: 0,
                     pml4e_link: None,
+                    confidential_bit: None,
                 },
                 page_table,
                 flattened_page_table,
@@ -624,6 +633,12 @@ impl<'a> IdentityMapBuilder<'a> {
     /// and physical addresses in the identity map
     pub fn with_address_bias(mut self, address_bias: u64) -> Self {
         self.params.address_bias = address_bias;
+        self
+    }
+
+    /// Builds the page tables with the confidential bit set.
+    pub fn with_confidential_bit(mut self, bit_position: u32) -> Self {
+        self.params.confidential_bit = Some(bit_position);
         self
     }
 
@@ -643,6 +658,12 @@ impl<'a> IdentityMapBuilder<'a> {
             flattened_page_table,
             params,
         } = self;
+        let set_entry = |entry: &mut PageTableEntry, entry_type| {
+            entry.set_entry(entry_type);
+            if let Some(bit_position) = params.confidential_bit {
+                entry.entry |= 1u64 << bit_position;
+            }
+        };
 
         // Allocate page tables. There are up to 6 total page tables:
         //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
@@ -670,13 +691,18 @@ impl<'a> IdentityMapBuilder<'a> {
 
             // Set PML4E entry linking PML4E to PDPTE.
             let output_address = params.page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
-            pml4e_table.entries[0].set_entry(PageTableEntryType::Pde(output_address));
+            set_entry(
+                &mut pml4e_table.entries[0],
+                PageTableEntryType::Pde(output_address),
+            );
 
             // Set PML4E entry to link the additional entry if specified.
             if let Some((link_target_gpa, linkage_gpa)) = params.pml4e_link {
                 assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
-                pml4e_table.entries[linkage_gpa as usize >> 39]
-                    .set_entry(PageTableEntryType::Pde(link_target_gpa));
+                set_entry(
+                    &mut pml4e_table.entries[linkage_gpa as usize >> 39],
+                    PageTableEntryType::Pde(link_target_gpa),
+                );
             }
 
             pdpte_table
@@ -689,10 +715,7 @@ impl<'a> IdentityMapBuilder<'a> {
         };
 
         // Build PDEs that point to 2 MB pages.
-        let top_address = match params.identity_map_size {
-            IdentityMapSize::Size4Gb => 0x100000000u64,
-            IdentityMapSize::Size8Gb => 0x200000000u64,
-        };
+        let top_address = params.identity_map_size.address_space_size();
         let mut current_va = 0;
 
         while current_va < top_address {
@@ -706,13 +729,14 @@ impl<'a> IdentityMapBuilder<'a> {
             let output_address = params.page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
             let pdpte_entry = &mut pdpte_table.entries[pdpte_index as usize];
             assert!(!pdpte_entry.is_present());
-            pdpte_entry.set_entry(PageTableEntryType::Pde(output_address));
+            set_entry(pdpte_entry, PageTableEntryType::Pde(output_address));
 
             // Set all 2MB entries in this PDE table.
             for entry in pde_table.iter_mut() {
-                entry.set_entry(PageTableEntryType::Leaf2MbPage(
-                    current_va + params.address_bias,
-                ));
+                set_entry(
+                    entry,
+                    PageTableEntryType::Leaf2MbPage(current_va + params.address_bias),
+                );
                 current_va += X64_LARGE_PAGE_SIZE;
             }
         }
@@ -760,12 +784,15 @@ mod tests {
     use std::vec;
 
     use super::Error;
+    use super::IdentityMapBuilder;
+    use super::IdentityMapSize;
     use super::MappedRange;
     use super::PAGE_TABLE_MAX_BYTES;
     use super::PAGE_TABLE_MAX_COUNT;
     use super::PageTable;
     use super::PageTableBuilder;
     use super::X64_1GB_PAGE_SIZE;
+    use super::X64_PTE_PRESENT;
     use super::align_up_to_large_page_size;
     use super::align_up_to_page_size;
     use super::calculate_pde_table_count;
@@ -918,5 +945,33 @@ mod tests {
                 struct_buf: _
             }
         ));
+    }
+
+    #[test]
+    fn identity_map_builder_sets_confidential_bit() {
+        const C_BIT: u32 = 51;
+        let mut page_table_work_buffer: Vec<PageTable> =
+            vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+        let mut page_table = vec![0; PAGE_TABLE_MAX_BYTES];
+
+        let page_table = IdentityMapBuilder::new(
+            0x4000,
+            IdentityMapSize::Size4Gb,
+            &mut page_table_work_buffer,
+            &mut page_table,
+        )
+        .unwrap()
+        .with_confidential_bit(C_BIT)
+        .build();
+
+        for entry in page_table.chunks_exact(8).map(|entry| {
+            u64::from_ne_bytes(entry.try_into().expect("page table entry is eight bytes"))
+        }) {
+            if entry & X64_PTE_PRESENT != 0 {
+                assert_ne!(entry & (1 << C_BIT), 0);
+            } else {
+                assert_eq!(entry, 0);
+            }
+        }
     }
 }

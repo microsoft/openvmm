@@ -2,12 +2,6 @@
 // Licensed under the MIT License.
 
 //! The timesync IC.
-//!
-//! TODO:
-//! * When the device is paused+resumed, this is an indicator that time may have
-//!   stopped for the guest. We should send another sync message to update the
-//!   guest, or potentially just reoffer the vmbus channel like Hyper-V does.
-//! * Saved state support.
 
 use crate::common::IcPipe;
 use crate::common::NegotiateState;
@@ -112,7 +106,11 @@ impl SimpleVmbusDevice for TimesyncIc {
             interface_name: "timesync_ic".to_owned(),
             instance_id: proto::INSTANCE_ID,
             interface_id: proto::INTERFACE_ID,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }
@@ -143,7 +141,7 @@ impl SimpleVmbusDevice for TimesyncIc {
     ) -> Option<
         &mut dyn SaveRestoreSimpleVmbusDevice<SavedState = Self::SavedState, Runner = Self::Runner>,
     > {
-        None
+        Some(self)
     }
 }
 
@@ -253,5 +251,22 @@ impl TimesyncChannel {
             ChannelState::Failed => pending().await,
         }
         Ok(())
+    }
+}
+
+// Like Hyper-V, no state is saved or restored. On restore, the channel starts
+// over with version negotiation, which also causes a fresh time sync message to
+// be sent to the guest to account for time having stopped while saved.
+impl SaveRestoreSimpleVmbusDevice for TimesyncIc {
+    fn save_open(&mut self, _runner: &Self::Runner) -> Self::SavedState {
+        NoSavedState
+    }
+
+    fn restore_open(
+        &mut self,
+        NoSavedState: Self::SavedState,
+        channel: RawAsyncChannel<GpadlRingMem>,
+    ) -> Result<Self::Runner, ChannelOpenError> {
+        TimesyncChannel::new(channel, None)
     }
 }

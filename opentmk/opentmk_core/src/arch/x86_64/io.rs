@@ -1,0 +1,102 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Low-level x86_64 port I/O helpers wrapping the `in`/`out` instructions.
+
+use core::arch::asm;
+
+/// Write a byte to a port.
+///
+/// # Safety
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
+pub unsafe fn outb(port: u16, data: u8) {
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "out dx, al",
+            in("dx") port,
+            in("al") data,
+        }
+    }
+}
+
+/// Read a byte from a port.
+///
+/// # Safety
+/// Caller guarantees that reading from the port at this time does not cause UB
+pub unsafe fn inb(port: u16) -> u8 {
+    let mut data;
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "in al, dx",
+            in("dx") port,
+            out("al") data,
+        }
+    }
+    data
+}
+
+/// Read a word from a port.
+///
+/// # Safety
+/// Caller guarantees that reading from the port at this time does not cause UB
+pub unsafe fn inw(port: u16) -> u16 {
+    let mut data;
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "in ax, dx",
+            in("dx") port,
+            out("ax") data,
+        }
+    }
+    data
+}
+
+/// Write a word to a port.
+///
+/// # Safety
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
+pub unsafe fn outw(port: u16, data: u16) {
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "out dx, ax",
+            in("dx") port,
+            in("ax") data,
+        }
+    }
+}
+
+/// Read a double word from a port.
+///
+/// # Safety
+/// Caller guarantees that reading from the port at this time does not cause UB
+pub unsafe fn inl(port: u16) -> u32 {
+    let mut data;
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "in eax, dx",
+            in("dx") port,
+            out("eax") data,
+        }
+    }
+    data
+}
+
+/// Write a double word to a port.
+///
+/// # Safety
+/// Caller guarantees that writing the given value to the given port at this time does not cause UB
+pub unsafe fn outl(port: u16, data: u32) {
+    // SAFETY: The caller has assured us this is safe.
+    unsafe {
+        asm! {
+            "out dx, eax",
+            in("dx") port,
+            in("eax") data,
+        }
+    }
+}

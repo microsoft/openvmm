@@ -36,12 +36,27 @@ impl AccessVmState for &'_ KvmPartition {
     }
 
     fn reftime(&mut self) -> Result<vm::ReferenceTime, Self::Error> {
-        super::vp_state::get_msrs_state(&self.inner.vp_kvm(VpIndex::BSP))
+        // The reference time counter is computed from the kvm clock, and the
+        // kvm clock is the only thing that can be set (see `set_reftime`), so
+        // query it here as well to keep save/restore self-consistent.
+        //
+        // Round up so that restoring this value never moves the kvm clock
+        // backwards, since the guest can observe the clock at nanosecond
+        // granularity.
+        let clock = self.inner.kvm.get_clock_ns()?;
+        Ok(vm::ReferenceTime {
+            value: clock.clock.div_ceil(100),
+        })
     }
 
-    fn set_reftime(&mut self, _value: &vm::ReferenceTime) -> Result<(), Self::Error> {
-        // TODO: KVM doesn't allow setting the reference time, since it's
-        // computed from the kvm clock. Figure out what we can do instead.
+    fn set_reftime(&mut self, value: &vm::ReferenceTime) -> Result<(), Self::Error> {
+        // KVM does not allow setting the reference time counter directly, but
+        // it is computed from the kvm clock, so set that instead. This also
+        // updates the reference TSC page parameters, so that the guest's view
+        // of the reference time is consistent however it queries it.
+        self.inner
+            .kvm
+            .set_clock_ns(value.value.saturating_mul(100))?;
         Ok(())
     }
 

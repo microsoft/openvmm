@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import React from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Menu } from "../menu";
 import "../styles/common.css";
 import "../../tailwind.css";

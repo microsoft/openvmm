@@ -18,12 +18,7 @@ impl vm_resource::ResolveResource<HypervisorKind, KvmHandle> for KvmResolver {
 
     fn resolve(&self, resource: KvmHandle, _input: ()) -> Result<Self::Output, Self::Error> {
         let kvm = resource.kvm;
-        #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
-        let mut backend = virt_kvm::Kvm::from_kvm(kvm)?;
-        #[cfg(guest_arch = "x86_64")]
-        {
-            backend.nested_virt = resource.nested_virt;
-        }
+        let backend = virt_kvm::Kvm::from_kvm(kvm)?;
         Ok(ResolvedHypervisorBackend::new(backend))
     }
 }

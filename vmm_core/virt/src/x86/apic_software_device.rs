@@ -267,6 +267,14 @@ impl SignalMsi for ApicSoftwareDevice {
         if let Some(interrupt) = table.entries.get(index) {
             let target = interrupt.msi_params();
             self.target.signal_msi(None, target.address, target.data)
+        } else {
+            // A dropped MSI might leave the guest waiting forever for a device
+            // notification, so make it visible.
+            tracelimit::warn_ratelimited!(
+                address,
+                index,
+                "dropping MSI for unregistered interrupt"
+            );
         }
     }
 }

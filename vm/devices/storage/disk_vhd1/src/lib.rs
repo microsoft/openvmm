@@ -247,6 +247,17 @@ mod tests {
     use std::io::Write;
     use zerocopy::IntoBytes;
 
+    const CONFORMANCE_DISK_SIZE: u64 = 1024 * 1024;
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(CONFORMANCE_DISK_SIZE).unwrap();
+        Vhd1Disk::make_fixed(&file).unwrap();
+        let disk = Disk::new(Vhd1Disk::open_fixed(file, false).unwrap()).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
     #[async_test]
     async fn open_fixed() {
         let mut file = tempfile::tempfile().unwrap();

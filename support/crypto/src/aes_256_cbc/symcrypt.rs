@@ -26,7 +26,7 @@ fn err(e: symcrypt::errors::SymCryptError, op: &'static str) -> Aes256CbcError {
 
 impl Aes256CbcInner {
     pub fn new(key: &[u8; KEY_LEN]) -> Result<Self, Aes256CbcError> {
-        let expanded = AesExpandedKey::new(key).map_err(|e| err(e, "expanding AES key"))?;
+        let expanded = AesExpandedKey::new(key).map_err(|e| err(e, "expanding the AES key"))?;
         Ok(Aes256CbcInner { key: expanded })
     }
 

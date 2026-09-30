@@ -100,13 +100,12 @@ pub fn blit_text(
                 );
             }
 
-            let char_data: u8;
-            if is_cursor_row
+            let char_data: u8 = if is_cursor_row
                 && ((left_col / char_width) == cursor_col as i32)
                 && (char_row >= text_state.cursor_first_scanline)
                 && (char_row <= text_state.cursor_last_scanline)
             {
-                char_data = 0xFF;
+                0xFF
             } else {
                 let mut current_char_bit_map =
                     char_bit_map_base + (((text_data as u64 >> 8) << 7) + 4 * char_row as u64);
@@ -117,8 +116,8 @@ pub fn blit_text(
                     }
                 }
 
-                char_data = vram.read_plain(current_char_bit_map).unwrap();
-            }
+                vram.read_plain(current_char_bit_map).unwrap()
+            };
 
             let mut char_data = char_data as u16;
             if text_state.lo_res_text_mode {

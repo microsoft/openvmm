@@ -17,10 +17,7 @@
 
 // Tests that run on more than one architecture.
 mod multiarch;
-// Tests for the TTRPC interface that currently only run on x86-64 but can
-// compile when targeting any architecture. As our ARM64 support improves
-// these tests should be able to someday run on both x86-64 and ARM64, and be
-// moved into a multi-arch module.
+// Tests for the TTRPC interface, which run on both x86-64 and ARM64.
 mod ttrpc;
 // Tests that currently run only on x86-64 but can compile when targeting
 // any architecture. As our ARM64 support improves these tests should be able to
@@ -30,6 +27,8 @@ mod x86_64;
 mod x86_64_exclusive;
 // Tests that will only ever run targeting Aarch64/ARM64.
 mod aarch64_exclusive;
+// Test the QEMU emulator petri backend
+mod qemu;
 // Utility functions shared across multiple test files.
 pub(crate) mod utils;
 

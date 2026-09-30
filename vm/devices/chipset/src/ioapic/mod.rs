@@ -526,3 +526,59 @@ impl MmioIntercept for IoApicDevice {
         )]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A redirection entry in the VT-d/AMD remappable interrupt format must be
+    /// emitted as a remappable-format MSI, carrying the interrupt-remap index
+    /// as the message handle. The remappable RTE deliberately overlays the
+    /// index onto the legacy destination fields, so the ordinary address
+    /// computation already produces the correct message with no special-casing.
+    #[test]
+    fn remappable_rte_emits_remappable_msi() {
+        // Remappable RTE: format bit (48) set, index[14:0] in bits 63:49 and
+        // index[15] in bit 11, vector in bits 7:0. Use an index with bit 15
+        // set to also exercise the bit-11 path.
+        let index: u16 = 0x9234;
+        let vector = 0x30u8;
+        let bits = u64::from(vector)
+            | (1 << 48)
+            | ((u64::from(index) & 0x7fff) << 49)
+            | (((u64::from(index) >> 15) & 1) << 11);
+        let rte = RedirectionEntry::from(bits);
+
+        let (address, data) = rte.as_msi().expect("unmasked entry yields an MSI");
+
+        // Remappable format (address bit 4), no subhandle (SHV, bit 3), and the
+        // index recoverable as the handle = {addr[2], addr[19:5]}.
+        assert_eq!((address >> 4) & 1, 1, "remappable format bit set");
+        assert_eq!((address >> 3) & 1, 0, "SHV clear (no subhandle)");
+        let handle = (((address >> 2) & 1) << 15) | ((address >> 5) & 0x7fff);
+        assert_eq!(handle as u16, index, "handle carries the IRTE index");
+        assert_eq!(data as u8, vector, "vector preserved for EOI matching");
+    }
+
+    /// A compatibility-format entry (format bit clear) is emitted as a
+    /// compatibility-format MSI (address bit 4 clear).
+    #[test]
+    fn compat_rte_emits_compat_msi() {
+        let rte = RedirectionEntry::new()
+            .with_vector(0x30)
+            .with_destination(0x04);
+        let (address, _data) = rte.as_msi().expect("unmasked entry yields an MSI");
+        assert_eq!(
+            (address >> 4) & 1,
+            0,
+            "compatibility format (not remappable)"
+        );
+    }
+
+    /// A masked entry produces no MSI regardless of format.
+    #[test]
+    fn masked_rte_emits_nothing() {
+        let rte = RedirectionEntry::new().with_masked(true).with_vector(0x30);
+        assert_eq!(rte.as_msi(), None);
+    }
+}

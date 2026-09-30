@@ -5,6 +5,8 @@
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use inspect::InspectMut;
@@ -47,9 +49,9 @@ impl ChipsetDevice for Piix4UsbUhciStub {
 
 /// Sidestep the config space emulator, and match legacy stub behavior directly
 impl PciConfigSpace for Piix4UsbUhciStub {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         use pci_core::spec::cfg_space::HeaderType00;
-        *value = match HeaderType00(offset) {
+        value.set(match HeaderType00(offset) {
             HeaderType00::BIST_HEADER => 0,
             HeaderType00::BAR4 => 0,
             HeaderType00::STATUS_COMMAND => 0x02800000,
@@ -68,12 +70,12 @@ impl PciConfigSpace for Piix4UsbUhciStub {
                 // stub-out all other registers as well, since this is just a stub device
                 0
             }
-        };
+        });
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         use pci_core::spec::cfg_space::HeaderType00;
         match HeaderType00(offset) {
             HeaderType00::BIST_HEADER => {}

@@ -24,11 +24,17 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::TdgPageReleaseError;
+use tdcall::tdcall_sys_rd;
+use tdcall::tdcall_vm_rd;
+use tdcall::tdcall_vm_wr;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::tdx::TdConfigFlags;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
@@ -76,6 +82,67 @@ impl MshvVtl {
             });
 
         tdcall::accept_pages(&mut MshvVtlTdcall(self), range, attributes)
+    }
+
+    /// Issues tdcalls to release pages.
+    pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdgPageReleaseError> {
+        tdcall::release_pages(&mut MshvVtlTdcall(self), range)
+    }
+
+    /// Issues tdcall to get TD-scoped config flags.
+    pub fn tdx_get_config_flags(&self) -> TdConfigFlags {
+        let res = tdcall_vm_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_CONFIG_FLAGS)
+            .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
+
+        TdConfigFlags::from_bits(res)
+    }
+
+    /// Reads the global-scope `TDX_FEATURES0` metadata field via the
+    /// `TDG.SYS.RD` TDCALL, which enumerates optional TDX module features
+    /// (including hardware-bound sealing support).
+    ///
+    /// Returns an error if the module does not support `TDG.SYS.RD` (older
+    /// modules) or rejects the field.
+    pub fn tdx_read_features0(&self) -> Result<x86defs::tdx::TdxFeatures0, TdCallResult> {
+        let value = tdcall_sys_rd(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_ID_TDX_FEATURES0,
+        )?;
+        Ok(x86defs::tdx::TdxFeatures0::from(value))
+    }
+
+    /// Attempts to opt this TD into hardware-bound seal keys by setting
+    /// `TD_CTLS.ENABLE_HW_SEAL_KEYS`, enabling the `TDG.MR.KEY.GET` TDCALL that
+    /// backs VMGS hardware key sealing.
+    ///
+    /// Returns `Ok(true)` if the bit is set after the operation (sealing keys
+    /// are available), or `Ok(false)` if the TDX module does not support
+    /// sealing.
+    ///
+    /// A TDX module that does not implement sealing treats
+    /// `ENABLE_HW_SEAL_KEYS` as a reserved bit and may *silently ignore* the
+    /// masked write while still returning success. The write status alone is
+    /// therefore not sufficient, so this reads `TD_CTLS` back and reports
+    /// whether the bit actually stuck.
+    pub fn tdx_enable_hw_seal_keys(&self) -> Result<bool, TdCallResult> {
+        let enable = x86defs::tdx::TdCtls::new().with_enable_hw_seal_keys(true);
+
+        // Masked write: only touch the ENABLE_HW_SEAL_KEYS bit.
+        tdcall_vm_wr(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_CODE_TD_CTLS,
+            enable.into(),
+            enable.into(),
+        )?;
+
+        // Read back to confirm the bit actually took effect, since an
+        // unsupporting module may have ignored the write.
+        let controls = x86defs::tdx::TdCtls::from(tdcall_vm_rd(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_CODE_TD_CTLS,
+        )?);
+
+        Ok(controls.enable_hw_seal_keys())
     }
 }
 

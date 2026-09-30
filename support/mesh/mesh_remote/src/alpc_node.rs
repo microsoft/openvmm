@@ -480,7 +480,7 @@ struct InitialMessage {
 
 /// The relative NT path to a server ALPC port within the anonymous directory.
 fn node_path(node_id: NodeId) -> UnicodeString {
-    format!("{:?}", &node_id).try_into().unwrap()
+    format!("{:?}", node_id).try_into().unwrap()
 }
 
 impl AlpcNode {

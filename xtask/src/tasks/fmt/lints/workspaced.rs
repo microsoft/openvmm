@@ -29,14 +29,18 @@ pub struct WorkspacedManifest {
     members: Vec<PathBuf>,
     excluded: Vec<PathBuf>,
     dependencies: Vec<PathBuf>,
+
+    only_diffed: bool,
 }
 
 impl Lint for WorkspacedManifest {
-    fn new(_ctx: &LintCtx) -> Self {
+    fn new(ctx: &LintCtx) -> Self {
         WorkspacedManifest {
             members: Vec::new(),
             excluded: Vec::new(),
             dependencies: Vec::new(),
+
+            only_diffed: ctx.only_diffed,
         }
     }
 
@@ -167,12 +171,15 @@ impl Lint for WorkspacedManifest {
     }
 
     fn exit_workspace(&mut self, content: &mut Lintable<DocumentMut>) {
-        // Any members or dependencies that we expected to see but didn't are errors
-        for member in self.members.iter() {
-            content.unfixable(&format!(
-                "workspace member {} does not exist",
-                member.display()
-            ));
+        // Any workspace members that we expected to see but didn't are errors,
+        // unless we're only checking diffs, in which case we know we'll miss crates.
+        if !self.only_diffed {
+            for member in self.members.iter() {
+                content.unfixable(&format!(
+                    "workspace member {} does not exist",
+                    member.display()
+                ));
+            }
         }
         // Dependencies that we didn't see may be from other workspaces, as is done in the internal repo, so they're allowed
         // Exclusions that we didn't see may be nested workspaces, which don't get visited, so they're allowed

@@ -6,6 +6,31 @@
 use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::path::Path;
+
+/// Determine the configured JUnit output path for a nextest profile.
+pub fn nextest_junit_path(
+    config_file: &Path,
+    nextest_profile: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let nextest_toml = fs_err::read_to_string(config_file)?
+        .parse::<toml_edit::DocumentMut>()
+        .context("failed to parse nextest.toml")?;
+
+    let path = Some(&nextest_toml)
+        .and_then(|i| i.get("profile"))
+        .and_then(|i| i.get(nextest_profile))
+        .and_then(|i| i.get("junit"))
+        .and_then(|i| i.get("path"));
+
+    if let Some(path) = path {
+        Ok(Some(
+            path.as_str().context("malformed nextest.toml")?.into(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
@@ -61,7 +86,7 @@ pub enum NextestRunKind {
     /// Run tests from pre-built nextest archive file.
     RunFromArchive {
         archive_file: ReadVar<PathBuf>,
-        target: Option<ReadVar<target_lexicon::Triple>>,
+        target: Option<target_lexicon::Triple>,
         nextest_bin: Option<ReadVar<PathBuf>>,
     },
 }
@@ -184,8 +209,7 @@ impl FlowNodeWithConfig for Node {
                     target,
                     nextest_bin,
                 } => {
-                    let target =
-                        target.unwrap_or(ReadVar::from_static(target_lexicon::Triple::host()));
+                    let target = target.unwrap_or(target_lexicon::Triple::host());
 
                     let nextest_bin = nextest_bin.unwrap_or_else(|| {
                         ctx.reqv(|v| crate::download_cargo_nextest::Request::Get(target.clone(), v))
@@ -233,25 +257,7 @@ impl FlowNodeWithConfig for Node {
 
                     // first things first - determine if junit is supported by
                     // the profile, and if so, where the output if going to be.
-                    let junit_path = {
-                        let nextest_toml = fs_err::read_to_string(&config_file)?
-                            .parse::<toml_edit::DocumentMut>()
-                            .context("failed to parse nextest.toml")?;
-
-                        let path = Some(&nextest_toml)
-                            .and_then(|i| i.get("profile"))
-                            .and_then(|i| i.get(&nextest_profile))
-                            .and_then(|i| i.get("junit"))
-                            .and_then(|i| i.get("path"));
-
-                        if let Some(path) = path {
-                            let path: PathBuf =
-                                path.as_str().context("malformed nextest.toml")?.into();
-                            Some(path)
-                        } else {
-                            None
-                        }
-                    };
+                    let junit_path = nextest_junit_path(&config_file, &nextest_profile)?;
 
                     // allow unlimited coredump sizes
                     //
@@ -307,7 +313,7 @@ impl FlowNodeWithConfig for Node {
                         .current_dir(&working_dir);
 
                     let mut child = command.spawn().with_context(|| {
-                        format!("failed to spawn '{}'", &cmd.commands[0].0.to_string_lossy())
+                        format!("failed to spawn '{}'", cmd.commands[0].0.to_string_lossy())
                     })?;
 
                     let status = child.wait()?;
@@ -351,7 +357,7 @@ impl FlowNodeWithConfig for Node {
                             .join(junit_path);
                         let final_xml = std::env::current_dir()?.join("junit.xml");
                         // copy locally to avoid trashing the output between test runs
-                        fs_err::rename(emitted_xml, &final_xml)?;
+                        fs_err::copy(emitted_xml, &final_xml)?;
                         Some(final_xml.absolute()?)
                     } else {
                         None

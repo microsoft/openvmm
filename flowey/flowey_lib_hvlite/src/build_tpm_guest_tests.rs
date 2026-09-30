@@ -16,13 +16,14 @@ pub enum TpmGuestTestsOutput {
         #[serde(rename = "tpm_guest_tests.exe")]
         exe: PathBuf,
         #[serde(rename = "tpm_guest_tests.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
     LinuxBin {
         #[serde(rename = "tpm_guest_tests")]
         bin: PathBuf,
         #[serde(rename = "tpm_guest_tests.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
 }
 
@@ -91,11 +92,6 @@ impl SimpleFlowNode for Node {
                         TpmGuestTestsOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        let dbg = dbg.unwrap_or_else(|| {
-                            let mut candidate = bin.clone();
-                            candidate.set_extension("dbg");
-                            candidate
-                        });
                         TpmGuestTestsOutput::LinuxBin { bin, dbg }
                     }
                     _ => unreachable!("unsupported build output variant for tpm_guest_tests"),

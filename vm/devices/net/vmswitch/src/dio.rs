@@ -28,7 +28,7 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::STATUS_SUCCESS;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
-use windows_sys::Win32::System::IO::CancelIo;
+use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use zerocopy::FromBytes;
@@ -79,7 +79,7 @@ impl DioNic {
         mac_address: [u8; 6],
     ) -> io::Result<Self> {
         let full_nic_name = format!("{}--{}", vm_id, nic_name);
-        let path = format!(r#"\\.\VmSwitch\{}"#, &full_nic_name);
+        let path = format!(r#"\\.\VmSwitch\{}"#, full_nic_name);
 
         let handle = unsafe {
             let mut raw_handle = ptr::null_mut();
@@ -316,7 +316,7 @@ impl Drop for QueueState {
         // Cancel and wait on any outstanding IO to release the overlapped
         // structures and buffers.
         unsafe {
-            CancelIo(self.handle.0);
+            CancelIoEx(self.handle.0, ptr::null_mut());
         }
         for o in self.in_overlapped.iter() {
             while o.io_status().is_none() {

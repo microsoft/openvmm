@@ -52,7 +52,9 @@ impl<T: IoBackend + Default> IoPool<T> {
         Self::named(T::name().to_owned())
     }
 
-    fn named(name: impl Into<Arc<str>>) -> Self {
+    /// Creates a new task pool with the given name, used to identify the
+    /// executor in traces.
+    pub fn named(name: impl Into<Arc<str>>) -> Self {
         let (tasks, scheduler) = task_queue(name);
         Self {
             driver: IoDriver {

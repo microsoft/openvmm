@@ -20,6 +20,8 @@ use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use closeable_mutex::CloseableMutex;
@@ -32,7 +34,6 @@ use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use zerocopy::FromBytes;
 
 type InterceptRanges<U> =
     Arc<RwLock<RangeMap<U, (Box<str>, Weak<CloseableMutex<dyn ChipsetDevice>>)>>>;
@@ -171,10 +172,14 @@ impl FuzzChipset {
     fn pci_read(&self, bdf: (u8, u8, u8), offset: u16, data: &mut [u8]) -> Option<()> {
         let dev = self.pci_devices.get(&bdf)?.upgrade().unwrap();
         let mut locked_dev = dev.lock();
+        let mut value = 0;
         let result = locked_dev
             .supports_pci()
             .expect("objects on the pci bus support pci")
-            .pci_cfg_read(offset, u32::mut_from_bytes(data).unwrap());
+            .pci_cfg_read(
+                offset,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            );
         // Convert to a non-deferred result
         let result = match result {
             IoResult::Ok => Ok(()),
@@ -182,7 +187,7 @@ impl FuzzChipset {
             IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
         };
         match result {
-            Ok(()) => {}
+            Ok(()) => data.copy_from_slice(&value.to_ne_bytes()[..data.len()]),
             Err(_) => {
                 data.fill(0);
             }
@@ -197,7 +202,7 @@ impl FuzzChipset {
         let result = locked_dev
             .supports_pci()
             .expect("objects on the pci bus support pci")
-            .pci_cfg_write(offset, value);
+            .pci_cfg_write(offset, ByteEnabledDwordWrite::with_all_bytes_enabled(value));
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {}
@@ -348,7 +353,7 @@ impl FuzzChipset {
                 let attached_bdfs = self.pci_devices.keys().collect::<Vec<_>>();
                 let bdf = **u.choose(&attached_bdfs)?;
 
-                let offset = u.int_in_range(0..=4096)?; // pci-e max cfg space size
+                let offset = u.int_in_range(0..=1023)? * 4; // pci-e max cfg space size
 
                 if matches!(action_kind, ChipsetActionKind::PciRead) {
                     ChipsetAction::PciRead { bdf, offset }

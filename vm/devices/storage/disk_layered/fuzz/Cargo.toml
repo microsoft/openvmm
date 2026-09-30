@@ -1,0 +1,36 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fuzz_disk_layered"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arbitrary = { workspace = true, features = ["derive"] }
+disk_backend.workspace = true
+disklayer_ram.workspace = true
+guestmem.workspace = true
+pal_async.workspace = true
+scsi_buffers.workspace = true
+xtask_fuzz.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libfuzzer-sys.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.xtask.fuzz.onefuzz-allowlist]
+fuzz_disk_layered = ["**/*.rs", "../src/**/*.rs"]
+
+[[bin]]
+name = "fuzz_disk_layered"
+path = "fuzz_disk_layered.rs"
+test = false
+doc = false
+doctest = false
+
+[lints]
+workspace = true

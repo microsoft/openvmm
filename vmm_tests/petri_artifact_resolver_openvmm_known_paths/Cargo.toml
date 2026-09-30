@@ -8,13 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 petri_artifacts_vmm_test.workspace = true
-vmm_test_images.workspace = true
 
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true
+target-lexicon.workspace = true
 
 [lints]
 workspace = true

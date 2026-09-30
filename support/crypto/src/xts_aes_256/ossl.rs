@@ -30,25 +30,25 @@ impl XtsAes256Inner {
 
     pub fn enc_ctx(&self) -> Result<XtsAes256EncCtxInner<'_>, XtsAes256Error> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating encrypt context"))?;
+            .map_err(|e| err(e, "creating the encryption context"))?;
         ctx.encrypt_init(
             Some(openssl::cipher::Cipher::aes_256_xts()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "encrypt init"))?;
+        .map_err(|e| err(e, "initializing the encryption context"))?;
         Ok(XtsAes256EncCtxInner { ctx, _dummy: &() })
     }
 
     pub fn dec_ctx(&self) -> Result<XtsAes256DecCtxInner<'_>, XtsAes256Error> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating decrypt context"))?;
+            .map_err(|e| err(e, "creating the decryption context"))?;
         ctx.decrypt_init(
             Some(openssl::cipher::Cipher::aes_256_xts()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "decrypt init"))?;
+        .map_err(|e| err(e, "initializing the decryption context"))?;
         Ok(XtsAes256DecCtxInner { ctx, _dummy: &() })
     }
 }
@@ -58,10 +58,10 @@ impl XtsAes256EncCtxInner<'_> {
         let iv = (tweak as u128).to_le_bytes();
         self.ctx
             .encrypt_init(None, None, Some(&iv))
-            .map_err(|e| err(e, "encryption"))?;
+            .map_err(|e| err(e, "setting the encryption tweak"))?;
         self.ctx
             .cipher_update_inplace(data, data.len())
-            .map_err(|e| err(e, "cipher update"))?;
+            .map_err(|e| err(e, "encrypting data"))?;
         Ok(())
     }
 }
@@ -71,10 +71,10 @@ impl XtsAes256DecCtxInner<'_> {
         let iv = (tweak as u128).to_le_bytes();
         self.ctx
             .decrypt_init(None, None, Some(&iv))
-            .map_err(|e| err(e, "decryption"))?;
+            .map_err(|e| err(e, "setting the decryption tweak"))?;
         self.ctx
             .cipher_update_inplace(data, data.len())
-            .map_err(|e| err(e, "cipher update"))?;
+            .map_err(|e| err(e, "decrypting data"))?;
         Ok(())
     }
 }

@@ -18,6 +18,7 @@ use gdma_defs::WqeHeader;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::GuestMemoryView;
 use inspect::Inspect;
 use parking_lot::MappedMutexGuard;
 use parking_lot::Mutex;

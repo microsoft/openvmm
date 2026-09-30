@@ -20,7 +20,8 @@ pub enum OhcldiagDevOutput {
         #[serde(rename = "ohcldiag-dev.exe")]
         exe: PathBuf,
         #[serde(rename = "ohcldiag-dev.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 

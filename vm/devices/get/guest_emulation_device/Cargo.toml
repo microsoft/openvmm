@@ -12,6 +12,7 @@ test_utilities = ["dep:disklayer_ram", "dep:pal_async", "dep:parking_lot"]
 [dependencies]
 get_protocol.workspace = true
 get_resources.workspace = true
+smbios_defs.workspace = true
 test_igvm_agent_lib.workspace = true
 
 disk_backend.workspace = true

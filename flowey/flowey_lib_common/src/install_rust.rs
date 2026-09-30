@@ -298,7 +298,7 @@ impl FlowNodeWithConfig for Node {
 
                                     flowey::shell_cmd!(
                                         rt,
-                                        "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
+                                        "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch}"
                                     ).run()?;
                                     flowey::shell_cmd!(
                                         rt,

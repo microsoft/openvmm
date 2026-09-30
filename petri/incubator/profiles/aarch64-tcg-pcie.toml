@@ -1,0 +1,42 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Incubator profile: AArch64 with PCIe (SMMUv3, nested virtualization)
+#
+# Provides an emulated ARM platform with EL2 nested-virtualization
+# support (so the guest can run KVM), SMMUv3, and a PCIe topology for
+# testing IOMMU, device assignment, and PCIe device emulation in
+# OpenVMM/OpenHCL.
+
+[incubator]
+type = "qemu-tcg"
+arch = "aarch64"
+binary = "qemu-system-aarch64"
+machine = "virt,virtualization=on,iommu=smmuv3,gic-version=3"
+cpu = "max"
+memory = "4G"
+smp = "2"
+cmdline = "console=ttyAMA0"
+
+[[devices]]
+type = "virtio-blk"
+name = "test-disk"
+size = "64M"
+vfio = true
+
+# P2P DMA pair: `edu` is the DMA initiator, `ivshmem-plain` BAR2 is the
+# peer-BAR target. Assigning both into the L2 guest and having `edu` DMA into
+# `ivshmem`'s BAR2 exercises the vfio-dmabuf device-BAR P2P import path. The
+# edu `dma_mask` is widened from its 28-bit default so it can address the high
+# aarch64 guest physical addresses the target BAR lands at.
+[[devices]]
+type = "edu"
+name = "edu-initiator"
+dma-mask = "0xffffffffffff"
+vfio = true
+
+[[devices]]
+type = "ivshmem-plain"
+name = "ivshmem-target"
+size = "4M"
+vfio = true

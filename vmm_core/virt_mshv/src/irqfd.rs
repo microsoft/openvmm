@@ -192,19 +192,18 @@ impl IrqFd for MshvIrqFd {
             .alloc_gsi()
             .context("no free GSIs available for irqfd")?;
 
+        // Defer the MSHV_IRQFD registration until `enable()` has installed the
+        // MSI routing for this GSI. On aarch64 the kernel maps a passthrough
+        // device interrupt to the guest vector at irqfd-assign (add-producer)
+        // time and does not retarget on a later routing change, so the routing
+        // must be in place *before* the irqfd is armed. Arming lazily also
+        // works for x86_64 (enable() arms after setting the route).
         let event = Event::new();
-        // SAFETY: `event` is moved into `MshvIrqFdRoute` below, which keeps
-        // it alive until `Drop` calls `unregister_irqfd`.
-        if let Err(e) = unsafe { self.partition.register_irqfd(&event, gsi) } {
-            self.partition.free_gsi(gsi);
-            return Err(e);
-        }
-
         Ok(Box::new(MshvIrqFdRoute {
             partition: self.partition.clone(),
             gsi,
             event,
-            armed: Mutex::new(true),
+            armed: Mutex::new(false),
         }))
     }
 }

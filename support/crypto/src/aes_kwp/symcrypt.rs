@@ -35,7 +35,7 @@ impl AesKeyWrapInner {
                 )));
             }
         }
-        let key = AesKwpKey::new(key).map_err(|e| err(e, "expanding kwp key"))?;
+        let key = AesKwpKey::new(key).map_err(|e| err(e, "expanding the AES-KWP key"))?;
         Ok(AesKeyWrapInner { key })
     }
 
@@ -52,7 +52,7 @@ impl AesKeyWrapCtxInner<'_> {
     pub fn wrap(&mut self, payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
         self.key
             .encrypt(payload)
-            .map_err(|e| err(e, "wrapping key"))
+            .map_err(|e| err(e, "wrapping the key"))
     }
 }
 
@@ -60,6 +60,6 @@ impl AesKeyUnwrapCtxInner<'_> {
     pub fn unwrap(&mut self, wrapped_payload: &[u8]) -> Result<Vec<u8>, AesKeyWrapError> {
         self.key
             .decrypt(wrapped_payload)
-            .map_err(|e| err(e, "unwrapping key"))
+            .map_err(|e| err(e, "unwrapping the key"))
     }
 }

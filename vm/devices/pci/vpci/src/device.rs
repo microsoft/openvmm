@@ -3,25 +3,33 @@
 
 //! Virtual PCI device module
 
+use crate::bus::VpciBusEject;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
+use chipset_device::pci::PciConfigByteEnable;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::spec::cfg_space;
 use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
+use std::future::poll_fn;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
@@ -225,6 +233,8 @@ enum PacketError {
     InvalidBars(#[source] InvalidBars),
     #[error("invalid slot {0:?}")]
     InvalidSlot(SlotNumber),
+    #[error("unexpected eject completion")]
+    UnexpectedEjectComplete,
     #[error("msi resource count {0} too high")]
     TooManyMsis(u32),
     #[error("failed to register interrupt")]
@@ -245,6 +255,9 @@ enum PacketData {
     },
     FdoD0Exit,
     QueryRelations,
+    EjectComplete {
+        slot: SlotNumber,
+    },
     DeviceRequest {
         slot: SlotNumber,
         request: DeviceRequest,
@@ -273,6 +286,7 @@ enum DeviceRequest {
     TdispCommand {
         data: Vec<u8>,
     },
+    QueryIsolatedResources,
 }
 
 #[derive(Debug)]
@@ -461,6 +475,12 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::FDO_D0_EXIT => PacketData::FdoD0Exit,
         protocol::MessageType::QUERY_BUS_RELATIONS => PacketData::QueryRelations,
+        protocol::MessageType::EJECT_COMPLETE => {
+            let msg = protocol::PdoMessage::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("eject complete"))?
+                .0;
+            PacketData::EjectComplete { slot: msg.slot }
+        }
         protocol::MessageType::QUERY_PROTOCOL_VERSION => {
             let msg = protocol::QueryProtocolVersion::read_from_prefix(buf)
                 .map_err(|_| PacketError::PacketTooSmall("query_version"))?
@@ -508,6 +528,15 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                 request: DeviceRequest::TdispCommand { data },
             }
         }
+        protocol::MessageType::VPCI_QUERY_ISOLATED_RESOURCES => {
+            let msg = protocol::VpciQueryIsolatedResources::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("query_isolated_resources"))?
+                .0;
+            PacketData::DeviceRequest {
+                slot: msg.slot,
+                request: DeviceRequest::QueryIsolatedResources,
+            }
+        }
         typ => return Err(PacketError::UnknownType(typ)),
     };
     Ok(data)
@@ -525,6 +554,8 @@ enum WorkerError {
     InvalidPacketType,
     #[error("packet handling error")]
     Packet(#[from] PacketError),
+    #[error("eject control channel closed")]
+    EjectControl(#[source] mesh::RecvError),
 }
 
 impl<T: RingMem> Connection<T> {
@@ -585,11 +616,12 @@ impl<T: RingMem> Connection<T> {
 pub struct VpciChannelState<T: RingMem = GpadlRingMem> {
     conn: Connection<T>,
     state: ProtocolState,
+    eject_recv: mesh::Receiver<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> InspectMut for VpciChannelState<T> {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        let Self { conn, state } = &self;
+        let Self { conn, state, .. } = &self;
         let mut resp = req.respond();
         let state = match state {
             ProtocolState::Init => "initializing",
@@ -616,13 +648,16 @@ struct ReadyState {
     send_device: bool,
     send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
+    pending_eject: Option<FailableRpc<(), ()>>,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
     async fn run(&mut self, dev: &mut VpciChannel) -> Result<(), WorkerError> {
         loop {
             match &mut self.state {
-                ProtocolState::Ready(state) => break state.run(&mut self.conn, dev).await,
+                ProtocolState::Ready(state) => {
+                    break state.run(&mut self.conn, &mut self.eject_recv, dev).await;
+                }
                 ProtocolState::Init => {
                     self.conn.wait_for_completion_space().await?;
 
@@ -643,13 +678,26 @@ impl<T: RingMem> VpciChannelState<T> {
                             | protocol::ProtocolVersion::VB
                             | protocol::ProtocolVersion::FE
                             | protocol::ProtocolVersion::GE
-                            | protocol::ProtocolVersion::DT => protocol::Status::SUCCESS,
+                            | protocol::ProtocolVersion::DT
+                            | protocol::ProtocolVersion::RB => protocol::Status::SUCCESS,
                             _ => protocol::Status::REVISION_MISMATCH,
+                        };
+
+                        // Echo `VB` for every legacy version (unchanged).
+                        // Echo `RB` only when the guest requested it
+                        // so it enables new tdisp interfaces without
+                        // confusing downlevel consumers.
+                        let reply_version = if status == protocol::Status::SUCCESS
+                            && version == protocol::ProtocolVersion::RB
+                        {
+                            protocol::ProtocolVersion::RB
+                        } else {
+                            protocol::ProtocolVersion::VB
                         };
 
                         let reply = protocol::QueryProtocolVersionReply {
                             status,
-                            protocol_version: protocol::ProtocolVersion::VB,
+                            protocol_version: reply_version,
                         };
 
                         self.conn.send_completion(transaction_id, &reply, &[])?;
@@ -659,6 +707,7 @@ impl<T: RingMem> VpciChannelState<T> {
                                 vpci_version: version,
                                 send_device: false,
                                 send_completion: None,
+                                pending_eject: None,
                             });
                         }
                     } else {
@@ -733,6 +782,7 @@ impl ReadyState {
     async fn run(
         &mut self,
         conn: &mut Connection<impl RingMem>,
+        eject_recv: &mut mesh::Receiver<FailableRpc<(), ()>>,
         dev: &mut VpciChannel,
     ) -> Result<(), WorkerError> {
         loop {
@@ -752,13 +802,53 @@ impl ReadyState {
                 .instrument(tracing::trace_span!("vpci_wait_for_completion_space", instance_id = ?dev.instance_id))
                 .await?;
 
-            let (packet, transaction_id) = {
-                let (mut queue, _) = conn.queue.split();
-                let packet = queue.read().await.map_err(WorkerError::Queue)?;
-                let IncomingPacket::Data(data) = packet.as_ref() else {
-                    return Err(WorkerError::InvalidPacketType);
+            enum Event {
+                Packet(Result<(Result<PacketData, PacketError>, Option<u64>), WorkerError>),
+                Eject(Result<FailableRpc<(), ()>, mesh::RecvError>),
+            }
+
+            let event = {
+                let packet = async {
+                    let (mut queue, _) = conn.queue.split();
+                    let packet = queue.read().await.map_err(WorkerError::Queue)?;
+                    let IncomingPacket::Data(data) = packet.as_ref() else {
+                        return Err(WorkerError::InvalidPacketType);
+                    };
+                    Ok((parse_packet(data), data.transaction_id()))
                 };
-                (parse_packet(data), data.transaction_id())
+                let mut packet = pin!(packet);
+                let mut eject = pin!(eject_recv.recv());
+                poll_fn(|cx| {
+                    if let Poll::Ready(request) = eject.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Eject(request));
+                    }
+                    if let Poll::Ready(packet) = packet.as_mut().poll(cx) {
+                        return Poll::Ready(Event::Packet(packet));
+                    }
+                    Poll::Pending
+                })
+                .await
+            };
+
+            let (packet, transaction_id) = match event {
+                Event::Packet(packet) => packet?,
+                Event::Eject(Ok(request)) => {
+                    if self.pending_eject.is_some() {
+                        request.fail(anyhow::anyhow!("VPCI device eject already in progress"));
+                        continue;
+                    }
+                    conn.send_packet(
+                        &protocol::PdoMessage {
+                            message_type: protocol::MessageType::EJECT,
+                            slot: SlotNumber::new(),
+                        },
+                        &(),
+                    )
+                    .await?;
+                    self.pending_eject = Some(request);
+                    continue;
+                }
+                Event::Eject(Err(error)) => return Err(WorkerError::EjectControl(error)),
             };
 
             let r = match packet {
@@ -819,6 +909,15 @@ impl ReadyState {
                 // could have set the completion requested bit in the ring
                 // buffer packet.
                 conn.send_completion(transaction_id, &(), &[])?;
+            }
+            PacketData::EjectComplete { slot } => {
+                if slot != SlotNumber::new() {
+                    return Err(PacketError::InvalidSlot(slot).into());
+                }
+                self.pending_eject
+                    .take()
+                    .ok_or(PacketError::UnexpectedEjectComplete)?
+                    .complete(Ok(()));
             }
             PacketData::DeviceRequest { slot, request } => {
                 if u32::from(slot) != 0 {
@@ -918,7 +1017,69 @@ impl ReadyState {
                             &[],
                         )?;
                     }
+                    DeviceRequest::QueryIsolatedResources => {
+                        let all_invalid = [protocol::ResourceIsolation::INVALID; 6];
+                        let reply = if self.vpci_version < protocol::ProtocolVersion::RB {
+                            tracelimit::warn_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                negotiated_version = ?self.vpci_version,
+                                "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol. Replying NOT_SUPPORTED."
+                            );
+                            protocol::VpciIsolatedResourcesReply {
+                                status: protocol::Status::NOT_SUPPORTED,
+                                bar_isolation: all_invalid,
+                                dma_isolation: protocol::ResourceIsolation::INVALID,
+                            }
+                        } else {
+                            // The reporter returns a `'static` boxed future, so
+                            // we can drop the sync device guard before awaiting
+                            // it. This avoids holding the chipset device lock
+                            // across attestation work.
+                            let fut = {
+                                let mut locked_dev = dev.device.lock();
+                                locked_dev
+                                    .supports_tdisp_relay()
+                                    .map(|r| r.tdisp_isolation_report())
+                            };
+                            let report = match fut {
+                                Some(f) => Some(f.await),
+                                None => None,
+                            };
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                ?report,
+                                "VPCI_QUERY_ISOLATED_RESOURCES isolation report"
+                            );
+                            let reply = build_isolation_reply(report);
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                status = ?reply.status,
+                                bar_isolation = ?reply.bar_isolation,
+                                dma_isolation = ?reply.dma_isolation,
+                                "VPCI_QUERY_ISOLATED_RESOURCES reply"
+                            );
+                            reply
+                        };
+                        conn.send_completion(transaction_id, &reply, &[])?;
+                    }
                     DeviceRequest::TdispCommand { data } => {
+                        // TDISP commands only exist from RB onward, so a guest
+                        // that negotiated an older version gets no further than
+                        // this, whatever it put in the payload.
+                        if self.vpci_version < protocol::ProtocolVersion::RB {
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                negotiated_version = ?self.vpci_version,
+                                "VPCI_TDISP_COMMAND on downlevel protocol. Replying NOT_SUPPORTED."
+                            );
+                            conn.send_completion(
+                                transaction_id,
+                                &protocol::Status::NOT_SUPPORTED,
+                                &[],
+                            )?;
+                            return Ok(());
+                        }
+
                         let command = match tdisp::serialize_proto::deserialize_command(&data) {
                             Ok(cmd) => cmd,
                             Err(err) => {
@@ -938,7 +1099,7 @@ impl ReadyState {
                         tracing::debug!(?command, "received TDISP command over vpci channel");
 
                         let mut locked_dev = dev.device.lock();
-                        if let Some(tdisp) = locked_dev.supports_tdisp() {
+                        if let Some(tdisp) = locked_dev.supports_tdisp_host() {
                             tracelimit::info_ratelimited!(
                                 "chipset device supports TDISP, handing off command for processing"
                             );
@@ -1003,6 +1164,61 @@ enum InvalidBars {
     TooLarge { index: usize, len: u64, mask: u64 },
 }
 
+/// Convert a `TdispIsolationReport` (or `None`, when the chipset device
+/// does not support the isolation reporter) into the wire reply for
+/// `VPCI_QUERY_ISOLATED_RESOURCES`.
+fn build_isolation_reply(
+    report: Option<tdisp::TdispIsolationReport>,
+) -> protocol::VpciIsolatedResourcesReply {
+    use protocol::ResourceIsolation;
+    use tdisp::TdispIsolationReport;
+    use tdisp::TdispResourceIsolation;
+
+    fn to_wire(r: TdispResourceIsolation) -> ResourceIsolation {
+        match r {
+            TdispResourceIsolation::Shared => ResourceIsolation::SHARED,
+            TdispResourceIsolation::Private => ResourceIsolation::PRIVATE,
+            TdispResourceIsolation::Invalid => ResourceIsolation::INVALID,
+        }
+    }
+
+    let all_invalid = [ResourceIsolation::INVALID; 6];
+    match report {
+        None => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::NOT_SUPPORTED,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::NotTdispCapable) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::SUCCESS,
+            bar_isolation: [ResourceIsolation::SHARED; 6],
+            dma_isolation: ResourceIsolation::SHARED,
+        },
+        Some(TdispIsolationReport::NotReady) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::INVALID_DEVICE_STATE,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::Error) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::UNSUCCESSFUL,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::Ready { bars, dma }) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::SUCCESS,
+            bar_isolation: [
+                to_wire(bars[0]),
+                to_wire(bars[1]),
+                to_wire(bars[2]),
+                to_wire(bars[3]),
+                to_wire(bars[4]),
+                to_wire(bars[5]),
+            ],
+            dma_isolation: to_wire(dma),
+        },
+    }
+}
+
 impl VpciChannel {
     fn bars(&mut self) -> [MmioResource; 6] {
         if !self.bars_set {
@@ -1014,10 +1230,11 @@ impl VpciChannel {
             let mut device = self.device.lock();
             let mut buf = 0;
             [0, 1, 2, 3, 4, 5].map(|i| {
+                let value = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf);
                 device
                     .supports_pci()
                     .unwrap()
-                    .pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, &mut buf)
+                    .pci_cfg_read(cfg_space::HeaderType00::BAR0.0 + 4 * i, value)
                     .now_or_never()
                     .map(|_| buf)
                     .unwrap_or(0)
@@ -1074,6 +1291,7 @@ impl VpciChannel {
 
         {
             for (i, bar) in bars.into_iter().enumerate() {
+                let bar = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
                 let result = self
                     .device
                     .lock()
@@ -1106,10 +1324,12 @@ impl VpciChannel {
             let mut device = self.device.lock();
             let pci = device.supports_pci().unwrap();
             let mut command = {
-                let mut value = 0;
-                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
+                let mut value_u32 = 0;
+                let value =
+                    ByteEnabledDwordRead::new(&mut value_u32, PciConfigByteEnable::LOW_WORD);
+                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, value)
                     .now_or_never()
-                    .map(|_| value)
+                    .map(|_| value_u32)
                     .unwrap_or(0)
             };
             let mmio = cfg_space::Command::new()
@@ -1120,6 +1340,7 @@ impl VpciChannel {
             } else {
                 command &= !mmio;
             }
+            let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
             pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
         match result {
@@ -1240,6 +1461,8 @@ pub struct VpciChannel {
     bars_set: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
+    #[inspect(skip)]
+    eject: VpciBusEject,
 }
 
 /// Virtual PCI Config Space
@@ -1366,7 +1589,12 @@ impl VpciChannel {
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         })
+    }
+
+    pub(crate) fn eject_control(&self) -> VpciBusEject {
+        self.eject.clone()
     }
 }
 
@@ -1399,10 +1627,12 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
                 queue: Queue::new(channel)?,
             },
             state: ProtocolState::Init,
+            eject_recv: self.eject.connect(),
         })
     }
 
     async fn close(&mut self) {
+        self.eject.disconnect();
         self.release_all().await;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
@@ -1442,6 +1672,7 @@ mod tests {
     use super::VpciChannel;
     use super::VpciChannelState;
     use super::VpciConfigSpace;
+    use crate::bus::VpciBusEject;
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
@@ -1450,6 +1681,8 @@ mod tests {
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
+    use chipset_device::pci::ByteEnabledDwordRead;
+    use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigSpace;
     use closeable_mutex::CloseableMutex;
     use device_emulators::ReadWriteRequestType;
@@ -1465,7 +1698,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
-    use pci_core::bus_range::AssignedBusRange;
+    use pal_async::task::Spawn;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1483,6 +1716,7 @@ mod tests {
     use tdisp::GuestToHostResponseExt;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp::TdispTdiState;
     use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
     use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
     use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
@@ -1526,6 +1760,7 @@ mod tests {
         host_queue: Queue<FlatRingMem>,
         transaction_id: AtomicU64,
         protocol_version: protocol::ProtocolVersion,
+        eject: VpciBusEject,
     }
 
     fn connected_device(
@@ -1556,15 +1791,18 @@ mod tests {
             device,
             bars_set: false,
             interrupts: Vec::new(),
+            eject: VpciBusEject::default(),
         };
+        let eject = state.eject_control();
         let mut worker = VpciChannelState {
             conn: Connection { queue: host },
             state: ProtocolState::Init,
+            eject_recv: eject.connect(),
         };
         driver
             .spawn("worker", async move { worker.run(&mut state).await })
             .detach();
-        MockVpciGuestDevice::new(guest, 0, hardware_ids)
+        MockVpciGuestDevice::new(guest, 0, hardware_ids, eject)
     }
 
     #[derive(Debug, Error)]
@@ -1583,12 +1821,18 @@ mod tests {
     }
 
     impl MockVpciGuestDevice {
-        fn new(queue: Queue<FlatRingMem>, _index: usize, config: HardwareIds) -> Self {
+        fn new(
+            queue: Queue<FlatRingMem>,
+            _index: usize,
+            config: HardwareIds,
+            eject: VpciBusEject,
+        ) -> Self {
             Self {
                 config,
                 host_queue: queue,
                 transaction_id: AtomicU64::new(1),
                 protocol_version: protocol::ProtocolVersion::VB,
+                eject,
             }
         }
 
@@ -1786,14 +2030,12 @@ mod tests {
             (reply.interrupt.address, reply.interrupt.data_payload)
         }
 
-        /// Serializes `command` to a `VPCI_TDISP_COMMAND` vmbus packet, sends it
-        /// to the server requesting a completion, then reads the completion and
-        /// deserializes the payload back to a [`tdisp::GuestToHostResponse`].
-        async fn send_tdisp_command(
-            &mut self,
-            command: tdisp::GuestToHostCommand,
-        ) -> tdisp::GuestToHostResponse {
-            let serialized = tdisp::serialize_proto::serialize_command(&command);
+        /// Serializes `command` into a `VPCI_TDISP_COMMAND` vmbus packet for
+        /// slot 0 and sends it to the server, requesting a completion.
+        ///
+        /// Returns the transaction id the completion will carry.
+        async fn write_tdisp_command(&mut self, command: &tdisp::GuestToHostCommand) -> u64 {
+            let serialized = tdisp::serialize_proto::serialize_command(command);
 
             let header = protocol::VpciTdispCommandHeader {
                 message_type: protocol::MessageType::VPCI_TDISP_COMMAND,
@@ -1804,6 +2046,34 @@ mod tests {
             self.write_packet_with_header(Some(transaction_id), &header, serialized.as_bytes())
                 .await
                 .unwrap();
+            transaction_id
+        }
+
+        /// Sends `command` and reads the completion as a bare status, for the
+        /// cases where the server answers with a status alone and no TDISP
+        /// payload.
+        async fn send_tdisp_command_for_status(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> protocol::Status {
+            let transaction_id = self.write_tdisp_command(&command).await;
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
+            let ReadPacketInfo::Completion(id) = pkt_info else {
+                panic!("unexpected TDISP command reply");
+            };
+            assert_eq!(id, transaction_id);
+            status
+        }
+
+        /// Sends `command`, then reads the completion and deserializes the
+        /// payload back to a [`tdisp::GuestToHostResponse`].
+        async fn send_tdisp_command(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> tdisp::GuestToHostResponse {
+            let transaction_id = self.write_tdisp_command(&command).await;
 
             let mut queue = self.host_queue.split().0;
             let packet = queue.read().await.map_err(GuestError::Queue).unwrap();
@@ -1841,6 +2111,26 @@ mod tests {
                 }
                 _ => panic!("unexpected incoming packet type"),
             }
+        }
+
+        /// Send a `VPCI_QUERY_ISOLATED_RESOURCES` packet for slot 0 and
+        /// read the completion reply.
+        async fn send_query_isolated_resources(&mut self) -> protocol::VpciIsolatedResourcesReply {
+            let msg = protocol::VpciQueryIsolatedResources {
+                message_type: protocol::MessageType::VPCI_QUERY_ISOLATED_RESOURCES,
+                slot: SlotNumber::new(),
+            };
+            let transaction_id = self.transaction_id.fetch_add(1, Ordering::Relaxed);
+            self.write_packet(Some(transaction_id), &msg).await.unwrap();
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let reply: protocol::VpciIsolatedResourcesReply =
+                self.read_packet(&mut pkt_info).await.unwrap();
+            match pkt_info {
+                ReadPacketInfo::Completion(id) => assert_eq!(id, transaction_id),
+                _ => panic!("expected completion for QueryIsolatedResources"),
+            }
+            reply
         }
     }
 
@@ -1880,12 +2170,12 @@ mod tests {
     }
 
     impl PciConfigSpace for NullDevice {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-            self.config_space.read_u32(offset, value)
+        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+            self.config_space.read_byte_enabled(offset, value)
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.config_space.write_u32(offset, value)
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.config_space.write_byte_enabled(offset, value)
         }
     }
 
@@ -1917,6 +2207,55 @@ mod tests {
     }
 
     #[async_test]
+    async fn eject_waits_for_guest_completion(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let pci_config = HardwareIds {
+            vendor_id: 0x123,
+            device_id: 0x789,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            type0_sub_vendor_id: 0x456,
+            type0_sub_system_id: 0x1,
+        };
+        let pci = Arc::new(CloseableMutex::new(NullDevice {
+            config_space: ConfigSpaceType0Emulator::new(
+                pci_config,
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
+        }));
+        let mut guest_driver = connected_device(&driver, pci, msi_controller);
+        guest_driver.start_device(0x140000000).await;
+
+        let eject = guest_driver.eject.clone();
+        let eject_task = driver.spawn("eject", async move { eject.eject().await });
+        let mut packet_info = ReadPacketInfo::None;
+        let request: protocol::PdoMessage =
+            guest_driver.read_packet(&mut packet_info).await.unwrap();
+        assert!(matches!(packet_info, ReadPacketInfo::NewTransaction));
+        assert_eq!(request.message_type, protocol::MessageType::EJECT);
+        assert_eq!(request.slot, SlotNumber::new());
+
+        let error = guest_driver.eject.eject().await.unwrap_err();
+        assert!(format!("{error:#}").contains("VPCI device eject already in progress"));
+
+        guest_driver
+            .write_packet(
+                None,
+                &protocol::PdoMessage {
+                    message_type: protocol::MessageType::EJECT_COMPLETE,
+                    slot: SlotNumber::new(),
+                },
+            )
+            .await
+            .unwrap();
+        eject_task.await.unwrap();
+    }
+
+    #[async_test]
     async fn verify_version_negotiation(driver: DefaultDriver) {
         let msi_controller = TestVpciInterruptController::new();
         let pci_config = HardwareIds {
@@ -1943,9 +2282,122 @@ mod tests {
         guest_driver.start_device(base_address).await;
     }
 
+    /// Sends a single `QueryProtocolVersion` packet with `requested` and
+    /// returns the `(status, echoed_version)` from the reply without asserting
+    /// anything about the echoed version (unlike `negotiate_version`, which
+    /// expects the echo to match the request).
+    async fn query_version_reply(
+        guest: &mut MockVpciGuestDevice,
+        requested: protocol::ProtocolVersion,
+    ) -> (protocol::Status, protocol::ProtocolVersion) {
+        let query = protocol::QueryProtocolVersion {
+            message_type: protocol::MessageType::QUERY_PROTOCOL_VERSION,
+            protocol_version: requested,
+        };
+        let transaction_id = guest.transaction_id.fetch_add(1, Ordering::Relaxed);
+        guest
+            .write_packet(Some(transaction_id), &query)
+            .await
+            .unwrap();
+
+        let mut pkt_info = ReadPacketInfo::None;
+        let reply: protocol::QueryProtocolVersionReply =
+            guest.read_packet(&mut pkt_info).await.unwrap();
+        match pkt_info {
+            ReadPacketInfo::Completion(id) => assert_eq!(id, transaction_id),
+            _ => panic!("expected completion"),
+        }
+        (reply.status, reply.protocol_version)
+    }
+
+    /// Verify that `QUERY_PROTOCOL_VERSION` only echoes back `RB` when
+    /// the guest requested `RB`, and echoes `VB` for every other
+    /// supported version. Unsupported versions still return
+    /// `REVISION_MISMATCH` with `VB`.
+    #[async_test]
+    async fn verify_version_negotiation_rb_gated(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let pci_config = HardwareIds {
+            vendor_id: 0x123,
+            device_id: 0x789,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+            sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+            type0_sub_vendor_id: 0x456,
+            type0_sub_system_id: 0x1,
+        };
+
+        // Legacy versions: server accepts them and echoes `VB`.
+        for requested in [
+            protocol::ProtocolVersion::RS1,
+            protocol::ProtocolVersion::VB,
+            protocol::ProtocolVersion::FE,
+            protocol::ProtocolVersion::GE,
+            protocol::ProtocolVersion::DT,
+        ] {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller.clone());
+            let (status, echoed) = query_version_reply(&mut guest, requested).await;
+            assert_eq!(
+                status,
+                protocol::Status::SUCCESS,
+                "request {:?} should succeed",
+                requested
+            );
+            assert_eq!(
+                echoed,
+                protocol::ProtocolVersion::VB,
+                "request {:?} must echo VB",
+                requested
+            );
+        }
+
+        // RB: server accepts and echoes `RB`.
+        {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller.clone());
+            let (status, echoed) =
+                query_version_reply(&mut guest, protocol::ProtocolVersion::RB).await;
+            assert_eq!(status, protocol::Status::SUCCESS);
+            assert_eq!(echoed, protocol::ProtocolVersion::RB);
+        }
+
+        // Unknown version: rejected with VB.
+        {
+            let pci = Arc::new(CloseableMutex::new(NullDevice {
+                config_space: ConfigSpaceType0Emulator::new(
+                    pci_config,
+                    Vec::new(),
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+            }));
+            let mut guest = connected_device(&driver, pci, msi_controller);
+            let (status, echoed) =
+                query_version_reply(&mut guest, protocol::ProtocolVersion(0x00020000)).await;
+            assert_eq!(status, protocol::Status::REVISION_MISMATCH);
+            assert_eq!(echoed, protocol::ProtocolVersion::VB);
+        }
+    }
+
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1957,7 +2409,7 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let (_msix, msix_capability) =
-            pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
+            pci_core::capabilities::msix::MsixEmulator::new(0, 64, &msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
         msi_conn.connect(msi_controller.signal_msi());
@@ -2002,53 +2454,135 @@ mod tests {
         let base_address = 0x80000000;
         guest_driver.start_device(base_address).await;
         for i in 0..6 {
-            let result = pci.lock().pci_cfg_write(0x10 + 4 * i, 0xffffffff);
+            let result = pci.lock().pci_cfg_write(
+                0x10 + 4 * i,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+            );
             complete_write(result).await;
         }
 
         let mut value = 0;
-        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0xfffff004);
-        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0xfffff000);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0xffffffff);
-        pci.lock().pci_cfg_read(0x18, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x18,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x1c, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x1c,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x20, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x20,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
-        pci.lock().pci_cfg_read(0x24, &mut value).unwrap();
+        pci.lock()
+            .pci_cfg_read(
+                0x24,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0);
 
-        complete_write(pci.lock().pci_cfg_write(0x14, 0x20)).await;
-        complete_write(pci.lock().pci_cfg_write(0x10, 0x0)).await;
-        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
-        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x14, ByteEnabledDwordWrite::with_all_bytes_enabled(0x20)),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0x0)),
+        )
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
 
         complete_write(
             pci.lock().pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
             ),
         )
         .await;
 
         // Writes to BAR address are not allowed once MMIO is enabled.
-        complete_write(pci.lock().pci_cfg_write(0x14, 0xffffffff)).await;
-        complete_write(pci.lock().pci_cfg_write(0x10, 0xffffffff)).await;
-        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
-        assert_eq!(value, 0x4);
-        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xffffffff),
+        ))
+        .await;
+        pci.lock()
+            .pci_cfg_read(
+                0x10,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
+        assert_eq!(value & 0xfffffff0, 0);
+        assert_eq!(value & 0x4, 0x4); // 64-bit BAR
+        assert_eq!(value & 0x8, 0x8); // prefetchable
+        pci.lock()
+            .pci_cfg_read(
+                0x14,
+                ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+            )
+            .unwrap();
         assert_eq!(value, 0x20);
     }
 
     struct TestDevice {
         config_space: ConfigSpaceType0Emulator,
         tdisp_interface: TdispHostDeviceTargetEmulator,
+        /// If `Some`, the device also advertises
+        /// `TdispRelayedDeviceTarget` and returns the stored report. If `None`,
+        /// the device does not relay a TDISP interface, which is the
+        /// chipset-device default.
+        isolation_report: Option<tdisp::TdispIsolationReport>,
     }
     impl TestDevice {
         fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
@@ -2077,7 +2611,13 @@ mod tests {
                         ),
                 ),
                 tdisp_interface: tdisp::test_helpers::new_null_tdisp_interface("vpci-unit-test"),
+                isolation_report: None,
             }
+        }
+
+        fn with_isolation_report(mut self, report: tdisp::TdispIsolationReport) -> Self {
+            self.isolation_report = Some(report);
+            self
         }
 
         fn read_bar_u32(&self, bar: u8, offset: u64) -> u32 {
@@ -2130,8 +2670,28 @@ mod tests {
             Some(self)
         }
 
-        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
             Some(&mut self.tdisp_interface)
+        }
+
+        fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
+            if self.isolation_report.is_some() {
+                Some(self)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl tdisp::TdispRelayedDeviceTarget for TestDevice {
+        fn tdisp_isolation_report(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn Future<Output = tdisp::TdispIsolationReport> + Send + 'static>>
+        {
+            let report = self
+                .isolation_report
+                .expect("isolation_report must be set when supports_tdisp_relay returns Some");
+            Box::pin(async move { report })
         }
     }
 
@@ -2158,11 +2718,11 @@ mod tests {
     }
 
     impl PciConfigSpace for TestDevice {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-            self.config_space.read_u32(offset, value)
+        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+            self.config_space.read_byte_enabled(offset, value)
         }
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.config_space.write_u32(offset, value)
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.config_space.write_byte_enabled(offset, value)
         }
     }
 
@@ -2194,35 +2754,45 @@ mod tests {
         };
 
         let bar_address1 = 0x2000000000;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap()),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x14,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 >> 32).unwrap(),
+            ),
+        ))
         .await;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap()),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x10,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address1 & 0xffffffff).unwrap(),
+            ),
+        ))
         .await;
 
         let bar_address2: u64 = 0x4000;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap()),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x1c,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 >> 32).unwrap(),
+            ),
+        ))
         .await;
-        complete_write(
-            pci.lock()
-                .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap()),
-        )
+        complete_write(pci.lock().pci_cfg_write(
+            0x18,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(
+                u32::try_from(bar_address2 & 0xffffffff).unwrap(),
+            ),
+        ))
         .await;
 
         complete_write(
             pci.lock().pci_cfg_write(
                 0x4,
-                pci_core::spec::cfg_space::Command::new()
-                    .with_mmio_enabled(true)
-                    .into_bits() as u32,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(
+                    pci_core::spec::cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32,
+                ),
             ),
         )
         .await;
@@ -2251,6 +2821,7 @@ mod tests {
             .add(|services| TestDevice::new(&mut services.register_mmio()))
             .unwrap();
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::RB;
         guest_driver.start_device(0x1000000).await;
 
         let guest_protocol_type: tdisp::TdispGuestProtocolType = TDISP_MOCK_GUEST_PROTOCOL;
@@ -2259,9 +2830,11 @@ mod tests {
             TDISP_MOCK_GUEST_PROTOCOL,
         );
         let response = guest_driver.send_tdisp_command(command).await;
+        let tdi_state_before = response.tdi_state_before_enum();
+        let tdi_state_after = response.tdi_state_after_enum();
 
-        let response = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
-        match response {
+        let response_unpacked = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        match response_unpacked {
             Ok(info_resp) => {
                 let interface_info = info_resp
                     .interface_info
@@ -2276,12 +2849,157 @@ mod tests {
                     TDISP_MOCK_SUPPORTED_FEATURES
                 );
                 assert_eq!(interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+                assert_eq!(tdi_state_before, Some(TdispTdiState::Unlocked));
+                assert_eq!(tdi_state_after, Some(TdispTdiState::Unlocked));
             }
             _ => panic!(
                 "expected GetDeviceInterfaceInfo response, got {:?}",
-                response
+                response_unpacked
             ),
         }
+    }
+
+    /// TDISP commands only exist from `RB` onward, so a guest that negotiated
+    /// an older version is answered `NOT_SUPPORTED` even though the device
+    /// behind the bus implements TDISP.
+    #[async_test]
+    async fn verify_tdisp_command_downlevel_protocol(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| TestDevice::new(&mut services.register_mmio()))
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::VB;
+        guest_driver.start_device(0x1000000).await;
+
+        let command = new_get_device_interface_info_command(
+            SlotNumber::new().into_bits() as u64,
+            TDISP_MOCK_GUEST_PROTOCOL,
+        );
+        assert_eq!(
+            guest_driver.send_tdisp_command_for_status(command).await,
+            protocol::Status::NOT_SUPPORTED
+        );
+    }
+
+    /// Verify that `VPCI_QUERY_ISOLATED_RESOURCES` is answered locally on a
+    /// TDISP-isolation-capable mock device after negotiating `RB`.
+    ///
+    /// Exercises every branch of `build_isolation_reply`:
+    /// - `Ready` → `SUCCESS` with the per-BAR/DMA classifications echoed.
+    /// - `NotReady` → `INVALID_DEVICE_STATE` with all entries `INVALID`.
+    /// - `NotTdispCapable` → `SUCCESS` with all entries `SHARED`.
+    /// - `Error` → `UNSUCCESSFUL`.
+    /// - Downlevel negotiation (no `RB`) → `NOT_SUPPORTED`.
+    #[async_test]
+    async fn verify_query_isolated_resources(driver: DefaultDriver) {
+        use tdisp::TdispIsolationReport;
+        use tdisp::TdispResourceIsolation;
+
+        // Ready: BAR 0 PRIVATE (TEE), BAR 2 SHARED (non-TEE), BAR 4
+        // SHARED (intercepted), others INVALID. DMA PRIVATE.
+        let ready_bars = [
+            TdispResourceIsolation::Private,
+            TdispResourceIsolation::Invalid,
+            TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
+            TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
+        ];
+
+        let cases: &[(TdispIsolationReport, _, _)] = &[
+            (
+                TdispIsolationReport::Ready {
+                    bars: ready_bars,
+                    dma: TdispResourceIsolation::Private,
+                },
+                protocol::Status::SUCCESS,
+                [
+                    protocol::ResourceIsolation::PRIVATE,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
+                ],
+            ),
+            (
+                TdispIsolationReport::NotTdispCapable,
+                protocol::Status::SUCCESS,
+                [protocol::ResourceIsolation::SHARED; 6],
+            ),
+            (
+                TdispIsolationReport::NotReady,
+                protocol::Status::INVALID_DEVICE_STATE,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
+            (
+                TdispIsolationReport::Error,
+                protocol::Status::UNSUCCESSFUL,
+                [protocol::ResourceIsolation::INVALID; 6],
+            ),
+        ];
+
+        for (report, expected_status, expected_bars) in cases.iter().copied() {
+            let msi_controller = TestVpciInterruptController::new();
+            let vm_chipset = TestChipset::default();
+            let pci = vm_chipset
+                .device_builder("test")
+                .with_external_pci()
+                .add(|services| {
+                    TestDevice::new(&mut services.register_mmio()).with_isolation_report(report)
+                })
+                .unwrap();
+            let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+            guest_driver.protocol_version = protocol::ProtocolVersion::RB;
+            guest_driver.start_device(0x1000000).await;
+
+            let reply = guest_driver.send_query_isolated_resources().await;
+            assert_eq!(reply.status, expected_status, "report {:?}", report);
+            assert_eq!(reply.bar_isolation, expected_bars, "report {:?}", report);
+            let expected_dma = match (report, expected_status) {
+                (TdispIsolationReport::Ready { dma, .. }, _) => match dma {
+                    TdispResourceIsolation::Private => protocol::ResourceIsolation::PRIVATE,
+                    TdispResourceIsolation::Shared => protocol::ResourceIsolation::SHARED,
+                    TdispResourceIsolation::Invalid => protocol::ResourceIsolation::INVALID,
+                },
+                (TdispIsolationReport::NotTdispCapable, _) => protocol::ResourceIsolation::SHARED,
+                _ => protocol::ResourceIsolation::INVALID,
+            };
+            assert_eq!(reply.dma_isolation, expected_dma, "report {:?}", report);
+        }
+
+        // Downlevel: negotiate `VB` instead of `RB`. A `TestDevice` that
+        // exposes a valid isolation report still replies `NOT_SUPPORTED`
+        // because the protocol gate is checked before consulting the device.
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| {
+                TestDevice::new(&mut services.register_mmio()).with_isolation_report(
+                    TdispIsolationReport::Ready {
+                        bars: ready_bars,
+                        dma: TdispResourceIsolation::Private,
+                    },
+                )
+            })
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.protocol_version = protocol::ProtocolVersion::VB;
+        guest_driver.start_device(0x1000000).await;
+
+        let reply = guest_driver.send_query_isolated_resources().await;
+        assert_eq!(reply.status, protocol::Status::NOT_SUPPORTED);
+        assert_eq!(
+            reply.bar_isolation,
+            [protocol::ResourceIsolation::INVALID; 6]
+        );
+        assert_eq!(reply.dma_isolation, protocol::ResourceIsolation::INVALID);
     }
 
     #[async_test]

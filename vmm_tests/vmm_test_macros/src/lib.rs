@@ -4,6 +4,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use petri_artifacts_common::capabilities;
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
 use petri_artifacts_common::tags::MachineArch;
@@ -27,7 +28,10 @@ struct Config {
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
-    unstable: bool,
+    /// If unstable, the reason why.
+    unstable: Option<String>,
+    /// If ignored, the reason why (compile-time documentation only).
+    ignored: Option<String>,
 }
 
 struct ResolvedConfig {
@@ -35,15 +39,18 @@ struct ResolvedConfig {
     firmware: Firmware,
     arch: MachineArch,
     extra_deps: Vec<Path>,
-    unstable: bool,
-    requires_vpci: bool,
+    unstable: Option<String>,
+    ignored: Option<String>,
     requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Vmm {
+    #[expect(clippy::enum_variant_names)]
     OpenVmm,
     HyperV,
+    Qemu,
 }
 
 /// Host CPU vendor that a test can be restricted to via macro overrides.
@@ -101,10 +108,11 @@ struct Args {
 struct ArgsWithOverrides {
     args: Args,
     vmm: Option<Vmm>,
-    unstable: bool,
+    unstable: Option<String>,
+    ignored: Option<String>,
     with_vtl0_pipette: bool,
-    requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: Vec<&'static str>,
 }
 
 struct ResolvedArgs {
@@ -133,6 +141,7 @@ impl ResolvedConfig {
         let vmm_prefix = match self.vmm {
             Vmm::OpenVmm => "openvmm",
             Vmm::HyperV => "hyperv",
+            Vmm::Qemu => "qemu",
         };
 
         let firmware_prefix = match &self.firmware {
@@ -267,79 +276,194 @@ impl ToTokens for FirmwareAndArch {
 
 impl Parse for ArgsWithOverrides {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut unstable = None;
-        let mut with_vtl0_pipette = None;
-        let mut vmm = None;
-        let mut requires_vpci = None;
-        let mut requires_host_vendor = None;
+        // Syntax: a comma-separated list of attributes followed by a single
+        // `configs(...)` group of firmware entries, e.g.
+        //   #[vmm_test_with(openvmm, amd, configs(linux_direct_x64, ...))]
+        //   #[vmm_test_with(requires(vpci), configs(...))]
+        //
+        // By convention the vmm (if specified) comes first and `configs(...)`
+        // comes last; both are enforced below. Floating the attributes as
+        // plain idents (rather than wrapping them in a tuple) keeps the whole
+        // attribute a valid meta item, which is what lets rustfmt format it.
+        let mut overrides = ParsedOverrides::new();
+        let mut args = None;
+        let mut position = 0usize;
 
-        let word = input.parse::<Ident>()?;
-        let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
-        for subword in word.to_string().split('_') {
-            match subword {
-                "unstable" => {
-                    if unstable.is_some() {
-                        return conflict_err();
+        while !input.is_empty() {
+            let ident = input.parse::<Ident>()?;
+            let ident_string = ident.to_string();
+            match ident_string.as_str() {
+                "configs" => {
+                    let configs;
+                    syn::parenthesized!(configs in input);
+                    args = Some(configs.parse::<Args>()?);
+                    // Tolerate an optional trailing comma after `configs(...)`.
+                    if input.peek(Token![,]) {
+                        input.parse::<Token![,]>()?;
                     }
-                    unstable = Some(true);
-                }
-                "noagent" => {
-                    if with_vtl0_pipette.is_some() {
-                        return conflict_err();
+                    if !input.is_empty() {
+                        return Err(input.error("`configs(...)` must be the last argument"));
                     }
-                    with_vtl0_pipette = Some(false);
+                    break;
                 }
-                "vpci" => {
-                    if requires_vpci.is_some() {
-                        return conflict_err();
+                "requires" => {
+                    let capabilities;
+                    syn::parenthesized!(capabilities in input);
+                    for capability in parse_required_capabilities(&capabilities)? {
+                        overrides.add_capability(capability.span, capability.name)?;
                     }
-                    requires_vpci = Some(true);
                 }
-                "amd" => {
-                    if requires_host_vendor.is_some() {
-                        return conflict_err();
+                "openvmm" | "hyperv" | "qemu" => {
+                    if position != 0 {
+                        return Err(Error::new(
+                            ident.span(),
+                            "the vmm must be the first argument",
+                        ));
                     }
-                    requires_host_vendor = Some(HostVendor::Amd);
+                    overrides.vmm = match ident_string.as_str() {
+                        "openvmm" => Some(Vmm::OpenVmm),
+                        "hyperv" => Some(Vmm::HyperV),
+                        "qemu" => Some(Vmm::Qemu),
+                        _ => unreachable!(),
+                    };
                 }
-                "intel" => {
-                    if requires_host_vendor.is_some() {
-                        return conflict_err();
+                "unstable" | "ignore" => {
+                    let inner;
+                    syn::parenthesized!(inner in input);
+                    let reason = parse_reason(&inner)?;
+                    // Tolerate a trailing comma (e.g. from rustfmt).
+                    let _: Option<Token![,]> = inner.parse()?;
+                    if !inner.is_empty() {
+                        return Err(inner.error(
+                            "whole-list `ignore`/`unstable` takes only `reason = \"...\"`; \
+                             wrap an individual config to scope it",
+                        ));
                     }
-                    requires_host_vendor = Some(HostVendor::Intel);
+                    overrides.set_flag_reason(&ident, reason)?;
                 }
-                "hyperv" => {
-                    if vmm.is_some() {
-                        return conflict_err();
-                    }
-                    vmm = Some(Vmm::HyperV);
-                }
-                "openvmm" => {
-                    if vmm.is_some() {
-                        return conflict_err();
-                    }
-                    vmm = Some(Vmm::OpenVmm);
-                }
-                _ => return Err(Error::new(word.span(), "unrecognized vmm test override")),
+                _ => overrides.apply_ident(&ident)?,
             }
+
+            position += 1;
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<Token![,]>()?;
         }
 
-        let unstable = unstable.unwrap_or(false);
-        let with_vtl0_pipette = with_vtl0_pipette.unwrap_or(true);
-        let requires_vpci = requires_vpci.unwrap_or(false);
+        let args =
+            args.ok_or_else(|| input.error("expected a `configs(...)` group of firmware entries"))?;
 
-        let parens;
-        syn::parenthesized!(parens in input);
-        let args = parens.parse::<Args>()?;
-
-        Ok(ArgsWithOverrides {
-            args,
-            vmm,
-            with_vtl0_pipette,
-            unstable,
-            requires_vpci,
-            requires_host_vendor,
-        })
+        Ok(overrides.finish(args))
     }
+}
+
+struct ParsedOverrides {
+    vmm: Option<Vmm>,
+    unstable: Option<String>,
+    ignored: Option<String>,
+    with_vtl0_pipette: Option<bool>,
+    requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: Vec<&'static str>,
+}
+
+impl ParsedOverrides {
+    fn new() -> Self {
+        Self {
+            vmm: None,
+            unstable: None,
+            ignored: None,
+            with_vtl0_pipette: None,
+            requires_host_vendor: None,
+            requires_capabilities: Vec::new(),
+        }
+    }
+
+    fn apply_ident(&mut self, ident: &Ident) -> syn::Result<()> {
+        let ident_string = ident.to_string();
+        let conflict_err = || Err(Error::new(ident.span(), "conflicting override"));
+        match ident_string.as_str() {
+            "noagent" => {
+                if self.with_vtl0_pipette.is_some() {
+                    return conflict_err();
+                }
+                self.with_vtl0_pipette = Some(false);
+            }
+            "amd" => {
+                if self.requires_host_vendor.is_some() {
+                    return conflict_err();
+                }
+                self.requires_host_vendor = Some(HostVendor::Amd);
+            }
+            "intel" => {
+                if self.requires_host_vendor.is_some() {
+                    return conflict_err();
+                }
+                self.requires_host_vendor = Some(HostVendor::Intel);
+            }
+            _ => return Err(Error::new(ident.span(), "unrecognized vmm test override")),
+        }
+        Ok(())
+    }
+
+    fn set_flag_reason(&mut self, ident: &Ident, reason: String) -> syn::Result<()> {
+        let slot = match ident.to_string().as_str() {
+            "unstable" => &mut self.unstable,
+            "ignore" => &mut self.ignored,
+            _ => unreachable!(),
+        };
+        if slot.is_some() {
+            return Err(Error::new(ident.span(), "conflicting override"));
+        }
+        *slot = Some(reason);
+        Ok(())
+    }
+
+    fn add_capability(&mut self, span: Span, capability: &'static str) -> syn::Result<()> {
+        if self.requires_capabilities.contains(&capability) {
+            return Err(Error::new(span, "duplicate required capability"));
+        }
+        self.requires_capabilities.push(capability);
+        Ok(())
+    }
+
+    fn finish(self, args: Args) -> ArgsWithOverrides {
+        ArgsWithOverrides {
+            args,
+            vmm: self.vmm,
+            with_vtl0_pipette: self.with_vtl0_pipette.unwrap_or(true),
+            unstable: self.unstable,
+            ignored: self.ignored,
+            requires_host_vendor: self.requires_host_vendor,
+            requires_capabilities: self.requires_capabilities,
+        }
+    }
+}
+
+struct RequiredCapability {
+    span: Span,
+    name: &'static str,
+}
+
+fn parse_required_capabilities(input: ParseStream<'_>) -> syn::Result<Vec<RequiredCapability>> {
+    let idents = input.parse_terminated(Ident::parse, Token![,])?;
+    if idents.is_empty() {
+        return Err(input.error("requires expects at least one capability"));
+    }
+
+    idents
+        .into_iter()
+        .map(|ident| {
+            let name = ident.to_string();
+            let name = capabilities::known(&name).ok_or_else(|| {
+                Error::new(ident.span(), format!("unknown test capability `{name}`"))
+            })?;
+            Ok(RequiredCapability {
+                span: ident.span(),
+                name,
+            })
+        })
+        .collect()
 }
 
 impl ArgsWithOverrides {
@@ -348,9 +472,10 @@ impl ArgsWithOverrides {
             args: Args { configs },
             vmm,
             unstable,
+            ignored,
             with_vtl0_pipette,
-            requires_vpci,
             requires_host_vendor,
+            requires_capabilities,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -364,15 +489,22 @@ impl ArgsWithOverrides {
                     (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
                     | (Some(Vmm::OpenVmm), None)
                     | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+                    (Some(Vmm::Qemu), Some(Vmm::Qemu))
+                    | (Some(Vmm::Qemu), None)
+                    | (None, Some(Vmm::Qemu)) => Vmm::Qemu,
                     (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
                     _ => return Err(Error::new(config.span, "vmm mismatch")),
                 },
                 firmware: config.firmware,
                 arch: config.arch,
                 extra_deps: config.extra_deps,
-                unstable: config.unstable || unstable,
-                requires_vpci,
+                // A per-config wrapper reason wins over the whole-list override.
+                // A config may carry both `unstable` and `ignored`; `ignore`
+                // dominates at runtime (the test is skipped).
+                unstable: config.unstable.or_else(|| unstable.clone()),
+                ignored: config.ignored.or_else(|| ignored.clone()),
                 requires_host_vendor,
+                requires_capabilities: requires_capabilities.clone(),
             });
         }
 
@@ -393,6 +525,10 @@ impl Parse for Args {
             .parse_terminated(Config::parse, Token![,])?
             .into_iter()
             .collect();
+
+        if configs.is_empty() {
+            return Err(input.error("expected at least one firmware entry"));
+        }
 
         for config in &configs {
             #[expect(clippy::single_match)] // more patterns coming later
@@ -418,18 +554,47 @@ impl Parse for Config {
         let word = input.parse::<Ident>()?;
         let word_string = word.to_string();
 
-        let (unstable, remainder) = if let Some(remainder) = word_string.strip_prefix("unstable_") {
-            (true, remainder)
-        } else {
-            (false, word_string.as_str())
-        };
+        // Per-config `ignore(reason = "...", <config>)` /
+        // `unstable(reason = "...", <config>)` wrappers.
+        if word_string == "ignore" || word_string == "unstable" {
+            let inner;
+            syn::parenthesized!(inner in input);
+            let reason = parse_reason(&inner)?;
+            inner.parse::<Token![,]>().map_err(|_| {
+                Error::new(
+                    word.span(),
+                    "per-config `ignore`/`unstable` requires a config, e.g. \
+                     `ignore(reason = \"...\", linux_direct_x64)`",
+                )
+            })?;
+            let mut config = inner.parse::<Config>()?;
+            // Tolerate a trailing comma (e.g. from rustfmt).
+            let _: Option<Token![,]> = inner.parse()?;
+            if !inner.is_empty() {
+                return Err(inner.error("expected a single config after the reason"));
+            }
+            if config.unstable.is_some() || config.ignored.is_some() {
+                return Err(Error::new(
+                    word.span(),
+                    "cannot nest `ignore`/`unstable` wrappers",
+                ));
+            }
+            if word_string == "ignore" {
+                config.ignored = Some(reason);
+            } else {
+                config.unstable = Some(reason);
+            }
+            return Ok(config);
+        }
 
-        let (vmm, remainder) = if let Some(remainder) = remainder.strip_prefix("hyperv_") {
+        let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
             (Some(Vmm::HyperV), remainder)
-        } else if let Some(remainder) = remainder.strip_prefix("openvmm_") {
+        } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
             (Some(Vmm::OpenVmm), remainder)
+        } else if let Some(remainder) = word_string.strip_prefix("qemu_") {
+            (Some(Vmm::Qemu), remainder)
         } else {
-            (None, remainder)
+            (None, word_string.as_str())
         };
 
         let (arch, firmware) = match remainder {
@@ -478,7 +643,8 @@ impl Parse for Config {
             arch,
             span: input.span(),
             extra_deps,
-            unstable,
+            unstable: None,
+            ignored: None,
         })
     }
 }
@@ -721,10 +887,24 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
     Ok(deps.into_iter().collect())
 }
 
+/// Parses a mandatory `reason = "..."` argument, returning the reason string.
+fn parse_reason(input: ParseStream<'_>) -> syn::Result<String> {
+    let ident = input.parse::<Ident>()?;
+    if ident != "reason" {
+        return Err(Error::new(ident.span(), "expected `reason = \"...\"`"));
+    }
+    input.parse::<Token![=]>()?;
+    let reason = input.parse::<syn::LitStr>()?;
+    Ok(reason.value())
+}
+
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
-/// All options can be prefixed with "unstable_" to denote that this should
-/// not block PRs if it fails.
+/// An individual config can be marked unstable (runs, but failures don't block
+/// PRs) or ignored (skipped by default, like a libtest `#[ignore]` test) by
+/// wrapping it in `unstable(reason = "...", <config>)` or
+/// `ignore(reason = "...", <config>)`. The `reason` is mandatory. Use
+/// `vmm_test_with` to apply either to the whole list of configs.
 ///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
@@ -780,6 +960,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 ///
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
+///
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -788,10 +969,11 @@ pub fn vmm_test(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: None,
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: true,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -799,18 +981,41 @@ pub fn vmm_test(
         .into()
 }
 
-/// Same options as `vmm_test`, but specify the following attributes to apply
-/// to all tests, separated by underscores:
-/// - unstable: all variants of this test are unstable
+/// Same options as `vmm_test`, but accepts test-wide attributes in addition to
+/// the firmware entries. The attributes are listed first, as plain comma-separated
+/// idents, and the firmware entries follow in a trailing `configs(...)` group:
+///
+/// ```ignore
+/// #[vmm_test_with(<attribute>, ..., configs(<firmware entry>, ...))]
+/// ```
+///
+/// The available attributes are:
+/// - unstable(reason = "..."): all variants are unstable (failures don't block PRs)
+/// - ignore(reason = "..."): all variants are ignored (skipped by default)
 /// - noagent: don't use pipette in vtl0 for this test
-/// - vpci: this test requires a hypervisor backend that supports VPCI
-///   (virtual PCI) device emulation
 /// - amd: this test only runs on AMD-vendor hosts (skipped otherwise)
 /// - intel: this test only runs on Intel-vendor hosts (skipped otherwise)
 /// - hyperv: use hyperv as the vmm
 /// - openvmm: use openvmm as the vmm
+/// - requires(...): required capabilities (see below)
 ///
-/// example: #[vmm_test_with(unstable_noagent_openvmm(linux_direct_x64, ...))]
+/// `unstable` and `ignore` can also be applied to a single config by wrapping
+/// it: `unstable(reason = "...", <config>)` / `ignore(reason = "...", <config>)`.
+/// A per-config wrapper cannot itself be nested inside another.
+///
+/// `requires(...)` lists capabilities the test needs. Petri auto-detects some
+/// capabilities, such as `vpci`, and execution environments can advertise
+/// capabilities via the `PETRI_CAPABILITIES` environment variable. When a
+/// required capability is not available, the test is skipped, so it
+/// self-excludes on any host that cannot provide it. Capability availability
+/// is evaluated in the context of each config's resolved VMM.
+///
+/// By convention the vmm (if specified) comes first and `configs(...)` comes
+/// last; both are enforced.
+///
+/// example: #[vmm_test_with(noagent, configs(linux_direct_x64, ...))]
+/// example: #[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
+/// example: #[vmm_test_with(openvmm, amd, configs(linux_direct_x64))]
 #[proc_macro_attribute]
 pub fn vmm_test_with(
     attr: proc_macro::TokenStream,
@@ -833,10 +1038,11 @@ pub fn openvmm_test(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: Some(Vmm::OpenVmm),
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: true,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -854,10 +1060,11 @@ pub fn openvmm_test_no_agent(
     let args = ArgsWithOverrides {
         args: parse_macro_input!(attr as Args),
         vmm: Some(Vmm::OpenVmm),
-        unstable: false,
+        unstable: None,
+        ignored: None,
         with_vtl0_pipette: false,
-        requires_vpci: false,
         requires_host_vendor: None,
+        requires_capabilities: Vec::new(),
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -892,8 +1099,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let requirements = build_requirements(
             &config.firmware,
             config.vmm,
-            config.requires_vpci,
             config.requires_host_vendor,
+            &config.requires_capabilities,
         );
 
         // Now move the values for the FirmwareAndArch and extra_deps
@@ -916,19 +1123,33 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                 quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
+            Vmm::Qemu => (
+                quote!(),
+                quote!(::petri::PetriVmArtifacts::<::petri::qemu::QemuPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::qemu::QemuPetriBackend>),
+            ),
         };
 
         let remote_access = match config.vmm {
             Vmm::HyperV => quote!(::petri::RemoteAccess::LocalOnly),
             Vmm::OpenVmm => quote!(::petri::RemoteAccess::Allow),
+            Vmm::Qemu => quote!(::petri::RemoteAccess::LocalOnly),
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
-        let unstable = config.unstable.to_token_stream();
+        let unstable = match &config.unstable {
+            Some(reason) => quote!(.unstable(#reason)),
+            None => quote!(),
+        };
+        let ignore = if config.ignored.is_some() {
+            quote!(.ignore())
+        } else {
+            quote!()
+        };
 
         let test = quote! {
             #cfg_conditions
-            ::petri::SimpleTest::new(
+            ::petri::SimpleTest::new_async(
                 #name,
                 |resolver| {
                     let firmware = #firmware;
@@ -937,16 +1158,16 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                     let artifacts = #artifacts::new(resolver, firmware, arch, #with_vtl0_pipette)?;
                     Some((artifacts, extra_deps))
                 },
-                |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(async |driver| {
-                        let config = #petri_vm_config;
-                        #original_name(#original_args).await
-                    })
+                async |params, driver, (artifacts, extra_deps)| {
+                    let config = #petri_vm_config;
+                    #original_name(#original_args).await
                 },
-                Some(#requirements),
-                #unstable,
-                #remote_access,
-            ).into(),
+            )
+            .requirements(#requirements)
+            .remote_access(#remote_access)
+            #unstable
+            #ignore
+            .into(),
         };
 
         tests.extend(test);
@@ -962,8 +1183,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 fn build_requirements(
     firmware: &Firmware,
     resolved_vmm: Vmm,
-    requires_vpci: bool,
     requires_host_vendor: Option<HostVendor>,
+    requires_capabilities: &[&'static str],
 ) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
@@ -1003,11 +1224,6 @@ fn build_requirements(
         ));
     }
 
-    if requires_vpci {
-        requirement_expr =
-            quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
-    }
-
     if let Some(vendor) = requires_host_vendor {
         let vendor_tokens = match vendor {
             HostVendor::Amd => quote!(::petri::requirements::Vendor::Amd),
@@ -1015,6 +1231,20 @@ fn build_requirements(
         };
         requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::Vendor(#vendor_tokens)
+        ));
+    }
+
+    for capability in requires_capabilities {
+        let vmm = match resolved_vmm {
+            Vmm::OpenVmm => quote!(::petri::requirements::VmmType::OpenVmm),
+            Vmm::HyperV => quote!(::petri::requirements::VmmType::HyperV),
+            Vmm::Qemu => quote!(::petri::requirements::VmmType::Qemu),
+        };
+        requirement_expr = quote!(#requirement_expr.and(
+            ::petri::requirements::TestRequirement::RequiresCapability {
+                name: #capability,
+                vmm: #vmm,
+            }
         ));
     }
 

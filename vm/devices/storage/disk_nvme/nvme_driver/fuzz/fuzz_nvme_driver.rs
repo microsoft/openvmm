@@ -18,6 +18,7 @@ use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pci_core::bus_range::AssignedBusRange;
+use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
@@ -48,13 +49,18 @@ impl FuzzNvmeDriver {
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        let msi_conn = MsiConnection::new(AssignedBusRange::new(), 0);
+        let msi_conn = MsiConnection::new();
 
         let guid = arbitrary_guid(u)?;
+        let dma_target = DmaTarget::new(
+            AssignedBusRange::new(),
+            0,
+            mem.guest_memory().clone(),
+            &msi_conn,
+        );
         let nvme = NvmeController::new(
             &driver_source,
-            mem.guest_memory().clone(),
-            msi_conn.target(),
+            &dma_target,
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
                 msix_count: 2,
@@ -69,7 +75,15 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_conn, mem.dma_client());
-        let mut nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?;
+        let fused_keepalive_device: bool = u.arbitrary()?;
+        let mut nvme_driver = NvmeDriver::new(
+            &driver_source,
+            cpu_count,
+            device,
+            false,
+            fused_keepalive_device,
+        )
+        .await?;
         let namespace = nvme_driver.namespace(1).await?;
 
         Ok(Self {
@@ -278,6 +292,9 @@ pub enum NvmeDriverAction {
     },
     ReservationAcquire {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: u64,
         prkey: u64,
@@ -285,12 +302,18 @@ pub enum NvmeDriverAction {
     },
     ReservationRelease {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: u64,
         reservation_type: u8,
     },
     ReservationRegister {
         target_cpu: u32,
+        #[arbitrary(with = |u: &mut Unstructured<'_>| {
+            u.int_in_range(0..=nvm::RESERVATION_ACTION_MAX)
+        })]
         action: u8,
         crkey: Option<u64>,
         nrkey: u64,

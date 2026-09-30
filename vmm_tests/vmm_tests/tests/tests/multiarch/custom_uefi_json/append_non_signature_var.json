@@ -1,0 +1,14 @@
+{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Append",
+            "signatures": {},
+            "PetriCustomVar": {
+                "guid": "Yd/ki8qT0hGqDQDgmAMrjA==",
+                "attributes": "Bw==",
+                "value": "cGV0cmktdWVmaS1kZWx0YQ=="
+            }
+        }
+    }
+}

@@ -3,7 +3,6 @@
 
 use crate::worker::memory_layout::ChipsetMmioRanges;
 use guestmem::GuestMemory;
-use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use loader::importer::Register;
 use loader::uefi::IMAGE_SIZE;
@@ -24,8 +23,21 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
+    #[error("invalid UEFI firmware version information")]
+    FirmwareVersion(#[source] loader::uefi::firmware_version::Error),
+    #[error(
+        "incompatible UEFI firmware interface version {actual_major}.{actual_minor}; expected {expected_major}.{minimum_minor} or newer compatible minor"
+    )]
+    IncompatibleFirmwareVersion {
+        actual_major: u16,
+        actual_minor: u16,
+        expected_major: u16,
+        minimum_minor: u16,
+    },
     #[error("failed to build PCIe ACPI tables")]
     PcieAcpi(#[source] vmm_core::acpi_builder::PcieAcpiBuildError),
+    #[error("SMBIOS field `{0}` cannot be configured on UEFI boot")]
+    UnsupportedSmbiosField(&'static str),
     #[cfg(guest_arch = "aarch64")]
     #[error("UEFI boot with GICv2 is not supported")]
     GicV2NotSupported,
@@ -34,6 +46,7 @@ pub enum Error {
 pub struct UefiLoadSettings {
     pub debugging: bool,
     pub battery: bool,
+    pub hibernation: bool,
     pub memory_protections: bool,
     pub frontpage: bool,
     pub tpm: bool,
@@ -42,7 +55,12 @@ pub struct UefiLoadSettings {
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
-    pub bios_guid: Guid,
+    /// SMBIOS (DMI) configuration. The system UUID is delivered as the VM's
+    /// `BiosGuid`, and any set Type 1 (System Information) overrides are emitted
+    /// as config blobs so the firmware reports the configured identity. Type 0
+    /// (BIOS) overrides are rejected because the firmware self-describes the
+    /// BIOS (see [`add_smbios_blobs`]).
+    pub smbios: openvmm_defs::config::SmbiosConfig,
     /// Whether VMBus is present in this VM. When `false`, the firmware's
     /// `vmbus_disabled` flag is set; the `MmioRanges` blob is still provided
     /// but the high MMIO range will be empty. The firmware must support this
@@ -50,6 +68,92 @@ pub struct UefiLoadSettings {
     pub vmbus: bool,
     /// Force UEFI to bounce-buffer all DMA traffic.
     pub force_dma_bounce: bool,
+    /// Whether the hypervisor (HV#1) enlightenments are exposed to the guest.
+    pub hv: bool,
+    /// Whether to disable the usage of SHA-1 PCRs.
+    pub disable_sha1_pcr: bool,
+    /// Continue loading firmware with malformed or incompatible version information.
+    pub force_firmware_version: bool,
+}
+
+const FIRMWARE_INTERFACE_MAJOR: u16 = 1;
+const FIRMWARE_INTERFACE_MINIMUM_MINOR: u16 = 0;
+
+fn firmware_interface_is_compatible(major: u16, minor: u16) -> bool {
+    major == FIRMWARE_INTERFACE_MAJOR
+        && minor
+            .checked_sub(FIRMWARE_INTERFACE_MINIMUM_MINOR)
+            .is_some()
+}
+
+fn check_firmware_version(image: &[u8], force: bool) -> Result<(), Error> {
+    let version = match loader::uefi::firmware_version::find_in_firmware_image(image) {
+        Ok(Some(version)) => version,
+        Ok(None) => {
+            tracing::warn!("UEFI firmware does not contain version information");
+            return Ok(());
+        }
+        Err(error) if force => {
+            tracing::warn!(
+                error = &error as &dyn std::error::Error,
+                "UEFI firmware version information is invalid; continuing because force_firmware_version is set"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(Error::FirmwareVersion(error)),
+    };
+
+    tracing::info!(
+        release = version.base_version,
+        interface = format_args!(
+            "{}.{}",
+            version.interface_version_major, version.interface_version_minor
+        ),
+        commit = format_args!(
+            "{}{}",
+            version.git_commit,
+            if version.flags & uefi_specs::hyperv::firmware_version::FLAG_DIRTY != 0 {
+                "-dirty"
+            } else {
+                ""
+            },
+        ),
+        official = version.flags & uefi_specs::hyperv::firmware_version::FLAG_OFFICIAL != 0,
+        "mu_msvm UEFI firmware version",
+    );
+    tracing::debug!(
+        struct_version = version.struct_version,
+        header_size = version.header_size,
+        flags = version.flags,
+        "UEFI firmware version record"
+    );
+
+    if !firmware_interface_is_compatible(
+        version.interface_version_major,
+        version.interface_version_minor,
+    ) {
+        if force {
+            tracing::warn!(
+                actual_interface = format_args!(
+                    "{}.{}",
+                    version.interface_version_major, version.interface_version_minor
+                ),
+                required_interface = format_args!(
+                    "{}.{}+",
+                    FIRMWARE_INTERFACE_MAJOR, FIRMWARE_INTERFACE_MINIMUM_MINOR
+                ),
+                "UEFI firmware interface is incompatible; continuing because force_firmware_version is set"
+            );
+        } else {
+            return Err(Error::IncompatibleFirmwareVersion {
+                actual_major: version.interface_version_major,
+                actual_minor: version.interface_version_minor,
+                expected_major: FIRMWARE_INTERFACE_MAJOR,
+                minimum_minor: FIRMWARE_INTERFACE_MINIMUM_MINOR,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// All inputs needed by [`load_uefi`].
@@ -88,6 +192,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         loaded_image.as_slice()
     };
 
+    check_firmware_version(image, settings.force_firmware_version)?;
+
     let mut entropy = [0; 64];
     getrandom::fill(&mut entropy).expect("rng failure");
 
@@ -103,7 +209,7 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         .collect();
 
     let flags = config::Flags::new()
-        .with_hibernate_enabled(true)
+        .with_hibernate_enabled(settings.hibernation)
         .with_serial_controllers_enabled(settings.serial)
         .with_vpci_boot_enabled(settings.vpci_boot)
         .with_debugger_enabled(settings.debugging)
@@ -135,7 +241,8 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         .with_default_boot_always_attempt(settings.default_boot_always_attempt)
         .with_vmbus_disabled(!settings.vmbus)
         .with_pci_resources_pre_assigned(true)
-        .with_force_dma_bounce_enabled(settings.force_dma_bounce);
+        .with_force_dma_bounce_enabled(settings.force_dma_bounce)
+        .with_disable_sha1_pcr(settings.disable_sha1_pcr);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {
@@ -143,7 +250,6 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         flags: 0,
     })
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
@@ -166,6 +272,11 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         },
     })
     .add(&flags);
+
+    // Emit the SMBIOS configuration: the system UUID (as the VM's `BiosGuid`)
+    // plus any overridden Type 1 strings. Rejects overrides the firmware can't
+    // honor.
+    add_smbios_blobs(&mut cfg, &settings.smbios)?;
 
     #[cfg(guest_arch = "aarch64")]
     {
@@ -222,8 +333,260 @@ pub fn load_uefi(params: &LoadUefiParams<'_>) -> Result<Vec<Register>, Error> {
         &mut loader,
         image,
         loader::uefi::ConfigType::ConfigBlob(cfg),
+        settings.hv,
     )
     .map_err(Error::Loader)?;
 
     Ok(loader.initial_regs())
+}
+
+/// Adds the SMBIOS configuration to the UEFI config blob, failing closed on any
+/// override the firmware can't honor.
+///
+/// On UEFI boot the firmware builds the SMBIOS tables itself, so only fields
+/// with a corresponding config blob can be overridden. The entire
+/// [`SmbiosConfig`](openvmm_defs::config::SmbiosConfig) is destructured here in
+/// one place so every field must be explicitly handled — emitted as a blob, or
+/// rejected with an error because the firmware self-describes it. Adding a field
+/// to `SmbiosConfig` is therefore a compile error until its UEFI handling is
+/// decided, rather than being silently dropped. As blobs are added for
+/// currently-unsupported fields, the corresponding override simply stops
+/// erroring.
+fn add_smbios_blobs(
+    cfg: &mut config::Blob,
+    smbios: &openvmm_defs::config::SmbiosConfig,
+) -> Result<(), Error> {
+    use config::BlobStructureType;
+
+    let openvmm_defs::config::SmbiosConfig {
+        bios:
+            openvmm_defs::config::SmbiosBiosOverrides {
+                vendor,
+                version: bios_version,
+                release_date,
+                release,
+            },
+        system:
+            openvmm_defs::config::SmbiosSystemOverrides {
+                manufacturer,
+                product_name,
+                version: system_version,
+                serial_number,
+                sku_number,
+                family,
+                uuid,
+            },
+    } = smbios;
+
+    // Type 0 (BIOS Information) has no config blobs: the firmware self-describes
+    // the BIOS, so reject any override rather than silently dropping it.
+    if vendor.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS vendor"));
+    }
+    if bios_version.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS version"));
+    }
+    if release_date.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release date"));
+    }
+    if release.is_some() {
+        return Err(Error::UnsupportedSmbiosField("BIOS release"));
+    }
+
+    // Type 1 (System Information): the UUID is always delivered as the VM's
+    // `BiosGuid`; the string fields are emitted only when overridden (otherwise
+    // the firmware uses its own default).
+    cfg.add(&config::BiosGuid(*uuid));
+    for (structure_type, value) in [
+        (BlobStructureType::SmbiosSystemManufacturer, manufacturer),
+        (BlobStructureType::SmbiosSystemProductName, product_name),
+        (BlobStructureType::SmbiosSystemVersion, system_version),
+        (BlobStructureType::SmbiosSystemSerialNumber, serial_number),
+        (BlobStructureType::SmbiosSystemSkuNumber, sku_number),
+        (BlobStructureType::SmbiosSystemFamily, family),
+    ] {
+        if let Some(value) = value {
+            cfg.add_cstring(structure_type, value.as_bytes());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openvmm_defs::config::SmbiosBiosOverrides;
+    use openvmm_defs::config::SmbiosConfig;
+    use openvmm_defs::config::SmbiosSystemOverrides;
+    use test_with_tracing::test;
+    use uefi_specs::hyperv::firmware_version;
+    use uefi_specs::uefi::firmware_volume;
+
+    fn size24(value: usize) -> [u8; 3] {
+        let value = (value as u32).to_le_bytes();
+        [value[0], value[1], value[2]]
+    }
+
+    fn firmware_image(interface: Option<(u16, u16)>) -> Vec<u8> {
+        let mut image = vec![
+            0;
+            if cfg!(guest_arch = "aarch64") {
+                0x20_0000
+            } else {
+                0
+            }
+        ];
+        let mut fv = vec![0xff; 0x1000];
+        let fv_length = fv.len() as u64;
+        fv[32..40].copy_from_slice(&fv_length.to_le_bytes());
+        fv[40..44].copy_from_slice(b"_FVH");
+        fv[48..50].copy_from_slice(
+            &(size_of::<firmware_volume::FirmwareVolumeHeader>() as u16).to_le_bytes(),
+        );
+
+        if let Some((major, minor)) = interface {
+            let mut record = [0; firmware_version::HEADER_SIZE];
+            record[0..4].copy_from_slice(firmware_version::SIGNATURE);
+            record[4..6].copy_from_slice(&firmware_version::STRUCT_VERSION.to_le_bytes());
+            record[6..8].copy_from_slice(&(firmware_version::HEADER_SIZE as u16).to_le_bytes());
+            record[12..14].copy_from_slice(&major.to_le_bytes());
+            record[14..16].copy_from_slice(&minor.to_le_bytes());
+            record[16] = 0;
+            record[32] = 0;
+
+            let section_size = size_of::<firmware_volume::CommonSectionHeader>() + record.len();
+            let file_size = size_of::<firmware_volume::FfsFileHeader>() + section_size;
+            let file_offset =
+                size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8);
+            fv[file_offset..file_offset + 16]
+                .copy_from_slice(firmware_version::FILE_GUID.as_bytes());
+            fv[file_offset + 20..file_offset + 23].copy_from_slice(&size24(file_size));
+            let section_offset = file_offset + size_of::<firmware_volume::FfsFileHeader>();
+            fv[section_offset..section_offset + 3].copy_from_slice(&size24(section_size));
+            fv[section_offset + 3] = firmware_volume::SECTION_RAW;
+            fv[section_offset + size_of::<firmware_volume::CommonSectionHeader>()
+                ..file_offset + file_size]
+                .copy_from_slice(&record);
+        }
+
+        image.extend_from_slice(&fv);
+        image
+    }
+
+    #[test]
+    fn accepts_system_overrides() {
+        let smbios = SmbiosConfig {
+            bios: SmbiosBiosOverrides::default(),
+            system: SmbiosSystemOverrides {
+                manufacturer: Some("Acme".to_string()),
+                family: Some("Widgets".to_string()),
+                ..Default::default()
+            },
+        };
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &smbios).unwrap();
+    }
+
+    #[test]
+    fn rejects_bios_overrides() {
+        for bios in [
+            SmbiosBiosOverrides {
+                vendor: Some("Acme".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                version: Some("1.0".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release_date: Some("01/01/2020".to_string()),
+                ..Default::default()
+            },
+            SmbiosBiosOverrides {
+                release: Some((4, 1)),
+                ..Default::default()
+            },
+        ] {
+            let smbios = SmbiosConfig {
+                bios,
+                system: SmbiosSystemOverrides::default(),
+            };
+            let mut cfg = config::Blob::new();
+            assert!(matches!(
+                add_smbios_blobs(&mut cfg, &smbios),
+                Err(Error::UnsupportedSmbiosField(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn emits_uuid_and_only_set_string_overrides() {
+        // The default config (no string overrides) still emits the `BiosGuid`.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(&mut cfg, &SmbiosConfig::default()).unwrap();
+        let baseline = cfg.complete().len();
+
+        // Setting a Type 1 string override emits an additional blob.
+        let mut cfg = config::Blob::new();
+        add_smbios_blobs(
+            &mut cfg,
+            &SmbiosConfig {
+                system: SmbiosSystemOverrides {
+                    manufacturer: Some("Acme".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cfg.complete().len() > baseline);
+    }
+
+    #[test]
+    fn firmware_interface_compatibility() {
+        assert!(firmware_interface_is_compatible(1, 0));
+        assert!(firmware_interface_is_compatible(1, 1));
+        assert!(!firmware_interface_is_compatible(0, 0));
+        assert!(!firmware_interface_is_compatible(2, 0));
+    }
+
+    #[test]
+    fn firmware_version_validation_policy() {
+        assert!(check_firmware_version(&firmware_image(Some((1, 0))), false).is_ok());
+
+        let incompatible = firmware_image(Some((2, 0)));
+        assert!(matches!(
+            check_firmware_version(&incompatible, false),
+            Err(Error::IncompatibleFirmwareVersion {
+                actual_major: 2,
+                actual_minor: 0,
+                expected_major: 1,
+                minimum_minor: 0,
+            })
+        ));
+        assert!(check_firmware_version(&incompatible, true).is_ok());
+
+        let mut malformed = firmware_image(Some((1, 0)));
+        let signature_offset = if cfg!(guest_arch = "aarch64") {
+            0x20_0000
+        } else {
+            0
+        } + size_of::<firmware_volume::FirmwareVolumeHeader>()
+            .next_multiple_of(8)
+            + size_of::<firmware_volume::FfsFileHeader>()
+            + size_of::<firmware_volume::CommonSectionHeader>();
+        malformed[signature_offset] = 0;
+        assert!(matches!(
+            check_firmware_version(&malformed, false),
+            Err(Error::FirmwareVersion(
+                loader::uefi::firmware_version::Error::InvalidSignature
+            ))
+        ));
+        assert!(check_firmware_version(&malformed, true).is_ok());
+
+        let missing = firmware_image(None);
+        assert!(check_firmware_version(&missing, false).is_ok());
+        assert!(check_firmware_version(&missing, true).is_ok());
+    }
 }

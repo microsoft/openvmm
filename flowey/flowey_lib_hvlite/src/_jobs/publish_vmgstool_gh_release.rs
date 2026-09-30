@@ -43,18 +43,22 @@ impl SimpleFlowNode for Node {
                             fs_err::hard_link(&bin, &bin_name)?;
                             files.push((bin_name.absolute()?, None));
 
-                            let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
-                            fs_err::hard_link(&dbg, &dbg_name)?;
-                            files.push((dbg_name.absolute()?, None));
+                            if let Some(dbg) = dbg {
+                                let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
+                                fs_err::hard_link(&dbg, &dbg_name)?;
+                                files.push((dbg_name.absolute()?, None));
+                            }
                         }
                         VmgstoolOutput::WindowsBin { exe, pdb } => {
                             let exe_name = PathBuf::from(format!("vmgstool-{target}.exe"));
                             fs_err::hard_link(&exe, &exe_name)?;
                             files.push((exe_name.absolute()?, None));
 
-                            let pdb_name = PathBuf::from(format!("vmgstool-{target}.pdb"));
-                            fs_err::hard_link(&pdb, &pdb_name)?;
-                            files.push((pdb_name.absolute()?, None));
+                            if let Some(pdb) = pdb {
+                                let pdb_name = PathBuf::from(format!("vmgstool-{target}.pdb"));
+                                fs_err::hard_link(&pdb, &pdb_name)?;
+                                files.push((pdb_name.absolute()?, None));
+                            }
                         }
                     }
                 }
@@ -92,7 +96,14 @@ impl SimpleFlowNode for Node {
                 tag,
                 title,
                 files,
+                notes: flowey_lib_common::publish_gh_release::GhReleaseNotes::Text("TODO".into()),
                 draft: true,
+                verify_tag: false,
+                // This job runs on every push to main, but the tag only
+                // changes when the version in the tree does, so an existing
+                // release is the normal steady state rather than a problem.
+                on_existing: flowey_lib_common::publish_gh_release::OnExistingRelease::Skip,
+                prerequisites: Vec::new(),
                 done,
             },
         ));

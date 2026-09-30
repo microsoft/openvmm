@@ -12,5 +12,5 @@ fn err(e: SymCryptError, op: &'static str) -> HmacSha256Error {
 }
 
 pub fn hmac_sha_256(key: &[u8], data: &[u8]) -> Result<[u8; 32], HmacSha256Error> {
-    hmac_sha256(key, data).map_err(|e| err(e, "computing HMAC-SHA-256"))
+    hmac_sha256(key, data).map_err(|e| err(e, "computing the HMAC-SHA-256"))
 }

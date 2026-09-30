@@ -643,6 +643,25 @@ impl HvEnlightenmentInformation {
     }
 }
 
+/// The EAX result of the `HV_CPUID_FUNCTION_MS_HV_NESTED_FEATURES` (0x4000000A)
+/// cpuid leaf, describing the nested virtualization enlightenments the
+/// hypervisor offers to a nested (L1) hypervisor.
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvNestedVirtFeaturesEax {
+    pub enlightened_vmcs_version_low: u8,
+    pub enlightened_vmcs_version_high: u8,
+    _reserved16: bool,
+    pub nested_flush_virtual_hypercall: bool,
+    pub flush_guest_physical_hypercall: bool,
+    pub msr_bitmap: bool,
+    pub virtualization_exception: bool,
+    pub debug_ctl: bool,
+    pub enlightened_npt_tlb: bool,
+    #[bits(9)]
+    _reserved23: u32,
+}
+
 #[bitfield(u128)]
 pub struct HvHardwareFeatures {
     pub apic_overlay_assist_in_use: bool,
@@ -2868,6 +2887,7 @@ registers! {
         // AMD SEV configuration MSRs
         SevControl = 0x00090040,
         SevGhcbGpa = 0x00090041,
+        SevDoorbellGpa = 0x00090042,
         SevAvicGpa = 0x00090043,
 
         CrInterceptControl = 0x000E0000,
@@ -2929,6 +2949,7 @@ registers! {
         Cpsr = 0x00020023,
         SpsrEl2 = 0x00021002,
 
+        MpidrEl1 = 0x00040001,
         SctlrEl1 = 0x00040002,
         Ttbr0El1 = 0x00040005,
         Ttbr1El1 = 0x00040006,
@@ -4288,6 +4309,31 @@ pub struct HvX64VmgexitInterceptMessage {
 }
 
 impl MessagePayload for HvX64VmgexitInterceptMessage {}
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64GpaAttributeInterceptMessageFlags {
+    #[bits(5)]
+    pub range_count: u32,
+    pub adjust: bool,
+    #[bits(2)]
+    pub host_visibility: u32,
+    #[bits(6)]
+    pub memory_type: u32,
+    #[bits(18)]
+    _reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64GpaAttributeInterceptMessage {
+    pub vp_index: u32,
+    pub flags: HvX64GpaAttributeInterceptMessageFlags,
+    pub ranges: [hypercall::HvGpaRange; 29],
+}
+
+impl MessagePayload for HvX64GpaAttributeInterceptMessage {}
+const_assert!(size_of::<HvX64GpaAttributeInterceptMessage>() == HV_MESSAGE_PAYLOAD_SIZE);
 
 #[bitfield(u64)]
 pub struct HvRegisterVpAssistPage {

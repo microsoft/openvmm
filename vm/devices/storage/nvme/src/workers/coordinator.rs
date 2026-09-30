@@ -4,10 +4,10 @@
 //! Coordinator between queues and hot add/remove of namespaces.
 
 use super::IoQueueEntrySizes;
+use super::admin::AddNamespaceError;
 use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
-use super::admin::NsidConflict;
 use crate::queue::DoorbellMemory;
 use crate::queue::InvalidDoorbell;
 use disk_backend::Disk;
@@ -144,15 +144,22 @@ impl NvmeWorkers {
     }
 
     pub fn poll_controller_reset(&mut self) -> bool {
-        if let EnableState::Resetting(recv) = &mut self.state {
+        let Self {
+            _task: _,
+            send: _,
+            doorbells,
+            state,
+        } = self;
+        if let EnableState::Resetting(recv) = state {
             if recv.now_or_never().is_some() {
-                self.state = EnableState::Disabled;
+                *state = EnableState::Disabled;
+                doorbells.write().reset();
                 true
             } else {
                 false
             }
         } else {
-            panic!("not resetting: {:?}", self.state)
+            panic!("not resetting: {:?}", state)
         }
     }
 
@@ -174,6 +181,7 @@ impl NvmeWorkers {
                 }
             }
         }
+        self.doorbells.write().reset();
     }
 }
 
@@ -185,7 +193,7 @@ pub struct NvmeControllerClient {
 
 impl NvmeControllerClient {
     /// Adds a namespace.
-    pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), NsidConflict> {
+    pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), AddNamespaceError> {
         self.send
             .call(CoordinatorRequest::AddNamespace, (nsid, disk))
             .await
@@ -212,7 +220,7 @@ struct Coordinator {
 
 enum CoordinatorRequest {
     EnableAdmin(Rpc<EnableAdminParams, ()>),
-    AddNamespace(Rpc<(u32, Disk), Result<(), NsidConflict>>),
+    AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),

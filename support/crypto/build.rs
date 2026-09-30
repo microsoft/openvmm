@@ -48,31 +48,30 @@ fn main() {
     // cfg for link-time checking. Don't emit the cfg for the rust backend,
     // as it's known to be insecure and should be used for testing purposes only.
     else if backend_count == 1 {
-        let secure;
-        if openssl {
+        let secure = if openssl {
             println!("cargo::rustc-cfg=openssl");
-            secure = true;
+            true
         } else if symcrypt {
             if vendored {
                 panic!("The symcrypt backend does not support vendoring");
             }
             println!("cargo::rustc-cfg=symcrypt");
-            secure = true;
+            true
         } else if rust {
             println!("cargo::rustc-cfg=rust");
-            secure = false;
+            false
         } else if native && linux && musl {
             println!("cargo::rustc-cfg=symcrypt");
-            secure = true;
+            true
         } else if native && linux && !musl {
             println!("cargo::rustc-cfg=openssl");
-            secure = true;
+            true
         } else if native && !linux {
             println!("cargo::rustc-cfg=native");
-            secure = true;
+            true
         } else {
             unreachable!();
-        }
+        };
         if secure {
             println!("cargo::rustc-cfg=single_backend");
         }

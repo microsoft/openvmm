@@ -490,6 +490,38 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
 
+    const CONFORMANCE_DISK_SIZE: u64 = 1024 * 1024;
+
+    fn conformance_disk() -> Disk {
+        let devices = (0..2)
+            .map(|_| disklayer_ram::ram_disk(CONFORMANCE_DISK_SIZE, false).unwrap())
+            .collect();
+        Disk::new(StripedDisk::new(devices, None, None).unwrap()).unwrap()
+    }
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        storage_tests::sector_range::test_disk_sector_range_conformance(&conformance_disk()).await;
+    }
+
+    /// `StripedDisk` computes `end_sector = start_sector + (len >> sector_shift)`
+    /// before handing it to `get_chunk_iter`, which is the function that
+    /// actually range checks. The addition is unchecked, so a request near
+    /// `u64::MAX` either panics or wraps to a small in-range `end_sector` that
+    /// passes the check.
+    #[async_test]
+    async fn end_sector_does_not_wrap() {
+        let disk = conformance_disk();
+        let mem = GuestMemory::allocate(1024);
+        let r = disk
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, 1024, true).buffer(&mem),
+                u64::MAX - 1,
+            )
+            .await;
+        assert!(matches!(r, Err(DiskError::IllegalBlock)), "{r:?}");
+    }
+
     fn new_strip_device(
         disk_count: u8,
         disk_size_in_bytes: Option<u64>,

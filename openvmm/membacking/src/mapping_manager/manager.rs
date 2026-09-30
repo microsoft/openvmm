@@ -8,6 +8,7 @@
 use super::mappable::Mappable;
 use super::object_cache::ObjectCache;
 use super::object_cache::ObjectId;
+use super::va_mapper::MapperRole;
 use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
@@ -40,17 +41,46 @@ pub struct MappingManager {
 }
 
 impl MappingManager {
-    /// Returns a new mapping manager that can map addresses up to `max_addr`.
+    /// Returns a new mapping manager (mapping addresses up to `max_addr`) and
+    /// its primary VA mapper.
     ///
-    /// Mappers created from this manager will use anonymous private memory for
-    /// guest RAM within `private_ranges` instead of using shared file-backed
-    /// memory.
-    pub fn new(
+    /// The primary mapper is created here, as part of construction, so it is
+    /// necessarily the first mapper in the owning process and is captured by the
+    /// shared cache: every later
+    /// [`new_mapper`](MappingManagerClient::new_mapper) in this process returns
+    /// it. It is the loader's write target and the partition's fault resolver,
+    /// and the only mapper eligible for soft large pages. It is always eager,
+    /// and starts empty — it receives mappings as regions are added.
+    ///
+    /// Private memory imposes a "single local eager mapper" restriction, but
+    /// that is enforced dynamically by the manager task as mappings and mappers
+    /// come and go (private RAM may be added later, e.g. via hotplug) rather
+    /// than captured here at construction time.
+    pub async fn new(
         spawn: impl Spawn,
         max_addr: u64,
-        private_ranges: Vec<MemoryRange>,
         minimum_va_alignment: Option<usize>,
-    ) -> Self {
+        supports_memory_fault_resolution: bool,
+    ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
+        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
+        // Create the primary mapper as part of construction. Being first, it is
+        // the instance the shared cache hands to every later `new_mapper` in
+        // this process.
+        let primary = this
+            .client()
+            .get_or_create_mapper(
+                true,
+                MapperRole::Primary {
+                    supports_memory_fault_resolution,
+                },
+            )
+            .await?;
+        Ok((this, primary))
+    }
+
+    /// Spawns the manager task and builds the client, without creating a primary
+    /// mapper.
+    fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -65,10 +95,21 @@ impl MappingManager {
                 id: ObjectId::new(),
                 req_send,
                 max_addr,
-                private_ranges,
                 minimum_va_alignment,
             },
         }
+    }
+
+    /// Test-only constructor that builds a manager with no primary mapper (an
+    /// empty mapper cache), so unit tests can exercise secondary/lazy mapper
+    /// mechanics directly. Production code must use [`new`](Self::new).
+    #[cfg(test)]
+    pub(crate) fn new_without_primary(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+    ) -> Self {
+        Self::new_bare(spawn, max_addr, minimum_va_alignment)
     }
 
     /// Returns an object used to access the mapping manager, potentially from a
@@ -84,13 +125,22 @@ pub struct MappingManagerClient {
     req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
-    private_ranges: Vec<MemoryRange>,
     minimum_va_alignment: Option<usize>,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 
 impl MappingManagerClient {
+    /// Returns a secondary VA mapper for this guest memory.
+    ///
+    /// A *secondary* mapper is any host-side view of guest memory other than the
+    /// primary one that the loader writes through and the partition resolves
+    /// faults against (created by [`MappingManager::new`](MappingManager::new)).
+    /// Secondary mappers are additional, remote views: for example a mapper in
+    /// the VP process for WHP VTL2 emulation, an out-of-process device that needs
+    /// to touch guest memory, or a DMA target. They never own the memory, and
+    /// soft large pages are not applied to them: in soft-large-page mode a
+    /// secondary mapper only ever gets 4 KB pages.
     /// Returns a VA mapper for this guest memory.
     ///
     /// When `eager` is true, the mapper receives all existing mappings
@@ -102,26 +152,34 @@ impl MappingManagerClient {
     /// When `eager` is false, the mapper is lazy: mappings are populated
     /// on demand via page faults. This avoids the cost of pushing every
     /// mapping change to processes that rarely access the mapped regions
-    /// (e.g., device-emulation processes with virtio-fs DAX). Lazy
-    /// mappers cannot be used with private memory mode.
+    /// (e.g., device-emulation processes with virtio-fs DAX).
     ///
     /// The mapper is single-instanced per process via a cache. If a lazy
     /// mapper was previously created and an eager one is now requested,
-    /// it is upgraded in place.
+    /// it is upgraded in place. In the process that owns the
+    /// [`GuestMemoryManager`](crate::MemoryManager), that cached instance is the
+    /// primary mapper created by [`MappingManager::new`](MappingManager::new);
+    /// in other processes (device/DMA workers) this creates a fresh secondary
+    /// mapper.
     pub async fn new_mapper(&self, eager: bool) -> Result<Arc<VaMapper>, VaMapperError> {
+        self.get_or_create_mapper(eager, MapperRole::Secondary)
+            .await
+    }
+
+    async fn get_or_create_mapper(
+        &self,
+        eager: bool,
+        role: MapperRole,
+    ) -> Result<Arc<VaMapper>, VaMapperError> {
         let mapper = MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                assert!(
-                    eager || self.private_ranges.is_empty(),
-                    "lazy mappers are not supported with private memory"
-                );
                 VaMapper::new(
                     self.req_send.clone(),
                     self.max_addr,
                     None,
-                    self.private_ranges.clone(),
                     self.minimum_va_alignment,
                     eager,
+                    role,
                 )
                 .await
             })
@@ -145,24 +203,26 @@ impl MappingManagerClient {
     ///
     /// Each call will allocate a new unique mapper.
     ///
-    /// Returns an error if private memory mode is enabled, since private
-    /// anonymous pages would be committed in the remote process and not
-    /// accessible locally.
+    /// If private memory is present, this fails at registration time because it
+    /// would be a second mapper (private RAM requires a single mapper); a remote
+    /// mapper is only rejected on that count, not for being remote.
     pub async fn new_remote_mapper(
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
-        if !self.private_ranges.is_empty() {
-            return Err(VaMapperError::RemoteWithPrivateMemory);
-        }
         Ok(Arc::new(
             VaMapper::new(
                 self.req_send.clone(),
                 self.max_addr,
                 Some(process),
-                Vec::new(),
                 self.minimum_va_alignment,
                 true, // eager — remote mappers used for partition mappings
+                // Secondary: this backs a partition from a remote process, but
+                // the soft-large-page work (deferred protect, first-write 2 MB
+                // populate, fault resolution) runs on the single primary mapper
+                // in the owning process. This mapper shares the same section
+                // pages, so it just maps them plain read-write 4 KB.
+                MapperRole::Secondary,
             )
             .await?,
         ))
@@ -242,7 +302,8 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
                     req.respond()
                         .field("writable", mapping.params.writable)
                         .field("mapping_type", mapping.params.mapping_type)
-                        .hex("file_offset", mapping.params.file_offset);
+                        .field("backed_by_fd", mapping.params.backing.mappable().is_some())
+                        .hex("file_offset", mapping.params.backing.file_offset());
                 }),
             );
         }
@@ -254,15 +315,105 @@ struct Mapping {
     active_mappers: Vec<MapperId>,
 }
 
+/// How a guest memory mapping is backed by host memory.
+#[derive(Debug, MeshPayload, Clone)]
+pub enum MappingBacking {
+    /// Backed by a mappable OS object (shared memory or file). The mapping
+    /// manager mmaps `mappable` at `file_offset` into each VA mapper, so the
+    /// same physical pages are shared across all mappers (and shareable with
+    /// other processes via `GuestMemorySharing`).
+    File {
+        /// The OS object to map.
+        mappable: Mappable,
+        /// The file offset into `mappable`.
+        file_offset: u64,
+    },
+    /// Backed by private anonymous memory committed directly by the mapping
+    /// manager. There is no backing fd, so the memory cannot be shared with
+    /// other processes or programmed into DMA targets that require an fd; it is
+    /// exposed to DMA targets purely by host VA.
+    ///
+    /// Private memory is only valid with a single mapper: its anonymous storage
+    /// lives in one mapper's address space, with no backing fd, so it cannot be
+    /// shared to a second mapper. The mapping manager rejects a second mapper
+    /// while private memory is present, and rejects adding private RAM while
+    /// more than one mapper exists (see the `AddMapper` handler and
+    /// [`MappingManagerTask::add_mapping`]). A lone remote mapper is fine — the
+    /// restriction is on mapper *count*, not on locality.
+    ///
+    /// Unlike file-backed memory, the storage *is* the VA mapping: there is no
+    /// fd holding the pages. Tearing the mapping down (via the region manager's
+    /// `remove_mappings`) decommits and zeroes the pages, so a private region
+    /// must not be transiently disabled and re-enabled — doing so would lose
+    /// guest memory. The region manager asserts against this.
+    Private,
+}
+
+impl MappingBacking {
+    /// Returns the backing object, if this mapping is file-backed.
+    pub fn mappable(&self) -> Option<&Mappable> {
+        match self {
+            MappingBacking::File { mappable, .. } => Some(mappable),
+            MappingBacking::Private => None,
+        }
+    }
+
+    /// Returns the offset within the backing object, or 0 if there is none.
+    pub fn file_offset(&self) -> u64 {
+        match self {
+            MappingBacking::File { file_offset, .. } => *file_offset,
+            MappingBacking::Private => 0,
+        }
+    }
+}
+
+/// Host-memory policy for a mapping, applied to the mapped VA range after the
+/// backing is established. Independent of how the mapping is backed, so it
+/// lives here rather than on [`MappingBacking`].
+///
+/// There is deliberately no `Default` impl: the correct policy is
+/// context-sensitive (guest RAM wants THP enabled, device memory does not), so
+/// an implicit fallback would silently do the wrong thing. Use [`MemoryPolicy::none`]
+/// when no special policy is desired, or construct the struct explicitly.
+#[derive(Debug, Copy, Clone, MeshPayload)]
+pub struct MemoryPolicy {
+    /// Host NUMA node to strictly bind the mapping to (Linux `mbind(MPOL_BIND)`,
+    /// Windows `MemExtendedParameterNumaNode`). `None` means OS default.
+    pub numa_node: Option<u32>,
+    /// Whether the range is advised as Transparent Huge Page eligible (Linux
+    /// `madvise(MADV_HUGEPAGE)`).
+    pub transparent_hugepages: bool,
+    /// Whether this range is populated eagerly at build time (prefetch). On
+    /// Windows this selects the *eager* soft-large-page path: the range is
+    /// mapped read-write and its large pages are built up front by the
+    /// build-time populate, with its first-fault windows pre-marked attempted
+    /// (rather than the lazy deferred-protect, fault-time path).
+    pub prefetch: bool,
+}
+
+impl MemoryPolicy {
+    /// Returns a policy that requests no special host-memory placement: no NUMA
+    /// binding (OS default placement) and no Transparent Huge Page advice.
+    ///
+    /// This may be the right choice for mappings that are not guest RAM, such
+    /// as device memory. Guest RAM should instead construct the policy
+    /// explicitly so that THP eligibility is a deliberate decision.
+    pub fn none() -> Self {
+        Self {
+            numa_node: None,
+            transparent_hugepages: false,
+            prefetch: false,
+        }
+    }
+}
+
 /// The mapping parameters.
 #[derive(Debug, MeshPayload, Clone)]
 pub struct MappingParams {
     /// The memory range for the mapping.
     pub range: MemoryRange,
-    /// The OS object to map.
-    pub mappable: Mappable,
-    /// The file offset into `mappable`.
-    pub file_offset: u64,
+    /// How the mapping is backed by host memory.
+    pub backing: MappingBacking,
     /// Whether to map the memory as writable.
     pub writable: bool,
     /// The type of memory being mapped.
@@ -271,8 +422,8 @@ pub struct MappingParams {
     /// [`GuestMemorySharing`](guestmem::GuestMemorySharing) so that external
     /// consumers (vhost-user backends, etc.) can share the backing memory.
     pub mapping_type: MappingType,
-    /// Host NUMA node for this mapping. `None` means OS default placement.
-    pub numa_node: Option<u32>,
+    /// Host-memory policy (NUMA node binding, THP eligibility).
+    pub policy: MemoryPolicy,
 }
 
 /// Error from a failed VA mapping operation.
@@ -340,6 +491,21 @@ impl MappingManagerTask {
             match req {
                 MappingRequest::AddMapper(rpc) => {
                     rpc.handle_failable(async |params: AddMapperParams| {
+                        // Private memory is anonymous: its storage *is* a single
+                        // mapper's address space, with no backing fd to share, so
+                        // a second mapper would get its own incoherent copy.
+                        // Private RAM therefore requires at most one mapper.
+                        // Reject a new mapper if private memory is already
+                        // present; the reverse direction (private RAM added
+                        // later) is enforced in `add_mapping`.
+                        if !self.mappers.mappers.is_empty() && self.has_private_mapping() {
+                            return Err(MappingError::new(
+                                MemoryRange::EMPTY,
+                                std::io::Error::other(
+                                    "cannot add a second mapper while private memory is present",
+                                ),
+                            ));
+                        }
                         self.add_mapper(params.send, params.eager).await
                     })
                     .await
@@ -355,7 +521,7 @@ impl MappingManagerTask {
                         .await
                 }
                 MappingRequest::AddMapping(rpc) => {
-                    rpc.handle(async |params| self.add_mapping(params).await)
+                    rpc.handle_failable(async |params| self.add_mapping(params).await)
                         .await
                 }
                 MappingRequest::RemoveMappings(rpc) => {
@@ -538,8 +704,15 @@ impl MappingManagerTask {
         }
     }
 
-    async fn add_mapping(&mut self, params: MappingParams) -> Result<(), RemoteError> {
+    async fn add_mapping(&mut self, params: MappingParams) -> anyhow::Result<()> {
         tracing::debug!(range = %params.range, "adding mapping");
+
+        // Private memory is anonymous and lives in a single mapper's address
+        // space, so it requires at most one mapper. Reject adding private RAM
+        // (e.g. via hotplug) while more than one mapper is present.
+        if matches!(params.backing, MappingBacking::Private) && self.mappers.mappers.len() > 1 {
+            anyhow::bail!("cannot add private memory while multiple mappers are present");
+        }
 
         assert!(!self.mappings.iter().any(|m| m.params.range == params.range));
 
@@ -573,7 +746,7 @@ impl MappingManagerTask {
                             );
                         }
                     }
-                    return Err(e);
+                    return Err(e.into());
                 }
                 Err(_) => {
                     // Mapper gone, skip. VaMapper::drop sends RemoveMapper
@@ -590,10 +763,21 @@ impl MappingManagerTask {
         Ok(())
     }
 
+    /// Returns true if any current mapping is backed by private memory.
+    fn has_private_mapping(&self) -> bool {
+        self.mappings
+            .iter()
+            .any(|m| matches!(m.params.backing, MappingBacking::Private))
+    }
+
     fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
         self.mappings
             .iter()
-            .filter(|m| m.params.mapping_type == MappingType::Ram)
+            // Only file-backed RAM can be shared with other processes;
+            // private/anonymous RAM has no fd to hand out.
+            .filter(|m| {
+                m.params.mapping_type == MappingType::Ram && m.params.backing.mappable().is_some()
+            })
             .map(|m| m.params.clone())
             .collect()
     }
@@ -653,11 +837,14 @@ impl ProvideShareableRegions for DmaRegionProvider {
 
         Ok(mappings
             .into_iter()
-            .map(|m| ShareableRegion {
-                guest_address: m.range.start(),
-                size: m.range.len(),
-                file: m.mappable.inner_arc(),
-                file_offset: m.file_offset,
+            .filter_map(|m| {
+                let mappable = m.backing.mappable()?;
+                Some(ShareableRegion {
+                    guest_address: m.range.start(),
+                    size: m.range.len(),
+                    file: mappable.inner_arc(),
+                    file_offset: m.backing.file_offset(),
+                })
             })
             .collect())
     }
@@ -673,7 +860,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x200000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x200000, None);
         let client = mm.client().clone();
 
         let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
@@ -686,11 +873,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x100000),
-                mappable: ram,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable: ram,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -698,11 +887,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0x100000..0x101000),
-                mappable: device,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable: device,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -721,7 +912,7 @@ mod tests {
 
     #[pal_async::async_test]
     async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
-        let mm = MappingManager::new(&spawn, 0x100000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&spawn, 0x100000, None);
         let client = mm.client().clone();
 
         let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
@@ -731,11 +922,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x1000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -755,11 +948,13 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x10000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Ram,
-            numa_node: None,
+            policy: MemoryPolicy::none(),
         };
         task.add_mapping(params.clone()).await.unwrap();
         (task, params)
@@ -829,11 +1024,13 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::none(),
         };
 
         // The eager mapper needs to respond to the MapEager Rpc.
@@ -942,11 +1139,13 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::none(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1060,11 +1259,13 @@ mod tests {
                 .into();
             task.add_mapping(MappingParams {
                 range: MemoryRange::new(start..end),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1148,11 +1349,13 @@ mod tests {
             .into();
         let params = MappingParams {
             range: MemoryRange::new(0..0x1000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::none(),
         };
 
         let add_future = task.add_mapping(params);
@@ -1255,11 +1458,13 @@ mod tests {
             .into();
         task.add_mapping(MappingParams {
             range: MemoryRange::new(0x20000..0x21000),
-            mappable,
-            file_offset: 0,
+            backing: MappingBacking::File {
+                mappable,
+                file_offset: 0,
+            },
             writable: true,
             mapping_type: MappingType::Device,
-            numa_node: None,
+            policy: MemoryPolicy::none(),
         })
         .await
         .unwrap();
@@ -1281,9 +1486,11 @@ mod tests {
             req_send,
             0x10000,
             None,
-            Vec::new(),
             None,
             true, // eager
+            MapperRole::Primary {
+                supports_memory_fault_resolution: false,
+            },
         );
         let (mapper, _) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1319,9 +1526,11 @@ mod tests {
             req_send,
             0x10000,
             None,
-            Vec::new(),
             None,
             true, // eager
+            MapperRole::Primary {
+                supports_memory_fault_resolution: false,
+            },
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1352,7 +1561,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping so the lazy mapper can find it.
@@ -1362,11 +1571,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1400,7 +1611,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x10000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x10000, None);
         let client = mm.client().clone();
 
         // Add a mapping while no mappers exist — it is stored for replay.
@@ -1410,11 +1621,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Ram,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1436,7 +1649,7 @@ mod tests {
         let _ = spawn;
         let (manager_thread, manager_driver) =
             pal_async::DefaultPool::spawn_on_thread("mapping-manager-test");
-        let mm = MappingManager::new(&manager_driver, 0x20000, Vec::new(), None);
+        let mm = MappingManager::new_without_primary(&manager_driver, 0x20000, None);
         let client = mm.client().clone();
 
         // Add a mapping first so replay has something to push.
@@ -1446,11 +1659,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0..0x10000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();
@@ -1475,11 +1690,13 @@ mod tests {
         client
             .add_mapping(MappingParams {
                 range: MemoryRange::new(0x10000..0x11000),
-                mappable,
-                file_offset: 0,
+                backing: MappingBacking::File {
+                    mappable,
+                    file_offset: 0,
+                },
                 writable: true,
                 mapping_type: MappingType::Device,
-                numa_node: None,
+                policy: MemoryPolicy::none(),
             })
             .await
             .unwrap();

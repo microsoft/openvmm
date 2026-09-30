@@ -276,6 +276,11 @@ impl CommonState {
         for test in &tests {
             tracing::info!(target: "test", name = test.name, "test started");
 
+            if test.linux_only && !cfg!(target_os = "linux") {
+                tracing::info!(target: "test", name = test.name, "test skipped, incompatible os");
+                continue;
+            }
+
             let mut vmtime_keeper = VmTimeKeeper::new(&self.driver, VmTime::from_100ns(0));
             let vmtime_source = vmtime_keeper.builder().build(&self.driver).await.unwrap();
             let mut ctx = RunContext {
@@ -291,19 +296,40 @@ impl CommonState {
 
             vmtime_keeper.stop().await;
 
-            match r {
-                TestResult::Passed => {
+            match (r, test.expected_failure) {
+                (TestResult::Passed, false) => {
                     tracing::info!(target: "test", name = test.name, "test passed");
                 }
-                TestResult::Failed => {
+                (TestResult::Passed, true) => {
+                    tracing::error!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        "test unexpectedly passed"
+                    );
+                    success = false;
+                }
+                (TestResult::Failed, false) => {
                     tracing::error!(target: "test", name = test.name, reason = "explicit failure", "test failed");
                     success = false;
                 }
-                TestResult::Faulted {
-                    vp_index,
-                    reason,
-                    regs,
-                } => {
+                (TestResult::Failed, true) => {
+                    tracing::info!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        reason = "explicit failure",
+                        "test passed"
+                    );
+                }
+                (
+                    TestResult::Faulted {
+                        vp_index,
+                        reason,
+                        regs,
+                    },
+                    false,
+                ) => {
                     tracing::error!(
                         target: "test",
                         name = test.name,
@@ -313,6 +339,24 @@ impl CommonState {
                         "test failed"
                     );
                     success = false;
+                }
+                (
+                    TestResult::Faulted {
+                        vp_index,
+                        reason,
+                        regs,
+                    },
+                    true,
+                ) => {
+                    tracing::info!(
+                        target: "test",
+                        name = test.name,
+                        expected_failure = true,
+                        vp_index = vp_index.index(),
+                        reason,
+                        regs = format_args!("{:#x?}", regs),
+                        "test passed"
+                    );
                 }
             }
         }

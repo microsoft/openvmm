@@ -18,6 +18,9 @@ use x86defs::msi::MsiData;
 /// hypervisors (notably KVM) will not generate EOI exits for a
 /// level-triggered interrupt request unless the request has been registered
 /// as a route on one of the IO-APIC IRQs.
+///
+/// `irq` must be less than [`IRQ_LINES`] for both methods; callers (the
+/// IO-APIC device) guarantee this, and implementations may panic otherwise.
 pub trait IoApicRouting: Send + Sync {
     /// Sets the associated interrupt request for the given irq.
     fn set_irq_route(&self, irq: u8, request: Option<MsiRequest>);
@@ -35,8 +38,8 @@ pub trait ControlGic: Send + Sync {
 // The number of IRQ lines for the interrupt controller.
 pub const IRQ_LINES: usize = 24;
 
-/// An message-signaled interrupt request.
-#[derive(Debug, Copy, Clone, Inspect)]
+/// A message-signaled interrupt request.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect)]
 pub struct MsiRequest {
     /// The MSI address.
     #[inspect(hex)]

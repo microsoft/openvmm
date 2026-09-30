@@ -66,10 +66,6 @@ fn der_err(e: der::Error, op: &'static str) -> RsaError {
     RsaError(crate::BackendError::Der(e, op))
 }
 
-fn pkcs8_err(e: pkcs8::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError::Pkcs8(e, op))
-}
-
 fn null_err(op: &'static str) -> RsaError {
     RsaError(crate::BackendError::Null(op))
 }
@@ -103,17 +99,17 @@ unsafe fn rsa_sec_err(error: CFErrorRef, op: &'static str) -> RsaError {
 fn build_pkcs1_pub(n: &[u8], e: &[u8]) -> Result<Vec<u8>, RsaError> {
     use der::asn1::UintRef;
     let pk = pkcs1::RsaPublicKey {
-        modulus: UintRef::new(n).map_err(|e| der_err(e, "encoding modulus"))?,
-        public_exponent: UintRef::new(e).map_err(|e| der_err(e, "encoding e"))?,
+        modulus: UintRef::new(n).map_err(|e| der_err(e, "encoding the modulus"))?,
+        public_exponent: UintRef::new(e).map_err(|e| der_err(e, "encoding the public exponent"))?,
     };
     pk.to_der()
-        .map_err(|e| der_err(e, "encoding PKCS#1 RSA public key"))
+        .map_err(|e| der_err(e, "encoding the PKCS#1 RSA public key"))
 }
 
 /// Parse a PKCS#1 RSAPublicKey DER blob into (n, e) byte vectors.
 fn parse_pkcs1_pub(der_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), RsaError> {
     let pk = pkcs1::RsaPublicKey::from_der(der_bytes)
-        .map_err(|e| der_err(e, "parsing PKCS#1 RSA public key"))?;
+        .map_err(|e| der_err(e, "parsing the PKCS#1 RSA public key"))?;
     Ok((
         pk.modulus.as_bytes().to_vec(),
         pk.public_exponent.as_bytes().to_vec(),
@@ -122,7 +118,10 @@ fn parse_pkcs1_pub(der_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), RsaError> {
 
 /// Import an RSA private key from a PKCS#1 RSAPrivateKey DER blob.
 fn import_private(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
-    let key_data = rsa_cf_data(pkcs1_der, "create CFData for PKCS#1 RSA private key")?;
+    let key_data = rsa_cf_data(
+        pkcs1_der,
+        "creating a CFData for the PKCS#1 RSA private key",
+    )?;
     // SAFETY: kSecAttr* are valid CFStringRef extern statics.
     let attrs = unsafe {
         rsa_cf_dict(
@@ -130,7 +129,7 @@ fn import_private(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
                 (kSecAttrKeyType, kSecAttrKeyTypeRSA),
                 (kSecAttrKeyClass, kSecAttrKeyClassPrivate),
             ],
-            "create attrs for RSA private key import",
+            "creating the RSA private key import attributes",
         )?
     };
     let mut error: CFErrorRef = ptr::null();
@@ -138,14 +137,14 @@ fn import_private(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
     let key = unsafe { SecKeyCreateWithData(key_data.0, attrs.0, &mut error) };
     if key.is_null() {
         // SAFETY: error is either null or a valid CFErrorRef.
-        return Err(unsafe { rsa_sec_err(error, "import RSA private key") });
+        return Err(unsafe { rsa_sec_err(error, "importing the RSA private key") });
     }
     Ok(CfHandle(key))
 }
 
 /// Import an RSA public key from a PKCS#1 RSAPublicKey DER blob.
 fn import_public(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
-    let key_data = rsa_cf_data(pkcs1_der, "create CFData for PKCS#1 RSA public key")?;
+    let key_data = rsa_cf_data(pkcs1_der, "creating a CFData for the PKCS#1 RSA public key")?;
     // SAFETY: kSecAttr* are valid CFStringRef extern statics.
     let attrs = unsafe {
         rsa_cf_dict(
@@ -153,7 +152,7 @@ fn import_public(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
                 (kSecAttrKeyType, kSecAttrKeyTypeRSA),
                 (kSecAttrKeyClass, kSecAttrKeyClassPublic),
             ],
-            "create attrs for RSA public key import",
+            "creating the RSA public key import attributes",
         )?
     };
     let mut error: CFErrorRef = ptr::null();
@@ -161,7 +160,7 @@ fn import_public(pkcs1_der: &[u8]) -> Result<CfHandle, RsaError> {
     let key = unsafe { SecKeyCreateWithData(key_data.0, attrs.0, &mut error) };
     if key.is_null() {
         // SAFETY: error is null or valid.
-        return Err(unsafe { rsa_sec_err(error, "import RSA public key") });
+        return Err(unsafe { rsa_sec_err(error, "importing the RSA public key") });
     }
     Ok(CfHandle(key))
 }
@@ -174,7 +173,7 @@ pub(crate) struct RsaPublicKeyInner(CfHandle);
 
 impl RsaKeyPairInner {
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
-        let size = rsa_cf_number(bits as i32, "create CFNumber for key size")?;
+        let size = rsa_cf_number(bits as i32, "creating a CFNumber for the key size")?;
         // SAFETY: kSecAttr* are valid CFStringRef extern statics.
         let params = unsafe {
             rsa_cf_dict(
@@ -182,7 +181,7 @@ impl RsaKeyPairInner {
                     (kSecAttrKeyType, kSecAttrKeyTypeRSA),
                     (kSecAttrKeySizeInBits, size.0),
                 ],
-                "create params for RSA key generation",
+                "creating the RSA key generation parameters",
             )?
         };
         let mut error: CFErrorRef = ptr::null();
@@ -190,19 +189,18 @@ impl RsaKeyPairInner {
         let key = unsafe { SecKeyCreateRandomKey(params.0, &mut error) };
         if key.is_null() {
             // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "generate RSA key") });
+            return Err(unsafe { rsa_sec_err(error, "generating the RSA key") });
         }
         Ok(Self(CfHandle(key)))
     }
 
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, RsaError> {
         let pki = pkcs8::PrivateKeyInfoRef::from_der(der_bytes)
-            .map_err(|e| der_err(e, "parsing PKCS#8 DER"))?;
+            .map_err(|e| der_err(e, "parsing the PKCS#8 DER private key"))?;
         if pki.algorithm.oid != pkcs1::ALGORITHM_OID {
-            return Err(pkcs8_err(
-                pkcs8::Error::KeyMalformed(pkcs8::KeyError::Invalid),
-                "PKCS#8 algorithm is not rsaEncryption",
-            ));
+            return Err(RsaError(crate::BackendError::Invalid(
+                "PKCS#8 private key is not an RSA key",
+            )));
         }
         let handle = import_private(pki.private_key.as_bytes())?;
         Ok(Self(handle))
@@ -218,7 +216,7 @@ impl RsaKeyPairInner {
         let data = unsafe { SecKeyCopyExternalRepresentation(self.0.0, &mut error) };
         if data.is_null() {
             // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "export RSA private key") });
+            return Err(unsafe { rsa_sec_err(error, "exporting the RSA private key") });
         }
         let data = CfHandle(data);
         // SAFETY: data.0 is a valid CFDataRef.
@@ -230,11 +228,11 @@ impl RsaKeyPairInner {
                 parameters: Some(der::Any::null()),
             },
             private_key: OctetString::new(pkcs1_der)
-                .map_err(|e| der_err(e, "wrapping PKCS#1 in OCTET STRING"))?,
+                .map_err(|e| der_err(e, "wrapping the PKCS#1 key in an OCTET STRING"))?,
             public_key: None,
         };
         pki.to_der()
-            .map_err(|e| der_err(e, "encoding PKCS#8 PrivateKeyInfo"))
+            .map_err(|e| der_err(e, "encoding the PKCS#8 PrivateKeyInfo"))
     }
 
     pub fn oaep_decrypt(
@@ -242,7 +240,7 @@ impl RsaKeyPairInner {
         input: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
-        let ct = rsa_cf_data(input, "create CFData")?;
+        let ct = rsa_cf_data(input, "creating a CFData for the ciphertext")?;
         let mut error: CFErrorRef = ptr::null();
         // SAFETY: self.0.0 and ct.0 are valid.
         let pt = unsafe {
@@ -255,7 +253,7 @@ impl RsaKeyPairInner {
         };
         if pt.is_null() {
             // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "RSA-OAEP decrypt") });
+            return Err(unsafe { rsa_sec_err(error, "decrypting with RSA-OAEP") });
         }
         let pt = CfHandle(pt);
         // SAFETY: pt.0 is valid.
@@ -287,13 +285,13 @@ impl RsaKeyPairInner {
 }
 
 fn sign(key: &CfHandle, alg: CFStringRef, data: &[u8]) -> Result<Vec<u8>, RsaError> {
-    let data_cf = rsa_cf_data(data, "create CFData")?;
+    let data_cf = rsa_cf_data(data, "creating a CFData for the message")?;
     let mut error: CFErrorRef = ptr::null();
     // SAFETY: key, alg, data_cf are valid.
     let sig = unsafe { SecKeyCreateSignature(key.0, alg, data_cf.0, &mut error) };
     if sig.is_null() {
         // SAFETY: error is null or valid.
-        return Err(unsafe { rsa_sec_err(error, "RSA sign") });
+        return Err(unsafe { rsa_sec_err(error, "computing the RSA signature") });
     }
     let sig = CfHandle(sig);
     // SAFETY: sig.0 valid.
@@ -306,8 +304,8 @@ fn verify(
     message: &[u8],
     signature: &[u8],
 ) -> Result<bool, RsaError> {
-    let msg = rsa_cf_data(message, "create CFData for message")?;
-    let sig = rsa_cf_data(signature, "create CFData for signature")?;
+    let msg = rsa_cf_data(message, "creating a CFData for the message")?;
+    let sig = rsa_cf_data(signature, "creating a CFData for the signature")?;
     let mut error: CFErrorRef = ptr::null();
     // SAFETY: all CF refs are valid.
     let ok = unsafe { SecKeyVerifySignature(key.0, alg, msg.0, sig.0, &mut error) };
@@ -326,7 +324,7 @@ fn verify(
             Ok(false)
         }
         // SAFETY: error is a valid CFErrorRef (sec_err takes ownership).
-        Some(_) => Err(unsafe { rsa_sec_err(error, "RSA verify") }),
+        Some(_) => Err(unsafe { rsa_sec_err(error, "verifying the RSA signature") }),
     }
 }
 
@@ -342,7 +340,7 @@ impl RsaPublicKeyInner {
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         let pub_key = self.public_key_handle()?;
-        let pt = rsa_cf_data(input, "create CFData")?;
+        let pt = rsa_cf_data(input, "creating a CFData for the plaintext")?;
         let mut error: CFErrorRef = ptr::null();
         // SAFETY: pub_key and pt valid.
         let ct = unsafe {
@@ -355,7 +353,7 @@ impl RsaPublicKeyInner {
         };
         if ct.is_null() {
             // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "RSA-OAEP encrypt") });
+            return Err(unsafe { rsa_sec_err(error, "encrypting with RSA-OAEP") });
         }
         let ct = CfHandle(ct);
         // SAFETY: ct.0 valid.
@@ -402,7 +400,7 @@ impl RsaPublicKeyInner {
         let mut error: CFErrorRef = ptr::null();
         // SAFETY: pub_key.0 is valid.
         let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
-        assert!(!data.is_null(), "SecKeyCopyExternalRepresentation failed");
+        assert!(!data.is_null(), "failed to export the RSA public key");
         let data = CfHandle(data);
         // SAFETY: data.0 is valid.
         let der_bytes = unsafe { cf_data_to_vec(data.0) };
@@ -419,7 +417,7 @@ impl RsaPublicKeyInner {
         // SAFETY: self.0.0 is a valid SecKeyRef.
         let pk = unsafe { SecKeyCopyPublicKey(self.0.0) };
         if pk.is_null() {
-            return Err(null_err("SecKeyCopyPublicKey"));
+            return Err(null_err("copying the public key"));
         }
         Ok(CfHandle(pk))
     }

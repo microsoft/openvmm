@@ -47,16 +47,21 @@ impl PowerShellBuilder {
     fn new_inner(program: &'static str) -> Self {
         PowerShellCmdletBuilder(Command::new(program))
             .flag("NoProfile")
+            .flag("NonInteractive")
             .flag("Command")
             .finish()
     }
 
     /// Start a new Cmdlet
+    ///
+    /// `cmdlet` is emitted verbatim and must be trusted input.
     pub fn cmdlet<S: AsRef<str>>(self, cmdlet: S) -> PowerShellCmdletBuilder {
         PowerShellCmdletBuilder(self.0).positional(RawVal::new(cmdlet.as_ref()))
     }
 
     /// Assign the output of the cmdlet to a variable
+    ///
+    /// `cmdlet` is emitted verbatim and must be trusted input.
     pub fn cmdlet_to_var<S: AsRef<str>>(
         self,
         cmdlet: S,
@@ -80,6 +85,8 @@ pub struct PowerShellCmdletBuilder(Command);
 
 impl PowerShellCmdletBuilder {
     /// Add a flag to the cmdlet
+    ///
+    /// `flag` is emitted verbatim and must be trusted input.
     pub fn flag<S: AsRef<OsStr>>(mut self, flag: S) -> Self {
         let mut arg = OsString::from("-");
         arg.push(flag);
@@ -112,6 +119,8 @@ impl PowerShellCmdletBuilder {
     }
 
     /// Add a named argument to the cmdlet
+    ///
+    /// `name` is emitted verbatim and must be trusted input; `value` is quoted.
     pub fn arg<S: AsRef<OsStr>, T: AsVal>(self, name: S, value: T) -> Self {
         self.flag(name).positional(value)
     }
@@ -171,13 +180,20 @@ impl<T: AsVal + ?Sized> AsVal for &T {
     }
 }
 
-/// wrap a string in quotes
+/// Quote a string as a PowerShell single-quoted string literal.
+///
+/// Single-quoted literals suppress all expansion (`$var`, `$(...)`, backtick
+/// escapes), so the only character that needs escaping is `'` itself, which is
+/// escaped by doubling it. Using double quotes here would allow any value
+/// containing `$(...)` to execute arbitrary PowerShell.
 pub fn quote_str(s: &OsStr) -> OsString {
-    let mut quoted = OsString::new();
-    quoted.push("\"");
-    // TODO: escape this properly.
-    quoted.push(s);
-    quoted.push("\"");
+    let mut quoted = OsString::from("'");
+    if let Some(s) = s.to_str() {
+        quoted.push(s.replace(r#"'"#, r#"''"#));
+    } else {
+        todo!("quote_str: non-UTF8 string {:?}", s);
+    }
+    quoted.push("'");
     quoted
 }
 
@@ -231,7 +247,10 @@ macro_rules! disp {
 
 disp!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
-/// A raw powershell value
+/// A raw, unquoted powershell value
+///
+/// The contents are emitted verbatim and are therefore trusted input. Never
+/// construct one from caller-supplied strings.
 pub struct RawVal<T>(T);
 
 impl<T: AsRef<OsStr>> RawVal<T> {
@@ -248,6 +267,8 @@ impl<T: AsRef<OsStr>> AsVal for RawVal<T> {
 }
 
 /// A powershell variable
+///
+/// The name is emitted verbatim and must be trusted input.
 pub struct Variable(String);
 
 impl Variable {
@@ -291,16 +312,19 @@ impl AsVal for Array {
 }
 
 /// A powershell hashtable
+///
+/// Keys are converted with [`AsVal`] just like values, so string keys are
+/// quoted and integer keys stay numeric.
 pub struct HashTable<K, V>(Vec<(K, V)>);
 
-impl<K: AsRef<str>, V: AsVal> HashTable<K, V> {
+impl<K: AsVal, V: AsVal> HashTable<K, V> {
     /// Create a new powershell hash table
     pub fn new(v: impl IntoIterator<Item = (K, V)>) -> Self {
         Self(v.into_iter().collect())
     }
 }
 
-impl<K: AsRef<str>, V: AsVal> AsVal for HashTable<K, V> {
+impl<K: AsVal, V: AsVal> AsVal for HashTable<K, V> {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         let mut args = OsString::new();
         args.push("@{");
@@ -309,7 +333,7 @@ impl<K: AsRef<str>, V: AsVal> AsVal for HashTable<K, V> {
             if !first {
                 args.push("; ");
             }
-            args.push(k.as_ref());
+            args.push(k.as_val());
             args.push("=");
             args.push(v.as_val());
             first = false;
@@ -319,7 +343,10 @@ impl<K: AsRef<str>, V: AsVal> AsVal for HashTable<K, V> {
     }
 }
 
-/// A powershell script
+/// A powershell script block
+///
+/// The contents are emitted verbatim and are therefore trusted input. Never
+/// construct one from caller-supplied strings.
 pub struct Script(String);
 
 impl Script {
@@ -332,5 +359,50 @@ impl Script {
 impl AsVal for Script {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn val(v: impl AsVal) -> String {
+        v.as_val().as_ref().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn quotes_are_literal() {
+        assert_eq!(val("hello"), "'hello'");
+        assert_eq!(val("with space"), "'with space'");
+        assert_eq!(val("it's"), "'it''s'");
+        assert_eq!(val(r"C:\path\to\file"), r"'C:\path\to\file'");
+    }
+
+    #[test]
+    fn no_expansion_or_escape() {
+        // `$`, `$(...)`, backticks and double quotes must all be inert.
+        assert_eq!(val("$(Get-Process)"), "'$(Get-Process)'");
+        assert_eq!(val("$env:PATH"), "'$env:PATH'");
+        assert_eq!(val("a`nb"), "'a`nb'");
+        assert_eq!(val(r#"a"b"#), r#"'a"b'"#);
+    }
+
+    #[test]
+    fn cannot_break_out_of_the_literal() {
+        assert_eq!(
+            val("x'; Remove-Item -Recurse C:\\; '"),
+            "'x''; Remove-Item -Recurse C:\\; '''"
+        );
+    }
+
+    #[test]
+    fn collections_quote_their_elements() {
+        assert_eq!(val(Array::new(["a'b", "c"])), "@('a''b'; 'c')");
+        assert_eq!(val(HashTable::new([("k", "v'w")])), "@{'k'='v''w'}");
+    }
+
+    #[test]
+    fn integer_hashtable_keys_stay_numeric() {
+        assert_eq!(val(HashTable::new([(0u32, "a")])), "@{0='a'}");
     }
 }

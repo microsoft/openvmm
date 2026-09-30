@@ -93,7 +93,7 @@ impl GpadlPagedMemory {
             .chain(gpadl.gpns().iter().skip(1))
             .copied()
             .collect();
-        let pages = mem.lock_gpns(false, &gpns)?;
+        let pages = mem.lock_gpns(guestmem::AccessType::Write, false, &gpns)?;
         Ok(Self {
             _gpadl: gpadl,
             pages,

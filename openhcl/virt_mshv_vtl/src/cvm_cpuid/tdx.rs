@@ -309,6 +309,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_enable_extended_gva_ranges_flush_va_list(true)
             .with_access_guest_idle_msr(true)
             .with_access_vsm(self.access_vsm)
+            .with_access_vp_registers(true)
             .with_isolation(true)
             .with_fast_hypercall_output(true);
 

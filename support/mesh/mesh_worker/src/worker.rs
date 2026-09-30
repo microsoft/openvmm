@@ -132,7 +132,7 @@ impl WorkerHostRunner {
                     // start a new thread and run the runner.
                     let (rundown_send, rundown_recv) = mesh::oneshot::<()>();
                     thread::Builder::new()
-                        .name(format!("worker-{}", &launch_params.name))
+                        .name(format!("worker-{}", launch_params.name))
                         .spawn(move || {
                             launch_params.request.launch(runner);
                             drop(rundown_send);
@@ -368,7 +368,7 @@ pub async fn launch_local_worker<T: Worker>(
     let (result_send, result_recv) = mesh::oneshot();
 
     thread::Builder::new()
-        .name(format!("worker-{}", &T::ID.id()))
+        .name(format!("worker-{}", T::ID.id()))
         .spawn(move || match T::new(parameters) {
             Ok(worker) => {
                 result_send.send(Ok(()));

@@ -34,8 +34,12 @@ pub struct OpenDiskOptions {
 /// Opens the resources needed for using a disk from a file at `path`.
 ///
 /// If the file ends with .vhd and is a fixed VHD1, it will be opened using
-/// the user-mode VHD parser. Otherwise, if the file ends with .vhd or
-/// .vhdx, the file will be opened using the kernel-mode VHD parser.
+/// the user-mode VHD parser. Otherwise, if the file ends with .vhd, the
+/// file will be opened using the kernel-mode VHD parser (Windows only).
+///
+/// If the file ends with .vhdx, the kernel-mode VHD parser is used on
+/// Windows. On Linux, the pure-Rust VHDX parser is used, with automatic
+/// parent-locator walking for differencing chains.
 pub async fn open_disk_type(
     path: &Path,
     options: OpenDiskOptions,
@@ -91,7 +95,10 @@ pub async fn open_disk_type(
                 ))
             }
             #[cfg(not(windows))]
-            anyhow::bail!("VHDX not supported on Linux");
+            {
+                ensure_no_direct(".vhdx")?;
+                disklayer_vhdx::chain::open_vhdx_chain(path, read_only).await?
+            }
         }
         Some("iso") if !read_only => {
             anyhow::bail!("iso file cannot be opened as read/write")

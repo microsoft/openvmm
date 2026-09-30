@@ -23,6 +23,7 @@ thiserror.workspace = true
 [target.'cfg(windows)'.dependencies]
 fs-err.workspace = true
 guid.workspace = true
+powershell_builder.workspace = true
 vmsocket.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 

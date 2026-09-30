@@ -10,6 +10,18 @@ use std::fs::File;
 use vm_resource::ResourceId;
 use vm_resource::kind::PciDeviceHandleKind;
 
+/// How a virtual BAR should be pre-programmed before the guest configures it.
+#[derive(Copy, Clone, Debug, Default, Eq, MeshPayload, PartialEq)]
+pub enum BarAddressConfig {
+    /// Do not pre-program this BAR; let the guest assign it normally.
+    #[default]
+    GuestAssigned,
+    /// Use the physical BAR address reported by the host.
+    HostAssigned,
+    /// Use an explicitly supplied host physical address.
+    Fixed(u64),
+}
+
 /// A handle to a VFIO-assigned PCI device (legacy group path).
 ///
 /// The launcher opens the VFIO group file descriptor (e.g., `/dev/vfio/N`)
@@ -21,9 +33,8 @@ pub struct VfioDeviceHandle {
     pub pci_id: String,
     /// Pre-opened VFIO group file descriptor (`/dev/vfio/<group_id>`).
     pub group: File,
-    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
-    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
-    pub bar_pt: [bool; 6],
+    /// Per-BAR pre-programming configuration.
+    pub bar_addresses: [BarAddressConfig; 6],
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioDeviceHandle {
@@ -47,9 +58,8 @@ pub struct VfioCdevDeviceHandle {
     /// The `--iommu` context ID this device belongs to. All devices
     /// sharing the same ID share a single IOAS (one set of page tables).
     pub iommu_id: String,
-    /// Per-BAR passthrough flags. When `bar_pt[i]` is true, the virtual
-    /// BAR is pre-programmed with the physical BAR address (GPA = HPA).
-    pub bar_pt: [bool; 6],
+    /// Per-BAR pre-programming configuration.
+    pub bar_addresses: [BarAddressConfig; 6],
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioCdevDeviceHandle {

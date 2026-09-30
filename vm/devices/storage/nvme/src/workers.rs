@@ -7,7 +7,7 @@ mod admin;
 mod coordinator;
 mod io;
 
-pub use admin::NsidConflict;
+pub use admin::AddNamespaceError;
 pub use coordinator::NvmeControllerClient;
 pub use coordinator::NvmeWorkers;
 

@@ -3,6 +3,10 @@
 
 //! Configuration for the VM worker.
 
+pub use smbios_defs::SmbiosBiosOverrides;
+pub use smbios_defs::SmbiosConfig;
+pub use smbios_defs::SmbiosSystemOverrides;
+
 use guid::Guid;
 use input_core::InputData;
 use memory_range::MemoryRange;
@@ -11,6 +15,7 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
+use tpm_resources::TpmVersion;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -27,6 +32,7 @@ pub struct Config {
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pub pcie_ecam_below_4gb: bool,
     pub pcie_devices: Vec<PcieDeviceConfig>,
     pub pcie_switches: Vec<PcieSwitchConfig>,
     pub pcie_generic_initiators: Vec<PcieGenericInitiatorConfig>,
@@ -47,8 +53,6 @@ pub struct Config {
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
     pub vmgs: Option<VmgsResource>,
-    pub secure_boot_enabled: bool,
-    pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
     pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
@@ -62,9 +66,6 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
-    /// allow the guest to reset without notifying the client
-    pub automatic_guest_reset: bool,
-    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
@@ -75,11 +76,19 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
-/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+/// Base address of the guest-visible GIC v2m MSI frame (exposed via the MADT
+/// and used by the software v2m SETSPI decoder for emulated devices). This is
+/// OpenVMM-emulated MMIO (one 4 KiB page), not shadowed by the hypervisor, so
+/// it stays at the conventional address.
 pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
 /// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
 pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// Default device-assignment MSI IOVA reservation for a physical SMMU
+/// implementation that lets the VMM select the range. The base follows the
+/// Hyper-V convention; 1 MiB matches Linux's Arm SMMU reservation size.
+pub const DEFAULT_DEVICE_ASSIGNMENT_MSI_IOVA_RANGE: MemoryRange =
+    MemoryRange::new(0xEFF6_8000..0xF006_8000);
 
 /// Base address of the GICv3 ITS MMIO region. Must be 64 KiB aligned,
 /// below the v2m frame address, and not overlap other devices.
@@ -114,6 +123,18 @@ pub enum LinuxDirectBootMode {
     Acpi,
 }
 
+/// Isolation-specific settings for Linux direct boot.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxIsolationConfig {
+    /// No isolation-specific loader configuration.
+    None,
+    /// AMD SEV-SNP loader configuration.
+    Snp {
+        /// Enables restricted interrupt injection in the SNP VMSA.
+        restricted_injection: bool,
+    },
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -121,27 +142,42 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
-        custom_dsdt: Option<Vec<u8>>,
+        isolation: LinuxIsolationConfig,
         boot_mode: LinuxDirectBootMode,
+        // Boxed to keep the `Linux` variant from dominating `LoadMode`'s size.
+        smbios: Box<SmbiosConfig>,
     },
     Uefi {
         firmware: File,
         enable_debugging: bool,
         enable_memory_protections: bool,
         disable_frontpage: bool,
-        enable_tpm: bool,
+        tpm_version: Option<TpmVersion>,
         enable_battery: bool,
         enable_serial: bool,
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
-        bios_guid: Guid,
+        // Boxed to keep the `Uefi` variant from dominating `LoadMode`'s size.
+        // The VM's BIOS GUID is sourced from `smbios.system.uuid`, so UEFI and
+        // Linux direct boot share a single UUID origin.
+        smbios: Box<SmbiosConfig>,
         enable_vmbus: bool,
         force_dma_bounce: bool,
+        enable_hv: bool,
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
+        force_firmware_version: bool,
     },
     Pcat {
         firmware: RomFileLocation,
         boot_order: [PcatBootDevice; 4],
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
+        // Boxed to keep the `Pcat` variant from dominating `LoadMode`'s size.
+        // Only the system UUID and serial number are honored; the PCAT BIOS ROM
+        // self-describes everything else, so other overrides are rejected.
+        smbios: Box<SmbiosConfig>,
     },
     Igvm {
         file: File,
@@ -217,7 +253,7 @@ pub struct PcieRootComplexConfig {
     pub end_bus: u8,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
-    pub ports: Vec<PcieRootPortConfig>,
+    pub ports: Vec<PciePortConfig>,
     /// Optional CXL configuration for root-complex CXL mode.
     pub cxl: Option<RootComplexCxlConfig>,
     /// Optional IOMMU for this root complex.
@@ -231,28 +267,40 @@ pub struct PcieRootComplexConfig {
     pub preserve_bars: bool,
 }
 
+/// Configuration for a single PCIe port — either a root-complex root port or a
+/// switch downstream port.
 #[derive(Debug, MeshPayload)]
-pub struct PcieRootPortConfig {
-    /// Root-port name used for topology wiring and lookup.
+pub struct PciePortConfig {
+    /// Port name used for topology wiring and lookup.
     pub name: String,
-    /// Enables PCIe hotplug capabilities for this root port.
+    /// The device/function (`device << 3 | function`) to place this port at on
+    /// its bus.
+    ///
+    /// When `None`, the port is assigned the lowest available devfn. Ports are
+    /// assigned in order, so an explicit devfn that collides with a
+    /// previously-assigned port (including one assigned automatically) is an
+    /// error. Honored for both root-complex root ports and switch downstream
+    /// ports.
+    pub devfn: Option<u8>,
+    /// Enables PCIe hotplug capabilities for this port.
     pub hotplug: bool,
-    /// Optional ACS capability bitmask to expose on this root port.
+    /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
-    /// Marks this root port as CXL-capable.
+    /// Marks this port as CXL-capable.
     ///
     /// Runtime port construction derives required BAR/subregion layout from
     /// this flag (currently CXL component registers for BAR0).
     pub cxl: bool,
+    /// Enables PASID support for functions downstream of this port.
+    pub pasid: bool,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieSwitchConfig {
     pub name: String,
-    pub num_downstream_ports: u8,
     pub parent_port: String,
-    pub hotplug: bool,
-    pub acs_capabilities_supported: Option<u16>,
+    /// The downstream ports of this switch.
+    pub ports: Vec<PciePortConfig>,
 }
 
 /// Declares that the device directly behind a named PCIe port (a root port or
@@ -353,7 +401,25 @@ pub enum PcieIommuConfig {
     /// AMD IOMMU (AMD-Vi) for x86_64 guests.
     AmdVi,
     /// Arm SMMUv3 for aarch64 guests.
-    Smmu,
+    Smmu {
+        /// Enable HW-accelerated nested translation (iommufd). Requires VFIO
+        /// devices with `iommu=` behind this SMMU.
+        accel: bool,
+        /// Output address size (OAS) resolution policy.
+        oas: SmmuOas,
+    },
+    /// Intel VT-d for x86_64 guests.
+    IntelVtd,
+}
+
+/// Output address size (OAS) policy for an emulated SMMUv3.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum SmmuOas {
+    /// Advertise a fixed default OAS. See `DEFAULT_AUTO_OAS_BITS` for the
+    /// sizing policy and its limits.
+    Auto,
+    /// Use a fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+    Fixed(u8),
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -474,6 +540,11 @@ pub struct HypervisorConfig {
     pub with_hv: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
+    /// Expose hardware virtualization (VMX/SVM) to the guest so that it can run
+    /// its own hypervisor. A backend that does not recognize this request
+    /// rejects it rather than silently ignoring it (see
+    /// `virt::Hypervisor::recognizes_nested_virt`).
+    pub nested_virt: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -553,12 +624,16 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
+    Snp,
+    Cca,
 }
 
 impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
+            IsolationType::Snp => Self::Snp,
+            IsolationType::Cca => Self::Cca,
         }
     }
 }
@@ -577,15 +652,4 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
-}
-
-#[derive(Copy, Clone, Debug, MeshPayload, Default)]
-pub enum EfiDiagnosticsLogLevelType {
-    /// Default log level
-    #[default]
-    Default,
-    /// Include INFO logs
-    Info,
-    /// All logs
-    Full,
 }

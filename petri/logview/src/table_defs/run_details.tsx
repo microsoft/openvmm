@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { ColumnDef } from "@tanstack/react-table";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { TestResult } from "../data_defs";
 
 export const defaultSorting = [

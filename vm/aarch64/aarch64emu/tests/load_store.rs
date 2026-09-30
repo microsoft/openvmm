@@ -117,6 +117,7 @@ impl Cpu for SingleCellCpu {
         &mut self,
         _gpa: u64,
         _bytes: &mut [u8],
+        _exec: bool,
     ) -> Result<(), Self::Error> {
         panic!("Not expected to be used during tests");
     }

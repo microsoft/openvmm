@@ -285,7 +285,15 @@ mod x86 {
             &mut self,
             value: &vp::SynicMessageQueues,
         ) -> Result<(), Self::Error> {
-            self.run.vplc(self.vtl).message_queues.restore(value);
+            let vplc = self.run.vplc(self.vtl);
+            vplc.message_queues.restore(value);
+            // Restoring the queues repopulates them directly, bypassing the
+            // `enqueue_message` path that rings the doorbell. If the restored
+            // queues are non-empty, ring the doorbell here.
+            if vplc.message_queues.pending_sints() != 0 {
+                vplc.check_queues
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(())
         }
 

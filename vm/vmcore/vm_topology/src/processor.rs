@@ -127,6 +127,48 @@ impl<T: ArchTopology> TopologyBuilder<T> {
     }
 }
 
+impl<T: ArchTopology> ProcessorTopology<T> {
+    /// Computes the socket, core, and thread coordinates of a VP from the
+    /// configured topology.
+    ///
+    /// This describes the regular topology the VM was asked for. It is
+    /// deliberately independent of any architectural CPU identity, since those
+    /// identities are free to encode an offset, reserved holes, or a packing
+    /// that carries no topology at all.
+    ///
+    /// The result is only meaningful if `vps_per_socket` and `smt_enabled`
+    /// actually describe the VPs in this topology. That holds by construction
+    /// for [`TopologyBuilder::build`], which generates VPs from those same
+    /// values, but [`TopologyBuilder::build_with_vp_info`] takes the VP list
+    /// from its caller and keeps the declared values unchecked. A caller that
+    /// supplies VPs laid out some other way gets coordinates describing the
+    /// layout it declared, not the one it passed in.
+    ///
+    /// Irregular topologies cannot be represented at all: `vps_per_socket` is a
+    /// single value, so sockets of differing sizes, or siblings that are not
+    /// adjacent in VP index order, have nowhere to live. Supporting those would
+    /// require storing per-VP coordinates rather than deriving them here.
+    pub(crate) fn logical_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
+        let index = vp_index.index();
+        let in_socket = index % self.vps_per_socket;
+        let (core, thread) = if self.smt_enabled {
+            (in_socket / THREADS_PER_CORE, in_socket % THREADS_PER_CORE)
+        } else {
+            (in_socket, 0)
+        };
+        VpTopologyInfo {
+            socket: index / self.vps_per_socket,
+            core,
+            thread,
+        }
+    }
+}
+
+/// The number of threads per core when SMT is enabled.
+///
+/// The topology API models SMT as a boolean, so two is the only possibility.
+pub(crate) const THREADS_PER_CORE: u32 = 2;
+
 impl<
     #[cfg(feature = "inspect")] T: ArchTopology + inspect::Inspect,
     #[cfg(not(feature = "inspect"))] T: ArchTopology,
@@ -184,6 +226,11 @@ impl<
     }
 
     /// Computes the processor topology information for a VP.
+    ///
+    /// This reports the topology the VM was configured with, which is only as
+    /// accurate as that configuration. It is not recovered from the VP's
+    /// architectural identity, and callers should not treat it as a
+    /// measurement of the underlying hardware.
     pub fn vp_topology(&self, vp_index: VpIndex) -> VpTopologyInfo {
         T::vp_topology(self, &self.vp_arch(vp_index))
     }

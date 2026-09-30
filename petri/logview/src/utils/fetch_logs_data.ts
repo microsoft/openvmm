@@ -82,15 +82,6 @@ export function parseLogText(text: string): RawLogRecord[] {
 // Processed petri log entries (UI friendly)
 // --------------------------------------------
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function removeTimestampPrefix(orig: string, entryTimestamp: Date): string {
   const message = orig.trim();
   const i = message.indexOf(" ");

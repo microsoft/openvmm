@@ -11,7 +11,7 @@ use flowey_lib_common::run_cargo_build::CargoCrateType;
 #[derive(Serialize, Deserialize)]
 pub enum XtaskOutput {
     LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    WindowsBin { exe: PathBuf, pdb: Option<PathBuf> },
 }
 
 flowey_request! {

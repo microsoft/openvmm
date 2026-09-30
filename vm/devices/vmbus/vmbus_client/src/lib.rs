@@ -44,6 +44,7 @@ use std::task::Poll;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
+use vmbus_channel::TaggedStream;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OfferKey;
@@ -51,7 +52,6 @@ use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::OutgoingMessage;
-use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
@@ -1603,6 +1603,12 @@ impl ClientTaskInner {
             self.messages.send(&protocol::CloseChannel { channel_id });
             channel.state = ChannelState::Offered;
             channel.connection_id.store(0, Ordering::Release);
+        } else if matches!(channel.state, ChannelState::Revoked) {
+            tracing::debug!(
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
+                "close for channel already revoked by the server"
+            );
         } else {
             tracing::warn!(
                 channel_id = channel_id.0,

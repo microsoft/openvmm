@@ -679,7 +679,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         //
         // For VTL 0, the alias map guards for read and write permissions, so only check VTL execute
         // permissions. Because VTL 2 will not restrict execute exclusively, only VTL 1 execute
-        // permissions need to be checked and therefore only check permissions if VTL 1 is allowed.
+        // permissions need to be checked and therefore only check permissions once VTL 1
+        // protections are enabled. However on non-isolated partitions we don't intercept
+        // VTL 1 enablement, so we just check if VTL 1 is supported at all.
         //
         // Note: the restriction to VTL 1 support also means that for WHP, which doesn't support VTL 1
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
@@ -693,6 +695,14 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             // Should always be called after translate gva with the tlb lock flag
             // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
+
+            // An intercept can report a gpa that is unmapped or even outside the
+            // partition's address space, and the hypervisor fails the whole
+            // hypercall for those rather than reporting a per-page result. Only
+            // mapped lower VTL RAM can carry VTL protections anyway.
+            if !self.vp.partition.is_gpa_lower_vtl_ram(gpa) {
+                return Ok(());
+            }
 
             let cpsr: Cpsr64 = self
                 .vp

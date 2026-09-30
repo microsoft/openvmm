@@ -14,6 +14,7 @@ virt.workspace = true
 memory_range = { workspace = true, features = ["mesh"] }
 
 inspect = { workspace = true, features = ["defer"] }
+inspect_counters.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
@@ -22,9 +23,15 @@ anyhow.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
+range_map_vec.workspace = true
 slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_System_Memory",
+]}
 
 [lints]
 workspace = true

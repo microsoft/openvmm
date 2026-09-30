@@ -137,7 +137,7 @@ pub mod pci {
             NOTIFY_CFG = 2,
             ISR_CFG = 3,
             DEVICE_CFG = 4,
-            // PCI_CFG = 5,
+            PCI_CFG = 5,
             SHARED_MEMORY_CFG = 8,
         }
     }
