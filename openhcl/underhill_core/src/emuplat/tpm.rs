@@ -4,7 +4,6 @@
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
@@ -92,8 +91,8 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             // to the guest via NV index.
             IgvmAttestRequestVersion::VERSION_1
         } else {
-            // Otherwise, this is an AK cert request. Use the latest version to get the latest features.
-            IGVM_ATTEST_REQUEST_CURRENT_VERSION
+            // AK cert responses keep the compact V2 format and 4 KiB buffer.
+            IgvmAttestRequestVersion::VERSION_2
         };
 
         let request = ak_cert_request_helper

@@ -153,7 +153,7 @@ async fn ak_retry<T, S, U: PetriVmmBackend>(
     super::tpm::ak_cert_retry_hyperv_impl(config, extra_deps, PetriTpmVersion::V138).await
 }
 
-/// 1.38 variant of [`super::tpm::cvm_tpm_guest_tests`].
+/// 1.38 variant of [`super::tpm::cvm_guest`].
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],

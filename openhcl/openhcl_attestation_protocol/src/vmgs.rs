@@ -78,16 +78,20 @@ pub struct SecurityProfile {
 /// local hardware sealing with AES-CBC-HMAC-SHA256.
 ///
 /// Version 1 is incompatible with newer versions.
-/// Version 2 or newer is forward-compatible if header.mix_measurement is not set.
+/// Versions 2 and newer retain the recorded derivation policy for unsealing.
+/// Readers must support the recorded version's exact layout; a version-4
+/// context hash cannot be discarded to downgrade to a legacy protector.
 pub const HW_KEY_PROTECTOR_VERSION_1: u32 = 1;
 pub const HW_KEY_PROTECTOR_VERSION_2: u32 = 2;
-/// Version 3 is a unified, TEE-tagged format used for all newly-created
-/// protectors (SNP and TDX). It records the raw report SVNs so the derived key
-/// can bind every SVN the TEE mixes in (for TDX, both `TEE_TCB_SVN` and
+/// Version 3 is a unified, TEE-tagged format used for newly-created protectors
+/// without a key-release context hash (SNP and TDX). It records the raw report
+/// SVNs so the derived key can bind every SVN the TEE mixes in (for TDX, both `TEE_TCB_SVN` and
 /// `CPU_SVN`) rather than a lossy `u64`. v2 is retained read-only for legacy SNP
 /// protectors.
 pub const HW_KEY_PROTECTOR_VERSION_3: u32 = 3;
-pub const HW_KEY_PROTECTOR_CURRENT_VERSION: u32 = HW_KEY_PROTECTOR_VERSION_3;
+/// Version 4 binds a decoded key-release context hash into the authenticated header.
+pub const HW_KEY_PROTECTOR_VERSION_4: u32 = 4;
+pub const HW_KEY_PROTECTOR_CURRENT_VERSION: u32 = HW_KEY_PROTECTOR_VERSION_4;
 
 /// TEE tag stored in [`HardwareKeyProtectorHeaderV3::tee_type`].
 pub const HW_KEY_PROTECTOR_TEE_TYPE_SNP: u32 = 0;
@@ -100,9 +104,13 @@ pub const HW_KEY_PROTECTOR_SIZE: usize = size_of::<HardwareKeyProtector>();
 /// The size of a version-3 `FileId::HW_KEY_PROTECTOR` entry.
 pub const HW_KEY_PROTECTOR_V3_SIZE: usize = size_of::<HardwareKeyProtectorV3>();
 
-// Readers dispatch on the entry size to tell the legacy layout apart from v3,
-// so the two must never collide.
-const _: () = assert!(HW_KEY_PROTECTOR_SIZE != HW_KEY_PROTECTOR_V3_SIZE);
+/// The size of a version-4 `FileId::HW_KEY_PROTECTOR` entry.
+pub const HW_KEY_PROTECTOR_V4_SIZE: usize = size_of::<HardwareKeyProtectorV4>();
+
+// The version and exact size jointly identify the on-disk layout.
+const _: () = assert!(HW_KEY_PROTECTOR_SIZE == 104);
+const _: () = assert!(HW_KEY_PROTECTOR_V3_SIZE == 128);
+const _: () = assert!(HW_KEY_PROTECTOR_V4_SIZE == 160);
 
 /// Size of the TEE-specific SVN blob in [`HardwareKeyProtectorHeaderV3`].
 pub const HW_KEY_PROTECTOR_SVN_SIZE: usize = 32;
@@ -219,6 +227,62 @@ pub struct HardwareKeyProtectorV3 {
     /// Encrypted key
     pub ciphertext: [u8; AES_GCM_KEY_LENGTH],
     /// HMAC-SHA-256 of [header, iv, ciphertext]
+    pub hmac: [u8; HMAC_SHA_256_KEY_LENGTH],
+}
+
+/// Version-4 header. The SVN layout is identical to
+/// [`HardwareKeyProtectorHeaderV3`]. The context hash is a decoded SHA-256 digest,
+/// not a base64 string, and is authenticated along with every other header byte.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HardwareKeyProtectorHeaderV4 {
+    /// Version of the format (== [`HW_KEY_PROTECTOR_VERSION_4`]).
+    pub version: u32,
+    /// Size of the [`HardwareKeyProtectorV4`] data blob.
+    pub length: u32,
+    /// TEE that produced the SVNs (see `HW_KEY_PROTECTOR_TEE_TYPE_*`).
+    pub tee_type: u32,
+    /// TEE-specific SVN material recorded at seal time.
+    pub svn: [u8; HW_KEY_PROTECTOR_SVN_SIZE],
+    /// Whether to mix the measurement in hardware key derivation (0 or 1).
+    pub mix_measurement: u8,
+    /// Must be zero.
+    pub _reserved: [u8; 3],
+    /// Decoded key-release context hash used in the VM configuration KDF input.
+    pub key_release_context_hash: [u8; 32],
+}
+
+impl HardwareKeyProtectorHeaderV4 {
+    /// Create a version-4 header with the fixed version and entry length.
+    pub fn new(
+        tee_type: u32,
+        svn: [u8; HW_KEY_PROTECTOR_SVN_SIZE],
+        mix_measurement: u8,
+        key_release_context_hash: [u8; 32],
+    ) -> Self {
+        Self {
+            version: HW_KEY_PROTECTOR_VERSION_4,
+            length: HW_KEY_PROTECTOR_V4_SIZE as u32,
+            tee_type,
+            svn,
+            mix_measurement,
+            _reserved: [0; 3],
+            key_release_context_hash,
+        }
+    }
+}
+
+/// Version-4 data format of the `FileId::HW_KEY_PROTECTOR` entry.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HardwareKeyProtectorV4 {
+    /// Header, including the key-release context hash.
+    pub header: HardwareKeyProtectorHeaderV4,
+    /// Random IV for AES-CBC.
+    pub iv: [u8; AES_CBC_IV_LENGTH],
+    /// Encrypted key.
+    pub ciphertext: [u8; AES_GCM_KEY_LENGTH],
+    /// HMAC-SHA-256 of the full [header, iv, ciphertext].
     pub hmac: [u8; HMAC_SHA_256_KEY_LENGTH],
 }
 

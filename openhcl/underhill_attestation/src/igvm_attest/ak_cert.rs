@@ -31,6 +31,8 @@ pub enum AkCertError {
 
 /// Parse a `AK_CERT_REQUEST` response and return the payload (i.e., the AK cert).
 ///
+/// Only V1 and V2 are supported; AK certificate requests remain pinned to V2.
+///
 /// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
@@ -62,7 +64,33 @@ mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use test_with_tracing::test;
     use zerocopy::FromBytes;
+
+    #[test]
+    fn ak_responses_remain_v1_or_v2_only() {
+        use crate::igvm_attest::tests::frame_response;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
+
+        for version in [
+            IgvmAttestResponseVersion::VERSION_1,
+            IgvmAttestResponseVersion::VERSION_2,
+        ] {
+            // AK certificates are binary, not subject to service payload UTF-8 checks.
+            let response = frame_response(version, &[0xff, 0x30], IgvmErrorInfo::default());
+            assert_eq!(parse_response(&response).unwrap(), [0xff, 0x30]);
+        }
+        let response = frame_response(
+            IgvmAttestResponseVersion::VERSION_3,
+            b"{}",
+            IgvmErrorInfo::default(),
+        );
+        assert!(matches!(
+            parse_response(&response),
+            Err(AkCertError::InvalidResponseVersion(3))
+        ));
+    }
 
     #[test]
     fn test_undersized_response() {
@@ -84,8 +112,9 @@ mod tests {
         assert!(undersized_parse_.is_err());
         assert_eq!(
             undersized_parse_.unwrap_err().to_string(),
-            AkCertError::ParseHeader(CommonError::ResponseSizeTooSmall {
-                response_size: HEADER_SIZE - 1
+            AkCertError::ParseHeader(CommonError::ResponseSizeMismatch {
+                size: HEADER_SIZE - 1,
+                specified_size: 0x01010101,
             })
             .to_string()
         );

@@ -15,22 +15,41 @@ use crypto::rsa::RsaKeyPair;
 use crypto::rsa::RsaPublicKey;
 use get_resources::ged::IgvmAttestTestConfig;
 use inspect::Inspect;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_SCHEMA_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseEnvelope;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseExtensions;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
+use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+/// Default mock context hash: canonical lowercase hex of bytes 0 through 31.
+/// This is test metadata, not an authenticated policy digest.
+/// Stateful refresh configs use this only for their first successful V3 release.
+pub const DEFAULT_KEY_RELEASE_CONTEXT_HASH: &str =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+/// Reserved mock assertion failure, distinct from scripted protocol failures.
+/// Always prohibits hardware unsealing; must not count as an expected outage.
+pub const KEY_RELEASE_CONTEXT_ASSERTION_ERROR: u32 = 0x9999;
 
 #[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
@@ -54,6 +73,12 @@ pub enum Error {
     WrappedKeyError(#[source] WrappedKeyError),
     #[error("failed to generate mock key release response")]
     KeyReleaseError(#[source] KeyReleaseError),
+    #[error("failed to serialize mock response envelope")]
+    ResponseEnvelopeSerialize(#[source] serde_json::Error),
+    #[error("mock response payload is not UTF-8")]
+    ResponsePayloadUtf8(#[source] std::string::FromUtf8Error),
+    #[error("mock response size {size} exceeds response buffer size {maximum_size}")]
+    ResponseTooLarge { size: usize, maximum_size: usize },
 }
 
 #[expect(missing_docs)] // self-explanatory fields
@@ -104,13 +129,42 @@ pub struct TestIgvmAgent {
     plan: Option<IgvmAgentTestPlan>,
     /// Track whether the plan has been installed to prevent multiple installations.
     plan_installed: bool,
+    /// Latest structurally valid request of each type, including no-response actions.
+    last_requests: HashMap<IgvmAttestRequestType, IgvmAgentRecordedRequest>,
+    /// Dedicated context behavior; custom action plans are unaffected.
+    context_config: Option<IgvmAttestTestConfig>,
+    /// Actual context in the last successfully built stateful V3 release.
+    issued_context: Option<String>,
+    /// Never allow a failed assertion to become success or hardware fallback.
+    context_assertion_failed: bool,
+}
+
+/// Request state retained for assertions by tests with access to the agent.
+#[derive(Debug, Clone)]
+pub struct IgvmAgentRecordedRequest {
+    /// Request data version, independent of the outer attestation header version.
+    pub version: IgvmAttestRequestVersion,
+    /// Exact runtime-claims JSON bytes, retained without parsing or reserialization.
+    pub runtime_claims: Vec<u8>,
 }
 
 /// Possible actions for the IGVM agent to take in response to a request.
 #[derive(Debug, Clone)]
 pub enum IgvmAgentAction {
-    /// Emit a successful response payload.
+    /// Emit a successful response matching the request version. V3 key-release
+    /// responses include [`DEFAULT_KEY_RELEASE_CONTEXT_HASH`]; wrapped-key
+    /// extensions are empty and AK responses never use V3.
     RespondSuccess,
+    /// Emit an unenveloped V2 success, including for V3 key requests.
+    /// V1 requests still receive V1 responses.
+    RespondSuccessV2,
+    /// Emit a V3 success for a V3 key request with the supplied metadata.
+    /// Legacy requests and AK certificates retain their request-aware V1/V2 format.
+    RespondSuccessV3 {
+        /// Used only for key-release responses. `None` omits the hash. Strings
+        /// are sent verbatim (including malformed hashes) to test validation.
+        key_release_context_hash: Option<String>,
+    },
     /// Emit a response that indicates a protocol error.
     RespondFailure,
     /// Emit a response that indicates a protocol error with skip_hw_unsealing signal.
@@ -221,19 +275,25 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
-        IgvmAttestTestConfig::KeyReleaseFailure => {
-            // Hyper-V VMs go through an `initial_reboot`, consuming two
-            // KEY_RELEASE requests (one during initial boot, one during
-            // reboot) before the test code starts.
-            plan.insert(
+        IgvmAttestTestConfig::KeyReleaseFailure
+        | IgvmAttestTestConfig::KeyReleaseContextRefresh => {
+            // These configs use per-VM state, not a boot-counted action queue.
+        }
+        IgvmAttestTestConfig::KeyReleaseV2 => {
+            for request_type in [
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::RespondFailure,
-                    IgvmAgentAction::AlwaysNoResponse,
-                ]),
-            );
+                IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            ] {
+                plan.insert(
+                    request_type,
+                    VecDeque::from([
+                        IgvmAgentAction::RespondSuccessV2,
+                        IgvmAgentAction::RespondSuccessV2,
+                        IgvmAgentAction::RespondSuccessV2,
+                        IgvmAgentAction::AlwaysNoResponse,
+                    ]),
+                );
+            }
         }
         IgvmAttestTestConfig::StateRefresh => {
             // The `state_refresh_request` behavior is driven by the GSP
@@ -266,7 +326,21 @@ impl TestIgvmAgent {
             des_key: None,
             plan: None,
             plan_installed: false,
+            last_requests: HashMap::new(),
+            context_config: None,
+            issued_context: None,
+            context_assertion_failed: false,
         }
+    }
+
+    /// Latest structurally valid request of this type, even if its action failed
+    /// or requested no response. Replaced on each request; no unbounded history.
+    /// The record is available to in-process tests, not automatically through RPC.
+    pub fn last_request(
+        &self,
+        request_type: IgvmAttestRequestType,
+    ) -> Option<&IgvmAgentRecordedRequest> {
+        self.last_requests.get(&request_type)
     }
 
     /// Install a scripted plan used by tests based on the setting.
@@ -285,6 +359,14 @@ impl TestIgvmAgent {
             }
             IgvmAgentTestSetting::TestConfig(config) => {
                 self.plan = Some(test_config_to_plan(config));
+                if matches!(
+                    config,
+                    IgvmAttestTestConfig::KeyReleaseFailure
+                        | IgvmAttestTestConfig::KeyReleaseContextRefresh
+                        | IgvmAttestTestConfig::KeyReleaseV2
+                ) {
+                    self.context_config = Some(*config);
+                }
             }
         }
 
@@ -309,53 +391,128 @@ impl TestIgvmAgent {
         }
     }
 
-    /// Build a failure response for any request type with the given
-    /// `error_code` and `igvm_signal`.
+    /// Frame the complete serialized body; never truncate to fit a response buffer.
+    fn frame_response(
+        request_type: IgvmAttestRequestType,
+        version: IgvmAttestResponseVersion,
+        data: &[u8],
+        error_info: IgvmErrorInfo,
+    ) -> Result<(Vec<u8>, u32), Error> {
+        let maximum_size = match request_type {
+            IgvmAttestRequestType::AK_CERT_REQUEST => AK_CERT_RESPONSE_BUFFER_SIZE,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST => KEY_RELEASE_RESPONSE_BUFFER_SIZE,
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => WRAPPED_KEY_RESPONSE_BUFFER_SIZE,
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+        let header_size = if version == IgvmAttestResponseVersion::VERSION_1 {
+            size_of::<IgvmAttestCommonResponseHeader>()
+        } else {
+            size_of::<IgvmAttestCommonResponseHeader>() + size_of::<IgvmErrorInfo>()
+        };
+        let size = header_size
+            .checked_add(data.len())
+            .ok_or(Error::ResponseTooLarge {
+                size: usize::MAX,
+                maximum_size,
+            })?;
+        if size > maximum_size {
+            return Err(Error::ResponseTooLarge { size, maximum_size });
+        }
+        let data_size =
+            u32::try_from(size).map_err(|_| Error::ResponseTooLarge { size, maximum_size })?;
+
+        let mut response = if version == IgvmAttestResponseVersion::VERSION_1 {
+            IgvmAttestCommonResponseHeader { data_size, version }
+                .as_bytes()
+                .to_vec()
+        } else {
+            // V2 and V3 retain the same 32-byte header and all error/signal bits.
+            match request_type {
+                IgvmAttestRequestType::WRAPPED_KEY_REQUEST => IgvmAttestWrappedKeyResponseHeader {
+                    data_size,
+                    version,
+                    error_info,
+                }
+                .as_bytes()
+                .to_vec(),
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST => IgvmAttestKeyReleaseResponseHeader {
+                    data_size,
+                    version,
+                    error_info,
+                }
+                .as_bytes()
+                .to_vec(),
+                IgvmAttestRequestType::AK_CERT_REQUEST => IgvmAttestAkCertResponseHeader {
+                    data_size,
+                    version,
+                    error_info,
+                }
+                .as_bytes()
+                .to_vec(),
+                ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+            }
+        };
+        response.extend_from_slice(data);
+        Ok((response, data_size))
+    }
+
+    /// V1 failures are empty; V2/V3 failures carry only the error-info header.
     fn build_failure_response(
         request_type: IgvmAttestRequestType,
+        version: IgvmAttestResponseVersion,
         error_code: u32,
         igvm_signal: IgvmSignal,
     ) -> Result<(Vec<u8>, u32), Error> {
-        let error_info = IgvmErrorInfo {
-            error_code,
-            http_status_code: 400,
-            igvm_signal,
-            reserved: [0; 3],
-        };
-
-        let payload = match request_type {
-            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                let header = IgvmAttestWrappedKeyResponseHeader {
-                    data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info,
-                };
-                header.as_bytes().to_vec()
-            }
-            IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                let header = IgvmAttestKeyReleaseResponseHeader {
-                    data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info,
-                };
-                header.as_bytes().to_vec()
-            }
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
-                let header = IgvmAttestAkCertResponseHeader {
-                    data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info,
-                };
-                header.as_bytes().to_vec()
-            }
-            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
-        };
-
-        let payload_len = payload.len() as u32;
-        Ok((payload, payload_len))
+        if version == IgvmAttestResponseVersion::VERSION_1 {
+            return Ok((Vec::new(), 0));
+        }
+        Self::frame_response(
+            request_type,
+            version,
+            &[],
+            IgvmErrorInfo {
+                error_code,
+                http_status_code: 400,
+                igvm_signal,
+                reserved: [0; 3],
+            },
+        )
     }
 
-    /// Request handler.
+    // Inspect raw JSON: deserializing into Option<String> would conflate an
+    // omitted field with null and fail to test the wire contract.
+    fn validate_key_release_context(
+        request_type: IgvmAttestRequestType,
+        runtime_claims: &[u8],
+        expected: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if request_type != IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+            return Err("context expectation requires a KEY_RELEASE_REQUEST");
+        }
+        let claims: serde_json::Value = serde_json::from_slice(runtime_claims)
+            .map_err(|_| "runtime claims are not valid JSON")?;
+        let config = claims
+            .get("vm-configuration")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("runtime claims must contain a vm-configuration object")?;
+        let actual = config.get("key-release-context-hash");
+        match (expected, actual) {
+            (None, None) => Ok(()),
+            (Some(expected), Some(serde_json::Value::String(actual))) if actual == expected => {
+                Ok(())
+            }
+            (None, Some(_)) => Err("key-release-context-hash must be omitted, not null or present"),
+            (Some(_), _) => {
+                Err("key-release-context-hash must be present as the exact expected string")
+            }
+        }
+    }
+
+    /// Request handler. Successful output contains the entire response, and its
+    /// reported length includes the header and any JSON envelope expansion.
+    /// Responses exceeding the protocol's per-request buffer limit return an
+    /// error. The transport remains responsible for validating the actual buffer
+    /// capacity, which is not included in `request_bytes`.
     pub fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
         let _span = tracing::info_span!("igvm_agent", vm_name = %self.vm_name).entered();
 
@@ -363,224 +520,222 @@ impl TestIgvmAgent {
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-        // Validate and extract runtime claims
-        // The version must be the current version to ensure the presence of the extension data structure.
-        if request.request_data.version != IGVM_ATTEST_REQUEST_CURRENT_VERSION {
-            return Err(Error::InvalidIgvmAttestRequestVersion {
-                found: request.request_data.version,
-                expected: IGVM_ATTEST_REQUEST_CURRENT_VERSION,
-            });
-        }
-
-        // The runtime claims are appended after the fixed-size IgvmAttestRequestBase and IgvmAttestRequestDataExt structures.
-        let runtime_claims_start =
-            size_of::<IgvmAttestRequestBase>() + size_of::<IgvmAttestRequestDataExt>();
-        let runtime_claims_end =
-            runtime_claims_start + request.request_data.variable_data_size as usize;
-        if request_bytes.len() < runtime_claims_end {
-            tracing::error!(
-                "Message buffer too short to contain runtime claims, len={}, expected_end={}",
-                request_bytes.len(),
-                runtime_claims_end
-            );
-            return Err(Error::InvalidIgvmAttestRequest);
-        }
-        let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
-
-        // Extract the request capability bitmap, appended right after the
-        // request base. This tells the agent whether the guest requested the
-        // SHA-384 variant of the RSA+AES key-wrap scheme.
-        let request_data_ext = IgvmAttestRequestDataExt::read_from_prefix(
-            &request_bytes[size_of::<IgvmAttestRequestBase>()..],
-        )
-        .map_err(|_| Error::InvalidIgvmAttestRequest)?
-        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-        let use_rsa_aes_key_wrap_384 = request_data_ext
-            .capability_bitmap
-            .use_rsa_aes_key_wrap_384();
-
-        let (response, length) = if let Some(action) =
-            self.take_next_action(request.header.request_type)
-        {
-            // If a plan is installed and has a queued action for this request type,
-            // execute it. This allows tests to force success/no-response, etc.
-            match action {
-                IgvmAgentAction::NoResponse | IgvmAgentAction::AlwaysNoResponse => {
-                    tracing::info!(?request.header.request_type, "Test plan: NoResponse");
-                    (vec![], 0)
-                }
-                IgvmAgentAction::RespondSuccess => {
-                    tracing::info!(?request.header.request_type, "Test plan: RespondSuccess");
-                    match request.header.request_type {
-                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                            self.initialize_keys()?;
-                            let data = self
-                                .generate_mock_wrapped_key_response()
-                                .map_err(Error::WrappedKeyError)?;
-                            let header = IgvmAttestWrappedKeyResponseHeader {
-                                data_size: (data.len()
-                                    + size_of::<IgvmAttestWrappedKeyResponseHeader>())
-                                    as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo::default(),
-                            };
-                            let payload = [header.as_bytes(), &data].concat();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                            if self.secret_key.is_none() {
-                                // Ensure keys exist so we can generate a valid JWT response
-                                self.initialize_keys()?;
-                            }
-                            let jwt = self
-                                .generate_mock_key_release_response(
-                                    runtime_claims_bytes,
-                                    use_rsa_aes_key_wrap_384,
-                                )
-                                .map_err(Error::KeyReleaseError)?;
-                            let data = jwt.as_bytes().to_vec();
-                            let header = IgvmAttestKeyReleaseResponseHeader {
-                                data_size: (data.len()
-                                    + size_of::<IgvmAttestKeyReleaseResponseHeader>())
-                                    as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    igvm_signal: IgvmSignal::default()
-                                        .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
-                                    ..Default::default()
-                                },
-                            };
-                            let payload = [header.as_bytes(), &data].concat();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::AK_CERT_REQUEST => {
-                            let data = vec![0xab; 2500];
-                            let header = IgvmAttestAkCertResponseHeader {
-                                data_size: (data.len()
-                                    + size_of::<IgvmAttestAkCertResponseHeader>())
-                                    as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo::default(),
-                            };
-                            let payload = [header.as_bytes(), &data].concat();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
-                    }
-                }
-                IgvmAgentAction::RespondFailure => {
-                    tracing::info!(?request.header.request_type, "Test plan: RespondFailure");
-                    Self::build_failure_response(
-                        request.header.request_type,
-                        0x1234,
-                        IgvmSignal::default().with_retry(false),
-                    )?
-                }
-                IgvmAgentAction::RespondFailureSkipHwUnsealing => {
-                    tracing::info!(?request.header.request_type, "Test plan: RespondFailureSkipHwUnsealing");
-                    Self::build_failure_response(
-                        request.header.request_type,
-                        0x5678,
-                        IgvmSignal::default()
-                            .with_retry(false)
-                            .with_skip_hw_unsealing(true),
-                    )?
-                }
+        let request_type = request.header.request_type;
+        let expected_version = match request_type {
+            IgvmAttestRequestType::AK_CERT_REQUEST => IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST
+            | IgvmAttestRequestType::WRAPPED_KEY_REQUEST => IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+        let mut response_version = match request.request_data.version {
+            IgvmAttestRequestVersion::VERSION_1 => IgvmAttestResponseVersion::VERSION_1,
+            IgvmAttestRequestVersion::VERSION_2 => IgvmAttestResponseVersion::VERSION_2,
+            IgvmAttestRequestVersion::VERSION_3
+                if request_type != IgvmAttestRequestType::AK_CERT_REQUEST =>
+            {
+                IgvmAttestResponseVersion::VERSION_3
             }
-        } else {
-            // No scripted action for this request type (either no plan is
-            // installed, or the plan does not cover this request type / is
-            // exhausted).  Fall back to the default behavior that always
-            // returns valid responses.
-            match request.header.request_type {
-                IgvmAttestRequestType::AK_CERT_REQUEST => {
-                    tracing::info!("Send a response for AK_CERT_REQUEST");
-
-                    let data = vec![0xab; 2500];
-                    let header = IgvmAttestAkCertResponseHeader {
-                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
-                            as u32,
-                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo::default(),
-                    };
-                    let payload = [header.as_bytes(), &data].concat();
-                    let payload_len = payload.len() as u32;
-
-                    (payload, payload_len)
-                }
-                IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                    tracing::info!("Send a response for WRAPPED_KEY_REQUEST");
-
-                    self.initialize_keys()?;
-
-                    let mock_response = self
-                        .generate_mock_wrapped_key_response()
-                        .map_err(Error::WrappedKeyError)?;
-                    let data = mock_response;
-
-                    let header = IgvmAttestWrappedKeyResponseHeader {
-                        data_size: (data.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>())
-                            as u32,
-                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo::default(),
-                    };
-                    let payload = [header.as_bytes(), &data].concat();
-                    let payload_len = payload.len() as u32;
-
-                    tracing::info!(
-                        "Sent mock response for WRAPPED_KEY_REQUEST, length: {}",
-                        payload.len()
-                    );
-
-                    (payload, payload_len)
-                }
-                IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                    tracing::info!("Send a response for KEY_RELEASE_REQUEST");
-
-                    if self.secret_key.is_none() {
-                        self.initialize_keys()?;
-                    }
-
-                    // Generate a mock JWT response for testing - convert request to proper type
-                    let jwt_response = self
-                        .generate_mock_key_release_response(
-                            runtime_claims_bytes,
-                            use_rsa_aes_key_wrap_384,
-                        )
-                        .map_err(Error::KeyReleaseError)?;
-                    let data = jwt_response.as_bytes().to_vec();
-
-                    let header = IgvmAttestKeyReleaseResponseHeader {
-                        data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
-                            as u32,
-                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo {
-                            igvm_signal: IgvmSignal::default()
-                                .with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384),
-                            ..Default::default()
-                        },
-                    };
-                    let payload = [header.as_bytes(), &data].concat();
-                    let payload_len = payload.len() as u32;
-
-                    tracing::info!(
-                        "Sent mock response for KEY_RELEASE_REQUEST, length: {}",
-                        payload.len()
-                    );
-
-                    (payload, payload_len)
-                }
-                ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+            found => {
+                return Err(Error::InvalidIgvmAttestRequestVersion {
+                    found,
+                    expected: expected_version,
+                });
             }
         };
 
-        Ok((response, length))
+        // V1 has no extension: claims immediately follow the base. V2/V3 use
+        // the same capability bitmap and runtime-claims layout.
+        let remaining = &request_bytes[size_of::<IgvmAttestRequestBase>()..];
+        let (use_rsa_aes_key_wrap_384, remaining) =
+            if request.request_data.version == IgvmAttestRequestVersion::VERSION_1 {
+                (false, remaining)
+            } else {
+                let (ext, remaining) = IgvmAttestRequestDataExt::read_from_prefix(remaining)
+                    .map_err(|_| Error::InvalidIgvmAttestRequest)?;
+                (ext.capability_bitmap.use_rsa_aes_key_wrap_384(), remaining)
+            };
+        let runtime_claims_bytes = remaining
+            .get(..request.request_data.variable_data_size as usize)
+            .ok_or(Error::InvalidIgvmAttestRequest)?;
+        self.last_requests.insert(
+            request_type,
+            IgvmAgentRecordedRequest {
+                version: request.request_data.version,
+                runtime_claims: runtime_claims_bytes.to_vec(),
+            },
+        );
+
+        let check_context = request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST
+            && self.context_config.is_some();
+        let stateful_release = check_context
+            && response_version == IgvmAttestResponseVersion::VERSION_3
+            && !matches!(
+                self.context_config,
+                Some(IgvmAttestTestConfig::KeyReleaseV2)
+            );
+        if check_context {
+            if response_version == IgvmAttestResponseVersion::VERSION_3 {
+                if let Err(reason) = Self::validate_key_release_context(
+                    request_type,
+                    runtime_claims_bytes,
+                    self.issued_context.as_deref(),
+                ) {
+                    self.context_assertion_failed = true;
+                    tracing::error!(
+                        error_code = KEY_RELEASE_CONTEXT_ASSERTION_ERROR,
+                        expected = ?self.issued_context,
+                        reason,
+                        "IGVM agent key-release context assertion failed"
+                    );
+                }
+            }
+            if self.context_assertion_failed {
+                // Explicit and sticky, including after a protocol downgrade:
+                // neither a transport timeout nor hardware fallback may hide it.
+                return Self::build_failure_response(
+                    request_type,
+                    if response_version == IgvmAttestResponseVersion::VERSION_1 {
+                        IgvmAttestResponseVersion::VERSION_2
+                    } else {
+                        response_version
+                    },
+                    KEY_RELEASE_CONTEXT_ASSERTION_ERROR,
+                    IgvmSignal::default()
+                        .with_skip_hw_unsealing(true)
+                        .with_retry(false),
+                );
+            }
+            if stateful_release
+                && self.issued_context.is_some()
+                && matches!(
+                    self.context_config,
+                    Some(IgvmAttestTestConfig::KeyReleaseFailure)
+                )
+            {
+                return Self::build_failure_response(
+                    request_type,
+                    response_version,
+                    0x1234,
+                    IgvmSignal::default()
+                        .with_retry(false)
+                        .with_skip_hw_unsealing(false),
+                );
+            }
+        }
+
+        // Custom plans retain their existing success/error/malformed behavior.
+        let action = self
+            .take_next_action(request_type)
+            .unwrap_or(IgvmAgentAction::RespondSuccess);
+        tracing::info!(?request_type, ?action, "IGVM agent action");
+        let mut key_release_context_hash = match action {
+            IgvmAgentAction::NoResponse | IgvmAgentAction::AlwaysNoResponse => {
+                return Ok((vec![], 0));
+            }
+            IgvmAgentAction::RespondFailure => {
+                return Self::build_failure_response(
+                    request_type,
+                    response_version,
+                    0x1234,
+                    IgvmSignal::default().with_retry(false),
+                );
+            }
+            IgvmAgentAction::RespondFailureSkipHwUnsealing => {
+                return Self::build_failure_response(
+                    request_type,
+                    response_version,
+                    0x5678,
+                    IgvmSignal::default()
+                        .with_retry(false)
+                        .with_skip_hw_unsealing(true),
+                );
+            }
+            IgvmAgentAction::RespondSuccess => Some(DEFAULT_KEY_RELEASE_CONTEXT_HASH.to_owned()),
+            IgvmAgentAction::RespondSuccessV2 => {
+                if response_version == IgvmAttestResponseVersion::VERSION_3 {
+                    response_version = IgvmAttestResponseVersion::VERSION_2;
+                }
+                None
+            }
+            IgvmAgentAction::RespondSuccessV3 {
+                key_release_context_hash,
+            } => key_release_context_hash,
+        };
+
+        if stateful_release && self.issued_context.is_some() {
+            // Only dedicated refresh configs reach here after an issued hash.
+            // Random metadata exercises resealing without adding dependencies.
+            loop {
+                let mut hash = [0u8; 32];
+                getrandom::fill(&mut hash).map_err(Error::GetRandomFailed)?;
+                let hash = encode_key_release_context_hash(&hash);
+                if Some(&hash) != self.issued_context.as_ref() {
+                    key_release_context_hash = Some(hash);
+                    break;
+                }
+            }
+        }
+
+        // Keep the existing mock certificate, CPS JSON, JWT and RSA/AES wrapping
+        // unchanged. Only V3 key responses wrap that original payload in JSON.
+        let mut error_info = IgvmErrorInfo::default();
+        let data = match request_type {
+            IgvmAttestRequestType::AK_CERT_REQUEST => vec![0xab; 2500],
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                self.initialize_keys()?;
+                self.generate_mock_wrapped_key_response()
+                    .map_err(Error::WrappedKeyError)?
+            }
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                if self.secret_key.is_none() {
+                    self.initialize_keys()?;
+                }
+                error_info.igvm_signal =
+                    IgvmSignal::default().with_rsa_aes_key_wrap_384_used(use_rsa_aes_key_wrap_384);
+                self.generate_mock_key_release_response(
+                    runtime_claims_bytes,
+                    use_rsa_aes_key_wrap_384,
+                )
+                .map_err(Error::KeyReleaseError)?
+                .into_bytes()
+            }
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+        let data = if response_version == IgvmAttestResponseVersion::VERSION_3 {
+            let envelope_request_type = match request_type {
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                    IgvmAttestResponseRequestType::KeyRelease
+                }
+                IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                    IgvmAttestResponseRequestType::WrappedKey
+                }
+                ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+            };
+            serde_json::to_vec(&IgvmAttestResponseEnvelope {
+                schema_version: IGVM_ATTEST_RESPONSE_SCHEMA_VERSION,
+                request_type: envelope_request_type,
+                payload: String::from_utf8(data).map_err(Error::ResponsePayloadUtf8)?,
+                extensions: IgvmAttestResponseExtensions {
+                    key_release_context_hash: if request_type
+                        == IgvmAttestRequestType::KEY_RELEASE_REQUEST
+                    {
+                        key_release_context_hash.clone()
+                    } else {
+                        None
+                    },
+                },
+            })
+            .map_err(Error::ResponseEnvelopeSerialize)?
+        } else {
+            data
+        };
+
+        let response = Self::frame_response(request_type, response_version, &data, error_info)?;
+        if stateful_release {
+            // Commit only after crypto, serialization, and framing all succeed.
+            self.issued_context = key_release_context_hash;
+        }
+        Ok(response)
     }
 
     fn initialize_keys(&mut self) -> Result<(), Error> {
@@ -774,5 +929,1042 @@ impl TestIgvmAgent {
 
         // Return properly formatted JWT: header.body.signature
         Ok(format!("{}.{}.{}", header_b64, body_b64, signature_b64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openhcl_attestation_protocol::igvm_attest::akv;
+    use openhcl_attestation_protocol::igvm_attest::cps;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestData;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+
+    const KEY_REQUEST_TYPES: [IgvmAttestRequestType; 2] = [
+        IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+        IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+    ];
+    const VERSIONS: [(IgvmAttestRequestVersion, IgvmAttestResponseVersion); 3] = [
+        (
+            IgvmAttestRequestVersion::VERSION_1,
+            IgvmAttestResponseVersion::VERSION_1,
+        ),
+        (
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestResponseVersion::VERSION_2,
+        ),
+        (
+            IgvmAttestRequestVersion::VERSION_3,
+            IgvmAttestResponseVersion::VERSION_3,
+        ),
+    ];
+
+    #[test]
+    fn default_context_hash_is_canonical_hex() {
+        use openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash;
+
+        let hash = std::array::from_fn(|i| i as u8);
+        assert_eq!(DEFAULT_KEY_RELEASE_CONTEXT_HASH.len(), 64);
+        assert_eq!(
+            decode_key_release_context_hash(DEFAULT_KEY_RELEASE_CONTEXT_HASH),
+            Ok(hash)
+        );
+        assert_eq!(
+            encode_key_release_context_hash(&hash),
+            DEFAULT_KEY_RELEASE_CONTEXT_HASH
+        );
+    }
+
+    fn vm_config(context_hash: Option<String>) -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: Some(1234),
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            ipmi_enabled: false,
+            secure_boot: true,
+            tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V185,
+            tpm_persisted: true,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: "mock-vm".to_owned(),
+            vmgs_provisioner: None,
+            hardware_sealing_policy: HardwareSealingPolicy::Hash,
+            key_release_context_hash: context_hash,
+        }
+    }
+
+    // Construct the wire request directly: no attestation helper, hardware report,
+    // or underhill_attestation dependency is needed by the mock agent.
+    fn request_bytes(
+        request_type: IgvmAttestRequestType,
+        version: IgvmAttestRequestVersion,
+        claims: &[u8],
+        use_sha384: bool,
+    ) -> Vec<u8> {
+        let extension_size = if version == IgvmAttestRequestVersion::VERSION_1 {
+            0
+        } else {
+            size_of::<IgvmAttestRequestDataExt>()
+        };
+        let size = size_of::<IgvmAttestRequestBase>() + extension_size + claims.len();
+        let mut base = IgvmAttestRequestBase::new_zeroed();
+        base.header = IgvmAttestRequestHeader::new(size.try_into().unwrap(), request_type, 0);
+        base.request_data = IgvmAttestRequestData::new(
+            version,
+            (size_of::<IgvmAttestRequestData>() + extension_size + claims.len())
+                .try_into()
+                .unwrap(),
+            IgvmAttestReportType::TVM_REPORT,
+            IgvmAttestHashType::SHA_256,
+            claims.len().try_into().unwrap(),
+        );
+        let mut bytes = base.as_bytes().to_vec();
+        if extension_size != 0 {
+            bytes.extend_from_slice(
+                IgvmAttestRequestDataExt::new(
+                    IgvmCapabilityBitMap::new()
+                        .with_error_code(true)
+                        .with_use_rsa_aes_key_wrap_384(use_sha384),
+                )
+                .as_bytes(),
+            );
+        }
+        bytes.extend_from_slice(claims);
+        assert_eq!(bytes.len(), size);
+        bytes
+    }
+
+    fn install_actions(
+        agent: &mut TestIgvmAgent,
+        request_type: IgvmAttestRequestType,
+        actions: impl IntoIterator<Item = IgvmAgentAction>,
+    ) {
+        agent.install_plan_from_setting(&IgvmAgentTestSetting::TestPlan(HashMap::from([(
+            request_type,
+            actions.into_iter().collect(),
+        )])));
+    }
+
+    fn response_parts(
+        response: &(Vec<u8>, u32),
+        expected_version: IgvmAttestResponseVersion,
+        maximum_size: usize,
+    ) -> (IgvmErrorInfo, &[u8]) {
+        let (bytes, size) = response;
+        let (header, rest) = IgvmAttestCommonResponseHeader::read_from_prefix(bytes).unwrap();
+        assert_eq!(header.version, expected_version);
+        assert_eq!(header.data_size, *size);
+        assert_eq!(*size as usize, bytes.len());
+        assert!(bytes.len() <= maximum_size);
+        if expected_version == IgvmAttestResponseVersion::VERSION_1 {
+            assert_eq!(bytes.len() - rest.len(), 8);
+            (IgvmErrorInfo::default(), rest)
+        } else {
+            let (error, body) = IgvmErrorInfo::read_from_prefix(rest).unwrap();
+            assert_eq!(bytes.len() - body.len(), 32);
+            (error, body)
+        }
+    }
+
+    fn assert_recorded(
+        agent: &TestIgvmAgent,
+        request_type: IgvmAttestRequestType,
+        version: IgvmAttestRequestVersion,
+        claims: &[u8],
+    ) {
+        let recorded = agent.last_request(request_type).unwrap();
+        assert_eq!(recorded.version, version);
+        assert_eq!(recorded.runtime_claims, claims);
+    }
+
+    #[test]
+    fn context_expectations_check_raw_json() {
+        let cases: &[(Option<&str>, &[u8], bool)] = &[
+            (None, br#"{"vm-configuration":{}}"#, true),
+            (
+                Some("abc"),
+                br#"{"vm-configuration":{"key-release-context-hash":"abc"}}"#,
+                true,
+            ),
+            // Compare the decoded string, not JSON escaping or whitespace.
+            (
+                Some("abc"),
+                br#"{ "vm-configuration": {"key-release-context-hash":"\u0061bc"}}"#,
+                true,
+            ),
+            (
+                None,
+                br#"{"vm-configuration":{"key-release-context-hash":null}}"#,
+                false,
+            ),
+            (
+                None,
+                br#"{"vm-configuration":{"key-release-context-hash":"abc"}}"#,
+                false,
+            ),
+            (Some("abc"), br#"{"vm-configuration":{}}"#, false),
+            (
+                Some("abc"),
+                br#"{"vm-configuration":{"key-release-context-hash":null}}"#,
+                false,
+            ),
+            (
+                Some("abc"),
+                br#"{"vm-configuration":{"key-release-context-hash":"ABC"}}"#,
+                false,
+            ),
+            (
+                Some("abc"),
+                br#"{"vm-configuration":{"key-release-context-hash":123}}"#,
+                false,
+            ),
+            (
+                None,
+                br#"{"vm-configuration":{"key-release-context-hash":false}}"#,
+                false,
+            ),
+            (
+                None,
+                br#"{"vm-configuration":{"key-release-context-hash":[]}}"#,
+                false,
+            ),
+            (
+                None,
+                br#"{"vm-configuration":{"key-release-context-hash":{}}}"#,
+                false,
+            ),
+            (None, br#"{}"#, false),
+            (None, br#"{"vm-configuration":null}"#, false),
+            (None, br#"{"vm-configuration":[]}"#, false),
+            (None, br#"[]"#, false),
+            (None, b"not json", false),
+            (None, b"\xff", false),
+        ];
+        let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        for &(expected, claims, valid) in cases {
+            assert_eq!(
+                TestIgvmAgent::validate_key_release_context(request_type, claims, expected).is_ok(),
+                valid,
+            );
+        }
+    }
+
+    #[test]
+    fn context_assertion_failures_are_explicit_and_sticky() {
+        let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        for config in [
+            IgvmAttestTestConfig::KeyReleaseFailure,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+            IgvmAttestTestConfig::KeyReleaseV2,
+        ] {
+            for issued in [None, Some(DEFAULT_KEY_RELEASE_CONTEXT_HASH.to_owned())] {
+                for claims in [
+                    br#"{"vm-configuration":{}}"#.as_slice(),
+                    br#"{"vm-configuration":{"key-release-context-hash":null}}"#,
+                    br#"{"vm-configuration":{"key-release-context-hash":"wrong"}}"#,
+                    br#"{}"#,
+                    b"not json",
+                ] {
+                    if issued.is_none() && claims == br#"{"vm-configuration":{}}"# {
+                        continue;
+                    }
+                    let mut agent = TestIgvmAgent::new("sticky-context-failure");
+                    agent.install_plan_from_setting(&IgvmAgentTestSetting::TestConfig(config));
+                    agent.issued_context = issued.clone();
+                    let response = agent
+                        .handle_request(&request_bytes(
+                            request_type,
+                            IgvmAttestRequestVersion::VERSION_3,
+                            claims,
+                            false,
+                        ))
+                        .unwrap();
+                    assert_context_failure(&response, IgvmAttestResponseVersion::VERSION_3);
+                    assert_recorded(
+                        &agent,
+                        request_type,
+                        IgvmAttestRequestVersion::VERSION_3,
+                        claims,
+                    );
+                    // Even a corrected request, or a downgrade, cannot clear it.
+                    let corrected = serde_json::to_vec(&RuntimeClaims {
+                        keys: vec![],
+                        vm_configuration: vm_config(issued.clone()),
+                        user_data: String::new(),
+                    })
+                    .unwrap();
+                    for (version, response_version) in VERSIONS {
+                        let response = agent
+                            .handle_request(&request_bytes(
+                                request_type,
+                                version,
+                                &corrected,
+                                false,
+                            ))
+                            .unwrap();
+                        assert_context_failure(
+                            &response,
+                            if version == IgvmAttestRequestVersion::VERSION_1 {
+                                IgvmAttestResponseVersion::VERSION_2
+                            } else {
+                                response_version
+                            },
+                        );
+                        assert_eq!(agent.issued_context, issued);
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_context_failure(response: &(Vec<u8>, u32), version: IgvmAttestResponseVersion) {
+        let (error, body) = response_parts(response, version, KEY_RELEASE_RESPONSE_BUFFER_SIZE);
+        assert!(body.is_empty());
+        assert_eq!(error.error_code, KEY_RELEASE_CONTEXT_ASSERTION_ERROR);
+        assert!(error.igvm_signal.skip_hw_unsealing());
+        assert!(!error.igvm_signal.retry());
+    }
+
+    #[test]
+    fn context_configs_cover_three_boots_with_real_crypto_and_request_versions() {
+        use openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash;
+
+        let transfer_key = RsaKeyPair::generate(2048).unwrap();
+        let components = transfer_key.to_components();
+        let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        for config in [
+            IgvmAttestTestConfig::KeyReleaseV2,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ] {
+            let is_v2 = matches!(config, IgvmAttestTestConfig::KeyReleaseV2);
+            for (request_version, default_version) in VERSIONS {
+                let version = if is_v2 && default_version == IgvmAttestResponseVersion::VERSION_3 {
+                    IgvmAttestResponseVersion::VERSION_2
+                } else {
+                    default_version
+                };
+                let mut agent = TestIgvmAgent::new(format!("{config:?}-{request_version:?}"));
+                let setting = IgvmAgentTestSetting::TestConfig(config);
+                agent.install_plan_from_setting(&setting);
+                let mut previous = None;
+                for boot in 0..3 {
+                    let claims =
+                        serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
+                            &components.public_exponent,
+                            &components.modulus,
+                            &vm_config(previous.clone()),
+                        ))
+                        .unwrap();
+                    // Both key RPCs obey the negotiated version on all boots.
+                    let wrapped = agent
+                        .handle_request(&request_bytes(
+                            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+                            request_version,
+                            &claims,
+                            false,
+                        ))
+                        .unwrap();
+                    let (error, body) =
+                        response_parts(&wrapped, version, WRAPPED_KEY_RESPONSE_BUFFER_SIZE);
+                    assert_eq!(error.error_code, 0);
+                    let payload = if version == IgvmAttestResponseVersion::VERSION_3 {
+                        let envelope: IgvmAttestResponseEnvelope =
+                            serde_json::from_slice(body).unwrap();
+                        assert!(envelope.extensions.key_release_context_hash.is_none());
+                        envelope.payload
+                    } else {
+                        std::str::from_utf8(body).unwrap().to_owned()
+                    };
+                    assert_wrapped_payload(&agent, &payload);
+                    assert_eq!(agent.issued_context, previous);
+
+                    let response = agent
+                        .handle_request(&request_bytes(
+                            request_type,
+                            request_version,
+                            &claims,
+                            true,
+                        ))
+                        .unwrap();
+                    assert_recorded(&agent, request_type, request_version, &claims);
+                    let recorded: serde_json::Value = serde_json::from_slice(
+                        &agent.last_request(request_type).unwrap().runtime_claims,
+                    )
+                    .unwrap();
+                    let actual = recorded["vm-configuration"].get("key-release-context-hash");
+                    assert_eq!(
+                        actual.and_then(serde_json::Value::as_str),
+                        previous.as_deref()
+                    );
+                    assert_eq!(actual.is_some(), previous.is_some());
+                    let (error, body) =
+                        response_parts(&response, version, KEY_RELEASE_RESPONSE_BUFFER_SIZE);
+                    assert!(!error.igvm_signal.skip_hw_unsealing());
+                    assert!(!error.igvm_signal.retry());
+                    if matches!(config, IgvmAttestTestConfig::KeyReleaseFailure)
+                        && version == IgvmAttestResponseVersion::VERSION_3
+                        && boot > 0
+                    {
+                        assert_eq!(error.error_code, 0x1234);
+                        assert!(body.is_empty());
+                        assert_eq!(agent.issued_context, previous);
+                    } else {
+                        assert_eq!(error.error_code, 0);
+                        let payload = if version == IgvmAttestResponseVersion::VERSION_3 {
+                            let envelope: IgvmAttestResponseEnvelope =
+                                serde_json::from_slice(body).unwrap();
+                            let hash = envelope.extensions.key_release_context_hash.unwrap();
+                            assert_eq!(
+                                encode_key_release_context_hash(
+                                    &decode_key_release_context_hash(&hash).unwrap()
+                                ),
+                                hash
+                            );
+                            if boot == 0 {
+                                assert_eq!(hash, DEFAULT_KEY_RELEASE_CONTEXT_HASH);
+                            } else {
+                                assert_ne!(Some(&hash), previous.as_ref());
+                            }
+                            previous = Some(hash);
+                            envelope.payload
+                        } else {
+                            assert!(
+                                serde_json::from_slice::<IgvmAttestResponseEnvelope>(body).is_err()
+                            );
+                            std::str::from_utf8(body).unwrap().to_owned()
+                        };
+                        assert_key_payload(
+                            &agent,
+                            &transfer_key,
+                            &payload,
+                            request_version != IgvmAttestRequestVersion::VERSION_1,
+                        );
+                        assert_eq!(agent.issued_context, previous);
+                    }
+                    // Reinstallation must not reset the per-VM state.
+                    agent.install_plan_from_setting(&setting);
+                }
+                if is_v2 {
+                    for request_type in KEY_REQUEST_TYPES {
+                        for _ in 0..3 {
+                            let response = agent
+                                .handle_request(&request_bytes(
+                                    request_type,
+                                    request_version,
+                                    br#"{"vm-configuration":{}}"#,
+                                    false,
+                                ))
+                                .unwrap();
+                            assert_eq!(response, (vec![], 0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_commits_only_built_v3_responses_and_legacy_does_not_change_context() {
+        let transfer_key = RsaKeyPair::generate(2048).unwrap();
+        let components = transfer_key.to_components();
+        let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        let setting =
+            IgvmAgentTestSetting::TestConfig(IgvmAttestTestConfig::KeyReleaseContextRefresh);
+        let mut agent = TestIgvmAgent::new("transactional-refresh");
+        agent.install_plan_from_setting(&setting);
+        let mut previous = None;
+        for _ in 0..3 {
+            // The expectation passes, but crypto cannot build the response.
+            let claims = serde_json::to_vec(&RuntimeClaims {
+                keys: vec![],
+                vm_configuration: vm_config(previous.clone()),
+                user_data: String::new(),
+            })
+            .unwrap();
+            assert!(matches!(
+                agent.handle_request(&request_bytes(
+                    request_type,
+                    IgvmAttestRequestVersion::VERSION_3,
+                    &claims,
+                    true,
+                )),
+                Err(Error::KeyReleaseError(
+                    KeyReleaseError::MissingTransferKeyInRuntimeClaims
+                ))
+            ));
+            assert_eq!(agent.issued_context, previous);
+            assert!(!agent.context_assertion_failed);
+
+            let claims = serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
+                &components.public_exponent,
+                &components.modulus,
+                &vm_config(previous.clone()),
+            ))
+            .unwrap();
+            let response = agent
+                .handle_request(&request_bytes(
+                    request_type,
+                    IgvmAttestRequestVersion::VERSION_3,
+                    &claims,
+                    true,
+                ))
+                .unwrap();
+            let (error, body) = response_parts(
+                &response,
+                IgvmAttestResponseVersion::VERSION_3,
+                KEY_RELEASE_RESPONSE_BUFFER_SIZE,
+            );
+            assert_eq!(error.error_code, 0);
+            let envelope: IgvmAttestResponseEnvelope = serde_json::from_slice(body).unwrap();
+            assert_key_payload(&agent, &transfer_key, &envelope.payload, true);
+            assert_ne!(envelope.extensions.key_release_context_hash, previous);
+            previous = envelope.extensions.key_release_context_hash;
+            assert_eq!(agent.issued_context, previous);
+
+            // Legacy requests omit context even after a V3 context was issued.
+            let claims = serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
+                &components.public_exponent,
+                &components.modulus,
+                &vm_config(None),
+            ))
+            .unwrap();
+            for (version, response_version) in VERSIONS.into_iter().take(2) {
+                let response = agent
+                    .handle_request(&request_bytes(request_type, version, &claims, true))
+                    .unwrap();
+                let (error, body) = response_parts(
+                    &response,
+                    response_version,
+                    KEY_RELEASE_RESPONSE_BUFFER_SIZE,
+                );
+                assert_eq!(error.error_code, 0);
+                assert_key_payload(
+                    &agent,
+                    &transfer_key,
+                    std::str::from_utf8(body).unwrap(),
+                    version != IgvmAttestRequestVersion::VERSION_1,
+                );
+                assert_eq!(agent.issued_context, previous);
+            }
+        }
+        // A different VM does not inherit this VM's context or failure state.
+        let mut other = TestIgvmAgent::new("fresh-vm");
+        other.install_plan_from_setting(&setting);
+        assert!(other.issued_context.is_none());
+        assert!(!other.context_assertion_failed);
+    }
+
+    #[test]
+    fn skip_hw_unsealing_retains_its_existing_sequence() {
+        let mut agent = TestIgvmAgent::new("skip-hw-unseal-sequence");
+        agent.install_plan_from_setting(&IgvmAgentTestSetting::TestConfig(
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ));
+        let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+        assert!(agent.context_config.is_none());
+        for _ in 0..2 {
+            assert!(matches!(
+                agent.take_next_action(request_type),
+                Some(IgvmAgentAction::RespondSuccess)
+            ));
+        }
+        assert!(matches!(
+            agent.take_next_action(request_type),
+            Some(IgvmAgentAction::RespondFailureSkipHwUnsealing)
+        ));
+        for _ in 0..3 {
+            assert!(matches!(
+                agent.take_next_action(request_type),
+                Some(IgvmAgentAction::AlwaysNoResponse)
+            ));
+        }
+    }
+
+    #[expect(deprecated)] // Exercise the legacy SHA-1 RSA-AES key-wrap scheme too.
+    fn assert_key_payload(
+        agent: &TestIgvmAgent,
+        transfer_key: &RsaKeyPair,
+        payload: &str,
+        use_sha384: bool,
+    ) {
+        // These must be the original compact JWT bytes, not another envelope.
+        assert!(payload.starts_with("eyJ"));
+        let parts: Vec<_> = payload.split('.').collect();
+        assert_eq!(parts.len(), 3);
+        let base64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header: akv::AkvKeyReleaseJwtHeader =
+            serde_json::from_slice(&base64.decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(header.alg, "RS256");
+        assert!(header.x5c.is_empty());
+        assert!(parts[2].is_empty()); // The mock deliberately does not sign JWTs.
+        let body: akv::AkvKeyReleaseJwtBody =
+            serde_json::from_slice(&base64.decode(parts[1]).unwrap()).unwrap();
+        let blob: akv::AkvKeyReleaseKeyBlob =
+            serde_json::from_slice(&body.response.key.key.key_hsm).unwrap();
+        let original_key = agent.secret_key.as_ref().unwrap().to_pkcs8_der().unwrap();
+        let rsa_size = transfer_key.modulus_size();
+        assert_eq!(
+            blob.ciphertext.len(),
+            rsa_size + (original_key.len().div_ceil(8) + 1) * 8
+        );
+        let (encrypted_kek, wrapped_key) = blob.ciphertext.split_at(rsa_size);
+        let kek = transfer_key
+            .oaep_decrypt(
+                encrypted_kek,
+                if use_sha384 {
+                    crypto::HashAlgorithm::Sha384
+                } else {
+                    crypto::HashAlgorithm::Sha1
+                },
+            )
+            .unwrap();
+        assert_eq!(kek.len(), 32);
+        let unwrapped = crypto::aes_kwp::AesKeyWrap::new(&kek)
+            .unwrap()
+            .unwrapper()
+            .unwrap()
+            .unwrap(wrapped_key)
+            .unwrap();
+        assert_eq!(unwrapped, original_key);
+    }
+
+    fn assert_wrapped_payload(agent: &TestIgvmAgent, payload: &str) {
+        // V2 must start with CPS JSON, not the V3 schema/payload wrapper.
+        assert!(payload.starts_with("{\"DiskEncryptionSettings\":"));
+        let blob: cps::VmmdBlob = serde_json::from_str(payload).unwrap();
+        let info = blob.disk_encryption_settings.encryption_info;
+        assert_eq!(
+            info.key_reference,
+            serde_json::json!({
+                "key_info": { "host": "name" },
+                "attestation_info": { "host": "attestation_name" }
+            })
+        );
+        let secret = agent.secret_key.as_ref().unwrap();
+        assert_eq!(info.aes_info.ciphertext.len(), secret.modulus_size());
+        assert_eq!(
+            secret
+                .oaep_decrypt(&info.aes_info.ciphertext, crypto::HashAlgorithm::Sha256)
+                .unwrap(),
+            agent.des_key.unwrap()
+        );
+    }
+
+    fn exercise_key_responses(request_type: IgvmAttestRequestType, use_sha384: bool) {
+        let transfer_key = RsaKeyPair::generate(2048).unwrap();
+        let components = transfer_key.to_components();
+        let context_hash = encode_key_release_context_hash(&[0x42; 32]);
+        let config = vm_config(Some(context_hash.clone()));
+        let claims = RuntimeClaims::key_release_request_runtime_claims(
+            &components.public_exponent,
+            &components.modulus,
+            &config,
+        );
+        // Whitespace makes exact-byte recording distinguishable from reserialization.
+        let claims = serde_json::to_vec_pretty(&claims).unwrap();
+        for (request_version, default_response_version) in VERSIONS {
+            let mut agent = TestIgvmAgent::new("key-response-versions");
+            let request = request_bytes(request_type, request_version, &claims, use_sha384);
+            let actions = [
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondSuccessV2,
+                IgvmAgentAction::RespondSuccessV3 {
+                    key_release_context_hash: Some(context_hash.clone()),
+                },
+                IgvmAgentAction::RespondSuccessV3 {
+                    key_release_context_hash: None,
+                },
+                IgvmAgentAction::RespondSuccessV3 {
+                    key_release_context_hash: Some("not a digest\"\n".to_owned()),
+                },
+            ];
+            // First exercise an absent plan; the final request exhausts the plan.
+            let mut responses = vec![(
+                agent.handle_request(&request).unwrap(),
+                default_response_version,
+                Some(DEFAULT_KEY_RELEASE_CONTEXT_HASH.to_owned()),
+            )];
+            install_actions(&mut agent, request_type, actions.clone());
+            for action in actions {
+                let (version, hash) = match action {
+                    IgvmAgentAction::RespondSuccess => (
+                        default_response_version,
+                        Some(DEFAULT_KEY_RELEASE_CONTEXT_HASH.to_owned()),
+                    ),
+                    IgvmAgentAction::RespondSuccessV2 => (
+                        if request_version == IgvmAttestRequestVersion::VERSION_1 {
+                            IgvmAttestResponseVersion::VERSION_1
+                        } else {
+                            IgvmAttestResponseVersion::VERSION_2
+                        },
+                        None,
+                    ),
+                    IgvmAgentAction::RespondSuccessV3 {
+                        key_release_context_hash,
+                    } => (default_response_version, key_release_context_hash),
+                    _ => unreachable!(),
+                };
+                responses.push((agent.handle_request(&request).unwrap(), version, hash));
+            }
+            responses.push((
+                agent.handle_request(&request).unwrap(),
+                default_response_version,
+                Some(DEFAULT_KEY_RELEASE_CONTEXT_HASH.to_owned()),
+            ));
+            for (response, version, hash) in responses {
+                let hash = if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                    hash
+                } else {
+                    None
+                };
+                let maximum_size = if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                    KEY_RELEASE_RESPONSE_BUFFER_SIZE
+                } else {
+                    WRAPPED_KEY_RESPONSE_BUFFER_SIZE
+                };
+                let (error, body) = response_parts(&response, version, maximum_size);
+                let uses_sha384 = use_sha384
+                    && request_version != IgvmAttestRequestVersion::VERSION_1
+                    && request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST;
+                let expected_error = IgvmErrorInfo {
+                    igvm_signal: IgvmSignal::default().with_rsa_aes_key_wrap_384_used(uses_sha384),
+                    ..Default::default()
+                };
+                assert_eq!(error.as_bytes(), expected_error.as_bytes());
+                let payload = if version == IgvmAttestResponseVersion::VERSION_3 {
+                    let envelope: IgvmAttestResponseEnvelope =
+                        serde_json::from_slice(body).unwrap();
+                    assert_eq!(envelope.schema_version, IGVM_ATTEST_RESPONSE_SCHEMA_VERSION);
+                    assert_eq!(
+                        envelope.request_type,
+                        if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                            IgvmAttestResponseRequestType::KeyRelease
+                        } else {
+                            IgvmAttestResponseRequestType::WrappedKey
+                        }
+                    );
+                    assert_eq!(envelope.extensions.key_release_context_hash, hash);
+                    let json: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    if request_type == IgvmAttestRequestType::WRAPPED_KEY_REQUEST {
+                        assert_eq!(json["extensions"], serde_json::json!({}));
+                    }
+                    assert_eq!(
+                        json["extensions"].get("key_release_context_hash").is_some(),
+                        hash.is_some()
+                    );
+                    assert_eq!(serde_json::to_vec(&envelope).unwrap(), body);
+                    assert!(body.len() > envelope.payload.len());
+                    envelope.payload
+                } else {
+                    assert!(serde_json::from_slice::<IgvmAttestResponseEnvelope>(body).is_err());
+                    std::str::from_utf8(body).unwrap().to_owned()
+                };
+                if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                    assert_key_payload(&agent, &transfer_key, &payload, uses_sha384);
+                } else {
+                    assert_wrapped_payload(&agent, &payload);
+                }
+            }
+            assert_recorded(&agent, request_type, request_version, &claims);
+            let recorded: serde_json::Value =
+                serde_json::from_slice(&agent.last_request(request_type).unwrap().runtime_claims)
+                    .unwrap();
+            assert_eq!(
+                recorded["vm-configuration"],
+                serde_json::to_value(&config).unwrap()
+            );
+            assert_eq!(
+                recorded["vm-configuration"]["key-release-context-hash"],
+                context_hash
+            );
+        }
+    }
+
+    #[test]
+    fn key_release_versions_actions_claims_and_real_jwt() {
+        for use_sha384 in [false, true] {
+            exercise_key_responses(IgvmAttestRequestType::KEY_RELEASE_REQUEST, use_sha384);
+        }
+    }
+
+    #[test]
+    fn wrapped_key_versions_actions_claims_and_real_cps_payload() {
+        exercise_key_responses(IgvmAttestRequestType::WRAPPED_KEY_REQUEST, false);
+    }
+
+    #[test]
+    fn ak_cert_stays_v2_even_with_v3_action() {
+        let request_type = IgvmAttestRequestType::AK_CERT_REQUEST;
+        let config = vm_config(Some(encode_key_release_context_hash(&[0x43; 32])));
+        let claims = serde_json::to_vec(&RuntimeClaims::ak_cert_runtime_claims(
+            &[1, 0, 1],
+            &[0x81; 256],
+            &[1, 0, 1],
+            &[0x82; 256],
+            &config,
+            b"user data",
+        ))
+        .unwrap();
+        for (request_version, response_version) in VERSIONS.into_iter().take(2) {
+            let mut agent = TestIgvmAgent::new("ak-cert-versions");
+            let request = request_bytes(request_type, request_version, &claims, false);
+            let actions = [
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondSuccessV2,
+                IgvmAgentAction::RespondSuccessV3 {
+                    key_release_context_hash: config.key_release_context_hash.clone(),
+                },
+            ];
+            let mut responses = vec![agent.handle_request(&request).unwrap()];
+            install_actions(&mut agent, request_type, actions.clone());
+            for _ in actions {
+                responses.push(agent.handle_request(&request).unwrap());
+            }
+            for response in responses {
+                let (error, body) =
+                    response_parts(&response, response_version, AK_CERT_RESPONSE_BUFFER_SIZE);
+                assert_eq!(error.as_bytes(), IgvmErrorInfo::default().as_bytes());
+                assert_eq!(body, vec![0xab; 2500]);
+            }
+            assert_recorded(&agent, request_type, request_version, &claims);
+        }
+        let mut agent = TestIgvmAgent::new("reject-ak-v3");
+        let request = request_bytes(
+            request_type,
+            IgvmAttestRequestVersion::VERSION_3,
+            &claims,
+            false,
+        );
+        assert!(matches!(
+            agent.handle_request(&request),
+            Err(Error::InvalidIgvmAttestRequestVersion {
+                found: IgvmAttestRequestVersion::VERSION_3,
+                expected: IgvmAttestRequestVersion::VERSION_2,
+            })
+        ));
+        assert!(agent.last_request(request_type).is_none());
+    }
+
+    #[test]
+    fn failures_preserve_error_codes_and_signals_without_envelopes() {
+        for request_type in KEY_REQUEST_TYPES
+            .into_iter()
+            .chain([IgvmAttestRequestType::AK_CERT_REQUEST])
+        {
+            for (request_version, response_version) in VERSIONS {
+                if request_type == IgvmAttestRequestType::AK_CERT_REQUEST
+                    && request_version == IgvmAttestRequestVersion::VERSION_3
+                {
+                    continue;
+                }
+                let mut agent = TestIgvmAgent::new("failure-signals");
+                install_actions(
+                    &mut agent,
+                    request_type,
+                    [
+                        IgvmAgentAction::RespondFailure,
+                        IgvmAgentAction::RespondFailureSkipHwUnsealing,
+                    ],
+                );
+                let request = request_bytes(request_type, request_version, b"{}", true);
+                for (code, skip) in [(0x1234, false), (0x5678, true)] {
+                    let response = agent.handle_request(&request).unwrap();
+                    assert_recorded(&agent, request_type, request_version, b"{}");
+                    if response_version == IgvmAttestResponseVersion::VERSION_1 {
+                        // No header or signal bits can be carried by a V1 failure.
+                        assert_eq!(response, (Vec::new(), 0));
+                        continue;
+                    }
+                    let (error, body) =
+                        response_parts(&response, response_version, AK_CERT_RESPONSE_BUFFER_SIZE);
+                    assert!(body.is_empty());
+                    let expected = IgvmErrorInfo {
+                        error_code: code,
+                        http_status_code: 400,
+                        igvm_signal: IgvmSignal::default().with_skip_hw_unsealing(skip),
+                        reserved: [0; 3],
+                    };
+                    assert_eq!(error.as_bytes(), expected.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_response_records_exact_latest_claims_per_request_type() {
+        let mut agent = TestIgvmAgent::new("record-requests");
+        agent.install_plan_from_setting(&IgvmAgentTestSetting::TestPlan(
+            KEY_REQUEST_TYPES
+                .into_iter()
+                .map(|request_type| {
+                    (
+                        request_type,
+                        VecDeque::from([
+                            IgvmAgentAction::NoResponse,
+                            IgvmAgentAction::AlwaysNoResponse,
+                        ]),
+                    )
+                })
+                .collect(),
+        ));
+        for (request_version, _) in VERSIONS {
+            for request_type in KEY_REQUEST_TYPES {
+                let config = vm_config(Some(encode_key_release_context_hash(
+                    &[request_version.0 as u8; 32],
+                )));
+                let claims = serde_json::to_vec_pretty(&RuntimeClaims {
+                    keys: vec![],
+                    vm_configuration: config,
+                    user_data: format!("request {}", request_type.0),
+                })
+                .unwrap();
+                let mut request = request_bytes(request_type, request_version, &claims, false);
+                // The declared claims size, not the transport buffer tail, is recorded.
+                request.extend_from_slice(b"ignored trailing bytes");
+                assert_eq!(agent.handle_request(&request).unwrap(), (vec![], 0));
+                assert_recorded(&agent, request_type, request_version, &claims);
+                let truncated = request_bytes(request_type, request_version, &claims, false);
+                assert!(matches!(
+                    agent.handle_request(&truncated[..truncated.len() - 1]),
+                    Err(Error::InvalidIgvmAttestRequest)
+                ));
+                assert_recorded(&agent, request_type, request_version, &claims);
+            }
+        }
+        for request_type in KEY_REQUEST_TYPES {
+            assert!(matches!(
+                agent.take_next_action(request_type),
+                Some(IgvmAgentAction::AlwaysNoResponse)
+            ));
+            let recorded: RuntimeClaims =
+                serde_json::from_slice(&agent.last_request(request_type).unwrap().runtime_claims)
+                    .unwrap();
+            assert_eq!(recorded.user_data, format!("request {}", request_type.0));
+            assert_eq!(
+                recorded.vm_configuration.key_release_context_hash,
+                Some(encode_key_release_context_hash(&[3; 32]))
+            );
+        }
+    }
+
+    #[test]
+    fn framing_accepts_exact_limit_rejects_overflow_and_preserves_error_info() {
+        for (request_type, maximum_size) in [
+            (
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                AK_CERT_RESPONSE_BUFFER_SIZE,
+            ),
+            (
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                KEY_RELEASE_RESPONSE_BUFFER_SIZE,
+            ),
+            (
+                IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+                WRAPPED_KEY_RESPONSE_BUFFER_SIZE,
+            ),
+        ] {
+            for (_, version) in VERSIONS {
+                if request_type == IgvmAttestRequestType::AK_CERT_REQUEST
+                    && version == IgvmAttestResponseVersion::VERSION_3
+                {
+                    continue;
+                }
+                let header_size = if version == IgvmAttestResponseVersion::VERSION_1 {
+                    8
+                } else {
+                    32
+                };
+                let error = IgvmErrorInfo {
+                    error_code: 0x12345678,
+                    http_status_code: 503,
+                    igvm_signal: IgvmSignal::from(0xa5a5ffff),
+                    reserved: [11, 22, 33],
+                };
+                let expected_error = error.as_bytes().to_vec();
+                let body = vec![0xa5; maximum_size - header_size];
+                let response =
+                    TestIgvmAgent::frame_response(request_type, version, &body, error).unwrap();
+                let (actual_error, actual_body) = response_parts(&response, version, maximum_size);
+                assert_eq!(response.1 as usize, maximum_size);
+                assert_eq!(actual_body, body);
+                if version != IgvmAttestResponseVersion::VERSION_1 {
+                    assert_eq!(actual_error.as_bytes(), expected_error);
+                }
+                assert!(matches!(
+                    TestIgvmAgent::frame_response(request_type, version, &vec![0; body.len() + 1], IgvmErrorInfo::default()),
+                    Err(Error::ResponseTooLarge { size, maximum_size: limit })
+                        if size == maximum_size + 1 && limit == maximum_size
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_v3_envelope_is_rejected_not_truncated() {
+        let transfer_key = RsaKeyPair::generate(2048).unwrap().to_components();
+        let claims = serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
+            &transfer_key.public_exponent,
+            &transfer_key.modulus,
+            &vm_config(None),
+        ))
+        .unwrap();
+        for request_type in KEY_REQUEST_TYPES {
+            let maximum_size = if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                KEY_RELEASE_RESPONSE_BUFFER_SIZE
+            } else {
+                WRAPPED_KEY_RESPONSE_BUFFER_SIZE
+            };
+            let mut agent = TestIgvmAgent::new("oversized-envelope");
+            install_actions(
+                &mut agent,
+                request_type,
+                [IgvmAgentAction::RespondSuccessV3 {
+                    // Escaping expands this string to more than the entire response buffer.
+                    key_release_context_hash: Some("\"".repeat(maximum_size / 2)),
+                }],
+            );
+            let request = request_bytes(
+                request_type,
+                IgvmAttestRequestVersion::VERSION_3,
+                &claims,
+                false,
+            );
+            let result = agent.handle_request(&request);
+            if request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST {
+                assert!(matches!(
+                    result,
+                    Err(Error::ResponseTooLarge { size, maximum_size: limit })
+                        if size > maximum_size && limit == maximum_size
+                ));
+            } else {
+                // Even oversized scripted context metadata is irrelevant to
+                // wrapped-key responses and must not be emitted.
+                let response = result.unwrap();
+                let (_, body) = response_parts(
+                    &response,
+                    IgvmAttestResponseVersion::VERSION_3,
+                    maximum_size,
+                );
+                let envelope: IgvmAttestResponseEnvelope = serde_json::from_slice(body).unwrap();
+                assert!(envelope.extensions.key_release_context_hash.is_none());
+            }
+            assert_recorded(
+                &agent,
+                request_type,
+                IgvmAttestRequestVersion::VERSION_3,
+                &claims,
+            );
+        }
     }
 }
