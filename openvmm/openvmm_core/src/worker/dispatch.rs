@@ -1344,6 +1344,7 @@ impl InitializedVm {
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
                 ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    &cfg.pcie_root_complexes,
                     ranges,
                     &spi_layout,
                     device_assignment_msi_iova_range,
