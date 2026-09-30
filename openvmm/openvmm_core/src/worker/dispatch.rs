@@ -1380,6 +1380,19 @@ impl InitializedVm {
         H: virt::Hypervisor<Partition = P>,
         P: 'static + HvlitePartition,
     {
+        #[cfg(all(target_os = "linux", not(guest_arch = "aarch64")))]
+        if let Some(device) = cfg
+            .pcie_devices
+            .iter()
+            .find(|device| device.direct_host_pci_id().is_some())
+        {
+            anyhow::bail!(
+                "direct VFIO device {} on port {} is only supported for aarch64 guests",
+                device.direct_host_pci_id().expect("checked above"),
+                device.port_name()
+            );
+        }
+
         let node_mem_sizes: Vec<u64> = cfg
             .numa
             .nodes

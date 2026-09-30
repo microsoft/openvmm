@@ -1620,7 +1620,7 @@ fn discover_capabilities_with_policy(
                 result.config_patches.insert(
                     cap_ptr,
                     ConfigPatch {
-                        mask: 0x0000_00ff,
+                        mask: 1 << 25,
                         value: 0,
                     },
                 );
@@ -3238,7 +3238,7 @@ mod tests {
         assert_eq!(discovered.managed_af_control_offset, Some(0x64));
         assert_eq!(discovered.config_patches[&0x44].mask, 1 << 28);
         assert_eq!(discovered.config_patches[&0x44].value, 0);
-        assert_eq!(discovered.config_patches[&0x60].mask, 0xff);
+        assert_eq!(discovered.config_patches[&0x60].mask, 1 << 25);
         assert_eq!(discovered.config_patches[&0x60].value, 0);
 
         let filtered =
