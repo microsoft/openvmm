@@ -103,6 +103,16 @@ returned. A calibration rendezvous instead keeps partition time advancing.
 Snapshots serialize VM and VP state and copy guest RAM. Restore tests either
 reset the existing partition first or create a new partition and VP, so private
 backend caches cannot substitute for serialized state.
+For fresh-partition restore, the executor joins the old VP thread and destroys
+the old partition before creating the replacement and mapping the retained guest
+RAM. Only the serialized VM/VP state, RAM, and test-runner context survive;
+backend partition objects do not.
+
+The host executes the requested operations and returns clock samples; the guest
+checks their architectural effects. Construction, reset-value, and host
+state-accessor assertions belong to separate
+[backend contract tests](./vmm.md#backend-contract-tests-no-guest), not to the
+TMK executor.
 
 Each host VP execution thread running a timekeeping test has a 60-second
 host-clock watchdog, independent of the guest's clocks and interrupts.
