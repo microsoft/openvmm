@@ -11,6 +11,7 @@ pub(crate) mod saved_state;
 
 pub(crate) use saved_state::SavedHardwareResealState;
 
+use anyhow::Context as _;
 use cvm_tracing::CVM_ALLOWED;
 use futures::StreamExt;
 use futures::task::AtomicWaker;
@@ -29,6 +30,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 use tee_call::TeeCall;
+use tracing::Instrument;
 use underhill_attestation::runtime_sealing;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -229,7 +231,14 @@ impl HardwareReseal {
                     return Poll::Pending;
                 }
                 if self.notification.take(cx) {
-                    self.schedule.notified(Instant::now());
+                    let now = Instant::now();
+                    self.schedule.notified(now);
+                    tracelimit::info_ratelimited!(
+                        CVM_ALLOWED,
+                        delay_ms = self.schedule.due().saturating_sub(now).as_millis() as u64,
+                        failures = self.schedule.failures,
+                        "hardware reseal notification consumed; work scheduled"
+                    );
                 }
                 if !self.schedule.force_reseal {
                     return Poll::Pending;
@@ -243,31 +252,56 @@ impl HardwareReseal {
                 Event::State(Some(req)) => req.apply(&mut self).await,
                 Event::State(None) => break,
                 Event::Reseal => {
-                    // Await the whole attempt, including offloaded hardware
-                    // calls. Stop is acknowledged only after hardware work and
-                    // VMGS I/O drain; it must not detach a pending write.
-                    let result = self.reseal().await;
-                    match &result {
-                        Ok(()) => {
-                            tracelimit::info_ratelimited!(
-                                CVM_ALLOWED,
-                                "VMGS hardware protector resealed"
-                            );
-                        }
-                        Err(error) => {
-                            tracelimit::warn_ratelimited!(
-                                CVM_ALLOWED,
-                                error = error.as_ref() as &dyn std::error::Error,
-                                "VMGS hardware protector recovery pending; retrying"
-                            );
+                    let span = tracing::info_span!("hardware_reseal_attempt", CVM_ALLOWED);
+                    async {
+                        // Await the whole attempt, including offloaded hardware
+                        // calls. Stop is acknowledged only after hardware work and
+                        // VMGS I/O drain; it must not detach a pending write.
+                        let started = Instant::now();
+                        let previous_failures = self.schedule.failures;
+                        tracelimit::info_ratelimited!(
+                            CVM_ALLOWED,
+                            previous_failures,
+                            "VMGS hardware protector reseal started"
+                        );
+                        let result = self.reseal().await;
+                        let completed = Instant::now();
+                        let elapsed_ms = completed.saturating_sub(started).as_millis() as u64;
+                        let pending_notification =
+                            self.notification.pending.load(Ordering::Acquire);
+                        let mut jitter = [0];
+                        // Jitter is scheduling only, not key material. RNG failure
+                        // must not prevent retrying a potentially stale protector.
+                        let _ = getrandom::fill(&mut jitter);
+                        self.schedule
+                            .completed(completed, result.is_ok(), jitter[0]);
+                        match &result {
+                            Ok(()) => {
+                                tracelimit::info_ratelimited!(
+                                    CVM_ALLOWED,
+                                    elapsed_ms,
+                                    previous_failures,
+                                    pending_notification,
+                                    "VMGS hardware protector resealed"
+                                );
+                            }
+                            Err(error) => {
+                                tracelimit::warn_ratelimited!(
+                                    CVM_ALLOWED,
+                                    error = error.as_ref() as &dyn std::error::Error,
+                                    elapsed_ms,
+                                    failures = self.schedule.failures,
+                                    retry_delay_ms =
+                                        self.schedule.due().saturating_sub(completed).as_millis()
+                                            as u64,
+                                    pending_notification,
+                                    "VMGS hardware protector recovery pending; retrying"
+                                );
+                            }
                         }
                     }
-                    let mut jitter = [0];
-                    // Jitter is scheduling only, not key material. RNG failure
-                    // must not prevent retrying a potentially stale protector.
-                    let _ = getrandom::fill(&mut jitter);
-                    self.schedule
-                        .completed(Instant::now(), result.is_ok(), jitter[0]);
+                    .instrument(span)
+                    .await;
                 }
             }
         }
@@ -281,7 +315,12 @@ impl HardwareReseal {
             self.tcb_floor.lock().is_some(),
             "hardware reseal floor is not initialized"
         );
-        let key = self.vmgs.active_encryption_key().await?;
+        tracelimit::info_ratelimited!(CVM_ALLOWED, "requesting active VMGS key");
+        let key = self
+            .vmgs
+            .active_encryption_key()
+            .await
+            .context("hardware reseal: obtaining active VMGS key")?;
         // TEE report/key ioctls are synchronous. Keep their latency off the VP
         // executors (and the GET thread). Only one blocking job per worker is
         // in flight, and each is awaited before advancing the attempt.
@@ -289,16 +328,26 @@ impl HardwareReseal {
         let config = self.config.clone();
         let tcb_floor = self.tcb_floor.clone();
         let span = tracing::Span::current();
+        tracelimit::info_ratelimited!(CVM_ALLOWED, "queueing hardware protector preparation");
         let protector = blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<Vec<u8>> {
+                tracelimit::info_ratelimited!(CVM_ALLOWED, "preparing hardware protector");
                 let mut floor = tcb_floor.lock();
                 let floor = floor
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?;
-                let protector = floor.create_protector(&*tee, &config, &key)?;
+                let protector = floor
+                    .create_protector(&*tee, &config, &key)
+                    .context("hardware reseal: checking TCB floor and creating protector")?;
                 // Validate with a second derivation, not the seal-time keys.
+                tracelimit::info_ratelimited!(
+                    CVM_ALLOWED,
+                    "verifying hardware protector before write"
+                );
                 anyhow::ensure!(
-                    floor.verify_protector(&*tee, &config, &protector, &key)?,
+                    floor
+                        .verify_protector(&*tee, &config, &protector, &key)
+                        .context("hardware reseal: verifying before write")?,
                     "hardware changed while constructing the protector"
                 );
                 Ok(protector)
@@ -309,10 +358,12 @@ impl HardwareReseal {
         // be read before unlocking VMGS. The active-DEK comparison is defensive:
         // although the broker currently cannot rotate the DEK, future concurrent
         // rotation must not let us publish a protector for a stale key.
+        tracelimit::info_ratelimited!(CVM_ALLOWED, "requesting hardware protector write and flush");
         anyhow::ensure!(
             self.vmgs
                 .write_file_if_active_key_matches(FileId::HW_KEY_PROTECTOR, protector.clone(), key)
-                .await?,
+                .await
+                .context("hardware reseal: writing and flushing protector")?,
             "VMGS key changed while constructing the protector"
         );
         // Migration can happen during the write/flush, too. An event arriving
@@ -321,14 +372,20 @@ impl HardwareReseal {
         let config = self.config.clone();
         let tcb_floor = self.tcb_floor.clone();
         let span = tracing::Span::current();
+        tracelimit::info_ratelimited!(CVM_ALLOWED, "queueing post-flush hardware verification");
         blocking::unblock(move || {
             span.in_scope(|| -> anyhow::Result<()> {
+                tracelimit::info_ratelimited!(
+                    CVM_ALLOWED,
+                    "verifying hardware protector after flush"
+                );
                 anyhow::ensure!(
                     tcb_floor
                         .lock()
                         .as_mut()
                         .ok_or_else(|| anyhow::anyhow!("hardware reseal floor is not initialized"))?
-                        .verify_protector(&*tee, &config, &protector, &key)?,
+                        .verify_protector(&*tee, &config, &protector, &key)
+                        .context("hardware reseal: verifying after flush")?,
                     "hardware changed while persisting the protector"
                 );
                 Ok(())
@@ -349,10 +406,23 @@ impl StateUnit for HardwareReseal {
         // Starting or resuming does not create work or reset retry backoff.
         // Pending notifications and recovery survive a normal stop/start.
         self.schedule.running = true;
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            floor_initialized = self.tcb_floor.lock().is_some(),
+            recovery_pending = self.schedule.force_reseal,
+            pending_notification = self.notification.pending.load(Ordering::Acquire),
+            "hardware reseal worker started"
+        );
     }
 
     async fn stop(&mut self) {
         self.schedule.running = false;
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            recovery_pending = self.schedule.force_reseal,
+            pending_notification = self.notification.pending.load(Ordering::Acquire),
+            "hardware reseal worker stopped; in-flight work drained"
+        );
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
