@@ -8,6 +8,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use net_backend::BufferAccess;
 use net_backend::RxBufferSegment;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use virtio::VirtioQueueCallbackWork;
@@ -195,11 +196,40 @@ impl BufferAccess for VirtioWorkPool {
         // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums have
         // been validated (Good or ValidatedButWrong, e.g. after RSC/LRO),
         // telling the guest it can skip re-verification.
-        let data_valid = metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
-        let flags = VirtioNetHeaderFlags::new().with_data_valid(data_valid);
+        let data_valid = metadata.checksum_offload.is_none()
+            && metadata.ip_checksum.is_valid()
+            && metadata.l4_checksum.is_valid();
+        let flags = VirtioNetHeaderFlags::new()
+            .with_needs_csum(metadata.checksum_offload.is_some())
+            .with_data_valid(data_valid);
+        let (gso_type, hdr_len, gso_size) = if let Some(gso) = metadata.gso {
+            let protocol = match gso.protocol {
+                RxGsoProtocol::TcpV4 => crate::VirtioNetHeaderGsoProtocol::TCPV4,
+                RxGsoProtocol::TcpV6 => crate::VirtioNetHeaderGsoProtocol::TCPV6,
+            };
+            (
+                crate::VirtioNetHeaderGso::new()
+                    .with_protocol(protocol)
+                    .with_ecn(gso.ecn)
+                    .into_bits(),
+                gso.header_len,
+                gso.max_segment_size,
+            )
+        } else {
+            (0, 0, 0)
+        };
+        let (csum_start, csum_offset) = metadata
+            .checksum_offload
+            .map(|checksum| (checksum.start, checksum.offset))
+            .unwrap_or_default();
 
         let virtio_net_header = VirtioNetHeader {
             flags: flags.into(),
+            gso_type,
+            hdr_len,
+            gso_size,
+            csum_start,
+            csum_offset,
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };
@@ -216,12 +246,14 @@ impl BufferAccess for VirtioWorkPool {
             );
             return;
         }
-        assert!(
-            metadata.len <= packet.cap as usize,
-            "packet len {} exceeds buffer capacity {}",
-            metadata.len,
-            packet.cap
-        );
+        if metadata.len > packet.cap as usize {
+            tracelimit::warn_ratelimited!(
+                packet_len = metadata.len,
+                capacity = packet.cap,
+                "dropping RX packet larger than guest buffer"
+            );
+            return;
+        }
         packet.len = metadata.len as u32;
     }
 }

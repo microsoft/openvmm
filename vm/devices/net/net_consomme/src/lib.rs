@@ -892,6 +892,8 @@ impl consomme::Client for Client<'_> {
                     } else {
                         L4Protocol::Unknown
                     },
+                    checksum_offload: None,
+                    gso: None,
                     vlan: None,
                 },
                 segments,

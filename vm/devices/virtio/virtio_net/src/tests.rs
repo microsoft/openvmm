@@ -9,7 +9,10 @@ use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxChecksumOffload;
 use net_backend::RxChecksumState;
+use net_backend::RxGso;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxError;
@@ -1870,6 +1873,51 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
     );
 }
 
+/// RX TCP GSO metadata is reproduced in the guest virtio-net header.
+#[async_test]
+async fn rx_offload_tcp_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let buffer_size: u32 = 65535;
+    let desc_index: u16 = 0;
+    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
+    handle.wait_for_rx_pending().await;
+
+    let payload = b"tcp-gso-packet";
+    let metadata = RxMetadata {
+        offset: 0,
+        len: payload.len(),
+        checksum_offload: Some(RxChecksumOffload {
+            start: 34,
+            offset: 16,
+        }),
+        gso: Some(RxGso {
+            protocol: RxGsoProtocol::TcpV4,
+            header_len: 54,
+            max_segment_size: 1460,
+            ecn: true,
+        }),
+        ..Default::default()
+    };
+    handle.inject_rx_packet_with_metadata(payload, &metadata);
+
+    let (used_id, _) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, desc_index);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(gso.protocol(), VirtioNetHeaderGsoProtocol::TCPV4);
+    assert!(gso.ecn());
+    assert_eq!(hdr.hdr_len, 54);
+    assert_eq!(hdr.gso_size, 1460);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+}
+
 // --- Feature Negotiation Tests ---
 
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
@@ -1901,6 +1949,8 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         "CSUM should be set when tcp+udp offloads supported"
     );
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
     assert!(
         bank0.host_tso4(),
         "HOST_TSO4 should be set when tso+tcp+ipv4_header supported"
@@ -1973,6 +2023,8 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac());
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),
