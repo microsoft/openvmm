@@ -125,6 +125,8 @@ pub mod ged {
             enable_vpci_boot: bool,
             /// Enable UEFI firmware debugging for VTL0.
             firmware_debug: bool,
+            /// Enable UEFI memory protections for VTL0.
+            enable_memory_protections: bool,
             /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
             disable_frontpage: bool,
             /// Where to send UEFI console output

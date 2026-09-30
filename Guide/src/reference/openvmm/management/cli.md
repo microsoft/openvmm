@@ -112,9 +112,8 @@ describes the source definitions.
     --hv --no-vmbus -m 160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
-  loader-generated SNP VMSA. This bring-up option has no default and requires
-  `--hypervisor mshv --isolation snp` with Linux direct boot. KVM SNP does not
-  support this option.
+  MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
+  today.
 * `--hypervisor mshv:snp_disable_cpuid_offload=true`: Disable MSHV handling of
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
@@ -128,8 +127,24 @@ describes the source definitions.
   as Virtual Secure Mode (VSM), which can hurt performance and interfere with
   VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
-* `--uefi`: Boot using `mu_msvm` UEFI
-* `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
+* `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
+  * `debug`: Enable UEFI debugging on COM1.
+  * `enable_memory_protections`: Enable UEFI memory protections.
+  * `force_dma_bounce`: Force UEFI to bounce-buffer all DMA traffic.
+  * `force_firmware_version`: Continue when a present version record is malformed or declares an incompatible interface version. A missing record only produces a warning.
+  * `disable_frontpage`: Shut down instead of showing the UEFI front page.
+  * `console=<default|com1|com2|none>`: Select the UEFI console.
+  * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
+  * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
+
+  With `--igvm --vtl2`, `--uefi` configures the UEFI firmware that OpenHCL
+  loads into VTL0. All options except `firmware` and
+  `force_firmware_version` are supported in this mode. Those options apply
+  only when OpenVMM loads an external firmware image and are rejected with
+  `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
+
+  The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
 * `--igvm <FILE>`: Boot from an IGVM file.
 * `--igvm-personality <uefi|linux-direct>`: Select the chipset and
@@ -233,15 +248,23 @@ describes the source definitions.
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+* `--virtio-fs-bus <BUS>`: Select the bus for `--virtio-fs` and
+  `--virtio-fs-shmem` devices. Accepted values are `auto`, `mmio`, `pci`,
+  `pcie:PORT`, and `vpci`. Defaults to `auto`. A `pcie_port` prefix on either
+  device option overrides this setting. Each PCIe port may be assigned to only
+  one device, whether selected by `pcie:PORT` or a `pcie_port` prefix.
 * `--virtio-rng`: Add a virtio entropy (RNG) device, exposing `/dev/hwrng` in the Linux guest.
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
-* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
-  Defaults to `auto`.
-* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using OpenVMM's
-  hybrid Unix-socket relay.
-* `--virtio-vsock-bus <mmio|pci>`: Select the bus for a virtio-vsock device
-  created by `--virtio-vsock-path` or `--virtio-vsock-vhost-cid`. When omitted,
-  OpenVMM selects the bus automatically.
+* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
+  values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
+  `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
+  hybrid Unix socket relay.
+* `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
+  virtio-vsock device created by `--virtio-vsock-path` or
+  `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
+  automatically. The `pcie` value uses the root port named `vsock`. Use
+  `pcie:PORT` to select another root port.
 * `--virtio-vsock-vhost-cid <CID>`: Add a virtio-vsock device backed by the
   Linux kernel's `vhost_vsock` implementation. This makes the guest reachable
   from host applications through `AF_VSOCK` at `CID`, which must be between 3
@@ -331,10 +354,9 @@ a supervisor can tell the exit reasons apart.
   host-side, whole-VM dump, distinct from `--openhcl-dump-path` (OpenHCL's
   in-guest crash dump device driven by the guest OS).
 
-`--disable-frontpage`: when booting UEFI, power the VM off instead of showing the
-firmware frontpage (the menu shown when there is no bootable device). Combined
-with `--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
-Requires `--uefi`.
+The `--uefi disable_frontpage` option powers the VM off instead of showing the
+firmware frontpage when there is no bootable device. Combined with
+`--guest-shutdown-action exit`, a guest with no boot device exits the VMM.
 
 ## PCIe Device Support
 
@@ -461,9 +483,12 @@ PCIe root port. The syntax varies slightly between device types:
 **Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
---virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0,serial=DATA-DISK
 --nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
+
+The optional `serial` value accepts 1-20 printable ASCII bytes except commas
+and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 

@@ -11,6 +11,7 @@ use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
@@ -84,6 +85,8 @@ pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
         require_enum!(req.report_type, TdispReportType)?;
     } else if let Some(Command::Unbind(req)) = &command.command {
         require_enum!(req.unbind_reason, TdispGuestUnbindReason)?;
+    } else if let Some(Command::ModifyMmioRange(req)) = &command.command {
+        require_enum!(req.action, TdispMmioRangeAction)?;
     }
 
     Ok(())

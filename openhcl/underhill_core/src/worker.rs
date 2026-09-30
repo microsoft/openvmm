@@ -1466,7 +1466,7 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs, tpm_version: TpmVersion) -> 
             TpmVersion::V185 => tpm_protocol::TPM_V185_VERSION,
         }
         .to_string(),
-        tpm_nvram_size: tpm_device::default_vtpm_size(tpm_version),
+        tpm_nvram_size: tpm_resources::default_vtpm_size(tpm_version),
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",
@@ -3407,6 +3407,12 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                // Determine if we're doing a mock TDISP flow.
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
                 use vpci_relay::*;
 
                 let mut relay = VpciRelay::new(
@@ -3435,13 +3441,11 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    isolation,
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 

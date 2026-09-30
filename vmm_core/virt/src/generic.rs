@@ -291,6 +291,18 @@ pub struct SnpConfig {
     pub id_block: Option<SnpIdBlock>,
 }
 
+/// SNP boot configuration needed before a backend creates a partition.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum SnpPartitionConfig {
+    /// A loader-generated Linux direct-boot VMSA.
+    DirectBoot {
+        /// Enables restricted interrupt injection in the partition and VMSA.
+        restricted_injection: bool,
+    },
+    /// Launch configuration extracted from an IGVM file.
+    Igvm(Box<SnpConfig>),
+}
+
 /// Isolation configuration needed before a backend creates a partition.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum ProtoPartitionIsolation {
@@ -298,8 +310,8 @@ pub enum ProtoPartitionIsolation {
     None,
     /// Hypervisor-based isolation.
     Vbs,
-    /// AMD SEV-SNP, optionally with launch configuration from an IGVM file.
-    Snp(Option<Box<SnpConfig>>),
+    /// AMD SEV-SNP with explicit boot configuration.
+    Snp(SnpPartitionConfig),
     /// Intel Trust Domain Extensions.
     Tdx,
     /// Arm Confidential Compute Architecture.
@@ -321,18 +333,6 @@ impl ProtoPartitionIsolation {
     /// Returns whether the partition is isolated.
     pub fn is_isolated(&self) -> bool {
         self.isolation_type().is_isolated()
-    }
-}
-
-impl From<IsolationType> for ProtoPartitionIsolation {
-    fn from(value: IsolationType) -> Self {
-        match value {
-            IsolationType::None => Self::None,
-            IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp(None),
-            IsolationType::Tdx => Self::Tdx,
-            IsolationType::Cca => Self::Cca,
-        }
     }
 }
 

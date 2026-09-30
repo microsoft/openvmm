@@ -554,8 +554,10 @@ name = "cca_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fs-err",
  "petri",
- "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
  "petri_artifacts_vmm_test",
  "tempfile",
  "tracing",
@@ -2344,7 +2346,6 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "test_with_tracing",
- "vmm_test_images",
 ]
 
 [[package]]
@@ -2379,6 +2380,8 @@ dependencies = [
  "log",
  "opentmk_disk",
  "paste",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
  "petri_artifacts_vmm_test",
  "powershell_builder",
  "serde",
@@ -2387,7 +2390,6 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "toml_edit",
- "vmm_test_images",
  "which 8.0.0",
 ]
 
@@ -3225,12 +3227,21 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guestmem_core",
  "inspect",
  "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
  "trycopy",
+ "zerocopy",
+]
+
+[[package]]
+name = "guestmem_core"
+version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.16",
  "zerocopy",
 ]
 
@@ -3703,6 +3714,14 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+]
+
+[[package]]
+name = "hyperv_keyboard_protocol"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4394,6 +4413,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
+ "uefi_specs",
  "vm_topology",
  "x86defs",
  "zerocopy",
@@ -4909,7 +4929,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=90d23db6e415fa7f88d917b448f46f2e6a90ca56#90d23db6e415fa7f88d917b448f46f2e6a90ca56"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=517ae1a64aeb990019d809b963ac2c2726080e24#517ae1a64aeb990019d809b963ac2c2726080e24"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -4989,7 +5009,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -4997,6 +5016,7 @@ dependencies = [
  "inspect_counters",
  "memory_range",
  "mesh",
+ "net_backend_core",
  "net_backend_resources",
  "pal_async",
  "parking_lot",
@@ -5005,6 +5025,13 @@ dependencies = [
  "tracing",
  "vm_resource",
  "vm_topology",
+]
+
+[[package]]
+name = "net_backend_core"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
 ]
 
 [[package]]
@@ -5131,7 +5158,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "event-listener",
  "futures",
  "futures-concurrency",
@@ -5144,8 +5170,8 @@ dependencies = [
  "mesh",
  "net_backend",
  "net_backend_resources",
+ "netvsp_protocol",
  "netvsp_resources",
- "open_enum",
  "pal_async",
  "parking_lot",
  "safeatomic",
@@ -5161,6 +5187,19 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "netvsp_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "net_backend_core",
+ "open_enum",
+ "static_assertions",
+ "vmbus_core",
  "zerocopy",
 ]
 
@@ -5376,6 +5415,7 @@ dependencies = [
 name = "nvme_test"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "device_emulators",
@@ -5396,6 +5436,7 @@ dependencies = [
  "scsi_buffers",
  "task_control",
  "tdisp",
+ "tdisp_proto",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5626,8 +5667,14 @@ name = "openhcl_tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "futures",
+ "hvdef",
+ "inspect",
+ "parking_lot",
  "tdisp",
  "tdisp_proto",
+ "tracing",
+ "virt",
 ]
 
 [[package]]
@@ -5790,7 +5837,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -5803,7 +5850,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "test_with_tracing",
 ]
@@ -6675,7 +6722,7 @@ dependencies = [
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
- "vmm_test_images",
+ "target-lexicon",
 ]
 
 [[package]]
@@ -6692,14 +6739,17 @@ dependencies = [
  "anyhow",
  "paste",
  "serde",
+ "target-lexicon",
 ]
 
 [[package]]
 name = "petri_artifacts_vmm_test"
 version = "0.0.0"
 dependencies = [
+ "linkme",
  "petri_artifacts_common",
  "petri_artifacts_core",
+ "serde",
 ]
 
 [[package]]
@@ -8737,6 +8787,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "guid",
  "inspect",
  "mesh",
@@ -8985,6 +9036,7 @@ dependencies = [
  "futures",
  "guestmem",
  "guid",
+ "hyperv_keyboard_protocol",
  "input_core",
  "inspect",
  "mesh",
@@ -9172,7 +9224,6 @@ dependencies = [
  "tee_call",
  "test_with_tracing",
  "thiserror 2.0.16",
- "tpm_device",
  "tpm_protocol",
  "tpm_resources",
  "tpm_vmgs",
@@ -10384,11 +10435,10 @@ name = "vmbus_core"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
- "futures",
  "guid",
  "hvdef",
  "inspect",
- "mesh",
+ "mesh_protobuf",
  "open_enum",
  "static_assertions",
  "thiserror 2.0.16",
@@ -10466,7 +10516,7 @@ name = "vmbus_ring"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "guestmem",
+ "guestmem_core",
  "inspect",
  "safeatomic",
  "thiserror 2.0.16",
@@ -10705,7 +10755,7 @@ dependencies = [
 
 [[package]]
 name = "vmgstool"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10847,16 +10897,6 @@ dependencies = [
  "anyhow",
  "pal",
  "tracing",
-]
-
-[[package]]
-name = "vmm_test_images"
-version = "0.0.0"
-dependencies = [
- "clap",
- "petri_artifacts_core",
- "petri_artifacts_vmm_test",
- "serde",
 ]
 
 [[package]]
@@ -11101,6 +11141,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "guid",
+ "hvdef",
  "inspect",
  "mesh",
  "openhcl_tdisp",
@@ -11114,6 +11155,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "virt",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_ring",
@@ -11139,22 +11181,31 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "closeable_mutex",
  "fs-err",
  "futures",
+ "guestmem",
+ "guid",
  "hcl",
  "hvdef",
  "inspect",
  "memory_range",
  "mesh",
  "openhcl_tdisp",
+ "pal_async",
+ "parking_lot",
  "pci_core",
  "slab",
  "sparse_mmap",
  "state_unit",
+ "task_control",
  "tdisp",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "user_driver",
+ "virt",
+ "vmbus_channel",
  "vmbus_client",
  "vmbus_server",
  "vmcore",
@@ -12019,10 +12070,10 @@ dependencies = [
  "ignore",
  "log",
  "object 0.37.3",
+ "petri_artifacts_vmm_test",
  "serde",
  "serde_json",
  "toml_edit",
- "vmm_test_images",
  "walkdir",
  "which 8.0.0",
  "xshell",

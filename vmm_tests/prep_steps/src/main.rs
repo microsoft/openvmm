@@ -3,9 +3,13 @@
 
 //! Perform preparation steps for our VMM tests.
 //!
-//! Currently this means booting a Windows VM to perform one task:
-//! 1. Mount the VHD that will be used for Windows-based CVM tests and install
-//!    pipette into it.
+//! This host-side helper uses Petri and OpenVMM to boot a Windows VM, mount the
+//! VHD used by Windows-based CVM tests, and install the Pipette guest agent.
+//!
+//! It is normally built and invoked by `cargo xflowey vmm-tests-run` while
+//! resolving test artifacts. Direct invocation is primarily useful when
+//! debugging image preparation and requires the same external artifacts as the
+//! VMM test pipeline.
 //!
 //! This tool is intentionally as minimal as possible, to keep tests easily
 //! reproducible. Anything that can be done through pipette during the test
@@ -176,7 +180,7 @@ fn build_no_vmbus(
             let output_dir =
                 resolver.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
             let virtio_win = resolver
-                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS);
+                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS);
             (artifacts, source_disk, output_dir, virtio_win)
         },
     )?;
@@ -331,7 +335,7 @@ async fn boot_vm_with_target_disk(
     PetriVmBuilder::new(
         PetriTestParams {
             test_name: name,
-            logger,
+            log_source: logger,
             // FUTURE: To properly support post_test_hooks we'd need to catch panics
             // and early failure returns. Not worth it for this simple prep step tool.
             post_test_hooks: &mut vec![],

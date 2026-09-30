@@ -45,15 +45,15 @@ pub mod artifacts {
 
     declare_artifacts! {
         /// Pipette windows x86_64 executable
-        PIPETTE_WINDOWS_X64,
-        /// Pipette linux x86_64 executable
-        PIPETTE_LINUX_X64,
+        PIPETTE_WINDOWS_X64("pipette.exe", WINDOWS_X64),
+        /// Pipette linux x86_64 musl executable
+        PIPETTE_LINUX_X64_MUSL("pipette", LINUX_X64_MUSL),
         /// Pipette windows aarch64 executable
-        PIPETTE_WINDOWS_AARCH64,
-        /// Pipette linux aarch64 executable
-        PIPETTE_LINUX_AARCH64,
+        PIPETTE_WINDOWS_AARCH64("pipette.exe", WINDOWS_AARCH64),
+        /// Pipette linux aarch64 musl executable
+        PIPETTE_LINUX_AARCH64_MUSL("pipette", LINUX_AARCH64_MUSL),
         /// Directory to put petri test logs in
-        TEST_LOG_DIRECTORY,
+        TEST_LOG_DIRECTORY("test_results", ANY),
     }
 }
 

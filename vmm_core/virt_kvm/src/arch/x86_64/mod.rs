@@ -149,7 +149,7 @@ impl virt::Hypervisor for Kvm {
 
     fn new_partition<'a>(
         &mut self,
-        mut config: ProtoPartitionConfig<'a>,
+        config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
         match config.isolation.isolation_type() {
             virt::IsolationType::None => {}
@@ -371,17 +371,26 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let snp_config = match &mut config.isolation {
+        let snp_config = match &config.isolation {
             virt::ProtoPartitionIsolation::None => None,
-            virt::ProtoPartitionIsolation::Snp(snp_config) => {
-                if let Some(snp_config) = snp_config.take() {
-                    Some(crate::snp::prepare_snp_config(
-                        *snp_config,
-                        self.kvm.supported_sev_vmsa_features()?,
-                    )?)
-                } else {
-                    None
-                }
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(snp_config)) => {
+                Some(crate::snp::prepare_snp_config(
+                    snp_config.as_ref().clone(),
+                    self.kvm.supported_sev_vmsa_features()?,
+                )?)
+            }
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: false,
+            }) => None,
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }) => {
+                return Err(SnpError::UnsupportedVmsaFeatures(
+                    x86defs::snp::SevFeatures::new()
+                        .with_restrict_injection(true)
+                        .into_bits(),
+                )
+                .into());
             }
             virt::ProtoPartitionIsolation::Vbs
             | virt::ProtoPartitionIsolation::Tdx

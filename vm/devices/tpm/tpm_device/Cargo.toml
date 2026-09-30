@@ -27,7 +27,7 @@ vm_resource.workspace = true
 
 crypto.workspace = true
 guid = { workspace = true, features = ["inspect"] }
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 open_enum.workspace = true
 pal_async.workspace = true

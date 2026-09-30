@@ -1,7 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
+//! Hyper-V synthetic keyboard wire types.
+//!
+//! Shared between the host-side vdev (`uidevices::keyboard`) and
+//! guest-side drivers. `no_std + alloc`-friendly.
+
+#![cfg_attr(not(test), no_std)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use guid::Guid;
 use zerocopy::FromBytes;

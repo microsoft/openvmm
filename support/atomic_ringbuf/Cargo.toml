@@ -8,7 +8,7 @@ edition.workspace = true
 
 [dependencies]
 cfg-if.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dev-dependencies]

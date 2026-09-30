@@ -36,7 +36,7 @@ pub enum OpenvmmOutput {
         #[serde(rename = "openvmm")]
         bin: PathBuf,
         #[serde(rename = "openvmm.dbg")]
-        dbg: PathBuf,
+        dbg: Option<PathBuf>,
     },
 }
 
@@ -118,10 +118,7 @@ impl FlowNode for Node {
                             OpenvmmOutput::WindowsBin { exe, pdb }
                         }
                         crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                            OpenvmmOutput::LinuxBin {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            }
+                            OpenvmmOutput::LinuxBin { bin, dbg }
                         }
                         _ => unreachable!(),
                     };

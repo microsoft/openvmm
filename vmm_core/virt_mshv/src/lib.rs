@@ -734,7 +734,7 @@ enum ErrorInner {
     #[error("operation not supported")]
     NotSupported,
     #[error("create_vm failed")]
-    CreateVMFailed,
+    CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]
     CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
@@ -868,7 +868,7 @@ fn create_vm_with_retry(
                 if e.errno() == libc::EINTR {
                     continue;
                 } else {
-                    return Err(ErrorInner::CreateVMFailed.into());
+                    return Err(ErrorInner::CreateVMFailed(e.into()).into());
                 }
             }
         }
