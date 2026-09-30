@@ -189,6 +189,9 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("cannot inject an extint: the VP is not ready for interrupt injection")]
+    ExtintNotInjectable,
 }
 
 pub struct KvmProcessorBinder {

@@ -65,13 +65,27 @@ use vfio_sys::iommufd::IommufdVeventHeader;
 use vfio_sys::iommufd::ViommuAlloc;
 use zerocopy::FromBytes;
 
+/// Capabilities that apply to one assigned endpoint rather than its physical
+/// SMMU. Devices behind the same SMMU may report different values.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceIommuCaps {
+    /// Maximum PASID width usable by this endpoint and its host IOMMU.
+    pub max_pasid_log2: u8,
+    /// Whether the endpoint supports PASID execute permission.
+    pub pasid_exec: bool,
+    /// Whether the endpoint supports PASID privileged mode.
+    pub pasid_priv: bool,
+}
+
 /// Query the physical SMMUv3's capabilities for a device bound to iommufd.
 ///
 /// Issues a single `IOMMU_GET_HW_INFO` and hands the host's raw IDR registers
 /// to [`smmu::HostSmmuCaps::from_idr`], which decodes the fields the vSMMU
-/// finalizes against and validates compatibility with (OAS, TTF, TTENDIAN,
-/// GRAN4K).
-pub fn query_host_caps(ctx: &IommufdCtx, dev_id: u32) -> anyhow::Result<smmu::HostSmmuCaps> {
+/// finalizes against and validates compatibility with.
+pub fn query_host_caps(
+    ctx: &IommufdCtx,
+    dev_id: u32,
+) -> anyhow::Result<(smmu::HostSmmuCaps, DeviceIommuCaps)> {
     let mut info = vfio_sys::iommufd::IommuHwInfoArmSmmuv3 {
         flags: 0,
         __reserved: 0,
@@ -79,13 +93,20 @@ pub fn query_host_caps(ctx: &IommufdCtx, dev_id: u32) -> anyhow::Result<smmu::Ho
         iidr: 0,
         aidr: 0,
     };
-    let (data_type, _caps) = ctx
+    let (data_type, max_pasid_log2, capabilities) = ctx
         .get_hw_info(dev_id, &mut info)
         .context("IOMMU_GET_HW_INFO failed")?;
     if data_type != vfio_sys::iommufd::IOMMU_HW_INFO_TYPE_ARM_SMMUV3 {
         anyhow::bail!("unexpected host IOMMU hw info type {data_type} (expected ARM SMMUv3)");
     }
-    Ok(smmu::HostSmmuCaps::from_idr(info.idr))
+    Ok((
+        smmu::HostSmmuCaps::from_idr(info.idr),
+        DeviceIommuCaps {
+            max_pasid_log2,
+            pasid_exec: capabilities & vfio_sys::iommufd::IOMMU_HW_CAP_PCI_PASID_EXEC != 0,
+            pasid_priv: capabilities & vfio_sys::iommufd::IOMMU_HW_CAP_PCI_PASID_PRIV != 0,
+        },
+    ))
 }
 
 /// Nested STE double-words `[DW0, DW1]` for the persistent **abort** HWPT:
