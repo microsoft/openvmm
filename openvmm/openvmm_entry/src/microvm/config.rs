@@ -411,6 +411,15 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 generation_id,
                 restore_entropy,
                 output_drain: Some(output_drain),
+                time_abi: opt.microvm.x_time_abi_v1.then(|| {
+                    chipset_resources::microvm::MicrovmPortbTimeAbi {
+                        generation: 0,
+                        utc_offset_ms: 0,
+                        sample_delay_us: 0,
+                        test_hooks: false,
+                        restore: None,
+                    }
+                }),
             }
             .into_resource(),
         });
