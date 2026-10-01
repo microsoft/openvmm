@@ -494,9 +494,9 @@ pub(crate) struct InitializedVm {
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
-    /// The identity MSR handler, when the partition uses the time ABI.
+    /// The time ABI of the partition, when it uses the time ABI.
     #[cfg(guest_arch = "x86_64")]
-    time_abi_msrs: Option<Arc<virt::time_abi::TimeAbiMsrs>>,
+    time_abi_partition: Option<time_abi::PartitionTimeAbi>,
 }
 
 trait ExtractTopologyConfig {
@@ -1276,13 +1276,21 @@ impl InitializedVm {
         let user_mode_memory_faults = !lazy_memory_registration;
 
         #[cfg(guest_arch = "x86_64")]
-        let (time_abi_msrs, time_abi_config) =
-            if cfg.machine_profile == MachineProfile::Microvm && cfg.microvm.time_abi.is_some() {
-                let (msrs, config) = time_abi::partition_config(processor_topology.vp_count());
-                (Some(msrs), Some(config))
-            } else {
-                (None, None)
-            };
+        let (time_abi_partition, time_abi_config) = match &cfg.microvm.time_abi {
+            Some(parameters) if cfg.machine_profile == MachineProfile::Microvm => {
+                let cpu_profile = time_abi::select_cpu_profile(
+                    &parameters.cpu_profile,
+                    &cfg.microvm.hypervisor_id,
+                )?;
+                let (msrs, config) =
+                    time_abi::partition_config(processor_topology.vp_count(), cpu_profile.clone());
+                (
+                    Some(time_abi::PartitionTimeAbi { msrs, cpu_profile }),
+                    Some(config),
+                )
+            }
+            _ => (None, None),
+        };
         #[cfg(guest_arch = "x86_64")]
         let versioned_cpu_contract =
             microvm::uses_versioned_cpu_contract(cfg.machine_profile) && time_abi_config.is_none();
@@ -1681,7 +1689,7 @@ impl InitializedVm {
             igvm_file,
             driver_source,
             #[cfg(guest_arch = "x86_64")]
-            time_abi_msrs,
+            time_abi_partition,
         })
     }
 
@@ -1715,7 +1723,7 @@ impl InitializedVm {
             igvm_file,
             driver_source,
             #[cfg(guest_arch = "x86_64")]
-            time_abi_msrs,
+            time_abi_partition,
         } = self;
 
         let instantiated_vp_count = snapshot_restore.select_instantiated_vps(
@@ -1951,8 +1959,8 @@ impl InitializedVm {
             .unwrap();
 
         #[cfg(guest_arch = "x86_64")]
-        let time_abi_state = match time_abi_msrs {
-            Some(msrs) => {
+        let time_abi_state = match time_abi_partition {
+            Some(time_abi::PartitionTimeAbi { msrs, cpu_profile }) => {
                 let parameters = cfg
                     .microvm
                     .time_abi
@@ -1964,11 +1972,12 @@ impl InitializedVm {
                     saved_state.is_some() == restore.is_some(),
                     "a time ABI restore requires both the saved state and the time ABI restore inputs"
                 );
-                let cpu_profile = virt::time_abi::surface::resolve_cpu_profile(
-                    &parameters.cpu_profile,
-                    hypervisor,
-                )?;
                 if let Some(input) = restore {
+                    anyhow::ensure!(
+                        input.cpu_profile.id == cpu_profile,
+                        "the partition's CPU profile '{cpu_profile}' is not the snapshot's '{}'",
+                        input.cpu_profile.id
+                    );
                     time_abi::check_cpu_surface(
                         partition.as_ref(),
                         hypervisor,
