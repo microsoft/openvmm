@@ -8,10 +8,12 @@
 mod cpu_contract;
 mod regs;
 pub(crate) mod snp;
+mod time_abi;
 mod tsc;
 mod vm_state;
 mod vp_state;
 
+pub(crate) use time_abi::KvmTimeAbi;
 pub(crate) use vp_state::seg_reg;
 pub(crate) use vp_state::table_reg;
 
@@ -80,6 +82,7 @@ use virt::irqcon::DeliveryMode;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::state::StateElement;
+use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::vm::AccessVmState;
 use virt::x86::HardwareBreakpoint;
 use virt::x86::max_physical_address_size_from_cpuid;
@@ -168,6 +171,14 @@ impl virt::Hypervisor for Kvm {
         }
 
         let nested_virt = config.nested_virt;
+        if config.time_abi.is_some() {
+            if config.hv_config.is_some() {
+                return Err(KvmError::TimeAbiUnsupported("Hyper-V enlightenments"));
+            }
+            if !matches!(config.isolation.isolation_type(), virt::IsolationType::None) {
+                return Err(KvmError::TimeAbiUnsupported("isolation"));
+            }
+        }
         let supported_cpuid = self.kvm.supported_cpuid()?;
 
         // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
@@ -434,6 +445,9 @@ impl virt::Hypervisor for Kvm {
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
+        if config.time_abi.is_some() {
+            time_abi::install_identity_msr_filter(&vm)?;
+        }
 
         if let Some(sev) = &sev {
             vm.sev_snp_init(
@@ -505,7 +519,10 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         cpuid.extend(config.cpuid);
         cpuid.extend(topology_leaves);
         cpuid.extend(psfd_fixup);
-        let cpuid = CpuidLeafSet::new(cpuid);
+        let cpuid = match &self.config.time_abi {
+            Some(time_abi) => time_abi::compose_cpuid(cpuid, &time_abi.cpuid),
+            None => CpuidLeafSet::new(cpuid),
+        };
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
         if bsp_apic_id != 0 {
@@ -524,12 +541,39 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             self.vm.add_vp(vp_info.apic_id)?;
         }
 
-        let cpuid = tsc::add_frequency_leaves(&self.vm, bsp_apic_id, cpuid)?;
-        let mut caps = virt::PartitionCapabilities::from_cpuid(
-            self.config.processor_topology,
-            &mut |function, index| cpuid.result(function, index, &[0; 4]),
-        )
+        let cpuid = match &self.config.time_abi {
+            None => tsc::add_frequency_leaves(&self.vm, bsp_apic_id, cpuid)?,
+            Some(_) => cpuid,
+        };
+        let mut caps = if self.config.time_abi.is_some() {
+            // The identity leaves must not make the partition model Hyper-V
+            // or the KVM clock.
+            virt::PartitionCapabilities::from_cpuid(
+                self.config.processor_topology,
+                &mut virt::time_abi::identity::capabilities_cpuid(&mut |function, index| {
+                    cpuid.result(function, index, &[0; 4])
+                }),
+            )
+        } else {
+            virt::PartitionCapabilities::from_cpuid(
+                self.config.processor_topology,
+                &mut |function, index| cpuid.result(function, index, &[0; 4]),
+            )
+        }
         .map_err(KvmError::Capabilities)?;
+        let time_abi = match &self.config.time_abi {
+            Some(config) => {
+                time_abi::check_capabilities(&caps)?;
+                let vcpus: Vec<_> = self
+                    .config
+                    .processor_topology
+                    .vps_arch()
+                    .map(|vp_info| vp_info.apic_id)
+                    .collect();
+                Some(KvmTimeAbi::new(&self.vm, &vcpus, config.msrs.clone())?)
+            }
+            None => None,
+        };
 
         caps.can_freeze_time = false;
         caps.nested_virt = self.nested_virt;
@@ -607,6 +651,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
             synic_ports: Default::default(),
+            time_abi,
         });
 
         let partition = KvmPartition {
@@ -784,6 +829,11 @@ impl Partition for KvmPartition {
     }
 
     fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
+        if self.inner.time_abi.is_some() {
+            return Err(KvmError::TimeAbiUnsupported(
+                "TSC scaling (KVM_SET_TSC_KHZ)",
+            ));
+        }
         self.inner.set_tsc_frequency_hz(frequency_hz)
     }
 
@@ -792,7 +842,19 @@ impl Partition for KvmPartition {
     }
 
     fn advance_snapshot_time(&self, duration: Duration) -> Result<(), Self::Error> {
+        if self.inner.time_abi.is_some() {
+            return Err(KvmError::TimeAbiUnsupported(
+                "the KVM clock (KVM_SET_CLOCK)",
+            ));
+        }
         self.inner.advance_snapshot_time(duration)
+    }
+
+    fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
+        self.inner
+            .time_abi
+            .is_some()
+            .then_some(&*self.inner as &dyn virt::time_abi::TimeAbiBackend)
     }
 
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
@@ -1608,6 +1670,12 @@ impl<'p> Processor for KvmProcessor<'p> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
+        if let Some(time_abi) = &self.partition.time_abi {
+            // A restore or a reset may have changed the guest-visible value.
+            time_abi
+                .sync_invariant_control(&self.kvm)
+                .map_err(|err| dev.fatal_error(KvmRunVpError::TimeAbi(err).into()))?;
+        }
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -1691,7 +1759,17 @@ impl<'p> Processor for KvmProcessor<'p> {
                         dev.read_mmio(self.vpindex, address, data).await
                     }
                     kvm::Exit::MsrRead { index, data, error } => {
-                        if MYSTERY_MSRS.contains(&index) {
+                        if let Some(result) = self
+                            .partition
+                            .time_abi
+                            .as_ref()
+                            .and_then(|time_abi| time_abi.read_msr(self.vpindex, index))
+                        {
+                            match result {
+                                Ok(value) => *data = value,
+                                Err(_) => *error = 1,
+                            }
+                        } else if MYSTERY_MSRS.contains(&index) {
                             tracelimit::warn_ratelimited!(index, "stubbed out mystery MSR read");
                             *data = 0;
                         } else {
@@ -1700,7 +1778,22 @@ impl<'p> Processor for KvmProcessor<'p> {
                         }
                     }
                     kvm::Exit::MsrWrite { index, data, error } => {
-                        if MYSTERY_MSRS.contains(&index) {
+                        if let Some(time_abi) = &self.partition.time_abi
+                            && let Some(result) = time_abi.write_msr(self.vpindex, index, data)
+                        {
+                            match result {
+                                Ok(()) if index == MSR_TSC_INVARIANT_CONTROL => {
+                                    // KVM hides invariant TSC until its own
+                                    // copy is set; mirror it before the guest
+                                    // runs on.
+                                    time_abi.sync_invariant_control(&self.kvm).map_err(|err| {
+                                        dev.fatal_error(KvmRunVpError::TimeAbi(err).into())
+                                    })?;
+                                }
+                                Ok(()) => {}
+                                Err(_) => *error = 1,
+                            }
+                        } else if MYSTERY_MSRS.contains(&index) {
                             tracelimit::warn_ratelimited!(index, "stubbed out mystery MSR write");
                         } else {
                             tracelimit::error_ratelimited!(index, data, "unrecognized msr write");

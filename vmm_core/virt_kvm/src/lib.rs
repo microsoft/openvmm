@@ -96,6 +96,12 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     TscFrequencyCpuid(#[from] virt::x86::tsc::TscFrequencyCpuidError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    TimeAbi(#[from] virt::time_abi::TimeAbiError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("the time ABI does not support {0}")]
+    TimeAbiUnsupported(&'static str),
 }
 
 #[derive(Inspect)]
@@ -166,6 +172,11 @@ struct KvmPartitionInner {
     gic_nr_irqs: u32,
     #[cfg(guest_arch = "x86_64")]
     synic_ports: virt::synic::SynicPortMap,
+    /// The NVX time ABI state, for a partition built with a time ABI
+    /// configuration.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    time_abi: Option<arch::KvmTimeAbi>,
 }
 
 // TODO: Chunk this up into smaller types.
@@ -194,6 +205,9 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    TimeAbi(virt::time_abi::TimeAbiError),
 }
 
 pub struct KvmProcessorBinder {
