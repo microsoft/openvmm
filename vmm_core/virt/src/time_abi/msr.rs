@@ -9,6 +9,7 @@
 
 use super::DeclaredRates;
 use crate::x86::MsrError;
+use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::ops::RangeInclusive;
 use std::sync::OnceLock;
@@ -153,6 +154,17 @@ impl TimeAbiMsrs {
         self.tsc_invariant_control
             .store(tsc_invariant_control, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+impl Inspect for TimeAbiMsrs {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        if let Some(rates) = self.declared() {
+            resp.field("tsc_hz", rates.tsc_hz)
+                .field("apic_hz", rates.apic_hz);
+        }
+        resp.field("tsc_invariant_control", self.tsc_invariant_control());
     }
 }
 
