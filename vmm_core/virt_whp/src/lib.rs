@@ -1631,9 +1631,6 @@ impl VtlPartition {
         let time_abi = match &config.time_abi {
             Some(time_abi) => Some(time_abi::WhpTimeAbi::configure(
                 time_abi,
-                // The features derive from the CPU profile once
-                // `TimeAbiConfig` carries it.
-                None,
                 &mut whp_config,
                 &mut extended_exits,
             )?),
