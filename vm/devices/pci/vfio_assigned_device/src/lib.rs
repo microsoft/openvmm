@@ -2244,7 +2244,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                     let new_in_d0 = power_state == 0;
                     let old_in_d0 = self.in_d0;
                     if self.kernel_owned_ats && !new_in_d0 {
-                        tracing::warn!(
+                        tracelimit::warn_ratelimited!(
                             pci_id = self.pci_id.as_str(),
                             power_state,
                             "ignored guest D-state transition while direct ATS is configured"
@@ -2368,7 +2368,7 @@ impl PciConfigSpace for VfioAssignedPciDevice {
                         enabled,
                         value,
                     ) {
-                        tracing::error!(
+                        tracelimit::error_ratelimited!(
                             pci_id = self.pci_id.as_str(),
                             error = err.as_ref() as &dyn std::error::Error,
                             enabled,
