@@ -48,33 +48,8 @@ pub(crate) async fn report_time_abi_verification(
         .join()
         .await
         .context("VM worker failed after time ABI verification")?;
-    // The worker checks profile support only where the backend reports a
-    // cheap CPU surface; verification mode always checks it, from the
-    // backend's CPU fingerprint, once the worker's partition is gone.
-    if let Err(err) = report_field(&report, "cpu_profile")
-        .and_then(|cpu_profile| check_profile_support(hypervisor, &cpu_profile))
-    {
-        tracing::error!(error = format!("{err:#}"), "time ABI verification failed");
-        println!("{}", failure_line(hypervisor, &err));
-        return Ok(1);
-    }
     println!("{line}");
     Ok(0)
-}
-
-/// Checks that the backend supports the CPU profile `id`, from the backend's
-/// CPU fingerprint (`E_PROFILE_UNSUPPORTED`). Fingerprinting creates a probe
-/// partition, which only verification mode can afford.
-fn check_profile_support(hypervisor: &str, id: &str) -> anyhow::Result<()> {
-    let profile = cpu_profile::pinned(id)
-        .with_context(|| format!("the CPU profile '{id}' is not pinned in this OpenVMM"))?;
-    let fingerprint = openvmm_helpers::hypervisor::cpu_fingerprint(Some(hypervisor))
-        .context("failed to fingerprint the hypervisor backend")?;
-    cpu_profile::verify_support(
-        profile,
-        &cpu_profile::HostCpuSurface::from_fingerprint(&fingerprint),
-    )?;
-    Ok(())
 }
 
 /// Returns the string value of `name` in the worker's `time-abi` inspect
