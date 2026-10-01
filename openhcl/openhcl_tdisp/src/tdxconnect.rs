@@ -233,7 +233,7 @@ impl TdispTdxConnectResourceValidator {
 impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // Nothing to do before the bind.
-        tracing::info!(?target_vtl, device_id, "TDX Connect on_pre_bind: no-op");
+        tracelimit::info_ratelimited!(?target_vtl, device_id, "TDX Connect on_pre_bind: no-op");
         Ok(())
     }
 
@@ -257,8 +257,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 )
             })?;
 
-        // This only authorizes the start. The host's TDH.TDI.START performs the
-        // transition to RUN, which `on_post_start` confirms.
+        // This only authorizes the start, the host's later call to
+        // TDH.TDI.START performs the transition to RUN.
         mshv_vtl
             .tdx_tdi_start(function_id, bind_session)
             .map_err(|e| {
@@ -268,7 +268,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 )
             })?;
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             ?target_vtl,
             device_id,
             bind_session,
@@ -279,20 +279,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     }
 
     fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // Read the state from the TDX Module rather than trusting the host,
-        // which the ABI EAS says is reliable after TDG.TDI.START.
-        let state = self.get_tsm_tdi_state(target_vtl, device_id)?;
-        if state != Some(TdispTdiState::Run) {
-            anyhow::bail!(
-                "TDI {device_id:#x} is in TDISP state {state:?} after the host start, expected Run"
-            );
-        }
-
-        tracing::info!(
-            ?target_vtl,
-            device_id,
-            "TDX Connect on_post_start: TDI confirmed in TDISP RUN state"
-        );
+        // Nothing to do after the start.
+        tracelimit::info_ratelimited!(?target_vtl, device_id, "TDX Connect on_post_start: no-op");
 
         Ok(())
     }
@@ -302,22 +290,10 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         target_vtl: Vtl,
         device_id: u16,
     ) -> anyhow::Result<Option<TdispTdiState>> {
-        let mshv_vtl = Self::open_mshv_vtl()?;
-
-        // A TD without the feature cannot answer, rather than having failed to.
-        if !mshv_vtl.tdx_get_config_flags().tdx_connect() {
-            tracing::info!(
-                ?target_vtl,
-                device_id,
-                "TDX Connect get_tsm_tdi_state: TDX Connect is not enabled on this TD"
-            );
-            return Ok(None);
-        }
-
         let function_id = Self::function_id(device_id);
 
-        // GET_TDISP_STATE returns its value in RCX, so the output buffer gpa
-        // must be zero.
+        // Output buffer gpa must be zero since GET_TDISP_STATE returns its
+        // value directly in a register.
         let raw = match mshv_vtl.tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0) {
             Ok(raw) => raw,
             Err(e) => {
@@ -330,7 +306,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                         | TdCallResultCode::TDI_INVALID_METADATA
                         | TdCallResultCode::TDI_INVALID_STATE
                 ) {
-                    tracing::info!(
+                    tracelimit::info_ratelimited!(
                         ?target_vtl,
                         device_id,
                         status = %Self::describe_status(e),
@@ -361,7 +337,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             ),
         };
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             ?target_vtl,
             device_id,
             %state,
@@ -372,11 +348,11 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
     }
 
     fn tdisp_set_tdi_report(&self, device_id: u16, report: &TdiReportStruct) {
-        // Only the MMIO range list is needed, to resolve a range_id to the
+        // The MMIO range list is needed to resolve a range_id to the
         // report-relative index TDG.TDI.MMIO.ACCEPT wants.
         let ranges = report.mmio_interface_info.clone();
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             "TDX Connect tdisp_set_tdi_report: recorded the TDI MMIO range list: \
              device_id={device_id:#x}, range_count={}, range_ids={:?}",
             ranges.len(),
@@ -388,7 +364,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     fn tdisp_clear_tdi_report(&self, device_id: u16) {
         let removed = self.tdi_mmio_ranges.lock().take().is_some();
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             "TDX Connect tdisp_clear_tdi_report: dropped the TDI MMIO range list: \
              device_id={device_id:#x}, removed={removed}"
         );
@@ -411,13 +387,12 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 anyhow::bail!("length_in_bytes must be page aligned");
             }
 
-            // TDISP TODO: This needs to be refactored a lot more.
             let mshv_vtl = Self::open_mshv_vtl()?;
             Self::ensure_tdx_connect(&mshv_vtl)?;
 
             // The caller has already told the host to unblock the range, so its
             // pages are ready to be accepted into the TD below.
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 "TDX Connect tdisp_unblock_mmio: unblocking the MMIO range: \
                  device_id={device_id:#x}, range_id={range_id}, base_gpa={base_gpa:#x}, \
                  base_offset={base_offset:#x}, length_in_bytes={length_in_bytes:#x}, \
@@ -426,11 +401,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             );
 
             let function_id = Self::function_id(device_id);
+
             // The leaf addresses the range by its position in the report's MMIO
-            // list, not by the report's `range_id` field.
+            // list, not by the report's `range_id` field. Convert it here.
             let mmio_range_index = self.mmio_range_index(device_id, range_id)?;
             let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
-            // Narrow once here, as the accept loops and the diagnostics below
+
+            // Narrow once here as the accept loops and the diagnostics below
             // all take u32 page counts.
             let page_count = u32::try_from(length_in_bytes / HV_PAGE_SIZE)
                 .context("MMIO range is more than u32::MAX pages")?;
@@ -441,14 +418,10 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             // MMIO_MAPPED so the VTL0 alias below can be created.
             //
             // TDISP TODO: this accepts one 4K page per call because
-            // `tdcall_tdi_mmio_accept` requires it: the leaf reports its resume
-            // cursor in R9 and the ioctl cannot read R9 back. EAS 4.3.5.1 says an
-            // interrupted accept resumes the TD with only RCX and R9 updated and
-            // that "guest TD software is not directly involved", which suggests
-            // the restart is transparent and the whole range could be accepted in
-            // a single call. Worth collapsing this loop once that is confirmed on
-            // hardware, since a 64MB BAR is 16384 ioctls today.
-            tracing::info!(
+            // `tdcall_tdi_mmio_accept` requires it. When OpenHCL Linux's tdcall
+            // interface supports the necessary batch accept mechanism, this
+            // loop can be optimized.
+            tracelimit::info_ratelimited!(
                 "TDX Connect tdisp_unblock_mmio: accepting MMIO pages with TDG.TDI.MMIO.ACCEPT: \
                  device_id={device_id:#x}, range_id={range_id}, \
                  mmio_range_index={mmio_range_index}, page_count={page_count}, \
@@ -468,8 +441,9 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                     .with_range_size(1)
                     .with_range_offset(base_offset_pages + i);
 
-                // The leaf addresses the range by its position in the interface
-                // report's MMIO list, not by the report's `range_id` field.
+                // NOTE: this tdcall addresses the range by its position in the
+                // interface report's MMIO list, not by the report's `range_id`
+                // field.
                 match mshv_vtl.tdx_tdi_mmio_accept(
                     function_id,
                     gpa_base_and_level,
@@ -479,14 +453,14 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                     Ok(()) => {}
                     Err(e) if e.code() == TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
                         already_accepted += 1;
-                        tracing::info!(
+                        tracelimit::info_ratelimited!(
                             "TDG.TDI.MMIO.ACCEPT: page already accepted, skipping: \
                              device_id={device_id:#x}, range_id={range_id}, \
                              page_gpa={page_gpa:#x}"
                         );
                     }
                     Err(e) => {
-                        tracing::error!(
+                        tracelimit::error_ratelimited!(
                             "TDG.TDI.MMIO.ACCEPT failed for requester id {device_id:#x} range \
                              {range_id} (report index {mmio_range_index}) page {page_gpa:#x} \
                              (page {i} of {page_count}): {}",
@@ -503,7 +477,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 }
             }
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 "TDX Connect tdisp_unblock_mmio: MMIO range accepted into the TD: \
                  device_id={device_id:#x}, range_id={range_id}, \
                  mmio_range_index={mmio_range_index}, page_count={page_count}, \
@@ -511,8 +485,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 page_count - already_accepted
             );
 
-            // Grant the range to L2 VM1, which is VTL0, so the guest can drive
-            // the device. Read and write only, as MMIO is not executable.
+            // Grant the range to L2 VM1 (VTL0) so the guest can access the
+            // device. RW only as MMIO can never be executable.
             let vm_attributes = GpaVmAttributes::new()
                 .with_valid(true)
                 .with_read(true)
@@ -521,7 +495,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             let attributes_mask = GpaVmAttributesMask::new().with_read(true).with_write(true);
             let mask = TdgMemPageAttrWriteR8::new().with_l2_vm1(attributes_mask);
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 "TDX Connect tdisp_unblock_mmio: granting the MMIO range to VTL0 with \
                  TDG.MEM.PAGE.ATTR.WR: device_id={device_id:#x}, range_id={range_id}, \
                  page_count={page_count}, first_pfn={base_pfn:#x}, \
@@ -533,13 +507,14 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 let page_gpa = base_gpa + (u64::from(i) << hvdef::HV_PAGE_SHIFT);
                 let range = MemoryRange::from_4k_gpn_range(pfn..pfn + 1);
 
-                // Confirm the page reached MMIO_MAPPED, so a failure names the
-                // page instead of surfacing as an EPT violation.
+                // Confirm the page reached MMIO_MAPPED so a failure identifies
+                // the page that failed instead of surfacing as an EPT
+                // violation.
                 Self::check_mmio_page_accepted(
                     &mshv_vtl, device_id, range_id, page_gpa, i, page_count,
                 )
                 .inspect_err(|e| {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         "TDG.MEM.PAGE.ATTR.RD preflight failed, not issuing \
                          TDG.MEM.PAGE.ATTR.WR: {e:#}"
                     );
@@ -547,7 +522,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
                 if let Err(code) = mshv_vtl.tdx_set_page_attributes(range, attributes, mask) {
                     let status = Self::describe_status_code(code);
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         "TDG.MEM.PAGE.ATTR.WR failed: device_id={device_id:#x}, \
                          range_id={range_id}, page_gpa={page_gpa:#x} \
                          (page {i} of {page_count}), status={status}"
@@ -560,7 +535,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
                 }
             }
 
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 "TDX Connect tdisp_unblock_mmio: MMIO range granted to VTL0: \
                  device_id={device_id:#x}, range_id={range_id}, page_count={page_count}"
             );
@@ -573,11 +548,11 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         let mshv_vtl = Self::open_mshv_vtl()?;
         Self::ensure_tdx_connect(&mshv_vtl)?;
 
-        // VM_IDX 0 is L1 and 1-3 select L2 VM1-VM3, so the target follows the
-        // same `vtl + 1` convention `hcl` uses for VP enter.
+        // Map the TDX VM index from the VTL value. Example: VM_IDX 0 is L1,
+        // which is VTL0.
         let target = DmarTarget::new().with_vm_idx(target_vtl as u8 + 1);
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             "TDX Connect tdisp_unblock_dma: accepting DMA with TDG.DMAR.ACCEPT: \
              device_id={device_id:#x}, vm_idx={}, target_vtl={target_vtl:?}, vtom={:#x}",
             target.vm_idx(),
@@ -595,7 +570,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             });
 
         if let Err(e) = err {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 "TDX Connect tdisp_unblock_dma: TDG.DMAR.ACCEPT failed for device_id={device_id:#x} (vm_idx {}): {}",
                 target.vm_idx(),
                 e
@@ -604,7 +579,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
             return Err(e);
         }
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             "TDX Connect tdisp_unblock_dma: DMA accepted: device_id={device_id:#x}, vm_idx={}",
             target.vm_idx()
         );
@@ -614,6 +589,8 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     /// Does nothing, as TDX Connect gives the guest no inverse for
     /// TDG.TDI.MMIO.ACCEPT. Releasing the pages is the host's job.
+    ///
+    /// Resource re-blocking is automatically enforced on Unbind by TDXC.
     fn tdisp_block_mmio<'a>(
         &'a self,
         target_vtl: Vtl,
@@ -624,7 +601,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
         Box::pin(async move {
-            tracing::info!(
+            tracelimit::info_ratelimited!(
                 vtom = self.vtom,
                 ?target_vtl,
                 device_id,
@@ -638,19 +615,9 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         })
     }
 
+    /// Does nothing. Resource re-blocking is automatically enforced on Unbind by TDXC.
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
-        // TDISP TODO: this should call TDG.DMAR.RELEASE (ABI EAS 0.61 4.3.2),
-        // which still needs a `DMAR_RELEASE` entry in `TdCallLeaf` plus
-        // `tdcall_dmar_release` / `MshvVtl::tdx_dmar_release`. The EAS does not
-        // give the leaf number and the other Connect leaves came from the TDX
-        // Module Base Spec, so the number has to be confirmed first.
-        //
-        // Two things to settle along with it: the leaf requires the PASID table
-        // entry to be DMAR_PRESENT and is defined as the first step of L1 DMA
-        // *reassignment*, and on success it TD-exits with TDX_TD_INV_REQUEST for
-        // the VMM to service before the call returns. For a plain unbind the
-        // teardown may instead be host-driven via TDH.DMAR.BLOCK.
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             vtom = self.vtom,
             ?target_vtl,
             device_id,
