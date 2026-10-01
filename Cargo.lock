@@ -6422,6 +6422,7 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "cpu_profile",
  "crossterm",
  "crypto",
  "cxl",
