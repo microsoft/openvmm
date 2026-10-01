@@ -17,6 +17,8 @@ use vm_resource::kind::NonVolatileStoreKind;
 /// A handle to a TPM device.
 #[derive(MeshPayload)]
 pub struct TpmDeviceHandle {
+    /// TPM reference implementation version
+    pub version: TpmVersion,
     /// Non-volatile store for PPI (physical presence interface) data
     pub ppi_store: Resource<NonVolatileStoreKind>,
     /// Non-volatile store for TPM NVRAM data
@@ -41,6 +43,15 @@ pub struct TpmDeviceHandle {
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
     const ID: &'static str = "tpm";
+}
+
+/// Version of the Microsoft TPM reference implementation to use.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
+pub enum TpmVersion {
+    /// TPM reference implementation version 1.38
+    V138,
+    /// TPM reference implementation version 1.85
+    V185,
 }
 
 /// A resource kind for AK cert renewal helpers.

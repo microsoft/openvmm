@@ -374,6 +374,7 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "PROVENANCE_DOC" => FileId::PROVENANCE_DOC,
         "TPM_NVRAM_BACKUP" => FileId::TPM_NVRAM_BACKUP,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
+        "TPM_185_NVRAM" => FileId::TPM_185_NVRAM,
         v => FileId(v.parse::<u32>()?),
     })
 }

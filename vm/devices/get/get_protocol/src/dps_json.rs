@@ -183,7 +183,10 @@ pub struct ManagementVtlFeatures {
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    _flag5: bool, // Reserved for NonMaskableDebugInterrupt
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
 }
 

@@ -136,7 +136,7 @@ pub struct GuestConfig {
     pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
-    /// Enable the TPM.
+    /// Enable the TPM device in the guest.
     pub enable_tpm: bool,
     /// The encoded VTL2 settings document.
     #[inspect(with = "Option::is_some")]

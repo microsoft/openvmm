@@ -1980,6 +1980,7 @@ mod tests {
     use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
@@ -1995,6 +1996,23 @@ mod tests {
     use vmgs_format::FileId;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    fn test_attestation_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V138,
+            tpm_persisted: true,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+            hardware_sealing_policy: HardwareSealingPolicy::None,
+        }
+    }
 
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
@@ -2135,6 +2153,7 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: true,
             hardware_sealing_policy: HardwareSealingPolicy::None,
             filtered_vpci_devices_allowed: false,
@@ -2709,6 +2728,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2788,6 +2808,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2832,6 +2853,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -2902,6 +2924,7 @@ mod tests {
                 interactive_console_enabled: false,
                 secure_boot: false,
                 tpm_enabled: false,
+                tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
@@ -3158,7 +3181,7 @@ mod tests {
         let get_pair = new_test_get(driver, false, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3363,7 +3386,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3448,7 +3471,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.encrypted());
@@ -3540,7 +3563,7 @@ mod tests {
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = Default::default();
+        let att_cfg = test_attestation_config();
         // Without hardware sealing support
         let tee = MockTeeCallNoGetDerivedKey {};
 

@@ -97,6 +97,8 @@ pub struct Config {
     /// A string to append to the current VTL0 command line. Currently only used
     /// when booting linux directly.
     pub cmdline_append: CString,
+    /// Whether UEFI should disable SHA-1 PCR usage.
+    pub disable_sha1_pcr: bool,
 }
 
 /// Load VTL0 based on measured config. Returns any VP state that should be set.
@@ -135,6 +137,7 @@ pub fn load(
                 chipset_capabilities,
                 platform_config,
                 caps,
+                config.disable_sha1_pcr,
                 isolated,
                 chipset_mmio,
             )?;
@@ -402,6 +405,7 @@ pub fn write_uefi_config(
     chipset_capabilities: VmChipsetCapabilities,
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
+    disable_sha1_pcr: bool,
     isolated: bool,
     chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), Error> {
@@ -667,6 +671,7 @@ pub fn write_uefi_config(
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
         flags.set_force_dma_bounce_enabled(platform_config.general.force_dma_bounce_enabled);
+        flags.set_disable_sha1_pcr(disable_sha1_pcr);
 
         // Some settings do not depend on host config
 

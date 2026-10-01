@@ -95,6 +95,10 @@ impl FlowNode for Node {
                     [
                         ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
                         ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
+                        (
+                            "CMAKE".to_string(),
+                            "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
+                        ),
                     ]
                     .into_iter()
                     .collect(),

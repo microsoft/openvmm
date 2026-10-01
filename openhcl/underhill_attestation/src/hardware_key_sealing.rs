@@ -343,6 +343,7 @@ impl HardwareKeyProtectorV3Ext for HardwareKeyProtectorV3 {
 mod tests {
     use super::*;
     use crate::test_utils::MockTeeCall;
+    use igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use igvm_attest::get::runtime_claims::AttestationVmConfig;
     use igvm_attest::get::runtime_claims::HardwareSealingPolicy;
     use zerocopy::FromBytes;
@@ -359,6 +360,7 @@ mod tests {
             interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: false,
             hardware_sealing_policy,
             filtered_vpci_devices_allowed: true,

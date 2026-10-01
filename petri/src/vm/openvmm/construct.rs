@@ -18,14 +18,13 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
+use crate::SIZE_1_MB;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
+use crate::VmbusStorageController;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-
-use crate::SIZE_1_MB;
-use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
 use crate::vm::PetriVmProperties;
@@ -82,6 +81,7 @@ use storvsp_resources::ScsiPath;
 use tempfile::TempPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
+use tpm_vmgs::tpm_nvram_file_id;
 use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -875,7 +875,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_debugging: false,
                     enable_memory_protections: false,
                     disable_frontpage: *disable_frontpage,
-                    enable_tpm: self.tpm_config.is_some(),
+                    tpm_version: self.tpm_config.map(|c| c.version.into()),
                     enable_battery: false,
                     enable_serial: true,
                     enable_vpci_boot: *enable_vpci_boot,
@@ -1082,7 +1082,7 @@ impl PetriVmConfigSetupCore<'_> {
             vmgs: memdiff_vmgs(self.vmgs).await?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
-            enable_tpm: self.tpm_config.is_some(),
+            tpm_version: self.tpm_config.map(|c| c.version.into() ),
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: *secure_boot_enabled,
             secure_boot_template: match secure_boot_template {
@@ -1158,8 +1158,9 @@ impl PetriVmConfigSetupCore<'_> {
 
     async fn config_tpm(&self) -> anyhow::Result<Option<ChipsetDeviceHandle>> {
         if !self.firmware.is_openhcl()
-            && let Some(TpmConfig {
+            && let Some(&TpmConfig {
                 no_persistent_secrets,
+                version,
                 ..
             }) = self.tpm_config
         {
@@ -1168,7 +1169,9 @@ impl PetriVmConfigSetupCore<'_> {
                 MachineArch::Aarch64 => TpmRegisterLayout::Mmio,
             };
 
-            let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || *no_persistent_secrets {
+            let tpm_version = version.into();
+
+            let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || no_persistent_secrets {
                 (
                     EphemeralNonVolatileStoreHandle.into_resource(),
                     EphemeralNonVolatileStoreHandle.into_resource(),
@@ -1176,7 +1179,7 @@ impl PetriVmConfigSetupCore<'_> {
             } else {
                 (
                     VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                    VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                    VmgsFileHandle::new(tpm_nvram_file_id(tpm_version), true).into_resource(),
                 )
             };
 
@@ -1184,6 +1187,7 @@ impl PetriVmConfigSetupCore<'_> {
                 name: "tpm".to_string(),
                 resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
+                        version: tpm_version,
                         ppi_store,
                         nvram_store,
                         refresh_tpm_seeds: false,
