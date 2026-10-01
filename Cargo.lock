@@ -1003,6 +1003,7 @@ name = "cpu_profile"
 version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
+ "hvdef",
  "safe_intrinsics",
  "serde",
  "serde_json",
