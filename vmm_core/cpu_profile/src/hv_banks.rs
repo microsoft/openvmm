@@ -26,6 +26,16 @@
 //! backend's to decide. Features that no bit controls (for example PKU), the
 //! descriptive leaves (caches, the brand string), and the time policy bits a
 //! host lacks reach the guest through the backend's CPUID results.
+//!
+//! The hypervisor refuses some feature sets. MSHV fails to create a partition
+//! with `mb_clear_support` cleared on its own on a Skylake-SP host, with
+//! `rdtscp_support` cleared on its own on Azure, or with an XSAVE prerequisite
+//! (`xsave_support`, `avx_support`, `avx512_support`,
+//! `xsave_comp_support`) cleared while what depends on it stays set. No pinned
+//! profile clears these where the fleet's hosts offer them, and a test keeps
+//! it so. A profile that did would fail partition creation with the
+//! hypervisor's error rather than `E_PROFILE_UNSUPPORTED`. The time ABI needs
+//! RDTSCP, so no profile clears it.
 
 use crate::cpuid::CpuidEntry;
 use crate::error::ProfileError;
@@ -348,7 +358,9 @@ pub const HV_FEATURES: &[HvFeature] = &[
     bank1!(with_tsc_invariant_support, X7, 0, EDX, 8),
     bank1!(with_cl_zero_support, X8, 0, EBX, 0),
     bank1!(with_rdpru_support, X8, 0, EBX, 4),
+    // Also sets the linear address width, 0x80000008 EAX[15:8].
     bank1!(with_la57_support, 7, 0, ECX, 16),
+    // MSHV does not expose VMX through this bit alone.
     bank1!(with_nested_virt_support, 1, 0, ECX, 5),
     bank1!(with_psfd_support, 7, 2, EDX, 0),
     bank1!(with_cet_ss_support, 7, 0, ECX, 7),
@@ -526,6 +538,14 @@ pub fn profile_features(
 /// A CPUID bit that several features control (IBRS and IBPB both control
 /// `SPEC_CTRL`) is cleared when any of them is missing. Bits the table does
 /// not map are left alone.
+///
+/// The function only clears, so the host's own view bounds the result.
+/// MSHV's root CPUID hides `TSC_ADJUST` (`7.0:EBX[1]`), which a partition with
+/// `tsc_adjust_support` presents, so that bit is under-reported; every profile
+/// pins it clear. Root-only bits the table does not map, such as MONITOR, DS,
+/// TM, the PMU, PT, and the topology fields, stay set. The derivation policy
+/// clears them in every profile, so [`verify_support`](crate::verify_support)
+/// never relies on them.
 pub fn restrict_cpuid_to_features(cpuid: &mut [CpuidEntry], available: HvFeatures) {
     for feature in HV_FEATURES {
         if available.word(feature.word) & feature.mask != 0 {
@@ -818,6 +838,38 @@ mod tests {
             HvFeatureWord::Bank1,
             "tsc_invariant_support"
         ));
+    }
+
+    #[test]
+    fn pinned_profiles_keep_what_the_hypervisor_requires() {
+        // MSHV refuses a partition with mb_clear or rdtscp cleared on its own,
+        // or with an XSAVE prerequisite cleared while a feature that depends
+        // on it stays set (see the module documentation).
+        for (id, host, available) in HOSTS {
+            let features = profile_features(profile(id), available).unwrap();
+            for name in ["mb_clear_support", "rdtscp_support"] {
+                if has(&available, HvFeatureWord::Bank0, name) {
+                    assert!(
+                        has(&features, HvFeatureWord::Bank0, name),
+                        "{host}: {id} clears {name}"
+                    );
+                }
+            }
+            let kept = |name: &str| has(&features, HvFeatureWord::Xsave, name);
+            for feature in HV_FEATURES {
+                let name = feature.name();
+                if feature.word != HvFeatureWord::Xsave || features.xsave & feature.mask == 0 {
+                    continue;
+                }
+                assert!(kept("xsave_support"), "{host}: {name} without xsave");
+                if name.starts_with("avx") && name != "avx_support" {
+                    assert!(kept("avx_support"), "{host}: {name} without avx");
+                }
+                if name.starts_with("avx512_") {
+                    assert!(kept("avx512_support"), "{host}: {name} without avx512");
+                }
+            }
+        }
     }
 
     #[test]
