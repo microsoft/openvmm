@@ -17,11 +17,12 @@ pub(crate) struct Capabilities {
     pub(crate) time_control: bool,
     pub(crate) reset: bool,
     pub(crate) deadline: bool,
+    pub(crate) hv1: bool,
 }
 
-// Probe exactly the unenlightened, single-VP configuration exercised by the
-// tests. In particular, MSHV Windows-guest reset restrictions do not apply.
-fn probe<H: Hypervisor>(mut hv: H) -> anyhow::Result<Capabilities>
+// Probe the same enlightenment configuration used by the test, including
+// configuration-dependent restrictions such as MSHV Windows-guest reset.
+fn probe<H: Hypervisor>(mut hv: H, hv1: bool) -> anyhow::Result<Capabilities>
 where
     H::Partition: virt::Partition,
 {
@@ -29,11 +30,12 @@ where
     let driver = pool.driver();
     pool.run_until(async {
         let fixture = Fixture::new(driver).await?;
-        let (partition, _binder) = fixture.build(&mut hv)?;
+        let (partition, _binder) = fixture.build(&mut hv, hv1)?;
         Ok(Capabilities {
             time_control: partition.supports_time_control().is_some(),
             reset: partition.supports_reset().is_some(),
             deadline: partition.caps().tsc_deadline,
+            hv1: partition.caps().hv1,
         })
     })
 }
@@ -43,22 +45,24 @@ macro_rules! backend {
         pub(crate) mod $module {
             use super::*;
 
-            static CAPS: OnceLock<Result<Capabilities, String>> = OnceLock::new();
+            static CAPS: [OnceLock<Result<Capabilities, String>>; 2] =
+                [OnceLock::new(), OnceLock::new()];
 
-            fn new_hypervisor() -> anyhow::Result<$hv> {
-                $constructor
+            fn new_hypervisor(hv1: bool) -> anyhow::Result<$hv> {
+                ($constructor)(hv1)
             }
 
-            pub(crate) fn capabilities() -> &'static Result<Capabilities, String> {
-                CAPS.get_or_init(|| {
-                    new_hypervisor()
-                        .and_then(probe)
+            pub(crate) fn capabilities(hv1: bool) -> &'static Result<Capabilities, String> {
+                CAPS[usize::from(hv1)].get_or_init(|| {
+                    new_hypervisor(hv1)
+                        .and_then(|hv| probe(hv, hv1))
                         .map_err(|error| format!("{error:#}"))
                 })
             }
 
             pub(crate) fn test(
                 name: &'static str,
+                hv1: bool,
                 supported: fn() -> bool,
                 run: impl 'static + Send + AsyncFn(DefaultDriver, $hv) -> anyhow::Result<()>,
             ) -> petri::TestCase {
@@ -68,13 +72,13 @@ macro_rules! backend {
                     async move |_, driver, ()| {
                         // Probe errors are test failures, not evidence of an
                         // unsupported host. Preserve them in Petri's logs.
-                        CAPS.get()
+                        CAPS[usize::from(hv1)].get()
                             .context("backend capability requirements were not evaluated")?
                             .as_ref()
                             .map_err(|error| anyhow::anyhow!("{error}"))
                             .context(concat!(stringify!($module), " capability probe failed"))?;
                         anyhow::ensure!(supported(), "backend does not support test requirements");
-                        let hv = new_hypervisor()
+                        let hv = new_hypervisor(hv1)
                             .context(concat!("failed to construct ", stringify!($module)))?;
                         run(driver, hv).await
                     },
@@ -90,40 +94,44 @@ macro_rules! backend {
 }
 
 #[cfg(target_os = "linux")]
-backend!(kvm, Kvm, virt_kvm::Kvm, Ok(virt_kvm::Kvm::new()?));
+backend!(kvm, Kvm, virt_kvm::Kvm, |_| Ok(virt_kvm::Kvm::new()?));
 #[cfg(target_os = "linux")]
 backend!(
     mshv,
     Mshv,
     virt_mshv::LinuxMshv,
-    Ok(virt_mshv::LinuxMshv::new()?)
+    |_| Ok(virt_mshv::LinuxMshv::new()?)
 );
 #[cfg(windows)]
 backend!(
     whp,
     Whp,
     virt_whp::Whp,
-    Ok(virt_whp::Whp {
+    |hv1| Ok(virt_whp::Whp {
         user_mode_apic: false,
-        offload_enlightenments: false,
+        offload_enlightenments: hv1,
     })
 );
 
 /// Registers a contract function for each native backend at its definition site.
 macro_rules! backend_test {
     ($test:ident, requires: [$($requirement:ident),* $(,)?]) => {
-        #[cfg(target_os = "linux")]
-        $crate::native::backend_test!(@backend kvm, $test, [$($requirement),*]);
-        #[cfg(target_os = "linux")]
-        $crate::native::backend_test!(@backend mshv, $test, [$($requirement),*]);
-        #[cfg(windows)]
-        $crate::native::backend_test!(@backend whp, $test, [$($requirement),*]);
+        $crate::native::backend_test!($test, hv1: false, requires: [$($requirement),*]);
     };
-    (@backend $backend:ident, $test:ident, [$($requirement:ident),*]) => {
+    ($test:ident, hv1: $hv1:literal, requires: [$($requirement:ident),* $(,)?]) => {
+        #[cfg(target_os = "linux")]
+        $crate::native::backend_test!(@backend kvm, $test, $hv1, [$($requirement),*]);
+        #[cfg(target_os = "linux")]
+        $crate::native::backend_test!(@backend mshv, $test, $hv1, [$($requirement),*]);
+        #[cfg(windows)]
+        $crate::native::backend_test!(@backend whp, $test, $hv1, [$($requirement),*]);
+    };
+    (@backend $backend:ident, $test:ident, $hv1:literal, [$($requirement:ident),*]) => {
         petri::multitest!(vec![
             $crate::native::$backend::test(
                 concat!(stringify!($backend), "::", stringify!($test)),
-                || $crate::native::$backend::capabilities()
+                $hv1,
+                || $crate::native::$backend::capabilities($hv1)
                     .as_ref()
                     .map_or(true, |caps| {
                         let _ = caps;
@@ -132,7 +140,7 @@ macro_rules! backend_test {
                 async |driver, mut hv| {
                     use virt::BindProcessor as _;
                     let fixture = $crate::fixture::Fixture::new(driver).await?;
-                    let (partition, mut binder) = fixture.build(&mut hv)?;
+                    let (partition, mut binder) = fixture.build(&mut hv, $hv1)?;
                     let mut processor = binder.bind()?;
                     $test(&partition, &mut processor)
                 },

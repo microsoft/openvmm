@@ -335,3 +335,59 @@ fn deadline_restore(
     check_deadline(processor, 0)?;
     Ok(())
 }
+
+backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
+fn synic_timers_restore(
+    partition: &(impl Partition + PartitionAccessState),
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    let control = partition
+        .supports_time_control()
+        .context("partition time control unavailable")?;
+    // Disabled timers keep config/count readback deterministic without running
+    // a VP or depending on timer expiration and interrupt delivery.
+    let timers = vp::SynicTimers {
+        timers: [1, 2, 3, 4].map(|sint| vp::SynicTimer {
+            config: hvdef::HvSynicStimerConfig::new()
+                .with_periodic(true)
+                .with_sint(sint)
+                .into(),
+            count: REFERENCE_TIME * u64::from(sint),
+            adjustment: 0,
+            undelivered_message_expiration_time: None,
+        }),
+    };
+    let cleared = vp::SynicTimers {
+        timers: [vp::SynicTimer::default(); 4],
+    };
+    for expected in [timers, cleared] {
+        control.freeze_time();
+        let saved = mesh::payload::encode(expected);
+        let restored = mesh::payload::decode::<vp::SynicTimers>(&saved)?;
+        {
+            let mut state = processor.access_state(Vtl::Vtl0);
+            state.set_synic_timers(&restored)?;
+            state.commit()?;
+        }
+        let mut check = || -> anyhow::Result<()> {
+            let actual = processor.access_state(Vtl::Vtl0).synic_timers()?;
+            for (index, (actual, expected)) in
+                actual.timers.iter().zip(&expected.timers).enumerate()
+            {
+                anyhow::ensure!(
+                    (actual.config, actual.count) == (expected.config, expected.count),
+                    "synthetic timer {index} mismatch: expected {expected:?}, actual {actual:?}"
+                );
+            }
+            Ok(())
+        };
+        check().context("restored synthetic timers differ while frozen")?;
+        std::thread::sleep(FROZEN_WAIT);
+        check().context("restored synthetic timers changed while frozen")?;
+        control.thaw_time();
+        check().context("restored synthetic timers differ after thaw")?;
+        std::thread::sleep(RUNNING_WAIT);
+        check().context("restored synthetic timers changed after thaw")?;
+    }
+    Ok(())
+}
