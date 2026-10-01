@@ -119,6 +119,16 @@ impl MshvProcessor<'_> {
         self.set_state(mshv_bindings::MSHV_VP_STATE_LAPIC, hv_state.as_bytes())
     }
 
+    /// Re-asserts the highest pending edge-triggered vector of the VP's
+    /// current LAPIC state; see [`Self::assert_pending_interrupt`].
+    pub(crate) fn reassert_pending_interrupt(&self) -> Result<(), Error> {
+        if self.partition.isolation.snp().is_some() {
+            return Ok(());
+        }
+        let lapic = self.get_lapic()?;
+        self.assert_pending_interrupt(&lapic)
+    }
+
     /// Re-asserts the highest-priority pending edge-triggered vector of a
     /// LAPIC state just written through the state page.
     ///
@@ -318,6 +328,9 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_lapic(&lapic)?;
         if self.partition.isolation.snp().is_none() {
             self.assert_pending_interrupt(&lapic)?;
+            self.inner
+                .lapic_written
+                .store(true, std::sync::atomic::Ordering::Release);
         }
 
         Ok(())

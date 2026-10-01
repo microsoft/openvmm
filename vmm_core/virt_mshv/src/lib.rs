@@ -162,6 +162,8 @@ impl<'a> MshvProtoPartition<'a> {
                 extint_pending: AtomicBool::new(false),
                 #[cfg(guest_arch = "x86_64")]
                 created: AtomicBool::new(false),
+                #[cfg(guest_arch = "x86_64")]
+                lapic_written: AtomicBool::new(false),
                 waker: RwLock::new(None),
             })
             .collect();
@@ -360,6 +362,11 @@ struct MshvVpInner {
     /// uncreated.
     #[cfg(guest_arch = "x86_64")]
     created: AtomicBool,
+    /// Set when the VMM writes this VP's LAPIC state. The next VP run
+    /// consumes it and re-asserts the highest pending edge-triggered vector
+    /// (see `MshvProcessor::assert_pending_interrupt`).
+    #[cfg(guest_arch = "x86_64")]
+    lapic_written: AtomicBool,
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,
@@ -642,6 +649,20 @@ impl virt::Processor for MshvProcessor<'_> {
         self.partition
             .thaw_time()
             .expect("failed to thaw partition time");
+
+        // A LAPIC state written since the last run may hold a pending vector
+        // that the hypervisor hasn't delivered, and partition time may have
+        // been frozen and thawed since then (the legacy restore clock does).
+        // Assert it again now that the VP is about to run.
+        #[cfg(guest_arch = "x86_64")]
+        if vpinner.lapic_written.swap(false, Ordering::AcqRel) {
+            if let Err(err) = self.reassert_pending_interrupt() {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to re-assert a pending LAPIC vector"
+                );
+            }
+        }
 
         // Ensure any messages present from a state restore are flushed on
         // the first loop iteration.
