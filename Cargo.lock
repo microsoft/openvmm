@@ -5987,6 +5987,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_pl011_resources",
  "serial_uart_resources",
+ "sha2",
  "smmu",
  "sparse_mmap",
  "state_unit",

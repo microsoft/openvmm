@@ -142,6 +142,9 @@ pub(super) struct SnapshotRestore {
     time: Option<RestoreTime>,
     /// The time ABI inputs of a restore, validated by the controller.
     pub(super) time_abi: Option<openvmm_defs::time_abi::RestoreTimeInput>,
+    /// Whether partition time must be released before the restored VPs
+    /// first run (time ABI restore step 17).
+    time_abi_release: bool,
     /// VP prefix instantiated for an explicit MSHV restore-time activation
     /// target.
     vp_prefix: Option<u32>,
@@ -263,6 +266,13 @@ impl LoadedVm {
         saved_state_restore: ProfileSpan,
     ) -> anyhow::Result<()> {
         saved_state_restore.complete("restore", "saved_state_restore", Default::default());
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(input) = self.snapshot_restore.time_abi.take() {
+            let clock_restore = ProfileSpan::start();
+            self.time_abi_restore(input).await?;
+            self.snapshot_restore.time_abi_release = true;
+            clock_restore.complete("restore", "time_abi_clock", Default::default());
+        }
         self.advance_restored_clock(self.snapshot_restore.time)
             .await?;
         self.snapshot_restore.start_guard =
@@ -297,6 +307,23 @@ impl LoadedVm {
                     ..Default::default()
                 },
             );
+        }
+        // Release partition time just before the readiness event and the VP
+        // release, so a failure never publishes readiness.
+        #[cfg(guest_arch = "x86_64")]
+        if std::mem::take(&mut self.snapshot_restore.time_abi_release) {
+            let released = self
+                .inner
+                .time_abi
+                .as_ref()
+                .context("a time ABI restore requires a time ABI partition")
+                .and_then(|state| {
+                    super::time_abi::release_time(self.inner.partition.as_ref(), state)
+                });
+            if let Err(error) = released {
+                self.state_units.stop().await;
+                return Err(error.context("failed to release restored partition time"));
+            }
         }
         if let Some(mut sink) = self.snapshot_restore.ready_sink.take() {
             let signal_result = sink.write_all(RESTORE_READY_EVENT_V1).and_then(|()| {
