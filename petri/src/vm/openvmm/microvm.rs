@@ -151,6 +151,7 @@ pub(super) fn attach_chipset_devices(
                 generation_id: [0x5a; 16],
                 restore_entropy: Vec::new(),
                 output_drain: None,
+                time_abi: None,
             }
             .into_resource(),
         },
