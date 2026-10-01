@@ -180,8 +180,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
 .\openvmm.exe `
     --hv `
     --vtl2 `
-    --igvm openhcl-x64-test-linux-direct.bin `
-    --igvm-personality openhcl `
+    --igvm "firmware=openhcl-x64-test-linux-direct.bin,personality=openhcl" `
     -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `

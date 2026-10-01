@@ -94,7 +94,8 @@ describes the source definitions.
 
   SNP support is currently limited to Linux direct boot and is intended for
   bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
-  selected with `--igvm-personality linux-direct`. MSHV SNP can expose Hyper-V
+  selected with `--igvm firmware=<FILE>,personality=linux-direct`.
+  MSHV SNP can expose Hyper-V
   enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
@@ -107,8 +108,8 @@ describes the source definitions.
 
   ```bash
   openvmm --hypervisor mshv --isolation snp \
-    --igvm path/to/snp-linux-direct.bin \
-    --igvm-personality linux-direct --com1 console \
+    --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
+    --com1 console \
     --hv --no-vmbus -m 160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
@@ -138,7 +139,7 @@ describes the source definitions.
   * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
   * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
 
-  With `--igvm-personality openhcl`, `--uefi` configures the UEFI firmware
+  With IGVM `personality=openhcl`, `--uefi` configures the UEFI firmware
   that OpenHCL loads into VTL0. All options except `firmware` and
   `force_firmware_version` are supported in this mode. Those options apply
   only when OpenVMM loads an external firmware image and are rejected with
@@ -146,12 +147,20 @@ describes the source definitions.
 
   The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--igvm <FILE>`: Boot from an IGVM file. Requires `--igvm-personality`.
-* `--igvm-personality <openhcl|uefi|linux-direct>`: Select the chipset and
-  device shape for an IGVM boot. This option is required for every `--igvm`
-  boot, including VTL2 boots; there is no default. The personality does not
-  select the isolation platform. Use
-  `--isolation` separately when required by the IGVM.
+* `--igvm <OPTIONS>`: Boot from an IGVM file. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the IGVM file.
+  * `personality=<openhcl|uefi|linux-direct>`: Select the chipset and device
+    shape for the IGVM boot.
+
+  Both options are required; neither has a default. For example:
+
+  ```bash
+  openvmm --hv --vtl2 \
+    --igvm firmware=path/to/openhcl.igvm,personality=openhcl
+  ```
+
+  The personality does not select the isolation platform. Use `--isolation`
+  separately when required by the IGVM.
 
   The `uefi` personality uses the Gen2 device shape, but firmware is loaded
   from the IGVM. It does not select the normal external-UEFI load path. The

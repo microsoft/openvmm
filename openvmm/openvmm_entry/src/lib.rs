@@ -231,8 +231,8 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 }
 
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
-    if let Some(personality) = opt.igvm_personality {
-        match personality {
+    if let Some(igvm) = &opt.igvm {
+        match igvm.personality {
             IgvmPersonalityCli::Openhcl => BaseChipsetType::HclHost,
             IgvmPersonalityCli::Uefi => BaseChipsetType::HypervGen2Uefi,
             IgvmPersonalityCli::LinuxDirect
@@ -1293,7 +1293,10 @@ async fn vm_config_from_command_line(
     };
 
     if (uefi.is_some() && opt.igvm.is_none())
-        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
+        || opt
+            .igvm
+            .as_ref()
+            .is_some_and(|igvm| igvm.personality == IgvmPersonalityCli::Uefi)
     {
         let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
@@ -1350,7 +1353,7 @@ async fn vm_config_from_command_line(
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
         with_hv = true;
-    } else if let Some(path) = &opt.igvm {
+    } else if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -1371,14 +1374,13 @@ async fn vm_config_from_command_line(
             !force_firmware_version,
             "--uefi force_firmware_version is not supported with --igvm"
         );
-        let file = fs_err::File::open(path)
+        let file = fs_err::File::open(&igvm.firmware)
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
-        with_hv = match opt.igvm_personality {
-            Some(IgvmPersonalityCli::Openhcl | IgvmPersonalityCli::Uefi) => true,
-            Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
-            None => anyhow::bail!("--igvm-personality is required for IGVM boots"),
+        with_hv = match igvm.personality {
+            IgvmPersonalityCli::Openhcl | IgvmPersonalityCli::Uefi => true,
+            IgvmPersonalityCli::LinuxDirect => opt.hv,
         };
 
         load_mode = LoadMode::Igvm {
@@ -3017,7 +3019,7 @@ async fn run_control_inner(
         ged_rpc: resources.ged_rpc.clone(),
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
-        igvm_path: opt.igvm.clone(),
+        igvm_path: opt.igvm.as_ref().map(|igvm| igvm.firmware.clone()),
         memory_backing_file: opt.memory_backing_file().cloned(),
         memory: opt.memory_size(),
         processors: opt.processors,
@@ -3185,22 +3187,14 @@ mod tests {
     fn maps_igvm_personalities_to_chipsets() {
         for (args, expected) in [
             (
-                vec![
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "uefi",
-                ],
+                vec!["openvmm", "--igvm", "firmware=guest.igvm,personality=uefi"],
                 BaseChipsetType::HypervGen2Uefi,
             ),
             (
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                 ],
                 BaseChipsetType::UnenlightenedLinuxDirect,
             ),
@@ -3208,9 +3202,7 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--hv",
                 ],
                 BaseChipsetType::HyperVGen2LinuxDirect,
@@ -3219,9 +3211,7 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--isolation",
                     "snp",
                 ],
@@ -3231,9 +3221,7 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "openhcl",
+                    "firmware=guest.igvm,personality=openhcl",
                     "--hv",
                     "--vtl2",
                 ],
@@ -3255,6 +3243,7 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let igvm_path = temp_dir.path().join("guest.igvm");
             File::create(&igvm_path).unwrap();
+            let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
             let mesh = VmmMesh::new(&driver, true).unwrap();
 
             for (extra, expected_alias, expected_policy) in [
@@ -3303,9 +3292,7 @@ mod tests {
                 let mut args = vec![
                     "openvmm",
                     "--igvm",
-                    igvm_path.to_str().unwrap(),
-                    "--igvm-personality",
-                    "openhcl",
+                    &igvm_options,
                     "--hv",
                     "--vtl2",
                     "--single-process",
@@ -3351,9 +3338,7 @@ mod tests {
                 let mut args = vec![
                     "openvmm",
                     "--igvm",
-                    igvm_path.to_str().unwrap(),
-                    "--igvm-personality",
-                    "openhcl",
+                    &igvm_options,
                     "--hv",
                     "--vtl2",
                     "--single-process",
