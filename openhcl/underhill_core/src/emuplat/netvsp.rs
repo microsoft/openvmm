@@ -443,30 +443,33 @@ impl HclNetworkVFManagerWorker {
         let indices = (0..device.num_vports()).collect::<Vec<u32>>();
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
 
-        // Preallocate adapter indices in vport order. NetworkAdapterIndex caches
-        // each MAC-to-index mapping, so it will not change during concurrent setup.
-        for index in &indices {
-            let config = device
-                .query_vport_config(*index)
-                .await
-                .with_context(|| format!("failed to query MANA vport {index} for {vtl2_vfid}"))?;
-            let mac_address = config.mac_addr.into();
-            self.network_adapter_index.next(&mac_address);
+        let vports = futures::future::try_join_all(indices.iter().map(|index| {
+            let vport_state = VportState::new(
+                self.save_state.direction_to_vtl0(*index),
+                Some(self.save_state.vport_callback(*index)),
+            );
+            let pending_device = device.new_vport(*index, Some(vport_state), device.dev_config());
+            async {
+                pending_device
+                    .await
+                    .with_context(|| format!("failed to create mana vport {vtl2_vfid}"))
+            }
+        }))
+        .instrument(tracing::info_span!(
+            "creating vports",
+            vtl2_vfid,
+            num_endpoints = indices.len()
+        ))
+        .await?;
+        // Assign adapter index in order of vports to ensure consistent mapping.
+        for vport in &vports {
+            let mac_address = vport.mac_address();
+            let _ = self.network_adapter_index.next(&mac_address);
         }
-
         let result = futures::future::try_join_all(
-            indices.iter().zip(self.endpoint_controls.iter_mut()).map(
-                |(index, endpoint_control)| {
-                    let vport_state = VportState::new(
-                        self.save_state.direction_to_vtl0(*index),
-                        Some(self.save_state.vport_callback(*index)),
-                    );
-                    let pending_device =
-                        device.new_vport(*index, Some(vport_state), device.dev_config());
+            vports.into_iter().zip(self.endpoint_controls.iter_mut()).map(
+                |(vport, endpoint_control)| {
                     async {
-                        let vport = pending_device
-                            .await
-                            .with_context(|| format!("failed to create mana vport {vtl2_vfid}"))?;
                         let mac_address = vport.mac_address();
                         let adapter_index = self.network_adapter_index.next(&mac_address);
                         vport.set_serial_no(adapter_index).await.with_context(|| {
