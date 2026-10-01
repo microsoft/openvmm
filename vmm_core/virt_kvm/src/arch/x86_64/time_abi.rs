@@ -16,13 +16,14 @@
 //!   capabilities come from the CPUID with the hypervisor range masked, so
 //!   neither `hv1` nor `kvm_clock` is present.
 //! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff`,
-//!   `IA32_TSC_ADJUST`, and `IA32_TSC_DEADLINE`, and
-//!   `KVM_MSR_EXIT_REASON_FILTER` delivers every guest access to OpenVMM:
-//!   [`TimeAbiMsrs`] serves the identity range, and the two hidden TSC MSRs
-//!   raise #GP (with their CPUID bits clear, KVM would still serve
-//!   `IA32_TSC_ADJUST`, and would read `IA32_TSC_DEADLINE` as 0 and ignore
-//!   writes). KVM checks the filter before its in-kernel Hyper-V MSRs, so
-//!   those never see a guest access.
+//!   `IA32_TSC_ADJUST`, `IA32_TSC_DEADLINE`, and the legacy P6 L2-cache MSRs,
+//!   and `KVM_MSR_EXIT_REASON_FILTER` delivers every guest access to OpenVMM:
+//!   [`TimeAbiMsrs`] serves the identity range, and the other MSRs raise #GP
+//!   (with their CPUID bits clear, KVM would still serve `IA32_TSC_ADJUST`,
+//!   and would read `IA32_TSC_DEADLINE` as 0 and ignore writes; KVM serves
+//!   reads of `MSR_IA32_BBL_CR_CTL3`, and OpenVMM stubs the other L2-cache
+//!   MSRs for the PCAT BIOS). KVM checks the filter before its in-kernel
+//!   Hyper-V MSRs, so those never see a guest access.
 //! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
 //!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
 //!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
@@ -54,6 +55,7 @@
 use super::KvmPartitionInner;
 use crate::KvmError;
 use parking_lot::Mutex;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
@@ -82,8 +84,25 @@ const MSR_IA32_TSC_ADJUST: u32 = 0x3b;
 /// `IA32_TSC_DEADLINE`, which the time ABI hides.
 const MSR_IA32_TSC_DEADLINE: u32 = 0x6e0;
 
-/// The MSRs outside the identity range that raise #GP.
+/// The TSC MSRs that the time ABI hides; they raise #GP.
 const HIDDEN_TSC_MSRS: [u32; 2] = [MSR_IA32_TSC_ADJUST, MSR_IA32_TSC_DEADLINE];
+
+/// The legacy P6 L2-cache MSRs that the backend stubs for Windows booting
+/// from the PCAT BIOS (`MYSTERY_MSRS` in the parent module). No CPU profile
+/// pins them and a microVM never probes them, so they raise #GP on a time
+/// ABI partition, as on MSHV. KVM itself serves reads of `0x11e`
+/// (`MSR_IA32_BBL_CR_CTL3`), so the filter denies them all.
+const LEGACY_L2_CACHE_MSRS: [RangeInclusive<u32>; 4] =
+    [0x88..=0x8a, 0x116..=0x116, 0x118..=0x11b, 0x11e..=0x11e];
+
+/// Whether a guest access to `msr` raises #GP on a time ABI partition,
+/// outside the identity range.
+fn is_hidden_msr(msr: u32) -> bool {
+    HIDDEN_TSC_MSRS.contains(&msr)
+        || LEGACY_L2_CACHE_MSRS
+            .iter()
+            .any(|range| range.contains(&msr))
+}
 
 /// Pairing attempts before an anchor fails: an attempt only misses
 /// [`MAX_ANCHOR_PAIRING_NS`] when the thread is interrupted between the two
@@ -91,12 +110,18 @@ const HIDDEN_TSC_MSRS: [u32; 2] = [MSR_IA32_TSC_ADJUST, MSR_IA32_TSC_DEADLINE];
 const ANCHOR_ATTEMPTS: usize = 16;
 
 /// Returns the MSR filter ranges of the time ABI: deny every guest access to
-/// the identity range and to the hidden TSC MSRs, so they exit to OpenVMM.
-pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 3] {
+/// the identity range, the hidden TSC MSRs, and the legacy L2-cache MSRs, so
+/// they exit to OpenVMM.
+pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 7] {
+    let [l2_a, l2_b, l2_c, l2_d] = LEGACY_L2_CACHE_MSRS;
     [
         kvm::MsrFilterRange::deny(IDENTITY_MSR_RANGE),
         kvm::MsrFilterRange::deny(MSR_IA32_TSC_ADJUST..=MSR_IA32_TSC_ADJUST),
         kvm::MsrFilterRange::deny(MSR_IA32_TSC_DEADLINE..=MSR_IA32_TSC_DEADLINE),
+        kvm::MsrFilterRange::deny(l2_a),
+        kvm::MsrFilterRange::deny(l2_b),
+        kvm::MsrFilterRange::deny(l2_c),
+        kvm::MsrFilterRange::deny(l2_d),
     ]
 }
 
@@ -345,8 +370,8 @@ impl KvmTimeAbi {
     /// Handles a guest read of `msr` that exited to user space. `None` means
     /// the MSR is not the time ABI's.
     pub(crate) fn read_msr(&self, vp: VpIndex, msr: u32) -> Option<Result<u64, MsrError>> {
-        if HIDDEN_TSC_MSRS.contains(&msr) {
-            tracelimit::info_ratelimited!(vp = vp.index(), msr, "hidden TSC MSR read raises #GP");
+        if is_hidden_msr(msr) {
+            tracelimit::info_ratelimited!(vp = vp.index(), msr, "hidden MSR read raises #GP");
             return Some(Err(MsrError::InvalidAccess));
         }
         self.msrs.read(vp, msr)
@@ -364,12 +389,12 @@ impl KvmTimeAbi {
         msr: u32,
         value: u64,
     ) -> Option<Result<(), MsrError>> {
-        if HIDDEN_TSC_MSRS.contains(&msr) {
+        if is_hidden_msr(msr) {
             tracelimit::info_ratelimited!(
                 vp = vp.index(),
                 msr,
                 value,
-                "hidden TSC MSR write raises #GP"
+                "hidden MSR write raises #GP"
             );
             return Some(Err(MsrError::InvalidAccess));
         }
@@ -630,7 +655,15 @@ mod tests {
     #[test]
     fn filter_denies_exactly_the_owned_msrs() {
         let filter = identity_msr_filter();
-        let owned = [(0x4000_0000, 0x4000_01ff), (0x3b, 0x3b), (0x6e0, 0x6e0)];
+        let owned = [
+            (0x4000_0000, 0x4000_01ff),
+            (0x3b, 0x3b),
+            (0x6e0, 0x6e0),
+            (0x88, 0x8a),
+            (0x116, 0x116),
+            (0x118, 0x11b),
+            (0x11e, 0x11e),
+        ];
         assert_eq!(filter.len(), owned.len());
         for (range, (first, last)) in filter.iter().zip(owned) {
             assert_eq!(range.base, first);
@@ -638,6 +671,12 @@ mod tests {
             assert!(range.read && range.write);
             assert!(range.bitmap.iter().all(|&byte| byte == 0));
         }
+    }
+
+    #[test]
+    fn legacy_l2_cache_msrs_are_the_legacy_stubs() {
+        let hidden: Vec<u32> = LEGACY_L2_CACHE_MSRS.into_iter().flatten().collect();
+        assert_eq!(hidden, super::super::MYSTERY_MSRS);
     }
 
     fn kvm_like_base() -> Vec<CpuidLeaf> {
@@ -982,8 +1021,15 @@ mod tests {
         assert_eq!(write(MSR_IA32_TSC_ADJUST, 0), Some(Err(())));
         assert_eq!(read(MSR_IA32_TSC_DEADLINE), Some(Err(())));
         assert_eq!(write(MSR_IA32_TSC_DEADLINE, 1), Some(Err(())));
+        // So do the legacy L2-cache MSRs that the legacy path stubs.
+        for msr in [0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e] {
+            assert_eq!(read(msr), Some(Err(())), "{msr:#x}");
+            assert_eq!(write(msr, 0), Some(Err(())), "{msr:#x}");
+        }
         // Other unknown MSRs keep their existing handling.
-        assert_eq!(read(0x88), None);
+        for msr in [0x87, 0x8b, 0x117, 0x11c, 0x11f] {
+            assert_eq!(read(msr), None, "{msr:#x}");
+        }
         assert_eq!(write(0x4000_0200, 0), None);
         // The invariant TSC control is guest state in the shared handler.
         assert_eq!(write(MSR_TSC_INVARIANT_CONTROL, 2), Some(Err(())));
