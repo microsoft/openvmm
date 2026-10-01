@@ -16,6 +16,10 @@
 //! their UTF-8 bytes, no whitespace), and the profile digest is its SHA-256.
 //! Pinned profiles are stored as pretty canonical JSON. Decoding accepts only
 //! the canonical bytes, so a profile has exactly one encoding and one digest.
+//!
+//! Every serialized struct declares its fields in the byte order of their
+//! keys, so serializing it directly gives the canonical form (tests check
+//! this against the sorting encoder). Keep new fields in that order.
 
 use crate::Hex32;
 use crate::Hex64;
@@ -49,10 +53,10 @@ const LEAF7_EDX_ARCH_CAPABILITIES: u32 = 1 << 29;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Generation {
-    /// The generation name used in logs and reports, such as `icelake-sp`.
-    pub name: String,
     /// The CPU models of the generation.
     pub cpus: Vec<GenerationCpu>,
+    /// The generation name used in logs and reports, such as `icelake-sp`.
+    pub name: String,
 }
 
 impl Generation {
@@ -92,14 +96,14 @@ pub struct GenerationCpu {
 pub struct CpuidLeafValue {
     /// The leaf, the input value of `EAX`.
     pub leaf: Hex32,
+    /// The bits of each output register that the values define.
+    pub mask: [Hex32; 4],
     /// The subleaf, the input value of `ECX`, or `None` for a leaf whose
     /// output does not depend on `ECX`.
     pub subleaf: Option<Hex32>,
     /// The output values of `EAX`, `EBX`, `ECX`, and `EDX`. Bits outside the
     /// mask are zero.
     pub value: [Hex32; 4],
-    /// The bits of each output register that the values define.
-    pub mask: [Hex32; 4],
 }
 
 impl CpuidLeafValue {
@@ -136,10 +140,10 @@ impl CpuidLeafValue {
 pub struct PinnedMsr {
     /// The MSR index.
     pub index: Hex32,
-    /// The pinned value. Bits outside the mask are zero.
-    pub value: Hex64,
     /// The bits the profile pins. The backend defines the others.
     pub mask: Hex64,
+    /// The pinned value. Bits outside the mask are zero.
+    pub value: Hex64,
 }
 
 /// Where a profile came from. Informative; part of the digest like every
@@ -170,18 +174,18 @@ pub struct ProvenanceSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CpuProfile {
-    pub(crate) schema: String,
-    pub(crate) id: String,
-    pub(crate) description: String,
-    pub(crate) vendor: String,
-    pub(crate) generation: Generation,
     pub(crate) cpuid: Vec<CpuidLeafValue>,
-    pub(crate) xcr0: Hex64,
-    pub(crate) xss: Hex64,
-    pub(crate) xsave_components: Vec<XsaveComponent>,
-    pub(crate) physical_address_width: u32,
+    pub(crate) description: String,
+    pub(crate) generation: Generation,
+    pub(crate) id: String,
     pub(crate) msrs: Vec<PinnedMsr>,
+    pub(crate) physical_address_width: u32,
     pub(crate) provenance: Provenance,
+    pub(crate) schema: String,
+    pub(crate) vendor: String,
+    pub(crate) xcr0: Hex64,
+    pub(crate) xsave_components: Vec<XsaveComponent>,
+    pub(crate) xss: Hex64,
 }
 
 impl CpuProfile {
@@ -260,13 +264,13 @@ impl CpuProfile {
 
     /// Returns the canonical encoding: compact canonical JSON.
     pub fn encode(&self) -> Vec<u8> {
-        canonical::to_compact(&to_value(self)).into_bytes()
+        canonical::to_compact_ordered(self)
     }
 
     /// Returns the profile as pretty canonical JSON, with a final newline:
     /// the form in which profiles are pinned.
     pub fn to_pretty_json(&self) -> String {
-        canonical::to_pretty(&to_value(self))
+        canonical::to_pretty_ordered(self)
     }
 
     /// Returns the profile digest: the SHA-256 of [`Self::encode`].
@@ -309,18 +313,38 @@ impl CpuProfile {
         Ok(this)
     }
 
+    /// Parses and validates a profile pinned in this crate. Unlike
+    /// [`Self::from_pretty_json`], it does not re-encode the profile to
+    /// check its form: the catalog's tests check every pinned file's form and
+    /// golden digest, and this runs on every OpenVMM start.
+    pub(crate) fn from_pinned_json(text: &str) -> Result<Self, ProfileError> {
+        Self::parse(text)
+    }
+
     fn parse(text: &str) -> Result<Self, ProfileError> {
-        let value: serde_json::Value = serde_json::from_str(text)
-            .map_err(|error| invalid(format!("malformed profile: {error}")))?;
-        let schema = value.get("schema").and_then(|schema| schema.as_str());
-        if schema != Some(SCHEMA) {
-            return Err(invalid(format!(
+        let schema_error = |schema: Option<&str>| {
+            invalid(format!(
                 "unsupported profile schema {:?}, expected {SCHEMA:?}",
                 schema.unwrap_or_default()
-            )));
+            ))
+        };
+        let this: Self = match serde_json::from_str(text) {
+            Ok(this) => this,
+            Err(error) => {
+                // Name an unsupported schema rather than the field that a
+                // document of another schema lacks.
+                let value: serde_json::Value = serde_json::from_str(text)
+                    .map_err(|error| invalid(format!("malformed profile: {error}")))?;
+                let schema = value.get("schema").and_then(|schema| schema.as_str());
+                if schema != Some(SCHEMA) {
+                    return Err(schema_error(schema));
+                }
+                return Err(invalid(format!("malformed profile: {error}")));
+            }
+        };
+        if this.schema != SCHEMA {
+            return Err(schema_error(Some(&this.schema)));
         }
-        let this: Self = serde_json::from_value(value)
-            .map_err(|error| invalid(format!("malformed profile: {error}")))?;
         this.validate()
             .map_err(|message| invalid(format!("profile {:?} is invalid: {message}", this.id)))?;
         Ok(this)
@@ -660,6 +684,7 @@ fn invalid(message: String) -> ProfileError {
     ProfileError::new(ProfileErrorCode::ProfileDigest, message)
 }
 
+#[cfg(test)]
 fn to_value<T: Serialize>(value: &T) -> serde_json::Value {
     // Every field serializes infallibly with string map keys.
     serde_json::to_value(value).expect("profile serialization is infallible")
@@ -714,6 +739,40 @@ mod tests {
                 decoded
             );
         }
+    }
+
+    /// The direct serialization that `encode` and `to_pretty_json` use is
+    /// canonical only while every struct declares its fields in key order.
+    #[test]
+    fn direct_serialization_matches_the_sorting_encoder() {
+        for profile in crate::pinned_profiles() {
+            let value = to_value(profile);
+            assert_eq!(
+                String::from_utf8(profile.encode()).unwrap(),
+                canonical::to_compact(&value),
+                "{}",
+                profile.id()
+            );
+            assert_eq!(
+                profile.to_pretty_json(),
+                canonical::to_pretty(&value),
+                "{}",
+                profile.id()
+            );
+        }
+        // Fields that the pinned profiles leave at one value.
+        let component = XsaveComponent {
+            align64: true,
+            index: 12,
+            offset: 0,
+            size: 24,
+            supervisor: true,
+            xfd: true,
+        };
+        assert_eq!(
+            canonical::to_compact_ordered(&component),
+            canonical::to_compact(&to_value(&component)).into_bytes()
+        );
     }
 
     #[test]
