@@ -145,6 +145,11 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_add_schedule_trigger(GhScheduleTriggers {
                             cron: "0 19 * * *".into(),
                             timezone: Some("America/Los_Angeles".into()),
+                        })
+                        // NOTE: THIS IS TEMPORARY -- REMOVE BEFORE CHECKIN
+                        .gh_set_pr_triggers(GhPrTriggers {
+                            branches,
+                            ..GhPrTriggers::new_draftable()
                         });
                 }
             }
