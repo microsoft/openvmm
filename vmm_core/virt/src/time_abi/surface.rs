@@ -14,18 +14,37 @@ pub const ENCODED_CPUID_LEAF_LEN: usize = 24;
 /// The most differing leaves an `E_CPU_SURFACE` failure names.
 const MAX_REPORTED_CPUID_DIFFERENCES: usize = 16;
 
+/// Returns the bits of a CPUID result that mirror VP runtime state rather
+/// than the CPU surface, which the canonical encoding clears: OSXSAVE
+/// (`CPUID.1:ECX[27]`), OSPKE (`CPUID.(7,0):ECX[4]`), and the XSAVE area sizes
+/// of the enabled features (`CPUID.(0xD,0):EBX` and `CPUID.(0xD,1):EBX`). They
+/// are the runtime-owned bits of the CPU profile format.
+fn runtime_owned_bits(function: u32, index: Option<u32>) -> [u32; 4] {
+    match (function, index) {
+        (0x1, _) => [0, 0, 1 << 27, 0],
+        (0x7, Some(0) | None) => [0, 0, 1 << 4, 0],
+        (0xd, Some(0 | 1)) => [0, !0, 0, 0],
+        _ => [0; 4],
+    }
+}
+
 /// Returns the canonical encoding of an effective CPUID table, as recorded in
 /// a snapshot's CPU profile record.
 ///
 /// Leaves are sorted by function and subleaf, a leaf without a subleaf sorts
 /// first, and duplicates keep the last entry. Each leaf is 24 bytes, all
 /// little-endian `u32`s: the function, the subleaf (`0xffffffff` for any),
-/// and EAX, EBX, ECX, and EDX. The values are the effective results, so the
-/// masks are not encoded.
+/// and EAX, EBX, ECX, and EDX. The values are the effective results with the
+/// runtime-owned bits cleared, so a VP that has enabled XSAVE encodes like a
+/// fresh one; the masks are not encoded.
 pub fn encode_cpuid(leaves: &[CpuidLeaf]) -> Vec<u8> {
     let mut entries: Vec<(u32, Option<u32>, [u32; 4])> = leaves
         .iter()
-        .map(|leaf| (leaf.function, leaf.index, leaf.result))
+        .map(|leaf| {
+            let runtime = runtime_owned_bits(leaf.function, leaf.index);
+            let result = [0, 1, 2, 3].map(|register| leaf.result[register] & !runtime[register]);
+            (leaf.function, leaf.index, result)
+        })
         .collect();
     entries.sort_by_key(|&(function, index, _)| (function, index));
     let mut deduplicated: Vec<(u32, Option<u32>, [u32; 4])> = Vec::with_capacity(entries.len());
@@ -217,6 +236,33 @@ mod tests {
         reversed.swap(1, 3);
         assert_ne!(encode_cpuid(&reversed), bytes);
         assert_eq!(encode_cpuid(&[]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn cpuid_encoding_clears_runtime_owned_bits() {
+        let fresh = [
+            CpuidLeaf::new(1, [0x506e3, 0x800, 0x76da_3203, 0x1f8b_fbff]),
+            CpuidLeaf::new(7, [0, 0x029c_6fbf, 0, 0]).indexed(0),
+            CpuidLeaf::new(0xd, [7, 0x240, 0x340, 0]).indexed(0),
+            CpuidLeaf::new(0xd, [0xf, 0x240, 0, 0]).indexed(1),
+        ];
+        let mut running = fresh;
+        running[0].result[2] |= 1 << 27;
+        running[1].result[2] |= 1 << 4;
+        running[2].result[1] = 0x340;
+        running[3].result[1] = 0x3c0;
+        assert_eq!(encode_cpuid(&running), encode_cpuid(&fresh));
+        check_effective_cpuid(&running, &encode_cpuid(&fresh)).unwrap();
+
+        // Every other bit is part of the surface.
+        let mut changed = fresh;
+        changed[0].result[2] ^= 1 << 26;
+        assert_eq!(
+            check_effective_cpuid(&changed, &encode_cpuid(&fresh))
+                .unwrap_err()
+                .code,
+            TimeAbiCode::CpuSurface
+        );
     }
 
     #[test]

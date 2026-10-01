@@ -344,6 +344,29 @@ impl LoadedVm {
         quiesce.complete("capture", "quiesce", Default::default());
         self.running = false;
 
+        // Time ABI capture steps 1 and 2: the LAPIC timers, then the capture
+        // anchor and records. The PIT checks itself when saved.
+        #[cfg(guest_arch = "x86_64")]
+        let time = match &self.inner.time_abi {
+            Some(state) => {
+                let rollback_safe = |error: anyhow::Error| {
+                    openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+                };
+                self.inner
+                    .partition_unit
+                    .check_one_shot_timers()
+                    .await
+                    .map_err(rollback_safe)?;
+                Some(
+                    super::time_abi::capture_records(self.inner.partition.as_ref(), state)
+                        .map_err(rollback_safe)?,
+                )
+            }
+            None => None,
+        };
+        #[cfg(not(guest_arch = "x86_64"))]
+        let time = None;
+
         let save_state = openvmm_defs::profile::ProfileSpan::start();
         let saved_state = self.save().await.map_err(|error| {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
@@ -372,6 +395,21 @@ impl LoadedVm {
                 ));
             }
         };
+        if let Some(time) = time {
+            return Ok(openvmm_defs::rpc::SnapshotSaveResponse {
+                state_unit_names: saved_state.inventory.clone(),
+                saved_state: ProtobufMessage::new(saved_state),
+                effective_command_line,
+                tsc_frequency_hz: 0,
+                apic_frequency_hz: 0,
+                capture_wall_clock: mesh::payload::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                },
+                cpu_contract: Vec::new(),
+                time: Some(time),
+            });
+        }
         let tsc_frequency_hz = self
             .inner
             .partition
@@ -409,6 +447,7 @@ impl LoadedVm {
             apic_frequency_hz,
             capture_wall_clock,
             cpu_contract: mesh::payload::encode(self.inner.partition.cpu_compatibility_contract()),
+            time: None,
         })
     }
 
