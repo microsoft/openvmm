@@ -195,7 +195,10 @@ describes the source definitions.
   behavior, zero entry and attribute cache lifetimes, and no shared-memory
   window. `--mount` conflicts with `--virtio-fs` and
   `--virtio-fs-shmem`; those standard-machine options cannot select the
-  microVM filesystem profile.
+  microVM filesystem profile. A read-write attachment accepts guest-created
+  symbolic links, stores their targets exactly, and never follows them on the
+  host; a read-only attachment rejects them with `EROFS`. On Windows, the
+  links are WSL-style reparse points.
 
   `--mount-deny <HOST_PATH>` is repeatable and hides an existing file or
   directory inside the exported root. Paths are canonicalized to
