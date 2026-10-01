@@ -67,14 +67,43 @@ impl From<Hex32> for u32 {
 
 impl Serialize for Hex32 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
+        serializer.serialize_str(format_hex(&mut [0; 10], self.0.into()))
     }
 }
 
 impl<'de> Deserialize<'de> for Hex32 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
+        Ok(Self(
+            deserializer.deserialize_str(HexVisitor { digits: 8 })? as u32,
+        ))
+    }
+}
+
+/// Formats `value` as `0x` and `buffer.len() - 2` hex digits in `buffer`,
+/// without the formatting machinery, as profiles hold hundreds of values.
+fn format_hex(buffer: &mut [u8], value: u64) -> &str {
+    let digits = buffer.len() - 2;
+    buffer[..2].copy_from_slice(b"0x");
+    for (i, digit) in buffer[2..].iter_mut().enumerate() {
+        *digit = b"0123456789abcdef"[((value >> (4 * (digits - 1 - i))) & 0xf) as usize];
+    }
+    std::str::from_utf8(buffer).expect("hex digits are ASCII")
+}
+
+/// Parses a hex string without allocating, as profiles hold hundreds of them.
+struct HexVisitor {
+    digits: usize,
+}
+
+impl serde::de::Visitor<'_> for HexVisitor {
+    type Value = u64;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x followed by up to {} hex digits", self.digits)
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<u64, E> {
+        parse_hex(value, self.digits).map_err(E::custom)
     }
 }
 
@@ -109,14 +138,15 @@ impl From<Hex64> for u64 {
 
 impl Serialize for Hex64 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
+        serializer.serialize_str(format_hex(&mut [0; 18], self.0))
     }
 }
 
 impl<'de> Deserialize<'de> for Hex64 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
+        Ok(Self(
+            deserializer.deserialize_str(HexVisitor { digits: 16 })?,
+        ))
     }
 }
 
@@ -132,6 +162,19 @@ mod tests {
         assert_eq!(Hex32(u32::MAX).to_string(), "0xffffffff");
         assert_eq!(Hex64(0x10a).to_string(), "0x000000000000010a");
         assert_eq!(Hex64(u64::MAX).to_string(), "0xffffffffffffffff");
+        // Serialization formats the same digits as Display.
+        for value in [0, 0x1f, 0x8000_0000, 0x0123_4567, u32::MAX] {
+            assert_eq!(
+                serde_json::to_string(&Hex32(value)).unwrap(),
+                format!("\"{}\"", Hex32(value))
+            );
+        }
+        for value in [0, 0x10a, 0x0123_4567_89ab_cdef, u64::MAX] {
+            assert_eq!(
+                serde_json::to_string(&Hex64(value)).unwrap(),
+                format!("\"{}\"", Hex64(value))
+            );
+        }
     }
 
     #[test]
