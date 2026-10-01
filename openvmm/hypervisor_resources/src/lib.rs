@@ -117,6 +117,27 @@ pub trait HypervisorProbe: Send + Sync + 'static {
     /// passed as `(key, "true")`. Backends should return an error for
     /// unrecognized keys.
     fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>>;
+
+    /// Returns the guest CPU surface that this backend supports on this host,
+    /// for a host CPU fingerprint.
+    ///
+    /// This needs no guest. A backend may create a transient probe partition
+    /// but must not leave any state behind. `params` are the backend
+    /// parameters, as for [`new_resource`](Self::new_resource); backends
+    /// reject the ones that do not apply to fingerprinting.
+    ///
+    /// The default implementation reports that the backend does not support
+    /// fingerprinting.
+    fn cpu_fingerprint(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendFingerprint> {
+        let _ = params;
+        anyhow::bail!(
+            "the {} hypervisor backend does not support CPU fingerprinting",
+            self.name()
+        )
+    }
 }
 
 /// Private module for linkme infrastructure.
