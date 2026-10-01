@@ -35,6 +35,17 @@ impl hypervisor_resources::HypervisorProbe for KvmProbe {
         let kvm = open_kvm().context("KVM is not available")?;
         Ok(KvmHandle { kvm: kvm.into() }.into_resource())
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn cpu_fingerprint(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendFingerprint> {
+        crate::reject_fingerprint_params("kvm", params)?;
+        let kvm = open_kvm().context("KVM is not available")?;
+        let kvm = virt_kvm::Kvm::from_kvm(kvm.into())?;
+        Ok(kvm.cpu_fingerprint()?)
+    }
 }
 
 fn open_kvm() -> std::io::Result<fs_err::File> {
