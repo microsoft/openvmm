@@ -295,6 +295,46 @@ fn partition_create_args(
     })
 }
 
+/// Registers `leaf` as the partition-wide result of CPUID intercepts for its
+/// leaf (and subleaf, if it has one), applied over the hypervisor's own result
+/// under the leaf's mask.
+fn register_cpuid_result(vmfd: &mshv_ioctls::VmFd, leaf: &virt::CpuidLeaf) -> Result<(), Error> {
+    let input = hvdef::hypercall::RegisterInterceptResultCpuid {
+        partition_id: 0,
+        vp_index: hvdef::HV_ANY_VP,
+        intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
+        parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
+            input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
+                eax: leaf.function,
+                ecx: leaf.index.unwrap_or(0),
+                subleaf_specific: u8::from(leaf.index.is_some()),
+                always_override: 1,
+                padding: 0,
+            },
+            result: hvdef::hypercall::HvRegisterX64CpuidResultParametersOutput {
+                eax: leaf.result[0],
+                eax_mask: leaf.mask[0],
+                ebx: leaf.result[1],
+                ebx_mask: leaf.mask[1],
+                ecx: leaf.result[2],
+                ecx_mask: leaf.mask[2],
+                edx: leaf.result[3],
+                edx_mask: leaf.mask[3],
+            },
+        },
+        _reserved: 0,
+    };
+    let mut args = mshv_bindings::mshv_root_hvcall {
+        code: hvdef::HypercallCode::HvCallRegisterInterceptResult.0,
+        in_sz: size_of_val(&input) as u16,
+        in_ptr: std::ptr::addr_of!(input) as u64,
+        ..Default::default()
+    };
+    vmfd.hvcall(&mut args)
+        .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
+    Ok(())
+}
+
 fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
     hvdef::HvPartitionSyntheticProcessorFeatures::new()
         .with_hypervisor_present(true)
@@ -512,40 +552,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         // Apply CPUID overrides partition-wide.
         let started = std::time::Instant::now();
         for leaf in cpuid.leaves().iter() {
-            let input = hvdef::hypercall::RegisterInterceptResultCpuid {
-                partition_id: 0,
-                vp_index: hvdef::HV_ANY_VP,
-                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
-                parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
-                    input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
-                        eax: leaf.function,
-                        ecx: leaf.index.unwrap_or(0),
-                        subleaf_specific: u8::from(leaf.index.is_some()),
-                        always_override: 1,
-                        padding: 0,
-                    },
-                    result: hvdef::hypercall::HvRegisterX64CpuidResultParametersOutput {
-                        eax: leaf.result[0],
-                        eax_mask: leaf.mask[0],
-                        ebx: leaf.result[1],
-                        ebx_mask: leaf.mask[1],
-                        ecx: leaf.result[2],
-                        ecx_mask: leaf.mask[2],
-                        edx: leaf.result[3],
-                        edx_mask: leaf.mask[3],
-                    },
-                },
-                _reserved: 0,
-            };
-            let mut args = mshv_bindings::mshv_root_hvcall {
-                code: hvdef::HypercallCode::HvCallRegisterInterceptResult.0,
-                in_sz: size_of_val(&input) as u16,
-                in_ptr: std::ptr::addr_of!(input) as u64,
-                ..Default::default()
-            };
-            self.vmfd
-                .hvcall(&mut args)
-                .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
+            register_cpuid_result(&self.vmfd, leaf)?;
         }
         tracing::info!(
             leaves = cpuid.leaves().len(),

@@ -666,6 +666,54 @@ mod hw {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// Characterizes how MSHV composes CPUID results, using leaf 4, whose
+    /// subleaves differ natively:
+    ///
+    /// - A subleaf result applies over the hypervisor's own value, so the bits
+    ///   it leaves unmasked stay native (the per-VP APIC IDs and the runtime
+    ///   XSAVE sizes rely on this), and the subleaves it does not name stay
+    ///   native.
+    /// - A whole-leaf result answers every subleaf.
+    /// - The hypervisor refuses a whole-leaf result and a subleaf result for
+    ///   the same leaf, whichever comes second. So unlisted subleaves cannot
+    ///   read zero through one whole-leaf result under the listed ones.
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn cpuid_results_compose_over_native_values() {
+        let mshv = Mshv::new().unwrap();
+        let host = host_features(&mshv).unwrap();
+        let read = |probe: &Probe| -> Vec<[u32; 4]> {
+            (0..4)
+                .map(|subleaf| probe.vp.get_cpuid_values(4, subleaf, 0, 0).unwrap())
+                .collect()
+        };
+        let native = read(&probe_partition(&mshv, host).unwrap());
+        println!("native leaf 4: {native:#010x?}");
+        assert_ne!(native[1], [0; 4], "leaf 4 has no native subleaf 1");
+        let whole = CpuidLeaf::new(4, [0; 4]);
+        let pinned = [0x1111_1111, 0x2222_2222, 0x3333_3333];
+        // Subleaf 0 pins EBX through EDX and leaves EAX to the hypervisor.
+        let listed = CpuidLeaf::new(4, [0, pinned[0], pinned[1], pinned[2]])
+            .indexed(0)
+            .masked([0, !0, !0, !0]);
+
+        let probe = probe_partition(&mshv, host).unwrap();
+        super::super::register_cpuid_result(&probe.vmfd, &listed).unwrap();
+        let refused = super::super::register_cpuid_result(&probe.vmfd, &whole).unwrap_err();
+        let leaf4 = read(&probe);
+        println!("subleaf first: {leaf4:#010x?}; whole leaf refused: {refused}");
+        assert_eq!(leaf4[0][1..], pinned);
+        assert_eq!(leaf4[0][0], native[0][0], "unmasked bits stay native");
+        assert_eq!(leaf4[1..], native[1..], "unnamed subleaves stay native");
+
+        let probe = probe_partition(&mshv, host).unwrap();
+        super::super::register_cpuid_result(&probe.vmfd, &whole).unwrap();
+        let refused = super::super::register_cpuid_result(&probe.vmfd, &listed).unwrap_err();
+        let leaf4 = read(&probe);
+        println!("whole leaf first: {leaf4:#010x?}; subleaf refused: {refused}");
+        assert!(leaf4.iter().all(|subleaf| *subleaf == [0; 4]));
+    }
+
     /// Creates a partition with this host's profile features and no CPUID
     /// results, and checks that the banks alone present every mapped feature
     /// as the profile pins it. The CPUID results supply the rest.
