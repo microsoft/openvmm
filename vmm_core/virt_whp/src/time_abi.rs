@@ -1317,6 +1317,83 @@ pub(crate) mod test_cpuid {
         virt::x86::topology::topology_cpuid(topology, native, &mut own).unwrap();
         own
     }
+
+    /// The CPUID programming of `de39f6aab`, before core's complete table:
+    /// the profile's leaves other than the VM-owned topology leaves as
+    /// `CpuidResultList2` results with the profile's masks, and exits for the
+    /// topology leaves and for every leaf of the identity and time-bit
+    /// overlay (`time_abi_cpuid`), which the exit handler applied last.
+    pub struct ProfileProgramming {
+        /// The `CpuidResultList2` results.
+        pub results: Vec<super::WHV_X64_CPUID_RESULT2>,
+        /// The CPUID exit list.
+        pub exits: Vec<u32>,
+        /// The overlay that the exit handler applied.
+        pub overlay: CpuidLeafSet,
+    }
+
+    /// Returns [`ProfileProgramming`] for `profile` and `vp_count` VPs.
+    pub fn profile_programming(profile: &CpuProfile, vp_count: u32) -> ProfileProgramming {
+        let overlay = virt::time_abi::identity::time_abi_cpuid(vp_count, true);
+        let mut exits = vec![1, 4, 0xb, 0x1f];
+        exits.extend(
+            overlay
+                .leaves()
+                .iter()
+                .filter(|leaf| !super::is_zero_fill(leaf))
+                .map(|leaf| leaf.function),
+        );
+        exits.sort_unstable();
+        exits.dedup();
+        let leaves = profile
+            .cpuid()
+            .iter()
+            .filter(|entry| !cpu_profile::VM_OWNED_LEAVES.contains(&entry.key().0))
+            .map(|entry| {
+                let (function, index) = entry.key();
+                CpuidLeaf {
+                    function,
+                    index,
+                    result: entry.values(),
+                    mask: entry.masks(),
+                }
+            })
+            .collect();
+        ProfileProgramming {
+            results: super::cpuid_results(&CpuidLeafSet::new(leaves)),
+            exits,
+            overlay,
+        }
+    }
+
+    /// Returns the leaves and subleaves on which to compare two CPUID views:
+    /// every result of `effective` and of `profile`, subleaves 0 to 63 of
+    /// every indexed leaf, and the four leaves past each maximum leaf.
+    pub fn probes(effective: &EffectiveCpuid, profile: &CpuProfile) -> Vec<(u32, u32)> {
+        let mut probes: Vec<(u32, u32)> = effective
+            .results()
+            .map(|result| (result.function, result.index.unwrap_or(0)))
+            .chain(profile.cpuid().iter().map(|entry| {
+                let (leaf, subleaf) = entry.key();
+                (leaf, subleaf.unwrap_or(0))
+            }))
+            .collect();
+        let indexed: Vec<u32> = effective
+            .results()
+            .filter(|result| result.index.is_some())
+            .map(|result| result.function)
+            .collect();
+        for function in indexed {
+            probes.extend((0..64).map(|index| (function, index)));
+        }
+        let max_basic = effective.lookup(0, 0)[0];
+        let max_extended = effective.lookup(0x8000_0000, 0)[0];
+        probes.extend((max_basic + 1..=max_basic + 4).map(|function| (function, 0)));
+        probes.extend((max_extended + 1..=max_extended + 4).map(|function| (function, 0)));
+        probes.sort_unstable();
+        probes.dedup();
+        probes
+    }
 }
 
 #[cfg(test)]
@@ -1373,23 +1450,30 @@ mod tests {
     /// match the effective CPUID.
     struct FakeWhp {
         results: Vec<WHV_X64_CPUID_RESULT2>,
+        /// Whether unprogrammed bits read noise rather than zero.
+        noise: bool,
     }
 
     impl FakeWhp {
         fn new(config: &CpuidLeafSet) -> Self {
             Self {
                 results: cpuid_results(config),
+                noise: true,
             }
         }
 
         fn native(&self, function: u32, index: u32) -> [u32; 4] {
             let seed = function.wrapping_mul(0x9e37_79b9) ^ index.wrapping_mul(0x85eb_ca6b);
-            let mut result = [
-                seed,
-                seed.rotate_left(8) ^ 0xa5a5_a5a5,
-                seed.rotate_left(16) ^ 0x5a5a_5a5a,
-                !seed,
-            ];
+            let mut result = if self.noise {
+                [
+                    seed,
+                    seed.rotate_left(8) ^ 0xa5a5_a5a5,
+                    seed.rotate_left(16) ^ 0x5a5a_5a5a,
+                    !seed,
+                ]
+            } else {
+                [0; 4]
+            };
             for programmed in self.results.iter().filter(|result| {
                 result.Function == function
                     && (!result.Flags.is_set(WHvX64CpuidResult2FlagSubleafSpecific)
@@ -1438,6 +1522,33 @@ mod tests {
                 effective,
                 config,
                 exits,
+                whp,
+                cpuid,
+                cpuid_topology,
+            }
+        }
+
+        /// A partition with the profile programming of `de39f6aab`
+        /// ([`test_cpuid::profile_programming`]) on a WHP whose unprogrammed
+        /// bits read zero if `noise` is false.
+        fn profile_programmed(profile: &str, vp_count: u32, noise: bool) -> Self {
+            let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
+            let pinned = cpu_profile::pinned(profile).unwrap();
+            let effective = test_cpuid::effective_cpuid(pinned, &topology);
+            let programming = test_cpuid::profile_programming(pinned, vp_count);
+            let whp = FakeWhp {
+                results: programming.results,
+                noise,
+            };
+            let own =
+                test_cpuid::own_cpuid(&topology, &|function, index| whp.native(function, index));
+            let cpuid = partition_cpuid(own, &programming.overlay, &programming.exits).unwrap();
+            let cpuid_topology = CpuidTopology::new(&topology);
+            Self {
+                topology,
+                effective,
+                config: programming.overlay,
+                exits: programming.exits,
                 whp,
                 cpuid,
                 cpuid_topology,
@@ -1697,6 +1808,49 @@ mod tests {
                     }
                     assert_eq!(theirs, ours, "{profile} VP {apic_id} {:#x}", leaf.function);
                 }
+            }
+        }
+    }
+
+    /// Since step B, WHP programs core's complete table as the single source
+    /// of the CPUID. VP 0 observes exactly the CPUID of the profile
+    /// programming of `de39f6aab` on every leaf and subleaf that either
+    /// lists, on their unlisted subleaves, and past the maximum leaves, on a
+    /// WHP whose unprogrammed bits read zero.
+    #[test]
+    fn core_table_presents_what_the_profile_programming_did() {
+        for profile in test_cpuid::PROFILES {
+            for vp_count in [1, 8] {
+                let mut new = Partition::new(profile, vp_count, X2ApicState::Supported);
+                new.whp.noise = false;
+                let old = Partition::profile_programmed(profile, vp_count, false);
+                let probes =
+                    test_cpuid::probes(&new.effective, cpu_profile::pinned(profile).unwrap());
+                let differences: Vec<String> = probes
+                    .iter()
+                    .filter_map(|&(function, index)| {
+                        let ours = normalize_cpuid(function, index, new.observe(0, function, index));
+                        let theirs = normalize_cpuid(function, index, old.observe(0, function, index));
+                        (ours != theirs).then(|| {
+                            format!("{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}")
+                        })
+                    })
+                    .collect();
+                assert!(
+                    differences.is_empty(),
+                    "{profile}, {vp_count} VPs, {} probes: {differences:#?}",
+                    probes.len()
+                );
+                // The views carry the profile: the comparison is not vacuous.
+                let populated = probes
+                    .iter()
+                    .filter(|&&(function, index)| new.observe(0, function, index) != [0; 4])
+                    .count();
+                let entries = cpu_profile::pinned(profile).unwrap().cpuid().len();
+                assert!(
+                    populated >= entries / 2,
+                    "{profile}: {populated} populated results of {entries} profile entries"
+                );
             }
         }
     }
@@ -2345,6 +2499,118 @@ mod whp_tests {
         }
         assert!(listed_failures.is_empty(), "{listed_failures:#?}");
         assert!(unlisted.is_empty(), "{unlisted:#?}");
+    }
+
+    /// The comparison of `tests::core_table_presents_what_the_profile_programming_did`
+    /// on WHP: two partitions with this host's profile and the same features,
+    /// one programmed from core's complete table and one with the profile
+    /// programming of `de39f6aab`, present the same CPUID to VP 0.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn core_table_presents_what_the_profile_programming_did_on_whp() {
+        const VP_COUNT: u32 = 2;
+        let Some(new) = partition(VP_COUNT) else {
+            return;
+        };
+        let profile = cpu_profile::pinned(&new.time_abi.cpu_profile).unwrap();
+        let programming = test_cpuid::profile_programming(profile, VP_COUNT);
+        let mut whp_config = whp::PartitionConfig::new().unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::ProcessorCount(VP_COUNT))
+            .unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::CpuidExitList(&programming.exits))
+            .unwrap();
+        let mut features = whp::capabilities::processor_features().unwrap();
+        features.bank0 = WHV_PROCESSOR_FEATURES(new.time_abi.features_bank0);
+        features.bank1 = WHV_PROCESSOR_FEATURES1(new.time_abi.features_bank1);
+        whp_config
+            .set_property(whp::PartitionProperty::ProcessorFeaturesBanks(features))
+            .unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::ProcessorXsaveFeatures(
+                WHV_PROCESSOR_XSAVE_FEATURES(new.time_abi.features_xsave),
+            ))
+            .unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::CpuidResultList2(
+                &programming.results,
+            ))
+            .unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::LocalApicEmulationMode(
+                whp::abi::WHvX64LocalApicEmulationModeXApic,
+            ))
+            .unwrap();
+        whp_config
+            .set_property(whp::PartitionProperty::ExtendedVmExits(
+                WHV_EXTENDED_VM_EXITS::X64CpuidExit | WHV_EXTENDED_VM_EXITS::X64MsrExit,
+            ))
+            .unwrap();
+        let old = whp_config.create().unwrap();
+        for vp in 0..VP_COUNT {
+            old.create_vp(vp).create().unwrap();
+        }
+
+        let cpuid_topology = CpuidTopology::new(&new.topology);
+        let new_cpuid = new
+            .time_abi
+            .partition_cpuid(test_cpuid::own_cpuid(&new.topology, &|function, index| {
+                native(&new.partition, function, index).unwrap()
+            }))
+            .unwrap();
+        let old_cpuid = partition_cpuid(
+            test_cpuid::own_cpuid(&new.topology, &|function, index| {
+                native(&old, function, index).unwrap()
+            }),
+            &programming.overlay,
+            &programming.exits,
+        )
+        .unwrap();
+        let view =
+            |partition: &whp::Partition, cpuid: &CpuidLeafSet, exits: &[u32], function, index| {
+                let vp0 = VpCpuid {
+                    cpuid,
+                    exits,
+                    topology: &cpuid_topology,
+                    apic_id: 0,
+                };
+                let result = vp0
+                    .result(function, index, || native(partition, function, index))
+                    .unwrap();
+                normalize_cpuid(function, index, result)
+            };
+        let probes = test_cpuid::probes(&new.effective, profile);
+        let mut populated = 0;
+        let mut differences = Vec::new();
+        for &(function, index) in &probes {
+            let ours = view(
+                &new.partition,
+                &new_cpuid,
+                &new.time_abi.cpuid_exits,
+                function,
+                index,
+            );
+            let theirs = view(&old, &old_cpuid, &programming.exits, function, index);
+            populated += usize::from(ours != [0; 4]);
+            if ours != theirs {
+                differences.push(format!(
+                    "{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}"
+                ));
+            }
+        }
+        println!(
+            "{}: {} probes, {populated} populated, {} differences; exits {} against {}, results {} against {}",
+            profile.id(),
+            probes.len(),
+            differences.len(),
+            new.time_abi.cpuid_exits.len(),
+            programming.exits.len(),
+            new.time_abi.cpuid_results,
+            programming.results.len()
+        );
+        assert!(differences.is_empty(), "{differences:#?}");
+        assert!(populated >= profile.cpuid().len() / 2);
     }
 
     #[test]
