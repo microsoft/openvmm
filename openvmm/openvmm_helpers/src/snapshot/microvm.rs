@@ -650,7 +650,8 @@ fn memory_expansion_prefix(
     Ok(prefix)
 }
 
-/// Builds the authoritative microVM machine contract.
+/// Builds the authoritative microVM machine contract with the clock fields of
+/// manifest versions 2 through 5.
 pub fn microvm_machine_contract(
     source_hypervisor: &str,
     boot_layout_version: u32,
@@ -677,6 +678,79 @@ pub fn microvm_machine_contract(
     tsc_frequency_hz: u64,
     apic_frequency_hz: Option<u64>,
     cpu_contract: Vec<u8>,
+) -> anyhow::Result<SnapshotMachineContract> {
+    microvm_machine_contract_with_clock(
+        source_hypervisor,
+        boot_layout_version,
+        effective_command_line,
+        network,
+        filesystem_slot,
+        filesystem,
+        console_attachment,
+        control_console_attachment,
+        sandbox_blocks,
+        processor_count,
+        memory_size,
+        memory_capacity,
+        state_unit_names,
+        MicrovmClockContract::Legacy {
+            capture_wall_clock,
+            tsc_frequency_hz,
+            apic_frequency_hz,
+            cpu_contract,
+        },
+    )
+}
+
+/// The clock records of a microVM machine contract.
+#[derive(Clone, Debug)]
+pub enum MicrovmClockContract {
+    /// The clock fields of manifest versions 2 through 5.
+    Legacy {
+        /// Host UTC at capture.
+        capture_wall_clock: Timestamp,
+        /// The effective guest TSC frequency.
+        tsc_frequency_hz: u64,
+        /// The guest LAPIC timer frequency.
+        apic_frequency_hz: Option<u64>,
+        /// The canonical CPU compatibility contract.
+        cpu_contract: Vec<u8>,
+    },
+    /// The NVX time ABI records of manifest version 6, which leave the
+    /// retired clock fields empty.
+    TimeAbi {
+        /// The time contract.
+        time: openvmm_defs::time_abi::SnapshotTimeContract,
+        /// The CPU profile record.
+        cpu_profile: openvmm_defs::time_abi::SnapshotCpuProfile,
+    },
+}
+
+/// Builds the authoritative microVM machine contract with the given clock
+/// records.
+pub fn microvm_machine_contract_with_clock(
+    source_hypervisor: &str,
+    boot_layout_version: u32,
+    effective_command_line: String,
+    network: Option<(
+        &openvmm_defs::microvm::MicrovmNetworkConfig,
+        &net_backend_resources::egress::EgressPolicy,
+        SnapshotAttachment,
+    )>,
+    filesystem_slot: bool,
+    filesystem: Option<(
+        &openvmm_defs::microvm::MicrovmFilesystemConfig,
+        &Path,
+        SnapshotAttachment,
+    )>,
+    console_attachment: Option<SnapshotAttachment>,
+    control_console_attachment: Option<SnapshotAttachment>,
+    sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
+    processor_count: u32,
+    memory_size: u64,
+    memory_capacity: Option<u64>,
+    state_unit_names: Vec<String>,
+    clock: MicrovmClockContract,
 ) -> anyhow::Result<SnapshotMachineContract> {
     anyhow::ensure!(
         matches!(source_hypervisor, "kvm" | "mshv" | "whp"),
@@ -1099,6 +1173,39 @@ pub fn microvm_machine_contract(
         attachments.push(attachment);
     }
 
+    let (
+        capture_wall_clock,
+        tsc_frequency_hz,
+        apic_frequency_hz,
+        clock_policy,
+        cpu_contract,
+        time,
+        cpu_profile,
+    ) = match clock {
+        MicrovmClockContract::Legacy {
+            capture_wall_clock,
+            tsc_frequency_hz,
+            apic_frequency_hz,
+            cpu_contract,
+        } => (
+            capture_wall_clock,
+            tsc_frequency_hz,
+            apic_frequency_hz,
+            ADVANCE_BY_HOST_DOWNTIME.to_owned(),
+            Some(cpu_contract),
+            None,
+            None,
+        ),
+        MicrovmClockContract::TimeAbi { time, cpu_profile } => (
+            super::time::NO_TIMESTAMP,
+            0,
+            None,
+            String::new(),
+            None,
+            Some(time),
+            Some(cpu_profile),
+        ),
+    };
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
         microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
@@ -1116,7 +1223,7 @@ pub fn microvm_machine_contract(
         cpu_contract: Vec::new(),
         cpu_contract_sha256: Vec::new(),
         boot_layout_version,
-        clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
+        clock_policy,
         microvm_network,
         microvm_filesystem,
         apic_frequency_hz,
@@ -1134,11 +1241,13 @@ pub fn microvm_machine_contract(
         memory_capacity_bytes,
         memory_block_size_bytes,
         memory_expansion_ranges,
-        time: None,
-        cpu_profile: None,
+        time,
+        cpu_profile,
     };
     contract.set_effective_command_line(effective_command_line);
-    contract.set_cpu_compatibility_contract(cpu_contract);
+    if let Some(cpu_contract) = cpu_contract {
+        contract.set_cpu_compatibility_contract(cpu_contract);
+    }
     validate_machine_contract_shape(&contract, memory_size, processor_count)?;
     Ok(contract)
 }
@@ -3430,6 +3539,36 @@ mod tests {
              nvx_control_tty=hvc2"
         );
         validate_manifest_version(&manifest).unwrap();
+    }
+
+    #[test]
+    fn platform_time_abi_snapshot_carries_no_clock_token() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+        crate::snapshot::time::set_time_abi_records(
+            &mut manifest,
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
+        )
+        .unwrap();
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(
+            contract
+                .effective_command_line
+                .replace(" tsc_early_khz=1000000", ""),
+        );
+        validate_manifest_version(&manifest).unwrap();
+
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(format!(
+            "{} tsc_early_khz=2100000",
+            contract.effective_command_line
+        ));
+        let err = validate_manifest_version(&manifest)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
     }
 
     #[test]

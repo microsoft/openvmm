@@ -7,7 +7,6 @@
 use crate::Options;
 use crate::microvm;
 use anyhow::Context;
-use std::time::Duration;
 
 /// An opened snapshot generation, validated against the VM configuration and
 /// prepared for the VM worker.
@@ -15,7 +14,7 @@ pub(crate) struct PreparedSnapshotRestore {
     pub(crate) shared_memory: openvmm_defs::worker::SharedMemoryFd,
     pub(crate) guards: openvmm_defs::worker::SnapshotRestoreGuards,
     pub(crate) saved_state: mesh::payload::message::ProtobufMessage,
-    pub(crate) restore_time: Option<(Duration, u64, Option<u64>, Vec<u8>)>,
+    pub(crate) restore_time: Option<microvm::RestoreClock>,
 }
 
 /// Validate an opened snapshot generation against the current VM config.
@@ -29,21 +28,34 @@ pub(super) fn prepare_snapshot_restore(
     let base_memory_size = snapshot.manifest().memory_size_bytes;
     let expected_microvm_contract =
         microvm.expected_restore_contract(opt, snapshot.manifest(), expected_hypervisor)?;
+    let hooks = virt::time_abi::TimeAbiTestHooks::parse(&opt.microvm.x_time_abi_test_hook)?;
+    let time_abi = opt
+        .microvm
+        .x_time_abi_v1
+        .then(|| microvm::TimeAbiRestoreOptions {
+            cpu_profile: opt.microvm.cpu_profile.as_deref().unwrap_or("auto"),
+            hooks: &hooks,
+        });
     prepare_snapshot_restore_for_config(
         snapshot,
         base_memory_size,
         opt.memory_size(),
         opt.processors,
         expected_microvm_contract,
+        time_abi,
     )
 }
 
+/// Validates an opened snapshot generation against a VM configuration and
+/// prepares it for the VM worker. `time_abi` selects the time ABI restore
+/// path of a microVM.
 pub(crate) fn prepare_snapshot_restore_for_config(
     snapshot: openvmm_helpers::snapshot::restore::OpenedSnapshot,
     expected_memory_size: u64,
     selected_memory_size: u64,
     expected_vp_count: u32,
     expected_microvm_contract: Option<microvm::ExpectedRestoreContract<'_>>,
+    time_abi: Option<microvm::TimeAbiRestoreOptions<'_>>,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
     let artifact_prepare = openvmm_defs::profile::ProfileSpan::start();
     let manifest = snapshot.manifest();
@@ -62,6 +74,7 @@ pub(crate) fn prepare_snapshot_restore_for_config(
                 expected_memory_size,
                 expected_vp_count,
                 contract,
+                time_abi,
             )
         })
         .transpose()?;

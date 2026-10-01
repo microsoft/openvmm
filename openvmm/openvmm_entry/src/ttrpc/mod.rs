@@ -1401,6 +1401,7 @@ impl VmService {
                     restore_cpu_contract: worker_fields
                         .restore_time
                         .map(|(_, _, _, cpu_contract)| cpu_contract),
+                    restore_time: None,
                     restore_ready_sink,
                     restore_gate_timeout: worker_fields.restore_gate_timeout,
                     restore_vp_count: worker_fields.restore_vp_count,
