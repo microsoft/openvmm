@@ -41,35 +41,65 @@ pub(crate) async fn report_time_abi_verification(
         .with_timeout(REPORT_TIMEOUT)
         .until_cancelled(inspection.resolve())
         .await;
-    let line = success_line(hypervisor, &inspection.results())?;
-    println!("{line}");
+    let report = inspection.results();
+    let line = success_line(hypervisor, &report)?;
     worker.stop();
     worker
         .join()
         .await
         .context("VM worker failed after time ABI verification")?;
+    // The worker checks profile support only where the backend reports a
+    // cheap CPU surface; verification mode always checks it, from the
+    // backend's CPU fingerprint, once the worker's partition is gone.
+    if let Err(err) = report_field(&report, "cpu_profile")
+        .and_then(|cpu_profile| check_profile_support(hypervisor, &cpu_profile))
+    {
+        tracing::error!(error = format!("{err:#}"), "time ABI verification failed");
+        println!("{}", failure_line(hypervisor, &err));
+        return Ok(1);
+    }
+    println!("{line}");
     Ok(0)
+}
+
+/// Checks that the backend supports the CPU profile `id`, from the backend's
+/// CPU fingerprint (`E_PROFILE_UNSUPPORTED`). Fingerprinting creates a probe
+/// partition, which only verification mode can afford.
+fn check_profile_support(hypervisor: &str, id: &str) -> anyhow::Result<()> {
+    let profile = cpu_profile::pinned(id)
+        .with_context(|| format!("the CPU profile '{id}' is not pinned in this OpenVMM"))?;
+    let fingerprint = openvmm_helpers::hypervisor::cpu_fingerprint(Some(hypervisor))
+        .context("failed to fingerprint the hypervisor backend")?;
+    cpu_profile::verify_support(
+        profile,
+        &cpu_profile::HostCpuSurface::from_fingerprint(&fingerprint),
+    )?;
+    Ok(())
+}
+
+/// Returns the string value of `name` in the worker's `time-abi` inspect
+/// node.
+fn report_field(node: &inspect::Node, name: &str) -> anyhow::Result<String> {
+    let inspect::Node::Dir(entries) = node else {
+        anyhow::bail!("the VM worker returned no time ABI report: {node:?}");
+    };
+    let entry = entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .with_context(|| format!("the time ABI report lacks '{name}'"))?;
+    match &entry.node {
+        inspect::Node::Value(value) => Ok(match &value.kind {
+            inspect::ValueKind::String(text) => text.clone(),
+            _ => value.to_string(),
+        }),
+        node => anyhow::bail!("the time ABI report field '{name}' is {node:?}"),
+    }
 }
 
 /// Formats the line of a passed verification from the worker's `time-abi`
 /// inspect node.
 fn success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String> {
-    let inspect::Node::Dir(entries) = node else {
-        anyhow::bail!("the VM worker returned no time ABI report: {node:?}");
-    };
-    let field = |name: &str| -> anyhow::Result<String> {
-        let entry = entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .with_context(|| format!("the time ABI report lacks '{name}'"))?;
-        match &entry.node {
-            inspect::Node::Value(value) => Ok(match &value.kind {
-                inspect::ValueKind::String(text) => text.clone(),
-                _ => value.to_string(),
-            }),
-            node => anyhow::bail!("the time ABI report field '{name}' is {node:?}"),
-        }
-    };
+    let field = |name: &str| report_field(node, name);
     Ok(format!(
         "{PREFIX} v=1 status=ok backend={hypervisor} cpu_profile={} tsc_hz={} native_tsc_hz={} lapic_hz={} msr_route={} sync={}",
         field("cpu_profile")?,
@@ -156,14 +186,14 @@ mod tests {
             entry("apic_hz", 200_000_000_u64),
             entry("tsc_invariant_control", 0_u64),
             entry("hypervisor", "mshv".to_owned()),
-            entry("cpu_profile", "interim.host.mshv.v1".to_owned()),
+            entry("cpu_profile", "intel.skylake-sp.v1".to_owned()),
             entry("msr_route", "ExitToVmm".to_owned()),
             entry("sync", "FrozenWrite".to_owned()),
             entry("native_tsc_hz", 2_100_000_000_u64),
         ]);
         assert_eq!(
             success_line("mshv", &node).unwrap(),
-            "NVX-TIME-ABI-VERIFY: v=1 status=ok backend=mshv cpu_profile=interim.host.mshv.v1 tsc_hz=2100000000 native_tsc_hz=2100000000 lapic_hz=200000000 msr_route=ExitToVmm sync=FrozenWrite"
+            "NVX-TIME-ABI-VERIFY: v=1 status=ok backend=mshv cpu_profile=intel.skylake-sp.v1 tsc_hz=2100000000 native_tsc_hz=2100000000 lapic_hz=200000000 msr_route=ExitToVmm sync=FrozenWrite"
         );
         let inspect::Node::Dir(mut entries) = node else {
             unreachable!()
