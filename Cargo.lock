@@ -999,12 +999,15 @@ dependencies = [
 name = "cpu_profile"
 version = "0.0.0"
 dependencies = [
+ "build_rs_guest_arch",
  "safe_intrinsics",
  "serde",
  "serde_json",
  "sha2",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "virt",
+ "vm_topology",
  "windows-sys 0.61.0",
 ]
 
