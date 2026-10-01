@@ -1714,7 +1714,6 @@ mod hw {
                     nested_virt: false,
                     user_mode_memory_faults: false,
                     lazy_memory_registration: false,
-                    versioned_cpu_contract: false,
                     time_abi: Some(TimeAbiConfig {
                         cpuid: Arc::new(host_profile_cpuid(&processor_topology).1),
                         msrs: Arc::new(TimeAbiMsrs::new()),
@@ -1749,7 +1748,6 @@ mod hw {
             }
 
             assert!(!partition.caps().hv1);
-            assert!(!partition.caps().kvm_clock);
             let backend = partition.time_abi().expect("a time ABI partition");
 
             let started = std::time::Instant::now();
@@ -1976,7 +1974,6 @@ mod hw {
                 nested_virt: false,
                 user_mode_memory_faults: false,
                 lazy_memory_registration: false,
-                versioned_cpu_contract: false,
                 time_abi: Some(TimeAbiConfig {
                     cpuid: Arc::new(table),
                     msrs: Arc::new(TimeAbiMsrs::new()),
@@ -2207,7 +2204,6 @@ mod hw {
                 nested_virt: false,
                 user_mode_memory_faults: false,
                 lazy_memory_registration: false,
-                versioned_cpu_contract: false,
                 time_abi: Some(TimeAbiConfig {
                     cpuid: Arc::new(table),
                     msrs: Arc::new(TimeAbiMsrs::new()),

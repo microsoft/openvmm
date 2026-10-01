@@ -1079,8 +1079,8 @@ pub struct MicrovmConfig {
     pub snapshot_memory_ranges: Vec<MemoryRange>,
     /// Fresh private GPA ranges selected for this restore launch.
     pub restore_memory_ranges: Vec<MemoryRange>,
-    /// Selects the NVX time ABI v1. Set by the hidden `--x-time-abi-v1`
-    /// development switch until the time ABI becomes the only microVM path.
+    /// The NVX time ABI v1 parameters. Every microVM uses the time ABI, so
+    /// the microVM profile requires them.
     pub time_abi: Option<crate::time_abi::TimeAbiParameters>,
 }
 
@@ -1213,6 +1213,10 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     }
     validate_microvm_command_line(config, hypervisor_id)?;
     validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
+    anyhow::ensure!(
+        config.microvm.time_abi.is_some(),
+        "the microVM profile requires the NVX time ABI parameters"
+    );
     if let Some(hypervisor_id) = hypervisor_id {
         anyhow::ensure!(
             matches!(hypervisor_id, "kvm" | "mshv" | "whp"),
@@ -1765,8 +1769,8 @@ mod tests {
 
     /// Returns a microVM configuration that [`validate_machine_config`]
     /// accepts: [`microvm_config_with_network`]'s, with the fixed topology of
-    /// one vCPU, the fixed chipset and RAM split, and two RAM blocks in a
-    /// capacity of two blocks.
+    /// one vCPU, the time ABI, the fixed chipset and RAM split, and two RAM
+    /// blocks in a capacity of two blocks.
     fn valid_microvm_config() -> Config {
         let mut config = microvm_config_with_network(&"10.0.0.2/24".parse().unwrap());
         config.processor_topology = crate::config::ProcessorTopologyConfig {
@@ -1791,6 +1795,11 @@ mod tests {
             vps: crate::config::VpAssignment::FromTopology,
         }];
         config.microvm.memory_capacity = Some(2 * MICROVM_MEMORY_BLOCK_SIZE_BYTES);
+        config.microvm.time_abi = Some(crate::time_abi::TimeAbiParameters {
+            cpu_profile: "auto".to_owned(),
+            generation: 0,
+            hooks: Default::default(),
+        });
         config.chipset = BaseChipsetManifest {
             with_generic_cmos_rtc: true,
             ..BaseChipsetManifest::empty()

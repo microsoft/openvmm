@@ -16,8 +16,9 @@ pub mod time;
 pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
 
-/// Current manifest format version. Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 5;
+/// The manifest format version, the only one this OpenVMM reads or writes.
+/// Bump when making incompatible changes.
+pub const MANIFEST_VERSION: u32 = 6;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -47,12 +48,8 @@ pub struct SnapshotManifest {
     /// Length of `state.bin` in bytes.
     #[mesh(8)]
     pub state_size_bytes: u64,
-    /// Legacy v2 SHA-256 digest of `state.bin`; empty in v3 through v5.
-    #[mesh(9)]
-    pub state_sha256: Vec<u8>,
-    /// Legacy v2 SHA-256 digest of `memory.bin`; empty in v3 through v5.
-    #[mesh(10)]
-    pub memory_sha256: Vec<u8>,
+    // Fields 9 and 10 held the artifact digests of manifest version 2. They
+    // are retired, and their numbers are never reused.
     /// Authoritative machine composition for versioned machine profiles.
     #[mesh(11)]
     pub machine_contract: Option<microvm::SnapshotMachineContract>,
@@ -95,7 +92,7 @@ pub fn validate_manifest(
     expected_page_size: u32,
 ) -> anyhow::Result<()> {
     format::validate_manifest_header(manifest)?;
-    format::validate_manifest_version(manifest)?;
+    format::validate_manifest_contents(manifest)?;
 
     if manifest.architecture != expected_arch {
         anyhow::bail!(
@@ -201,8 +198,6 @@ mod tests {
         assert_eq!(read_manifest.architecture, manifest.architecture);
         assert_eq!(read_manifest.snapshot_id, manifest.snapshot_id);
         assert_eq!(read_manifest.state_size_bytes, state.len() as u64);
-        assert!(read_manifest.state_sha256.is_empty());
-        assert!(read_manifest.memory_sha256.is_empty());
         assert_eq!(read_state, state);
 
         // memory.bin should exist in the snapshot directory.
