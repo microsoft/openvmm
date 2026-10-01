@@ -373,6 +373,8 @@ struct SharedStateInner {
     /// Advertised output address size in bits. Reflected in IDR5.OAS and
     /// used to derive `oas_mask`.
     oas_bits: u8,
+    /// Advertised SubstreamID size in bits. Reflected in IDR1.SSIDSIZE.
+    ssid_bits: u8,
     /// Host SMMU capabilities, once an accelerated VFIO device has bound and
     /// [`SmmuSharedState::resolve_host_caps`] has resolved or validated the
     /// host-derived parameters. `None` until then (and always `None` for
@@ -446,12 +448,13 @@ impl SmmuSharedState {
     /// `oas_bits` is the initial output address size in bits (e.g., 40 for a
     /// 40-bit physical address space). Computed addresses for STE/CD/PT
     /// fetches are truncated to this width, matching hardware behavior per
-    /// SMMUv3 §3.4. `oas_policy` controls whether the value can be resolved
-    /// against a host SMMU before capabilities are frozen (see
-    /// [`Self::resolve_host_caps`]).
+    /// SMMUv3 §3.4. `ssid_bits` is the guest-visible IDR1.SSIDSIZE value.
+    /// `oas_policy` controls whether OAS can be resolved against a host SMMU
+    /// before capabilities are frozen (see [`Self::resolve_host_caps`]).
     pub(crate) fn new(
         guest_memory: GuestMemory,
         oas_bits: u8,
+        ssid_bits: u8,
         oas_policy: crate::SmmuOasPolicy,
         accel: bool,
         evtq_irq: Option<LineInterrupt>,
@@ -466,6 +469,7 @@ impl SmmuSharedState {
                 strtab_base: 0,
                 strtab_log2size: 0,
                 oas_bits,
+                ssid_bits,
                 resolved_host_caps: None,
                 oas_mask,
             }),
@@ -497,6 +501,11 @@ impl SmmuSharedState {
     /// Returns the currently advertised output address size in bits.
     pub(crate) fn oas_bits(&self) -> u8 {
         self.inner.read().oas_bits
+    }
+
+    /// Returns the currently advertised SubstreamID size in bits.
+    pub fn ssid_bits(&self) -> u8 {
+        self.inner.read().ssid_bits
     }
 
     /// Freezes guest-visible capabilities before the VM can observe them.
@@ -1846,6 +1855,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             false,
             None,
@@ -2113,6 +2123,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             false,
             None,
@@ -2364,7 +2375,7 @@ mod tests {
             crate::SmmuOasPolicy::Auto { provisional } => provisional,
             crate::SmmuOasPolicy::Fixed(bits) => bits,
         };
-        SmmuSharedState::new(gm, oas_bits, policy, true, None, None)
+        SmmuSharedState::new(gm, oas_bits, 0, policy, true, None, None)
     }
 
     #[test]
@@ -2520,6 +2531,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             false,
             None,
@@ -2553,6 +2565,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             false,
             None,
@@ -2584,6 +2597,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             true,
             None,
@@ -2601,6 +2615,7 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
+            0,
             crate::SmmuOasPolicy::Fixed(40),
             true,
             None,
