@@ -110,10 +110,12 @@ fn verify_sha256(bytes: &[u8], digest: &[u8], description: &str) -> Result<(), T
     Ok(())
 }
 
-/// Validates a CPU profile record: its shape, both digests, and both canonical
-/// encodings. The embedded profile must be the one the record names
-/// (`E_PROFILE_DIGEST`); whether this OpenVMM pins it is the restore
-/// preflight's check.
+/// Validates a CPU profile record: its shape and both digests. It decodes
+/// neither document, because manifests are validated several times per
+/// restore and each decode costs about a millisecond. The restore preflight
+/// requires the profile digest to be the pinned profile's, so the embedded
+/// document, which hashes to it, is that profile's canonical encoding; the
+/// worker compares the effective CPUID record with its recomputation.
 pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), TimeAbiError> {
     let SnapshotCpuProfile {
         id,
@@ -144,8 +146,6 @@ pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), Ti
         return Err(manifest_error("effective CPUID record size is invalid"));
     }
     verify_sha256(effective_cpuid, effective_cpuid_sha256, "effective CPUID")?;
-    cpu_profile::verify_profile_record(id, sha256, profile).map_err(profile_error)?;
-    cpu_profile::EffectiveCpuid::decode(effective_cpuid).map_err(profile_error)?;
     Ok(())
 }
 
@@ -253,8 +253,10 @@ pub struct TimeAbiRestorePreflight {
 /// identity and clocks.
 ///
 /// The snapshot's profile must be pinned in this OpenVMM with the same
-/// digest, and `host` must be in its generation. The worker recomputes the
-/// effective CPUID and compares it with the record.
+/// digest (`E_PROFILE_UNKNOWN`, `E_PROFILE_DIGEST`), and `host` must be in its
+/// generation. The embedded document hashes to that digest, so it is the
+/// pinned profile's canonical encoding without being decoded. The worker
+/// recomputes the effective CPUID and compares it with the record.
 pub fn preflight_time_abi_restore(
     contract: &SnapshotMachineContract,
     hypervisor: &str,
@@ -292,8 +294,9 @@ pub fn preflight_time_abi_restore(
             "the host CPU cannot be identified",
         )
     })?;
-    cpu_profile::restore_profile(&record.id, &record.sha256, &record.profile, &host)
-        .map_err(profile_error)?;
+    let profile =
+        cpu_profile::pinned_for_restore(&record.id, &record.sha256).map_err(profile_error)?;
+    cpu_profile::check_generation(profile, &host).map_err(profile_error)?;
     let capture = capture_record(time)?;
     let downtime = select_downtime(&capture, destination, now, hooks)?;
     Ok(TimeAbiRestorePreflight {
@@ -435,7 +438,7 @@ pub(super) mod tests {
     #[test]
     fn cpu_profile_record_rules() {
         validate_cpu_profile_record(&test_cpu_profile()).unwrap();
-        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 12] = [
+        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 10] = [
             (|r| r.id.clear(), TimeAbiCode::ManifestTime),
             (|r| r.id = "Intel_SKX".to_owned(), TimeAbiCode::ManifestTime),
             (
@@ -445,11 +448,6 @@ pub(super) mod tests {
             (
                 |r| r.id = "intel.skylake-sp.kvm.v1.".to_owned(),
                 TimeAbiCode::ManifestTime,
-            ),
-            // The embedded profile is not the one the record names.
-            (
-                |r| r.id = "intel.skylake-sp.v1".to_owned(),
-                TimeAbiCode::ProfileDigest,
             ),
             (|r| r.profile.push(0), TimeAbiCode::ProfileDigest),
             (
@@ -461,15 +459,6 @@ pub(super) mod tests {
             ),
             (|r| r.sha256.truncate(31), TimeAbiCode::ManifestTime),
             (|r| r.effective_cpuid[0] = 1, TimeAbiCode::ProfileDigest),
-            // A digest that verifies over bytes that are not the canonical
-            // encoding.
-            (
-                |r| {
-                    r.effective_cpuid.insert(1, b' ');
-                    r.effective_cpuid_sha256 = sha2::Sha256::digest(&r.effective_cpuid).to_vec();
-                },
-                TimeAbiCode::ProfileDigest,
-            ),
             (|r| r.effective_cpuid.clear(), TimeAbiCode::ManifestTime),
             (
                 |r| r.profile = vec![0; MAX_CPU_PROFILE_BYTES + 1],
@@ -486,6 +475,18 @@ pub(super) mod tests {
                 record.id
             );
         }
+
+        // Validation does not decode the documents. The restore preflight
+        // rejects a document that is not the named profile, and the worker an
+        // effective CPUID record that is not this partition's encoding.
+        let mut renamed = test_cpu_profile();
+        renamed.id = "intel.skylake-sp.v1".to_owned();
+        validate_cpu_profile_record(&renamed).unwrap();
+        let mut noncanonical = test_cpu_profile();
+        noncanonical.effective_cpuid.insert(1, b' ');
+        noncanonical.effective_cpuid_sha256 =
+            sha2::Sha256::digest(&noncanonical.effective_cpuid).to_vec();
+        validate_cpu_profile_record(&noncanonical).unwrap();
     }
 
     #[test]
@@ -752,6 +753,14 @@ pub(super) mod tests {
         record.sha256 = sha2::Sha256::digest(&record.profile).to_vec();
         assert_eq!(
             fail(&swapped, "whp", "auto", host, &now, &hooks),
+            TimeAbiCode::ProfileDigest
+        );
+
+        // The record names another pinned profile than its document.
+        let mut renamed = contract.clone();
+        renamed.cpu_profile.as_mut().unwrap().id = "intel.skylake-sp.v1".to_owned();
+        assert_eq!(
+            fail(&renamed, "whp", "auto", host, &now, &hooks),
             TimeAbiCode::ProfileDigest
         );
 

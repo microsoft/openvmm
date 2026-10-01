@@ -9,7 +9,8 @@
 //!
 //! Writes the profile, as pretty canonical JSON, to standard output, and its
 //! ID and digest to standard error. Pin it under
-//! `vmm_core/cpu_profile/profiles/<id>.json` with its digest in the catalog.
+//! `vmm_core/cpu_profile/profiles/<id>.json`, with its ID and digest in the
+//! catalog's `PINNED` table.
 
 use cpu_profile::derive;
 use cpu_profile::fingerprint::CpuFingerprint;

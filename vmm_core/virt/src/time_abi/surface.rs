@@ -1,26 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Host CPU facts for the CPU profile record of a snapshot, the CPU surface a
-//! backend supports, and the interim CPU profile IDs that backends still
-//! recognize.
-
-/// The prefix of every interim CPU profile ID.
-const INTERIM_CPU_PROFILE_PREFIX: &str = "interim.host.";
-
-/// Returns the ID of the interim CPU profile of `hypervisor`, which named the
-/// backend's own CPU features before CPU profiles. Core no longer selects or
-/// restores interim profiles; backends that still recognize the ID drop it
-/// together with this function.
-pub fn interim_cpu_profile_id(hypervisor: &str) -> String {
-    format!("{INTERIM_CPU_PROFILE_PREFIX}{hypervisor}.v1")
-}
-
-/// Returns whether `id` names an interim CPU profile rather than a pinned
-/// one. See [`interim_cpu_profile_id`].
-pub fn is_interim_cpu_profile(id: &str) -> bool {
-    id.starts_with(INTERIM_CPU_PROFILE_PREFIX)
-}
+//! Host CPU facts for the CPU profile record of a snapshot, and the CPU
+//! surface a backend supports.
 
 /// Returns the host's display signature, CPUID.1:EAX, as the VMM's host OS
 /// sees it, or `None` on a host that is not x86-64.
@@ -69,12 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interim_cpu_profiles() {
-        assert_eq!(interim_cpu_profile_id("kvm"), "interim.host.kvm.v1");
-        assert!(is_interim_cpu_profile("interim.host.mshv.v1"));
-        for id in ["auto", "intel.icelake-sp.v1", "", "interim"] {
-            assert!(!is_interim_cpu_profile(id), "{id}");
-        }
+    fn host_cpu_signature_is_reported() {
         assert_ne!(host_cpu_signature(), Some(0));
     }
 }
