@@ -196,24 +196,8 @@ fn identify_cpu(
         String::new()
     };
     let invariant_tsc = max_extended >= 0x8000_0007 && cpuid(0x8000_0007, 0)[3] & (1 << 8) != 0;
-
-    let stepping = signature & 0xf;
-    let base_model = (signature >> 4) & 0xf;
-    let base_family = (signature >> 8) & 0xf;
-    let extended_model = (signature >> 16) & 0xf;
-    let extended_family = (signature >> 20) & 0xff;
-    let family = if base_family == 0xf {
-        base_family + extended_family
-    } else {
-        base_family
-    };
-    // Intel extends the model for families 6 and 15; AMD only for family 15.
-    let extends_model = base_family == 0xf || (base_family == 0x6 && vendor == "GenuineIntel");
-    let model = if extends_model {
-        (extended_model << 4) | base_model
-    } else {
-        base_model
-    };
+    let (family, model, stepping) =
+        crate::signature::decode_signature(vendor.as_bytes(), signature);
 
     let cpu = HostCpu {
         vendor,
