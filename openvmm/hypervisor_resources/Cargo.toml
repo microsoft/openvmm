@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+cpu_profile.workspace = true
 linkme.workspace = true
 mesh.workspace = true
 vm_resource.workspace = true

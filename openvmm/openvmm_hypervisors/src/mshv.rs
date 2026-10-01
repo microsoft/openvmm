@@ -55,6 +55,18 @@ impl hypervisor_resources::HypervisorProbe for MshvProbe {
             snp_disable_cpuid_offload,
         }))
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn cpu_fingerprint(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendFingerprint> {
+        crate::reject_fingerprint_params("mshv", params)?;
+        anyhow::ensure!(virt_mshv::is_available()?, "MSHV is not available");
+        let mshv =
+            virt_mshv::LinuxMshv::from(std::fs::File::from(fs_err::File::open("/dev/mshv")?));
+        Ok(mshv.cpu_fingerprint()?)
+    }
 }
 
 #[cfg(test)]

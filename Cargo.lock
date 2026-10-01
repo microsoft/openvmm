@@ -3774,6 +3774,7 @@ name = "hypervisor_resources"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cpu_profile",
  "linkme",
  "mesh",
  "vm_resource",
@@ -6157,6 +6158,7 @@ name = "openvmm_helpers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cpu_profile",
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
@@ -6186,9 +6188,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "cpu_profile",
  "fs-err",
  "hypervisor_resources",
  "test_with_tracing",
+ "virt_kvm",
  "virt_mshv",
  "virt_whp",
  "vm_resource",

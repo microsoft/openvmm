@@ -40,3 +40,33 @@ pub(crate) fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {
         _ => anyhow::bail!("invalid boolean value for {key}: {val}"),
     }
 }
+
+/// Rejects backend parameters for CPU fingerprinting, which none of them
+/// affect.
+#[expect(clippy::allow_attributes, reason = "lots of conditions")]
+#[allow(dead_code)]
+pub(crate) fn reject_fingerprint_params(
+    backend: &str,
+    params: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    if let Some(&(key, _)) = params.first() {
+        anyhow::bail!("{backend} parameter {key} does not apply to CPU fingerprinting");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_fingerprint_params;
+    use test_with_tracing::test;
+
+    #[test]
+    fn fingerprinting_rejects_backend_parameters() {
+        reject_fingerprint_params("whp", &[]).unwrap();
+        let error = reject_fingerprint_params("whp", &[("user_mode_apic", "true")]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "whp parameter user_mode_apic does not apply to CPU fingerprinting"
+        );
+    }
+}
