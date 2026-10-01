@@ -1169,13 +1169,13 @@ impl SaveRestore for SmmuDevice {
             guest_memory: _,
             ref shared_state,
 
-            // Only the configurable capabilities are saved for validation.
-            idr0,
-            idr1,
+            // Identification registers — not saved.
+            idr0: _,
+            idr1: _,
             idr2: _,
             idr3: _,
             idr4: _,
-            idr5,
+            idr5: _,
             iidr: _,
             aidr: _,
 
@@ -1232,11 +1232,7 @@ impl SaveRestore for SmmuDevice {
             evtq_cons: queue.evtq_cons,
             gerror: queue.gerror,
             gerrorn: queue.gerrorn,
-            capabilities: Some(state::SavedCapabilities::save(SmmuCapabilities {
-                oas_bits: idr5.oas().addr_bits().expect("valid configured OAS"),
-                ssid_bits: idr1.ssidsize(),
-                ats: idr0.ats(),
-            })),
+            capabilities: Some(state::SavedCapabilities::save(shared_state.capabilities())),
         })
     }
 
@@ -2715,6 +2711,41 @@ mod tests {
                 .capabilities
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_save_uses_resolved_capabilities_before_start() {
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::empty(),
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                ssid_policy: SmmuSsidPolicy::Auto,
+                accel: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        dev.shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+
+        let expected = dev.shared_state.capabilities();
+        assert_eq!(expected.oas_bits, 48);
+        assert_eq!(expected.ssid_bits, 14);
+        assert!(expected.ats);
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 0);
+
+        let saved = dev.save().unwrap();
+        assert_eq!(
+            saved.capabilities.map(state::SavedCapabilities::restore),
+            Some(expected)
+        );
+        let saved = dev.save().unwrap();
+        dev.restore(saved).unwrap();
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 14);
     }
 
     #[test]
