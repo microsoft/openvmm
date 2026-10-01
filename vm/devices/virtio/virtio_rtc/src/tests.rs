@@ -136,12 +136,14 @@ fn head(msg_type: u16) -> spec::ReqHead {
     }
 }
 
-fn read_request(clock_id: u16) -> spec::ReqClock {
-    spec::ReqClock {
-        head: head(spec::REQ_READ),
+fn clock_request(msg_type: u16, clock_id: u16) -> Vec<u8> {
+    let body = spec::ReqClockBody {
         clock_id: virtio::spec::u16_le::new(clock_id),
         reserved: [0; 6],
-    }
+    };
+    let mut request = head(msg_type).as_bytes().to_vec();
+    request.extend_from_slice(body.as_bytes());
+    request
 }
 
 #[async_test]
@@ -158,11 +160,8 @@ async fn rtc_reports_correct_traits(driver: DefaultDriver) {
 async fn rtc_reads_host_time(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
-    let request = read_request(0);
-    harness
-        .mem
-        .write_at(REQUEST_ADDR, request.as_bytes())
-        .unwrap();
+    let request = clock_request(spec::REQ_READ, 0);
+    harness.mem.write_at(REQUEST_ADDR, &request).unwrap();
 
     let before = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -171,7 +170,7 @@ async fn rtc_reads_host_time(driver: DefaultDriver) {
     let (written, response) = harness
         .submit_and_wait(
             REQUEST_ADDR,
-            size_of::<spec::ReqClock>() as u32,
+            request.len() as u32,
             size_of::<spec::RespRead>() as u32,
         )
         .await;
@@ -207,19 +206,12 @@ async fn rtc_reports_clock_capabilities(driver: DefaultDriver) {
     assert_eq!(response.head.status, spec::S_OK);
     assert_eq!(response.num_clocks.get(), 1);
 
-    let clock_cap = spec::ReqClock {
-        head: head(spec::REQ_CLOCK_CAP),
-        clock_id: virtio::spec::u16_le::new(0),
-        reserved: [0; 6],
-    };
-    harness
-        .mem
-        .write_at(REQUEST_ADDR, clock_cap.as_bytes())
-        .unwrap();
+    let clock_cap = clock_request(spec::REQ_CLOCK_CAP, 0);
+    harness.mem.write_at(REQUEST_ADDR, &clock_cap).unwrap();
     let (written, response) = harness
         .submit_and_wait(
             REQUEST_ADDR,
-            size_of::<spec::ReqClock>() as u32,
+            clock_cap.len() as u32,
             size_of::<spec::RespClockCap>() as u32,
         )
         .await;
@@ -256,22 +248,16 @@ async fn rtc_handles_cross_requests(driver: DefaultDriver) {
             (spec::COUNTER_INVALID, spec::S_EINVAL),
             (2, spec::S_EOPNOTSUPP),
         ] {
-            let request = spec::ReqCross {
-                head: head(msg_type),
+            let body = spec::ReqCrossBody {
                 clock_id: virtio::spec::u16_le::new(0),
                 hw_counter: counter,
                 reserved: [0; 5],
             };
-            harness
-                .mem
-                .write_at(REQUEST_ADDR, request.as_bytes())
-                .unwrap();
+            let mut request = head(msg_type).as_bytes().to_vec();
+            request.extend_from_slice(body.as_bytes());
+            harness.mem.write_at(REQUEST_ADDR, &request).unwrap();
             let (written, response) = harness
-                .submit_and_wait(
-                    REQUEST_ADDR,
-                    size_of::<spec::ReqCross>() as u32,
-                    response_size as u32,
-                )
+                .submit_and_wait(REQUEST_ADDR, request.len() as u32, response_size as u32)
                 .await;
             assert_eq!(written, response_size as u32);
             assert_eq!(
@@ -293,15 +279,12 @@ async fn rtc_handles_cross_requests(driver: DefaultDriver) {
 async fn rtc_rejects_unknown_clock(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
-    let request = read_request(u16::MAX);
-    harness
-        .mem
-        .write_at(REQUEST_ADDR, request.as_bytes())
-        .unwrap();
+    let request = clock_request(spec::REQ_READ, u16::MAX);
+    harness.mem.write_at(REQUEST_ADDR, &request).unwrap();
     let (written, response) = harness
         .submit_and_wait(
             REQUEST_ADDR,
-            size_of::<spec::ReqClock>() as u32,
+            request.len() as u32,
             size_of::<spec::RespRead>() as u32,
         )
         .await;
@@ -314,19 +297,12 @@ async fn rtc_rejects_unknown_clock(driver: DefaultDriver) {
 async fn rtc_handles_short_response_buffers(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
-    let request = read_request(0);
-    harness
-        .mem
-        .write_at(REQUEST_ADDR, request.as_bytes())
-        .unwrap();
+    let request = clock_request(spec::REQ_READ, 0);
+    harness.mem.write_at(REQUEST_ADDR, &request).unwrap();
 
     for writable_len in 0..size_of::<spec::RespRead>() as u32 {
         let (written, response) = harness
-            .submit_and_wait(
-                REQUEST_ADDR,
-                size_of::<spec::ReqClock>() as u32,
-                writable_len,
-            )
+            .submit_and_wait(REQUEST_ADDR, request.len() as u32, writable_len)
             .await;
         assert_eq!(
             written,
@@ -357,14 +333,12 @@ async fn rtc_ignores_trailing_request_bytes(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
     let cfg = head(spec::REQ_CFG);
-    let read = read_request(0);
+    let read = clock_request(spec::REQ_READ, 0);
 
-    for request in [cfg.as_bytes(), read.as_bytes()] {
+    for request in [cfg.as_bytes(), read.as_slice()] {
         let request_addr = (TOTAL_MEM_SIZE - request.len()) as u64;
         harness.mem.write_at(request_addr, request).unwrap();
-        let (written, response) = harness
-            .submit_and_wait(request_addr, MAX_REQUEST_SIZE as u32, 32)
-            .await;
+        let (written, response) = harness.submit_and_wait(request_addr, 24, 32).await;
         assert_eq!(written, 16);
         assert_eq!(response[0], spec::S_OK);
         assert!(

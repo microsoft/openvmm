@@ -48,16 +48,14 @@ pub struct RespHead {
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-pub struct ReqClock {
-    pub head: ReqHead,
+pub struct ReqClockBody {
     pub clock_id: u16_le,
     pub reserved: [u8; 6],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-pub struct ReqCross {
-    pub head: ReqHead,
+pub struct ReqCrossBody {
     pub clock_id: u16_le,
     pub hw_counter: u8,
     pub reserved: [u8; 5],
@@ -65,8 +63,7 @@ pub struct ReqCross {
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-pub struct ReqSetAlarm {
-    pub head: ReqHead,
+pub struct ReqSetAlarmBody {
     pub alarm_time: u64_le,
     pub clock_id: u16_le,
     pub flags: u8,
@@ -75,8 +72,7 @@ pub struct ReqSetAlarm {
 
 #[repr(C)]
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
-pub struct ReqSetAlarmEnabled {
-    pub head: ReqHead,
+pub struct ReqSetAlarmEnabledBody {
     pub clock_id: u16_le,
     pub flags: u8,
     pub reserved: [u8; 5],

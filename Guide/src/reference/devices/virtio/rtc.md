@@ -19,8 +19,12 @@ there is no alarm queue, and alarm requests return `ENODEV`.
 The implementation uses one request virtqueue and no device-specific
 configuration registers. It follows the existing small-device worker
 pattern, reusing OpenVMM's virtqueue, guest-memory, and task-control
-infrastructure. Requests are processed sequentially. The device has no
-mutable clock state and supports transport save/restore; reads after restore
+infrastructure. A single request handler reads the common header once;
+each command then reads its typed body and checks buffer sizes before
+execution. The header stays in the handler and is not reread or copied into
+the body.
+Requests are processed sequentially. The device has no mutable clock state
+and supports transport save/restore; reads after restore
 return current host time. Additional clocks and optional features are
 follow-up work.
 

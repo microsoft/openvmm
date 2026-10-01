@@ -39,10 +39,10 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 const RESPONSE_HEAD_SIZE: usize = size_of::<spec::RespHead>();
-const MAX_REQUEST_SIZE: usize = size_of::<spec::ReqSetAlarm>();
 const MAX_RESPONSE_SIZE: usize = size_of::<spec::RespReadCross>();
 
 #[derive(InspectMut)]
@@ -154,7 +154,7 @@ impl AsyncRun<RtcQueue> for RtcWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    let bytes_written = process_request(&state.mem, &work);
+                    let bytes_written = handle_request(&state.mem, &work);
                     state.queue.complete(work, bytes_written);
                 }
                 Err(err) => {
@@ -170,68 +170,34 @@ impl AsyncRun<RtcQueue> for RtcWorker {
     }
 }
 
-fn process_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
-    let readable_len = work.get_payload_length(false);
-    let writable_len = work.get_payload_length(true);
-
-    if writable_len == 0 {
+fn handle_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
+    if work.get_payload_length(true) == 0 {
         return 0;
     }
-    let error_head_size = writable_len.min(RESPONSE_HEAD_SIZE as u64) as usize;
-    if readable_len < size_of::<spec::ReqHead>() as u64 {
-        return write_error_response(mem, work, spec::S_EINVAL, error_head_size);
+    if work.get_payload_length(false) < size_of::<spec::ReqHead>() as u64 {
+        return write_error_response(mem, work, spec::S_EINVAL, RESPONSE_HEAD_SIZE);
     }
 
-    let head_size = size_of::<spec::ReqHead>();
-    let mut request = [0; MAX_REQUEST_SIZE];
-    if let Err(status) = read_request_part(mem, work, 0, &mut request[..head_size]) {
-        return write_error_response(mem, work, status, error_head_size);
-    }
-
-    let head =
-        spec::ReqHead::read_from_bytes(&request[..head_size]).expect("fixed request header size");
-    let msg_type = head.msg_type.get();
-    let Some((request_size, response_size)) = request_layout(msg_type) else {
-        return write_error_response(mem, work, spec::S_EOPNOTSUPP, error_head_size);
-    };
-
-    if writable_len < response_size as u64 {
-        return write_error_response(mem, work, spec::S_EINVAL, error_head_size);
-    }
-    if readable_len < request_size as u64 {
-        return write_error_response(mem, work, spec::S_EINVAL, response_size);
-    }
-
-    if request_size > head_size {
-        if let Err(status) = read_request_part(
-            mem,
-            work,
-            head_size as u64,
-            &mut request[head_size..request_size],
-        ) {
-            return write_error_response(mem, work, status, response_size);
+    let mut head = spec::ReqHead::new_zeroed();
+    match work.read(mem, head.as_mut_bytes()) {
+        Ok(bytes_read) if bytes_read == size_of::<spec::ReqHead>() => {}
+        Ok(_) => return write_error_response(mem, work, spec::S_EINVAL, RESPONSE_HEAD_SIZE),
+        Err(err) => {
+            tracelimit::error_ratelimited!(
+                err = &err as &dyn std::error::Error,
+                "failed to read virtio-rtc request"
+            );
+            return write_error_response(mem, work, spec::S_EIO, RESPONSE_HEAD_SIZE);
         }
     }
 
-    handle_request(mem, work, head, &request[..request_size], response_size)
-}
-
-fn handle_request(
-    mem: &GuestMemory,
-    work: &VirtioQueueCallbackWork,
-    head: spec::ReqHead,
-    request: &[u8],
-    response_size: usize,
-) -> u32 {
     let msg_type = head.msg_type.get();
-    if matches!(
-        msg_type,
-        spec::REQ_READ_ALARM | spec::REQ_SET_ALARM | spec::REQ_SET_ALARM_ENABLED
-    ) {
-        return write_error_response(mem, work, spec::S_ENODEV, response_size);
-    }
     match msg_type {
         spec::REQ_CFG => {
+            let response_size = size_of::<spec::RespCfg>();
+            if work.get_payload_length(true) < response_size as u64 {
+                return write_error_response(mem, work, spec::S_EINVAL, response_size);
+            }
             if head.reserved != [0; 6] {
                 return write_error_response(mem, work, spec::S_EINVAL, response_size);
             }
@@ -243,12 +209,15 @@ fn handle_request(
             write_response(mem, work, response.as_bytes())
         }
         spec::REQ_CLOCK_CAP => {
-            let request =
-                spec::ReqClock::read_from_bytes(request).expect("validated clock request size");
-            if request.clock_id.get() != 0 {
+            let response_size = size_of::<spec::RespClockCap>();
+            let body = match read_request_body::<spec::ReqClockBody>(mem, work, response_size) {
+                Ok(body) => body,
+                Err(status) => return write_error_response(mem, work, status, response_size),
+            };
+            if body.clock_id.get() != 0 {
                 return write_error_response(mem, work, spec::S_ENODEV, response_size);
             }
-            if head.reserved != [0; 6] || request.reserved != [0; 6] {
+            if head.reserved != [0; 6] || body.reserved != [0; 6] {
                 return write_error_response(mem, work, spec::S_EINVAL, response_size);
             }
             let response = spec::RespClockCap {
@@ -261,11 +230,14 @@ fn handle_request(
             write_response(mem, work, response.as_bytes())
         }
         spec::REQ_READ => {
-            let request =
-                spec::ReqClock::read_from_bytes(request).expect("validated clock request size");
-            let reading = match request.clock_id.get() {
+            let response_size = size_of::<spec::RespRead>();
+            let body = match read_request_body::<spec::ReqClockBody>(mem, work, response_size) {
+                Ok(body) => body,
+                Err(status) => return write_error_response(mem, work, status, response_size),
+            };
+            let reading = match body.clock_id.get() {
                 0 => {
-                    if head.reserved != [0; 6] || request.reserved != [0; 6] {
+                    if head.reserved != [0; 6] || body.reserved != [0; 6] {
                         return write_error_response(mem, work, spec::S_EINVAL, response_size);
                     }
                     clock_reading_ns(SystemTime::now())
@@ -290,12 +262,19 @@ fn handle_request(
             }
         }
         spec::REQ_CROSS_CAP | spec::REQ_READ_CROSS => {
-            let request =
-                spec::ReqCross::read_from_bytes(request).expect("validated cross request size");
-            if request.clock_id.get() != 0 {
+            let response_size = if msg_type == spec::REQ_CROSS_CAP {
+                size_of::<spec::RespCrossCap>()
+            } else {
+                size_of::<spec::RespReadCross>()
+            };
+            let body = match read_request_body::<spec::ReqCrossBody>(mem, work, response_size) {
+                Ok(body) => body,
+                Err(status) => return write_error_response(mem, work, status, response_size),
+            };
+            if body.clock_id.get() != 0 {
                 return write_error_response(mem, work, spec::S_ENODEV, response_size);
             }
-            match request.hw_counter {
+            match body.hw_counter {
                 spec::COUNTER_ARM_VCT | spec::COUNTER_X86_TSC => {}
                 spec::COUNTER_INVALID => {
                     return write_error_response(mem, work, spec::S_EINVAL, response_size);
@@ -304,7 +283,7 @@ fn handle_request(
                     return write_error_response(mem, work, spec::S_EOPNOTSUPP, response_size);
                 }
             }
-            if head.reserved != [0; 6] || request.reserved != [0; 5] {
+            if head.reserved != [0; 6] || body.reserved != [0; 5] {
                 return write_error_response(mem, work, spec::S_EINVAL, response_size);
             }
             if msg_type == spec::REQ_READ_CROSS {
@@ -317,7 +296,34 @@ fn handle_request(
             };
             write_response(mem, work, response.as_bytes())
         }
-        _ => unreachable!("known request layout must have a handler"),
+        spec::REQ_READ_ALARM => {
+            let response_size = size_of::<spec::RespReadAlarm>();
+            let status = match read_request_body::<spec::ReqClockBody>(mem, work, response_size) {
+                Ok(_) => spec::S_ENODEV,
+                Err(status) => status,
+            };
+            write_error_response(mem, work, status, response_size)
+        }
+        spec::REQ_SET_ALARM => {
+            let status =
+                match read_request_body::<spec::ReqSetAlarmBody>(mem, work, RESPONSE_HEAD_SIZE) {
+                    Ok(_) => spec::S_ENODEV,
+                    Err(status) => status,
+                };
+            write_error_response(mem, work, status, RESPONSE_HEAD_SIZE)
+        }
+        spec::REQ_SET_ALARM_ENABLED => {
+            let status = match read_request_body::<spec::ReqSetAlarmEnabledBody>(
+                mem,
+                work,
+                RESPONSE_HEAD_SIZE,
+            ) {
+                Ok(_) => spec::S_ENODEV,
+                Err(status) => status,
+            };
+            write_error_response(mem, work, status, RESPONSE_HEAD_SIZE)
+        }
+        _ => write_error_response(mem, work, spec::S_EOPNOTSUPP, RESPONSE_HEAD_SIZE),
     }
 }
 
@@ -327,6 +333,15 @@ fn write_error_response(
     status: u8,
     len: usize,
 ) -> u32 {
+    let writable_len = work.get_payload_length(true);
+    let len = if writable_len < len as u64 {
+        writable_len.min(RESPONSE_HEAD_SIZE as u64) as usize
+    } else {
+        len
+    };
+    if len == 0 {
+        return 0;
+    }
     let mut bytes = [0; MAX_RESPONSE_SIZE];
     bytes[0] = status;
     write_response(mem, work, &bytes[..len])
@@ -352,45 +367,31 @@ fn clock_reading_ns(time: SystemTime) -> anyhow::Result<u64> {
     u64::try_from(duration.as_nanos()).context("host clock exceeds the virtio RTC range")
 }
 
-fn read_request_part(
+fn read_request_body<Body: FromBytes + IntoBytes>(
     mem: &GuestMemory,
     work: &VirtioQueueCallbackWork,
-    offset: u64,
-    bytes: &mut [u8],
-) -> Result<(), u8> {
-    match work.read_at_offset(offset, mem, bytes) {
-        Ok(bytes_read) if bytes_read == bytes.len() => Ok(()),
+    response_size: usize,
+) -> Result<Body, u8> {
+    if work.get_payload_length(true) < response_size as u64 {
+        return Err(spec::S_EINVAL);
+    }
+    let header_size = size_of::<spec::ReqHead>();
+    let request_size = header_size + size_of::<Body>();
+    if work.get_payload_length(false) < request_size as u64 {
+        return Err(spec::S_EINVAL);
+    }
+
+    let mut body = Body::new_zeroed();
+    match work.read_at_offset(header_size as u64, mem, body.as_mut_bytes()) {
+        Ok(bytes_read) if bytes_read == size_of::<Body>() => Ok(body),
         Ok(_) => Err(spec::S_EINVAL),
         Err(err) => {
             tracelimit::error_ratelimited!(
                 err = &err as &dyn std::error::Error,
-                "failed to read virtio-rtc request"
+                "failed to read virtio-rtc request body"
             );
             Err(spec::S_EIO)
         }
-    }
-}
-
-fn request_layout(msg_type: u16) -> Option<(usize, usize)> {
-    match msg_type {
-        spec::REQ_READ => Some((size_of::<spec::ReqClock>(), size_of::<spec::RespRead>())),
-        spec::REQ_READ_CROSS => Some((
-            size_of::<spec::ReqCross>(),
-            size_of::<spec::RespReadCross>(),
-        )),
-        spec::REQ_CFG => Some((size_of::<spec::ReqHead>(), size_of::<spec::RespCfg>())),
-        spec::REQ_CLOCK_CAP => Some((size_of::<spec::ReqClock>(), size_of::<spec::RespClockCap>())),
-        spec::REQ_CROSS_CAP => Some((size_of::<spec::ReqCross>(), size_of::<spec::RespCrossCap>())),
-        spec::REQ_READ_ALARM => Some((
-            size_of::<spec::ReqClock>(),
-            size_of::<spec::RespReadAlarm>(),
-        )),
-        spec::REQ_SET_ALARM => Some((size_of::<spec::ReqSetAlarm>(), size_of::<spec::RespHead>())),
-        spec::REQ_SET_ALARM_ENABLED => Some((
-            size_of::<spec::ReqSetAlarmEnabled>(),
-            size_of::<spec::RespHead>(),
-        )),
-        _ => None,
     }
 }
 
