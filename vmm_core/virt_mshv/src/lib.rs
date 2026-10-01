@@ -333,6 +333,9 @@ struct MshvPartitionInner {
     /// Set to `true` when partition time is frozen (e.g. during reset).
     /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
+    /// The NVX time ABI state, for a partition built with it.
+    #[cfg(guest_arch = "x86_64")]
+    time_abi: Option<arch::time_abi::MshvTimeAbi>,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
     /// assertions via a v2m frame.
     #[cfg(guest_arch = "aarch64")]
@@ -861,6 +864,9 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    TimeAbi(#[from] virt::time_abi::TimeAbiError),
 }
 
 /// Equivalent to [`MshvError`] but has a much better error message.

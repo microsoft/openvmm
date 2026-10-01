@@ -5,6 +5,7 @@
 
 mod extint;
 pub(crate) mod finalize;
+pub(crate) mod time_abi;
 mod tsc;
 mod vm_state;
 mod vp_state;
@@ -119,6 +120,9 @@ impl virt::Hypervisor for LinuxMshv {
         };
         let isolation = config.isolation.isolation_type();
         validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        if config.time_abi.is_some() {
+            time_abi::validate_partition(isolation, config.hv_config.is_some())?;
+        }
         let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
@@ -130,13 +134,18 @@ impl virt::Hypervisor for LinuxMshv {
             x2apic,
             config.processor_topology.smt_enabled(),
         )?;
-        let create_args = tsc::with_features1(create_args, config.versioned_cpu_contract);
+        let create_args = if config.time_abi.is_some() {
+            time_abi::with_feature_banks(create_args)
+        } else {
+            tsc::with_features1(create_args, config.versioned_cpu_contract)
+        };
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
         // Set synthetic processor features before initialization when the
         // guest interface is configured. SNP partitions require the smaller
-        // early-property feature set accepted by the hypervisor.
+        // early-property feature set accepted by the hypervisor. A time ABI
+        // partition has none: OpenVMM serves its identity MSRs.
         if config.hv_config.is_some() || snp {
             let synthetic_features = if snp {
                 snp_synthetic_features()
@@ -157,6 +166,10 @@ impl virt::Hypervisor for LinuxMshv {
 
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
+
+        if config.time_abi.is_some() {
+            time_abi::route_identity_msrs(&vmfd)?;
+        }
 
         if snp {
             let snp_policy = igvm_snp_config.as_ref().map_or_else(
@@ -482,10 +495,13 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
             }
         }
-        let cpuid = tsc::add_cpuid_leaves(&self.vmfd, cpuid)?;
-        let cpuid = virt::CpuidLeafSet::new(cpuid);
+        let cpuid = match &self.config.time_abi {
+            Some(time_abi) => time_abi::partition_cpuid(cpuid, &time_abi.cpuid),
+            None => virt::CpuidLeafSet::new(tsc::add_cpuid_leaves(&self.vmfd, cpuid)?),
+        };
 
         // Apply CPUID overrides partition-wide.
+        let started = std::time::Instant::now();
         for leaf in cpuid.leaves().iter() {
             let input = hvdef::hypercall::RegisterInterceptResultCpuid {
                 partition_id: 0,
@@ -522,6 +538,16 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 .hvcall(&mut args)
                 .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
         }
+        tracing::info!(
+            leaves = cpuid.leaves().len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "registered MSHV CPUID results"
+        );
+        let time_abi = self
+            .config
+            .time_abi
+            .as_ref()
+            .map(|config| time_abi::MshvTimeAbi::new(config, &cpuid));
 
         let apic_id_map = self
             .config
@@ -558,6 +584,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             isolation,
             // SNP partition creation set TimeFreeze=1 before this object was built.
             time_frozen: Mutex::new(time_frozen),
+            time_abi,
         });
         inner.add_snp_vmsa_mapping()?;
 
@@ -609,6 +636,10 @@ impl virt::Partition for MshvPartition {
 
     fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
         self.inner.apic_frequency_hz()
+    }
+
+    fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
+        self.inner.time_abi.as_ref().map(|_| self as _)
     }
 
     fn supports_initial_page_acceptance(
@@ -767,6 +798,9 @@ impl MshvPartitionInner {
     /// created here, so restored-TSC synchronization sees exactly the created
     /// VPs.
     fn create_vp(&self, vp_index: VpIndex) -> Result<VcpuFd, Error> {
+        if let Some(time_abi) = &self.time_abi {
+            time_abi.check_vp_creation(vp_index)?;
+        }
         let vcpufd = self
             .vmfd
             .create_vcpu(
@@ -775,7 +809,10 @@ impl MshvPartitionInner {
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
         self.vp(vp_index)
             .created
-            .store(true, std::sync::atomic::Ordering::Release);
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(time_abi) = &self.time_abi {
+            time_abi.check_vp_creation(vp_index)?;
+        }
         Ok(vcpufd)
     }
 }
@@ -919,6 +956,14 @@ impl MshvProcessor<'_> {
             }
             HvMessageType::HvMessageTypeX64InterruptionDeliverable => {
                 self.handle_interrupt_deliverable(exit, dev);
+            }
+            // Only a time ABI partition installs MSR intercepts.
+            HvMessageType::HvMessageTypeMsrIntercept => {
+                let partition = self.partition;
+                let Some(time_abi) = &partition.time_abi else {
+                    panic!("Unhandled vcpu exit code {:?}", exit.header.typ);
+                };
+                self.handle_time_abi_msr_intercept(time_abi, exit);
             }
             exit_type => {
                 panic!("Unhandled vcpu exit code {exit_type:?}");
