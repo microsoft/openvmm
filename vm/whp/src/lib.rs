@@ -117,6 +117,21 @@ pub mod capabilities {
             Err(err) => Err(err),
         }
     }
+    /// The available processor features of the first bank, from the query
+    /// that predates feature banks.
+    pub fn processor_features_bank0() -> Result<abi::WHV_PROCESSOR_FEATURES> {
+        get(abi::WHvCapabilityCodeProcessorFeatures)
+    }
+    /// The available processor feature banks, without a fallback to the
+    /// query that predates them.
+    pub fn processor_features_banks() -> Result<abi::WHV_PROCESSOR_FEATURES_BANKS> {
+        get(abi::WHvCapabilityCodeProcessorFeaturesBanks)
+    }
+    /// The available synthetic processor feature banks, whatever their count.
+    pub fn synthetic_processor_features_banks()
+    -> Result<abi::WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS> {
+        get(abi::WHvCapabilityCodeSyntheticProcessorFeaturesBanks)
+    }
     /// Processor frequency capping capabilities.
     pub fn processor_frequency_cap() -> Result<abi::WHV_CAPABILITY_PROCESSOR_FREQUENCY_CAP> {
         get(abi::WHvCapabilityCodeProcessorFrequencyCap)
