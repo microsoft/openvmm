@@ -1269,6 +1269,8 @@ impl InitializedVm {
                 user_mode_memory_faults,
                 lazy_memory_registration,
                 versioned_cpu_contract: microvm::uses_versioned_cpu_contract(cfg.machine_profile),
+                #[cfg(guest_arch = "x86_64")]
+                time_abi: None,
             })
             .context("failed to create the prototype partition")?;
         partition_prototype.complete("startup", "partition_prototype", Default::default());

@@ -26,6 +26,11 @@ pub trait MicrovmPartition: Send + Sync {
 
     /// Returns the LAPIC interrupt clock frequency when available.
     fn apic_frequency_hz(&self) -> anyhow::Result<Option<u64>>;
+
+    /// Returns the NVX time ABI primitives, if the partition was built with a
+    /// time ABI configuration.
+    #[cfg(guest_arch = "x86_64")]
+    fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend>;
 }
 
 impl<T> MicrovmPartition for T
@@ -53,5 +58,10 @@ where
 
     fn apic_frequency_hz(&self) -> anyhow::Result<Option<u64>> {
         Ok(Partition::apic_frequency_hz(self)?)
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
+        Partition::time_abi(self)
     }
 }

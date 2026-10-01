@@ -364,6 +364,11 @@ pub struct ProtoPartitionConfig<'a> {
     pub lazy_memory_registration: bool,
     /// Build the reproducible CPU/clock contract used by a versioned machine profile.
     pub versioned_cpu_contract: bool,
+    /// The NVX time ABI configuration. A backend that implements the time ABI
+    /// returns `Some` from [`Partition::time_abi`] for such a partition; the
+    /// worker rejects one that does not.
+    #[cfg(guest_arch = "x86_64")]
+    pub time_abi: Option<crate::time_abi::TimeAbiConfig>,
 }
 
 /// Partition creation configuration.
@@ -561,6 +566,13 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Returns the effective LAPIC interrupt clock frequency when available.
     fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
         Ok(None)
+    }
+
+    /// Returns the NVX time ABI primitives, if the partition was built with
+    /// [`ProtoPartitionConfig::time_abi`].
+    #[cfg(guest_arch = "x86_64")]
+    fn time_abi(&self) -> Option<&dyn crate::time_abi::TimeAbiBackend> {
+        None
     }
 
     /// Returns a trait object for initial page imports during the initial start
