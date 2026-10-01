@@ -3542,6 +3542,36 @@ mod tests {
     }
 
     #[test]
+    fn platform_time_abi_snapshot_carries_no_clock_token() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+        crate::snapshot::time::set_time_abi_records(
+            &mut manifest,
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
+        )
+        .unwrap();
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(
+            contract
+                .effective_command_line
+                .replace(" tsc_early_khz=1000000", ""),
+        );
+        validate_manifest_version(&manifest).unwrap();
+
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(format!(
+            "{} tsc_early_khz=2100000",
+            contract.effective_command_line
+        ));
+        let err = validate_manifest_version(&manifest)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
+    }
+
+    #[test]
     fn platform_snapshot_rejects_invalid_control_tokens() {
         let scratch = vec![0x5a; 512];
         let mut manifest = paired_scratch_manifest(&scratch);
