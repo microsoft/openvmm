@@ -85,12 +85,23 @@ pub(crate) fn configure_session(fs: &VirtioFs, info: &mut SessionInfo) {
     }
 }
 
-pub(crate) fn check_symlink_allowed(fs: &VirtioFs) -> lx::Result<()> {
-    // The generic LxVolume API cannot pin every ancestor while resolving
-    // a symlink. The microVM profile therefore does not create links that
-    // could later turn a checked relative lookup into an escape.
+/// The longest symbolic link target, in bytes, that Linux accepts.
+const MAX_SYMLINK_TARGET_BYTES: usize = 4095;
+
+/// Validates a guest symbolic link target without rewriting it.
+pub(crate) fn validate_symlink_target(fs: &VirtioFs, target: &lx::LxStr) -> lx::Result<()> {
+    // The microVM volume never follows a symbolic link while resolving a host
+    // path (see `LxVolumeOptions::confine_paths`), so the guest may store any
+    // target verbatim. Only the bounds that Linux itself enforces are applied,
+    // so that every host reports the same errors.
     if fs.is_microvm() {
-        return Err(lx::Error::ENOTSUP);
+        let target = target.as_bytes();
+        if target.is_empty() {
+            return Err(lx::Error::ENOENT);
+        }
+        if target.len() > MAX_SYMLINK_TARGET_BYTES {
+            return Err(lx::Error::ENAMETOOLONG);
+        }
     }
     Ok(())
 }
@@ -129,7 +140,10 @@ impl VirtioFs {
         let root_path = root_path.as_ref();
         profile.validate_root_path(root_path)?;
         let mut mount_options = LxVolumeOptions::new();
-        mount_options.readonly(profile.is_readonly()).sandbox(true);
+        mount_options
+            .readonly(profile.is_readonly())
+            .sandbox(true)
+            .confine_paths(true);
         let volume = mount_options.new_volume(root_path)?;
         let denied_identities = profile
             .denied_paths()

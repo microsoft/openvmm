@@ -165,7 +165,7 @@ impl VirtioFsInode {
     }
 
     pub(crate) fn object_stat(&self) -> lx::Result<lx::Stat> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume.lstat(&*self.get_path())
     }
 
@@ -245,21 +245,21 @@ impl VirtioFsInode {
 
     /// Retrieves the attributes of this inode.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         let stat = self.volume.lstat(&*self.get_path())?;
         Ok(self.attr_from_stat(&stat))
     }
 
     /// Retrieves the extended attributes of this inode.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         let statx = self.volume.statx(&*self.get_path())?;
         Ok(self.statx_from(&statx))
     }
 
     /// Sets the attributes of this inode.
     pub fn set_attr(&self, arg: &fuse_setattr_in, request_uid: lx::uid_t) -> lx::Result<fuse_attr> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         let attr = util::fuse_set_attr_to_lxutil(arg, request_uid);
 
         // Because FUSE_HANDLE_KILLPRIV is set, set-user-ID and set-group-ID must be cleared
@@ -271,9 +271,10 @@ impl VirtioFsInode {
 
     /// Opens the inode, creating a file object.
     pub fn open(self: Arc<VirtioFsInode>, flags: u32) -> lx::Result<VirtioFsFile> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         let flags = (flags as i32) | lx::O_NOFOLLOW;
         let file = self.volume.open(&*self.get_path(), flags, None)?;
+        crate::microvm::inode::reject_opened_symlink(&self.volume, &file)?;
         Ok(VirtioFsFile::new(file, self, flags as u32))
     }
 
@@ -292,6 +293,7 @@ impl VirtioFsInode {
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
         let stat = file.fstat()?.into();
+        crate::microvm::inode::reject_symlink_stat(&self.volume, &stat)?;
         let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
         Ok((inode, attr, file))
@@ -362,7 +364,7 @@ impl VirtioFsInode {
     /// Creates a new hard link as a child of this inode.
     pub fn link(&self, name: &LxStr, target: &VirtioFsInode) -> lx::Result<fuse_attr> {
         self.validate_confined()?;
-        target.validate_confined()?;
+        target.validate_confined_object()?;
         if self.volume.id() != target.volume.id() {
             return Err(lx::Error::EXDEV);
         }
@@ -375,7 +377,7 @@ impl VirtioFsInode {
 
     /// Reads the target of the symbolic link, if this inode is a symbolic link.
     pub fn read_link(&self) -> lx::Result<LxString> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume.read_link(&*self.get_path())
     }
 
@@ -403,7 +405,7 @@ impl VirtioFsInode {
 
     /// Gets the attributes of the file system that the inode resides on.
     pub fn stat_fs(&self) -> lx::Result<fuse_kstatfs> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         let stat_fs = self.volume.stat_fs(&*self.get_path())?;
         Ok(fuse_kstatfs::new(
             stat_fs.block_count,
@@ -419,26 +421,26 @@ impl VirtioFsInode {
 
     /// Gets the value or the size of an extended attribute on this inode.
     pub fn get_xattr(&self, name: &LxStr, value: Option<&mut [u8]>) -> lx::Result<usize> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume.get_xattr(&*self.get_path(), name, value)
     }
 
     /// Sets an extended attribute on this inode.
     pub fn set_xattr(&self, name: &LxStr, value: &[u8], flags: u32) -> lx::Result<()> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume
             .set_xattr(&*self.get_path(), name, value, flags as i32)
     }
 
     /// Lists the extended attributes on this inode.
     pub fn list_xattr(&self, list: Option<&mut [u8]>) -> lx::Result<usize> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume.list_xattr(&*self.get_path(), list)
     }
 
     /// Removes an extended attribute from this inode.
     pub fn remove_xattr(&self, name: &LxStr) -> lx::Result<()> {
-        self.validate_confined()?;
+        self.validate_confined_object()?;
         self.volume.remove_xattr(&*self.get_path(), name)
     }
 
@@ -475,11 +477,10 @@ impl VirtioFsInode {
         let replacements: Vec<_> = aliases
             .iter()
             .filter_map(|alias| {
-                alias.strip_prefix(old).ok().map(|suffix| {
-                    let mut replacement = new.to_path_buf();
-                    replacement.push(suffix);
-                    (alias.clone(), replacement)
-                })
+                alias
+                    .strip_prefix(old)
+                    .ok()
+                    .map(|suffix| (alias.clone(), renamed_path(new, suffix)))
             })
             .collect();
         for (old_alias, new_alias) in &replacements {
@@ -491,9 +492,7 @@ impl VirtioFsInode {
         let mut path = self.path.write();
         let suffix = path.strip_prefix(old).ok().map(ToOwned::to_owned);
         if let Some(suffix) = suffix {
-            let mut replacement = new.to_path_buf();
-            replacement.push(&suffix);
-            *path = replacement;
+            *path = renamed_path(new, &suffix);
         }
     }
 
@@ -536,4 +535,17 @@ impl VirtioFsInode {
     pub(crate) fn get_path(&self) -> parking_lot::RwLockReadGuard<'_, PathBuf> {
         self.path.read()
     }
+}
+
+/// Returns `suffix` relocated under a renamed prefix `new`.
+///
+/// An empty suffix (the renamed object itself) must not be pushed, because
+/// pushing an empty path appends a trailing separator, which makes the host
+/// resolve the path as a directory (and follow a symbolic link).
+pub(crate) fn renamed_path(new: &Path, suffix: &Path) -> PathBuf {
+    let mut path = new.to_path_buf();
+    if !suffix.as_os_str().is_empty() {
+        path.push(suffix);
+    }
+    path
 }
