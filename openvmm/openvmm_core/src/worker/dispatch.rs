@@ -919,9 +919,9 @@ struct LoadedVmInner {
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
-    /// The time ABI state unit, when the partition uses the time ABI.
+    /// The time ABI state, when the partition uses the time ABI.
     #[cfg(guest_arch = "x86_64")]
-    _time_abi_unit: Option<SpawnedUnit<time_abi::TimeAbiUnit>>,
+    time_abi: Option<time_abi::TimeAbiState>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
@@ -1936,7 +1936,7 @@ impl InitializedVm {
             .unwrap();
 
         #[cfg(guest_arch = "x86_64")]
-        let time_abi_unit = match time_abi_msrs {
+        let time_abi_state = match time_abi_msrs {
             Some(msrs) => {
                 let parameters = cfg
                     .microvm
@@ -1971,18 +1971,23 @@ impl InitializedVm {
                     }),
                     &parameters.hooks,
                 )?;
-                anyhow::ensure!(
-                    restore.is_none(),
-                    "time ABI v1 snapshot restore is not implemented yet: the preflight passed, but the restore clock is missing"
-                );
-                Some(
-                    state_units
-                        .add(time_abi::TIME_ABI_UNIT)
-                        .spawn(driver_source.simple(), |recv| {
+                let unit = state_units
+                    .add(time_abi::TIME_ABI_UNIT)
+                    .spawn(driver_source.simple(), {
+                        let msrs = msrs.clone();
+                        let report = report.clone();
+                        move |recv| {
                             state_unit::run_unit(time_abi::TimeAbiUnit { msrs, report }, recv)
-                        })
-                        .unwrap(),
-                )
+                        }
+                    })
+                    .unwrap();
+                Some(time_abi::TimeAbiState {
+                    _unit: unit,
+                    msrs,
+                    report,
+                    generation: parameters.generation,
+                    hooks: parameters.hooks.clone(),
+                })
             }
             None => {
                 anyhow::ensure!(
@@ -3365,7 +3370,7 @@ impl InitializedVm {
                 chipset_devices: devices,
                 _vmtime: vmtime,
                 #[cfg(guest_arch = "x86_64")]
-                _time_abi_unit: time_abi_unit,
+                time_abi: time_abi_state,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,

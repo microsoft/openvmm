@@ -14,6 +14,7 @@ use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use super::format::MEMORY_FILE_NAME;
 use super::format::SCRATCH_FILE_NAME;
 use super::format::STATE_FILE_NAME;
+use super::format::TIME_ABI_MANIFEST_VERSION;
 use super::format::validate_manifest_header;
 use super::format::validate_manifest_version;
 use super::fs::OpenedSnapshotDirectory;
@@ -226,11 +227,12 @@ fn stage_snapshot(
             manifest.vp_count,
         )?;
     }
-    if manifest.version != MANIFEST_VERSION {
+    if manifest.version != MANIFEST_VERSION && manifest.version != TIME_ABI_MANIFEST_VERSION {
         return Err(anyhow::anyhow!(
-            "snapshot manifest version {} is not supported for writing (expected {})",
+            "snapshot manifest version {} is not supported for writing (expected {} or {})",
             manifest.version,
             MANIFEST_VERSION,
+            TIME_ABI_MANIFEST_VERSION,
         )
         .into());
     }

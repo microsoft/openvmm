@@ -11,6 +11,7 @@ gdb = ["vmm_core/gdb"]
 
 [dev-dependencies]
 chipset.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 test_with_tracing.workspace = true
 
 [dependencies]
@@ -105,6 +106,7 @@ futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true

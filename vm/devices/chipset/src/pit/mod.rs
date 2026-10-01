@@ -545,8 +545,19 @@ pub struct PitDevice {
     // Runtime book-keeping
     dram_refresh: bool, // just jitters back and forth
 
+    // Static configuration
+    time_abi: bool,
+
     // Volatile state
     last: VmTime,
+}
+
+/// Channel 0 counts in a periodic mode, which the NVX time ABI forbids at
+/// snapshot capture and restore.
+#[derive(Debug, Error)]
+#[error("[E_PIT_ACTIVE] PIT channel 0 is counting in periodic mode {mode:?}")]
+struct PitActiveError {
+    mode: Mode,
 }
 
 impl PitDevice {
@@ -562,7 +573,28 @@ impl PitDevice {
             last: vmtime.now(),
             vmtime,
             dram_refresh: false,
+            time_abi: false,
         }
+    }
+
+    /// Applies the NVX time ABI: saving or restoring the device while
+    /// channel 0 counts in a periodic mode fails with `E_PIT_ACTIVE`.
+    pub fn with_time_abi(mut self) -> Self {
+        self.time_abi = true;
+        self
+    }
+
+    /// Fails if the time ABI applies and channel 0 counts in a periodic mode.
+    fn check_time_abi(&self) -> Result<(), PitActiveError> {
+        let state = &self.timers[0].state;
+        let mode = state.op_mode();
+        if self.time_abi
+            && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
+            && state.state != CountState::Inactive
+        {
+            return Err(PitActiveError { mode });
+        }
+        Ok(())
     }
 
     fn evaluate(&mut self, now: VmTime) {
@@ -796,10 +828,13 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            self.check_time_abi()
+                .map_err(|err| SaveError::Other(err.into()))?;
             let Self {
                 vmtime: _,
                 timers,
                 dram_refresh: _,
+                time_abi: _,
                 last,
             } = self;
 
@@ -891,6 +926,8 @@ mod save_restore {
                     PitDeviceRestoreError::InvalidLastTick.into(),
                 ));
             }
+            self.check_time_abi()
+                .map_err(|err| RestoreError::InvalidSavedState(err.into()))?;
 
             Ok(())
         }
@@ -1086,5 +1123,58 @@ mod tests {
 
         assert_eq!(*target.0.lock(), [false, true]);
         assert!(timer.state.out);
+    }
+
+    #[test]
+    fn time_abi_rejects_periodic_channel0_at_save_and_restore() {
+        use super::PitDevice;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::vmtime::VmTime;
+
+        let mut pool = pal_async::DefaultPool::new();
+        let driver = pool.driver();
+        let keeper = vmcore::vmtime::VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let source = pool.run_until(keeper.builder().build(&driver)).unwrap();
+        let device = |time_abi| {
+            let device = PitDevice::new(LineInterrupt::detached(), source.access("pit"));
+            if time_abi {
+                device.with_time_abi()
+            } else {
+                device
+            }
+        };
+
+        // Linux stops channel 0 by programming mode 0, which is accepted.
+        let mut stopped = device(true);
+        set_timer(&mut stopped.timers[0], Mode::TerminalCount, 0, false);
+        let saved = stopped.save().unwrap();
+
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            let mut periodic = device(true);
+            set_timer(&mut periodic.timers[0], mode, 100, false);
+            periodic.timers[0].evaluate(1);
+            let Err(err) = periodic.save() else {
+                panic!("a periodic channel 0 saved under the time ABI");
+            };
+            assert!(format!("{err:#}").contains("[E_PIT_ACTIVE]"), "{err:#}");
+
+            // Without the time ABI the same state saves, and restoring it
+            // into a time ABI device fails.
+            let mut legacy = device(false);
+            set_timer(&mut legacy.timers[0], mode, 100, false);
+            legacy.timers[0].evaluate(1);
+            let saved_periodic = legacy.save().unwrap();
+            let err = device(true).restore(saved_periodic).unwrap_err();
+            let mut chain = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(error) = source {
+                chain = format!("{chain}: {error}");
+                source = error.source();
+            }
+            assert!(chain.contains("[E_PIT_ACTIVE]"), "{chain}");
+        }
+
+        device(true).restore(saved).unwrap();
+        drop(keeper);
     }
 }

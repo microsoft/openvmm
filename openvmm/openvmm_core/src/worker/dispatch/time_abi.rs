@@ -3,19 +3,31 @@
 
 //! NVX time ABI v1 in the VM worker, selected by the hidden `--x-time-abi-v1`
 //! development switch: the partition configuration, the backend preflight
-//! and rate policy, and the `time-abi` state unit.
+//! and rate policy, the `time-abi` state unit, the capture records, and the
+//! restore clock.
 
 #![cfg(guest_arch = "x86_64")]
 
+use super::LoadedVm;
 use crate::partition::HvlitePartition;
+use anyhow::Context as _;
+use chipset_resources::microvm_time::RestoreTimeRecord;
 use inspect::Inspect;
 use inspect::InspectMut;
+use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
+use openvmm_defs::time_abi::SnapshotTimeContract;
+use openvmm_defs::time_abi::TimeCapture;
+use sha2::Digest as _;
+use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use std::sync::Arc;
+use std::time::Duration;
 use virt::time_abi::DeclaredRates;
+use virt::time_abi::DowntimeSource;
 use virt::time_abi::IdentityMsrRoute;
 use virt::time_abi::RateCheck;
+use virt::time_abi::TIME_ABI_VERSION;
 use virt::time_abi::TimeAbiBackend;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiConfig;
@@ -29,6 +41,20 @@ use vmcore::save_restore::SavedStateBlob;
 
 /// The name of the time ABI state unit.
 pub(super) const TIME_ABI_UNIT: &str = "time-abi";
+
+/// The time ABI state of a loaded VM.
+pub(super) struct TimeAbiState {
+    /// The `time-abi` state unit.
+    pub _unit: SpawnedUnit<TimeAbiUnit>,
+    /// The identity MSR handler, holding the declared rates.
+    pub msrs: Arc<TimeAbiMsrs>,
+    /// The preflight report.
+    pub report: TimeAbiReport,
+    /// The generation counter of this VM process.
+    pub generation: u32,
+    /// The active test hooks.
+    pub hooks: TimeAbiTestHooks,
+}
 
 /// Returns the identity MSR handler and the time ABI configuration of a new
 /// partition with `vp_count` VPs.
@@ -123,6 +149,143 @@ pub(super) fn check_cpu_surface(
     let effective = backend(partition, hypervisor)?.effective_cpuid()?;
     virt::time_abi::surface::check_effective_cpuid(&effective, &record.effective_cpuid)?;
     Ok(())
+}
+
+/// Takes the time ABI records of a capture: capture steps 2 and 3 of the
+/// specification, the capture anchor and host identities, then the declared
+/// rates, the CPU profile record, and the generation counter. The caller has
+/// stopped every VP and checked the LAPIC timers (step 1).
+pub(super) fn capture_records(
+    partition: &dyn HvlitePartition,
+    state: &TimeAbiState,
+) -> anyhow::Result<TimeCapture> {
+    let backend = backend(partition, &state.report.hypervisor)?;
+    let rates = state
+        .msrs
+        .declared()
+        .context("the time ABI rates are not declared")?;
+    let anchor = backend.capture_anchor()?;
+    let identity = virt::time_abi::host::host_identity()?;
+    let effective_cpuid = virt::time_abi::surface::encode_cpuid(&backend.effective_cpuid()?);
+    tracing::info!(
+        tsc = anchor.tsc,
+        utc_ns = anchor.sample.utc_ns,
+        pairing_ns = anchor.pairing_ns,
+        generation = state.generation,
+        "time ABI capture anchor"
+    );
+    Ok(TimeCapture {
+        time: SnapshotTimeContract {
+            time_abi_version: TIME_ABI_VERSION,
+            tsc_frequency_hz: rates.tsc_hz,
+            tsc_tolerance_ppm: virt::time_abi::rate::TSC_TOLERANCE_PPM,
+            apic_frequency_hz: rates.apic_hz,
+            capture_tsc: anchor.tsc,
+            capture_utc_ns: anchor.sample.utc_ns,
+            capture_monotonic_ns: anchor.sample.monotonic_ns,
+            host_clock: identity.clock.as_str().to_owned(),
+            host_id: identity.host_id.to_vec(),
+            host_boot_id: identity.boot_id.to_vec(),
+            capture_generation: state.generation,
+        },
+        cpu_profile: SnapshotCpuProfile {
+            id: state.report.cpu_profile.clone(),
+            // The interim profile has an empty document.
+            sha256: sha2::Sha256::digest(b"").to_vec(),
+            profile: Vec::new(),
+            effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
+            effective_cpuid,
+            capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
+        },
+    })
+}
+
+/// Releases partition time immediately before the restored VPs first run:
+/// restore step 17 of the specification.
+pub(super) fn release_time(
+    partition: &dyn HvlitePartition,
+    state: &TimeAbiState,
+) -> anyhow::Result<()> {
+    backend(partition, &state.report.hypervisor)?.release_time()?;
+    Ok(())
+}
+
+impl LoadedVm {
+    /// Restores the guest clocks: restore steps 11 to 16 of the
+    /// specification, after the saved state is restored and before any
+    /// restored VP runs.
+    ///
+    /// It checks the LAPIC timers, performs the synchronized TSC set at the
+    /// downtime selected at the restore anchor, advances and sets every
+    /// LAPIC, advances VM time and the RTC, and seals the time fields of the
+    /// restore packet. The PIT checks itself when restored.
+    pub(super) async fn time_abi_restore(&mut self, input: RestoreTimeInput) -> anyhow::Result<()> {
+        let state = self
+            .inner
+            .time_abi
+            .as_ref()
+            .context("a time ABI restore requires a time ABI partition")?;
+        let hypervisor = state.report.hypervisor.clone();
+        let hooks = state.hooks.clone();
+        let rate_deviation = state
+            .report
+            .rate_check
+            .map_or(0, |check| check.rate_deviation);
+        let capture = input.contract.capture_record()?;
+        let tsc_hz = input.contract.tsc_frequency_hz;
+        let apic_hz = input.contract.apic_frequency_hz;
+
+        self.inner.partition_unit.check_one_shot_timers().await?;
+
+        let partition = self.inner.partition.clone();
+        let mut downtime = None;
+        let set =
+            backend(partition.as_ref(), &hypervisor)?.set_synchronized_tsc(&mut |sample| {
+                let selected = virt::time_abi::downtime::select_downtime(
+                    &capture,
+                    &input.destination,
+                    sample,
+                    &hooks,
+                )?;
+                let target =
+                    virt::time_abi::downtime::tsc_target(capture.tsc, selected.nanos, tsc_hz)?;
+                downtime = Some(selected);
+                Ok(target)
+            })?;
+        let downtime =
+            downtime.context("the backend set the TSC without selecting the downtime")?;
+        if let Some(step_ns) = downtime.host_wall_clock_step_ns {
+            tracing::warn!(
+                step_ns,
+                "host wall clock was stepped since capture; the downtime uses host monotonic time"
+            );
+        }
+        tracing::info!(
+            downtime_ns = downtime.nanos,
+            source = ?downtime.source,
+            target = set.target,
+            method = ?set.method,
+            vps = set.readback.len(),
+            "time ABI synchronized TSC set"
+        );
+
+        self.inner
+            .partition_unit
+            .advance_lapic_timers(downtime.nanos, apic_hz)
+            .await?;
+        self.state_units
+            .advance_time(Duration::from_nanos(downtime.nanos))
+            .await
+            .context("failed to advance restored VM time")?;
+
+        input.restore_record.send(RestoreTimeRecord {
+            downtime_ns: downtime.nanos,
+            downtime_utc: downtime.source == DowntimeSource::Utc,
+            rate_deviation,
+            test_hooks: hooks.active(),
+        });
+        Ok(())
+    }
 }
 
 /// The `time-abi` state unit. It saves and restores

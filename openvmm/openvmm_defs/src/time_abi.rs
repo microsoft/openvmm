@@ -7,7 +7,12 @@
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use mesh::MeshPayload;
 use mesh::payload::Protobuf;
+use virt::time_abi::CaptureTimeRecord;
+use virt::time_abi::HostClockKind;
 use virt::time_abi::HostIdentity;
+use virt::time_abi::HostTimeSample;
+use virt::time_abi::TimeAbiCode;
+use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiTestHooks;
 
 /// The manifest's time contract, recorded at the capture anchor.
@@ -48,6 +53,39 @@ pub struct SnapshotTimeContract {
     /// The generation counter of the captured VM process.
     #[mesh(11)]
     pub capture_generation: u32,
+}
+
+impl SnapshotTimeContract {
+    /// Returns the capture record: the capture anchor and the capture host's
+    /// identities (`E_MANIFEST_TIME` if an identity or the clock is
+    /// malformed).
+    pub fn capture_record(&self) -> Result<CaptureTimeRecord, TimeAbiError> {
+        let identity = |bytes: &[u8], description: &str| {
+            <[u8; 16]>::try_from(bytes).map_err(|_| {
+                TimeAbiError::new(
+                    TimeAbiCode::ManifestTime,
+                    format!("{description} is {} bytes, not 16", bytes.len()),
+                )
+            })
+        };
+        Ok(CaptureTimeRecord {
+            tsc: self.capture_tsc,
+            sample: HostTimeSample {
+                utc_ns: self.capture_utc_ns,
+                monotonic_ns: self.capture_monotonic_ns,
+            },
+            identity: HostIdentity {
+                host_id: identity(&self.host_id, "host identity")?,
+                boot_id: identity(&self.host_boot_id, "host boot identity")?,
+                clock: HostClockKind::from_manifest(&self.host_clock).ok_or_else(|| {
+                    TimeAbiError::new(
+                        TimeAbiCode::ManifestTime,
+                        format!("host clock '{}' is unknown", self.host_clock),
+                    )
+                })?,
+            },
+        })
+    }
 }
 
 /// The manifest's CPU profile record.

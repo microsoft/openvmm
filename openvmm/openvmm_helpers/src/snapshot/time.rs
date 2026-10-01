@@ -152,19 +152,7 @@ pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), Ti
 /// Returns the capture record of a validated time contract.
 pub fn capture_record(contract: &SnapshotTimeContract) -> Result<CaptureTimeRecord, TimeAbiError> {
     validate_time_contract(contract)?;
-    Ok(CaptureTimeRecord {
-        tsc: contract.capture_tsc,
-        sample: HostTimeSample {
-            utc_ns: contract.capture_utc_ns,
-            monotonic_ns: contract.capture_monotonic_ns,
-        },
-        identity: HostIdentity {
-            host_id: identity(&contract.host_id, "host identity")?,
-            boot_id: identity(&contract.host_boot_id, "host boot identity")?,
-            clock: HostClockKind::from_manifest(&contract.host_clock)
-                .ok_or_else(|| manifest_error("host clock is unknown"))?,
-        },
-    })
+    contract.capture_record()
 }
 
 /// Validates the time ABI part of a version 6 machine contract: both

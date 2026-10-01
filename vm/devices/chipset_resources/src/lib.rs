@@ -218,8 +218,12 @@ pub mod pit {
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
     /// A handle to a PIT (Intel 8253/8254 Programmable Interval Timer) device.
-    #[derive(MeshPayload)]
-    pub struct PitDeviceHandle;
+    #[derive(MeshPayload, Default)]
+    pub struct PitDeviceHandle {
+        /// Applies the NVX time ABI: saving or restoring the PIT while
+        /// channel 0 counts in a periodic mode fails with `E_PIT_ACTIVE`.
+        pub time_abi: bool,
+    }
 
     impl ResourceId<ChipsetDeviceHandleKind> for PitDeviceHandle {
         const ID: &'static str = "pit";

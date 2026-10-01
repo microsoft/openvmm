@@ -5942,6 +5942,7 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "sha2",
  "smmu",
  "sparse_mmap",
  "state_unit",

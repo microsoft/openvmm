@@ -19,6 +19,10 @@ pub(super) enum SnapshotRequest {
     StopVpsAtIoBoundary(FailableRpc<(mesh::OneshotSender<()>, mesh::OneshotReceiver<()>), ()>),
     #[cfg(guest_arch = "x86_64")]
     AdvanceTsc(FailableRpc<(std::time::Duration, u64, Option<u64>), ()>),
+    #[cfg(guest_arch = "x86_64")]
+    CheckTimers(FailableRpc<(), ()>),
+    #[cfg(guest_arch = "x86_64")]
+    AdvanceLapic(FailableRpc<(u64, u64), ()>),
 }
 
 /// Returns the number of VPs to instantiate, validated against the topology's
@@ -70,6 +74,37 @@ impl PartitionUnit {
             .await?;
         Ok(())
     }
+
+    /// Checks the LAPIC timer of every stopped vCPU for the NVX time ABI
+    /// (`E_LAPIC_PERIODIC`, `E_LAPIC_TSC_DEADLINE`).
+    #[cfg(guest_arch = "x86_64")]
+    pub async fn check_one_shot_timers(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(
+                |rpc| PartitionRequest::Snapshot(SnapshotRequest::CheckTimers(rpc)),
+                (),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Advances the one-shot LAPIC timer of every stopped vCPU by
+    /// `downtime_ns` at `apic_hz` and sets every vCPU's LAPIC state again,
+    /// for the NVX time ABI.
+    #[cfg(guest_arch = "x86_64")]
+    pub async fn advance_lapic_timers(
+        &mut self,
+        downtime_ns: u64,
+        apic_hz: u64,
+    ) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(
+                |rpc| PartitionRequest::Snapshot(SnapshotRequest::AdvanceLapic(rpc)),
+                (downtime_ns, apic_hz),
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 impl PartitionUnitRunner {
@@ -93,6 +128,18 @@ impl PartitionUnitRunner {
                     self.vp_set
                         .advance_tsc(duration, frequency_hz, apic_frequency_hz)
                         .await
+                })
+                .await
+            }
+            #[cfg(guest_arch = "x86_64")]
+            SnapshotRequest::CheckTimers(rpc) => {
+                rpc.handle_failable(async |()| self.vp_set.check_one_shot_timers().await)
+                    .await
+            }
+            #[cfg(guest_arch = "x86_64")]
+            SnapshotRequest::AdvanceLapic(rpc) => {
+                rpc.handle_failable(async |(downtime_ns, apic_hz)| {
+                    self.vp_set.advance_lapic_timers(downtime_ns, apic_hz).await
                 })
                 .await
             }
