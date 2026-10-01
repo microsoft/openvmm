@@ -165,8 +165,11 @@ pub(crate) fn validate_reopenable_alias(
     volume
         .ensure_path_allowed(path)
         .map_err(anyhow::Error::from)?;
+    // The object itself may be a symbolic link, which is reopened without
+    // being followed, but no ancestor may be one.
+    let component_count = path.components().count();
     let mut prefix = PathBuf::new();
-    for component in path.components() {
+    for (index, component) in path.components().enumerate() {
         let std::path::Component::Normal(component) = component else {
             anyhow::bail!("alias contains a non-normal path component");
         };
@@ -176,8 +179,8 @@ pub(crate) fn validate_reopenable_alias(
             .map_err(anyhow::Error::from)
             .context("alias component cannot be inspected")?;
         anyhow::ensure!(
-            stat.mode & lx::S_IFMT != lx::S_IFLNK,
-            "alias contains a symbolic-link component"
+            index + 1 == component_count || stat.mode & lx::S_IFMT != lx::S_IFLNK,
+            "alias crosses a symbolic-link component"
         );
     }
     volume
@@ -343,10 +346,6 @@ pub(crate) fn validate_microvm_state(
         anyhow::ensure!(
             inode.lookup_count != 0,
             "saved inode lookup count is invalid"
-        );
-        anyhow::ensure!(
-            inode.object_identity.kind != lx::S_IFLNK,
-            "saved symlink identities are unsupported by the microVM profile"
         );
         anyhow::ensure!(
             !inode.relative_aliases.is_empty()
