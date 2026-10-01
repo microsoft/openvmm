@@ -77,6 +77,9 @@ pub struct SnapshotSaveResponse {
     pub capture_wall_clock: mesh::payload::Timestamp,
     /// Canonical effective CPU compatibility contract.
     pub cpu_contract: Vec<u8>,
+    /// The NVX time ABI records of the capture. With them, the four clock
+    /// fields above are empty and the manifest is version 6.
+    pub time: Option<crate::time_abi::TimeCapture>,
 }
 
 /// Failure classification for a bounded snapshot quiesce/save operation.

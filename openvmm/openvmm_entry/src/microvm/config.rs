@@ -417,6 +417,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
         };
         let time_abi = if opt.microvm.x_time_abi_v1 {
             let hooks = time_abi_test_hooks(opt)?;
+            // The time ABI forbids a periodic PIT channel 0 at capture and
+            // restore (`E_PIT_ACTIVE`).
+            for device in chipset_devices.iter_mut() {
+                if device.name == chipset_resources::pit::PitDeviceHandle::ID {
+                    device.resource =
+                        chipset_resources::pit::PitDeviceHandle { time_abi: true }.into_resource();
+                }
+            }
             Some(chipset_resources::microvm::MicrovmPortbTimeAbi {
                 generation: time_abi_restore
                     .as_ref()
@@ -710,10 +718,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
             anyhow::ensure!(
                 cfg.machine_profile == MachineProfile::Microvm,
                 "--x-time-abi-v1 requires the microVM machine profile"
-            );
-            anyhow::ensure!(
-                opt.microvm.snapshot_destination.is_none(),
-                "time ABI v1 snapshot capture is not implemented yet"
             );
             let hooks = time_abi_test_hooks(opt)?;
             if hooks.active() {
