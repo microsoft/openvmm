@@ -250,9 +250,15 @@ mod tests {
 
             let mut runner = vp.runner();
             deliver(&mut runner, &vp);
-            assert_eq!(next_out_port(&mut runner, timed_out), HANDLER_PORT.into());
+            assert_eq!(
+                next_out_port(&mut runner, timed_out),
+                u16::from(HANDLER_PORT)
+            );
             assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
-            assert_eq!(next_out_port(&mut runner, timed_out), RESUMED_PORT.into());
+            assert_eq!(
+                next_out_port(&mut runner, timed_out),
+                u16::from(RESUMED_PORT)
+            );
             drop(runner);
             drop(done);
         });

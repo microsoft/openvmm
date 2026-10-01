@@ -14,6 +14,8 @@ mod apic;
 mod cpu_contract;
 pub mod device;
 mod emu;
+#[cfg(guest_arch = "x86_64")]
+mod fingerprint;
 mod hypercalls;
 mod memory;
 mod regs;
@@ -81,6 +83,8 @@ use x86defs::cpuid::Vendor;
 
 #[cfg(guest_arch = "aarch64")]
 pub use aarch64::WHP_PMU_GSIV;
+#[cfg(guest_arch = "x86_64")]
+pub use fingerprint::cpu_fingerprint;
 
 #[derive(Debug)]
 pub struct Whp {
