@@ -1175,6 +1175,35 @@ flags:
     #[clap(long)]
     pub write_saved_state_proto: Option<PathBuf>,
 
+    /// write a CPU fingerprint of this host for the hypervisor selected by
+    /// `--hypervisor` to the specified path (`-` for stdout), and exit
+    #[clap(
+        long,
+        value_name = "PATH",
+        long_help = r#"Write a CPU fingerprint of this host to PATH ("-" for stdout), and exit.
+
+The fingerprint records the guest CPU surface that the backend selected by
+--hypervisor supports on this host (or the first available backend): every
+CPUID leaf and subleaf, the XSAVE features and layout, the feature MSRs, and
+the time capabilities (TSC and LAPIC timer rates, invariant TSC, TSC-deadline,
+TSC_ADJUST, TSC offset control and scaling, and MSR interception). It also
+records the host CPU, OS, and hypervisor identity.
+
+The output is deterministic, sorted JSON with SHA-256 digests. It needs no
+guest; the backend may create, and then destroys, a transient probe partition.
+
+After writing the fingerprint, OpenVMM checks it against the pinned CPU profile
+of the host's generation and prints one "NVX-CPU-PROFILE:" line to stderr. It
+exits with status 1 and the failure code (E_PROFILE_HOST_UNKNOWN or
+E_PROFILE_UNSUPPORTED) if no profile serves the host or the backend does not
+support it.
+
+Examples:
+    --hypervisor kvm --cpu-fingerprint host.json
+    --hypervisor whp --cpu-fingerprint -"#
+    )]
+    pub cpu_fingerprint: Option<PathBuf>,
+
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
     pub imc: Option<PathBuf>,
@@ -5821,6 +5850,28 @@ mod tests {
     fn test_pidfile_option_parsed() {
         let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
         assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
+
+    #[test]
+    fn test_cpu_fingerprint_option() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert_eq!(opt.cpu_fingerprint, None);
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--hypervisor",
+            "kvm",
+            "--cpu-fingerprint",
+            "host.json",
+        ])
+        .unwrap();
+        assert_eq!(opt.cpu_fingerprint, Some(PathBuf::from("host.json")));
+        assert_eq!(opt.hypervisor.as_deref(), Some("kvm"));
+
+        let opt = Options::try_parse_from(["openvmm", "--cpu-fingerprint", "-"]).unwrap();
+        assert_eq!(opt.cpu_fingerprint, Some(PathBuf::from("-")));
+
+        assert!(Options::try_parse_from(["openvmm", "--cpu-fingerprint"]).is_err());
     }
 
     #[test]

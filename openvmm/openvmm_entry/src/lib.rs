@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod cli_args;
+mod cpu_fingerprint;
 mod crash_dump;
 mod kvp;
 mod meshworker;
@@ -2739,6 +2740,11 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
+        return Ok(0);
+    }
+
+    if let Some(path) = &opt.cpu_fingerprint {
+        cpu_fingerprint::write(path, opt.hypervisor.as_deref())?;
         return Ok(0);
     }
 

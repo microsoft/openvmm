@@ -462,6 +462,47 @@ guest state and protect the directory with host access controls.
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
   ```
+* `--cpu-fingerprint <PATH>`: Write a CPU fingerprint of the host for the
+  backend selected by `--hypervisor` (or the auto-detected one) to `PATH`, or
+  to standard output for `-`, and exit without starting a VM. Backend
+  parameters are rejected.
+
+  The fingerprint records the guest CPU surface that the backend supports on
+  this host: every CPUID leaf and subleaf, the XSAVE features and layout, the
+  feature MSRs, and the processor feature banks. It also records the time
+  capabilities (TSC and LAPIC timer rates, invariant TSC, TSC-deadline,
+  `TSC_ADJUST`, TSC offset control and scaling, time freezing, and MSR
+  interception) and the host CPU, OS, and hypervisor identity. KVM reports its
+  surface through `KVM_GET_SUPPORTED_CPUID` and its MSR-based features; MSHV
+  and WHP report the CPUID of a transient probe partition that is destroyed
+  before OpenVMM exits. No guest runs.
+
+  The output is deterministic, sorted JSON (schema
+  `openvmm-cpu-fingerprint/v1`). CPUID fields that depend on the executing
+  processor or on the virtual processor state, such as APIC IDs and the
+  enabled XSAVE size, are normalized. `surface_digest` is the SHA-256 of the
+  guest CPU surface, so hosts that offer guests the same CPU share it, and
+  `digest` covers the whole document.
+
+  OpenVMM then checks the fingerprint against the pinned CPU profile of the
+  host's generation (the profile that `--cpu-profile auto` would select) and
+  prints one line to standard error, for example:
+
+  ```text
+  NVX-CPU-PROFILE: status=pass backend=kvm generation=icelake-sp profile=intel.icelake-sp.v1 profile_digest=sha256:… surface_digest=sha256:… host_invariant_tsc=yes
+  ```
+
+  If no pinned profile serves the host, or the backend does not support every
+  feature, limit, XSAVE layout, and MSR value of the profile, the line has
+  `status=fail`, `code`, and `detail`, and OpenVMM exits with status 1 and the
+  same code (`E_PROFILE_HOST_UNKNOWN` or `E_PROFILE_UNSUPPORTED`). The
+  fingerprint is still written, so hosts of new generations can be
+  fingerprinted to derive their profiles.
+
+  ```bash
+  openvmm --hypervisor kvm --cpu-fingerprint host.json
+  openvmm --hypervisor whp --cpu-fingerprint -
+  ```
 * `--isolation <MODE>`: Enable a confidential or isolated VM mode.
   Supported modes include `vbs` and, for `x86_64` guests on KVM or MSHV,
   `snp`.

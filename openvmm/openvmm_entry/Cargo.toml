@@ -15,6 +15,7 @@ ttrpc = []
 [dependencies]
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
+cpu_profile.workspace = true
 crypto.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
