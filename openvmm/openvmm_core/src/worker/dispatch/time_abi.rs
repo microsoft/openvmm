@@ -427,14 +427,15 @@ pub(super) fn capture_records(
 }
 
 impl LoadedVm {
-    /// Restores the guest clocks: restore steps 11 to 16 of the
+    /// Restores the guest clocks: restore steps 12 to 16 of the
     /// specification, after the saved state is restored and before any
     /// restored VP runs.
     ///
-    /// It checks the LAPIC timers, performs the synchronized TSC set at the
-    /// downtime selected at the restore anchor, advances and sets every
-    /// LAPIC, advances VM time and the RTC, and seals the time fields of the
-    /// restore packet. The PIT checks itself when restored.
+    /// It performs the synchronized TSC set at the downtime selected at the
+    /// restore anchor, advances and sets every LAPIC, advances VM time and
+    /// the RTC, and seals the time fields of the restore packet. The LAPIC
+    /// advance rejects a periodic or TSC-deadline timer, so restore needs no
+    /// separate timer check, and the PIT checks itself when restored.
     pub(super) async fn time_abi_restore(&mut self, input: RestoreTimeInput) -> anyhow::Result<()> {
         let state = self
             .inner
@@ -452,9 +453,6 @@ impl LoadedVm {
         let apic_hz = input.contract.apic_frequency_hz;
 
         let started = std::time::Instant::now();
-        self.inner.partition_unit.check_one_shot_timers().await?;
-        let timers_checked = started.elapsed();
-
         let partition = self.inner.partition.clone();
         let mut downtime = None;
         let set =
@@ -501,8 +499,7 @@ impl LoadedVm {
         // Per-phase durations attribute the restore.time_abi_clock profile
         // phase.
         tracing::info!(
-            timers_us = timers_checked.as_micros() as u64,
-            tsc_set_us = (tsc_set - timers_checked).as_micros() as u64,
+            tsc_set_us = tsc_set.as_micros() as u64,
             lapic_us = (lapic_advanced - tsc_set).as_micros() as u64,
             vm_time_us = (finished - lapic_advanced).as_micros() as u64,
             total_us = finished.as_micros() as u64,
