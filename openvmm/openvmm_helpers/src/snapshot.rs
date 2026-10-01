@@ -11,6 +11,7 @@ pub mod fs;
 pub mod microvm;
 pub mod publish;
 pub mod restore;
+pub mod time;
 
 pub use publish::write_snapshot;
 
