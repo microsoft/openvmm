@@ -747,12 +747,12 @@ pub const WHvX64CpuidResult2FlagVpSpecific: WHV_X64_CPUID_RESULT2_FLAGS =
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct WHV_X64_CPUID_RESULT2 {
-    Function: u32,
-    Index: u32,
-    VpIndex: u32,
-    Flags: WHV_X64_CPUID_RESULT2_FLAGS,
-    Output: WHV_CPUID_OUTPUT,
-    Mask: WHV_CPUID_OUTPUT,
+    pub Function: u32,
+    pub Index: u32,
+    pub VpIndex: u32,
+    pub Flags: WHV_X64_CPUID_RESULT2_FLAGS,
+    pub Output: WHV_CPUID_OUTPUT,
+    pub Mask: WHV_CPUID_OUTPUT,
 }
 
 #[repr(C)]
