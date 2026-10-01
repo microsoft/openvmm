@@ -27,6 +27,11 @@ pub struct HostCpuSurface {
     /// every available processor and XSAVE feature enabled.
     pub cpuid: Vec<CpuidEntry>,
     /// The widest guest physical address the backend supports, in bits.
+    ///
+    /// Support checks use this rather than the CPUID's `0x80000008:EAX[7:0]`:
+    /// a surface built from the host's own CPUID carries the host's width,
+    /// and a hypervisor may give guests another one. WHP, for one, reports
+    /// its partition property, 46 bits on a host whose CPUID reports 42.
     pub physical_address_width: u8,
     /// The MSR values the backend can present to a guest.
     pub msrs: Vec<SupportedMsr>,
@@ -167,6 +172,12 @@ pub fn support_violations(profile: &CpuProfile, surface: &HostCpuSurface) -> Vec
                 }
                 RegisterClass::Limits(fields) => {
                     for &(shift, width) in fields {
+                        // The guest physical address width is checked against
+                        // `surface.physical_address_width` below. The surface's
+                        // CPUID may hold the host's width instead.
+                        if (leaf, register, shift) == (EXTENDED_LEAF_BASE + 8, 0, 0) {
+                            continue;
+                        }
                         let field = |value: u32| field_value(value, shift, width);
                         if field(pinned) > field(host[register]) {
                             violations.push(format!(
@@ -347,10 +358,24 @@ mod tests {
         let violations = support_violations(profile, &surface);
         assert_eq!(
             violations,
-            [
-                "CPUID 0x80000008 EAX[7:0] is 0x2e, above the supported 0x27",
-                "the guest physical address width 46 exceeds the supported 39",
-            ]
+            ["the guest physical address width 46 exceeds the supported 39"]
+        );
+
+        // The surface's own field decides the physical address width, not its
+        // CPUID: a cheap surface from the host's CPUID may report the host's
+        // narrower width.
+        let mut surface = self::surface(profile);
+        edit(&mut surface, 0x8000_0008, 0, 0, |eax| (eax & !0xff) | 42);
+        verify_support(profile, &surface).unwrap();
+
+        // The linear address width is still a CPUID limit.
+        let mut surface = self::surface(profile);
+        edit(&mut surface, 0x8000_0008, 0, 0, |eax| {
+            (eax & !0xff00) | 48 << 8
+        });
+        assert_eq!(
+            support_violations(profile, &surface),
+            ["CPUID 0x80000008 EAX[15:8] is 0x39, above the supported 0x30"]
         );
 
         let mut surface = self::surface(profile);
