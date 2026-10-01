@@ -12,6 +12,8 @@
 pub mod device;
 mod hypercalls;
 mod memory;
+#[cfg(guest_arch = "x86_64")]
+mod profile_features;
 mod regs;
 mod synic;
 #[cfg(guest_arch = "x86_64")]
