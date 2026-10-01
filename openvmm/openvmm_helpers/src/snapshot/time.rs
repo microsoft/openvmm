@@ -119,9 +119,12 @@ pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), Ti
     } = record;
     let id_valid = !id.is_empty()
         && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        && id.split('.').all(|component| {
+            !component.is_empty()
+                && component
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
     if !id_valid {
         return Err(manifest_error(format!(
             "CPU profile ID '{id}' is malformed"
@@ -256,7 +259,7 @@ pub(super) mod tests {
         let profile = b"profile".to_vec();
         let effective_cpuid = vec![0; 24];
         SnapshotCpuProfile {
-            id: "intel-skylake-sp-v1".to_owned(),
+            id: "intel.skylake-sp.kvm.v1".to_owned(),
             sha256: sha2::Sha256::digest(&profile).to_vec(),
             profile,
             effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
@@ -310,9 +313,17 @@ pub(super) mod tests {
     #[test]
     fn cpu_profile_record_rules() {
         validate_cpu_profile_record(&test_cpu_profile()).unwrap();
-        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 7] = [
+        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 9] = [
             (|r| r.id.clear(), TimeAbiCode::ManifestTime),
             (|r| r.id = "Intel_SKX".to_owned(), TimeAbiCode::ManifestTime),
+            (
+                |r| r.id = "intel..kvm.v1".to_owned(),
+                TimeAbiCode::ManifestTime,
+            ),
+            (
+                |r| r.id = "intel.skylake-sp.kvm.v1.".to_owned(),
+                TimeAbiCode::ManifestTime,
+            ),
             (|r| r.profile.push(0), TimeAbiCode::ProfileDigest),
             (|r| r.sha256.truncate(31), TimeAbiCode::ManifestTime),
             (|r| r.effective_cpuid[0] = 1, TimeAbiCode::ProfileDigest),
