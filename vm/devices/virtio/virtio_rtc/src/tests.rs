@@ -276,6 +276,55 @@ async fn rtc_handles_cross_requests(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rtc_rejects_alarm_requests(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    let set_alarm = spec::ReqSetAlarmBody {
+        alarm_time: virtio::spec::u64_le::new(0),
+        clock_id: virtio::spec::u16_le::new(0),
+        flags: 0,
+        reserved: [0; 5],
+    };
+    let set_alarm_enabled = spec::ReqSetAlarmEnabledBody {
+        clock_id: virtio::spec::u16_le::new(0),
+        flags: 0,
+        reserved: [0; 5],
+    };
+    let with_body = |msg_type, body: &[u8]| {
+        let mut request = head(msg_type).as_bytes().to_vec();
+        request.extend_from_slice(body);
+        request
+    };
+
+    for (msg_type, request, response_size) in [
+        (
+            spec::REQ_READ_ALARM,
+            clock_request(spec::REQ_READ_ALARM, 0),
+            size_of::<spec::RespReadAlarm>(),
+        ),
+        (
+            spec::REQ_SET_ALARM,
+            with_body(spec::REQ_SET_ALARM, set_alarm.as_bytes()),
+            size_of::<spec::RespHead>(),
+        ),
+        (
+            spec::REQ_SET_ALARM_ENABLED,
+            with_body(spec::REQ_SET_ALARM_ENABLED, set_alarm_enabled.as_bytes()),
+            size_of::<spec::RespHead>(),
+        ),
+    ] {
+        harness.mem.write_at(REQUEST_ADDR, &request).unwrap();
+        let (written, response) = harness
+            .submit_and_wait(REQUEST_ADDR, request.len() as u32, response_size as u32)
+            .await;
+        assert_eq!(written, response_size as u32);
+        assert_eq!(response[0], spec::S_ENODEV, "message {msg_type:#06x}");
+    }
+    harness.device.stop_queue(0).await.unwrap();
+}
+
+#[async_test]
 async fn rtc_rejects_unknown_clock(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
