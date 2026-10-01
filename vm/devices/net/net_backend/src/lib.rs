@@ -68,6 +68,8 @@ pub use net_backend_core::*;
 /// separately via [`Queue::rx_avail`] after queue creation.
 pub struct QueueConfig {
     pub driver: Box<dyn Driver>,
+    /// Receive offloads negotiated by the frontend.
+    pub rx_offload_support: RxOffloadSupport,
 }
 
 /// A network endpoint — the backend side of a NIC.
