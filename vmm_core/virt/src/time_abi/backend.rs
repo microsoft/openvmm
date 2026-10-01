@@ -32,10 +32,21 @@ pub trait TimeAbiBackend: Send + Sync {
     /// installed, that the synchronized TSC set is available, and that the
     /// guest TSC is not scaled. Fails with `E_IDENTITY_ROUTING`,
     /// `E_TSC_SYNC_UNSUPPORTED`, or `E_TSC_SCALING_ACTIVE`.
+    ///
+    /// Core calls it on cold boot and restore before any VP runs and before
+    /// any VP state is restored, so it may briefly stop partition time (MSHV
+    /// probes `TimeFreeze`) and read VP 0's reset state.
     fn preflight(&self) -> Result<BackendPreflight, TimeAbiError>;
 
     /// Returns the CPUID the backend programmed for VP 0, for the
     /// effective-CPUID record and check. Fails with `E_CPU_SURFACE`.
+    ///
+    /// Core calls it with all VPs stopped: on restore, before any VP runs, for
+    /// the check, and at capture, after the guest has run, for the record, so
+    /// the result must not depend on guest state. Core's first call to this
+    /// method or to [`Self::preflight`] comes before any VP runs, so a
+    /// backend that can only read VP 0's live view reads it then and keeps
+    /// it.
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError>;
 
     /// Takes the capture anchor: VP 0's TSC paired with
@@ -52,6 +63,10 @@ pub trait TimeAbiBackend: Send + Sync {
     /// anchor and verifies it by read-back before returning
     /// (`E_TSC_SYNC_READBACK`). Creating a VP afterwards is an error
     /// (`E_VP_LATE_CREATION`).
+    ///
+    /// Core calls it once per restore, after every instantiated VP is bound
+    /// (which creates it on MSHV) and its saved state is restored, and before
+    /// any restored VP runs. A cold boot never calls it.
     fn set_synchronized_tsc(
         &self,
         target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
