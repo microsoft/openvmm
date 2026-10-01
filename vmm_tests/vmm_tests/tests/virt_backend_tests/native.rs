@@ -72,7 +72,8 @@ macro_rules! backend {
                     async move |_, driver, ()| {
                         // Probe errors are test failures, not evidence of an
                         // unsupported host. Preserve them in Petri's logs.
-                        CAPS[usize::from(hv1)].get()
+                        CAPS[usize::from(hv1)]
+                            .get()
                             .context("backend capability requirements were not evaluated")?
                             .as_ref()
                             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -96,22 +97,14 @@ macro_rules! backend {
 #[cfg(target_os = "linux")]
 backend!(kvm, Kvm, virt_kvm::Kvm, |_| Ok(virt_kvm::Kvm::new()?));
 #[cfg(target_os = "linux")]
-backend!(
-    mshv,
-    Mshv,
-    virt_mshv::LinuxMshv,
-    |_| Ok(virt_mshv::LinuxMshv::new()?)
-);
+backend!(mshv, Mshv, virt_mshv::LinuxMshv, |_| Ok(
+    virt_mshv::LinuxMshv::new()?
+));
 #[cfg(windows)]
-backend!(
-    whp,
-    Whp,
-    virt_whp::Whp,
-    |hv1| Ok(virt_whp::Whp {
-        user_mode_apic: false,
-        offload_enlightenments: hv1,
-    })
-);
+backend!(whp, Whp, virt_whp::Whp, |hv1| Ok(virt_whp::Whp {
+    user_mode_apic: false,
+    offload_enlightenments: hv1,
+}));
 
 /// Registers a contract function for each native backend at its definition site.
 macro_rules! backend_test {
