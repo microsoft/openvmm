@@ -8,13 +8,18 @@
 //! It implements the KVM column of "Backend obligations" in NVX
 //! `doc/design/time-abi.md`:
 //!
-//! - **CPUID.** The time ABI CPUID applies after every other CPUID source and
-//!   no KVM `0x4xxxxxxx` leaf remains, so the guest sees the Hyper-V frequency
-//!   identity instead of KVM's signature. Without a KVM signature the guest
-//!   has no KVM paravirtual feature, and `KVM_CAP_ENFORCE_PV_FEATURE_CPUID`
-//!   makes their MSRs (kvmclock and the others) raise #GP. The partition
-//!   capabilities come from the CPUID with the hypervisor range masked, so
-//!   neither `hv1` nor `kvm_clock` is present.
+//! - **CPUID and the CPU profile.** The partition's CPUID is the CPU
+//!   profile's complete effective CPUID, programmed verbatim with
+//!   `KVM_SET_CPUID2` (each vCPU gets its own APIC identity), so no KVM leaf
+//!   remains and the guest sees the Hyper-V frequency identity instead of
+//!   KVM's signature. Without a KVM signature the guest has no KVM
+//!   paravirtual feature, and `KVM_CAP_ENFORCE_PV_FEATURE_CPUID` makes their
+//!   MSRs (kvmclock and the others) raise #GP. Every vCPU presents the
+//!   profile's `IA32_ARCH_CAPABILITIES` in the bits the profile pins, and
+//!   KVM's own value in the others. KVM's supported CPUID and
+//!   `IA32_ARCH_CAPABILITIES` feature MSR form the surface for the profile's
+//!   support check. The partition capabilities come from the CPUID with the
+//!   hypervisor range masked, so neither `hv1` nor `kvm_clock` is present.
 //! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff`,
 //!   `IA32_TSC_ADJUST`, `IA32_TSC_DEADLINE`, and the legacy P6 L2-cache MSRs,
 //!   and `KVM_MSR_EXIT_REASON_FILTER` delivers every guest access to OpenVMM:
@@ -54,6 +59,7 @@
 
 use super::KvmPartitionInner;
 use crate::KvmError;
+use cpu_profile::CpuProfile;
 use parking_lot::Mutex;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -72,11 +78,16 @@ use virt::time_abi::TscAnchor;
 use virt::time_abi::TscSetReport;
 use virt::time_abi::TscSyncMethod;
 use virt::time_abi::host::sample_host_time;
-use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::msr::IDENTITY_MSR_RANGE;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::rate::LAPIC_HZ_KVM;
+use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::surface::SupportedMsrValue;
 use virt::x86::MsrError;
+use x86defs::cpuid::CpuidFunction;
+
+/// `IA32_ARCH_CAPABILITIES`, which the CPU profile pins.
+pub(crate) const MSR_IA32_ARCH_CAPABILITIES: u32 = 0x10a;
 
 /// `IA32_TSC_ADJUST`, which the time ABI hides.
 const MSR_IA32_TSC_ADJUST: u32 = 0x3b;
@@ -149,16 +160,79 @@ pub(crate) fn install_identity_msr_filter(vm: &kvm::Partition) -> Result<(), Tim
     Ok(())
 }
 
-/// Composes the partition CPUID: `base` (every other CPUID source, in
-/// order) without its hypervisor-range leaves, then the time ABI CPUID, so
-/// that the time ABI leaves override every other source.
-pub(crate) fn compose_cpuid(base: Vec<CpuidLeaf>, time_abi: &CpuidLeafSet) -> CpuidLeafSet {
-    let mut leaves: Vec<_> = base
-        .into_iter()
-        .filter(|leaf| !HYPERVISOR_CPUID_RANGE.contains(&leaf.function))
-        .collect();
-    leaves.extend(time_abi.leaves().iter().copied());
-    CpuidLeafSet::new(leaves)
+/// Returns the partition CPUID: the time ABI CPUID verbatim. It is the CPU
+/// profile's complete effective CPUID (the profile's leaves, OpenVMM's
+/// topology leaves and APIC mode, and the identity and explicit zero leaves),
+/// so neither KVM's supported CPUID nor any other source adds a leaf or a
+/// bit. `bind` sets each vCPU's own APIC identity in the per-VP fields.
+pub(crate) fn partition_cpuid(time_abi: &CpuidLeafSet) -> CpuidLeafSet {
+    CpuidLeafSet::new(time_abi.leaves().to_vec())
+}
+
+/// Returns the CPU surface KVM supports on this host, for the CPU profile's
+/// support check (`E_PROFILE_UNSUPPORTED`): `supported` is
+/// `KVM_GET_SUPPORTED_CPUID` as the partition queries it (without permission
+/// for dynamically enabled XSAVE features), the physical address width is
+/// the one it reports, and `arch_capabilities` is KVM's
+/// `IA32_ARCH_CAPABILITIES` feature MSR, any bit of which the VMM may present
+/// clear. AMD's PSFD is cleared where KVM advertises it without the
+/// SPEC_CTRL access that a guest needs to use it (see `strip_psfd_leaf`), so
+/// a profile that sets it fails the check instead of losing it silently.
+pub(crate) fn supported_surface(
+    supported: &[kvm::kvm_cpuid_entry2],
+    arch_capabilities: u64,
+) -> SupportedCpuSurface {
+    let mut cpuid = cpuid_leaves(supported);
+    if let Some(psfd_fixup) = super::strip_psfd_leaf(&CpuidLeafSet::new(cpuid.clone())) {
+        for leaf in cpuid
+            .iter_mut()
+            .filter(|leaf| leaf.function == psfd_fixup.function)
+        {
+            psfd_fixup.apply(&mut leaf.result);
+        }
+    }
+    let physical_address_width = cpuid
+        .iter()
+        .find(|leaf| leaf.function == CpuidFunction::ExtendedAddressSpaceSizes.0)
+        .map_or(0, |leaf| leaf.result[0] as u8);
+    SupportedCpuSurface {
+        cpuid,
+        physical_address_width,
+        msrs: vec![SupportedMsrValue {
+            index: MSR_IA32_ARCH_CAPABILITIES,
+            supported: arch_capabilities,
+            controllable: !0,
+        }],
+    }
+}
+
+/// Returns the `IA32_ARCH_CAPABILITIES` value that every vCPU presents under
+/// `profile`: the profile's pinned bits, and KVM's own value (`supported`) in
+/// the bits it leaves to the backend. `None` when the profile pins no value
+/// or its CPUID (`cpuid`) does not enumerate the MSR, which then raises #GP
+/// and keeps KVM's default.
+pub(crate) fn profile_arch_capabilities(
+    profile: &CpuProfile,
+    supported: u64,
+    cpuid: &CpuidLeafSet,
+) -> Option<u64> {
+    let (value, mask) = profile.msr(MSR_IA32_ARCH_CAPABILITIES)?;
+    let leaf7_edx = cpuid.result(CpuidFunction::ExtendedFeatures.0, 0, &[0; 4])[3];
+    let enumerated =
+        x86defs::cpuid::ExtendedFeatureSubleaf0Edx::from(leaf7_edx).arch_capabilities();
+    enumerated.then_some((value & mask) | (supported & !mask))
+}
+
+/// Returns the pinned CPU profile that `id` names. Core selects or restores
+/// it before the partition exists, so an unknown ID is an internal error
+/// (`E_PROFILE_UNKNOWN`).
+pub(crate) fn pinned_profile(id: &str) -> Result<&'static CpuProfile, TimeAbiError> {
+    cpu_profile::pinned(id).ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnknown,
+            format!("CPU profile {id:?} is not pinned in this OpenVMM"),
+        )
+    })
 }
 
 /// Converts the KVM CPUID entries programmed for a VP to CPUID leaves.
@@ -319,16 +393,24 @@ pub(crate) struct KvmTimeAbi {
     /// Hyper-V emulation), in which case KVM does not hide invariant TSC
     /// either.
     kvm_invariant_control: Option<Mutex<u64>>,
+    /// The CPU surface KVM supports, taken when the partition was created.
+    surface: SupportedCpuSurface,
+    /// The `IA32_ARCH_CAPABILITIES` value of every vCPU, from the CPU
+    /// profile ([`profile_arch_capabilities`]).
+    arch_capabilities: Option<u64>,
 }
 
 impl KvmTimeAbi {
     /// Sets up the vCPUs of a new partition for the time ABI: KVM's
     /// paravirtual MSRs raise #GP, and KVM's copy of
-    /// `HV_X64_MSR_TSC_INVARIANT_CONTROL` is probed.
+    /// `HV_X64_MSR_TSC_INVARIANT_CONTROL` is probed. `surface` and
+    /// `arch_capabilities` come from the partition's CPU profile.
     pub(crate) fn new(
         vm: &kvm::Partition,
         vcpus: &[u32],
         msrs: Arc<TimeAbiMsrs>,
+        surface: SupportedCpuSurface,
+        arch_capabilities: Option<u64>,
     ) -> Result<Self, TimeAbiError> {
         for &vcpu in vcpus {
             vm.vp(vcpu)
@@ -364,7 +446,32 @@ impl KvmTimeAbi {
         Ok(Self {
             msrs,
             kvm_invariant_control,
+            surface,
+            arch_capabilities,
         })
+    }
+
+    /// Presents the CPU profile's `IA32_ARCH_CAPABILITIES` on `vp`, with a
+    /// host-initiated write after its CPUID is set: KVM accepts the MSR only
+    /// for a vCPU whose CPUID enumerates it, and keeps the value across
+    /// resets.
+    pub(crate) fn set_arch_capabilities(
+        &self,
+        vp: &kvm::Processor<'_>,
+    ) -> Result<(), TimeAbiError> {
+        let Some(value) = self.arch_capabilities else {
+            return Ok(());
+        };
+        vp.set_msrs(&[(MSR_IA32_ARCH_CAPABILITIES, value)])
+            .map_err(|err| {
+                TimeAbiError::new(
+                    TimeAbiCode::ProfileUnsupported,
+                    format!(
+                        "KVM cannot present the CPU profile's IA32_ARCH_CAPABILITIES {value:#x}: \
+                         {err:#}"
+                    ),
+                )
+            })
     }
 
     /// Handles a guest read of `msr` that exited to user space. `None` means
@@ -535,6 +642,13 @@ impl TimeAbiBackend for KvmPartitionInner {
         Ok(cpuid_leaves(&self.bsp_cpuid))
     }
 
+    fn supported_cpu_surface(&self) -> Result<Option<SupportedCpuSurface>, TimeAbiError> {
+        Ok(self
+            .time_abi
+            .as_ref()
+            .map(|time_abi| time_abi.surface.clone()))
+    }
+
     fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
         let tsc_hz = self.native_tsc_hz()?;
         // With every VP stopped, VP 0's TSC is the host TSC plus its offset
@@ -647,6 +761,7 @@ pub(crate) fn check_capabilities(caps: &virt::PartitionCapabilities) -> Result<(
 mod tests {
     use super::*;
     use virt::time_abi::DeclaredRates;
+    use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
     use virt::time_abi::identity::time_abi_cpuid;
     use virt::time_abi::msr::MSR_APIC_FREQUENCY;
     use virt::time_abi::msr::MSR_TSC_FREQUENCY;
@@ -679,6 +794,112 @@ mod tests {
         assert_eq!(hidden, super::super::MYSTERY_MSRS);
     }
 
+    fn kvm_entry(function: u32, index: Option<u32>, result: [u32; 4]) -> kvm::kvm_cpuid_entry2 {
+        kvm::kvm_cpuid_entry2 {
+            function,
+            index: index.unwrap_or(0),
+            flags: if index.is_some() {
+                kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX
+            } else {
+                0
+            },
+            eax: result[0],
+            ebx: result[1],
+            ecx: result[2],
+            edx: result[3],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn supported_surface_is_kvms_cpuid_width_and_arch_capabilities() {
+        let supported = [
+            kvm_entry(0, None, [0x16, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+            kvm_entry(7, Some(0), [0, 0xd19f_4fbb, 0, 0xbc00_0400]),
+            // A 46-bit physical address width.
+            kvm_entry(0x8000_0008, None, [0x302e, 0, 0, 0]),
+        ];
+        let surface = supported_surface(&supported, 0x4000_0000_0c00_00eb);
+        let leaves: Vec<_> = surface
+            .cpuid
+            .iter()
+            .map(|leaf| (leaf.function, leaf.index, leaf.result))
+            .collect();
+        assert_eq!(
+            leaves,
+            [
+                (0, None, [0x16, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+                (7, Some(0), [0, 0xd19f_4fbb, 0, 0xbc00_0400]),
+                (0x8000_0008, None, [0x302e, 0, 0, 0]),
+            ]
+        );
+        assert_eq!(surface.physical_address_width, 46);
+        let msrs: Vec<_> = surface
+            .msrs
+            .iter()
+            .map(|msr| (msr.index, msr.supported, msr.controllable))
+            .collect();
+        assert_eq!(msrs, [(0x10a, 0x4000_0000_0c00_00eb, !0)]);
+    }
+
+    #[test]
+    fn supported_surface_clears_psfd_without_spec_ctrl() {
+        // AMD's PSFD (0x80000008 EBX[28]) without IBRS, STIBP, or SSBD: KVM
+        // would not let the guest write SPEC_CTRL to use it.
+        let psfd = 1 << 28;
+        let lone = [kvm_entry(0x8000_0008, None, [0x30, psfd, 0, 0])];
+        assert_eq!(supported_surface(&lone, 0).cpuid[0].result[1], 0);
+        // With SSBD (bit 24), SPEC_CTRL is the guest's, and PSFD stays.
+        let ssbd = 1 << 24;
+        let with_ssbd = [kvm_entry(0x8000_0008, None, [0x30, psfd | ssbd, 0, 0])];
+        assert_eq!(
+            supported_surface(&with_ssbd, 0).cpuid[0].result[1],
+            psfd | ssbd
+        );
+    }
+
+    #[test]
+    fn arch_capabilities_follow_the_profile() {
+        // KVM 7.0 on a Skylake-SP host presents ITS_NO (bit 62), RFDS_NO
+        // (27), SKIP_L1DFL_VMENTRY (3), and IF_PSCHANGE_MC_NO (6).
+        let supported = (1 << 62) | (1 << 27) | (1 << 3) | (1 << 6);
+        let enumerated = CpuidLeafSet::new(vec![CpuidLeaf::new(7, [0, 0, 0, 1 << 29]).indexed(0)]);
+        // The Skylake profile pins its whole mask clear, ITS_NO included;
+        // outside it, KVM's own value stays.
+        let skylake = pinned_profile("intel.skylake-sp.v1").unwrap();
+        assert_eq!(
+            profile_arch_capabilities(skylake, supported, &enumerated),
+            Some(1 << 6)
+        );
+        // The Ice Lake profile pins RDCL_NO, MDS_NO, TAA_NO, and RFDS_NO set.
+        let icelake = pinned_profile("intel.icelake-sp.v1").unwrap();
+        assert_eq!(
+            profile_arch_capabilities(icelake, supported, &enumerated),
+            Some(0x0800_0121 | (1 << 6))
+        );
+        // Without the CPUID enumeration the guest's reads raise #GP, and KVM
+        // would refuse the write: nothing is presented.
+        assert_eq!(
+            profile_arch_capabilities(skylake, supported, &CpuidLeafSet::new(Vec::new())),
+            None
+        );
+    }
+
+    #[test]
+    fn only_pinned_profiles_resolve() {
+        assert_eq!(
+            pinned_profile("intel.skylake-sp.v1").unwrap().id(),
+            "intel.skylake-sp.v1"
+        );
+        for id in ["interim.host.kvm.v1", "intel.skylake-sp.kvm.v1", ""] {
+            let error = pinned_profile(id).unwrap_err();
+            assert!(
+                matches!(error.code, TimeAbiCode::ProfileUnknown),
+                "{id}: {error:?}"
+            );
+        }
+    }
+
     fn kvm_like_base() -> Vec<CpuidLeaf> {
         vec![
             CpuidLeaf::new(0, [0x16, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
@@ -706,47 +927,44 @@ mod tests {
         ]
     }
 
+    /// An effective CPUID shaped like a CPU profile's: the CPU's leaves
+    /// without a hypervisor leaf, and the time ABI's identity, zero, and time
+    /// leaves.
+    fn effective_like(vp_count: u32) -> CpuidLeafSet {
+        let mut leaves: Vec<_> = kvm_like_base()
+            .into_iter()
+            .filter(|leaf| !HYPERVISOR_CPUID_RANGE.contains(&leaf.function))
+            .collect();
+        leaves.extend(time_abi_cpuid(vp_count, true).leaves().iter().copied());
+        CpuidLeafSet::new(leaves)
+    }
+
     #[test]
-    fn composed_cpuid_carries_the_identity_and_time_bits() {
-        let config = time_abi_cpuid(4, true);
-        let cpuid = compose_cpuid(kvm_like_base(), &config);
+    fn partition_cpuid_is_the_time_abi_cpuid_verbatim() {
+        let time_abi = effective_like(4);
+        let cpuid = partition_cpuid(&time_abi);
+        let leaves = |set: &CpuidLeafSet| -> Vec<_> {
+            set.leaves()
+                .iter()
+                .map(|leaf| (leaf.function, leaf.index, leaf.result, leaf.mask))
+                .collect()
+        };
+        assert_eq!(leaves(&cpuid), leaves(&time_abi));
         let mut lookup = |leaf, subleaf| cpuid.result(leaf, subleaf, &[0; 4]);
         virt::time_abi::identity::check_identity(&mut lookup, 4).unwrap();
         virt::time_abi::identity::check_time_bits(&mut lookup, true).unwrap();
-        // The hypervisor range holds exactly the time ABI's leaves: no KVM
-        // signature survives at any base.
-        let hypervisor_leaves = |set: &CpuidLeafSet| -> Vec<u32> {
-            set.leaves()
-                .iter()
-                .map(|leaf| leaf.function)
-                .filter(|function| HYPERVISOR_CPUID_RANGE.contains(function))
-                .collect()
-        };
-        assert_eq!(hypervisor_leaves(&cpuid), hypervisor_leaves(&config));
+        // No KVM signature at any base, and a leaf the table does not list
+        // reads zero.
         assert_eq!(cpuid.result(0x4000_0100, 0, &[0; 4]), [0; 4]);
-        // The time bits are cleared or set; the other bits keep KVM's values.
-        assert_eq!(
-            cpuid.result(1, 0, &[0; 4])[2],
-            (0xfffa_3203 & !((1 << 24) | (1 << 15))) | (1 << 31)
-        );
-        assert_eq!(cpuid.result(7, 0, &[0; 4])[1], 0xd19f_4fbb & !(1 << 1));
+        assert_eq!(cpuid.result(0x8000_001f, 0, &[0; 4]), [0; 4]);
     }
 
     #[test]
-    fn composed_cpuid_drops_hypervisor_leaves_of_every_source() {
-        let mut base = kvm_like_base();
-        // A later override of a hypervisor leaf does not survive either.
-        base.push(CpuidLeaf::new(0x4000_0003, [!0; 4]));
-        let cpuid = compose_cpuid(base, &time_abi_cpuid(1, true));
-        assert_eq!(cpuid.result(0x4000_0003, 0, &[0; 4]), [0x8860, 0, 0, 0x100]);
-    }
-
-    #[test]
-    fn capabilities_of_the_composed_cpuid_exclude_hv1_and_kvm_clock() {
+    fn capabilities_of_the_partition_cpuid_exclude_hv1_and_kvm_clock() {
         let topology = vm_topology::processor::TopologyBuilder::new_x86()
             .build(2)
             .unwrap();
-        let cpuid = compose_cpuid(kvm_like_base(), &time_abi_cpuid(2, true));
+        let cpuid = partition_cpuid(&effective_like(2));
         let mut lookup = |leaf, subleaf| {
             let mut result = cpuid.result(leaf, subleaf, &[0; 4]);
             if leaf == 1 {
@@ -980,6 +1198,8 @@ mod tests {
         KvmTimeAbi {
             msrs,
             kvm_invariant_control: None,
+            surface: SupportedCpuSurface::default(),
+            arch_capabilities: None,
         }
     }
 
@@ -1135,7 +1355,14 @@ mod kvm_tests {
     fn invariant_control_mirror_reaches_kvm() {
         let vm = partition(2);
         let msrs = Arc::new(TimeAbiMsrs::new());
-        let time_abi = KvmTimeAbi::new(&vm, &[0, 1], msrs.clone()).unwrap();
+        let time_abi = KvmTimeAbi::new(
+            &vm,
+            &[0, 1],
+            msrs.clone(),
+            SupportedCpuSurface::default(),
+            None,
+        )
+        .unwrap();
         if time_abi.kvm_invariant_control.is_none() {
             tracing::info!("KVM does not implement HV_X64_MSR_TSC_INVARIANT_CONTROL");
             return;
@@ -1157,5 +1384,49 @@ mod kvm_tests {
             .get_msrs(&[MSR_TSC_INVARIANT_CONTROL], &mut value)
             .unwrap();
         assert_eq!(value[0], 0);
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn profile_arch_capabilities_reach_the_vcpu() {
+        let kvm = kvm::Kvm::new().unwrap();
+        let surface = supported_surface(
+            &kvm.supported_cpuid().unwrap(),
+            kvm.feature_msr(MSR_IA32_ARCH_CAPABILITIES).unwrap(),
+        );
+        assert!(surface.physical_address_width >= 36);
+        let supported = surface.msrs[0].supported;
+        tracing::info!(
+            supported = format_args!("{supported:#x}"),
+            "KVM's ARCH_CAPABILITIES"
+        );
+        let vm = partition(1);
+        // KVM accepts the MSR once the vCPU's CPUID enumerates it.
+        let enumerated = CpuidLeafSet::new(vec![CpuidLeaf::new(7, [0, 0, 0, 1 << 29]).indexed(0)]);
+        vm.vp(0)
+            .set_cpuid(&[kvm::kvm_cpuid_entry2 {
+                function: 7,
+                flags: kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+                edx: 1 << 29,
+                ..Default::default()
+            }])
+            .unwrap();
+        let profile = pinned_profile("intel.skylake-sp.v1").unwrap();
+        let value = profile_arch_capabilities(profile, supported, &enumerated).unwrap();
+        let time_abi = KvmTimeAbi::new(
+            &vm,
+            &[0],
+            Arc::new(TimeAbiMsrs::new()),
+            surface,
+            Some(value),
+        )
+        .unwrap();
+        time_abi.set_arch_capabilities(&vm.vp(0)).unwrap();
+        let mut read = [0];
+        vm.vp(0)
+            .get_msrs(&[MSR_IA32_ARCH_CAPABILITIES], &mut read)
+            .unwrap();
+        assert_eq!(read[0], value);
+        assert_eq!(read[0] & (1 << 62), 0, "ITS_NO is pinned clear");
     }
 }
