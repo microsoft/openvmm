@@ -19,7 +19,8 @@
 //!   KVM's own value in the others. KVM's supported CPUID and
 //!   `IA32_ARCH_CAPABILITIES` feature MSR form the surface for the profile's
 //!   support check. The partition capabilities come from the CPUID with the
-//!   hypervisor range masked, so neither `hv1` nor `kvm_clock` is present.
+//!   hypervisor range masked, so the partition does not model Hyper-V
+//!   (`hv1`).
 //! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff`,
 //!   `IA32_TSC_ADJUST`, `IA32_TSC_DEADLINE`, and the legacy P6 L2-cache MSRs,
 //!   and `KVM_MSR_EXIT_REASON_FILTER` delivers every guest access to OpenVMM:
@@ -746,13 +747,14 @@ impl TimeAbiBackend for KvmPartitionInner {
     }
 }
 
-/// Reports the time ABI capabilities that the partition does not have.
+/// Rejects partition capabilities that model Hyper-V (`hv1`), which the
+/// identity leaves must not turn on. No KVM clock can appear: every KVM
+/// signature leaf is removed.
 pub(crate) fn check_capabilities(caps: &virt::PartitionCapabilities) -> Result<(), KvmError> {
-    if caps.hv1 || caps.kvm_clock {
-        return Err(KvmError::TimeAbi(routing_error(format!(
-            "partition capabilities expose hv1 ({}) or the KVM clock ({})",
-            caps.hv1, caps.kvm_clock
-        ))));
+    if caps.hv1 {
+        return Err(KvmError::TimeAbi(routing_error(
+            "partition capabilities expose hv1",
+        )));
     }
     Ok(())
 }
@@ -960,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_of_the_partition_cpuid_exclude_hv1_and_kvm_clock() {
+    fn capabilities_of_the_partition_cpuid_exclude_hv1() {
         let topology = vm_topology::processor::TopologyBuilder::new_x86()
             .build(2)
             .unwrap();
