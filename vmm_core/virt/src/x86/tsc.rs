@@ -1,9 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! TSC and paravirtual clock support: CPUID leaves that expose an exact TSC
-//! frequency, KVM clock detection, and the default snapshot-downtime TSC
-//! adjustment.
+//! CPUID leaves that expose an exact TSC frequency, for partitions without
+//! the NVX time ABI.
 
 use thiserror::Error;
 use x86defs::cpuid::CpuidFunction;
@@ -61,45 +60,6 @@ pub fn tsc_frequency_cpuid_leaves(
             [denominator, numerator, crystal_frequency_hz, 0],
         ),
     ])
-}
-
-/// Returns whether the hypervisor CPUID leaves report KVM with its
-/// paravirtual clock (`KVM_FEATURE_CLOCKSOURCE2`).
-pub(super) fn kvm_clock_from_cpuid(f: &mut dyn FnMut(u32, u32) -> [u32; 4]) -> bool {
-    let [_, ebx, ecx, edx] = f(hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0);
-    let mut vendor = [0_u8; 12];
-    vendor[0..4].copy_from_slice(&ebx.to_le_bytes());
-    vendor[4..8].copy_from_slice(&ecx.to_le_bytes());
-    vendor[8..12].copy_from_slice(&edx.to_le_bytes());
-    if vendor.starts_with(b"KVMKVMKVM") {
-        const KVM_FEATURE_CLOCKSOURCE2: u32 = 1 << 3;
-        f(hvdef::HV_CPUID_FUNCTION_HV_INTERFACE, 0)[0] & KVM_FEATURE_CLOCKSOURCE2 != 0
-    } else {
-        false
-    }
-}
-
-/// Advances the stopped VTL0 TSC of `processor` by `cycles` guest cycles
-/// through its state access interface.
-///
-/// This is the default implementation of `Processor::advance_tsc`.
-#[cfg(guest_arch = "x86_64")]
-pub(crate) fn advance_tsc<P: crate::Processor + ?Sized>(
-    processor: &mut P,
-    cycles: u64,
-) -> anyhow::Result<()> {
-    use crate::x86::vp::AccessVpState;
-    use anyhow::Context as _;
-
-    let mut access = processor.access_state(hvdef::Vtl::Vtl0);
-    let mut tsc = access.tsc()?;
-    tsc.value = tsc
-        .value
-        .checked_add(cycles)
-        .context("TSC downtime adjustment exceeds the counter range")?;
-    access.set_tsc(&tsc)?;
-    access.commit()?;
-    Ok(())
 }
 
 #[cfg(test)]

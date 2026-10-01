@@ -1,13 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! CPUID policy for the CPU compatibility contract: the fixed TSC frequency
-//! and CPUID exits of a versioned CPU contract, the per-VP topology results
-//! returned on CPUID exits, and hiding the L0 GPA pinning enlightenment.
+//! CPUID policy for the CPU compatibility contract: the per-VP topology
+//! results returned on CPUID exits, and hiding the L0 GPA pinning
+//! enlightenment.
 
-use crate::Error;
 use crate::WhpProcessor;
-use crate::WhpResultExt;
 use inspect::Inspect;
 use x86defs::cpuid::CpuidFunction;
 
@@ -29,45 +27,6 @@ pub(crate) fn mask_gpa_pinning_enlightenment() -> virt::CpuidLeaf {
         (mask >> 64) as u32,
         (mask >> 96) as u32,
     ])
-}
-
-/// Sets the fixed TSC frequency of a versioned CPU contract and routes the
-/// topology and clock CPUID leaves to the VMM.
-pub(crate) fn configure_versioned_contract(
-    whp_config: &mut whp::PartitionConfig,
-    extended_exits: &mut whp::abi::WHV_EXTENDED_VM_EXITS,
-) -> Result<(), Error> {
-    const VERSIONED_TSC_FREQUENCY_HZ: u64 = 1_000_000_000;
-
-    match whp_config.set_property(whp::PartitionProperty::ProcessorClockFrequency(
-        VERSIONED_TSC_FREQUENCY_HZ,
-    )) {
-        Ok(_) => {}
-        Err(err @ (whp::WHvError::ERROR_NOT_SUPPORTED | whp::WHvError::WHV_E_UNKNOWN_PROPERTY)) => {
-            tracing::warn!(
-                error = %err,
-                "WHP cannot set the versioned TSC frequency; using the host frequency"
-            );
-        }
-        Err(err) => {
-            return Err(err).for_op("set versioned CPU contract TSC frequency");
-        }
-    }
-    *extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
-    let cpuid_exit_list = [
-        CpuidFunction::VendorAndMaxFunction.0,
-        CpuidFunction::VersionAndFeatures.0,
-        CpuidFunction::CacheParameters.0,
-        CpuidFunction::ExtendedTopologyEnumeration.0,
-        CpuidFunction::V2ExtendedTopologyEnumeration.0,
-        CpuidFunction::ExtendedAddressSpaceSizes.0,
-        CpuidFunction::ProcessorTopologyDefinition.0,
-        CpuidFunction::CoreCrystalClockInformation.0,
-    ];
-    whp_config
-        .set_property(whp::PartitionProperty::CpuidExitList(&cpuid_exit_list))
-        .for_op("set versioned CPU contract CPUID exits")?;
-    Ok(())
 }
 
 /// Processor topology parameters of the per-VP topology CPUID results.
