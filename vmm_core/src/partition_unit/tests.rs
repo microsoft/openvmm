@@ -116,6 +116,8 @@ fn new_runner() -> (PartitionUnitRunner, Arc<Mutex<Clock>>, Arc<Halt>) {
         req_recv: mesh::channel().1,
         topology,
         initial_regs: None,
+        #[cfg(guest_arch = "x86_64")]
+        omit_saved_tsc: false,
         #[cfg(feature = "gdb")]
         debugger_state: debug::DebuggerState::new(GuestMemory::allocate(4096), None),
     };

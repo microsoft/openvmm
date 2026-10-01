@@ -26,11 +26,17 @@ impl ResolveResource<ChipsetDeviceHandleKind, PitDeviceHandle> for PitResolver {
 
     fn resolve(
         &self,
-        _resource: PitDeviceHandle,
+        resource: PitDeviceHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let interrupt = input.configure.new_line(IRQ_LINE_SET, "timer0", 2); // hard-coded IRQ lines, as per x86 spec
         let vmtime = input.vmtime.access("pit");
-        Ok(PitDevice::new(interrupt, vmtime).into())
+        let device = PitDevice::new(interrupt, vmtime);
+        Ok(if resource.time_abi {
+            device.with_time_abi()
+        } else {
+            device
+        }
+        .into())
     }
 }

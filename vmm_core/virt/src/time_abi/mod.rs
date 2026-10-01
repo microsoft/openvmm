@@ -17,6 +17,7 @@ pub mod identity;
 #[cfg(guest_arch = "x86_64")]
 pub mod msr;
 pub mod rate;
+pub mod surface;
 
 #[cfg(guest_arch = "x86_64")]
 pub use backend::BackendPreflight;
