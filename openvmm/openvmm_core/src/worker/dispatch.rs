@@ -920,9 +920,9 @@ struct LoadedVmInner {
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
-    /// The time ABI state unit, when the partition uses the time ABI.
+    /// The time ABI state, when the partition uses the time ABI.
     #[cfg(guest_arch = "x86_64")]
-    _time_abi_unit: Option<SpawnedUnit<time_abi::TimeAbiUnit>>,
+    time_abi: Option<time_abi::TimeAbiState>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
@@ -1951,34 +1951,66 @@ impl InitializedVm {
             .unwrap();
 
         #[cfg(guest_arch = "x86_64")]
-        let time_abi_unit = match time_abi_msrs {
+        let time_abi_state = match time_abi_msrs {
             Some(msrs) => {
                 let parameters = cfg
                     .microvm
                     .time_abi
                     .as_ref()
                     .context("time ABI parameters are missing")?;
+                let hypervisor = &cfg.microvm.hypervisor_id;
+                let restore = snapshot_restore.time_abi.as_ref();
                 anyhow::ensure!(
-                    saved_state.is_none(),
-                    "time ABI v1 snapshot restore is not implemented yet"
+                    saved_state.is_some() == restore.is_some(),
+                    "a time ABI restore requires both the saved state and the time ABI restore inputs"
                 );
-                time_abi::declare_rates(
+                let cpu_profile = virt::time_abi::surface::resolve_cpu_profile(
+                    &parameters.cpu_profile,
+                    hypervisor,
+                )?;
+                if let Some(input) = restore {
+                    time_abi::check_cpu_surface(
+                        partition.as_ref(),
+                        hypervisor,
+                        &input.cpu_profile,
+                    )?;
+                }
+                let report = time_abi::declare_rates(
                     partition.as_ref(),
                     &msrs,
-                    &cfg.microvm.hypervisor_id,
-                    None,
+                    hypervisor,
+                    cpu_profile,
+                    restore.map(|input| virt::time_abi::DeclaredRates {
+                        tsc_hz: input.contract.tsc_frequency_hz,
+                        apic_hz: input.contract.apic_frequency_hz,
+                    }),
                     &parameters.hooks,
                 )?;
-                Some(
-                    state_units
-                        .add(time_abi::TIME_ABI_UNIT)
-                        .spawn(driver_source.simple(), |recv| {
-                            state_unit::run_unit(time_abi::TimeAbiUnit(msrs), recv)
-                        })
-                        .unwrap(),
-                )
+                let unit = state_units
+                    .add(time_abi::TIME_ABI_UNIT)
+                    .spawn(driver_source.simple(), {
+                        let msrs = msrs.clone();
+                        let report = report.clone();
+                        move |recv| {
+                            state_unit::run_unit(time_abi::TimeAbiUnit { msrs, report }, recv)
+                        }
+                    })
+                    .unwrap();
+                Some(time_abi::TimeAbiState {
+                    _unit: unit,
+                    msrs,
+                    report,
+                    generation: parameters.generation,
+                    hooks: parameters.hooks.clone(),
+                })
             }
-            None => None,
+            None => {
+                anyhow::ensure!(
+                    snapshot_restore.time_abi.is_none(),
+                    "time ABI restore inputs require a time ABI partition"
+                );
+                None
+            }
         };
 
         let mut input_distributor = InputDistributor::new(cfg.input);
@@ -3362,7 +3394,7 @@ impl InitializedVm {
                 chipset_devices: devices,
                 _vmtime: vmtime,
                 #[cfg(guest_arch = "x86_64")]
-                _time_abi_unit: time_abi_unit,
+                time_abi: time_abi_state,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,
@@ -3414,7 +3446,7 @@ impl InitializedVm {
         };
 
         if let Some(saved_state) = saved_state {
-            let saved_state_restore = this.begin_snapshot_restore(&saved_state)?;
+            let saved_state_restore = this.begin_snapshot_restore(&saved_state).await?;
             this.restore(saved_state)
                 .await
                 .context("loadedvm restore failed")?;
@@ -3966,7 +3998,7 @@ impl LoadedVm {
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
             SnapshotBoundary(microvm::SnapshotBoundaryEvent),
-            RestoreGateTimeout,
+            Restore(restore::RestoreEvent),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3995,10 +4027,7 @@ impl LoadedVm {
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
                 let d = self.snapshot_boundary.recv().map(Event::SnapshotBoundary);
-                let e = self
-                    .snapshot_restore
-                    .gate_expired(driver)
-                    .map(|()| Event::RestoreGateTimeout);
+                let e = self.snapshot_restore.next_event(driver).map(Event::Restore);
                 (a, b, c, d, e).race().await
             };
 
@@ -4451,9 +4480,12 @@ impl LoadedVm {
                         break;
                     }
                 }
-                Event::RestoreGateTimeout => {
+                Event::Restore(restore::RestoreEvent::GateExpired) => {
                     self.handle_restore_gate_timeout().await;
                     break;
+                }
+                Event::Restore(restore::RestoreEvent::PacketSelected) => {
+                    self.snapshot_restore.restore_packet_selected();
                 }
             }
         }
