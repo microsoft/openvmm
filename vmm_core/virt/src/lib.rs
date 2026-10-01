@@ -11,6 +11,7 @@ pub mod irqcon;
 pub use vmcore::irqfd;
 pub mod state;
 pub mod synic;
+pub mod time_abi;
 pub mod x86;
 
 pub use arch::*;

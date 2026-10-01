@@ -754,6 +754,7 @@ dependencies = [
  "local_clock",
  "memory_range",
  "mesh",
+ "thiserror 2.0.16",
  "vm_resource",
 ]
 
@@ -10382,6 +10383,7 @@ dependencies = [
  "guestmem",
  "hvdef",
  "inspect",
+ "libc",
  "memory_range",
  "mesh_protobuf",
  "pal_event",
@@ -10394,6 +10396,7 @@ dependencies = [
  "tracing",
  "vm_topology",
  "vmcore",
+ "windows-sys 0.61.0",
  "x86defs",
  "zerocopy",
 ]
