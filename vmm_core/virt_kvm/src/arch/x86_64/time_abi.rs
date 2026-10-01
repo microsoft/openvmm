@@ -15,12 +15,14 @@
 //!   makes their MSRs (kvmclock and the others) raise #GP. The partition
 //!   capabilities come from the CPUID with the hypervisor range masked, so
 //!   neither `hv1` nor `kvm_clock` is present.
-//! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff` and
-//!   `IA32_TSC_ADJUST`, and `KVM_MSR_EXIT_REASON_FILTER` delivers every guest
-//!   access to OpenVMM: [`TimeAbiMsrs`] serves the identity range, and
-//!   `IA32_TSC_ADJUST` raises #GP (KVM serves it even with its CPUID bit
-//!   clear). KVM checks the filter before its in-kernel Hyper-V MSRs, so those
-//!   never see a guest access.
+//! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff`,
+//!   `IA32_TSC_ADJUST`, and `IA32_TSC_DEADLINE`, and
+//!   `KVM_MSR_EXIT_REASON_FILTER` delivers every guest access to OpenVMM:
+//!   [`TimeAbiMsrs`] serves the identity range, and the two hidden TSC MSRs
+//!   raise #GP (with their CPUID bits clear, KVM would still serve
+//!   `IA32_TSC_ADJUST`, and would read `IA32_TSC_DEADLINE` as 0 and ignore
+//!   writes). KVM checks the filter before its in-kernel Hyper-V MSRs, so
+//!   those never see a guest access.
 //! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
 //!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
 //!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
@@ -59,6 +61,7 @@ use virt::VpIndex;
 use virt::time_abi::BackendPreflight;
 use virt::time_abi::HostTimeSample;
 use virt::time_abi::IdentityMsrRoute;
+use virt::time_abi::MAX_ANCHOR_PAIRING_NS;
 use virt::time_abi::TimeAbiBackend;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
@@ -76,20 +79,24 @@ use virt::x86::MsrError;
 /// `IA32_TSC_ADJUST`, which the time ABI hides.
 const MSR_IA32_TSC_ADJUST: u32 = 0x3b;
 
-/// The most a host time sample may be from the TSC read it is paired with
-/// (spec: "Capture anchor").
-const MAX_ANCHOR_PAIRING_NS: u64 = 10_000;
+/// `IA32_TSC_DEADLINE`, which the time ABI hides.
+const MSR_IA32_TSC_DEADLINE: u32 = 0x6e0;
 
-/// Anchor attempts before giving up: an attempt only fails when the thread
-/// is interrupted between the two TSC reads around the host sample.
+/// The MSRs outside the identity range that raise #GP.
+const HIDDEN_TSC_MSRS: [u32; 2] = [MSR_IA32_TSC_ADJUST, MSR_IA32_TSC_DEADLINE];
+
+/// Pairing attempts before an anchor fails: an attempt only misses
+/// [`MAX_ANCHOR_PAIRING_NS`] when the thread is interrupted between the two
+/// TSC reads around the host sample.
 const ANCHOR_ATTEMPTS: usize = 16;
 
 /// Returns the MSR filter ranges of the time ABI: deny every guest access to
-/// the identity range and to `IA32_TSC_ADJUST`, so they exit to OpenVMM.
-pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 2] {
+/// the identity range and to the hidden TSC MSRs, so they exit to OpenVMM.
+pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 3] {
     [
         kvm::MsrFilterRange::deny(IDENTITY_MSR_RANGE),
         kvm::MsrFilterRange::deny(MSR_IA32_TSC_ADJUST..=MSR_IA32_TSC_ADJUST),
+        kvm::MsrFilterRange::deny(MSR_IA32_TSC_DEADLINE..=MSR_IA32_TSC_DEADLINE),
     ]
 }
 
@@ -207,35 +214,45 @@ struct PairedSample {
     pairing_ns: u64,
 }
 
-/// Takes a host time sample paired with the host TSC: the first of
-/// [`ANCHOR_ATTEMPTS`] attempts within [`MAX_ANCHOR_PAIRING_NS`], or else the
-/// tightest one.
-fn paired_host_sample(tsc_hz: u64) -> Result<PairedSample, TimeAbiError> {
-    let mut best: Option<PairedSample> = None;
+/// Takes the `anchor` ("capture anchor" or "restore anchor"): a host time
+/// sample paired with the host TSC within [`MAX_ANCHOR_PAIRING_NS`].
+fn paired_host_sample(tsc_hz: u64, anchor: &str) -> Result<PairedSample, TimeAbiError> {
+    pair_within_bound(tsc_hz, anchor, || HostTscBracket::around(sample_host_time))
+}
+
+/// Samples with `sample` until a pair is within [`MAX_ANCHOR_PAIRING_NS`],
+/// at most [`ANCHOR_ATTEMPTS`] times, then fails with `E_TSC_ANCHOR`.
+fn pair_within_bound(
+    tsc_hz: u64,
+    anchor: &str,
+    mut sample: impl FnMut() -> (HostTscBracket, Result<HostTimeSample, TimeAbiError>),
+) -> Result<PairedSample, TimeAbiError> {
+    let mut tightest_ns: Option<u64> = None;
     for _ in 0..ANCHOR_ATTEMPTS {
-        let (bracket, sample) = HostTscBracket::around(sample_host_time);
-        let sample = sample?;
+        let (bracket, host) = sample();
+        let host = host?;
         let Some((host_tsc, pairing_ns)) = pair_host_sample(bracket, tsc_hz) else {
             continue;
         };
-        let paired = PairedSample {
-            host_tsc,
-            sample,
-            pairing_ns,
-        };
         if pairing_ns <= MAX_ANCHOR_PAIRING_NS {
-            return Ok(paired);
+            return Ok(PairedSample {
+                host_tsc,
+                sample: host,
+                pairing_ns,
+            });
         }
-        if best.is_none_or(|best| pairing_ns < best.pairing_ns) {
-            best = Some(paired);
-        }
+        tightest_ns = Some(tightest_ns.map_or(pairing_ns, |ns| ns.min(pairing_ns)));
     }
-    best.ok_or_else(|| {
-        TimeAbiError::new(
-            TimeAbiCode::TscAnchor,
-            "the host TSC went backwards around every host time sample",
-        )
-    })
+    Err(TimeAbiError::new(
+        TimeAbiCode::TscAnchor,
+        format!(
+            "cannot pair the {anchor} with a host time sample within {MAX_ANCHOR_PAIRING_NS} ns \
+             in {ANCHOR_ATTEMPTS} attempts (tightest pairing: {})",
+            tightest_ns.map_or("none, the host TSC went backwards".into(), |ns| format!(
+                "{ns} ns"
+            ))
+        ),
+    ))
 }
 
 /// Returns whether the guest TSC read from a vCPU between the host TSC reads
@@ -328,8 +345,8 @@ impl KvmTimeAbi {
     /// Handles a guest read of `msr` that exited to user space. `None` means
     /// the MSR is not the time ABI's.
     pub(crate) fn read_msr(&self, vp: VpIndex, msr: u32) -> Option<Result<u64, MsrError>> {
-        if msr == MSR_IA32_TSC_ADJUST {
-            tracelimit::info_ratelimited!(vp = vp.index(), "IA32_TSC_ADJUST read raises #GP");
+        if HIDDEN_TSC_MSRS.contains(&msr) {
+            tracelimit::info_ratelimited!(vp = vp.index(), msr, "hidden TSC MSR read raises #GP");
             return Some(Err(MsrError::InvalidAccess));
         }
         self.msrs.read(vp, msr)
@@ -347,11 +364,12 @@ impl KvmTimeAbi {
         msr: u32,
         value: u64,
     ) -> Option<Result<(), MsrError>> {
-        if msr == MSR_IA32_TSC_ADJUST {
+        if HIDDEN_TSC_MSRS.contains(&msr) {
             tracelimit::info_ratelimited!(
                 vp = vp.index(),
+                msr,
                 value,
-                "IA32_TSC_ADJUST write raises #GP"
+                "hidden TSC MSR write raises #GP"
             );
             return Some(Err(MsrError::InvalidAccess));
         }
@@ -460,8 +478,9 @@ impl TimeAbiBackend for KvmPartitionInner {
                 )));
             }
             // Without scaling, the guest TSC is the host TSC plus the offset.
-            // KVM scales only outside its tolerance (250 ppm by default), far
-            // more than the bracket width at any host TSC value.
+            // KVM scales only outside its tolerance (250 ppm by default),
+            // which moves the value far outside the bracket once the host
+            // has been up for about a second.
             let offset = vp
                 .tsc_offset()
                 .map_err(|err| scaling(format!("cannot read KVM_VCPU_TSC_OFFSET: {err:#}")))?;
@@ -503,18 +522,7 @@ impl TimeAbiBackend for KvmPartitionInner {
                 format!("cannot read VP 0's TSC offset: {err:#}"),
             )
         })?;
-        let paired = paired_host_sample(tsc_hz)?;
-        if paired.pairing_ns > MAX_ANCHOR_PAIRING_NS {
-            return Err(TimeAbiError::new(
-                TimeAbiCode::TscAnchor,
-                format!(
-                    "cannot pair VP 0's TSC with a host time sample within \
-                     {MAX_ANCHOR_PAIRING_NS} ns: the best of {ANCHOR_ATTEMPTS} attempts is \
-                     {} ns",
-                    paired.pairing_ns
-                ),
-            ));
-        }
+        let paired = paired_host_sample(tsc_hz, "capture anchor")?;
         let tsc = paired.host_tsc.wrapping_add(offset);
         tracing::debug!(
             tsc,
@@ -552,13 +560,7 @@ impl TimeAbiBackend for KvmPartitionInner {
 
         // The restore anchor. Every guest TSC equals the target at the host
         // instant of `host_tsc` and runs from there.
-        let paired = paired_host_sample(tsc_hz)?;
-        if paired.pairing_ns > MAX_ANCHOR_PAIRING_NS {
-            tracelimit::warn_ratelimited!(
-                pairing_ns = paired.pairing_ns,
-                "time ABI restore anchor is paired loosely"
-            );
-        }
+        let paired = paired_host_sample(tsc_hz, "restore anchor")?;
         let host_tsc = paired.host_tsc;
         let target_tsc = target(&paired.sample)?;
         let offset = target_tsc.wrapping_sub(host_tsc);
@@ -628,18 +630,14 @@ mod tests {
     #[test]
     fn filter_denies_exactly_the_owned_msrs() {
         let filter = identity_msr_filter();
-        let owned = [
-            (0x4000_0000, 0x4000_01ff),
-            (MSR_IA32_TSC_ADJUST, MSR_IA32_TSC_ADJUST),
-        ];
+        let owned = [(0x4000_0000, 0x4000_01ff), (0x3b, 0x3b), (0x6e0, 0x6e0)];
+        assert_eq!(filter.len(), owned.len());
         for (range, (first, last)) in filter.iter().zip(owned) {
             assert_eq!(range.base, first);
             assert_eq!(range.base + range.nmsrs - 1, last);
             assert!(range.read && range.write);
             assert!(range.bitmap.iter().all(|&byte| byte == 0));
         }
-        assert_eq!(filter[0].nmsrs, 0x200);
-        assert_eq!(filter[1].nmsrs, 1);
     }
 
     fn kvm_like_base() -> Vec<CpuidLeaf> {
@@ -799,6 +797,70 @@ mod tests {
         assert_eq!(pair_host_sample(high, hz), Some((u64::MAX - 50, 25)));
     }
 
+    fn host_sample(ns: u64) -> HostTimeSample {
+        HostTimeSample {
+            utc_ns: ns,
+            monotonic_ns: ns,
+        }
+    }
+
+    #[test]
+    fn anchors_sample_again_until_paired_within_the_bound() {
+        // 1 GHz: one cycle per ns. Two wide brackets, then a tight one.
+        let mut brackets = [(0, 30_000), (0, 25_000), (1_000, 1_100)].into_iter();
+        let paired = pair_within_bound(1_000_000_000, "capture anchor", || {
+            let (start, end) = brackets.next().unwrap();
+            (HostTscBracket { start, end }, Ok(host_sample(start)))
+        })
+        .unwrap();
+        assert_eq!((paired.host_tsc, paired.pairing_ns), (1_050, 50));
+        assert_eq!(paired.sample, host_sample(1_000));
+    }
+
+    #[test]
+    fn anchors_fail_after_bounded_attempts() {
+        let mut attempts = 0;
+        let error = pair_within_bound(1_000_000_000, "restore anchor", || {
+            attempts += 1;
+            let end = 20_000 + attempts as u64;
+            (HostTscBracket { start: 0, end }, Ok(host_sample(0)))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, ANCHOR_ATTEMPTS);
+        assert_eq!(error.code, TimeAbiCode::TscAnchor);
+        assert!(
+            error.message.contains("restore anchor"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("tightest pairing: 10001 ns"),
+            "{}",
+            error.message
+        );
+
+        let error = pair_within_bound(1_000_000_000, "capture anchor", || {
+            (HostTscBracket { start: 10, end: 9 }, Ok(host_sample(0)))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::TscAnchor);
+        assert!(
+            error.message.contains("went backwards"),
+            "{}",
+            error.message
+        );
+
+        // A host clock failure ends the anchor at once, with its own code.
+        let error = pair_within_bound(1_000_000_000, "capture anchor", || {
+            (
+                HostTscBracket { start: 0, end: 1 },
+                Err(TimeAbiError::new(TimeAbiCode::HostIdentity, "no clock")),
+            )
+        })
+        .unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::HostIdentity);
+    }
+
     #[test]
     fn unscaled_tsc_is_host_plus_offset() {
         let bracket = HostTscBracket {
@@ -918,6 +980,8 @@ mod tests {
         }
         assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(Err(())));
         assert_eq!(write(MSR_IA32_TSC_ADJUST, 0), Some(Err(())));
+        assert_eq!(read(MSR_IA32_TSC_DEADLINE), Some(Err(())));
+        assert_eq!(write(MSR_IA32_TSC_DEADLINE, 1), Some(Err(())));
         // Other unknown MSRs keep their existing handling.
         assert_eq!(read(0x88), None);
         assert_eq!(write(0x4000_0200, 0), None);
@@ -1014,7 +1078,7 @@ mod kvm_tests {
         let hz = vm.vp(0).tsc_frequency_hz().unwrap();
         let mut worst = 0;
         for _ in 0..1000 {
-            worst = worst.max(paired_host_sample(hz).unwrap().pairing_ns);
+            worst = worst.max(paired_host_sample(hz, "test anchor").unwrap().pairing_ns);
         }
         tracing::info!(worst, "worst host sample pairing, ns");
         assert!(worst <= MAX_ANCHOR_PAIRING_NS);
