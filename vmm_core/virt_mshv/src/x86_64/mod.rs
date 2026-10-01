@@ -5,6 +5,7 @@
 
 mod extint;
 pub(crate) mod finalize;
+mod fingerprint;
 pub(crate) mod time_abi;
 mod tsc;
 mod vm_state;

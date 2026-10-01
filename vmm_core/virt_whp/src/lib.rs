@@ -26,6 +26,8 @@ cfg_select! {
         mod apic;
         mod cpu_contract;
         mod emu;
+        mod fingerprint;
+        pub use fingerprint::cpu_fingerprint;
         use x86defs::cpuid::Vendor;
         type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
     }
