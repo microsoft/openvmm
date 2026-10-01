@@ -48,6 +48,10 @@
 use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
+use crate::profile_features::WhpFeatures;
+use crate::profile_features::profile_cpuid_results;
+use crate::profile_features::profile_features;
+use cpu_profile::CpuProfile;
 use inspect::Inspect;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -71,8 +75,11 @@ use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::surface::is_interim_cpu_profile;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
+use whp::abi::WHV_PROCESSOR_FEATURES;
 use whp::abi::WHV_PROCESSOR_FEATURES1;
+use whp::abi::WHV_PROCESSOR_XSAVE_FEATURES;
 use whp::abi::WHV_X64_MSR_EXIT_BITMAP;
 use x86defs::cpuid::CpuidFunction;
 
@@ -171,6 +178,13 @@ pub(crate) struct WhpTimeAbi {
     /// Processor feature bank 1.
     #[inspect(hex)]
     features_bank1: u64,
+    /// The XSAVE features, when a CPU profile set them.
+    #[inspect(hex)]
+    features_xsave: Option<u64>,
+    /// The CPU profile the features derive from, if any.
+    cpu_profile: Option<String>,
+    /// How many `CpuidResultList2` entries present the CPU profile's leaves.
+    cpuid_results: usize,
     /// The effective CPUID record, computed once: it depends only on the
     /// configuration, because it excludes guest state.
     #[inspect(skip)]
@@ -179,13 +193,19 @@ pub(crate) struct WhpTimeAbi {
 
 impl WhpTimeAbi {
     /// Programs a new WHP partition for the time ABI: the CPUID exits, the
-    /// processor feature banks, and the unhandled-MSR exits. The partition
-    /// must have passed [`validate_partition`].
+    /// processor features, and the unhandled-MSR exits. The partition must
+    /// have passed [`validate_partition`].
+    ///
+    /// With a pinned CPU profile (`config.cpu_profile`), the processor feature
+    /// banks and the XSAVE features derive from it ([`profile_features`]);
+    /// with an interim profile, the banks are WHP's capability without the
+    /// hidden time features.
     pub(crate) fn configure(
         config: &TimeAbiConfig,
         whp_config: &mut whp::PartitionConfig,
         extended_exits: &mut WHV_EXTENDED_VM_EXITS,
     ) -> Result<Self, TimeAbiError> {
+        let profile = pinned_profile(&config.cpu_profile)?;
         let amd = match whp::capabilities::processor_vendor() {
             Ok(whp::abi::WHvProcessorVendorIntel) => false,
             Ok(whp::abi::WHvProcessorVendorAmd | whp::abi::WHvProcessorVendorHygon) => true,
@@ -219,7 +239,29 @@ impl WhpTimeAbi {
                 format!("cannot query the processor features: {err}"),
             )
         })?;
-        let features = processor_features(available);
+        let (features, xsave) = match profile {
+            Some(profile) => {
+                let available_xsave =
+                    whp::capabilities::processor_xsave_features().map_err(|err| {
+                        TimeAbiError::new(
+                            TimeAbiCode::ProfileUnsupported,
+                            format!("cannot query the XSAVE features: {err}"),
+                        )
+                    })?;
+                let derived = profile_features(
+                    profile,
+                    WhpFeatures {
+                        banks: [available.bank0.0, available.bank1.0],
+                        xsave: available_xsave.0,
+                    },
+                )?;
+                let mut features = available;
+                features.bank0 = WHV_PROCESSOR_FEATURES(derived.banks[0]);
+                features.bank1 = WHV_PROCESSOR_FEATURES1(derived.banks[1]);
+                (processor_features(features), Some(derived.xsave))
+            }
+            None => (processor_features(available), None),
+        };
         whp_config
             .set_property(whp::PartitionProperty::ProcessorFeaturesBanks(features))
             .map_err(|err| {
@@ -231,6 +273,32 @@ impl WhpTimeAbi {
                     ),
                 )
             })?;
+        if let Some(xsave) = xsave {
+            whp_config
+                .set_property(whp::PartitionProperty::ProcessorXsaveFeatures(
+                    WHV_PROCESSOR_XSAVE_FEATURES(xsave),
+                ))
+                .map_err(|err| {
+                    TimeAbiError::new(
+                        TimeAbiCode::ProfileUnsupported,
+                        format!("cannot set XSAVE features {xsave:#x}: {err}"),
+                    )
+                })?;
+        }
+        let cpuid_results = profile.map(profile_cpuid_results).unwrap_or_default();
+        if !cpuid_results.is_empty() {
+            whp_config
+                .set_property(whp::PartitionProperty::CpuidResultList2(&cpuid_results))
+                .map_err(|err| {
+                    TimeAbiError::new(
+                        TimeAbiCode::ProfileUnsupported,
+                        format!(
+                            "cannot program the {} CPUID results of the CPU profile: {err}",
+                            cpuid_results.len()
+                        ),
+                    )
+                })?;
+        }
 
         let msr_exits = whp::capabilities::x64_msr_exit_bitmap()
             .map_err(|err| routing_error(format!("cannot query the MSR exits: {err}")))?;
@@ -248,10 +316,13 @@ impl WhpTimeAbi {
 
         tracing::info!(
             cpuid_exits = cpuid_exits.len(),
+            cpuid_results = cpuid_results.len(),
+            cpu_profile = profile.map(|profile| profile.id()),
             available_bank0 = format_args!("{:#x}", available.bank0.0),
             available_bank1 = format_args!("{:#x}", available.bank1.0),
             bank0 = format_args!("{:#x}", features.bank0.0),
             bank1 = format_args!("{:#x}", features.bank1.0),
+            xsave = xsave.map(|xsave| format!("{xsave:#x}")),
             tsc_invariant_feature = features
                 .bank1
                 .is_set(WHV_PROCESSOR_FEATURES1::TscInvariantSupport),
@@ -264,6 +335,9 @@ impl WhpTimeAbi {
             cpuid_exits,
             features_bank0: features.bank0.0,
             features_bank1: features.bank1.0,
+            features_xsave: xsave,
+            cpu_profile: profile.map(|profile| profile.id().to_owned()),
+            cpuid_results: cpuid_results.len(),
             effective: OnceLock::new(),
         })
     }
@@ -283,6 +357,22 @@ impl WhpTimeAbi {
 
 fn routing_error(message: impl Into<String>) -> TimeAbiError {
     TimeAbiError::new(TimeAbiCode::IdentityRouting, message)
+}
+
+/// Returns the pinned CPU profile that `id` names, or `None` for an interim
+/// profile, which keeps WHP's own CPU features. Core selects and verifies the
+/// profile before the partition exists, so an unknown ID is an internal
+/// error (`E_PROFILE_UNKNOWN`).
+fn pinned_profile(id: &str) -> Result<Option<&'static CpuProfile>, TimeAbiError> {
+    if is_interim_cpu_profile(id) {
+        return Ok(None);
+    }
+    cpu_profile::pinned(id).map(Some).ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnknown,
+            format!("CPU profile {id:?} is not pinned in this OpenVMM"),
+        )
+    })
 }
 
 /// Fails unless the partition can carry the time ABI: no isolation, no
@@ -1019,6 +1109,21 @@ mod tests {
 
     const VP_COUNT: u32 = 8;
 
+    #[test]
+    fn cpu_profile_ids_resolve_to_pinned_profiles() {
+        let interim = virt::time_abi::surface::interim_cpu_profile_id("whp");
+        assert!(pinned_profile(&interim).unwrap().is_none());
+        let skylake = pinned_profile("intel.skylake-sp.v1").unwrap().unwrap();
+        assert_eq!(skylake.id(), "intel.skylake-sp.v1");
+        for id in ["intel.skylake-sp.whp.v1", ""] {
+            assert_eq!(
+                pinned_profile(id).unwrap_err().code,
+                TimeAbiCode::ProfileUnknown,
+                "{id:?}"
+            );
+        }
+    }
+
     /// WHP's own results on an Intel host without synthetic features: no
     /// hypervisor leaves, and every time bit wrong.
     fn whp_cpuid(function: u32, index: u32) -> [u32; 4] {
@@ -1127,7 +1232,7 @@ mod tests {
     #[test]
     fn feature_banks_hide_exactly_the_time_bits() {
         let mut available = whp::ProcessorFeatures::default();
-        available.bank0 = whp::abi::WHV_PROCESSOR_FEATURES(0x1001_f9ff_e7f7_859f);
+        available.bank0 = WHV_PROCESSOR_FEATURES(0x1001_f9ff_e7f7_859f);
         available.bank1 = WHV_PROCESSOR_FEATURES1(!0);
         let features = processor_features(available);
         assert_eq!(features.bank0, available.bank0);
@@ -1525,9 +1630,19 @@ mod whp_tests {
     /// Returns a time ABI partition with `vp_count` VPs, configured as
     /// `VtlPartition::new` configures one, and its time ABI state.
     fn partition(vp_count: u32) -> (whp::Partition, WhpTimeAbi) {
+        partition_with(vp_count, None)
+    }
+
+    /// Returns a time ABI partition with `vp_count` VPs whose features derive
+    /// from `profile`, if any.
+    fn partition_with(vp_count: u32, profile: Option<&CpuProfile>) -> (whp::Partition, WhpTimeAbi) {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(vp_count, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: profile.map_or_else(
+                || virt::time_abi::surface::interim_cpu_profile_id("whp"),
+                |profile| profile.id().to_owned(),
+            ),
         };
         let mut whp_config = whp::PartitionConfig::new().unwrap();
         whp_config
@@ -1612,6 +1727,63 @@ mod whp_tests {
             time_abi.features_bank1,
             native(&partition, 0x8000_0007, 0).unwrap()
         );
+    }
+
+    /// Configures a partition from this host's CPU profile, as partitions
+    /// will once `TimeAbiConfig` carries the profile, and checks the static
+    /// obligations and that the guest CPUID equals the profile's wherever the
+    /// profile pins it.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn host_profile_configures_the_partition() {
+        let profile = match cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()) {
+            Ok(profile) => profile,
+            Err(err) => {
+                println!("skipped: no profile for this host: {err}");
+                return;
+            }
+        };
+        let (partition, time_abi) = partition_with(4, Some(profile));
+        assert_eq!(time_abi.cpu_profile.as_deref(), Some(profile.id()));
+        assert!(time_abi.features_xsave.is_some());
+        check_native_sentinels(|function| native(&partition, function, 0)).unwrap();
+        check_feature_banks(|function, index| native(&partition, function, index)).unwrap();
+
+        let cpuid = time_abi.partition_cpuid(Vec::new()).unwrap();
+        let record = effective_cpuid(&cpuid, |function, index| {
+            native(&partition, function, index).map(|result| cpuid.result(function, index, &result))
+        })
+        .unwrap();
+        let record = CpuidLeafSet::new(record);
+        let mut lookup = |function, index| record.result(function, index, &[0; 4]);
+        check_identity(&mut lookup, 4).unwrap();
+        check_time_bits(&mut lookup, true).unwrap();
+
+        // What the guest sees: the time ABI CPUID over WHP's results.
+        let mut differences = Vec::new();
+        for entry in profile.cpuid() {
+            let (function, index) = entry.key();
+            let index = index.unwrap_or(0);
+            let native = native(&partition, function, index).unwrap();
+            let guest = cpuid.result(function, index, &native);
+            let pinned = entry.values().into_iter().zip(entry.masks());
+            for (register, (actual, (value, mask))) in guest.into_iter().zip(pinned).enumerate() {
+                let differs = (actual ^ value) & mask;
+                if differs != 0 {
+                    differences.push(format!(
+                        "{function:#x}.{index} register {register}: guest {actual:#010x} profile {value:#010x} differing bits {differs:#010x}",
+                    ));
+                }
+            }
+        }
+        println!(
+            "{}: bank0 {:#x} bank1 {:#x} xsave {:#x?}",
+            profile.id(),
+            time_abi.features_bank0,
+            time_abi.features_bank1,
+            time_abi.features_xsave
+        );
+        assert!(differences.is_empty(), "{differences:#?}");
     }
 
     #[test]
