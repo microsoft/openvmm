@@ -42,6 +42,7 @@ use virt::io::CpuIo;
 use virt_support_aarch64emu::translate::TranslationRegisters;
 use virt_support_gic::ListRegisterInterrupt;
 use virt_support_gic::PendingInterrupt;
+use virt_support_gic::GicV3Model;
 use zerocopy::FromZeros;
 
 #[derive(Debug, Error)]
@@ -431,6 +432,26 @@ fn queue_virtual_interrupt(candidates: &mut Vec<u64>, interrupt: PendingInterrup
     );
 }
 
+pub fn modify_using_pending_latch(lrs: &mut [u64], gic: &GicV3Model, vp: VpIndex) {
+
+    match gic.get_latches(vp) {
+        Some((clearing_latch, pending_latch)) => {
+            for lr in lrs.iter_mut() {
+                let vintid = (*lr & ICH_LR_VINTID_MASK) as u32;
+                if vintid < 32 && (clearing_latch & (1 << vintid)) != 0 {
+                    *lr &= !ICH_LR_PENDING;
+                }
+
+                //do I need this since I can collect an array of potential interrupts in the private pending array that could be made active+pending, like I did for the shared interrupts (I guess the OR doesn't rlly make a difference)
+                if vintid < 32 && *lr & ICH_LR_ACTIVE != 0 && (pending_latch & (1 << vintid)) != 0 {
+                    *lr |= ICH_LR_PENDING;
+                }
+            }
+        }
+        None => return,
+    };
+}
+
 fn extend_mmio_read(data: [u8; size_of::<u64>()], len: usize, sign_extend: bool, sf: bool) -> u64 {
     let value = u64::from_ne_bytes(data);
     if sign_extend {
@@ -794,7 +815,7 @@ impl UhProcessor<'_, CcaBacked> {
 
         if let Some((iss, value, esr_el2)) = irq_exit.system_register_trap {
             self.handle_system_register_trap(vtl, iss, value, esr_el2)?;
-        } else if irq_exit.virtual_timer_asserted {
+        } else if self.shared.cvm.gic.pend_ppi(irq_exit.virtual_timer_asserted, self.shared.virt_timer_ppi, self.vp_index()) {
             let intid = self.shared.virt_timer_ppi;
 
             if !self.shared.cvm.gic.raise_ppi(self.vp_index(), intid) {
@@ -906,6 +927,9 @@ impl UhProcessor<'_, CcaBacked> {
             .filter(|lr| lr_is_valid(*lr))
             .collect();
         logical_lrs.extend(overflow);
+
+        let vp = self.vp_index();
+        modify_using_pending_latch(&mut logical_lrs, &self.shared.cvm.gic, vp);
 
         let returned = logical_lrs
             .iter()

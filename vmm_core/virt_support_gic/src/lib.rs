@@ -180,6 +180,24 @@ impl GicV3Model {
     pub fn mark_private_injected(&self, vp: VpIndex, intid: u32) {
         self.distributor.mark_private_injected(vp, intid);
     }
+
+    pub fn pend_ppi(&self, asserted: bool, intid: u32, vp: VpIndex) -> bool {
+        match self.redistributors.get(vp.index() as usize) {
+            Some(gicr) => {
+                let mut gicr = gicr.lock();
+                gicr.shared.pend_ppi(asserted, intid)
+            }
+            None => false,
+        }
+    }
+
+    pub fn get_latches(&self, vp: VpIndex) -> Option<(u32, u32)> {
+
+        match self.redistributors.get(vp.index() as usize) {
+            Some(gicr) => Some(gicr.lock().shared.get_latches()),
+            None => None,
+        }
+    }
 }
 
 mod gicd {
@@ -720,7 +738,7 @@ mod gicd {
                         && gicr.mpidr.aff3() == value.aff3()
                         && gicr.mpidr.aff2() == value.aff2()
                         && gicr.mpidr.aff1() == value.aff1()
-                        && (1 << gicr.mpidr.aff0()) & value.target_list() != 0)
+                        && (gicr.mpidr.aff0() >> 4) == value.rs() && (value.target_list() & (1 << (gicr.mpidr.aff0() & 0xf)) != 0))
                 {
                     if gicr.raise(value.intid()) {
                         wake(index);
@@ -1394,6 +1412,9 @@ mod gicr {
     pub(crate) struct SharedState {
         pub(super) pending: AtomicU32,
         pub(super) in_flight: AtomicU32,
+        pub(super) ppi_level_line: AtomicU32,
+        pub(super) ppi_clearing_latch: AtomicU32,
+        pub(super) ppi_pending_latch: AtomicU32,
         #[inspect(with = "|&x| u64::from(x)")]
         pub(super) mpidr: MpidrEl1,
         last: bool,
@@ -1469,6 +1490,30 @@ mod gicr {
         pub fn raise(&self, intid: u32) -> bool {
             let mask = 1 << intid;
             self.pending.fetch_or(mask, Ordering::Relaxed) & mask == 0
+        }
+
+        pub fn pend_ppi(&self, asserted: bool, intid: u32) -> bool {
+            let mask = 1 << intid;
+            let state = self.mutable.lock();
+            let edge_triggered = state.ppi_cfg & mask != 0;
+
+            if edge_triggered {
+                return true;
+            }
+
+            if asserted {
+                self.ppi_level_line.fetch_or(mask, Ordering::Relaxed);
+            } else {
+                self.ppi_level_line.fetch_and(!mask, Ordering::Relaxed);
+            }
+
+            asserted
+        }
+
+        pub fn get_latches(&self) -> (u32, u32) {
+            let clearing_latch = self.ppi_clearing_latch.swap(0, Ordering::Relaxed);
+            let pending_latch = self.ppi_pending_latch.swap(0, Ordering::Relaxed);
+            (clearing_latch, pending_latch)
         }
 
         pub fn mark_injected(&self, intid: u32) {
@@ -1686,6 +1731,19 @@ mod gicr {
                 GicrSgiRegister::ICACTIVER0 => self.mutable.lock().active &= !data,
                 GicrSgiRegister::ISENABLER0 => self.mutable.lock().enable |= data,
                 GicrSgiRegister::ICENABLER0 => self.mutable.lock().enable &= !data,
+                GicrSgiRegister::ICPENDR0 => {
+                    self.clear_pending_icpendr0(data);
+                    // need to change the LR pending to inactive
+                    // Or change from active + pending tp active
+                    self.ppi_clearing_latch.fetch_or(data, Ordering::Relaxed);
+                }
+                GicrSgiRegister::ISPENDR0 => {
+                    self.pending.fetch_or(data, Ordering::Relaxed);
+                    // from inactive to pending
+                    // from active to active+pending
+                    // just make pending and then in get next interrupt selection it will be handled
+                    // self.ppi_pending_latch.fetch_or(data, Ordering::Relaxed);
+                }
                 GicrSgiRegister::ICFGR0 => {
                     // Cannot change trigger mode for SGIs.
                 }
@@ -1705,6 +1763,25 @@ mod gicr {
 
             self.pending.fetch_and(!(1 << intid), Ordering::Relaxed);
         }
+
+        pub fn clear_pending_icpendr0(&self, data: u32) {
+            let state = self.mutable.lock();
+
+            for intid in 0..32 {
+                if data & (1 << intid) == 0 {
+                    continue;
+                }
+                let edge_triggered = state.ppi_cfg & (1 << intid) != 0;
+                if edge_triggered {
+                    self.clear_pending(intid);
+                } else {
+                    let asserted = self.ppi_level_line.load(Ordering::Relaxed) & (1 << intid) != 0;
+                    if !asserted {
+                        self.clear_pending(intid);
+                    }
+                }
+            }
+        }
     }
 
     impl Redistributor {
@@ -1712,6 +1789,9 @@ mod gicr {
             let shared = Arc::new(SharedState {
                 pending: AtomicU32::new(0),
                 in_flight: AtomicU32::new(0),
+                ppi_level_line: AtomicU32::new(0),
+                ppi_clearing_latch: AtomicU32::new(0),
+                ppi_pending_latch: AtomicU32::new(0),
                 mpidr: mpidr.into(),
                 last,
                 mutable: Mutex::new(SharedMutState {
