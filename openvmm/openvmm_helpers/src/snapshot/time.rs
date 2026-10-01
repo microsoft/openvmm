@@ -23,7 +23,6 @@ use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::downtime::select_downtime;
 use virt::time_abi::rate;
-use virt::time_abi::surface;
 
 /// The value of the retired capture wall clock in a version 6 manifest.
 pub(super) const NO_TIMESTAMP: Timestamp = Timestamp {
@@ -111,7 +110,10 @@ fn verify_sha256(bytes: &[u8], digest: &[u8], description: &str) -> Result<(), T
     Ok(())
 }
 
-/// Validates a CPU profile record: its shape and both digests.
+/// Validates a CPU profile record: its shape, both digests, and both canonical
+/// encodings. The embedded profile must be the one the record names
+/// (`E_PROFILE_DIGEST`); whether this OpenVMM pins it is the restore
+/// preflight's check.
 pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), TimeAbiError> {
     let SnapshotCpuProfile {
         id,
@@ -134,19 +136,17 @@ pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), Ti
             "CPU profile ID '{id}' is malformed"
         )));
     }
-    if profile.len() > MAX_CPU_PROFILE_BYTES {
-        return Err(manifest_error("CPU profile exceeds 1 MiB"));
+    if profile.is_empty() || profile.len() > MAX_CPU_PROFILE_BYTES {
+        return Err(manifest_error("CPU profile record size is invalid"));
     }
     verify_sha256(profile, sha256, "CPU profile")?;
-    if effective_cpuid.is_empty()
-        || effective_cpuid.len() > MAX_EFFECTIVE_CPUID_BYTES
-        || !effective_cpuid
-            .len()
-            .is_multiple_of(surface::ENCODED_CPUID_LEAF_LEN)
-    {
+    if effective_cpuid.is_empty() || effective_cpuid.len() > MAX_EFFECTIVE_CPUID_BYTES {
         return Err(manifest_error("effective CPUID record size is invalid"));
     }
-    verify_sha256(effective_cpuid, effective_cpuid_sha256, "effective CPUID")
+    verify_sha256(effective_cpuid, effective_cpuid_sha256, "effective CPUID")?;
+    cpu_profile::verify_profile_record(id, sha256, profile).map_err(profile_error)?;
+    cpu_profile::EffectiveCpuid::decode(effective_cpuid).map_err(profile_error)?;
+    Ok(())
 }
 
 /// Returns the capture record of a validated time contract.
@@ -252,11 +252,9 @@ pub struct TimeAbiRestorePreflight {
 /// generation, and the downtime preflight against the destination host's
 /// identity and clocks.
 ///
-/// A snapshot that recorded a pinned profile restores where this OpenVMM pins
-/// the same profile and `host` is in its generation. One that recorded an
-/// interim profile restores only on the backend that recorded it and on a
-/// host with the capture host's CPU signature. In both cases the worker
-/// compares the effective CPUID.
+/// The snapshot's profile must be pinned in this OpenVMM with the same
+/// digest, and `host` must be in its generation. The worker recomputes the
+/// effective CPUID and compares it with the record.
 pub fn preflight_time_abi_restore(
     contract: &SnapshotMachineContract,
     hypervisor: &str,
@@ -288,18 +286,14 @@ pub fn preflight_time_abi_restore(
             ),
         ));
     }
-    if surface::is_interim_cpu_profile(&record.id) {
-        check_interim_cpu_profile_restore(record, hypervisor, host)?;
-    } else {
-        let host = host.ok_or_else(|| {
-            TimeAbiError::new(
-                TimeAbiCode::CpuGeneration,
-                "the host CPU cannot be identified",
-            )
-        })?;
-        cpu_profile::restore_profile(&record.id, &record.sha256, &record.profile, &host)
-            .map_err(profile_error)?;
-    }
+    let host = host.ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::CpuGeneration,
+            "the host CPU cannot be identified",
+        )
+    })?;
+    cpu_profile::restore_profile(&record.id, &record.sha256, &record.profile, &host)
+        .map_err(profile_error)?;
     let capture = capture_record(time)?;
     let downtime = select_downtime(&capture, destination, now, hooks)?;
     Ok(TimeAbiRestorePreflight {
@@ -308,41 +302,6 @@ pub fn preflight_time_abi_restore(
         generation: time.capture_generation + 1,
         cpu_profile: record.id.clone(),
     })
-}
-
-/// Checks the restore of a snapshot that recorded an interim CPU profile: the
-/// profile is the backend's, the record embeds no profile document, and the
-/// host has the capture host's CPU signature.
-fn check_interim_cpu_profile_restore(
-    record: &SnapshotCpuProfile,
-    hypervisor: &str,
-    host: Option<cpu_profile::HostCpuSignature>,
-) -> Result<(), TimeAbiError> {
-    surface::check_interim_cpu_profile(&record.id, hypervisor)?;
-    if !record.profile.is_empty() {
-        return Err(TimeAbiError::new(
-            TimeAbiCode::ProfileDigest,
-            format!(
-                "the snapshot's interim profile '{}' embeds a profile document",
-                record.id
-            ),
-        ));
-    }
-    let signature = host.map(|host| host.signature());
-    if signature != Some(record.capture_cpu_signature) {
-        let host = signature.map_or_else(
-            || "unavailable".to_owned(),
-            |signature| format!("{signature:#010x}"),
-        );
-        return Err(TimeAbiError::new(
-            TimeAbiCode::CpuGeneration,
-            format!(
-                "the host CPU signature {host} is not the capture host's {:#010x}",
-                record.capture_cpu_signature
-            ),
-        ));
-    }
-    Ok(())
 }
 
 /// Converts a CPU profile failure to the time ABI failure with the same code.
@@ -388,16 +347,46 @@ pub(super) mod tests {
         }
     }
 
+    /// The CPU profile of the test records.
+    pub(in crate::snapshot) const TEST_PROFILE: &str = "intel.icelake-sp.v1";
+    /// A host CPU signature in the test profile's generation.
+    const TEST_SIGNATURE: u32 = 0x0006_06a6;
+
+    /// Returns the effective CPUID of a partition with `vp_count` VPs and
+    /// `profile`: the topology fields OpenVMM sets for one socket, an xAPIC,
+    /// and no identity leaves.
+    fn test_effective_cpuid(
+        profile: &cpu_profile::CpuProfile,
+        vp_count: u32,
+    ) -> cpu_profile::EffectiveCpuid {
+        use cpu_profile::CpuidResult;
+        let mut vm = vec![
+            CpuidResult::new(1, [0, vp_count << 16, 0, 0]).masked([0, 0xffff_0000, 0, 0]),
+            CpuidResult::new(4, [(vp_count - 1) << 26, 0, 0, 0]).masked([0xffff_c000, 0, 0, 0]),
+            cpu_profile::x2apic_cpuid(false),
+        ];
+        let max_basic = profile.lookup(0, 0)[0];
+        for leaf in cpu_profile::VM_OWNED_LEAVES
+            .into_iter()
+            .filter(|&leaf| leaf <= max_basic)
+        {
+            vm.push(CpuidResult::new(leaf, [0, 1, 0x100, 0]).indexed(0));
+            vm.push(CpuidResult::new(leaf, [0, vp_count, 0x201, 0]).indexed(1));
+        }
+        profile.effective_cpuid(&vm, &[]).unwrap()
+    }
+
     pub(in crate::snapshot) fn test_cpu_profile() -> SnapshotCpuProfile {
-        let profile = b"profile".to_vec();
-        let effective_cpuid = vec![0; 24];
+        let pinned = cpu_profile::pinned(TEST_PROFILE).unwrap();
+        let profile = pinned.encode();
+        let effective_cpuid = test_effective_cpuid(pinned, 2).encode();
         SnapshotCpuProfile {
-            id: "intel.skylake-sp.kvm.v1".to_owned(),
+            id: TEST_PROFILE.to_owned(),
             sha256: sha2::Sha256::digest(&profile).to_vec(),
             profile,
             effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
             effective_cpuid,
-            capture_cpu_signature: 0x0005_0657,
+            capture_cpu_signature: TEST_SIGNATURE,
         }
     }
 
@@ -446,7 +435,7 @@ pub(super) mod tests {
     #[test]
     fn cpu_profile_record_rules() {
         validate_cpu_profile_record(&test_cpu_profile()).unwrap();
-        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 9] = [
+        let mutations: [(fn(&mut SnapshotCpuProfile), TimeAbiCode); 12] = [
             (|r| r.id.clear(), TimeAbiCode::ManifestTime),
             (|r| r.id = "Intel_SKX".to_owned(), TimeAbiCode::ManifestTime),
             (
@@ -457,9 +446,30 @@ pub(super) mod tests {
                 |r| r.id = "intel.skylake-sp.kvm.v1.".to_owned(),
                 TimeAbiCode::ManifestTime,
             ),
+            // The embedded profile is not the one the record names.
+            (
+                |r| r.id = "intel.skylake-sp.v1".to_owned(),
+                TimeAbiCode::ProfileDigest,
+            ),
             (|r| r.profile.push(0), TimeAbiCode::ProfileDigest),
+            (
+                |r| {
+                    r.profile.clear();
+                    r.sha256 = sha2::Sha256::digest(&r.profile).to_vec();
+                },
+                TimeAbiCode::ManifestTime,
+            ),
             (|r| r.sha256.truncate(31), TimeAbiCode::ManifestTime),
             (|r| r.effective_cpuid[0] = 1, TimeAbiCode::ProfileDigest),
+            // A digest that verifies over bytes that are not the canonical
+            // encoding.
+            (
+                |r| {
+                    r.effective_cpuid.insert(1, b' ');
+                    r.effective_cpuid_sha256 = sha2::Sha256::digest(&r.effective_cpuid).to_vec();
+                },
+                TimeAbiCode::ProfileDigest,
+            ),
             (|r| r.effective_cpuid.clear(), TimeAbiCode::ManifestTime),
             (
                 |r| r.profile = vec![0; MAX_CPU_PROFILE_BYTES + 1],
@@ -589,24 +599,13 @@ pub(super) mod tests {
         }
     }
 
-    const SIGNATURE: u32 = 0x0005_0657;
-
-    /// A version 6 machine contract captured on WHP with the interim profile,
+    /// A version 6 machine contract captured on WHP with the test profile,
     /// and a destination sample 5 s after its capture anchor on the same host
     /// boot.
-    fn interim_restore() -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
-        let effective_cpuid = vec![7; 48];
-        let record = SnapshotCpuProfile {
-            id: "interim.host.whp.v1".to_owned(),
-            sha256: sha2::Sha256::digest(b"").to_vec(),
-            profile: Vec::new(),
-            effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
-            effective_cpuid,
-            capture_cpu_signature: SIGNATURE,
-        };
+    fn test_restore() -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
         let mut manifest = crate::snapshot::tests::test_manifest();
         manifest.machine_contract = Some(crate::snapshot::microvm::test_machine_contract());
-        set_time_abi_records(&mut manifest, test_time_contract(), record).unwrap();
+        set_time_abi_records(&mut manifest, test_time_contract(), test_cpu_profile()).unwrap();
         let capture = capture_record(&test_time_contract()).unwrap();
         let now = HostTimeSample {
             utc_ns: capture.sample.utc_ns + 5_000_000_000,
@@ -638,21 +637,21 @@ pub(super) mod tests {
 
     #[test]
     fn restore_preflight_selects_the_downtime_and_generation() {
-        let (contract, destination, now) = interim_restore();
+        let (contract, destination, now) = test_restore();
         let hooks = TimeAbiTestHooks::default();
-        for requested in ["auto", "interim.host.whp.v1"] {
+        for requested in ["auto", TEST_PROFILE] {
             let result = preflight(
                 &contract,
                 "whp",
                 requested,
-                Some(SIGNATURE),
+                Some(TEST_SIGNATURE),
                 &destination,
                 &now,
                 &hooks,
             )
             .unwrap();
             assert_eq!(result.generation, 4);
-            assert_eq!(result.cpu_profile, "interim.host.whp.v1");
+            assert_eq!(result.cpu_profile, TEST_PROFILE);
             assert_eq!(result.downtime.nanos, 5_000_000_000);
             assert_eq!(
                 result.downtime.source,
@@ -668,7 +667,7 @@ pub(super) mod tests {
             &contract,
             "whp",
             "auto",
-            Some(SIGNATURE),
+            Some(TEST_SIGNATURE),
             &destination,
             &now,
             &hooks,
@@ -679,7 +678,7 @@ pub(super) mod tests {
 
     #[test]
     fn restore_preflight_failures_have_stable_codes() {
-        let (contract, destination, now) = interim_restore();
+        let (contract, destination, now) = test_restore();
         let hooks = TimeAbiTestHooks::default();
         let fail = |contract: &SnapshotMachineContract,
                     hypervisor: &str,
@@ -699,24 +698,19 @@ pub(super) mod tests {
             .unwrap_err()
             .code
         };
+        let host = Some(TEST_SIGNATURE);
 
         assert_eq!(
-            fail(&contract, "kvm", "auto", Some(SIGNATURE), &now, &hooks),
+            fail(&contract, "kvm", "auto", host, &now, &hooks),
             TimeAbiCode::BackendMismatch
         );
         assert_eq!(
-            fail(
-                &contract,
-                "whp",
-                "intel.icelake-sp.whp.v1",
-                Some(SIGNATURE),
-                &now,
-                &hooks
-            ),
+            fail(&contract, "whp", "intel.skylake-sp.v1", host, &now, &hooks),
             TimeAbiCode::ProfileUnknown
         );
+        // A Skylake-SP host, and a host whose CPU cannot be identified.
         assert_eq!(
-            fail(&contract, "whp", "auto", Some(SIGNATURE + 1), &now, &hooks),
+            fail(&contract, "whp", "auto", Some(0x0005_0654), &now, &hooks),
             TimeAbiCode::CpuGeneration
         );
         assert_eq!(
@@ -724,98 +718,17 @@ pub(super) mod tests {
             TimeAbiCode::CpuGeneration
         );
 
-        let mut other_interim = contract.clone();
-        other_interim.cpu_profile.as_mut().unwrap().id = "interim.host.kvm.v1".to_owned();
+        // A snapshot that recorded an interim profile, before CPU profiles.
+        let mut interim = contract.clone();
+        let record = interim.cpu_profile.as_mut().unwrap();
+        record.id = "interim.host.whp.v1".to_owned();
+        record.profile = Vec::new();
+        record.sha256 = sha2::Sha256::digest(b"").to_vec();
+        record.effective_cpuid = vec![7; 48];
+        record.effective_cpuid_sha256 = sha2::Sha256::digest(&record.effective_cpuid).to_vec();
         assert_eq!(
-            fail(&other_interim, "whp", "auto", Some(SIGNATURE), &now, &hooks),
-            TimeAbiCode::ProfileUnknown
-        );
-
-        // A pinned ID without its profile document does not verify.
-        let mut pinned = contract.clone();
-        let record = pinned.cpu_profile.as_mut().unwrap();
-        record.id = "intel.icelake-sp.v1".to_owned();
-        assert_eq!(
-            fail(&pinned, "whp", "auto", Some(SIGNATURE), &now, &hooks),
-            TimeAbiCode::ProfileDigest
-        );
-
-        let mut document = contract.clone();
-        let record = document.cpu_profile.as_mut().unwrap();
-        record.profile = b"profile".to_vec();
-        record.sha256 = sha2::Sha256::digest(&record.profile).to_vec();
-        assert_eq!(
-            fail(&document, "whp", "auto", Some(SIGNATURE), &now, &hooks),
-            TimeAbiCode::ProfileDigest
-        );
-
-        let mut exhausted = contract.clone();
-        exhausted.time.as_mut().unwrap().capture_generation = u32::MAX;
-        assert_eq!(
-            fail(&exhausted, "whp", "auto", Some(SIGNATURE), &now, &hooks),
-            TimeAbiCode::GenerationExhausted
-        );
-
-        let rollback = HostTimeSample {
-            utc_ns: now.utc_ns,
-            monotonic_ns: now.monotonic_ns - 10_000_000_000,
-        };
-        assert_eq!(
-            fail(&contract, "whp", "auto", Some(SIGNATURE), &rollback, &hooks),
-            TimeAbiCode::DowntimeNegative
-        );
-        let excessive = TimeAbiTestHooks {
-            downtime_add_s: 30 * 24 * 60 * 60,
-            ..Default::default()
-        };
-        assert_eq!(
-            fail(&contract, "whp", "auto", Some(SIGNATURE), &now, &excessive),
-            TimeAbiCode::DowntimeExcessive
-        );
-    }
-
-    /// A version 6 machine contract like [`interim_restore`]'s, recorded with
-    /// the pinned profile `id`.
-    fn pinned_restore(id: &str) -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
-        let (mut contract, destination, now) = interim_restore();
-        let profile = cpu_profile::pinned(id).unwrap();
-        let record = contract.cpu_profile.as_mut().unwrap();
-        record.id = id.to_owned();
-        record.profile = profile.encode();
-        record.sha256 = profile.digest().to_vec();
-        (contract, destination, now)
-    }
-
-    #[test]
-    fn restore_preflight_checks_a_pinned_profile() {
-        const ICELAKE: &str = "intel.icelake-sp.v1";
-        let icelake_host = cpu_profile::HostCpuSignature::new(*b"GenuineIntel", 0x0006_06a6);
-        let skylake_host = cpu_profile::HostCpuSignature::new(*b"GenuineIntel", 0x0005_0654);
-        cpu_profile::check_generation(cpu_profile::pinned(ICELAKE).unwrap(), &icelake_host)
-            .unwrap();
-        let (contract, destination, now) = pinned_restore(ICELAKE);
-        let hooks = TimeAbiTestHooks::default();
-        let run = |contract: &SnapshotMachineContract, requested: &str, host| {
-            preflight_time_abi_restore(contract, "whp", requested, host, &destination, &now, &hooks)
-        };
-        let code = |result: Result<TimeAbiRestorePreflight, TimeAbiError>| result.unwrap_err().code;
-
-        for requested in ["auto", ICELAKE] {
-            let result = run(&contract, requested, Some(icelake_host)).unwrap();
-            assert_eq!(result.cpu_profile, ICELAKE);
-            assert_eq!(result.generation, 4);
-        }
-        assert_eq!(
-            code(run(&contract, "auto", Some(skylake_host))),
-            TimeAbiCode::CpuGeneration
-        );
-        assert_eq!(
-            code(run(&contract, "auto", None)),
-            TimeAbiCode::CpuGeneration
-        );
-        assert_eq!(
-            code(run(&contract, "intel.skylake-sp.v1", Some(icelake_host))),
-            TimeAbiCode::ProfileUnknown
+            fail(&interim, "whp", "auto", host, &now, &hooks),
+            TimeAbiCode::ManifestTime
         );
 
         // A valid profile document that this OpenVMM does not pin.
@@ -828,7 +741,7 @@ pub(super) mod tests {
             .into_bytes();
         record.sha256 = sha2::Sha256::digest(&record.profile).to_vec();
         assert_eq!(
-            code(run(&unknown, "auto", Some(icelake_host))),
+            fail(&unknown, "whp", "auto", host, &now, &hooks),
             TimeAbiCode::ProfileUnknown
         );
 
@@ -838,11 +751,48 @@ pub(super) mod tests {
         record.profile = cpu_profile::pinned("intel.skylake-sp.v1").unwrap().encode();
         record.sha256 = sha2::Sha256::digest(&record.profile).to_vec();
         assert_eq!(
-            code(run(&swapped, "auto", Some(icelake_host))),
+            fail(&swapped, "whp", "auto", host, &now, &hooks),
             TimeAbiCode::ProfileDigest
+        );
+
+        let mut exhausted = contract.clone();
+        exhausted.time.as_mut().unwrap().capture_generation = u32::MAX;
+        assert_eq!(
+            fail(&exhausted, "whp", "auto", host, &now, &hooks),
+            TimeAbiCode::GenerationExhausted
+        );
+
+        let rollback = HostTimeSample {
+            utc_ns: now.utc_ns,
+            monotonic_ns: now.monotonic_ns - 10_000_000_000,
+        };
+        assert_eq!(
+            fail(&contract, "whp", "auto", host, &rollback, &hooks),
+            TimeAbiCode::DowntimeNegative
+        );
+        let excessive = TimeAbiTestHooks {
+            downtime_add_s: 30 * 24 * 60 * 60,
+            ..Default::default()
+        };
+        assert_eq!(
+            fail(&contract, "whp", "auto", host, &now, &excessive),
+            TimeAbiCode::DowntimeExcessive
         );
     }
 
+    #[test]
+    fn effective_cpuid_records_fit_the_manifest() {
+        for profile in cpu_profile::pinned_profiles() {
+            let encoded = test_effective_cpuid(profile, 8).encode();
+            assert!(
+                encoded.len() < MAX_EFFECTIVE_CPUID_BYTES / 2,
+                "{}: {} bytes",
+                profile.id(),
+                encoded.len()
+            );
+            assert!(profile.encode().len() < MAX_CPU_PROFILE_BYTES / 16);
+        }
+    }
     #[test]
     fn profile_errors_keep_their_codes() {
         for code in cpu_profile::ProfileErrorCode::ALL {

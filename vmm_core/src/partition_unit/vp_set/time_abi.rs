@@ -51,8 +51,9 @@ impl LapicAdvance {
 }
 
 impl VpSet {
-    /// Checks the LAPIC timer of every stopped VP: restore step 11 and
-    /// capture step 1 of the time ABI.
+    /// Checks the LAPIC timer of every stopped VP: capture step 1 of the time
+    /// ABI. Restore needs no separate check, because the LAPIC advance
+    /// rejects the same timers.
     pub async fn check_one_shot_timers(&mut self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.started,
@@ -74,7 +75,9 @@ impl VpSet {
 
     /// Advances the one-shot LAPIC timer of every stopped VP by `downtime_ns`
     /// at `apic_hz` and sets every VP's LAPIC state again: restore step 14 of
-    /// the time ABI, after the synchronized TSC set.
+    /// the time ABI, after the synchronized TSC set. A periodic or
+    /// TSC-deadline timer fails it (`E_LAPIC_PERIODIC`,
+    /// `E_LAPIC_TSC_DEADLINE`) before any VP runs.
     pub async fn advance_lapic_timers(
         &mut self,
         downtime_ns: u64,
