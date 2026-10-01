@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aarch64defs.workspace = true
+cpu_profile.workspace = true
 headervec.workspace = true
 hv1_emulator.workspace = true
 hv1_hypercall.workspace = true
