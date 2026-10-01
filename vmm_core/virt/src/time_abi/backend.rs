@@ -38,16 +38,33 @@ pub trait TimeAbiBackend: Send + Sync {
     /// probes `TimeFreeze`) and read VP 0's reset state.
     fn preflight(&self) -> Result<BackendPreflight, TimeAbiError>;
 
-    /// Returns the CPUID the backend programmed for VP 0, for the
-    /// effective-CPUID record and check. Fails with `E_CPU_SURFACE`.
+    /// Returns the CPUID that VP 0 observes for the leaves of
+    /// [`TimeAbiConfig::cpuid`](super::TimeAbiConfig::cpuid), or a superset,
+    /// with VP 0's own APIC identity in the per-VP fields. Core compares it
+    /// with the CPU profile's effective CPUID under its masks
+    /// (`E_CPU_SURFACE`). Fails with `E_CPU_SURFACE`.
     ///
-    /// Core calls it with all VPs stopped: on restore, before any VP runs, for
-    /// the check, and at capture, after the guest has run, for the record, so
-    /// the result must not depend on guest state. Core's first call to this
-    /// method or to [`Self::preflight`] comes before any VP runs, so a
+    /// Core calls it with all VPs stopped, before any VP runs and before any
+    /// VP state is restored, on cold boot and restore. Core's first call to
+    /// this method or to [`Self::preflight`] comes before any VP runs, so a
     /// backend that can only read VP 0's live view reads it then and keeps
     /// it.
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError>;
+
+    /// Returns the CPU surface the backend supports on this host, for the CPU
+    /// profile's support check (`E_PROFILE_UNSUPPORTED`) at partition
+    /// creation. It must be cheap: capability queries and the host's CPUID,
+    /// never a probe partition.
+    ///
+    /// The default returns `None`; core then checks support only in
+    /// verification mode (`--x-time-abi-verify`), from the backend's CPU
+    /// fingerprint. Every backend implements it before the time ABI becomes
+    /// the only microVM path.
+    fn supported_cpu_surface(
+        &self,
+    ) -> Result<Option<super::surface::SupportedCpuSurface>, TimeAbiError> {
+        Ok(None)
+    }
 
     /// Takes the capture anchor: VP 0's TSC paired with
     /// [`sample_host_time`](super::host::sample_host_time). Fails with
@@ -64,6 +81,11 @@ pub trait TimeAbiBackend: Send + Sync {
     /// (`E_TSC_SYNC_READBACK`). Creating a VP afterwards is an error
     /// (`E_VP_LATE_CREATION`).
     ///
+    /// Guest time runs from the anchor: a backend that stops partition time
+    /// for the set resumes it right after a successful read-back, before
+    /// returning, never at the first VP run. A failed set may leave it
+    /// stopped; the restore then fails.
+    ///
     /// Core calls it once per restore, after every instantiated VP is bound
     /// (which creates it on MSHV) and its saved state is restored, and before
     /// any restored VP runs. A cold boot never calls it.
@@ -71,15 +93,6 @@ pub trait TimeAbiBackend: Send + Sync {
         &self,
         target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
     ) -> Result<TscSetReport, TimeAbiError>;
-
-    /// Releases partition time immediately before the restored VPs first run.
-    ///
-    /// A backend whose synchronized set leaves partition time frozen resumes
-    /// it here, unless the first VP run resumes it. The default does
-    /// nothing.
-    fn release_time(&self) -> Result<(), TimeAbiError> {
-        Ok(())
-    }
 }
 
 /// How a backend delivers the identity MSR range to [`super::TimeAbiMsrs`].
@@ -98,7 +111,8 @@ pub enum TscSyncMethod {
     /// One TSC offset for every VP, computed from one host TSC read (KVM).
     CommonOffset,
     /// Partition time is frozen, the target is written to every VP and read
-    /// back while frozen, and time resumes at release (MSHV, WHP).
+    /// back while frozen, and time resumes right after the read-back (MSHV,
+    /// WHP).
     FrozenWrite,
 }
 
