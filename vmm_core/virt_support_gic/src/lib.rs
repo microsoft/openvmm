@@ -6,6 +6,8 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
+
 pub use gicd::Distributor;
 pub use gicr::Redistributor;
 
@@ -155,6 +157,15 @@ impl GicV3Model {
             .next_private_interrupt(vp, running_priority)
     }
 
+    pub fn next_pending_private_interrupts(
+        &self,
+        vp: VpIndex,
+        running_priority: u8,
+    ) -> Option<HashMap<u64, PendingInterrupt>> {
+        self.distributor
+            .next_private_interrupts(vp, running_priority)
+    }
+
     pub fn next_pending_spi_interrupt(
         &self,
         vp: VpIndex,
@@ -173,6 +184,15 @@ impl GicV3Model {
             .reserve_pending_spi_interrupt(vp, running_priority)
     }
 
+    pub fn reserve_pending_spi_interrupts(
+        &self,
+        vp: VpIndex,
+        running_priority: u8,
+    ) -> Option<HashMap<u64, PendingInterrupt>> {
+        self.distributor
+            .reserve_pending_spi_interrupts(vp, running_priority)
+    }
+
     pub fn raise_ppi(&self, vp: VpIndex, intid: u32) -> bool {
         self.distributor.raise_ppi(vp, intid)
     }
@@ -184,7 +204,7 @@ impl GicV3Model {
     pub fn pend_ppi(&self, asserted: bool, intid: u32, vp: VpIndex) -> bool {
         match self.redistributors.get(vp.index() as usize) {
             Some(gicr) => {
-                let mut gicr = gicr.lock();
+                let gicr = gicr.lock();
                 gicr.shared.pend_ppi(asserted, intid)
             }
             None => false,
@@ -217,6 +237,7 @@ mod gicd {
     use parking_lot::Mutex;
     use std::sync::Arc;
     use vm_topology::processor::VpIndex;
+    use std::collections::HashMap;
 
     #[derive(Debug, Inspect)]
     pub struct Distributor {
@@ -470,6 +491,22 @@ mod gicd {
             Some(interrupt)
         }
 
+        pub fn reserve_pending_spi_interrupts(
+            &self,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let mut state = self.state.lock();
+            let interrupts = self.next_spi_interrupts_locked(&state, vp, running_priority)?;
+            // Reserve while still holding the selection lock so another VP
+            // cannot select the same IRM-routed SPIs.
+            for (&intid, _) in &interrupts {
+                Self::set_pending_locked(&mut state, intid as u32, false);
+                Self::set_in_flight_locked(&mut state, vp, intid as u32);
+            }
+            Some(interrupts)
+        }
+
         pub fn next_private_interrupt(
             &self,
             vp: VpIndex,
@@ -482,6 +519,20 @@ mod gicd {
             self.gicr
                 .get(vp.index() as usize)?
                 .next_private_interrupt(running_priority)
+        }
+
+        pub fn next_private_interrupts(
+            &self,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            if !self.state.lock().enable_grp1_non_secure && !self.state.lock().enable_grp1_secure {
+                return None;
+            }
+
+            self.gicr
+                .get(vp.index() as usize)?
+                .next_private_interrupts(running_priority)
         }
 
         pub fn clear_pending(&self, vp_index: usize, intid: u32) {
@@ -578,6 +629,85 @@ mod gicd {
             }
 
             best
+        }
+
+        fn next_spi_interrupts_locked(
+            &self,
+            state: &DistributorState,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            if !state.enable_grp1_non_secure && !state.enable_grp1_secure {
+                return None;
+            }
+
+            let mut interrupts = HashMap::new();
+            let mut ready_words = state.pending_word_summary & !1;
+            while ready_words != 0 {
+                let word = ready_words.trailing_zeros() as usize;
+                ready_words &= ready_words - 1;
+
+                let mut group = 0;
+                if state.enable_grp0 {
+                    group |= !state.group_modifier[word] & !state.group_status[word];
+                }
+                if state.enable_grp1_non_secure {
+                    // modified bit: 0b1, status bit: 0b1, Reserved, treated as Non-secure Group 1
+                    group |= state.group_status[word];
+                }
+                if state.enable_grp1_secure {
+                    group |= state.group_modifier[word] & !state.group_status[word];
+                }
+
+                let mut candidates = (state.pending[word] | state.asserted[word])
+                    & state.enable[word]
+                    & group;
+
+                while candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    candidates &= candidates - 1;
+
+                    let intid = word as u32 * 32 + bit;
+                    let mask = 1 << bit;
+                    let pending = state.pending[word] & mask != 0;
+                    let level_asserted =
+                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
+                    let group1 = (state.group_status[word] & mask) | (state.group_modifier[word] & mask) != 0;
+                    if !pending && !level_asserted {
+                        continue;
+                    }
+                    let owned_by_vp = state.in_flight[intid as usize] == Some(vp.index());
+                    if !pending && owned_by_vp {
+                        continue;
+                    }
+                    if intid > self.max_spi_intid
+                        || (state.in_flight[intid as usize].is_some() && !owned_by_vp)
+                        || (state.active[word] & mask != 0 && !owned_by_vp)
+                        || !self.spi_targets_vp(&state, intid, vp)
+                    {
+                        continue;
+                    }
+
+                    let priority = Self::priority(&state.priority, intid);
+                    if priority >= running_priority {
+                        continue;
+                    }
+
+                    let interrupt = PendingInterrupt {
+                        intid,
+                        priority,
+                        group1,
+                    };
+
+                    interrupts.insert(intid as u64, interrupt);
+                }
+            }
+
+            if interrupts.is_empty() {
+                return None;
+            }
+
+            Some(interrupts)
         }
 
         fn set_pending_locked(state: &mut DistributorState, intid: u32, pending: bool) -> bool {
@@ -797,7 +927,7 @@ mod gicd {
                     if n >= 8 {
                         if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
                             *priority &= !(0xff << (j * 8));
-                            *priority |= (u32::from(value) << (j * 8));
+                            *priority |= u32::from(value) << (j * 8);
                         }
                     }
                 }
@@ -1481,6 +1611,7 @@ mod gicr {
     use inspect::Inspect;
     use parking_lot::Mutex;
     use std::sync::Arc;
+    use std::collections::HashMap;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
     use super::gicd::DistributorState;
@@ -1530,6 +1661,14 @@ mod gicr {
         ) -> Option<PendingInterrupt> {
             let pending = self.pending.load(Ordering::Relaxed);
             self.select_private_interrupt(pending, running_priority)
+        }
+
+        pub(crate) fn next_private_interrupts(
+            &self,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let pending = self.pending.load(Ordering::Relaxed);
+            self.select_private_interrupts(pending, running_priority)
         }
 
         pub(crate) fn select_private_interrupt(
@@ -1586,6 +1725,66 @@ mod gicr {
             }
 
             best
+        }
+
+        pub(crate) fn select_private_interrupts(
+            &self,
+            pending: u32,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let state = self.mutable.lock();
+            let in_flight = self.in_flight.load(Ordering::Relaxed);
+            let mut group = 0;
+            if self.distributor_state.lock().enable_grp0 {
+                group |= !state.group_modifier & !state.group_status;
+            }
+            if self.distributor_state.lock().enable_grp1_non_secure {
+                // modified bit: 0b1, status bit: 0b1, Reserved, treated as Non-secure Group 1
+                group |= state.group_status;
+            }
+            if self.distributor_state.lock().enable_grp1_secure {
+                group |= state.group_modifier & !state.group_status;
+            }
+
+            let deliverable = pending & state.enable & group & (!state.active | in_flight);
+
+            // Too make it active+pending the deliverable mask above is wrong/too strict
+            // let repend = pending & state.enable & group & state.active & in_flight;
+
+            let mut interrupts: HashMap<u64, PendingInterrupt> = HashMap::new();
+            for intid in 0..32 {
+                let group1 = (state.group_modifier | state.group_status) & (1 << intid) != 0;
+                if deliverable & (1 << intid) == 0 {
+                    continue;
+                }
+
+                /*
+                intid 0..3   -> priority[0]
+                intid 4..7   -> priority[1]
+                intid 8..11  -> priority[2]
+                */
+                let word = state.priority[(intid / 4) as usize];
+                let priority = ((word >> ((intid % 4) * 8)) & 0xff) as u8;
+                if priority >= running_priority {
+                    continue;
+                }
+
+                interrupts.insert(
+                    intid as u64,
+                    PendingInterrupt {
+                        intid,
+                        priority,
+                        group1,
+                    },
+                );
+
+            }
+
+            if interrupts.is_empty() {
+                None
+            } else {
+                Some(interrupts)
+            }
         }
 
         pub fn raise(&self, intid: u32) -> bool {
