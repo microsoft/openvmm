@@ -542,10 +542,14 @@ pub fn profile_features(
 /// The function only clears, so the host's own view bounds the result.
 /// MSHV's root CPUID hides `TSC_ADJUST` (`7.0:EBX[1]`), which a partition with
 /// `tsc_adjust_support` presents, so that bit is under-reported; every profile
-/// pins it clear. Root-only bits the table does not map, such as MONITOR, DS,
-/// TM, the PMU, PT, and the topology fields, stay set. The derivation policy
-/// clears them in every profile, so [`verify_support`](crate::verify_support)
-/// never relies on them.
+/// pins it clear. The root views of MSHV and WHP also show what neither gives
+/// a guest. Those over-claims stay set: MONITOR, VMX, EST, TM and TM2, PDCM,
+/// DS, ACPI, HTT, PT, TME, the hybrid bit, the topology fields, and leaves 5,
+/// 6, `0xA`, `0x14`, and `0x15`. They are harmless to
+/// [`verify_support`](crate::verify_support): no profile sets them, except
+/// ARAT in leaf 6, a time policy bit that support checks exempt.
+/// The surface's guest physical address width must come from the hypervisor,
+/// not from this CPUID (see [`HostCpuSurface`](crate::HostCpuSurface)).
 pub fn restrict_cpuid_to_features(cpuid: &mut [CpuidEntry], available: HvFeatures) {
     for feature in HV_FEATURES {
         if available.word(feature.word) & feature.mask != 0 {
