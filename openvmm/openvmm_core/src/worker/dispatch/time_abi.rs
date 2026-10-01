@@ -56,15 +56,63 @@ pub(super) struct TimeAbiState {
     pub hooks: TimeAbiTestHooks,
 }
 
+/// The time ABI of a new partition, set up before the partition is created.
+pub(super) struct PartitionTimeAbi {
+    /// The identity MSR handler.
+    pub msrs: Arc<TimeAbiMsrs>,
+    /// The ID of the partition's CPU profile.
+    pub cpu_profile: String,
+}
+
 /// Returns the identity MSR handler and the time ABI configuration of a new
-/// partition with `vp_count` VPs.
-pub(super) fn partition_config(vp_count: u32) -> (Arc<TimeAbiMsrs>, TimeAbiConfig) {
+/// partition with `vp_count` VPs and the CPU profile `cpu_profile`.
+pub(super) fn partition_config(
+    vp_count: u32,
+    cpu_profile: String,
+) -> (Arc<TimeAbiMsrs>, TimeAbiConfig) {
     let msrs = Arc::new(TimeAbiMsrs::new());
     let config = TimeAbiConfig {
         cpuid: Arc::new(virt::time_abi::identity::time_abi_cpuid(vp_count, true)),
         msrs: msrs.clone(),
+        cpu_profile,
     };
     (msrs, config)
+}
+
+/// Selects the CPU profile of a new partition before it is created, and
+/// returns its ID.
+///
+/// `requested` is `--cpu-profile` on cold boot (`auto` or an ID), or the
+/// profile a snapshot recorded on restore. `auto` and a pinned ID select a
+/// pinned profile whose generation contains the host CPU
+/// (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`). An
+/// interim ID must be the backend's own (`E_PROFILE_UNKNOWN`).
+pub(super) fn select_cpu_profile(requested: &str, hypervisor: &str) -> anyhow::Result<String> {
+    if virt::time_abi::surface::is_interim_cpu_profile(requested) {
+        virt::time_abi::surface::check_interim_cpu_profile(requested, hypervisor)?;
+        return Ok(requested.to_owned());
+    }
+    let profile = cpu_profile::select(requested, &host_cpu()?)?;
+    Ok(profile.id().to_owned())
+}
+
+/// Returns the vendor and signature of the host CPU (`E_CPU_GENERATION` if
+/// the host is not x86-64).
+fn host_cpu() -> Result<cpu_profile::HostCpuSignature, TimeAbiError> {
+    // The host CPU is identified with the host's CPUID instruction.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok(cpu_profile::HostCpuSignature::current())
+    }
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Err(TimeAbiError::new(
+            TimeAbiCode::CpuGeneration,
+            "the host CPU cannot be identified on this architecture",
+        ))
+    }
 }
 
 /// Returns the partition's time ABI backend (`E_TSC_SYNC_UNSUPPORTED` if the
@@ -167,6 +215,15 @@ pub(super) fn capture_records(
     let anchor = backend.capture_anchor()?;
     let identity = virt::time_abi::host::host_identity()?;
     let effective_cpuid = virt::time_abi::surface::encode_cpuid(&backend.effective_cpuid()?);
+    // A pinned profile is recorded with its canonical document; an interim
+    // profile has none.
+    let (profile_sha256, profile) = match cpu_profile::pinned(&state.report.cpu_profile) {
+        Some(profile) => {
+            let encoded = profile.encode();
+            (sha2::Sha256::digest(&encoded).to_vec(), encoded)
+        }
+        None => (sha2::Sha256::digest(b"").to_vec(), Vec::new()),
+    };
     tracing::info!(
         tsc = anchor.tsc,
         utc_ns = anchor.sample.utc_ns,
@@ -190,9 +247,8 @@ pub(super) fn capture_records(
         },
         cpu_profile: SnapshotCpuProfile {
             id: state.report.cpu_profile.clone(),
-            // The interim profile has an empty document.
-            sha256: sha2::Sha256::digest(b"").to_vec(),
-            profile: Vec::new(),
+            sha256: profile_sha256,
+            profile,
             effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
             effective_cpuid,
             capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
@@ -329,6 +385,8 @@ mod tests {
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
     use vm_topology::processor::VpIndex;
 
+    const TEST_PROFILE: &str = "intel.icelake-sp.v1";
+
     fn test_unit(msrs: Arc<TimeAbiMsrs>) -> TimeAbiUnit {
         TimeAbiUnit {
             msrs,
@@ -346,7 +404,7 @@ mod tests {
     #[test]
     fn unit_saves_restores_and_resets_the_invariant_control() {
         futures::executor::block_on(async {
-            let (msrs, config) = partition_config(4);
+            let (msrs, config) = partition_config(4, TEST_PROFILE.to_owned());
             assert!(Arc::ptr_eq(&msrs, &config.msrs));
             msrs.write(VpIndex::BSP, MSR_TSC_INVARIANT_CONTROL, 1)
                 .unwrap()
@@ -354,7 +412,7 @@ mod tests {
             let mut unit = test_unit(msrs.clone());
             let saved = unit.save().await.unwrap().unwrap();
 
-            let (restored, _) = partition_config(4);
+            let (restored, _) = partition_config(4, TEST_PROFILE.to_owned());
             let mut restored_unit = test_unit(restored.clone());
             restored_unit.restore(saved).await.unwrap();
             assert_eq!(restored.tsc_invariant_control(), 1);
@@ -366,7 +424,7 @@ mod tests {
 
     #[test]
     fn unit_inspects_the_report() {
-        let (msrs, _) = partition_config(1);
+        let (msrs, _) = partition_config(1, TEST_PROFILE.to_owned());
         let mut unit = test_unit(msrs);
         let mut inspection = inspect::inspect("", &mut unit);
         futures::executor::block_on(inspection.resolve());
@@ -388,8 +446,51 @@ mod tests {
 
     #[test]
     fn partition_cpuid_carries_the_identity() {
-        let (_, config) = partition_config(2);
+        let (_, config) = partition_config(2, TEST_PROFILE.to_owned());
+        assert_eq!(config.cpu_profile, TEST_PROFILE);
         let mut cpuid = |leaf, subleaf| config.cpuid.result(leaf, subleaf, &[0; 4]);
         virt::time_abi::identity::check_identity(&mut cpuid, 2).unwrap();
+    }
+
+    fn code(result: anyhow::Result<String>) -> String {
+        let message = format!("{:#}", result.unwrap_err());
+        message
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']'))
+            .map_or(message.clone(), |(code, _)| code.to_owned())
+    }
+
+    #[test]
+    fn cpu_profile_selection() {
+        assert_eq!(
+            select_cpu_profile("interim.host.kvm.v1", "kvm").unwrap(),
+            "interim.host.kvm.v1"
+        );
+        assert_eq!(
+            code(select_cpu_profile("interim.host.kvm.v1", "mshv")),
+            "E_PROFILE_UNKNOWN"
+        );
+        assert_eq!(
+            code(select_cpu_profile("intel.cascadelake.v1", "kvm")),
+            "E_PROFILE_UNKNOWN"
+        );
+
+        // `auto` selects the pinned profile of the host's generation, if any,
+        // and a pinned ID selects its profile only in its generation.
+        let host = host_cpu().unwrap();
+        match select_cpu_profile("auto", "whp") {
+            Ok(id) => assert!(
+                cpu_profile::check_generation(cpu_profile::pinned(&id).unwrap(), &host).is_ok()
+            ),
+            Err(err) => assert_eq!(code(Err(err)), "E_PROFILE_HOST_UNKNOWN"),
+        }
+        for profile in cpu_profile::pinned_profiles() {
+            let selected = select_cpu_profile(profile.id(), "kvm");
+            if cpu_profile::check_generation(profile, &host).is_ok() {
+                assert_eq!(selected.unwrap(), profile.id());
+            } else {
+                assert_eq!(code(selected), "E_CPU_GENERATION");
+            }
+        }
     }
 }
