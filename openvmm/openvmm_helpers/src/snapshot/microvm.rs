@@ -444,6 +444,13 @@ pub struct SnapshotMachineContract {
     /// Canonical capacity ranges absent from the captured boot memory map.
     #[mesh(30)]
     pub memory_expansion_ranges: Vec<SnapshotMemoryExpansionRange>,
+    /// The NVX time ABI time contract; required in manifest version 6, which
+    /// leaves fields 11 to 15, 17, and 20 empty.
+    #[mesh(31)]
+    pub time: Option<openvmm_defs::time_abi::SnapshotTimeContract>,
+    /// The NVX time ABI CPU profile record; required in manifest version 6.
+    #[mesh(32)]
+    pub cpu_profile: Option<openvmm_defs::time_abi::SnapshotCpuProfile>,
 }
 
 impl SnapshotMachineContract {
@@ -1127,6 +1134,8 @@ pub fn microvm_machine_contract(
         memory_capacity_bytes,
         memory_block_size_bytes,
         memory_expansion_ranges,
+        time: None,
+        cpu_profile: None,
     };
     contract.set_effective_command_line(effective_command_line);
     contract.set_cpu_compatibility_contract(cpu_contract);
@@ -1136,7 +1145,7 @@ pub fn microvm_machine_contract(
 
 /// Returns whether restore must hold external device input until guest repair completes.
 pub fn requires_post_restore_gate(manifest: &SnapshotManifest) -> bool {
-    manifest.version == MANIFEST_VERSION
+    manifest.version >= MANIFEST_VERSION
         && manifest.machine_contract.as_ref().is_some_and(|contract| {
             matches!(
                 contract.microvm_abi_version,
@@ -1229,7 +1238,7 @@ pub fn validate_microvm_machine_contract(
         "snapshot virtio interrupt contract doesn't match the requested machine"
     );
     anyhow::ensure!(
-        contract.clock_policy == expected.clock_policy,
+        contract.clock_policy == expected.clock_policy || contract.time.is_some(),
         "snapshot clock policy doesn't match the requested machine"
     );
     anyhow::ensure!(
@@ -1291,6 +1300,11 @@ pub fn validate_microvm_machine_contract(
         },
         "snapshot sandbox block topology or identity doesn't match the requested machine"
     );
+    if contract.time.is_some() {
+        // The time ABI replaces exact clock equality with the rate policy and
+        // the CPU profile checks of restore preflight.
+        return Ok(());
+    }
     anyhow::ensure!(
         contract.tsc_frequency_hz == expected.tsc_frequency_hz
             && contract.tsc_tolerance_ppm == expected.tsc_tolerance_ppm,
@@ -1307,42 +1321,8 @@ pub fn validate_microvm_machine_contract(
     Ok(())
 }
 
-pub(super) fn validate_machine_contract_shape(
-    contract: &SnapshotMachineContract,
-    memory_size: u64,
-    vp_count: u32,
-) -> anyhow::Result<()> {
-    validate_supported_microvm_contract(contract)?;
-    anyhow::ensure!(
-        contract.virtio_interrupt_mode == MICROVM_SHARED_STATUS_INTERRUPT_MODE
-            && contract.virtio_shared_status_page_gpa
-                == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
-            && contract.virtio_shared_status_page_size
-                == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
-        "snapshot microVM shared-status interrupt contract is invalid"
-    );
-    anyhow::ensure!(
-        contract.clock_policy == ADVANCE_BY_HOST_DOWNTIME,
-        "snapshot clock policy '{}' is unsupported",
-        contract.clock_policy
-    );
-    anyhow::ensure!(
-        contract.effective_command_line.len() < MAX_COMMAND_LINE_BYTES,
-        "snapshot command line exceeds the 64-KiB limit"
-    );
-    anyhow::ensure!(
-        !contract.effective_command_line.contains('\0'),
-        "snapshot command line contains an embedded NUL"
-    );
-    validate_sha256(
-        &contract.effective_command_line_sha256,
-        "effective command line",
-    )?;
-    verify_digest(
-        contract.effective_command_line.as_bytes(),
-        &contract.effective_command_line_sha256,
-        "effective command line",
-    )?;
+/// Validates the clock fields of a machine contract before manifest version 6.
+fn validate_clock_contract(contract: &SnapshotMachineContract) -> anyhow::Result<()> {
     anyhow::ensure!(
         contract.tsc_frequency_hz != 0,
         "snapshot TSC frequency must be nonzero"
@@ -1367,6 +1347,51 @@ pub(super) fn validate_machine_contract_shape(
         .capture_wall_clock
         .try_into()
         .context("snapshot capture wall clock is invalid")?;
+    Ok(())
+}
+
+pub(super) fn validate_machine_contract_shape(
+    contract: &SnapshotMachineContract,
+    memory_size: u64,
+    vp_count: u32,
+) -> anyhow::Result<()> {
+    validate_supported_microvm_contract(contract)?;
+    anyhow::ensure!(
+        contract.virtio_interrupt_mode == MICROVM_SHARED_STATUS_INTERRUPT_MODE
+            && contract.virtio_shared_status_page_gpa
+                == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+            && contract.virtio_shared_status_page_size
+                == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
+        "snapshot microVM shared-status interrupt contract is invalid"
+    );
+    let time_abi = contract.time.is_some() || contract.cpu_profile.is_some();
+    anyhow::ensure!(
+        contract.clock_policy == ADVANCE_BY_HOST_DOWNTIME || time_abi,
+        "snapshot clock policy '{}' is unsupported",
+        contract.clock_policy
+    );
+    anyhow::ensure!(
+        contract.effective_command_line.len() < MAX_COMMAND_LINE_BYTES,
+        "snapshot command line exceeds the 64-KiB limit"
+    );
+    anyhow::ensure!(
+        !contract.effective_command_line.contains('\0'),
+        "snapshot command line contains an embedded NUL"
+    );
+    validate_sha256(
+        &contract.effective_command_line_sha256,
+        "effective command line",
+    )?;
+    verify_digest(
+        contract.effective_command_line.as_bytes(),
+        &contract.effective_command_line_sha256,
+        "effective command line",
+    )?;
+    if time_abi {
+        super::time::validate_time_abi_contract(contract)?;
+    } else {
+        validate_clock_contract(contract)?;
+    }
 
     anyhow::ensure!(
         !contract.memory_ranges.is_empty() && contract.memory_ranges.len() <= MAX_MEMORY_RANGES,
@@ -1842,8 +1867,9 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
             .split_ascii_whitespace()
             .filter(|token| token.starts_with("tsc_early_khz="))
             .collect::<Vec<_>>();
+        // A time ABI contract forbids the token instead.
         anyhow::ensure!(
-            tsc_frequency_tokens == [expected_tsc_frequency.as_str()],
+            contract.time.is_some() || tsc_frequency_tokens == [expected_tsc_frequency.as_str()],
             "platform snapshot command line TSC frequency does not match its machine contract"
         );
         let control_tty_count = contract
@@ -2049,6 +2075,8 @@ pub(super) fn test_machine_contract() -> SnapshotMachineContract {
         memory_capacity_bytes: 0,
         memory_block_size_bytes: 0,
         memory_expansion_ranges: Vec::new(),
+        time: None,
+        cpu_profile: None,
     };
     contract.set_effective_command_line("console=hvc0".to_owned());
     contract.set_cpu_compatibility_contract(vec![1, 2, 3]);

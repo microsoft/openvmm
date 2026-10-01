@@ -13,6 +13,10 @@ use sha2::Digest;
 
 /// Magic identifying the OpenVMM snapshot manifest format.
 pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V5\0";
+/// Manifest version of snapshots that carry the NVX time ABI records.
+pub const TIME_ABI_MANIFEST_VERSION: u32 = 6;
+/// Magic identifying a time ABI snapshot manifest.
+pub const TIME_ABI_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V6\0";
 const VERSION_4_MANIFEST_VERSION: u32 = 4;
 const VERSION_4_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V4\0";
 pub(super) const PREVIOUS_MANIFEST_VERSION: u32 = 3;
@@ -113,8 +117,9 @@ pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::R
         PREVIOUS_MANIFEST_VERSION => PREVIOUS_SNAPSHOT_FORMAT_MAGIC,
         VERSION_4_MANIFEST_VERSION => VERSION_4_SNAPSHOT_FORMAT_MAGIC,
         MANIFEST_VERSION => SNAPSHOT_FORMAT_MAGIC,
+        TIME_ABI_MANIFEST_VERSION => TIME_ABI_SNAPSHOT_FORMAT_MAGIC,
         version => anyhow::bail!(
-            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {MANIFEST_VERSION})"
+            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {TIME_ABI_MANIFEST_VERSION})"
         ),
     };
     anyhow::ensure!(
@@ -161,7 +166,10 @@ pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::
                 "snapshot manifest version {LEGACY_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
             );
         }
-        PREVIOUS_MANIFEST_VERSION | VERSION_4_MANIFEST_VERSION | MANIFEST_VERSION => {
+        PREVIOUS_MANIFEST_VERSION
+        | VERSION_4_MANIFEST_VERSION
+        | MANIFEST_VERSION
+        | TIME_ABI_MANIFEST_VERSION => {
             anyhow::ensure!(
                 manifest.state_sha256.is_empty() && manifest.memory_sha256.is_empty(),
                 "snapshot manifest version {} must not contain legacy artifact digests",
@@ -173,13 +181,30 @@ pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::
                     "snapshot manifest version {PREVIOUS_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
                 );
             }
-            if manifest.version == MANIFEST_VERSION {
+            if manifest.version >= MANIFEST_VERSION {
                 microvm::validate_snapshot_tier(manifest)?;
             }
         }
         version => anyhow::bail!(
-            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {MANIFEST_VERSION})"
+            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {TIME_ABI_MANIFEST_VERSION})"
         ),
+    }
+    let contract = manifest.machine_contract.as_ref();
+    if manifest.version == TIME_ABI_MANIFEST_VERSION {
+        let contract = contract.ok_or_else(|| {
+            virt::time_abi::TimeAbiError::new(
+                virt::time_abi::TimeAbiCode::ManifestTime,
+                "a version 6 manifest requires a microVM machine contract",
+            )
+        })?;
+        super::time::validate_time_abi_contract(contract)?;
+    } else {
+        anyhow::ensure!(
+            contract
+                .is_none_or(|contract| contract.time.is_none() && contract.cpu_profile.is_none()),
+            "snapshot manifest version {} cannot carry time ABI records",
+            manifest.version,
+        );
     }
     Ok(())
 }
