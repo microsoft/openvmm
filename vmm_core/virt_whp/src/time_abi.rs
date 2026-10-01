@@ -2265,6 +2265,88 @@ mod whp_tests {
         );
     }
 
+    /// Sweeps subleaves 0 to 63 of every indexed leaf of the effective CPUID,
+    /// and the four leaves past the maximum basic and extended leaves, and
+    /// checks that VP 0 observes the effective CPUID there. By the profile's
+    /// contract a subleaf or leaf that the table does not list reads zero,
+    /// while WHP serves its own value for anything not programmed: WHP reads
+    /// zero there on prometheus28, 8370C, and 8573C, so the backend programs
+    /// no explicit zero results. Listed results must match under their masks,
+    /// as `host_profile_configures_the_partition` checks too.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn unlisted_subleaves_read_zero() {
+        let Some(Partition {
+            partition,
+            time_abi,
+            topology,
+            effective,
+        }) = partition(1)
+        else {
+            return;
+        };
+        let own = test_cpuid::own_cpuid(&topology, &|function, index| {
+            native(&partition, function, index).unwrap()
+        });
+        let cpuid = time_abi.partition_cpuid(own).unwrap();
+        let cpuid_topology = CpuidTopology::new(&topology);
+        let vp0 = VpCpuid {
+            cpuid: &cpuid,
+            exits: &time_abi.cpuid_exits,
+            topology: &cpuid_topology,
+            apic_id: 0,
+        };
+        let mut indexed: Vec<u32> = effective
+            .results()
+            .filter(|result| result.index.is_some())
+            .map(|result| result.function)
+            .collect();
+        indexed.dedup();
+        let max_basic = effective.lookup(0, 0)[0];
+        let max_extended = effective.lookup(0x8000_0000, 0)[0];
+        let probes = indexed
+            .iter()
+            .flat_map(|&function| (0..64).map(move |index| (function, index)))
+            .chain((max_basic + 1..=max_basic + 4).map(|function| (function, 0)))
+            .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)));
+        let (mut count, mut listed_failures, mut unlisted) = (0, Vec::new(), Vec::new());
+        for (function, index) in probes {
+            count += 1;
+            let listed = effective.results().find(|result| {
+                result.function == function && result.index.is_none_or(|i| i == index)
+            });
+            let (expected, mask) =
+                listed.map_or(([0; 4], [!0; 4]), |result| (result.result, result.mask));
+            let actual = normalize_cpuid(
+                function,
+                index,
+                vp0.result(function, index, || native(&partition, function, index))
+                    .unwrap(),
+            );
+            if (0..4).all(|register| (actual[register] ^ expected[register]) & mask[register] == 0)
+            {
+                continue;
+            }
+            let line = format!("{function:#x}.{index}: {actual:08x?}");
+            if listed.is_some() {
+                listed_failures.push(format!("{line} expected {expected:08x?} mask {mask:08x?}"));
+            } else {
+                unlisted.push(line);
+            }
+        }
+        println!(
+            "{}: {count} probes of {} indexed leaves (max basic {max_basic:#x}, max extended {max_extended:#x}); {} unlisted results are not zero:",
+            time_abi.cpu_profile,
+            indexed.len(),
+            unlisted.len()
+        );
+        for line in &unlisted {
+            println!("  {line}");
+        }
+        assert!(listed_failures.is_empty(), "{listed_failures:#?}");
+        assert!(unlisted.is_empty(), "{unlisted:#?}");
+    }
+
     #[test]
     #[ignore = "requires WHP"]
     fn time_suspension_is_idempotent() {
