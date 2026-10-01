@@ -83,6 +83,9 @@ pub struct MicrovmRestorePacketSource {
     pub base: crate::microvm_time::RestorePacketBase,
     /// The time fields the worker seals before the first restored VP runs.
     pub time: mesh::OneshotReceiver<crate::microvm_time::RestoreTimeRecord>,
+    /// Notified when the guest first selects the packet, which ends the
+    /// guest-resume phase of the restore profile.
+    pub selected: Option<mesh::OneshotSender<()>>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPortbHandle {

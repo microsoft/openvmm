@@ -3964,7 +3964,7 @@ impl LoadedVm {
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
             SnapshotBoundary(microvm::SnapshotBoundaryEvent),
-            RestoreGateTimeout,
+            Restore(restore::RestoreEvent),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3993,10 +3993,7 @@ impl LoadedVm {
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
                 let d = self.snapshot_boundary.recv().map(Event::SnapshotBoundary);
-                let e = self
-                    .snapshot_restore
-                    .gate_expired(driver)
-                    .map(|()| Event::RestoreGateTimeout);
+                let e = self.snapshot_restore.next_event(driver).map(Event::Restore);
                 (a, b, c, d, e).race().await
             };
 
@@ -4449,9 +4446,12 @@ impl LoadedVm {
                         break;
                     }
                 }
-                Event::RestoreGateTimeout => {
+                Event::Restore(restore::RestoreEvent::GateExpired) => {
                     self.handle_restore_gate_timeout().await;
                     break;
+                }
+                Event::Restore(restore::RestoreEvent::PacketSelected) => {
+                    self.snapshot_restore.restore_packet_selected();
                 }
             }
         }

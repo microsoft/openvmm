@@ -479,16 +479,19 @@ pub(crate) struct TimeAbiRestore {
 
 impl TimeAbiRestore {
     /// Returns the worker's restore input. The worker seals the time fields
-    /// of the restore packet through `restore_record`.
+    /// of the restore packet through `restore_record`, and `packet_selected`,
+    /// when present, reports the guest's first selection of the packet.
     pub(crate) fn into_input(
         self,
         restore_record: mesh::OneshotSender<RestoreTimeRecord>,
+        packet_selected: Option<mesh::OneshotReceiver<()>>,
     ) -> RestoreTimeInput {
         RestoreTimeInput {
             contract: self.contract,
             cpu_profile: self.cpu_profile,
             destination: self.destination,
             restore_record,
+            packet_selected,
         }
     }
 }

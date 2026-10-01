@@ -395,26 +395,22 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let (drain, output_drain) = MicrovmOutputDrain::new(Some(output_completion));
         self.resources.output_drain = Some(drain);
         let mut time_abi_restore = None;
-        let (generation_id, restore_entropy) = if opt.microvm.x_time_abi_v1
-            && self.restore.time_abi_records().is_some()
-        {
-            let (generation_id, base) = self
-                .restore
-                .time_abi_restore_packet(opt.microvm.restore_processors)?;
-            let (send, recv) = mesh::oneshot();
-            self.resources.restore_time_record = Some(send);
-            time_abi_restore =
-                Some(chipset_resources::microvm::MicrovmRestorePacketSource { base, time: recv });
-            (generation_id, Vec::new())
-        } else if opt.microvm.restore_entropy || self.restore.memory_target_requested {
-            fresh_microvm_restore_packet(
-                opt.microvm.restore_processors,
-                self.restore.memory_target_requested,
-                &self.restore.memory_ranges,
-            )?
-        } else {
-            (fresh_microvm_generation_id()?, Vec::new())
-        };
+        let (generation_id, restore_entropy) =
+            if opt.microvm.x_time_abi_v1 && self.restore.time_abi_records().is_some() {
+                let (generation_id, base) = self
+                    .restore
+                    .time_abi_restore_packet(opt.microvm.restore_processors)?;
+                time_abi_restore = Some(self.resources.time_abi_restore_packet(base));
+                (generation_id, Vec::new())
+            } else if opt.microvm.restore_entropy || self.restore.memory_target_requested {
+                fresh_microvm_restore_packet(
+                    opt.microvm.restore_processors,
+                    self.restore.memory_target_requested,
+                    &self.restore.memory_ranges,
+                )?
+            } else {
+                (fresh_microvm_generation_id()?, Vec::new())
+            };
         let time_abi = if opt.microvm.x_time_abi_v1 {
             let hooks = time_abi_test_hooks(opt)?;
             // The time ABI forbids a periodic PIT channel 0 at capture and

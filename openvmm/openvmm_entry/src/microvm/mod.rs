@@ -88,4 +88,29 @@ pub(crate) struct MicrovmResources {
     /// restoring worker takes it.
     pub(crate) restore_time_record:
         Option<mesh::OneshotSender<chipset_resources::microvm_time::RestoreTimeRecord>>,
+    /// Under the time ABI with profiling enabled, notified when the guest
+    /// first selects the restore packet; the restoring worker takes it.
+    pub(crate) restore_packet_selected: Option<mesh::OneshotReceiver<()>>,
+}
+
+impl MicrovmResources {
+    /// Returns the portb source of a time ABI restore packet with `base`, and
+    /// keeps the restoring worker's ends of its channels.
+    fn time_abi_restore_packet(
+        &mut self,
+        base: chipset_resources::microvm_time::RestorePacketBase,
+    ) -> chipset_resources::microvm::MicrovmRestorePacketSource {
+        let (record, time) = mesh::oneshot();
+        self.restore_time_record = Some(record);
+        let selected = openvmm_defs::profile::enabled().then(|| {
+            let (selected, recv) = mesh::oneshot();
+            self.restore_packet_selected = Some(recv);
+            selected
+        });
+        chipset_resources::microvm::MicrovmRestorePacketSource {
+            base,
+            time,
+            selected,
+        }
+    }
 }
