@@ -363,6 +363,36 @@ pub struct MicrovmCli {
     /// becomes the only microVM path)
     #[clap(long = "x-time-abi-v1", hide = true)]
     pub x_time_abi_v1: bool,
+
+    /// microVM CPU profile: a pinned profile ID, or `auto` (the default) to
+    /// select the host's profile; a restore must name the snapshot's profile
+    #[clap(
+        long = "cpu-profile",
+        value_name = "ID",
+        hide = true,
+        requires = "x_time_abi_v1"
+    )]
+    pub cpu_profile: Option<String>,
+
+    /// time ABI test hook (repeatable; testing only)
+    #[clap(
+        long = "x-time-abi-test-hook",
+        value_name = "HOOK",
+        hide = true,
+        requires = "x_time_abi_v1"
+    )]
+    pub x_time_abi_test_hook: Vec<String>,
+
+    /// build the partition and run the time ABI preflight without running
+    /// the guest, print one `NVX-TIME-ABI-VERIFY:` line, and exit with status
+    /// 0 or 1 (host qualification)
+    #[clap(
+        long = "x-time-abi-verify",
+        hide = true,
+        requires = "x_time_abi_v1",
+        conflicts_with_all = ["restore_snapshot", "snapshot_destination"]
+    )]
+    pub x_time_abi_verify: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

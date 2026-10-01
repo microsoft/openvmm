@@ -499,10 +499,17 @@ impl CreateVm {
                     None,
                     restore.machine_contract.microvm_sandbox_blocks.clone(),
                 )),
+                None,
             )?;
-            let restore_time = prepared
+            let restore_time = match prepared
                 .restore_time
-                .context("microVM snapshot is missing its restore-time contract")?;
+                .context("microVM snapshot is missing its restore-time contract")?
+            {
+                crate::microvm::RestoreClock::Legacy(restore_time) => restore_time,
+                crate::microvm::RestoreClock::TimeAbi(_) => {
+                    anyhow::bail!("ttrpc restore does not support time ABI snapshots yet")
+                }
+            };
             if !self.restore_entropy
                 && self.restore_online_vp_count.is_none()
                 && !restore.restore_memory_target_requested

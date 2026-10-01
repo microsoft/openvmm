@@ -66,6 +66,11 @@ impl RestoreParameters {
             "received restore-time VP activation target"
         );
         let cpu_contract = parameters.restore_cpu_contract.take();
+        let time_abi = parameters.restore_time.take();
+        anyhow::ensure!(
+            time_abi.is_none() || (restore_time.is_none() && cpu_contract.is_none()),
+            "a restore carries either the time ABI inputs or the legacy clock contract"
+        );
         let file_mapping_mode = if parameters.shared_memory_copy_on_write {
             FileMappingMode::CopyOnWrite
         } else {
@@ -74,6 +79,7 @@ impl RestoreParameters {
         Ok(Self {
             state: SnapshotRestore {
                 time: restore_time,
+                time_abi,
                 vp_prefix,
                 ready_sink,
                 gate_timeout,
@@ -134,6 +140,8 @@ fn select_instantiated_vps<T>(
 pub(super) struct SnapshotRestore {
     /// Saved guest-clock contract, checked and applied around the restore.
     time: Option<RestoreTime>,
+    /// The time ABI inputs of a restore, validated by the controller.
+    pub(super) time_abi: Option<openvmm_defs::time_abi::RestoreTimeInput>,
     /// VP prefix instantiated for an explicit MSHV restore-time activation
     /// target.
     vp_prefix: Option<u32>,

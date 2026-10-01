@@ -12,11 +12,19 @@ use crate::cli_args;
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::microvm::MachineProfileCli;
 use anyhow::Context;
+use chipset_resources::microvm_time::RESTORE_ENTROPY_LEN;
+use chipset_resources::microvm_time::RestoreMemoryRange;
+use chipset_resources::microvm_time::RestorePacketBase;
+use chipset_resources::microvm_time::RestoreTimeRecord;
 use net_backend_resources::egress::EgressPolicy;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
+use openvmm_defs::time_abi::RestoreTimeInput;
+use openvmm_defs::time_abi::SnapshotCpuProfile;
+use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_helpers::snapshot::SnapshotManifest;
+use openvmm_helpers::snapshot::microvm::MicrovmClockContract;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
@@ -24,6 +32,8 @@ use openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock;
 use openvmm_helpers::snapshot::restore::OpenedSnapshot;
 use std::path::Path;
 use std::time::Duration;
+use virt::time_abi::HostIdentity;
+use virt::time_abi::TimeAbiTestHooks;
 
 const MAX_SNAPSHOT_DOWNTIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -182,6 +192,63 @@ pub(crate) struct MicrovmRestore {
     pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
 }
 
+impl MicrovmRestore {
+    /// Returns the time ABI records of the snapshot being restored: its time
+    /// contract and CPU profile record.
+    pub(crate) fn time_abi_records(&self) -> Option<(&SnapshotTimeContract, &SnapshotCpuProfile)> {
+        let contract = self.machine_contract.as_ref()?;
+        contract.time.as_ref().zip(contract.cpu_profile.as_ref())
+    }
+
+    /// Returns the controller's fields of restore packet version 4 for a time
+    /// ABI restore, and the generation ID they imply: restore step 7 of the
+    /// specification. The generation counter is the snapshot's plus one.
+    pub(crate) fn time_abi_restore_packet(
+        &self,
+        restore_online_vp_count: Option<u32>,
+    ) -> anyhow::Result<([u8; 16], RestorePacketBase)> {
+        let (time, _) = self
+            .time_abi_records()
+            .context("time ABI restore requires the snapshot's time contract")?;
+        let generation = time.capture_generation.checked_add(1).ok_or_else(|| {
+            virt::time_abi::TimeAbiError::new(
+                virt::time_abi::TimeAbiCode::GenerationExhausted,
+                "the snapshot's generation counter cannot be incremented",
+            )
+        })?;
+        anyhow::ensure!(
+            self.memory_target_requested || self.memory_ranges.is_empty(),
+            "restore memory ranges require an explicit memory target"
+        );
+        let generation_id_create = openvmm_defs::profile::ProfileSpan::start();
+        let mut entropy = [0_u8; RESTORE_ENTROPY_LEN];
+        getrandom::fill(&mut entropy).context("failed to generate restore entropy")?;
+        let base = RestorePacketBase {
+            online_vp_count: restore_online_vp_count
+                .map(u8::try_from)
+                .transpose()
+                .context("restore-online VP count does not fit in u8")?
+                .unwrap_or(0),
+            memory_target: self.memory_target_requested,
+            ack_required: self.gate_required,
+            generation,
+            ranges: self
+                .memory_ranges
+                .iter()
+                .map(|range| RestoreMemoryRange {
+                    gpa_start: range.gpa_start,
+                    length: range.length,
+                })
+                .collect(),
+            entropy,
+        };
+        base.validate()
+            .context("restore packet version 4 is invalid")?;
+        generation_id_create.complete("restore", "generation_id_create", Default::default());
+        Ok((microvm_generation_id(&entropy), base))
+    }
+}
+
 /// Validates a snapshot restore against the microVM profile and prepares the
 /// restore-time inputs of the microVM configuration.
 ///
@@ -224,6 +291,13 @@ pub(crate) fn prepare_restore(
             "snapshot machine profile does not match the requested microVM machine"
         );
         openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
+        openvmm_helpers::snapshot::time::check_time_abi_manifest_version(
+            manifest,
+            opt.microvm.x_time_abi_v1,
+        )?;
+        if let Some(time) = &contract.time {
+            openvmm_helpers::snapshot::time::validate_time_contract(time)?;
+        }
         if let Some(restore_processors) = opt.microvm.restore_processors {
             openvmm_helpers::snapshot::microvm::validate_restore_online_vp_count(
                 manifest,
@@ -328,7 +402,11 @@ pub(crate) fn prepare_restore(
     } else {
         None
     };
-    if restore_gate_required || opt.microvm.restore_processors.is_some() {
+    // A time ABI restore always exposes a restore packet with fresh entropy.
+    if restore_gate_required
+        || opt.microvm.restore_processors.is_some()
+        || (opt.microvm.x_time_abi_v1 && restore_machine_contract.is_some())
+    {
         opt.microvm.restore_entropy = true;
     }
     if restore_machine_contract.is_some()
@@ -373,8 +451,54 @@ pub(crate) type ExpectedRestoreContract<'a> = (
 /// microVM: host downtime, TSC and APIC frequencies, and the CPU contract.
 pub(crate) type RestoreTime = (Duration, u64, Option<u64>, Vec<u8>);
 
+/// The time ABI options of a microVM restore.
+#[derive(Clone, Copy)]
+pub(crate) struct TimeAbiRestoreOptions<'a> {
+    /// The requested CPU profile: `auto` or a profile ID.
+    pub(crate) cpu_profile: &'a str,
+    /// The active test hooks.
+    pub(crate) hooks: &'a TimeAbiTestHooks,
+}
+
+/// The clock inputs of a restored microVM's worker.
+pub(crate) enum RestoreClock {
+    /// The clock fields of manifest versions before 6.
+    Legacy(RestoreTime),
+    /// The time ABI records of a version 6 manifest, after the controller's
+    /// time ABI preflight.
+    TimeAbi(Box<TimeAbiRestore>),
+}
+
+/// A time ABI restore validated by the controller: restore steps 1 to 6 of
+/// the specification.
+pub(crate) struct TimeAbiRestore {
+    contract: SnapshotTimeContract,
+    cpu_profile: SnapshotCpuProfile,
+    destination: HostIdentity,
+}
+
+impl TimeAbiRestore {
+    /// Returns the worker's restore input. The worker seals the time fields
+    /// of the restore packet through `restore_record`.
+    pub(crate) fn into_input(
+        self,
+        restore_record: mesh::OneshotSender<RestoreTimeRecord>,
+    ) -> RestoreTimeInput {
+        RestoreTimeInput {
+            contract: self.contract,
+            cpu_profile: self.cpu_profile,
+            destination: self.destination,
+            restore_record,
+        }
+    }
+}
+
 /// Validates the authoritative machine contract of a microVM snapshot against
 /// the restore-time configuration.
+///
+/// With `time_abi`, the manifest must be version 6, and the time ABI
+/// preflight checks its records, the backend, the CPU profile, and the
+/// downtime against this host before the rest of the contract is compared.
 pub(crate) fn validate_restore_contract(
     manifest: &SnapshotManifest,
     expected_memory_size: u64,
@@ -388,11 +512,16 @@ pub(crate) fn validate_restore_contract(
         control_console_attachment,
         sandbox_blocks,
     ): ExpectedRestoreContract<'_>,
-) -> anyhow::Result<RestoreTime> {
+    time_abi: Option<TimeAbiRestoreOptions<'_>>,
+) -> anyhow::Result<RestoreClock> {
     let saved_contract = manifest
         .machine_contract
         .as_ref()
         .context("microVM snapshot is missing its authoritative machine contract")?;
+    openvmm_helpers::snapshot::time::check_time_abi_manifest_version(manifest, time_abi.is_some())?;
+    let time_abi_destination = time_abi
+        .map(|options| preflight_time_abi_restore(saved_contract, expected_hypervisor, options))
+        .transpose()?;
     let network = network.map(|(config, policy, attachment)| (config, policy, attachment.clone()));
     let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
     let filesystem = saved_contract
@@ -400,43 +529,100 @@ pub(crate) fn validate_restore_contract(
         .as_ref()
         .and(filesystem)
         .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()));
-    let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
-        expected_hypervisor,
-        openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
-        effective_command_line.to_owned(),
-        network,
-        filesystem_slot,
-        filesystem,
-        console_attachment.cloned(),
-        control_console_attachment.cloned(),
-        sandbox_blocks,
-        expected_vp_count,
-        expected_memory_size,
-        (saved_contract.memory_expansion_version != 0)
-            .then_some(saved_contract.memory_capacity_bytes),
-        saved_contract.state_unit_names.clone(),
-        saved_contract.capture_wall_clock,
-        saved_contract.tsc_frequency_hz,
-        saved_contract.apic_frequency_hz,
-        saved_contract.cpu_contract.clone(),
-    )?;
+    let clock = match (&saved_contract.time, &saved_contract.cpu_profile) {
+        (Some(time), Some(cpu_profile)) => MicrovmClockContract::TimeAbi {
+            time: time.clone(),
+            cpu_profile: cpu_profile.clone(),
+        },
+        _ => MicrovmClockContract::Legacy {
+            capture_wall_clock: saved_contract.capture_wall_clock,
+            tsc_frequency_hz: saved_contract.tsc_frequency_hz,
+            apic_frequency_hz: saved_contract.apic_frequency_hz,
+            cpu_contract: saved_contract.cpu_contract.clone(),
+        },
+    };
+    let mut expected_contract =
+        openvmm_helpers::snapshot::microvm::microvm_machine_contract_with_clock(
+            expected_hypervisor,
+            openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
+            effective_command_line.to_owned(),
+            network,
+            filesystem_slot,
+            filesystem,
+            console_attachment.cloned(),
+            control_console_attachment.cloned(),
+            sandbox_blocks,
+            expected_vp_count,
+            expected_memory_size,
+            (saved_contract.memory_expansion_version != 0)
+                .then_some(saved_contract.memory_capacity_bytes),
+            saved_contract.state_unit_names.clone(),
+            clock,
+        )?;
     align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
     align_restore_console_listener_contract(saved_contract, &mut expected_contract);
     openvmm_helpers::snapshot::microvm::validate_microvm_machine_contract(
         manifest,
         &expected_contract,
     )?;
+    if let Some(destination) = time_abi_destination {
+        let (Some(contract), Some(cpu_profile)) = (
+            saved_contract.time.clone(),
+            saved_contract.cpu_profile.clone(),
+        ) else {
+            unreachable!("the time ABI preflight requires both records");
+        };
+        return Ok(RestoreClock::TimeAbi(Box::new(TimeAbiRestore {
+            contract,
+            cpu_profile,
+            destination,
+        })));
+    }
     let capture_time: std::time::SystemTime = saved_contract
         .capture_wall_clock
         .try_into()
         .context("snapshot capture wall clock is invalid")?;
     let downtime = calculate_snapshot_downtime(capture_time, std::time::SystemTime::now())?;
-    Ok((
+    Ok(RestoreClock::Legacy((
         downtime,
         saved_contract.tsc_frequency_hz,
         saved_contract.apic_frequency_hz,
         saved_contract.cpu_contract.clone(),
-    ))
+    )))
+}
+
+/// Runs the controller's time ABI preflight (restore steps 2 to 5 of the
+/// specification) against this host, and returns the host's identity.
+fn preflight_time_abi_restore(
+    contract: &SnapshotMachineContract,
+    hypervisor: &str,
+    options: TimeAbiRestoreOptions<'_>,
+) -> anyhow::Result<HostIdentity> {
+    let destination = virt::time_abi::host::host_identity()?;
+    let now = virt::time_abi::host::sample_host_time()?;
+    let preflight = openvmm_helpers::snapshot::time::preflight_time_abi_restore(
+        contract,
+        hypervisor,
+        options.cpu_profile,
+        virt::time_abi::surface::host_cpu_signature(),
+        &destination,
+        &now,
+        options.hooks,
+    )?;
+    if let Some(step_ns) = preflight.downtime.host_wall_clock_step_ns {
+        tracing::warn!(
+            step_ns,
+            "host wall clock was stepped since capture; the downtime uses host monotonic time"
+        );
+    }
+    tracing::info!(
+        downtime_ns = preflight.downtime.nanos,
+        source = ?preflight.downtime.source,
+        generation = preflight.generation,
+        cpu_profile = preflight.cpu_profile,
+        "time ABI restore preflight passed"
+    );
+    Ok(destination)
 }
 
 #[cfg(test)]
@@ -567,5 +753,74 @@ mod tests {
         assert_eq!(&v3_explicit_base[21..], &entropy);
 
         assert!(microvm_restore_packet(&entropy, None, false, &ranges[..1]).is_err());
+    }
+
+    fn time_abi_restore(capture_generation: u32) -> MicrovmRestore {
+        let mut contract: SnapshotMachineContract = mesh::payload::decode(&[]).unwrap();
+        contract.time = Some(SnapshotTimeContract {
+            time_abi_version: 1,
+            tsc_frequency_hz: 2_100_000_000,
+            tsc_tolerance_ppm: 250,
+            apic_frequency_hz: 200_000_000,
+            capture_tsc: 1,
+            capture_utc_ns: 2,
+            capture_monotonic_ns: 3,
+            host_clock: "linux-boottime".to_owned(),
+            host_id: vec![1; 16],
+            host_boot_id: vec![2; 16],
+            capture_generation,
+        });
+        contract.cpu_profile = Some(SnapshotCpuProfile {
+            id: "interim.host.kvm.v1".to_owned(),
+            sha256: Vec::new(),
+            profile: Vec::new(),
+            effective_cpuid: Vec::new(),
+            effective_cpuid_sha256: Vec::new(),
+            capture_cpu_signature: 0,
+        });
+        MicrovmRestore {
+            machine_contract: Some(contract),
+            gate_required: true,
+            memory_target_requested: true,
+            memory_ranges: vec![SnapshotMemoryExpansionRange {
+                gpa_start: 0x1_0000_0000,
+                length: 0x4000_0000,
+            }],
+            private_scratch_dir: None,
+        }
+    }
+
+    #[test]
+    fn time_abi_restore_packet_carries_the_controller_fields() {
+        let restore = time_abi_restore(6);
+        let (generation_id, base) = restore.time_abi_restore_packet(Some(4)).unwrap();
+        assert_eq!(base.generation, 7);
+        assert_eq!(base.online_vp_count, 4);
+        assert!(base.memory_target && base.ack_required);
+        assert_eq!(
+            base.ranges,
+            [RestoreMemoryRange {
+                gpa_start: 0x1_0000_0000,
+                length: 0x4000_0000,
+            }]
+        );
+        assert_eq!(generation_id, microvm_generation_id(&base.entropy));
+        let (_, other) = restore.time_abi_restore_packet(None).unwrap();
+        assert_eq!(other.online_vp_count, 0);
+        assert_ne!(other.entropy, base.entropy);
+
+        assert!(restore.time_abi_restore_packet(Some(3)).is_err());
+        let err = time_abi_restore(u32::MAX)
+            .time_abi_restore_packet(None)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("[E_GENERATION_EXHAUSTED]"),
+            "{err:#}"
+        );
+        assert!(
+            MicrovmRestore::default()
+                .time_abi_restore_packet(None)
+                .is_err()
+        );
     }
 }

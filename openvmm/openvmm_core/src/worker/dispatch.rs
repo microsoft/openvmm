@@ -1943,27 +1943,54 @@ impl InitializedVm {
                     .time_abi
                     .as_ref()
                     .context("time ABI parameters are missing")?;
+                let hypervisor = &cfg.microvm.hypervisor_id;
+                let restore = snapshot_restore.time_abi.as_ref();
                 anyhow::ensure!(
-                    saved_state.is_none(),
-                    "time ABI v1 snapshot restore is not implemented yet"
+                    saved_state.is_some() == restore.is_some(),
+                    "a time ABI restore requires both the saved state and the time ABI restore inputs"
                 );
-                time_abi::declare_rates(
+                let cpu_profile = virt::time_abi::surface::resolve_cpu_profile(
+                    &parameters.cpu_profile,
+                    hypervisor,
+                )?;
+                if let Some(input) = restore {
+                    time_abi::check_cpu_surface(
+                        partition.as_ref(),
+                        hypervisor,
+                        &input.cpu_profile,
+                    )?;
+                }
+                let report = time_abi::declare_rates(
                     partition.as_ref(),
                     &msrs,
-                    &cfg.microvm.hypervisor_id,
-                    None,
+                    hypervisor,
+                    cpu_profile,
+                    restore.map(|input| virt::time_abi::DeclaredRates {
+                        tsc_hz: input.contract.tsc_frequency_hz,
+                        apic_hz: input.contract.apic_frequency_hz,
+                    }),
                     &parameters.hooks,
                 )?;
+                anyhow::ensure!(
+                    restore.is_none(),
+                    "time ABI v1 snapshot restore is not implemented yet: the preflight passed, but the restore clock is missing"
+                );
                 Some(
                     state_units
                         .add(time_abi::TIME_ABI_UNIT)
                         .spawn(driver_source.simple(), |recv| {
-                            state_unit::run_unit(time_abi::TimeAbiUnit(msrs), recv)
+                            state_unit::run_unit(time_abi::TimeAbiUnit { msrs, report }, recv)
                         })
                         .unwrap(),
                 )
             }
-            None => None,
+            None => {
+                anyhow::ensure!(
+                    snapshot_restore.time_abi.is_none(),
+                    "time ABI restore inputs require a time ABI partition"
+                );
+                None
+            }
         };
 
         let mut input_distributor = InputDistributor::new(cfg.input);

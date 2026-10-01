@@ -2970,7 +2970,7 @@ async fn run_control_inner(
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
         let (shared_memory, saved_state) = if opt.restore_snapshot.is_some() {
-            let (fd, state_msg) = restore.prepare(&opt, &microvm, &source_hypervisor)?;
+            let (fd, state_msg) = restore.prepare(&opt, &mut microvm, &source_hypervisor)?;
             (Some(fd), Some(state_msg))
         } else if let Some(shared_memory) = microvm.capture_shared_memory()? {
             (Some(shared_memory), None)
@@ -3003,6 +3003,7 @@ async fn run_control_inner(
             restore_tsc_frequency_hz: restore.tsc_frequency_hz,
             restore_apic_frequency_hz: restore.apic_frequency_hz,
             restore_cpu_contract: restore.cpu_contract,
+            restore_time: restore.time,
             restore_ready_sink,
             restore_gate_timeout: microvm.restore_gate_timeout(&opt),
             restore_vp_count: opt.microvm.restore_processors,
@@ -3010,11 +3011,14 @@ async fn run_control_inner(
             notify: notify_send,
         };
         let worker_launch = openvmm_defs::profile::ProfileSpan::start();
-        vm_host
+        let launched = vm_host
             .launch_worker(VM_WORKER, params)
             .await
-            .context("failed to launch vm worker")
-            .inspect(|_| snapshot_restore::worker_launched(worker_launch))?
+            .context("failed to launch vm worker");
+        if opt.microvm.x_time_abi_verify {
+            return microvm::report_time_abi_verification(launched, &source_hypervisor).await;
+        }
+        launched.inspect(|_| snapshot_restore::worker_launched(worker_launch))?
     };
 
     if opt.restore_snapshot.is_some() {

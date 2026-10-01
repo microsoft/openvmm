@@ -83,6 +83,9 @@ pub struct VmWorkerParameters {
     pub restore_apic_frequency_hz: Option<u64>,
     /// Saved canonical CPU contract required by restore.
     pub restore_cpu_contract: Option<Vec<u8>>,
+    /// The time ABI inputs of a restored microVM, validated by the
+    /// controller. They replace the four fields above under the time ABI.
+    pub restore_time: Option<crate::time_abi::RestoreTimeInput>,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,
     /// Timeout for the microVM post-restore input gate, when required.
