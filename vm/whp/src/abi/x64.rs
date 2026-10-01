@@ -342,7 +342,7 @@ impl WHV_PROCESSOR_FEATURES {
 
 impl WHV_PROCESSOR_FEATURES1 {
     pub const ACountMCountSupport: Self = Self(1 << 0);
-    pub const Reserved1: Self = Self(1 << 1);
+    pub const TscInvariantSupport: Self = Self(1 << 1);
     pub const ClZeroSupport: Self = Self(1 << 2);
     pub const RdpruSupport: Self = Self(1 << 3);
 
