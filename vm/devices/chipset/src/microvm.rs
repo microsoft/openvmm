@@ -83,6 +83,8 @@ struct PortbTimeAbi {
     sample_delay: std::time::Duration,
     test_hooks: bool,
     restore: RestorePacketState,
+    /// Notified at the guest's first selection of the restore packet.
+    packet_selected: Option<mesh::OneshotSender<()>>,
 }
 
 impl PortbTimeAbi {
@@ -212,11 +214,13 @@ impl MicrovmPortb {
         self.restore_processor_target_available = false;
         self.restore_memory_target_available = false;
         self.restore_memory_expansion_available = false;
+        let mut packet_selected = None;
         let restore = match restore {
             Some(source) => {
                 self.restore_processor_target_available = source.base.online_vp_count != 0;
                 self.restore_memory_target_available = source.base.memory_target;
                 self.restore_memory_expansion_available = !source.base.ranges.is_empty();
+                packet_selected = source.selected;
                 RestorePacketState::Pending(source.base, source.time)
             }
             None => RestorePacketState::None,
@@ -227,6 +231,7 @@ impl MicrovmPortb {
             sample_delay: std::time::Duration::from_micros(sample_delay_us.into()),
             test_hooks,
             restore,
+            packet_selected,
         });
         self
     }
@@ -243,6 +248,9 @@ impl MicrovmPortb {
             else {
                 return;
             };
+            if let Some(selected) = time_abi.packet_selected.take() {
+                selected.send(());
+            }
             let packet = RestorePacketV4 {
                 base,
                 time,
@@ -1628,10 +1636,12 @@ mod tests {
             test_hooks: true,
         };
         let (send, recv) = mesh::oneshot();
+        let (selected_send, mut selected) = mesh::oneshot();
         let mut portb = time_abi_portb(Some(
             chipset_resources::microvm::MicrovmRestorePacketSource {
                 base: base.clone(),
                 time: recv,
+                selected: Some(selected_send),
             },
         ));
         // Unsealed: only the targets are advertised.
@@ -1649,6 +1659,10 @@ mod tests {
                 | STATUS_GENERATION_ID_AVAILABLE
                 | STATUS_TIME_SAMPLE_AVAILABLE
         );
+        assert!(
+            (&mut selected).now_or_never().is_none(),
+            "selection is notified only at the first selection"
+        );
 
         let before = now_ns();
         assert!(matches!(
@@ -1656,6 +1670,7 @@ mod tests {
             IoResult::Ok
         ));
         let after = now_ns();
+        assert!(matches!(selected.now_or_never(), Some(Ok(()))));
         let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
         let packet = RestorePacketV4::decode(&bytes).unwrap();
         assert_eq!((packet.base, packet.time), (base, time));
@@ -1687,6 +1702,7 @@ mod tests {
                     entropy: [0; 64],
                 },
                 time: recv,
+                selected: None,
             },
         ));
         drop(send);

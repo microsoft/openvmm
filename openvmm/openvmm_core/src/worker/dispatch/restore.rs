@@ -12,6 +12,8 @@ use super::clock;
 use super::clock::RestoreTime;
 use crate::partition::HvlitePartition;
 use anyhow::Context;
+use futures::FutureExt;
+use futures_concurrency::future::Race;
 use hypervisor_resources::HypervisorKind;
 use hypervisor_resources::MshvHandle;
 use membacking::FileMappingMode;
@@ -162,6 +164,23 @@ pub(super) struct SnapshotRestore {
     pub(super) gate_profile: Option<ProfileSpan>,
     /// Whether host input is gated by the post-restore input gate.
     pub(super) input_gated: bool,
+    /// With profiling enabled, notified when the guest first selects the
+    /// time ABI restore packet.
+    packet_selected: Option<mesh::OneshotReceiver<()>>,
+    /// Profile span from the release of the restored VPs to the guest's
+    /// first selection of the restore packet.
+    resume_profile: Option<ProfileSpan>,
+    /// Profile span from the guest's first selection of the restore packet to
+    /// its acknowledgement of a gated restore.
+    repair_profile: Option<ProfileSpan>,
+}
+
+/// A post-restore event handled by the VM worker's run loop.
+pub(super) enum RestoreEvent {
+    /// The armed post-restore input gate expired.
+    GateExpired,
+    /// The guest first selected the time ABI restore packet.
+    PacketSelected,
 }
 
 impl SnapshotRestore {
@@ -176,17 +195,68 @@ impl SnapshotRestore {
         select_instantiated_vps(vps, vp_capacity, self.vp_prefix, restoring)
     }
 
-    /// Returns a future that completes when the armed post-restore input gate
-    /// expires, and never completes while the gate is not armed.
-    pub(super) fn gate_expired(&self, driver: &impl Driver) -> impl Future<Output = ()> {
+    /// Returns a future that completes at the next post-restore event: the
+    /// expiry of the armed input gate, or the guest's first selection of the
+    /// restore packet. It never completes while neither is pending.
+    pub(super) fn next_event(
+        &mut self,
+        driver: &impl Driver,
+    ) -> impl Future<Output = RestoreEvent> {
         let deadline = self.gate_deadline;
+        let packet_selected = &mut self.packet_selected;
         async move {
-            match deadline {
-                Some(deadline) => {
-                    PolledTimer::new(driver).sleep_until(deadline).await;
+            let gate_expired = async {
+                match deadline {
+                    Some(deadline) => {
+                        PolledTimer::new(driver).sleep_until(deadline).await;
+                    }
+                    None => std::future::pending().await,
                 }
-                None => std::future::pending().await,
+                RestoreEvent::GateExpired
+            };
+            let selected = async {
+                if let Some(selected) = packet_selected.as_mut() {
+                    let result = selected.await;
+                    *packet_selected = None;
+                    if result.is_ok() {
+                        return RestoreEvent::PacketSelected;
+                    }
+                }
+                std::future::pending().await
+            };
+            (gate_expired, selected).race().await
+        }
+    }
+
+    /// Ends the `restore/guest_resume` profile phase at the guest's first
+    /// selection of the restore packet, and starts the `restore/guest_repair`
+    /// phase of a gated restore.
+    pub(super) fn restore_packet_selected(&mut self) {
+        if let Some(resume) = self.resume_profile.take() {
+            resume.complete("restore", "guest_resume", Default::default());
+            if self.gate_profile.is_some() {
+                self.repair_profile = Some(ProfileSpan::start());
             }
+        }
+    }
+
+    /// Ends the `restore/guest_repair` profile phase when the guest
+    /// acknowledges a gated restore.
+    pub(super) fn restore_acknowledged(&mut self) {
+        // The guest selects the packet before it acknowledges the restore, so
+        // handle a selection that the run loop has not handled yet first.
+        if let Some(result) = self
+            .packet_selected
+            .as_mut()
+            .and_then(|selected| selected.now_or_never())
+        {
+            self.packet_selected = None;
+            if result.is_ok() {
+                self.restore_packet_selected();
+            }
+        }
+        if let Some(repair) = self.repair_profile.take() {
+            repair.complete("restore", "guest_repair", Default::default());
         }
     }
 }
@@ -267,7 +337,8 @@ impl LoadedVm {
     ) -> anyhow::Result<()> {
         saved_state_restore.complete("restore", "saved_state_restore", Default::default());
         #[cfg(guest_arch = "x86_64")]
-        if let Some(input) = self.snapshot_restore.time_abi.take() {
+        if let Some(mut input) = self.snapshot_restore.time_abi.take() {
+            self.snapshot_restore.packet_selected = input.packet_selected.take();
             let clock_restore = ProfileSpan::start();
             self.time_abi_restore(input).await?;
             self.snapshot_restore.time_abi_release = true;
@@ -344,6 +415,9 @@ impl LoadedVm {
         if let Some(timeout) = self.snapshot_restore.gate_timeout {
             self.snapshot_restore.gate_deadline = Some(Instant::now().saturating_add(timeout));
             self.snapshot_restore.gate_profile = Some(ProfileSpan::start());
+        }
+        if self.snapshot_restore.packet_selected.is_some() {
+            self.snapshot_restore.resume_profile = Some(ProfileSpan::start());
         }
         self.snapshot_restore.start_guard.take();
         Ok(())
@@ -432,5 +506,84 @@ mod tests {
             error.to_string(),
             "backend returned 4 VP binders for topology capacity 8"
         );
+    }
+
+    #[test]
+    fn restore_events_report_the_first_packet_selection() {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let (send, recv) = mesh::oneshot();
+            let mut restore = SnapshotRestore {
+                packet_selected: Some(recv),
+                ..Default::default()
+            };
+            assert!(restore.next_event(&driver).now_or_never().is_none());
+            send.send(());
+            assert!(matches!(
+                restore.next_event(&driver).await,
+                RestoreEvent::PacketSelected
+            ));
+            assert!(restore.packet_selected.is_none());
+            assert!(restore.next_event(&driver).now_or_never().is_none());
+        });
+    }
+
+    #[test]
+    fn restore_events_ignore_a_dropped_packet_notifier() {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let (send, recv) = mesh::oneshot::<()>();
+            let mut restore = SnapshotRestore {
+                packet_selected: Some(recv),
+                ..Default::default()
+            };
+            drop(send);
+            assert!(restore.next_event(&driver).now_or_never().is_none());
+            assert!(restore.packet_selected.is_none());
+        });
+    }
+
+    #[test]
+    fn restore_events_report_the_gate_expiry() {
+        pal_async::DefaultPool::run_with(async |driver| {
+            let mut restore = SnapshotRestore {
+                gate_deadline: Some(Instant::now()),
+                ..Default::default()
+            };
+            assert!(matches!(
+                restore.next_event(&driver).await,
+                RestoreEvent::GateExpired
+            ));
+        });
+    }
+
+    #[test]
+    fn packet_selection_starts_the_repair_phase_of_a_gated_restore() {
+        for gated in [false, true] {
+            let mut restore = SnapshotRestore {
+                resume_profile: Some(ProfileSpan::start()),
+                gate_profile: gated.then(ProfileSpan::start),
+                ..Default::default()
+            };
+            restore.restore_packet_selected();
+            assert!(restore.resume_profile.is_none());
+            assert_eq!(restore.repair_profile.is_some(), gated);
+            restore.restore_acknowledged();
+            assert!(restore.repair_profile.is_none());
+        }
+    }
+
+    #[test]
+    fn acknowledgement_handles_an_unhandled_packet_selection_first() {
+        let (send, recv) = mesh::oneshot();
+        let mut restore = SnapshotRestore {
+            packet_selected: Some(recv),
+            resume_profile: Some(ProfileSpan::start()),
+            gate_profile: Some(ProfileSpan::start()),
+            ..Default::default()
+        };
+        send.send(());
+        restore.restore_acknowledged();
+        assert!(restore.packet_selected.is_none());
+        assert!(restore.resume_profile.is_none());
+        assert!(restore.repair_profile.is_none());
     }
 }
