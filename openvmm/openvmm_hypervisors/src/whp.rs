@@ -46,4 +46,14 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
         Ok(Resource::new(handle))
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn cpu_fingerprint(
+        &self,
+        params: &[(&str, &str)],
+    ) -> anyhow::Result<cpu_profile::fingerprint::BackendFingerprint> {
+        crate::reject_fingerprint_params("whp", params)?;
+        anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
+        Ok(virt_whp::cpu_fingerprint()?)
+    }
 }
