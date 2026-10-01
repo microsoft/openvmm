@@ -7,6 +7,7 @@
 
 mod cpu_contract;
 mod extint;
+mod fingerprint;
 mod regs;
 pub(crate) mod snp;
 mod time_abi;
