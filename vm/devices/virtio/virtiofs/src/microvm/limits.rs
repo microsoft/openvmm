@@ -12,6 +12,7 @@ use super::state::relative_path_encoded_len;
 use super::state::validate_relative_path;
 use crate::InodeMap;
 use crate::inode::VirtioFsInode;
+use crate::inode::renamed_path;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -97,11 +98,10 @@ impl InodeMap {
                 let replacements: Vec<_> = aliases
                     .iter()
                     .filter_map(|alias| {
-                        alias.strip_prefix(old).ok().map(|suffix| {
-                            let mut replacement = new.to_path_buf();
-                            replacement.push(suffix);
-                            (alias.clone(), replacement)
-                        })
+                        alias
+                            .strip_prefix(old)
+                            .ok()
+                            .map(|suffix| (alias.clone(), renamed_path(new, suffix)))
                     })
                     .collect();
                 for (old_alias, new_alias) in replacements {
