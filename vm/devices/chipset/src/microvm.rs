@@ -12,6 +12,7 @@ use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
+use chipset_resources::microvm::MicrovmPortbDrain;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::InspectMut;
@@ -76,9 +77,9 @@ pub struct MicrovmPortb {
     #[inspect(skip)]
     tx_waker: Option<Waker>,
     #[inspect(skip)]
-    output_drain_requests: Option<mesh::Receiver<mesh::rpc::FailableRpc<(), ()>>>,
+    output_drain_requests: Option<mesh::Receiver<mesh::rpc::FailableRpc<MicrovmPortbDrain, ()>>>,
     #[inspect(skip)]
-    output_drain: Option<mesh::rpc::FailableRpc<(), ()>>,
+    output_drain: Option<(MicrovmPortbDrain, mesh::rpc::FailableRpc<(), ()>)>,
 }
 
 impl MicrovmPortb {
@@ -119,13 +120,36 @@ impl MicrovmPortb {
         }
     }
 
-    /// Installs the process-exit output drain channel.
+    /// Installs the output drain request channel.
+    ///
+    /// A drain request writes and flushes every byte the device has accepted.
+    /// [`MicrovmPortbDrain::Close`] then closes the endpoint before process
+    /// exit, while [`MicrovmPortbDrain::Flush`] keeps it open because a
+    /// snapshot capture may still roll back and resume the guest.
     pub fn with_output_drain(
         mut self,
-        requests: Option<mesh::Receiver<mesh::rpc::FailableRpc<(), ()>>>,
+        requests: Option<mesh::Receiver<mesh::rpc::FailableRpc<MicrovmPortbDrain, ()>>>,
     ) -> Self {
         self.output_drain_requests = requests;
         self
+    }
+
+    /// Completes an active flush that has no connected endpoint to write to.
+    ///
+    /// The accepted bytes stay buffered, so a snapshot saves them for the
+    /// restored VM, as it does for output accepted while no peer is connected.
+    fn complete_flush_without_endpoint(&mut self, cx: &mut Context<'_>) {
+        if matches!(self.output_drain, Some((MicrovmPortbDrain::Flush, _)))
+            && let Some((_, request)) = self.output_drain.take()
+        {
+            tracing::debug!(
+                buffered_bytes = self.tx_buffer.len(),
+                "microVM portb endpoint is not connected; keeping buffered output"
+            );
+            request.complete(Ok(()));
+            // Poll again to accept the next drain request.
+            cx.waker().wake_by_ref();
+        }
     }
 
     fn poll_rx(&mut self, cx: &mut Context<'_>) {
@@ -208,7 +232,8 @@ impl ChangeDeviceState for MicrovmPortb {
     }
 
     async fn stop(&mut self) {
-        // Drain every byte the endpoint accepts immediately. Any remaining
+        // Drain every byte the endpoint accepts immediately. A guest-requested
+        // snapshot flushes the output before stopping the device. Any remaining
         // VMM-owned bytes are serialized and retried against the reconstructed
         // endpoint after restore.
         let _ = self.poll_tx(&mut Context::from_waker(Waker::noop()));
@@ -244,11 +269,13 @@ impl PollDevice for MicrovmPortb {
         {
             match requests.poll_recv(cx) {
                 Poll::Ready(Ok(request)) => {
+                    let (drain, request) = request.split();
                     tracing::debug!(
                         buffered_bytes = self.tx_buffer.len(),
+                        ?drain,
                         "draining microVM portb output"
                     );
-                    self.output_drain = Some(request);
+                    self.output_drain = Some((drain, request));
                 }
                 Poll::Ready(Err(_)) => self.output_drain_requests = None,
                 Poll::Pending => {}
@@ -262,9 +289,13 @@ impl PollDevice for MicrovmPortb {
                         error = &error as &dyn std::error::Error,
                         "microVM portb backend connection failed"
                     );
+                    self.complete_flush_without_endpoint(cx);
                     return;
                 }
-                Poll::Pending => return,
+                Poll::Pending => {
+                    self.complete_flush_without_endpoint(cx);
+                    return;
+                }
             }
         }
         if !self.input_gated {
@@ -276,14 +307,23 @@ impl PollDevice for MicrovmPortb {
                 Poll::Ready(Ok(())) => Pin::new(&mut self.io).poll_flush(cx),
                 output => output,
             };
-            if let Poll::Ready(result) = output {
-                // Closing the endpoint publishes EOF only after every accepted
-                // byte has reached it. The controller also waits for the relay.
-                self.io = Box::new(Disconnected);
-                self.output_drain_requests = None;
-                if let Some(request) = self.output_drain.take() {
-                    request.handle_failable_sync(|()| result);
+            if let Poll::Ready(result) = output
+                && let Some((drain, request)) = self.output_drain.take()
+            {
+                match drain {
+                    MicrovmPortbDrain::Flush => {
+                        // Poll again to accept the next drain request.
+                        cx.waker().wake_by_ref();
+                    }
+                    MicrovmPortbDrain::Close => {
+                        // Closing the endpoint publishes EOF only after every
+                        // accepted byte has reached it. The controller also
+                        // waits for the relay.
+                        self.io = Box::new(Disconnected);
+                        self.output_drain_requests = None;
+                    }
                 }
+                request.handle_failable_sync(|()| result);
             }
         }
     }
@@ -754,7 +794,8 @@ mod tests {
         .with_output_drain(Some(receiver));
         let payload = b"OPENVMM-SNAPSHOT-RESTORE-OK\n\0\xff";
         assert!(matches!(portb.io_write(DATA_PORT, payload), IoResult::Ok));
-        let mut result = Box::pin(requests.call_failable(std::convert::identity, ()));
+        let mut result =
+            Box::pin(requests.call_failable(std::convert::identity, MicrovmPortbDrain::Close));
         let mut cx = Context::from_waker(Waker::noop());
         portb.poll_device(&mut cx);
         assert!(result.as_mut().now_or_never().is_none());
@@ -788,9 +829,115 @@ mod tests {
         )
         .with_output_drain(Some(receiver));
         assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
-        let result = requests.call_failable(std::convert::identity, ());
+        let result = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Close);
         portb.poll_device(&mut Context::from_waker(Waker::noop()));
         assert!(result.now_or_never().unwrap().is_err());
+        assert!(state.lock().closed);
+    }
+
+    #[test]
+    fn portb_snapshot_flush_delivers_output_and_keeps_endpoint_open() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+        use std::task::Wake;
+
+        struct FlushWake(AtomicBool);
+        impl Wake for FlushWake {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let wake = Arc::new(FlushWake(AtomicBool::new(false)));
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let state = Arc::new(Mutex::new(OutputState::default()));
+        let (requests, receiver) = mesh::channel();
+        let mut portb = MicrovmPortb::new(
+            Box::new(Connected::new(BufferedOutput(state.clone()))),
+            TEST_GENERATION_ID,
+            Vec::new(),
+        )
+        .with_output_drain(Some(receiver));
+        // The guest writes a marker just before its snapshot request, while
+        // the endpoint does not yet accept writes.
+        let marker = b"OPENVMM-LINUX-MPTABLE-SNAPSHOT-READY";
+        assert!(matches!(portb.io_write(DATA_PORT, marker), IoResult::Ok));
+        let mut flush =
+            Box::pin(requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush));
+        portb.poll_device(&mut cx);
+        assert!(flush.as_mut().now_or_never().is_none());
+
+        state.lock().writable = true;
+        portb.poll_device(&mut cx);
+        assert!(flush.as_mut().now_or_never().is_none());
+        assert_eq!(state.lock().bytes, marker);
+
+        state.lock().flushed = true;
+        wake.0.store(false, Ordering::Relaxed);
+        portb.poll_device(&mut cx);
+        flush.now_or_never().unwrap().unwrap();
+        assert!(wake.0.load(Ordering::Relaxed));
+        assert!(!state.lock().closed);
+
+        // A capture that rolls back keeps delivering guest output.
+        assert!(matches!(portb.io_write(DATA_PORT, b"+"), IoResult::Ok));
+        portb.poll_device(&mut cx);
+        assert_eq!(
+            state.lock().bytes,
+            [marker.as_slice(), b"+".as_slice()].concat()
+        );
+
+        // A committed capture saves no stale source output, and the source
+        // endpoint holds the marker when the terminating process closes it.
+        futures::executor::block_on(portb.stop());
+        assert!(portb.save().unwrap().tx_buffer.is_empty());
+        drop(portb);
+        assert!(state.lock().closed);
+    }
+
+    #[test]
+    fn portb_snapshot_flush_without_endpoint_keeps_output_for_restore() {
+        let (requests, receiver) = mesh::channel();
+        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new())
+            .with_output_drain(Some(receiver));
+        assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
+        let flush = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush);
+        portb.poll_device(&mut Context::from_waker(Waker::noop()));
+        flush.now_or_never().unwrap().unwrap();
+        assert_eq!(portb.save().unwrap().tx_buffer, b"marker");
+    }
+
+    #[test]
+    fn portb_snapshot_flush_failure_keeps_endpoint_for_exit_drain() {
+        let state = Arc::new(Mutex::new(OutputState {
+            error: Some(ErrorKind::BrokenPipe),
+            ..Default::default()
+        }));
+        let (requests, receiver) = mesh::channel();
+        let mut portb = MicrovmPortb::new(
+            Box::new(Connected::new(BufferedOutput(state.clone()))),
+            TEST_GENERATION_ID,
+            Vec::new(),
+        )
+        .with_output_drain(Some(receiver));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
+        let flush = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush);
+        portb.poll_device(&mut cx);
+        assert!(flush.now_or_never().unwrap().is_err());
+        assert!(!state.lock().closed);
+        assert_eq!(portb.save().unwrap().tx_buffer, b"marker");
+
+        *state.lock() = OutputState {
+            writable: true,
+            flushed: true,
+            ..Default::default()
+        };
+        let close = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Close);
+        portb.poll_device(&mut cx);
+        close.now_or_never().unwrap().unwrap();
+        assert_eq!(state.lock().bytes, b"marker");
         assert!(state.lock().closed);
     }
 

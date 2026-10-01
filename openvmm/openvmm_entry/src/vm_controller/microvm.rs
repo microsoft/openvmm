@@ -219,6 +219,20 @@ impl VmController {
             return self.release_snapshot_boundary_without_capture().await;
         }
 
+        // The source terminates once the snapshot commits, so deliver the
+        // console output the guest wrote before its request while the endpoint
+        // is still open. Bytes that miss the bound stay in the snapshot.
+        if let Some(drain) = &self.microvm.resources.output_drain {
+            let output_flush = openvmm_defs::profile::ProfileSpan::start();
+            match drain.flush(self.microvm.snapshot_quiesce_timeout).await {
+                Ok(()) => output_flush.complete("capture", "output_flush", Default::default()),
+                Err(error) => tracelimit::warn_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to flush microVM console output before snapshot; undelivered bytes stay in the snapshot"
+                ),
+            }
+        }
+
         let response = match self
             .vm_rpc
             .call(

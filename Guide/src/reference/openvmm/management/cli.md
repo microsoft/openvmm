@@ -221,13 +221,17 @@ describes the source definitions.
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
   must already be a directory. OpenVMM automatically creates file-backed RAM
-  in that parent when no memory backing file was supplied, quiesces the VM,
+  in that parent when no memory backing file was supplied, delivers the portb
+  console output that the guest wrote before its request, quiesces the VM,
   writes and flushes a sibling staging directory, and atomically renames it to
   `DIR`. After a successful commit, the source VM terminates without executing
   the instruction after the snapshot `out`.
 
   `--snapshot-quiesce-timeout-ms <MILLISECONDS>` sets the bounded quiesce
-  timeout and defaults to 5000. A request with no configured destination is
+  timeout and defaults to 5000. The same bound applies to delivering portb
+  output before quiescing; output still undelivered when it expires, or
+  accepted while no portb peer is connected, is saved in the snapshot and
+  written by the restored VM. A request with no configured destination is
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
   KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must
   be cached regular raw files with nonzero 512-byte-aligned geometry. An
@@ -814,7 +818,9 @@ transmit buffer. Draining is bounded to five seconds; an output error or timeout
 is reported as a failure rather than a successful exit with truncated output.
 In RPC-server mode, a drain failure also fails pending `WaitVm` requests and
 terminates the server with an error instead of leaving it uninitialized.
-Snapshot capture still preserves pending console bytes in the snapshot.
+A guest-requested snapshot capture instead flushes accepted portb output to its
+endpoint before quiescing, without closing it because the capture can still roll
+back; see `--snapshot-destination`.
 
 * `--crash-dump-path <PATH>`: when the guest triple-faults, write a
   WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
