@@ -757,8 +757,11 @@ impl LxVolume {
         let win_target = Path::from_lx(target);
 
         // Determine whether a NT symlink can be created, and if so whether it should be a file or
-        // directory.
-        let link_type = if let Ok(win_target) = &win_target {
+        // directory. A confined volume only creates LX symlinks, which Windows path resolution
+        // never follows, so a link can never redirect a later lookup outside the volume.
+        let link_type = if self.state.options.confine_paths {
+            SymlinkType::Lx
+        } else if let Ok(win_target) = &win_target {
             self.determine_symlink_type(path.parent().unwrap(), win_target)
         } else {
             SymlinkType::Lx
