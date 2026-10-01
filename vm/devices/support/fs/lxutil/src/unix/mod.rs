@@ -5,6 +5,8 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 
+#[cfg(test)]
+mod confine_tests;
 pub(crate) mod path;
 mod util;
 
