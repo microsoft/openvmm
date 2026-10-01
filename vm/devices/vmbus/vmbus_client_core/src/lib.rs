@@ -60,8 +60,9 @@ pub struct Config {
     /// The VTL the client runs in. Standard value is 0 (VTL0 client)
     /// or 2 (VTL2 openhcl-side client).
     pub vtl: u8,
-    /// The protocol versions this client will offer, most preferred
-    /// first.
+    /// The protocol versions this client will offer, least preferred
+    /// first. Negotiation starts at the end of the slice and proceeds
+    /// toward the beginning.
     pub supported_versions: &'static [Version],
     /// The feature flags this client will advertise on
     /// `InitiateContact2`.
@@ -771,6 +772,7 @@ pub struct ClientCore {
     /// Set when a `ModifyConnection` is outstanding, so a duplicate
     /// request can be rejected.
     modify_connection_request_id: Option<RequestId>,
+    malformed_host_message_count: u64,
 }
 
 /// Per-channel entry held in [`ClientCore::channels`].
@@ -900,6 +902,7 @@ impl ClientCore {
             running: false,
             host_busy: false,
             modify_connection_request_id: None,
+            malformed_host_message_count: 0,
         }
     }
 
@@ -931,6 +934,39 @@ impl ClientCore {
     /// not).
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    /// Number of malformed host messages discarded by this core instance.
+    pub fn malformed_host_message_count(&self) -> u64 {
+        self.malformed_host_message_count
+    }
+
+    /// Number of caller requests waiting for a protocol completion.
+    pub fn pending_request_count(&self) -> usize {
+        self.outstanding.len()
+    }
+
+    /// Number of hvsock connection requests waiting for a host response.
+    pub fn pending_hvsock_request_count(&self) -> usize {
+        self.hvsock_pending
+            .values()
+            .map(|requests| requests.len())
+            .sum()
+    }
+
+    /// Number of GPADL IDs with an active teardown request.
+    pub fn pending_gpadl_teardown_count(&self) -> usize {
+        self.teardown_gpadls.len()
+    }
+
+    /// Number of redirected event flags currently reserved.
+    pub fn event_flag_count(&self) -> usize {
+        self.flag_allocator.used_count()
+    }
+
+    /// Whether a connection modification is waiting for a host response.
+    pub fn modify_connection_pending(&self) -> bool {
+        self.modify_connection_request_id.is_some()
     }
 
     /// Allocate a redirected-event flag from the internal pool.
@@ -1291,18 +1327,18 @@ impl ClientCore {
 
     /// Decode and dispatch a host wire message.
     ///
-    /// Parse errors are silently dropped: they represent malformed
+    /// Parse errors are dropped and counted: they represent malformed
     /// input from the host, and the client never trusts host framing
-    /// enough to panic. Wrapper-side tracing can pick up the raw
-    /// bytes at the transport layer if diagnostics are needed.
+    /// enough to panic.
     fn dispatch_host_message(&mut self, bytes: &[u8], sink: &mut dyn ActionSink) {
         use vmbus_core::protocol::Message;
 
         let version = self.phase.version();
         let Ok(msg) = Message::parse(bytes, version) else {
             // Malformed host input. Never panic on host framing;
-            // wrapper-side logs at the transport layer can pick up
-            // the raw bytes if diagnostics are needed.
+            // retain a counter so wrappers can diagnose a stalled
+            // request without logging attacker-controlled data.
+            self.malformed_host_message_count = self.malformed_host_message_count.saturating_add(1);
             return;
         };
         match msg {
@@ -2026,6 +2062,16 @@ impl ClientCore {
         request: ModifyRequest,
         sink: &mut dyn ActionSink,
     ) {
+        if !matches!(
+            self.phase,
+            ClientPhase::Connected { version } if version.version >= Version::Iron
+        ) {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyChannel(-1),
+            });
+            return;
+        }
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             sink.emit(Action::Complete {
                 request_id,
@@ -2393,13 +2439,24 @@ impl ClientCore {
     }
 
     /// Handle [`Event::Unload`] — post `Unload` and transition to
-    /// [`ClientPhase::Disconnecting`]. Rejected if the client is
-    /// not currently `Connected` or `RequestingOffers` (there's
-    /// nothing to unload).
+    /// [`ClientPhase::Disconnecting`]. If offer enumeration is still
+    /// in progress, cancel it before unloading so its caller is not
+    /// left pending.
     fn handle_unload(&mut self, request_id: RequestId, sink: &mut dyn ActionSink) {
         let version = match self.phase {
             ClientPhase::Connected { version } => version,
-            ClientPhase::RequestingOffers { version, .. } => version,
+            ClientPhase::RequestingOffers {
+                version,
+                request_id: offers_request_id,
+                ..
+            } => {
+                self.outstanding.remove(&offers_request_id);
+                sink.emit(Action::Complete {
+                    request_id: offers_request_id,
+                    result: CompletionResult::RequestOffers(Err(ConnectError::InvalidState)),
+                });
+                version
+            }
             // Idempotent from Disconnected — nothing to do.
             _ => {
                 sink.emit(Action::Complete {
@@ -2505,6 +2562,16 @@ impl ClientCore {
         request: HvsockConnectRequest,
         sink: &mut dyn ActionSink,
     ) {
+        if !matches!(
+            self.phase.version(),
+            Some(version) if version.version >= Version::Win10Rs5
+        ) {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::HvsockConnect(None),
+            });
+            return;
+        }
         // vmbus_client only sends the newer TlConnectRequest2 (Win10Rs5+).
         let msg = vmbus_core::protocol::TlConnectRequest2 {
             base: vmbus_core::protocol::TlConnectRequest {
@@ -2697,6 +2764,7 @@ mod step_tests {
         core.step(Event::HostMessage(&[0xff; 64]), &mut sink);
         assert!(sink.actions.is_empty());
         assert!(matches!(core.phase(), ClientPhase::Disconnected));
+        assert_eq!(core.malformed_host_message_count(), 3);
     }
 
     // -- Phase 4b-ii: Connect + version-response ladder --------------
@@ -4613,6 +4681,50 @@ mod step_tests {
     }
 
     #[test]
+    fn unload_while_requesting_offers_cancels_offer_request() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_with_flags(
+            &mut core,
+            &mut sink,
+            make_redirect_config().supported_feature_flags,
+        );
+        core.step(
+            Event::RequestOffers {
+                request_id: RequestId(2001),
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        core.step(
+            Event::Unload {
+                request_id: RequestId(2002),
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [
+                Action::Complete {
+                    request_id: RequestId(2001),
+                    result: CompletionResult::RequestOffers(Err(ConnectError::InvalidState)),
+                },
+                Action::PostMessage(_),
+            ]
+        ));
+        assert!(matches!(
+            core.phase(),
+            ClientPhase::Disconnecting {
+                request_id: RequestId(2002),
+                ..
+            }
+        ));
+        assert_eq!(core.pending_request_count(), 1);
+    }
+
+    #[test]
     fn unload_from_disconnected_completes_synchronously() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
@@ -4757,6 +4869,37 @@ mod step_tests {
     }
 
     #[test]
+    fn modify_channel_before_iron_is_rejected_without_posting() {
+        let mut core = ClientCore::new(Config {
+            sint: vmbus_core::VMBUS_SINT,
+            vtl: 0,
+            supported_versions: &[Version::Win10Rs5],
+            supported_feature_flags: FeatureFlags::new(),
+        });
+        let mut sink = Recording::default();
+        connect_with_flags(&mut core, &mut sink, FeatureFlags::new());
+        deliver_one_offer(&mut core, &mut sink, 24);
+
+        core.step(
+            Event::ModifyChannel {
+                request_id: RequestId(2420),
+                channel_id: vmbus_core::protocol::ChannelId(24),
+                request: ModifyRequest::TargetVp { target_vp: 1 },
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(2420),
+                result: CompletionResult::ModifyChannel(-1),
+            }]
+        ));
+        assert_eq!(core.pending_request_count(), 0);
+    }
+
+    #[test]
     fn hvsock_connect_posts_and_tracks_pending() {
         let mut core = ClientCore::new(make_redirect_config());
         let mut sink = Recording::default();
@@ -4786,6 +4929,46 @@ mod step_tests {
         );
         assert_eq!(sink.actions.len(), 1);
         let _ = expect_post(&sink.actions[0]);
+    }
+
+    #[test]
+    fn hvsock_connect_before_win10_rs5_is_rejected_without_posting() {
+        let mut core = ClientCore::new(Config {
+            sint: vmbus_core::VMBUS_SINT,
+            vtl: 0,
+            supported_versions: &[Version::Win10Rs4],
+            supported_feature_flags: FeatureFlags::new(),
+        });
+        let mut sink = Recording::default();
+        connect_with_flags(&mut core, &mut sink, FeatureFlags::new());
+
+        core.step(
+            Event::HvsockConnect {
+                request_id: RequestId(2501),
+                request: HvsockConnectRequest {
+                    service_id: Guid {
+                        data1: 0xdead,
+                        ..Guid::ZERO
+                    },
+                    endpoint_id: Guid {
+                        data1: 0xbeef,
+                        ..Guid::ZERO
+                    },
+                    silo_id: Guid::ZERO,
+                    hosted_silo_unaware: false,
+                },
+            },
+            &mut sink,
+        );
+
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(2501),
+                result: CompletionResult::HvsockConnect(None),
+            }]
+        ));
+        assert_eq!(core.pending_hvsock_request_count(), 0);
     }
 
     #[test]
