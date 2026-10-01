@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#[cfg(guest_arch = "x86_64")]
-mod tsc;
-
 use super::Vplc;
 use super::VtlPartition;
 use super::vtl2::Vtl2InterceptState;
@@ -41,8 +38,6 @@ pub(crate) struct ExitStats {
     memory: Counter,
     #[cfg(guest_arch = "x86_64")]
     cpuid: Counter,
-    #[cfg(guest_arch = "x86_64")]
-    rdtsc: Counter,
     #[cfg(guest_arch = "x86_64")]
     apic_eoi: Counter,
     cancel: Counter,
@@ -577,10 +572,6 @@ mod x86 {
                 ExitReason::Cpuid(info) => {
                     self.handle_cpuid(info, exit);
                     &mut self.state.exits.cpuid
-                }
-                ExitReason::Rdtsc(info) => {
-                    self.handle_rdtsc_exit(dev, info, exit)?;
-                    &mut self.state.exits.rdtsc
                 }
                 ExitReason::ApicEoi(info) => {
                     self.handle_apic_eoi(info, dev);
@@ -1253,9 +1244,6 @@ mod x86 {
                 .handle_time_abi_msr(info, exit)
                 .map_err(|error| dev.fatal_error(error.into()))?
             {
-                return Ok(());
-            }
-            if self.handle_restored_tsc_msr_exit(dev, info, exit)? {
                 return Ok(());
             }
             let handled = if info.AccessInfo.IsWrite() {
