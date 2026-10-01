@@ -346,7 +346,7 @@ pub struct MicrovmCli {
         long,
         hide = true,
         requires("microvm_control_console"),
-        conflicts_with_all = ["rpc", "ttrpc", "grpc", "relay_console_path", "write_saved_state_proto", "paused"]
+        conflicts_with_all = ["rpc", "ttrpc", "grpc", "relay_console_path", "write_saved_state_proto", "cpu_fingerprint", "paused"]
     )]
     pub microvm_control_auth_stdin: bool,
 
