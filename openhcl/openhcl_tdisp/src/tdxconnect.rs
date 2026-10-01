@@ -615,13 +615,15 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         })
     }
 
-    /// Does nothing. Resource re-blocking is automatically enforced on Unbind by TDXC.
+    /// Does nothing, as unbinding the device is the only interface that tears
+    /// down DMA. Unbind reverses the DMA protections where it can today, and
+    /// will handle this automatically in the future.
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         tracelimit::info_ratelimited!(
             vtom = self.vtom,
             ?target_vtl,
             device_id,
-            "TDX Connect tdisp_block_dma: no-op stub"
+            "TDX Connect tdisp_block_dma: nothing to do, DMA is torn down by unbind"
         );
         Ok(())
     }
