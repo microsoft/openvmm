@@ -49,6 +49,11 @@ pub(super) struct MicrovmManifest {
     pub(super) memory_capacity: Option<u64>,
     pub(super) snapshot_memory_ranges: Vec<MemoryRange>,
     pub(super) restore_memory_ranges: Vec<MemoryRange>,
+    /// The NVX time ABI parameters, when the time ABI is selected.
+    pub(super) time_abi: Option<openvmm_defs::time_abi::TimeAbiParameters>,
+    /// The hypervisor backend ID (`kvm`, `mshv`, or `whp`), set by the
+    /// worker.
+    pub(super) hypervisor_id: String,
 }
 
 impl From<MicrovmConfig> for MicrovmManifest {
@@ -61,12 +66,15 @@ impl From<MicrovmConfig> for MicrovmManifest {
             memory_capacity,
             snapshot_memory_ranges,
             restore_memory_ranges,
+            time_abi,
         } = config;
         Self {
             sandbox_blocks,
             memory_capacity,
             snapshot_memory_ranges,
             restore_memory_ranges,
+            time_abi,
+            hypervisor_id: String::new(),
         }
     }
 }
@@ -739,6 +747,11 @@ fn prepare_cold_boot_command_line(
     let Some(cmdline) = cmdline else {
         anyhow::bail!("microVM has no supported cold-boot command line");
     };
+    if cfg.microvm.time_abi.is_some() {
+        // The time ABI declares both rates through the identity MSRs.
+        virt::time_abi::check_command_line_clock_tokens(cmdline)?;
+        return Ok(());
+    }
     match partition
         .tsc_frequency_hz()
         .context("failed to query the backend guest TSC frequency")?

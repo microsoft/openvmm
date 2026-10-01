@@ -358,6 +358,11 @@ pub struct MicrovmCli {
         hide = true
     )]
     pub microvm_control_auth_timeout_ms: u64,
+
+    /// use the NVX time ABI v1 (development switch; removed when the time ABI
+    /// becomes the only microVM path)
+    #[clap(long = "x-time-abi-v1", hide = true)]
+    pub x_time_abi_v1: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

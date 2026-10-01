@@ -13,6 +13,7 @@ mod pcie_wiring;
 mod restore;
 mod smmu_wiring;
 mod snapshot_rpc;
+mod time_abi;
 
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
@@ -347,7 +348,8 @@ impl Worker for VmWorker {
         let microvm_params = microvm::MicrovmParameters::take(&mut parameters)?;
         let (device_thread, device_driver) = new_device_thread();
 
-        let manifest = Manifest::from_config(parameters.cfg);
+        let mut manifest = Manifest::from_config(parameters.cfg);
+        manifest.microvm.hypervisor_id = parameters.hypervisor.id().to_owned();
 
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
             .context("failed to resolve hypervisor backend")?;
@@ -491,6 +493,9 @@ pub(crate) struct InitializedVm {
     processor_topology: ProcessorTopology,
     igvm_file: Option<IgvmFile>,
     driver_source: VmTaskDriverSource,
+    /// The identity MSR handler, when the partition uses the time ABI.
+    #[cfg(guest_arch = "x86_64")]
+    time_abi_msrs: Option<Arc<virt::time_abi::TimeAbiMsrs>>,
 }
 
 trait ExtractTopologyConfig {
@@ -914,6 +919,9 @@ struct LoadedVmInner {
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
+    /// The time ABI state unit, when the partition uses the time ABI.
+    #[cfg(guest_arch = "x86_64")]
+    _time_abi_unit: Option<SpawnedUnit<time_abi::TimeAbiUnit>>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
@@ -1256,6 +1264,20 @@ impl InitializedVm {
             microvm::uses_lazy_memory_registration(&cfg, shared_memory.as_ref());
         let user_mode_memory_faults = !lazy_memory_registration;
 
+        #[cfg(guest_arch = "x86_64")]
+        let (time_abi_msrs, time_abi_config) =
+            if cfg.machine_profile == MachineProfile::Microvm && cfg.microvm.time_abi.is_some() {
+                let (msrs, config) = time_abi::partition_config(processor_topology.vp_count());
+                (Some(msrs), Some(config))
+            } else {
+                (None, None)
+            };
+        #[cfg(guest_arch = "x86_64")]
+        let versioned_cpu_contract =
+            microvm::uses_versioned_cpu_contract(cfg.machine_profile) && time_abi_config.is_none();
+        #[cfg(not(guest_arch = "x86_64"))]
+        let versioned_cpu_contract = microvm::uses_versioned_cpu_contract(cfg.machine_profile);
+
         let partition_prototype = openvmm_defs::profile::ProfileSpan::start();
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -1268,9 +1290,9 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
                 user_mode_memory_faults,
                 lazy_memory_registration,
-                versioned_cpu_contract: microvm::uses_versioned_cpu_contract(cfg.machine_profile),
+                versioned_cpu_contract,
                 #[cfg(guest_arch = "x86_64")]
-                time_abi: None,
+                time_abi: time_abi_config,
             })
             .context("failed to create the prototype partition")?;
         partition_prototype.complete("startup", "partition_prototype", Default::default());
@@ -1644,6 +1666,8 @@ impl InitializedVm {
             processor_topology,
             igvm_file,
             driver_source,
+            #[cfg(guest_arch = "x86_64")]
+            time_abi_msrs,
         })
     }
 
@@ -1676,6 +1700,8 @@ impl InitializedVm {
             processor_topology,
             igvm_file,
             driver_source,
+            #[cfg(guest_arch = "x86_64")]
+            time_abi_msrs,
         } = self;
 
         let instantiated_vp_count = snapshot_restore.select_instantiated_vps(
@@ -1908,6 +1934,37 @@ impl InitializedVm {
                 }
             })
             .unwrap();
+
+        #[cfg(guest_arch = "x86_64")]
+        let time_abi_unit = match time_abi_msrs {
+            Some(msrs) => {
+                let parameters = cfg
+                    .microvm
+                    .time_abi
+                    .as_ref()
+                    .context("time ABI parameters are missing")?;
+                anyhow::ensure!(
+                    saved_state.is_none(),
+                    "time ABI v1 snapshot restore is not implemented yet"
+                );
+                time_abi::declare_rates(
+                    partition.as_ref(),
+                    &msrs,
+                    &cfg.microvm.hypervisor_id,
+                    None,
+                    &parameters.hooks,
+                )?;
+                Some(
+                    state_units
+                        .add(time_abi::TIME_ABI_UNIT)
+                        .spawn(driver_source.simple(), |recv| {
+                            state_unit::run_unit(time_abi::TimeAbiUnit(msrs), recv)
+                        })
+                        .unwrap(),
+                )
+            }
+            None => None,
+        };
 
         let mut input_distributor = InputDistributor::new(cfg.input);
         resolver.add_async_resolver::<KeyboardInputHandleKind, _, MultiplexedInputHandle, _>(
@@ -3280,6 +3337,8 @@ impl InitializedVm {
                 partition,
                 chipset_devices: devices,
                 _vmtime: vmtime,
+                #[cfg(guest_arch = "x86_64")]
+                _time_abi_unit: time_abi_unit,
                 memory_manager,
                 gm,
                 vtl0_hvsock_relay,
