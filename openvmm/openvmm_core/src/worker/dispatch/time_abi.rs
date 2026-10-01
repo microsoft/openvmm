@@ -426,16 +426,6 @@ pub(super) fn capture_records(
     })
 }
 
-/// Releases partition time immediately before the restored VPs first run:
-/// restore step 17 of the specification.
-pub(super) fn release_time(
-    partition: &dyn HvlitePartition,
-    state: &TimeAbiState,
-) -> anyhow::Result<()> {
-    backend(partition, &state.report.hypervisor)?.release_time()?;
-    Ok(())
-}
-
 impl LoadedVm {
     /// Restores the guest clocks: restore steps 11 to 16 of the
     /// specification, after the saved state is restored and before any

@@ -81,6 +81,11 @@ pub trait TimeAbiBackend: Send + Sync {
     /// (`E_TSC_SYNC_READBACK`). Creating a VP afterwards is an error
     /// (`E_VP_LATE_CREATION`).
     ///
+    /// Guest time runs from the anchor: a backend that stops partition time
+    /// for the set resumes it right after a successful read-back, before
+    /// returning, never at the first VP run. A failed set may leave it
+    /// stopped; the restore then fails.
+    ///
     /// Core calls it once per restore, after every instantiated VP is bound
     /// (which creates it on MSHV) and its saved state is restored, and before
     /// any restored VP runs. A cold boot never calls it.
@@ -88,15 +93,6 @@ pub trait TimeAbiBackend: Send + Sync {
         &self,
         target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
     ) -> Result<TscSetReport, TimeAbiError>;
-
-    /// Releases partition time immediately before the restored VPs first run.
-    ///
-    /// A backend whose synchronized set leaves partition time frozen resumes
-    /// it here, unless the first VP run resumes it. The default does
-    /// nothing.
-    fn release_time(&self) -> Result<(), TimeAbiError> {
-        Ok(())
-    }
 }
 
 /// How a backend delivers the identity MSR range to [`super::TimeAbiMsrs`].
@@ -115,7 +111,8 @@ pub enum TscSyncMethod {
     /// One TSC offset for every VP, computed from one host TSC read (KVM).
     CommonOffset,
     /// Partition time is frozen, the target is written to every VP and read
-    /// back while frozen, and time resumes at release (MSHV, WHP).
+    /// back while frozen, and time resumes right after the read-back (MSHV,
+    /// WHP).
     FrozenWrite,
 }
 
