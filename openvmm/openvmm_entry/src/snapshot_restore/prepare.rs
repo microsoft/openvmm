@@ -14,7 +14,8 @@ pub(crate) struct PreparedSnapshotRestore {
     pub(crate) shared_memory: openvmm_defs::worker::SharedMemoryFd,
     pub(crate) guards: openvmm_defs::worker::SnapshotRestoreGuards,
     pub(crate) saved_state: mesh::payload::message::ProtobufMessage,
-    pub(crate) restore_time: Option<microvm::RestoreClock>,
+    /// The time ABI restore of a microVM.
+    pub(crate) restore_time: Option<microvm::TimeAbiRestore>,
 }
 
 /// Validate an opened snapshot generation against the current VM config.
@@ -29,33 +30,31 @@ pub(super) fn prepare_snapshot_restore(
     let expected_microvm_contract =
         microvm.expected_restore_contract(opt, snapshot.manifest(), expected_hypervisor)?;
     let hooks = virt::time_abi::TimeAbiTestHooks::parse(&opt.microvm.x_time_abi_test_hook)?;
-    let time_abi = opt
-        .microvm
-        .x_time_abi_v1
-        .then(|| microvm::TimeAbiRestoreOptions {
-            cpu_profile: opt.microvm.cpu_profile.as_deref().unwrap_or("auto"),
-            hooks: &hooks,
-        });
+    let time_abi = microvm::TimeAbiRestoreOptions {
+        cpu_profile: opt.microvm.cpu_profile.as_deref().unwrap_or("auto"),
+        hooks: &hooks,
+    };
     prepare_snapshot_restore_for_config(
         snapshot,
         base_memory_size,
         opt.memory_size(),
         opt.processors,
-        expected_microvm_contract,
-        time_abi,
+        expected_microvm_contract.map(|contract| (contract, time_abi)),
     )
 }
 
 /// Validates an opened snapshot generation against a VM configuration and
-/// prepares it for the VM worker. `time_abi` selects the time ABI restore
-/// path of a microVM.
+/// prepares it for the VM worker. A microVM restore passes the contract the
+/// snapshot must match and the options of its time ABI restore.
 pub(crate) fn prepare_snapshot_restore_for_config(
     snapshot: openvmm_helpers::snapshot::restore::OpenedSnapshot,
     expected_memory_size: u64,
     selected_memory_size: u64,
     expected_vp_count: u32,
-    expected_microvm_contract: Option<microvm::ExpectedRestoreContract<'_>>,
-    time_abi: Option<microvm::TimeAbiRestoreOptions<'_>>,
+    microvm: Option<(
+        microvm::ExpectedRestoreContract<'_>,
+        microvm::TimeAbiRestoreOptions<'_>,
+    )>,
 ) -> anyhow::Result<PreparedSnapshotRestore> {
     let artifact_prepare = openvmm_defs::profile::ProfileSpan::start();
     let manifest = snapshot.manifest();
@@ -67,8 +66,8 @@ pub(crate) fn prepare_snapshot_restore_for_config(
         expected_vp_count,
         crate::system_page_size(),
     )?;
-    let restore_time = expected_microvm_contract
-        .map(|contract| {
+    let restore_time = microvm
+        .map(|(contract, time_abi)| {
             microvm::validate_restore_contract(
                 manifest,
                 expected_memory_size,

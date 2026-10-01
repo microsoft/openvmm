@@ -193,27 +193,19 @@ pub fn set_time_abi_records(
     Ok(())
 }
 
-/// Requires the manifest version that matches the selected restore path:
-/// version 6 with the time ABI, and a version before 6 without it.
-pub fn check_time_abi_manifest_version(
-    manifest: &SnapshotManifest,
-    time_abi: bool,
-) -> Result<(), TimeAbiError> {
-    let is_time_abi = manifest.version == TIME_ABI_MANIFEST_VERSION;
-    match (time_abi, is_time_abi) {
-        (true, false) => Err(TimeAbiError::new(
-            TimeAbiCode::SnapshotVersion,
-            format!(
-                "snapshot manifest version {} predates the time ABI; recapture the snapshot",
-                manifest.version
-            ),
-        )),
-        (false, true) => Err(TimeAbiError::new(
-            TimeAbiCode::SnapshotVersion,
-            "a time ABI snapshot requires --x-time-abi-v1",
-        )),
-        _ => Ok(()),
+/// Requires manifest version 6, the time ABI's: every microVM restore uses
+/// the time ABI (`E_SNAPSHOT_VERSION`).
+pub fn check_time_abi_manifest_version(manifest: &SnapshotManifest) -> Result<(), TimeAbiError> {
+    if manifest.version == TIME_ABI_MANIFEST_VERSION {
+        return Ok(());
     }
+    Err(TimeAbiError::new(
+        TimeAbiCode::SnapshotVersion,
+        format!(
+            "snapshot manifest version {} predates the time ABI; recapture the snapshot",
+            manifest.version
+        ),
+    ))
 }
 
 /// The controller's view of a time ABI restore after restore steps 2 to 5 of
@@ -597,19 +589,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn manifest_version_must_match_the_restore_path() {
-        let version_6 = version_6_manifest();
+    fn restore_requires_manifest_version_6() {
+        check_time_abi_manifest_version(&version_6_manifest()).unwrap();
         let version_5 = crate::snapshot::tests::test_manifest();
-        check_time_abi_manifest_version(&version_6, true).unwrap();
-        check_time_abi_manifest_version(&version_5, false).unwrap();
-        for (manifest, time_abi) in [(&version_5, true), (&version_6, false)] {
-            assert_eq!(
-                check_time_abi_manifest_version(manifest, time_abi)
-                    .unwrap_err()
-                    .code,
-                TimeAbiCode::SnapshotVersion
-            );
-        }
+        let err = check_time_abi_manifest_version(&version_5).unwrap_err();
+        assert_eq!(err.code, TimeAbiCode::SnapshotVersion);
+        assert!(err.to_string().contains("recapture the snapshot"), "{err}");
     }
 
     /// A version 6 machine contract captured on WHP with the test profile,

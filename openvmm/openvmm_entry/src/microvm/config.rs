@@ -23,7 +23,6 @@ use super::output::MicrovmOutputDrain;
 use super::output::OutputCompletion;
 use super::output::spawn_output;
 use super::restore::fresh_microvm_generation_id;
-use super::restore::fresh_microvm_restore_packet;
 use crate::ConsoleState;
 use crate::Options;
 use crate::VmResources;
@@ -394,53 +393,27 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let opt = self.opt;
         let (drain, output_drain) = MicrovmOutputDrain::new(Some(output_completion));
         self.resources.output_drain = Some(drain);
-        let mut time_abi_restore = None;
-        let (generation_id, restore_entropy) =
-            if opt.microvm.x_time_abi_v1 && self.restore.time_abi_records().is_some() {
-                let (generation_id, base) = self
-                    .restore
-                    .time_abi_restore_packet(opt.microvm.restore_processors)?;
-                time_abi_restore = Some(self.resources.time_abi_restore_packet(base));
-                (generation_id, Vec::new())
-            } else if opt.microvm.restore_entropy || self.restore.memory_target_requested {
-                fresh_microvm_restore_packet(
-                    opt.microvm.restore_processors,
-                    self.restore.memory_target_requested,
-                    &self.restore.memory_ranges,
-                )?
-            } else {
-                (fresh_microvm_generation_id()?, Vec::new())
-            };
-        let time_abi = if opt.microvm.x_time_abi_v1 {
-            let hooks = time_abi_test_hooks(opt)?;
-            // The time ABI forbids a periodic PIT channel 0 at capture and
-            // restore (`E_PIT_ACTIVE`).
-            for device in chipset_devices.iter_mut() {
-                if device.name == chipset_resources::pit::PitDeviceHandle::ID {
-                    device.resource =
-                        chipset_resources::pit::PitDeviceHandle { time_abi: true }.into_resource();
-                }
-            }
-            Some(chipset_resources::microvm::MicrovmPortbTimeAbi {
-                generation: time_abi_restore
-                    .as_ref()
-                    .map_or(0, |restore| restore.base.generation),
-                utc_offset_ms: hooks.utc_offset_ms,
-                sample_delay_us: hooks.sample_delay_us,
-                test_hooks: hooks.active(),
-                restore: time_abi_restore,
-            })
+        let (generation_id, time_abi_restore) = if self.restore.machine_contract.is_some() {
+            let (generation_id, base) = self
+                .restore
+                .time_abi_restore_packet(opt.microvm.restore_processors)?;
+            (
+                generation_id,
+                Some(self.resources.time_abi_restore_packet(base)),
+            )
         } else {
-            None
+            (fresh_microvm_generation_id()?, None)
         };
+        let hooks = time_abi_test_hooks(opt)?;
+        let time_abi = super::time_abi_chipset(chipset_devices, &hooks, time_abi_restore);
         chipset_devices.push(ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
             resource: MicrovmPortbHandle {
                 io,
                 generation_id,
-                restore_entropy,
+                restore_entropy: Vec::new(),
                 output_drain: Some(output_drain),
-                time_abi,
+                time_abi: Some(time_abi),
             }
             .into_resource(),
         });
@@ -710,11 +683,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 memory_range::MemoryRange::new(range.gpa_start..range.gpa_start + range.length)
             })
             .collect();
-        if opt.microvm.x_time_abi_v1 {
-            anyhow::ensure!(
-                cfg.machine_profile == MachineProfile::Microvm,
-                "--x-time-abi-v1 requires the microVM machine profile"
-            );
+        if cfg.machine_profile == MachineProfile::Microvm {
             let hooks = time_abi_test_hooks(opt)?;
             if hooks.active() {
                 tracing::warn!(?hooks, "time ABI test hooks are active");
@@ -733,6 +702,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 generation,
                 hooks,
             });
+        } else {
+            anyhow::ensure!(
+                opt.microvm.cpu_profile.is_none()
+                    && opt.microvm.x_time_abi_test_hook.is_empty()
+                    && !opt.microvm.x_time_abi_verify,
+                "--cpu-profile, --x-time-abi-test-hook, and --x-time-abi-verify require the microVM machine profile"
+            );
         }
 
         let requested_hypervisor = opt
