@@ -227,6 +227,7 @@ pub mod pit {
 }
 
 pub mod microvm;
+pub mod microvm_time;
 
 pub mod battery {
     //! Resource definitions for the battery device

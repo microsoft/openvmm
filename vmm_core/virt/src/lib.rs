@@ -10,6 +10,7 @@ pub mod io;
 pub mod irqcon;
 pub mod state;
 pub mod synic;
+pub mod time_abi;
 pub mod x86;
 
 pub use arch::*;
