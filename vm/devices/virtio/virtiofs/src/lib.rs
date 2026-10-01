@@ -375,9 +375,11 @@ impl Fuse for VirtioFs {
         if self.is_synthetic_root(request.node_id()) {
             return Err(lx::Error::EROFS);
         }
-        microvm::fs::check_symlink_allowed(self)?;
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
+        microvm::fs::validate_symlink_target(self, target)?;
+        let path = inode.child_path(name)?;
+        self.preflight_new_inode_path(&path)?;
         let reservation = self.reserve_inode()?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
@@ -739,7 +741,7 @@ impl VirtioFs {
             tracelimit::warn_ratelimited!(node_id, "request for unknown inode");
             lx::Error::EINVAL
         })?;
-        inode.validate_confined()?;
+        inode.validate_confined_object()?;
         Ok(inode)
     }
 
