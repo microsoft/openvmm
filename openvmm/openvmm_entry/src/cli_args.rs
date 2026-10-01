@@ -661,7 +661,7 @@ options:
 
     /// configure SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable).
     ///
-    /// Syntax: `rc=<name>[,accel][,oas=auto|N]`.
+    /// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
     #[cfg(guest_arch = "aarch64")]
     #[clap(long, value_name = "SMMU_CONFIG")]
     pub smmu: Vec<SmmuCli>,
@@ -3696,7 +3696,8 @@ impl FromStr for VfioDeviceCli {
 
 /// CLI configuration for an SMMUv3 instance.
 ///
-/// Syntax: `rc=<name>[,accel][,oas=auto|N]`. `oas` defaults to `auto`.
+/// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
+/// Both `oas` and `ssidsize` default to `auto`.
 #[cfg(guest_arch = "aarch64")]
 #[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
 pub struct SmmuCli {
@@ -3709,6 +3710,9 @@ pub struct SmmuCli {
     /// Output address size policy.
     #[kv(default)]
     pub oas: SmmuOasCli,
+    /// SubstreamID width policy.
+    #[kv(default)]
+    pub ssidsize: SmmuSsidSizeCli,
 }
 
 /// Output address size (OAS) policy parsed from `--smmu`.
@@ -3732,6 +3736,31 @@ impl FromStr for SmmuOasCli {
             SmmuOasCli::Auto
         } else {
             SmmuOasCli::Fixed(s.parse().context("oas must be 'auto' or a number")?)
+        })
+    }
+}
+
+/// SubstreamID width (SSIDSIZE) policy parsed from `--smmu`.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum SmmuSsidSizeCli {
+    /// Disable substreams in software mode; under acceleration, adopt the
+    /// host's width before device start freezes the capabilities.
+    #[default]
+    Auto,
+    /// Fixed width in bits (0..=20). Zero disables substreams.
+    Fixed(u8),
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl FromStr for SmmuSsidSizeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s == "auto" {
+            Self::Auto
+        } else {
+            Self::Fixed(s.parse().context("ssidsize must be 'auto' or a number")?)
         })
     }
 }
@@ -6385,17 +6414,19 @@ mod tests {
     #[cfg(guest_arch = "aarch64")]
     #[test]
     fn test_smmu_cli_from_str() {
-        // Minimal: only rc=, oas defaults to auto, accel off.
+        // Minimal: only rc=, sizing policies default to auto, accel off.
         let s = SmmuCli::from_str("rc=pcie0").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(!s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // accel flag.
         let s = SmmuCli::from_str("rc=pcie0,accel").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // Explicit oas=auto.
         let s = SmmuCli::from_str("rc=pcie0,oas=auto").unwrap();
@@ -6406,10 +6437,11 @@ mod tests {
         assert!(matches!(s.oas, SmmuOasCli::Fixed(52)));
 
         // All keys/flags together, order independent.
-        let s = SmmuCli::from_str("oas=48,accel,rc=pcie1").unwrap();
+        let s = SmmuCli::from_str("ssidsize=12,oas=48,accel,rc=pcie1").unwrap();
         assert_eq!(s.rc_name, "pcie1");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Fixed(48)));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(12)));
 
         // Missing required rc=.
         assert!(SmmuCli::from_str("accel").is_err());
@@ -6429,5 +6461,29 @@ mod tests {
 
         // Unknown flag.
         assert!(SmmuCli::from_str("rc=pcie0,turbo").is_err());
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_smmu_cli_ssidsize() {
+        for accel in ["", ",accel"] {
+            let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize=auto{accel}")).unwrap();
+            assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
+
+            // Device configuration validates supported widths, not the parser.
+            for bits in [0, 14, 20, 21, 255] {
+                let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize={bits}{accel}")).unwrap();
+                assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(n) if n == bits));
+            }
+        }
+
+        for value in ["256", "-1", "1.5", "", "big", "AUTO"] {
+            assert!(
+                SmmuCli::from_str(&format!("rc=pcie0,ssidsize={value}")).is_err(),
+                "accepted invalid ssidsize={value}"
+            );
+        }
+        assert!(SmmuCli::from_str("ssidsize=12").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,ssidsize=auto,ssidsize=12").is_err());
     }
 }

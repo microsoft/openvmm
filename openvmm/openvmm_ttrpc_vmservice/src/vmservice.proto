@@ -573,6 +573,11 @@ message SmmuConfig {
     // freezes the advertised value; later hot-add must be compatible.
     // A fixed value cannot exceed the physical SMMU's OAS with acceleration.
     optional uint32 oas_bits = 2;
+    // Fixed SubstreamID width in bits (0..=20). Zero disables substreams.
+    // Absent => CLI ssidsize=auto: zero in software mode; with acceleration,
+    // adopt the host SMMU's width before device start freezes capabilities.
+    // A fixed width must not exceed the host's width with acceleration.
+    optional uint32 ssid_bits = 3;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at

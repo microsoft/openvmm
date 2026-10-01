@@ -111,10 +111,17 @@ complex without a guest-visible IOMMU.
 
 `SmmuConfig.oas_bits` selects a fixed output address size in bits. Omit it for
 the CLI's `oas=auto` policy: initially 48 bits, adopting the physical SMMU's
-width when an accelerated device attaches before VM start. VM start freezes the
-advertised width; subsequent hot-add must be compatible with it. A fixed width
-cannot exceed the physical SMMU's width with acceleration. SMMU configuration
-cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
-SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+width when an accelerated device is available during VM construction. Later
+device attachments must support the resulting advertised width. A fixed width
+cannot exceed the physical SMMU's width with acceleration.
+
+`SmmuConfig.ssid_bits` selects a fixed SubstreamID width from 0 to 20.
+Explicit zero disables substreams. Omitting the field selects `ssidsize=auto`:
+zero in software mode, or the cold-plug host SMMU's width under acceleration.
+Later device attachments must support the resulting advertised width. A fixed
+width must not exceed the host's width under acceleration.
+
+SMMU configuration cannot be changed at runtime. See [the CLI reference](cli.md)
+and [Arm SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

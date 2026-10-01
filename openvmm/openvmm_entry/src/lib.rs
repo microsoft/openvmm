@@ -1056,6 +1056,12 @@ async fn vm_config_from_command_line(
                             openvmm_defs::config::SmmuOas::Fixed(bits)
                         }
                     },
+                    ssidsize: match s.ssidsize {
+                        cli_args::SmmuSsidSizeCli::Auto => openvmm_defs::config::SmmuSsidSize::Auto,
+                        cli_args::SmmuSsidSizeCli::Fixed(bits) => {
+                            openvmm_defs::config::SmmuSsidSize::Fixed(bits)
+                        }
+                    },
                 }
             }),
             #[cfg(guest_arch = "x86_64")]

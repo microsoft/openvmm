@@ -26,8 +26,8 @@ listed here reads as unsupported in the IDR registers:
 | Translation granule | 4 KiB only | |
 | Stream table format | linear only | no 2-level tables |
 | StreamID size | 16 bits | |
-| Substreams (SSID/PASID) | not supported | `IDR1.SSIDSIZE` = 0 |
-| ATS (`IDR0.ATS`) | not supported | `ATC_INV` is an illegal command |
+| Substreams (`IDR1.SSIDSIZE`) | configurable with `ssidsize` | `auto`: host-derived with `accel`, otherwise 0 |
+| ATS (`IDR0.ATS`) | host-derived with `accel` | otherwise `ATC_INV` is illegal |
 | Range invalidation (`IDR3.RIL`) | not supported | |
 | Fault model | terminate | `STALL_MODEL` = 1, no stalling |
 | Attribute override | not supported | `ATTR_TYPES_OVR`/`ATTR_PERMS_OVR` = 0 |
@@ -103,6 +103,18 @@ Invalidation is scoped to the vIOMMU rather than to individual devices, so a
 guest command is forwarded once regardless of how many devices sit behind
 the SMMU.
 
+### Substreams and ATS
+
+Accelerated SMMUs derive ATS support and the automatic SSID width from
+cold-plug devices. Without one, ATS and automatic substream support remain
+disabled. Capabilities are fixed at the first device start; later hotplug
+must be compatible. Restore requires matching capabilities.
+
+OpenVMM also reports ATS in IORT for root complexes whose SMMU supports it.
+Endpoint PASID capabilities are separate from the SMMU's SSID width.
+Software devices issue untagged DMA and honor the default-substream policy;
+they do not generate PASID-tagged requests. Only linear CD tables are supported.
+
 ### StreamID binding
 
 The host needs the guest's StreamID to route invalidations and faults, but
@@ -135,11 +147,11 @@ re-establishes it afterwards.
 ### Output address size
 
 The advertised output address size (`IDR5.OAS`) cannot exceed the physical
-SMMU's. With `oas=auto`, an accelerated device attached before the VM starts
-causes the emulated SMMU to adopt the host's OAS. Starting the VM freezes the
-advertised value. A device hotplugged after that point must support the frozen
-OAS; attachment fails rather than changing a capability the guest may already
-have observed. With a fixed `oas=N`, a value larger than the host's is rejected.
+SMMU's. With `oas=auto`, a cold-plug accelerated device causes the emulated
+SMMU to adopt the host's OAS. Device start freezes the advertised value.
+A device hotplugged after that point must support the frozen OAS; attachment
+fails rather than changing a capability the guest may already have observed.
+With a fixed `oas=N`, a value larger than the host's is rejected.
 
 ### Fault reporting
 
