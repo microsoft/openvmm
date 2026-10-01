@@ -18,6 +18,8 @@ mod emu;
 mod fingerprint;
 mod hypercalls;
 mod memory;
+#[cfg(guest_arch = "x86_64")]
+mod profile_features;
 mod regs;
 mod synic;
 #[cfg(guest_arch = "x86_64")]
@@ -1609,6 +1611,9 @@ impl VtlPartition {
         let time_abi = match &config.time_abi {
             Some(time_abi) => Some(time_abi::WhpTimeAbi::configure(
                 time_abi,
+                // The features derive from the CPU profile once
+                // `TimeAbiConfig` carries it.
+                None,
                 &mut whp_config,
                 &mut extended_exits,
             )?),
