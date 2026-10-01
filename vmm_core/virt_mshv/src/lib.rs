@@ -841,6 +841,13 @@ enum ErrorInner {
         error: KernelError,
         ty: u8,
     },
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to re-assert pending LAPIC vector {vector:#x}")]
+    AssertPendingInterrupt {
+        #[source]
+        error: KernelError,
+        vector: u8,
+    },
     #[error("failed to reset state")]
     ResetState(#[source] Box<virt::state::StateError<Error>>),
     #[error("install intercept failed")]
