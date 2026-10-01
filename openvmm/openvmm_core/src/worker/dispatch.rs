@@ -1267,14 +1267,16 @@ impl InitializedVm {
         #[cfg(guest_arch = "x86_64")]
         let (time_abi_partition, time_abi_config) = match &cfg.microvm.time_abi {
             Some(parameters) if cfg.machine_profile == MachineProfile::Microvm => {
-                let cpu_profile = time_abi::select_cpu_profile(
-                    &parameters.cpu_profile,
-                    &cfg.microvm.hypervisor_id,
-                )?;
-                let (msrs, config) =
-                    time_abi::partition_config(processor_topology.vp_count(), cpu_profile.clone());
+                let profile = time_abi::select_cpu_profile(&parameters.cpu_profile)?;
+                let effective_cpuid =
+                    Arc::new(time_abi::effective_cpuid(profile, &processor_topology)?);
+                let (msrs, config) = time_abi::partition_config(profile, &effective_cpuid);
                 (
-                    Some(time_abi::PartitionTimeAbi { msrs, cpu_profile }),
+                    Some(time_abi::PartitionTimeAbi {
+                        msrs,
+                        profile,
+                        effective_cpuid,
+                    }),
                     Some(config),
                 )
             }
@@ -1945,7 +1947,11 @@ impl InitializedVm {
 
         #[cfg(guest_arch = "x86_64")]
         let time_abi_state = match time_abi_partition {
-            Some(time_abi::PartitionTimeAbi { msrs, cpu_profile }) => {
+            Some(time_abi::PartitionTimeAbi {
+                msrs,
+                profile,
+                effective_cpuid,
+            }) => {
                 let parameters = cfg
                     .microvm
                     .time_abi
@@ -1959,21 +1965,25 @@ impl InitializedVm {
                 );
                 if let Some(input) = restore {
                     anyhow::ensure!(
-                        input.cpu_profile.id == cpu_profile,
-                        "the partition's CPU profile '{cpu_profile}' is not the snapshot's '{}'",
+                        input.cpu_profile.id == profile.id(),
+                        "the partition's CPU profile '{}' is not the snapshot's '{}'",
+                        profile.id(),
                         input.cpu_profile.id
                     );
-                    time_abi::check_cpu_surface(
-                        partition.as_ref(),
-                        hypervisor,
-                        &input.cpu_profile,
-                    )?;
+                    time_abi::check_recorded_cpuid(&effective_cpuid, &input.cpu_profile)?;
                 }
+                time_abi::check_presented_cpuid(
+                    partition.as_ref(),
+                    hypervisor,
+                    profile,
+                    &effective_cpuid,
+                )?;
+                time_abi::check_profile_support(partition.as_ref(), hypervisor, profile)?;
                 let report = time_abi::declare_rates(
                     partition.as_ref(),
                     &msrs,
                     hypervisor,
-                    cpu_profile,
+                    profile.id().to_owned(),
                     restore.map(|input| virt::time_abi::DeclaredRates {
                         tsc_hz: input.contract.tsc_frequency_hz,
                         apic_hz: input.contract.apic_frequency_hz,
@@ -1993,6 +2003,8 @@ impl InitializedVm {
                 Some(time_abi::TimeAbiState {
                     _unit: unit,
                     msrs,
+                    profile,
+                    effective_cpuid,
                     report,
                     generation: parameters.generation,
                     hooks: parameters.hooks.clone(),

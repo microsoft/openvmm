@@ -774,7 +774,7 @@ mod tests {
             capture_generation,
         });
         contract.cpu_profile = Some(SnapshotCpuProfile {
-            id: "interim.host.kvm.v1".to_owned(),
+            id: "intel.skylake-sp.v1".to_owned(),
             sha256: Vec::new(),
             profile: Vec::new(),
             effective_cpuid: Vec::new(),

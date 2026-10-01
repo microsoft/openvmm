@@ -12,6 +12,8 @@ use super::LoadedVm;
 use crate::partition::HvlitePartition;
 use anyhow::Context as _;
 use chipset_resources::microvm_time::RestoreTimeRecord;
+use cpu_profile::CpuProfile;
+use cpu_profile::EffectiveCpuid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use openvmm_defs::time_abi::RestoreTimeInput;
@@ -23,6 +25,8 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use std::sync::Arc;
 use std::time::Duration;
+use virt::CpuidLeaf;
+use virt::CpuidLeafSet;
 use virt::time_abi::DeclaredRates;
 use virt::time_abi::DowntimeSource;
 use virt::time_abi::IdentityMsrRoute;
@@ -35,6 +39,9 @@ use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiMsrs;
 use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::TscSyncMethod;
+use virt::time_abi::surface::SupportedCpuSurface;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::ApicMode;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -42,12 +49,19 @@ use vmcore::save_restore::SavedStateBlob;
 /// The name of the time ABI state unit.
 pub(super) const TIME_ABI_UNIT: &str = "time-abi";
 
+/// The most differences an `E_CPU_SURFACE` read-back failure names.
+const MAX_REPORTED_CPUID_DIFFERENCES: usize = 16;
+
 /// The time ABI state of a loaded VM.
 pub(super) struct TimeAbiState {
     /// The `time-abi` state unit.
     pub _unit: SpawnedUnit<TimeAbiUnit>,
     /// The identity MSR handler, holding the declared rates.
     pub msrs: Arc<TimeAbiMsrs>,
+    /// The CPU profile.
+    pub profile: &'static CpuProfile,
+    /// The effective CPUID of the partition.
+    pub effective_cpuid: Arc<EffectiveCpuid>,
     /// The preflight report.
     pub report: TimeAbiReport,
     /// The generation counter of this VM process.
@@ -60,40 +74,97 @@ pub(super) struct TimeAbiState {
 pub(super) struct PartitionTimeAbi {
     /// The identity MSR handler.
     pub msrs: Arc<TimeAbiMsrs>,
-    /// The ID of the partition's CPU profile.
-    pub cpu_profile: String,
+    /// The CPU profile.
+    pub profile: &'static CpuProfile,
+    /// The effective CPUID of the partition.
+    pub effective_cpuid: Arc<EffectiveCpuid>,
 }
 
 /// Returns the identity MSR handler and the time ABI configuration of a new
-/// partition with `vp_count` VPs and the CPU profile `cpu_profile`.
+/// partition with the CPU profile `profile` and its effective CPUID.
 pub(super) fn partition_config(
-    vp_count: u32,
-    cpu_profile: String,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
 ) -> (Arc<TimeAbiMsrs>, TimeAbiConfig) {
     let msrs = Arc::new(TimeAbiMsrs::new());
     let config = TimeAbiConfig {
-        cpuid: Arc::new(virt::time_abi::identity::time_abi_cpuid(vp_count, true)),
+        cpuid: Arc::new(backend_cpuid(effective_cpuid)),
         msrs: msrs.clone(),
-        cpu_profile,
+        cpu_profile: profile.id().to_owned(),
     };
     (msrs, config)
 }
 
-/// Selects the CPU profile of a new partition before it is created, and
-/// returns its ID.
+/// Selects the CPU profile of a new partition before it is created.
 ///
 /// `requested` is `--cpu-profile` on cold boot (`auto` or an ID), or the
-/// profile a snapshot recorded on restore. `auto` and a pinned ID select a
-/// pinned profile whose generation contains the host CPU
-/// (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`). An
-/// interim ID must be the backend's own (`E_PROFILE_UNKNOWN`).
-pub(super) fn select_cpu_profile(requested: &str, hypervisor: &str) -> anyhow::Result<String> {
-    if virt::time_abi::surface::is_interim_cpu_profile(requested) {
-        virt::time_abi::surface::check_interim_cpu_profile(requested, hypervisor)?;
-        return Ok(requested.to_owned());
-    }
-    let profile = cpu_profile::select(requested, &host_cpu()?)?;
-    Ok(profile.id().to_owned())
+/// profile a snapshot recorded on restore. It selects a pinned profile whose
+/// generation contains the host CPU (`E_PROFILE_HOST_UNKNOWN`,
+/// `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`).
+pub(super) fn select_cpu_profile(requested: &str) -> anyhow::Result<&'static CpuProfile> {
+    Ok(cpu_profile::select(requested, &host_cpu()?)?)
+}
+
+/// Builds the effective CPUID of a partition with `profile` and `topology`:
+/// the profile completed with OpenVMM's topology leaves, the APIC mode, and
+/// the time ABI's identity and explicit zero leaves. Fails with
+/// `E_CPU_SURFACE` if they do not complete the profile exactly.
+pub(super) fn effective_cpuid(
+    profile: &CpuProfile,
+    topology: &ProcessorTopology,
+) -> anyhow::Result<EffectiveCpuid> {
+    let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
+        function: leaf.function,
+        index: leaf.index,
+        result: leaf.result,
+        mask: leaf.mask,
+    };
+    let mut topology_leaves = Vec::new();
+    virt::x86::topology::topology_cpuid(
+        topology,
+        &|leaf, subleaf| profile.lookup(leaf, subleaf),
+        &mut topology_leaves,
+    )
+    .map_err(|err| {
+        TimeAbiError::new(
+            TimeAbiCode::CpuSurface,
+            format!(
+                "cannot build the topology CPUID of CPU profile {}: {err}",
+                profile.id()
+            ),
+        )
+    })?;
+    let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
+    vm.push(cpu_profile::x2apic_cpuid(!matches!(
+        topology.apic_mode(),
+        ApicMode::XApic
+    )));
+    let identity: Vec<_> = virt::time_abi::identity::identity_cpuid_leaves(topology.vp_count())
+        .iter()
+        .map(result)
+        .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
+        .collect();
+    Ok(profile.effective_cpuid(&vm, &identity)?)
+}
+
+/// Returns the CPUID results a backend programs for `effective`: every
+/// result of the effective CPUID, with the per-VP APIC identity bits
+/// unmasked, so that the backend sets each VP's own.
+fn backend_cpuid(effective: &EffectiveCpuid) -> CpuidLeafSet {
+    CpuidLeafSet::new(
+        effective
+            .results()
+            .map(|result| {
+                let per_vp = virt::x86::topology::per_vp_cpuid_bits(result.function);
+                CpuidLeaf {
+                    function: result.function,
+                    index: result.index,
+                    result: result.result,
+                    mask: [0, 1, 2, 3].map(|register| result.mask[register] & !per_vp[register]),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Returns the vendor and signature of the host CPU (`E_CPU_GENERATION` if
@@ -186,17 +257,124 @@ pub(super) fn declare_rates(
     })
 }
 
-/// Compares the effective CPUID the backend programmed with the snapshot's
-/// record (`E_CPU_SURFACE`): the effective-CPUID check of restore step 8 of
-/// the specification.
-pub(super) fn check_cpu_surface(
-    partition: &dyn HvlitePartition,
-    hypervisor: &str,
+/// Compares the effective CPUID recomputed for this partition with the one
+/// the snapshot recorded: restore step 8 of the specification
+/// (`E_PROFILE_DIGEST` if the record does not verify, `E_CPU_SURFACE` if the
+/// two differ).
+pub(super) fn check_recorded_cpuid(
+    effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
-    let effective = backend(partition, hypervisor)?.effective_cpuid()?;
-    virt::time_abi::surface::check_effective_cpuid(&effective, &record.effective_cpuid)?;
+    let recorded =
+        EffectiveCpuid::decode_verified(&record.effective_cpuid, &record.effective_cpuid_sha256)?;
+    effective_cpuid.check_matches(&recorded)?;
     Ok(())
+}
+
+/// Checks that VP 0 observes the effective CPUID, on cold boot and restore
+/// before any VP runs (`E_CPU_SURFACE`): the backend's report, looked up as
+/// the guest's CPUID instruction finds it, equals every governed leaf under
+/// its masks, and a leaf without a subleaf is read at subleaf 0.
+pub(super) fn check_presented_cpuid(
+    partition: &dyn HvlitePartition,
+    hypervisor: &str,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+) -> anyhow::Result<()> {
+    let presented = CpuidLeafSet::new(backend(partition, hypervisor)?.effective_cpuid()?);
+    let differences = cpuid_differences(&presented, effective_cpuid);
+    if differences.is_empty() {
+        return Ok(());
+    }
+    let count = differences.len();
+    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
+    Err(TimeAbiError::new(
+        TimeAbiCode::CpuSurface,
+        format!(
+            "VP 0 does not observe the effective CPUID of CPU profile {} in {count} results: {}",
+            profile.id(),
+            shown.join("; ")
+        ),
+    )
+    .into())
+}
+
+/// Lists every result of `effective` that `presented` does not match under
+/// the result's masks.
+fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Vec<String> {
+    const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
+    effective
+        .results()
+        .filter_map(|expected| {
+            let subleaf = expected.index.unwrap_or(0);
+            let actual = presented.result(expected.function, subleaf, &[0; 4]);
+            let registers: Vec<String> = (0..4)
+                .filter(|&register| {
+                    (actual[register] ^ expected.result[register]) & expected.mask[register] != 0
+                })
+                .map(|register| {
+                    format!(
+                        "{} is {:#010x}, not {:#010x} under mask {:#010x}",
+                        REGISTERS[register],
+                        actual[register],
+                        expected.result[register],
+                        expected.mask[register]
+                    )
+                })
+                .collect();
+            (!registers.is_empty()).then(|| {
+                let leaf = match expected.index {
+                    Some(index) => format!("CPUID {:#x}.{index}", expected.function),
+                    None => format!("CPUID {:#x}", expected.function),
+                };
+                format!("{leaf} {}", registers.join(", "))
+            })
+        })
+        .collect()
+}
+
+/// Checks that the backend supports the CPU profile (`E_PROFILE_UNSUPPORTED`)
+/// when it reports its CPU surface, and returns whether it did. Until every
+/// backend reports one, verification mode checks support from the backend's
+/// CPU fingerprint instead.
+pub(super) fn check_profile_support(
+    partition: &dyn HvlitePartition,
+    hypervisor: &str,
+    profile: &CpuProfile,
+) -> anyhow::Result<bool> {
+    let Some(surface) = backend(partition, hypervisor)?.supported_cpu_surface()? else {
+        tracing::info!(
+            hypervisor,
+            cpu_profile = profile.id(),
+            "the backend reports no CPU surface; profile support is checked in verification mode"
+        );
+        return Ok(false);
+    };
+    cpu_profile::verify_support(profile, &host_cpu_surface(&surface))?;
+    Ok(true)
+}
+
+/// Converts a backend's CPU surface to the profile crate's form.
+fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+    let mut cpuid = surface
+        .cpuid
+        .iter()
+        .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+        .collect();
+    cpu_profile::cpuid::normalize(&mut cpuid);
+    cpu_profile::HostCpuSurface {
+        cpuid,
+        physical_address_width: surface.physical_address_width,
+        msrs: surface
+            .msrs
+            .iter()
+            .map(|msr| cpu_profile::SupportedMsr {
+                index: msr.index,
+                supported: msr.supported,
+                controllable: msr.controllable,
+            })
+            .collect(),
+    }
 }
 
 /// Takes the time ABI records of a capture: capture steps 2 and 3 of the
@@ -214,16 +392,8 @@ pub(super) fn capture_records(
         .context("the time ABI rates are not declared")?;
     let anchor = backend.capture_anchor()?;
     let identity = virt::time_abi::host::host_identity()?;
-    let effective_cpuid = virt::time_abi::surface::encode_cpuid(&backend.effective_cpuid()?);
-    // A pinned profile is recorded with its canonical document; an interim
-    // profile has none.
-    let (profile_sha256, profile) = match cpu_profile::pinned(&state.report.cpu_profile) {
-        Some(profile) => {
-            let encoded = profile.encode();
-            (sha2::Sha256::digest(&encoded).to_vec(), encoded)
-        }
-        None => (sha2::Sha256::digest(b"").to_vec(), Vec::new()),
-    };
+    let profile = state.profile.encode();
+    let effective_cpuid = state.effective_cpuid.encode();
     tracing::info!(
         tsc = anchor.tsc,
         utc_ns = anchor.sample.utc_ns,
@@ -246,8 +416,8 @@ pub(super) fn capture_records(
             capture_generation: state.generation,
         },
         cpu_profile: SnapshotCpuProfile {
-            id: state.report.cpu_profile.clone(),
-            sha256: profile_sha256,
+            id: state.profile.id().to_owned(),
+            sha256: sha2::Sha256::digest(&profile).to_vec(),
             profile,
             effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
             effective_cpuid,
@@ -383,16 +553,40 @@ impl StateUnit for TimeAbiUnit {
 mod tests {
     use super::*;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+    use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
+    use vm_topology::processor::x86::X2ApicState;
 
     const TEST_PROFILE: &str = "intel.icelake-sp.v1";
+
+    fn test_profile() -> &'static CpuProfile {
+        cpu_profile::pinned(TEST_PROFILE).unwrap()
+    }
+
+    fn topology(vp_count: u32, x2apic: X2ApicState) -> ProcessorTopology {
+        TopologyBuilder::new_x86()
+            .vps_per_socket(vp_count)
+            .x2apic(x2apic)
+            .build(vp_count)
+            .unwrap()
+    }
+
+    /// Returns the MSR handler, the configuration, and the effective CPUID of
+    /// a partition with `vp_count` VPs and the test profile.
+    fn test_config(vp_count: u32) -> (Arc<TimeAbiMsrs>, TimeAbiConfig, EffectiveCpuid) {
+        let profile = test_profile();
+        let effective =
+            effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
+        let (msrs, config) = partition_config(profile, &effective);
+        (msrs, config, effective)
+    }
 
     fn test_unit(msrs: Arc<TimeAbiMsrs>) -> TimeAbiUnit {
         TimeAbiUnit {
             msrs,
             report: TimeAbiReport {
                 hypervisor: "kvm".to_owned(),
-                cpu_profile: "interim.host.kvm.v1".to_owned(),
+                cpu_profile: TEST_PROFILE.to_owned(),
                 msr_route: IdentityMsrRoute::ExitToVmm,
                 sync: TscSyncMethod::CommonOffset,
                 native_tsc_hz: 2_100_000_000,
@@ -401,10 +595,18 @@ mod tests {
         }
     }
 
+    fn code<T: std::fmt::Debug>(result: anyhow::Result<T>) -> String {
+        let message = format!("{:#}", result.unwrap_err());
+        message
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']'))
+            .map_or(message.clone(), |(code, _)| code.to_owned())
+    }
+
     #[test]
     fn unit_saves_restores_and_resets_the_invariant_control() {
         futures::executor::block_on(async {
-            let (msrs, config) = partition_config(4, TEST_PROFILE.to_owned());
+            let (msrs, config, _) = test_config(4);
             assert!(Arc::ptr_eq(&msrs, &config.msrs));
             msrs.write(VpIndex::BSP, MSR_TSC_INVARIANT_CONTROL, 1)
                 .unwrap()
@@ -412,7 +614,7 @@ mod tests {
             let mut unit = test_unit(msrs.clone());
             let saved = unit.save().await.unwrap().unwrap();
 
-            let (restored, _) = partition_config(4, TEST_PROFILE.to_owned());
+            let (restored, _, _) = test_config(4);
             let mut restored_unit = test_unit(restored.clone());
             restored_unit.restore(saved).await.unwrap();
             assert_eq!(restored.tsc_invariant_control(), 1);
@@ -424,7 +626,7 @@ mod tests {
 
     #[test]
     fn unit_inspects_the_report() {
-        let (msrs, _) = partition_config(1, TEST_PROFILE.to_owned());
+        let (msrs, _, _) = test_config(1);
         let mut unit = test_unit(msrs);
         let mut inspection = inspect::inspect("", &mut unit);
         futures::executor::block_on(inspection.resolve());
@@ -444,50 +646,118 @@ mod tests {
         }
     }
 
+    /// Every pinned profile completes, for every topology, into a partition
+    /// CPUID that carries the whole effective CPUID, the identity, and the
+    /// time bits, with only the per-VP bits left to the backend.
     #[test]
-    fn partition_cpuid_carries_the_identity() {
-        let (_, config) = partition_config(2, TEST_PROFILE.to_owned());
-        assert_eq!(config.cpu_profile, TEST_PROFILE);
-        let mut cpuid = |leaf, subleaf| config.cpuid.result(leaf, subleaf, &[0; 4]);
-        virt::time_abi::identity::check_identity(&mut cpuid, 2).unwrap();
+    fn partition_cpuid_is_the_complete_profile() {
+        for profile in cpu_profile::pinned_profiles() {
+            for vp_count in [1, 2, 8] {
+                for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
+                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
+                    let (_, config) = partition_config(profile, &effective);
+                    assert_eq!(config.cpu_profile, profile.id());
+
+                    let mut cpuid = |leaf, subleaf| config.cpuid.result(leaf, subleaf, &[0; 4]);
+                    virt::time_abi::identity::check_identity(&mut cpuid, vp_count).unwrap();
+                    virt::time_abi::identity::check_time_bits(&mut cpuid, true).unwrap();
+                    assert!(
+                        cpuid_differences(&config.cpuid, &effective).is_empty(),
+                        "{} at {vp_count} VPs",
+                        profile.id()
+                    );
+                    let x2apic_bit = effective.lookup(1, 0)[2] & (1 << 21) != 0;
+                    assert_eq!(x2apic_bit, x2apic == X2ApicState::Supported);
+
+                    for leaf in config.cpuid.leaves() {
+                        let per_vp = virt::x86::topology::per_vp_cpuid_bits(leaf.function);
+                        for (mask, bits) in leaf.mask.iter().zip(per_vp) {
+                            assert_eq!(mask & bits, 0, "{leaf:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    fn code(result: anyhow::Result<String>) -> String {
-        let message = format!("{:#}", result.unwrap_err());
-        message
-            .strip_prefix('[')
-            .and_then(|rest| rest.split_once(']'))
-            .map_or(message.clone(), |(code, _)| code.to_owned())
+    #[test]
+    fn presented_cpuid_must_match_under_the_masks() {
+        let (_, config, effective) = test_config(2);
+        let presented = config.cpuid.leaves().to_vec();
+        assert!(cpuid_differences(&CpuidLeafSet::new(presented.clone()), &effective).is_empty());
+
+        // A feature bit the profile sets (AVX2) that VP 0 does not see.
+        let mut changed = presented.clone();
+        changed.push(
+            CpuidLeaf::new(7, [0; 4])
+                .indexed(0)
+                .masked([0, 1 << 5, 0, 0]),
+        );
+        let differences = cpuid_differences(&CpuidLeafSet::new(changed), &effective);
+        assert_eq!(differences.len(), 1, "{differences:?}");
+        assert!(
+            differences[0].starts_with("CPUID 0x7.0 EBX is"),
+            "{differences:?}"
+        );
+
+        // Runtime-owned bits, such as OSXSAVE, are not part of the profile.
+        let mut running = presented.clone();
+        running.push(CpuidLeaf::new(1, [0, 0, 1 << 27, 0]).masked([0, 0, 1 << 27, 0]));
+        assert!(cpuid_differences(&CpuidLeafSet::new(running), &effective).is_empty());
+
+        // A leaf VP 0 does not report reads as zeros.
+        let without_brand: Vec<_> = presented
+            .iter()
+            .copied()
+            .filter(|leaf| leaf.function != 0x8000_0002)
+            .collect();
+        let differences = cpuid_differences(&CpuidLeafSet::new(without_brand), &effective);
+        assert_eq!(differences.len(), 1, "{differences:?}");
+        assert!(differences[0].starts_with("CPUID 0x80000002 "));
+    }
+
+    #[test]
+    fn recorded_cpuid_verifies_and_must_match() {
+        let (_, _, effective) = test_config(2);
+        let profile = test_profile().encode();
+        let record = SnapshotCpuProfile {
+            id: TEST_PROFILE.to_owned(),
+            sha256: sha2::Sha256::digest(&profile).to_vec(),
+            profile,
+            effective_cpuid: effective.encode(),
+            effective_cpuid_sha256: effective.digest().to_vec(),
+            capture_cpu_signature: 0,
+        };
+        check_recorded_cpuid(&effective, &record).unwrap();
+
+        let (_, _, other) = test_config(4);
+        assert_eq!(code(check_recorded_cpuid(&other, &record)), "E_CPU_SURFACE");
+
+        let mut tampered = record.clone();
+        tampered.effective_cpuid_sha256[0] ^= 1;
+        assert_eq!(
+            code(check_recorded_cpuid(&effective, &tampered)),
+            "E_PROFILE_DIGEST"
+        );
     }
 
     #[test]
     fn cpu_profile_selection() {
-        assert_eq!(
-            select_cpu_profile("interim.host.kvm.v1", "kvm").unwrap(),
-            "interim.host.kvm.v1"
-        );
-        assert_eq!(
-            code(select_cpu_profile("interim.host.kvm.v1", "mshv")),
-            "E_PROFILE_UNKNOWN"
-        );
-        assert_eq!(
-            code(select_cpu_profile("intel.cascadelake.v1", "kvm")),
-            "E_PROFILE_UNKNOWN"
-        );
+        for requested in ["interim.host.kvm.v1", "intel.cascadelake.v1"] {
+            assert_eq!(code(select_cpu_profile(requested)), "E_PROFILE_UNKNOWN");
+        }
 
         // `auto` selects the pinned profile of the host's generation, if any,
         // and a pinned ID selects its profile only in its generation.
         let host = host_cpu().unwrap();
-        match select_cpu_profile("auto", "whp") {
-            Ok(id) => assert!(
-                cpu_profile::check_generation(cpu_profile::pinned(&id).unwrap(), &host).is_ok()
-            ),
-            Err(err) => assert_eq!(code(Err(err)), "E_PROFILE_HOST_UNKNOWN"),
+        match select_cpu_profile("auto") {
+            Ok(profile) => assert!(cpu_profile::check_generation(profile, &host).is_ok()),
+            Err(err) => assert_eq!(code::<()>(Err(err)), "E_PROFILE_HOST_UNKNOWN"),
         }
         for profile in cpu_profile::pinned_profiles() {
-            let selected = select_cpu_profile(profile.id(), "kvm");
+            let selected = select_cpu_profile(profile.id());
             if cpu_profile::check_generation(profile, &host).is_ok() {
-                assert_eq!(selected.unwrap(), profile.id());
+                assert_eq!(selected.unwrap().id(), profile.id());
             } else {
                 assert_eq!(code(selected), "E_CPU_GENERATION");
             }
