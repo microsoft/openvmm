@@ -658,8 +658,8 @@ impl virt::Processor for MshvProcessor<'_> {
 
         // A LAPIC state written since the last run may hold a pending vector
         // that the hypervisor hasn't delivered, and partition time may have
-        // been frozen and thawed since then (the legacy restore clock does).
-        // Assert it again now that the VP is about to run.
+        // been frozen and thawed since then. Assert it again now that the VP
+        // is about to run.
         #[cfg(guest_arch = "x86_64")]
         if vpinner.lapic_written.swap(false, Ordering::AcqRel) {
             if let Err(err) = self.reassert_pending_interrupt() {
@@ -848,13 +848,6 @@ enum ErrorInner {
     #[error("register access error")]
     Register(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]
-    #[error("failed to synchronize restored VP {vp_index} TSC")]
-    SynchronizeTsc {
-        vp_index: u32,
-        #[source]
-        error: KernelError,
-    },
-    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get VP state {ty}")]
     GetVpState {
         #[source]
@@ -887,14 +880,6 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("unsupported processor vendor: {0:?}")]
     UnsupportedProcessorVendor(hvdef::HvProcessorVendor),
-    #[cfg(guest_arch = "x86_64")]
-    #[error(
-        "TSC frequency mismatch between snapshot ({saved} Hz) and destination ({destination} Hz)"
-    )]
-    TscFrequencyMismatch { saved: u64, destination: u64 },
-    #[cfg(guest_arch = "x86_64")]
-    #[error(transparent)]
-    TscFrequencyCpuid(#[from] virt::x86::tsc::TscFrequencyCpuidError),
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),

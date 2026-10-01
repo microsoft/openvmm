@@ -142,10 +142,7 @@ impl virt::Hypervisor for LinuxMshv {
                 let features = time_abi::partition_features(&time_abi.cpu_profile, host)?;
                 (time_abi::with_features(create_args, features), Some(host))
             }
-            None => (
-                tsc::with_features1(create_args, config.versioned_cpu_contract),
-                None,
-            ),
+            None => (tsc::with_features1(create_args), None),
         };
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
@@ -556,7 +553,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         }
         let cpuid = match &self.config.time_abi {
             Some(time_abi) => time_abi::partition_cpuid(&time_abi.cpuid),
-            None => virt::CpuidLeafSet::new(tsc::add_cpuid_leaves(&self.vmfd, cpuid)?),
+            None => virt::CpuidLeafSet::new(cpuid),
         };
 
         // A time ABI partition reads the host's CPUID once: its supported CPU
@@ -671,22 +668,6 @@ impl virt::Partition for MshvPartition {
 
     fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
         virt::x86::CpuCompatibilityContract::new(self.inner.caps(), &self.inner.config.cpuid)
-    }
-
-    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        self.inner.tsc_frequency_hz()
-    }
-
-    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
-        self.inner.set_tsc_frequency_hz(frequency_hz)
-    }
-
-    fn advance_snapshot_time(&self, _duration: std::time::Duration) -> Result<(), Self::Error> {
-        self.inner.advance_snapshot_time()
-    }
-
-    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        self.inner.apic_frequency_hz()
     }
 
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
@@ -846,8 +827,8 @@ impl virt::irqcon::IoApicRouting for MshvPartitionInner {
 
 impl MshvPartitionInner {
     /// Creates the hypervisor VP and records that it exists. Every VP is
-    /// created here, so restored-TSC synchronization sees exactly the created
-    /// VPs.
+    /// created here, so the time ABI's synchronized TSC set sees exactly the
+    /// created VPs.
     ///
     /// A time ABI partition's extended topology leaves get this VP's own
     /// results here, with its x2APIC ID in EDX: the hypervisor does not
