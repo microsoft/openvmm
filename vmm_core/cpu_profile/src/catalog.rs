@@ -65,11 +65,10 @@ pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
 }
 
 /// Returns the name of the generation of the host CPU, if a pinned profile
-/// serves it.
+/// serves it: the generation of the profile [`select_auto`] selects.
 pub fn generation_of(host: &HostCpuSignature) -> Option<&'static str> {
-    pinned_profiles()
-        .iter()
-        .find(|profile| profile.generation().contains(profile.vendor(), host))
+    select_auto(host)
+        .ok()
         .map(|profile| profile.generation().name.as_str())
 }
 
@@ -77,18 +76,52 @@ pub fn generation_of(host: &HostCpuSignature) -> Option<&'static str> {
 /// revision.
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN` when no pinned profile serves the
-/// host; there is no host CPUID passthrough.
+/// host, or when profiles of more than one generation do; there is no host
+/// CPUID passthrough.
 pub fn select_auto(host: &HostCpuSignature) -> Result<&'static CpuProfile, ProfileError> {
-    pinned_profiles()
+    select_auto_in(pinned_profiles(), host)
+}
+
+fn select_auto_in<'a>(
+    profiles: &'a [CpuProfile],
+    host: &HostCpuSignature,
+) -> Result<&'a CpuProfile, ProfileError> {
+    let ids = || {
+        profiles
+            .iter()
+            .map(|profile| profile.id())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let matches = profiles
         .iter()
         .filter(|profile| profile.generation().contains(profile.vendor(), host))
+        .collect::<Vec<_>>();
+    let mut generations = matches
+        .iter()
+        .map(|profile| profile.generation().name.as_str())
+        .collect::<Vec<_>>();
+    generations.sort_unstable();
+    generations.dedup();
+    if generations.len() > 1 {
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileHostUnknown,
+            format!(
+                "the host CPU, {host}, is in more than one CPU generation ({}); pinned profiles: {}",
+                generations.join(", "),
+                ids()
+            ),
+        ));
+    }
+    matches
+        .into_iter()
         .max_by_key(|profile| revision(profile.id()))
         .ok_or_else(|| {
             ProfileError::new(
                 ProfileErrorCode::ProfileHostUnknown,
                 format!(
                     "no pinned CPU profile serves the host CPU, {host}; pinned profiles: {}",
-                    pinned_ids()
+                    ids()
                 ),
             )
         })
@@ -306,6 +339,41 @@ mod tests {
             "{error}"
         );
         assert!(error.message.contains("model 85 stepping 7"), "{error}");
+    }
+
+    #[test]
+    fn auto_takes_the_latest_revision_and_rejects_ambiguous_generations() {
+        let json = profile("intel.skylake-sp.v1").to_pretty_json();
+        let variant =
+            |from: &str, to: &str| CpuProfile::from_pretty_json(&json.replace(from, to)).unwrap();
+        let host = intel(SKYLAKE);
+        let revisions = [
+            variant("intel.skylake-sp.v1", "intel.skylake-sp.v2"),
+            variant("intel.skylake-sp.v1", "intel.skylake-sp.v10"),
+            CpuProfile::from_pretty_json(&json).unwrap(),
+        ];
+        assert_eq!(
+            select_auto_in(&revisions, &host).unwrap().id(),
+            "intel.skylake-sp.v10"
+        );
+
+        // Two generations that both cover the host.
+        let ambiguous = [
+            CpuProfile::from_pretty_json(&json).unwrap(),
+            variant("skylake-sp", "skylake-x"),
+        ];
+        let error = select_auto_in(&ambiguous, &host).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileHostUnknown);
+        assert!(
+            error
+                .message
+                .contains("is in more than one CPU generation (skylake-sp, skylake-x)"),
+            "{error}"
+        );
+        assert_eq!(
+            code(select_auto_in(&ambiguous, &intel(ICELAKE))),
+            ProfileErrorCode::ProfileHostUnknown
+        );
     }
 
     #[test]

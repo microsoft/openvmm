@@ -120,27 +120,22 @@ pub(crate) fn register_class(leaf: u32, subleaf: u32, register: usize) -> Regist
 /// numeric limit, the exact XSAVE layout of every enabled component, the
 /// guest physical address width, and every pinned MSR value.
 ///
-/// Fails with `E_PROFILE_UNSUPPORTED`, naming the first missing leaf,
-/// register, and bits.
+/// Fails with `E_PROFILE_UNSUPPORTED`, naming every violation at once: each
+/// missing leaf, subleaf, register, and bit, as [`support_violations`] lists
+/// them.
 pub fn verify_support(profile: &CpuProfile, surface: &HostCpuSurface) -> Result<(), ProfileError> {
     let violations = support_violations(profile, surface);
-    match violations.split_first() {
-        None => Ok(()),
-        Some((first, rest)) => {
-            let more = if rest.is_empty() {
-                String::new()
-            } else {
-                format!(" (and {} more)", rest.len())
-            };
-            Err(ProfileError::new(
-                ProfileErrorCode::ProfileUnsupported,
-                format!(
-                    "the backend does not support CPU profile {}: {first}{more}",
-                    profile.id()
-                ),
-            ))
-        }
+    if violations.is_empty() {
+        return Ok(());
     }
+    Err(ProfileError::new(
+        ProfileErrorCode::ProfileUnsupported,
+        format!(
+            "the backend does not support CPU profile {}: {}",
+            profile.id(),
+            violations.join("; ")
+        ),
+    ))
 }
 
 /// Returns every way in which `surface` falls short of `profile`, in the
@@ -340,11 +335,10 @@ mod tests {
         edit(&mut surface, 7, 0, 1, |ebx| ebx & !(1 << 16));
         edit(&mut surface, 7, 2, 3, |edx| edx & !1);
         let message = unsupported(profile, &surface);
-        assert!(
-            message.ends_with(
-                "intel.icelake-sp.v1: CPUID 0x7.0 EBX bit 16 is not supported (and 1 more)"
-            ),
-            "{message}"
+        assert_eq!(
+            message,
+            "the backend does not support CPU profile intel.icelake-sp.v1: \
+             CPUID 0x7.0 EBX bit 16 is not supported; CPUID 0x7.2 EDX bit 0 is not supported"
         );
 
         let mut surface = self::surface(profile);
