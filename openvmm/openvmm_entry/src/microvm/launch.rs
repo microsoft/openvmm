@@ -170,6 +170,20 @@ impl MicrovmLaunch {
             .then_some(Duration::from_millis(opt.microvm.restore_gate_timeout_ms))
     }
 
+    /// Takes the sender that seals the time fields of a time ABI restore
+    /// packet, for the restoring worker.
+    pub(crate) fn take_restore_time_record(
+        &mut self,
+    ) -> Option<mesh::OneshotSender<chipset_resources::microvm_time::RestoreTimeRecord>> {
+        self.resources.restore_time_record.take()
+    }
+
+    /// Takes the receiver notified when the guest first selects a time ABI
+    /// restore packet, for the restoring worker's profile.
+    pub(crate) fn take_restore_packet_selected(&mut self) -> Option<mesh::OneshotReceiver<()>> {
+        self.resources.restore_packet_selected.take()
+    }
+
     /// Creates the channels that carry guest-requested snapshot boundaries from
     /// the VM worker to the VM controller.
     pub(crate) fn snapshot_channels(
