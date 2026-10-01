@@ -26,15 +26,15 @@ struct Pinned {
 const PINNED: &[Pinned] = &[
     Pinned {
         json: include_str!("../profiles/intel.skylake-sp.v1.json"),
-        digest: "sha256:e1c8e7965ec04693b2e3bd97eb93da55a2dc518118e48b563241772190d4b0a8",
+        digest: "sha256:b36ef861ffec67350a28faff8c446d5a19f78d6d58862378fa9d2282dad87492",
     },
     Pinned {
         json: include_str!("../profiles/intel.icelake-sp.v1.json"),
-        digest: "sha256:5dbabb30bef86017f5d0858c2f3c056d345bfd33698e2f69877150a9cc66f812",
+        digest: "sha256:a35f3bb9bc30337b8b76af4939d5914f878ac7dc2a2d6d9d6bf4d8278b91f301",
     },
     Pinned {
         json: include_str!("../profiles/intel.emeraldrapids.v1.json"),
-        digest: "sha256:84106dd216e6dc858c1e8f7813eff29b0ee61ab7968b676c74efb268f9ed700f",
+        digest: "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
     },
 ];
 

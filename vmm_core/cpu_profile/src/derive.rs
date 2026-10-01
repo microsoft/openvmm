@@ -19,7 +19,10 @@
 //! 3. The XSAVE features are the intersection, within [`ALLOWED_XCR0`], and
 //!    the XSAVE leaf is rebuilt from them; every host must agree on the
 //!    layout. A feature whose XSAVE state is not enabled is cleared.
-//! 4. The brand string is the hosts' common brand.
+//! 4. The brand string is generic per generation,
+//!    `Intel(R) Xeon(R) Processor (<display name>)` without a frequency
+//!    ([`KnownGeneration::brand`]), so every host of a generation presents
+//!    it whatever its SKU, and the hosts' brands are not compared.
 //! 5. `IA32_ARCH_CAPABILITIES` is pinned in [`ARCH_CAPABILITIES_PINNED_MASK`]
 //!    to what every backend can present: KVM's value, and for MSHV and WHP
 //!    the bits their processor feature banks derive. `ITS_NO` is pinned
@@ -110,6 +113,9 @@ pub struct KnownGeneration {
     pub cpus: &'static [(u32, u32, [u32; 2])],
     /// A human-readable name.
     pub description: &'static str,
+    /// The brand string of every profile of the generation: generic, with
+    /// the generation's display name and without a SKU or frequency.
+    pub brand: &'static str,
 }
 
 impl KnownGeneration {
@@ -138,6 +144,7 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 3] = [
         // Steppings 5 to 7 are Cascade Lake, and 10 and 11 Cooper Lake.
         cpus: &[(6, 85, [0, 4])],
         description: "Intel Xeon Scalable, first generation (Skylake-SP)",
+        brand: "Intel(R) Xeon(R) Processor (Skylake-SP)",
     },
     KnownGeneration {
         vendor: "GenuineIntel",
@@ -145,6 +152,7 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 3] = [
         name: "icelake-sp",
         cpus: &[(6, 106, [0, 15])],
         description: "Intel Xeon Scalable, third generation (Ice Lake-SP)",
+        brand: "Intel(R) Xeon(R) Processor (Ice Lake-SP)",
     },
     KnownGeneration {
         vendor: "GenuineIntel",
@@ -152,6 +160,7 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 3] = [
         name: "emeraldrapids",
         cpus: &[(6, 207, [0, 15])],
         description: "Intel Xeon Scalable, fifth generation (Emerald Rapids)",
+        brand: "Intel(R) Xeon(R) Processor (Emerald Rapids)",
     },
 ];
 
@@ -188,9 +197,6 @@ pub enum DeriveError {
         /// The tied values and their votes.
         values: String,
     },
-    /// The hosts report different brand strings.
-    #[error("the hosts report different brand strings: {0:?}")]
-    Brand(Vec<String>),
     /// The hosts disagree on the layout of an XSAVE component.
     #[error("the hosts disagree on the layout of XSAVE component {0}")]
     XsaveLayout(u32),
@@ -255,16 +261,8 @@ pub fn derive_profile(
 
     let mut leaves = apply_policy(&combined)?;
 
-    // The brand string.
-    let brands = fingerprints
-        .iter()
-        .map(|fingerprint| fingerprint.host.cpu.brand.clone())
-        .collect::<BTreeSet<_>>();
-    if brands.len() != 1 {
-        return Err(DeriveError::Brand(brands.into_iter().collect()));
-    }
-    let brand = brand_leaves(brands.first().expect("one brand"));
-    for (leaf, value) in (EXTENDED_LEAF_BASE + 2..).zip(brand) {
+    // The brand string: generic per generation.
+    for (leaf, value) in (EXTENDED_LEAF_BASE + 2..).zip(brand_leaves(generation.brand)) {
         if let Some(entry) = leaves.get_mut(&(leaf, None)) {
             *entry = value;
         }
@@ -405,7 +403,7 @@ pub fn derive_profile(
 
 /// Returns the table of a fingerprint's CPUID for combining: without the
 /// hypervisor range, the XSAVE leaf (rebuilt from the fingerprints' XSAVE
-/// information), and the brand string (the hosts' common brand), and with
+/// information), and the brand string (generic per generation), and with
 /// the bits OpenVMM sets per VM cleared, so hosts are compared only on what a
 /// profile pins.
 fn table(entries: &[cpuid::CpuidEntry]) -> Table {
@@ -783,6 +781,44 @@ mod tests {
         assert_eq!(derived.cpuid(), pinned.cpuid());
     }
 
+    /// Returns the brand string of `profile`.
+    fn brand(profile: &CpuProfile) -> String {
+        let bytes = (0x8000_0002..=0x8000_0004)
+            .flat_map(|leaf| profile.lookup(leaf, 0))
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let end = bytes.iter().position(|&byte| byte == 0).unwrap();
+        String::from_utf8(bytes[..end].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn the_brand_is_generic_per_generation() {
+        for known in &KNOWN_GENERATIONS {
+            // The brand string holds 47 bytes and a terminator.
+            assert!(known.brand.len() < 48, "{}", known.brand);
+        }
+        for pinned in crate::pinned_profiles() {
+            assert_eq!(brand(pinned), generation(&pinned.generation().name).brand);
+        }
+
+        // A host of another SKU derives the same brand.
+        let pinned = profile(ICELAKE);
+        let mut other_sku = edited(pinned, "whp", |entries| {
+            for leaf in 0x8000_0002..=0x8000_0004 {
+                set(entries, leaf, None, 0, |eax| eax ^ 0x0101_0101);
+            }
+        });
+        other_sku.host.cpu.brand = "Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz".to_owned();
+        let derived = derive_profile(
+            generation("icelake-sp"),
+            1,
+            &[fingerprint(pinned, "kvm"), other_sku],
+        )
+        .unwrap();
+        assert_eq!(brand(&derived), "Intel(R) Xeon(R) Processor (Ice Lake-SP)");
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+    }
+
     #[test]
     fn intersects_features_and_votes_on_descriptions() {
         let pinned = profile(ICELAKE);
@@ -865,17 +901,6 @@ mod tests {
         assert!(matches!(
             derive_profile(generation("skylake-sp"), 1, &[fingerprint(pinned, "kvm")]),
             Err(DeriveError::WrongGeneration { .. })
-        ));
-
-        let mut renamed = fingerprint(pinned, "whp");
-        renamed.host.cpu.brand.push('!');
-        assert!(matches!(
-            derive_profile(
-                generation("icelake-sp"),
-                1,
-                &[fingerprint(pinned, "kvm"), renamed]
-            ),
-            Err(DeriveError::Brand(_))
         ));
 
         let moved = edited(pinned, "whp", |entries| {
