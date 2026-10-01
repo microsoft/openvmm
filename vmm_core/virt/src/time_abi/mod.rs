@@ -391,26 +391,27 @@ pub fn check_command_line_clock_tokens(cmdline: &str) -> Result<(), TimeAbiError
 /// [`ProtoPartitionConfig::time_abi`](crate::ProtoPartitionConfig::time_abi).
 ///
 /// A backend that receives it must program `cpuid` after every other CPUID
-/// source, remove every hypervisor-range leaf of its own, route the identity
-/// MSR range to `msrs`, derive its partition capabilities through
+/// source, remove every hypervisor-range leaf of its own, derive its
+/// processor features from the CPU profile, route the identity MSR range to
+/// `msrs`, derive its partition capabilities through
 /// [`identity::capabilities_cpuid`], and implement [`TimeAbiBackend`].
 #[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Clone)]
 pub struct TimeAbiConfig {
-    /// CPUID results the backend programs on every VP. Until the profile's
-    /// effective CPUID replaces it, this is [`identity::time_abi_cpuid`]: the
-    /// identity leaves, the explicit zero leaves, and the CPU time bits,
-    /// applied over the backend's own CPUID.
+    /// The complete CPUID of the partition, which the backend programs on
+    /// every VP: the effective CPUID of the CPU profile (every leaf and
+    /// subleaf of the profile, the topology leaves, and the identity and
+    /// explicit zero leaves). Bits it leaves unmasked are not the profile's:
+    /// the runtime-owned bits, and the per-VP fields (the initial APIC ID in
+    /// leaf 1, the x2APIC IDs in leaves 0xB and 0x1F, and the IDs in leaf
+    /// 0x8000001E), which the backend sets for each VP.
     pub cpuid: std::sync::Arc<crate::CpuidLeafSet>,
     /// The identity MSR handler, shared with the worker's `time-abi` state
     /// unit.
     pub msrs: std::sync::Arc<TimeAbiMsrs>,
     /// The ID of the partition's CPU profile, selected or restored before the
-    /// partition is created. A pinned ID names the profile that
-    /// `cpu_profile::pinned` returns, from which a backend derives its
-    /// processor features. An interim ID ([`surface::is_interim_cpu_profile`])
-    /// names no profile: the backend presents its own CPU features, as before
-    /// CPU profiles.
+    /// partition is created: `cpu_profile::pinned` returns the profile, from
+    /// which a backend derives its processor features.
     pub cpu_profile: String,
 }
 
