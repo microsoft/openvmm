@@ -69,17 +69,9 @@ pub struct SnapshotSaveResponse {
     pub state_unit_names: Vec<String>,
     /// Effective Linux direct command line loaded into the guest.
     pub effective_command_line: String,
-    /// Effective guest TSC frequency.
-    pub tsc_frequency_hz: u64,
-    /// Effective local APIC timer frequency.
-    pub apic_frequency_hz: u64,
-    /// Host wall time at the stopped capture boundary.
-    pub capture_wall_clock: mesh::payload::Timestamp,
-    /// Canonical effective CPU compatibility contract.
-    pub cpu_contract: Vec<u8>,
-    /// The NVX time ABI records of the capture. With them, the four clock
-    /// fields above are empty and the manifest is version 6.
-    pub time: Option<crate::time_abi::TimeCapture>,
+    /// The NVX time ABI records of the capture, which make the manifest
+    /// version 6.
+    pub time: crate::time_abi::TimeCapture,
 }
 
 /// Failure classification for a bounded snapshot quiesce/save operation.

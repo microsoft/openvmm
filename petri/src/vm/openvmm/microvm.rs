@@ -9,14 +9,18 @@ use crate::Firmware;
 use crate::PetriLogFile;
 use anyhow::Context;
 use chipset_resources::microvm::MicrovmPortbHandle;
+use chipset_resources::microvm::MicrovmPortbTimeAbi;
 use chipset_resources::microvm::MicrovmShutdownHandle;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
+use chipset_resources::pit::PitDeviceHandle;
 use futures::AsyncWriteExt;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LinuxDirectBootMode;
 use openvmm_defs::config::LinuxIsolationConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmConfig;
+use openvmm_defs::time_abi::TimeAbiParameters;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::socket::WriteHalf;
@@ -42,6 +46,19 @@ pub(super) struct PortbSerial {
 
 pub(super) fn is_enabled(machine_profile: MachineProfile) -> bool {
     machine_profile == MachineProfile::Microvm
+}
+
+/// Returns the microVM configuration of a VM: every microVM uses the NVX time
+/// ABI, with the host's CPU profile.
+pub(super) fn microvm_config(machine_profile: MachineProfile) -> MicrovmConfig {
+    MicrovmConfig {
+        time_abi: is_enabled(machine_profile).then(|| TimeAbiParameters {
+            cpu_profile: "auto".to_owned(),
+            generation: 0,
+            hooks: Default::default(),
+        }),
+        ..Default::default()
+    }
 }
 
 pub(super) fn validate_profile(
@@ -143,6 +160,12 @@ pub(super) fn attach_chipset_devices(
         Some(PortbSerial { io, runtime }) => (io, Some(runtime)),
         None => (DisconnectedSerialBackendHandle.into_resource(), None),
     };
+    // The time ABI puts the PIT in strict mode.
+    for device in chipset_devices.iter_mut() {
+        if device.name == PitDeviceHandle::ID {
+            device.resource = PitDeviceHandle { time_abi: true }.into_resource();
+        }
+    }
     chipset_devices.extend([
         ChipsetDeviceHandle {
             name: MicrovmPortbHandle::ID.to_owned(),
@@ -151,7 +174,13 @@ pub(super) fn attach_chipset_devices(
                 generation_id: [0x5a; 16],
                 restore_entropy: Vec::new(),
                 output_drain: None,
-                time_abi: None,
+                time_abi: Some(MicrovmPortbTimeAbi {
+                    generation: 0,
+                    utc_offset_ms: 0,
+                    sample_delay_us: 0,
+                    test_hooks: false,
+                    restore: None,
+                }),
             }
             .into_resource(),
         },

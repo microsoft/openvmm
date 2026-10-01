@@ -145,11 +145,6 @@ impl MicrovmLaunch {
         })
     }
 
-    /// Returns whether guest-requested snapshot capture is configured.
-    pub(crate) fn snapshot_capture_enabled(&self) -> bool {
-        self.snapshot_destination.is_some()
-    }
-
     /// Duplicates the exact RAM handle used for guest-requested snapshot
     /// capture, as the VM worker's shared guest RAM.
     pub(crate) fn capture_shared_memory(&self) -> anyhow::Result<Option<SharedMemoryFd>> {
