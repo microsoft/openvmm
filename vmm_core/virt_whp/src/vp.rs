@@ -236,6 +236,17 @@ impl<'a> WhpProcessor<'a> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
         tracing::trace!(vtl = ?self.state.active_vtl, "current vtl");
+        // A LAPIC state written since the last run may hold a pending vector
+        // that the hypervisor has not delivered, and partition time may have
+        // been suspended and resumed since then. Assert it again now that the
+        // VP is about to run.
+        #[cfg(guest_arch = "x86_64")]
+        if let Err(err) = self.reassert_written_lapic() {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to assert a pending LAPIC vector"
+            );
+        }
         let mut last_waker = None;
         loop {
             self.inner.interrupt.maybe_yield().await;
