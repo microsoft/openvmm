@@ -113,6 +113,12 @@ pub(crate) struct MshvTimeAbi {
     /// The CPUID results registered with the hypervisor.
     #[inspect(skip)]
     registered_cpuid: Vec<CpuidLeaf>,
+    /// The effective CPUID: VP 0's view of the registered leaves at reset,
+    /// read once before any VP runs. Later reads would fold in VP state (the
+    /// hypervisor applies the VP's XCR0, XSS, and control registers), so the
+    /// capture and the restore of one snapshot would disagree.
+    #[inspect(skip)]
+    effective_cpuid: std::sync::OnceLock<Vec<CpuidLeaf>>,
     /// Set by the synchronized TSC set. VP creation fails afterwards.
     #[inspect(with = "|x| x.load(Ordering::Relaxed)")]
     vp_set_sealed: AtomicBool,
@@ -123,6 +129,7 @@ impl MshvTimeAbi {
         Self {
             msrs: config.msrs.clone(),
             registered_cpuid: registered_cpuid.leaves().to_vec(),
+            effective_cpuid: std::sync::OnceLock::new(),
             vp_set_sealed: AtomicBool::new(false),
         }
     }
@@ -544,22 +551,63 @@ impl MshvPartitionInner {
         Ok(())
     }
 
-    /// Checks that VP 0 sees the identity leaves as registered, and zero at
-    /// the sentinel leaves.
+    /// Returns the effective CPUID, reading it from VP 0 the first time. The
+    /// first read happens in preflight, before any VP runs, on both cold boot
+    /// and restore, so it is VP 0's view at reset.
+    fn time_abi_effective_cpuid(&self) -> Result<&[CpuidLeaf], TimeAbiError> {
+        let state = self.time_abi_state()?;
+        if let Some(leaves) = state.effective_cpuid.get() {
+            return Ok(leaves);
+        }
+        let bsp = self.time_abi_bsp(TimeAbiCode::CpuSurface)?;
+        let read = |function: u32, index: Option<u32>| {
+            let result = vp_cpuid(bsp, function, index.unwrap_or(0)).map_err(|error| {
+                TimeAbiError::new(
+                    TimeAbiCode::CpuSurface,
+                    format!(
+                        "cannot read CPUID {function:#x}/{:#x} of VP 0: {}",
+                        index.unwrap_or(0),
+                        error_chain(&error)
+                    ),
+                )
+            })?;
+            let leaf = CpuidLeaf::new(function, result);
+            Ok(match index {
+                Some(index) => leaf.indexed(index),
+                None => leaf,
+            })
+        };
+        let mut leaves = EFFECTIVE_CPUID_MAX_LEAVES
+            .into_iter()
+            .map(|function| read(function, None))
+            .collect::<Result<Vec<_>, TimeAbiError>>()?;
+        for leaf in &state.registered_cpuid {
+            leaves.push(if is_zero_fill(leaf) {
+                *leaf
+            } else {
+                read(leaf.function, leaf.index)?
+            });
+        }
+        // A concurrent first read stores identical values.
+        let _ = state
+            .effective_cpuid
+            .set(CpuidLeafSet::new(leaves).into_leaves());
+        Ok(state.effective_cpuid.get().expect("set above"))
+    }
+
+    /// Checks that the effective CPUID holds the identity leaves as
+    /// registered, and that VP 0 reads zero at the sentinel leaves.
     fn check_identity_cpuid(&self, bsp: &VcpuFd) -> Result<(), TimeAbiError> {
         let state = self.time_abi_state()?;
-        let identity = state
-            .registered_cpuid
-            .iter()
-            .filter(|leaf| {
-                leaf.function <= IDENTITY_MAX_LEAF && IDENTITY_CPUID_RANGE.contains(&leaf.function)
-            })
-            .copied();
-        let sentinels = PREFLIGHT_SENTINEL_LEAVES
-            .into_iter()
-            .map(|function| CpuidLeaf::new(function, [0; 4]));
-        for leaf in identity.chain(sentinels) {
-            let function = leaf.function;
+        let effective = CpuidLeafSet::new(self.time_abi_effective_cpuid()?.to_vec());
+        let identity = state.registered_cpuid.iter().filter(|leaf| {
+            leaf.function <= IDENTITY_MAX_LEAF && IDENTITY_CPUID_RANGE.contains(&leaf.function)
+        });
+        for leaf in identity {
+            let actual = effective.result(leaf.function, leaf.index.unwrap_or(0), &[0; 4]);
+            check_leaf(leaf, actual)?;
+        }
+        for function in PREFLIGHT_SENTINEL_LEAVES {
             let actual = vp_cpuid(bsp, function, 0).map_err(|error| {
                 TimeAbiError::new(
                     TimeAbiCode::IdentityRouting,
@@ -569,19 +617,27 @@ impl MshvPartitionInner {
                     ),
                 )
             })?;
-            let mut expected = actual;
-            leaf.apply(&mut expected);
-            if actual != expected {
-                return Err(TimeAbiError::new(
-                    TimeAbiCode::IdentityRouting,
-                    format!(
-                        "VP 0 reads CPUID {function:#x} as {actual:#x?}, expected {expected:#x?}"
-                    ),
-                ));
-            }
+            check_leaf(&CpuidLeaf::new(function, [0; 4]), actual)?;
         }
         Ok(())
     }
+}
+
+/// Fails with `E_IDENTITY_ROUTING` unless VP 0's `actual` result agrees with
+/// `leaf` under its mask.
+fn check_leaf(leaf: &CpuidLeaf, actual: [u32; 4]) -> Result<(), TimeAbiError> {
+    let mut expected = actual;
+    leaf.apply(&mut expected);
+    if actual != expected {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::IdentityRouting,
+            format!(
+                "VP 0 reads CPUID {:#x} as {actual:#x?}, expected {expected:#x?}",
+                leaf.function
+            ),
+        ));
+    }
+    Ok(())
 }
 
 impl TimeAbiBackend for MshvPartition {
@@ -654,37 +710,7 @@ impl TimeAbiBackend for MshvPartition {
     }
 
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
-        let state = self.inner.time_abi_state()?;
-        let bsp = self.inner.time_abi_bsp(TimeAbiCode::CpuSurface)?;
-        let read = |function: u32, index: Option<u32>| {
-            let result = vp_cpuid(bsp, function, index.unwrap_or(0)).map_err(|error| {
-                TimeAbiError::new(
-                    TimeAbiCode::CpuSurface,
-                    format!(
-                        "cannot read CPUID {function:#x}/{:#x} of VP 0: {}",
-                        index.unwrap_or(0),
-                        error_chain(&error)
-                    ),
-                )
-            })?;
-            let leaf = CpuidLeaf::new(function, result);
-            Ok(match index {
-                Some(index) => leaf.indexed(index),
-                None => leaf,
-            })
-        };
-        let mut leaves = EFFECTIVE_CPUID_MAX_LEAVES
-            .into_iter()
-            .map(|function| read(function, None))
-            .collect::<Result<Vec<_>, TimeAbiError>>()?;
-        for leaf in &state.registered_cpuid {
-            leaves.push(if is_zero_fill(leaf) {
-                *leaf
-            } else {
-                read(leaf.function, leaf.index)?
-            });
-        }
-        Ok(CpuidLeafSet::new(leaves).into_leaves())
+        Ok(self.inner.time_abi_effective_cpuid()?.to_vec())
     }
 
     fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
@@ -1310,6 +1336,37 @@ mod hw {
             check_time_bits(&mut lookup, true).unwrap();
             check_identity(&mut lookup, VP_CAPACITY).unwrap();
 
+            // The hypervisor folds VP state into CPUID reads, so the effective
+            // CPUID must stay VP 0's view at reset, whatever the guest does.
+            let bsp = &partition.inner.finalized().unwrap().bsp_vcpufd;
+            let live_before = bsp.get_cpuid_values(1, 0, 0, 0).unwrap();
+            let mut cr4 = [HvRegisterAssoc::from((HvX64RegisterName::Cr4, 0u64))];
+            bsp.get_hvdef_regs(&mut cr4).unwrap();
+            let reset_cr4 = cr4[0].value.as_u64();
+            let osxsave = bsp.set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvX64RegisterName::Cr4,
+                reset_cr4 | (1 << 18),
+            ))]);
+            let live_after = bsp.get_cpuid_values(1, 0, 0, 0).unwrap();
+            let key = |leaves: &[CpuidLeaf]| -> Vec<(u32, Option<u32>, [u32; 4])> {
+                leaves
+                    .iter()
+                    .map(|l| (l.function, l.index, l.result))
+                    .collect()
+            };
+            assert_eq!(
+                key(&backend.effective_cpuid().unwrap()),
+                key(effective.leaves())
+            );
+            bsp.set_hvdef_regs(&[HvRegisterAssoc::from((HvX64RegisterName::Cr4, reset_cr4))])
+                .unwrap();
+            let osxsave = format!(
+                "cr4_osxsave_write={} live_cpuid1_ecx={:#x}->{:#x}",
+                osxsave.is_ok(),
+                live_before[2],
+                live_after[2]
+            );
+
             let mut pairings: Vec<u64> = (0..200)
                 .map(|_| backend.capture_anchor().unwrap().pairing_ns)
                 .collect();
@@ -1378,7 +1435,7 @@ mod hw {
                 "time ABI backend: created {created}/{VP_CAPACITY} tsc_hz={tsc_hz} \
                  build_us={build_us} preflight_us={preflight_us} effective_cpuid_us={effective_us} \
                  ({} leaves) set_us={set_us} anchor_pairing_ns min={} p50={} p99={} max={} \
-                 anchor_rate_deviation_ppm={deviation_ppm:.3} thawed={after:?}",
+                 anchor_rate_deviation_ppm={deviation_ppm:.3} {osxsave} thawed={after:?}",
                 effective.leaves().len(),
                 pairings[0],
                 percentile(&pairings, 50),
