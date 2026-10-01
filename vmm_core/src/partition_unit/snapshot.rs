@@ -23,6 +23,18 @@ pub(super) enum SnapshotRequest {
     CheckTimers(FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
     AdvanceLapic(FailableRpc<(u64, u64), ()>),
+    #[cfg(guest_arch = "x86_64")]
+    OmitSavedTsc(mesh::rpc::Rpc<(), ()>),
+}
+
+/// Returns `data`, a VP's saved state, without its saved TSC.
+#[cfg(guest_arch = "x86_64")]
+pub(super) fn without_saved_tsc(
+    data: vmcore::save_restore::SavedStateBlob,
+) -> Result<vmcore::save_restore::SavedStateBlob, vmcore::save_restore::RestoreError> {
+    let mut state: virt::vp::VpSavedState = data.parse()?;
+    state.clear_tsc();
+    Ok(vmcore::save_restore::SavedStateBlob::new(state))
 }
 
 /// Returns the number of VPs to instantiate, validated against the topology's
@@ -105,6 +117,20 @@ impl PartitionUnit {
             .await?;
         Ok(())
     }
+
+    /// Makes every later restore drop the VPs' saved TSC values, which the
+    /// NVX time ABI's synchronized TSC set supersedes, so no backend applies
+    /// a per-VP TSC write before it.
+    #[cfg(guest_arch = "x86_64")]
+    pub async fn omit_saved_tsc(&mut self) {
+        self.req_send
+            .call(
+                |rpc| PartitionRequest::Snapshot(SnapshotRequest::OmitSavedTsc(rpc)),
+                (),
+            )
+            .await
+            .unwrap();
+    }
 }
 
 impl PartitionUnitRunner {
@@ -143,6 +169,10 @@ impl PartitionUnitRunner {
                 })
                 .await
             }
+            #[cfg(guest_arch = "x86_64")]
+            SnapshotRequest::OmitSavedTsc(rpc) => rpc.handle_sync(|()| {
+                self.omit_saved_tsc = true;
+            }),
         }
     }
 }
