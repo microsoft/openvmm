@@ -6,6 +6,7 @@
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
 mod cpu_contract;
+mod fingerprint;
 mod regs;
 pub(crate) mod snp;
 mod time_abi;

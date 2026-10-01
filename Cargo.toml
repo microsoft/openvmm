@@ -450,6 +450,7 @@ vm_topology = { path = "vm/vmcore/vm_topology" }
 vmcore = { path = "vm/vmcore" }
 
 # vmm_core
+cpu_profile = { path = "vmm_core/cpu_profile" }
 hyperv_dump = { path = "vmm_core/hyperv_dump" }
 state_unit = { path = "vmm_core/state_unit" }
 virt = { path = "vmm_core/virt" }

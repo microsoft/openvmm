@@ -996,6 +996,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu_profile"
+version = "0.0.0"
+dependencies = [
+ "safe_intrinsics",
+ "serde",
+ "serde_json",
+ "sha2",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9803,6 +9816,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "build_rs_guest_arch",
  "cfg-if",
+ "cpu_profile",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
@@ -9835,6 +9849,7 @@ dependencies = [
  "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
+ "cpu_profile",
  "fs-err",
  "guestmem",
  "headervec",
@@ -9990,6 +10005,7 @@ dependencies = [
  "arrayvec",
  "build_rs_guest_arch",
  "chipset_device",
+ "cpu_profile",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",

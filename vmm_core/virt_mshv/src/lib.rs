@@ -867,6 +867,12 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     TimeAbi(#[from] virt::time_abi::TimeAbiError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to get host partition property {0:?}")]
+    GetHostPartitionProperty(HvPartitionPropertyCode, #[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to query the CPUID values of the fingerprint probe partition")]
+    FingerprintCpuid(#[source] KernelError),
 }
 
 /// Equivalent to [`MshvError`] but has a much better error message.
