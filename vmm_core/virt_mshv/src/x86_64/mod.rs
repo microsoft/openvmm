@@ -549,13 +549,29 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             None => virt::CpuidLeafSet::new(tsc::add_cpuid_leaves(&self.vmfd, cpuid)?),
         };
 
+        // A time ABI partition's unlisted leaves and subleaves read zero, which
+        // takes explicit results on MSHV.
+        let started = std::time::Instant::now();
+        let (zero_results, host_cpuid) = if self.config.time_abi.is_some() {
+            let host_cpuid = profile_features::host_cpuid_table();
+            (
+                profile_features::unlisted_zero_results(&cpuid, &host_cpuid),
+                host_cpuid,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let host_cpuid_us = started.elapsed().as_micros() as u64;
+
         // Apply CPUID overrides partition-wide.
         let started = std::time::Instant::now();
-        for leaf in cpuid.leaves().iter() {
+        for leaf in cpuid.leaves().iter().chain(&zero_results) {
             register_cpuid_result(&self.vmfd, leaf)?;
         }
         tracing::info!(
             leaves = cpuid.leaves().len(),
+            zero_results = zero_results.len(),
+            host_cpuid_us,
             elapsed_us = started.elapsed().as_micros() as u64,
             "registered MSHV CPUID results"
         );
@@ -565,6 +581,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 &cpuid,
                 self.time_abi_host
                     .expect("a time ABI partition reads the host's features"),
+                host_cpuid,
             )
         });
 
