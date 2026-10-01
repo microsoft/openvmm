@@ -1294,7 +1294,7 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if uefi.is_some() || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi)) {
+    if matches!(base_chipset_type(opt), BaseChipsetType::HypervGen2Uefi) {
         let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),

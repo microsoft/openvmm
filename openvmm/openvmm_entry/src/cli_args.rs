@@ -1415,10 +1415,7 @@ impl Options {
     pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
         let mut uefi = match &self.uefi {
             Some(uefi) => uefi.clone(),
-            None if self.igvm.is_some()
-                && !self.pcat
-                && matches!(self.igvm_personality, Some(IgvmPersonalityCli::Uefi)) =>
-            {
+            None if self.igvm.is_some() && !self.pcat && self.igvm_personality.is_none() => {
                 UefiCli::default()
             }
             None => return Ok(None),
