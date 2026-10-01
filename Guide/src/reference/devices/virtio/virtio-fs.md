@@ -49,6 +49,7 @@ guest-visible configuration:
 | Cache policy | Zero entry and attribute lifetimes |
 | File policy | Direct I/O |
 | Maximum write | 1 MiB payload plus protocol headers |
+| Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
 
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
 `virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line.
@@ -58,6 +59,18 @@ Repeat `--mount-deny` to hide existing host files or directories. OpenVMM
 canonicalizes each entry relative to the export and rejects paths outside the
 root, the root itself, overlapping entries, symlink/reparse components, and
 nested-mount crossings before opening the device.
+
+A read-write attachment lets the guest create symbolic links, so ordinary
+build tools (package managers, virtual environments, and language
+toolchains) work in a live share. HostFs stores each target byte for byte and
+never follows a link while resolving a host path; the guest kernel resolves
+links in its own namespace. A target that names an absolute host path, a
+location above the export, or a denied path therefore cannot reach host data
+outside the policy. Opening a link object fails with `ELOOP`, and on Linux
+changing its mode fails with `EOPNOTSUPP`. On Windows, HostFs always creates
+WSL-style links, which Windows path resolution never follows, so Windows tools
+see guest-created links as inaccessible files. Host software that later reads
+the exported directory must treat guest-created links as untrusted.
 
 `SectionFs`, aggregate roots, alternate tags, PCI transport, DAX, and extra
 queues are not part of the microVM profile.
@@ -78,7 +91,9 @@ Restoring a snapshot captured with an active attachment requires a fresh
 guest target, and mode. Identity validation remains independent: before any vCPU starts,
 OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
-objects fail restore.
+objects fail restore. A saved symbolic link is revalidated as the link itself,
+without being followed, and an alias whose ancestor has become a link fails
+restore.
 
 A snapshot captured without `--mount` records the fixed slot as dormant. It
 may restore without an attachment, or bind a new `--mount` attachment. Because
@@ -111,20 +126,33 @@ that would expose guest RAM or snapshot files through virtio-fs.
 
 Guest FUSE requests, paths, and saved aliases are untrusted. HostFs rejects
 absolute and parent-relative aliases, does not follow symbolic links or
-Windows reparse points while resolving saved objects, and enforces read-only
-mode before invoking a host mutation.
+Windows reparse points while resolving guest or saved objects, and enforces
+read-only mode before invoking a host mutation.
+
+On Linux, every host operation opens the parent directory of its path with
+`openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)`, or with one
+`O_NOFOLLOW` open per component where `openat2` is unavailable, and applies
+the operation to the final component without following it. Extended
+attributes and file system statistics use that pinned directory rather than
+an absolute host path. Neither a guest-created link nor a concurrent rename
+can therefore redirect an operation outside the export. On Windows, the guest
+can only create WSL-style links, which are never followed, and HostFs rejects
+any ancestor that is a symbolic link or reparse point before each operation.
 
 Denied paths are enforced in the server namespace rather than by guest mount
 layout. Lookup and mutation operations reject denied prefixes, directory
 enumeration omits their names, and denied root object identities reject
-hard-link, junction, and bind-mount aliases. Mounting the same virtio-fs tag at
-another guest path does not change the policy.
+hard-link, junction, and bind-mount aliases. A guest-created link cannot reach
+a denied path because the guest resolves it and every resulting host lookup
+applies the same policy. Mounting the same virtio-fs tag at another guest path
+does not change the policy.
 
 ```admonish warning
-The current cross-platform `LxVolume` interface does not provide fully
-handle-relative component walking for every operation. Do not allow an
-untrusted host process to concurrently replace or rename directories inside
-the export; quiesce external namespace mutation during capture and restore.
+On Windows, the check for host-created NT symbolic links and junctions in
+ancestor components is not handle-relative. Do not let an untrusted host
+process create reparse points or replace directories inside a Windows export
+while a VM runs. On every host, quiesce external namespace mutation during
+capture and restore.
 ```
 
 Host filesystem behavior differs where Windows cannot represent a POSIX
