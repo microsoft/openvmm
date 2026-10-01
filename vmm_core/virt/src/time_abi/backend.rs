@@ -52,19 +52,14 @@ pub trait TimeAbiBackend: Send + Sync {
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError>;
 
     /// Returns the CPU surface the backend supports on this host, for the CPU
-    /// profile's support check (`E_PROFILE_UNSUPPORTED`) at partition
-    /// creation. It must be cheap: capability queries and the host's CPUID,
-    /// never a probe partition.
-    ///
-    /// The default returns `None`; core then checks support only in
-    /// verification mode (`--x-time-abi-verify`), from the backend's CPU
-    /// fingerprint. Every backend implements it before the time ABI becomes
-    /// the only microVM path.
+    /// profile's support check (`E_PROFILE_UNSUPPORTED`), which core runs at
+    /// every cold boot and restore. It must be cheap: capability queries and
+    /// the host's CPUID, never a probe partition. A backend that cannot report
+    /// its surface returns `None`, which fails every time ABI boot
+    /// (`E_PROFILE_UNSUPPORTED`).
     fn supported_cpu_surface(
         &self,
-    ) -> Result<Option<super::surface::SupportedCpuSurface>, TimeAbiError> {
-        Ok(None)
-    }
+    ) -> Result<Option<super::surface::SupportedCpuSurface>, TimeAbiError>;
 
     /// Takes the capture anchor: VP 0's TSC paired with
     /// [`sample_host_time`](super::host::sample_host_time). Fails with
@@ -232,6 +227,12 @@ mod tests {
         }
 
         fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn supported_cpu_surface(
+            &self,
+        ) -> Result<Option<crate::time_abi::surface::SupportedCpuSurface>, TimeAbiError> {
             unreachable!()
         }
 
