@@ -38,18 +38,18 @@
 //! - **LAPIC.** The in-kernel LAPIC timer counts KVM's fixed 1 GHz bus clock;
 //!   `KVM_CAP_X86_APIC_BUS_CYCLES_NS` is never set.
 //!
-//! **Restore and the saved per-VP TSC.** VP state restore still writes each
-//! VP's saved `IA32_TSC`. KVM passes host-initiated `IA32_TSC` writes through
-//! its TSC synchronization heuristic: a value within about one second of the
-//! TSC that KVM expects is treated as a synchronization attempt, and KVM
-//! keeps its current offset instead. Linux 6.6 applies this to the first
-//! write after vCPU creation as well, so it discards the saved TSC of any
-//! snapshot taken within about a second of the guest's boot; Linux 6.7 and
-//! later honor the first user-space write. The synchronized set overwrites
-//! every vCPU's offset before any VP runs, so what KVM made of the saved
-//! values never reaches the guest, on either kernel. KVM computes the LAPIC
-//! timer's TSC deadline when the LAPIC state is set, so the restore
-//! orchestrator re-applies the LAPIC state after the synchronized set.
+//! **Restore and the saved per-VP TSC.** A time ABI restore omits every VP's
+//! saved TSC (core strips the `tsc` element before VP state restore), so no
+//! host-initiated `IA32_TSC` write reaches KVM's TSC synchronization
+//! heuristic. That heuristic treats a write within about a second of the TSC
+//! KVM expects as a synchronization attempt and keeps its own offset; Linux
+//! 6.6 applies it to the first write after vCPU creation too, which would
+//! discard the saved TSC of a snapshot taken within about a second of the
+//! guest's boot. Each vCPU instead keeps its creation-time offset until the
+//! synchronized set writes the common offset, before any VP runs, on every
+//! kernel. KVM computes the LAPIC timer's TSC deadline when the LAPIC state is
+//! set, so the restore orchestrator re-applies the LAPIC state after the
+//! synchronized set.
 
 use super::KvmPartitionInner;
 use crate::KvmError;
@@ -544,8 +544,8 @@ impl TimeAbiBackend for KvmPartitionInner {
         let readback_error =
             |message: String| TimeAbiError::new(TimeAbiCode::TscSyncReadback, message);
         let tsc_hz = self.native_tsc_hz()?;
-        // The offsets the restore left, logged to show what KVM made of the
-        // saved IA32_TSC values (see the module documentation).
+        // The offsets before the set, logged for diagnosis: each vCPU's
+        // creation-time offset, since a time ABI restore writes no saved TSC.
         let previous = self
             .time_abi_vps()
             .map(|(vp_index, vp)| {
