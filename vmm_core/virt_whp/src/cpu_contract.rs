@@ -100,37 +100,52 @@ impl WhpProcessor<'_> {
     /// Replaces the BSP identity in the partition's topology CPUID results
     /// with this VP's APIC-derived identity.
     pub(crate) fn fixup_topology_cpuid(&self, function: u32, index: u32, default: &mut [u32; 4]) {
-        match CpuidFunction(function) {
-            CpuidFunction::VersionAndFeatures => {
-                let ebx = x86defs::cpuid::VersionAndFeaturesEbx::from(default[1]);
-                default[1] = ebx
-                    .with_initial_apic_id(self.inner.vp_info.apic_id as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedTopologyEnumeration
-            | CpuidFunction::V2ExtendedTopologyEnumeration => {
-                fixup_extended_topology(index, self.inner.vp_info.apic_id, default);
-            }
-            CpuidFunction::ProcessorTopologyDefinition => {
-                let topology = &self.vp.partition.cpuid_topology;
-                let apic_id = self.inner.vp_info.apic_id;
-                default[0] = x86defs::cpuid::ProcessorTopologyDefinitionEax::from(default[0])
-                    .with_extended_apic_id(apic_id)
-                    .into();
-                let threads_per_core = if topology.smt_enabled { 2 } else { 1 };
-                default[1] = x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(default[1])
-                    .with_compute_unit_id(
-                        ((apic_id % topology.reserved_vps_per_socket) / threads_per_core) as u8,
-                    )
-                    .with_threads_per_compute_unit((threads_per_core - 1) as u8)
-                    .into();
-                default[2] = x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(default[2])
-                    .with_node_id((apic_id / topology.reserved_vps_per_socket) as u8)
-                    .with_nodes_per_processor(0)
-                    .into();
-            }
-            _ => {}
+        fixup_vp_topology_cpuid(
+            &self.vp.partition.cpuid_topology,
+            self.inner.vp_info.apic_id,
+            function,
+            index,
+            default,
+        );
+    }
+}
+
+/// Replaces the BSP identity in the partition's topology CPUID results with
+/// the identity of the VP whose APIC ID is `apic_id`, as the CPUID exit
+/// handler does for each VP.
+pub(crate) fn fixup_vp_topology_cpuid(
+    topology: &CpuidTopology,
+    apic_id: u32,
+    function: u32,
+    index: u32,
+    default: &mut [u32; 4],
+) {
+    match CpuidFunction(function) {
+        CpuidFunction::VersionAndFeatures => {
+            let ebx = x86defs::cpuid::VersionAndFeaturesEbx::from(default[1]);
+            default[1] = ebx.with_initial_apic_id(apic_id as u8).into();
         }
+        CpuidFunction::ExtendedTopologyEnumeration
+        | CpuidFunction::V2ExtendedTopologyEnumeration => {
+            fixup_extended_topology(index, apic_id, default);
+        }
+        CpuidFunction::ProcessorTopologyDefinition => {
+            default[0] = x86defs::cpuid::ProcessorTopologyDefinitionEax::from(default[0])
+                .with_extended_apic_id(apic_id)
+                .into();
+            let threads_per_core = if topology.smt_enabled { 2 } else { 1 };
+            default[1] = x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(default[1])
+                .with_compute_unit_id(
+                    ((apic_id % topology.reserved_vps_per_socket) / threads_per_core) as u8,
+                )
+                .with_threads_per_compute_unit((threads_per_core - 1) as u8)
+                .into();
+            default[2] = x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(default[2])
+                .with_node_id((apic_id / topology.reserved_vps_per_socket) as u8)
+                .with_nodes_per_processor(0)
+                .into();
+        }
+        _ => {}
     }
 }
 
