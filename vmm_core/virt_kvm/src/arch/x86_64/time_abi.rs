@@ -1,0 +1,1051 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! The NVX time ABI v1 on KVM.
+//!
+//! Active only for partitions built with
+//! [`ProtoPartitionConfig::time_abi`](virt::ProtoPartitionConfig::time_abi).
+//! It implements the KVM column of "Backend obligations" in NVX
+//! `doc/design/time-abi.md`:
+//!
+//! - **CPUID.** The time ABI CPUID applies after every other CPUID source and
+//!   no KVM `0x4xxxxxxx` leaf remains, so the guest sees the Hyper-V frequency
+//!   identity instead of KVM's signature. Without a KVM signature the guest
+//!   has no KVM paravirtual feature, and `KVM_CAP_ENFORCE_PV_FEATURE_CPUID`
+//!   makes their MSRs (kvmclock and the others) raise #GP. The partition
+//!   capabilities come from the CPUID with the hypervisor range masked, so
+//!   neither `hv1` nor `kvm_clock` is present.
+//! - **Identity MSRs.** An MSR filter denies `0x40000000..=0x400001ff` and
+//!   `IA32_TSC_ADJUST`, and `KVM_MSR_EXIT_REASON_FILTER` delivers every guest
+//!   access to OpenVMM: [`TimeAbiMsrs`] serves the identity range, and
+//!   `IA32_TSC_ADJUST` raises #GP (KVM serves it even with its CPUID bit
+//!   clear). KVM checks the filter before its in-kernel Hyper-V MSRs, so those
+//!   never see a guest access.
+//! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
+//!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
+//!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
+//!   set. The filter keeps the guest's writes away from KVM, so the backend
+//!   mirrors the guest-visible value into KVM with host-initiated writes,
+//!   which bypass the filter: after every guest write, and before a VP runs
+//!   after the value changed otherwise (restore and reset).
+//! - **TSC.** The guest TSC is the host TSC plus a per-vCPU offset and is
+//!   never scaled: the backend never calls `KVM_SET_TSC_KHZ`, and `F_d` is
+//!   VP 0's `KVM_GET_TSC_KHZ`. The synchronized set writes one
+//!   `KVM_VCPU_TSC_OFFSET` (Linux 5.16 and later) to every vCPU, computed from
+//!   one host TSC read, and reads every offset back.
+//! - **LAPIC.** The in-kernel LAPIC timer counts KVM's fixed 1 GHz bus clock;
+//!   `KVM_CAP_X86_APIC_BUS_CYCLES_NS` is never set.
+//!
+//! **Restore and the saved per-VP TSC.** VP state restore still writes each
+//! VP's saved `IA32_TSC`. KVM passes host-initiated `IA32_TSC` writes through
+//! its TSC synchronization heuristic: a value within about one second of the
+//! TSC that KVM expects is treated as a synchronization attempt, and KVM
+//! keeps its current offset instead. Linux 6.6 applies this to the first
+//! write after vCPU creation as well, so it discards the saved TSC of any
+//! snapshot taken within about a second of the guest's boot; Linux 6.7 and
+//! later honor the first user-space write. The synchronized set overwrites
+//! every vCPU's offset before any VP runs, so what KVM made of the saved
+//! values never reaches the guest, on either kernel. KVM computes the LAPIC
+//! timer's TSC deadline when the LAPIC state is set, so the restore
+//! orchestrator re-applies the LAPIC state after the synchronized set.
+
+use super::KvmPartitionInner;
+use crate::KvmError;
+use parking_lot::Mutex;
+use std::sync::Arc;
+use virt::CpuidLeaf;
+use virt::CpuidLeafSet;
+use virt::VpIndex;
+use virt::time_abi::BackendPreflight;
+use virt::time_abi::HostTimeSample;
+use virt::time_abi::IdentityMsrRoute;
+use virt::time_abi::TimeAbiBackend;
+use virt::time_abi::TimeAbiCode;
+use virt::time_abi::TimeAbiError;
+use virt::time_abi::TimeAbiMsrs;
+use virt::time_abi::TscAnchor;
+use virt::time_abi::TscSetReport;
+use virt::time_abi::TscSyncMethod;
+use virt::time_abi::host::sample_host_time;
+use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
+use virt::time_abi::msr::IDENTITY_MSR_RANGE;
+use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+use virt::time_abi::rate::LAPIC_HZ_KVM;
+use virt::x86::MsrError;
+
+/// `IA32_TSC_ADJUST`, which the time ABI hides.
+const MSR_IA32_TSC_ADJUST: u32 = 0x3b;
+
+/// The most a host time sample may be from the TSC read it is paired with
+/// (spec: "Capture anchor").
+const MAX_ANCHOR_PAIRING_NS: u64 = 10_000;
+
+/// Anchor attempts before giving up: an attempt only fails when the thread
+/// is interrupted between the two TSC reads around the host sample.
+const ANCHOR_ATTEMPTS: usize = 16;
+
+/// Returns the MSR filter ranges of the time ABI: deny every guest access to
+/// the identity range and to `IA32_TSC_ADJUST`, so they exit to OpenVMM.
+pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 2] {
+    [
+        kvm::MsrFilterRange::deny(IDENTITY_MSR_RANGE),
+        kvm::MsrFilterRange::deny(MSR_IA32_TSC_ADJUST..=MSR_IA32_TSC_ADJUST),
+    ]
+}
+
+/// Routes the time ABI's MSRs to user space: user-space exits for unknown
+/// and filtered MSRs, and the [`identity_msr_filter`] (every other MSR keeps
+/// its in-kernel handling).
+pub(crate) fn install_identity_msr_filter(vm: &kvm::Partition) -> Result<(), TimeAbiError> {
+    for (name, cap) in [
+        (
+            "KVM_CAP_X86_USER_SPACE_MSR",
+            kvm::KVM_CAP_X86_USER_SPACE_MSR,
+        ),
+        ("KVM_CAP_X86_MSR_FILTER", kvm::KVM_CAP_X86_MSR_FILTER),
+    ] {
+        if !vm.check_extension(cap).is_ok_and(|value| value > 0) {
+            return Err(routing_error(format!(
+                "KVM lacks {name} (Linux 5.10 or later)"
+            )));
+        }
+    }
+    vm.enable_msr_exits(kvm::KVM_MSR_EXIT_REASON_UNKNOWN | kvm::KVM_MSR_EXIT_REASON_FILTER)
+        .map_err(|err| routing_error(format!("cannot enable user-space MSR exits: {err:#}")))?;
+    vm.set_msr_filter(true, &identity_msr_filter())
+        .map_err(|err| routing_error(format!("cannot install the MSR filter: {err:#}")))?;
+    Ok(())
+}
+
+/// Composes the partition CPUID: `base` (every other CPUID source, in
+/// order) without its hypervisor-range leaves, then the time ABI CPUID, so
+/// that the time ABI leaves override every other source.
+pub(crate) fn compose_cpuid(base: Vec<CpuidLeaf>, time_abi: &CpuidLeafSet) -> CpuidLeafSet {
+    let mut leaves: Vec<_> = base
+        .into_iter()
+        .filter(|leaf| !HYPERVISOR_CPUID_RANGE.contains(&leaf.function))
+        .collect();
+    leaves.extend(time_abi.leaves().iter().copied());
+    CpuidLeafSet::new(leaves)
+}
+
+/// Converts the KVM CPUID entries programmed for a VP to CPUID leaves.
+pub(crate) fn cpuid_leaves(entries: &[kvm::kvm_cpuid_entry2]) -> Vec<CpuidLeaf> {
+    entries
+        .iter()
+        .map(|entry| {
+            let leaf = CpuidLeaf::new(entry.function, [entry.eax, entry.ebx, entry.ecx, entry.edx]);
+            if entry.flags & kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX != 0 {
+                leaf.indexed(entry.index)
+            } else {
+                leaf
+            }
+        })
+        .collect()
+}
+
+fn routing_error(message: impl Into<String>) -> TimeAbiError {
+    TimeAbiError::new(TimeAbiCode::IdentityRouting, message)
+}
+
+/// Two host TSC reads around another host operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HostTscBracket {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Waits until every earlier instruction has completed locally, so that a
+/// TSC read is not reordered with its neighbors.
+fn lfence() {
+    // SAFETY: LFENCE only orders instruction execution.
+    unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)) };
+}
+
+impl HostTscBracket {
+    /// Runs `f` between two host TSC reads.
+    pub(crate) fn around<T>(f: impl FnOnce() -> T) -> (Self, T) {
+        lfence();
+        let start = safe_intrinsics::rdtsc();
+        lfence();
+        let value = f();
+        lfence();
+        let end = safe_intrinsics::rdtsc();
+        (Self { start, end }, value)
+    }
+
+    /// The host TSC at the middle of the bracket, and the most the instant of
+    /// the bracketed operation can be from it, in cycles. `None` if the TSC
+    /// went backwards.
+    pub(crate) fn midpoint(&self) -> Option<(u64, u64)> {
+        let width = self.end.checked_sub(self.start)?;
+        Some((self.start + width / 2, width.div_ceil(2)))
+    }
+}
+
+/// Converts `cycles` at `tsc_hz` to nanoseconds, rounding up.
+fn cycles_to_ns_ceil(cycles: u64, tsc_hz: u64) -> u64 {
+    let ns = (u128::from(cycles) * 1_000_000_000).div_ceil(u128::from(tsc_hz.max(1)));
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
+/// Pairs a host time sample with the bracket of host TSC reads around it.
+///
+/// Returns the host TSC at the middle of the bracket and the pairing
+/// uncertainty, half the bracket, in nanoseconds at `tsc_hz`. `None` if the
+/// TSC went backwards.
+pub(crate) fn pair_host_sample(bracket: HostTscBracket, tsc_hz: u64) -> Option<(u64, u64)> {
+    let (host_tsc, half_width) = bracket.midpoint()?;
+    Some((host_tsc, cycles_to_ns_ceil(half_width, tsc_hz)))
+}
+
+/// A host time sample paired with the host TSC.
+#[derive(Debug, Clone, Copy)]
+struct PairedSample {
+    host_tsc: u64,
+    sample: HostTimeSample,
+    pairing_ns: u64,
+}
+
+/// Takes a host time sample paired with the host TSC: the first of
+/// [`ANCHOR_ATTEMPTS`] attempts within [`MAX_ANCHOR_PAIRING_NS`], or else the
+/// tightest one.
+fn paired_host_sample(tsc_hz: u64) -> Result<PairedSample, TimeAbiError> {
+    let mut best: Option<PairedSample> = None;
+    for _ in 0..ANCHOR_ATTEMPTS {
+        let (bracket, sample) = HostTscBracket::around(sample_host_time);
+        let sample = sample?;
+        let Some((host_tsc, pairing_ns)) = pair_host_sample(bracket, tsc_hz) else {
+            continue;
+        };
+        let paired = PairedSample {
+            host_tsc,
+            sample,
+            pairing_ns,
+        };
+        if pairing_ns <= MAX_ANCHOR_PAIRING_NS {
+            return Ok(paired);
+        }
+        if best.is_none_or(|best| pairing_ns < best.pairing_ns) {
+            best = Some(paired);
+        }
+    }
+    best.ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::TscAnchor,
+            "the host TSC went backwards around every host time sample",
+        )
+    })
+}
+
+/// Returns whether the guest TSC read from a vCPU between the host TSC reads
+/// of `bracket` is the host TSC plus `offset`, as it is without TSC scaling.
+pub(crate) fn tsc_is_unscaled(guest_tsc: u64, offset: u64, bracket: HostTscBracket) -> bool {
+    let host_tsc = guest_tsc.wrapping_sub(offset);
+    (bracket.start..=bracket.end).contains(&host_tsc)
+}
+
+/// Checks the synchronized set's read-back: every vCPU's offset must be the
+/// common offset.
+pub(crate) fn check_offset_readback(
+    offset: u64,
+    readback: &[(VpIndex, u64)],
+) -> Result<(), TimeAbiError> {
+    let mismatched: Vec<_> = readback
+        .iter()
+        .filter(|(_, value)| *value != offset)
+        .map(|(vp, value)| format!("VP {}: {value:#x}", vp.index()))
+        .collect();
+    if !mismatched.is_empty() {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::TscSyncReadback,
+            format!(
+                "KVM_VCPU_TSC_OFFSET read back differs from the common offset {offset:#x}: {}",
+                mismatched.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The time ABI state of a KVM partition.
+#[derive(Debug)]
+pub(crate) struct KvmTimeAbi {
+    msrs: Arc<TimeAbiMsrs>,
+    /// The value of KVM's own `HV_X64_MSR_TSC_INVARIANT_CONTROL`, or `None`
+    /// if this KVM does not implement it (Linux before 6.3, or built without
+    /// Hyper-V emulation), in which case KVM does not hide invariant TSC
+    /// either.
+    kvm_invariant_control: Option<Mutex<u64>>,
+}
+
+impl KvmTimeAbi {
+    /// Sets up the vCPUs of a new partition for the time ABI: KVM's
+    /// paravirtual MSRs raise #GP, and KVM's copy of
+    /// `HV_X64_MSR_TSC_INVARIANT_CONTROL` is probed.
+    pub(crate) fn new(
+        vm: &kvm::Partition,
+        vcpus: &[u32],
+        msrs: Arc<TimeAbiMsrs>,
+    ) -> Result<Self, TimeAbiError> {
+        for &vcpu in vcpus {
+            vm.vp(vcpu)
+                .enable_cap(
+                    "enforce_pv_feature_cpuid",
+                    kvm::KVM_CAP_ENFORCE_PV_FEATURE_CPUID,
+                    [1, 0, 0, 0],
+                )
+                .map_err(|err| {
+                    routing_error(format!(
+                        "cannot hide KVM's paravirtual MSRs on vCPU {vcpu}: {err:#}"
+                    ))
+                })?;
+        }
+        // Writing KVM's power-on value tells whether KVM implements the MSR.
+        // `vcpus[0]` is VP 0.
+        let kvm_invariant_control =
+            match vm.vp(vcpus[0]).set_msrs(&[(MSR_TSC_INVARIANT_CONTROL, 0)]) {
+                Ok(()) => Some(Mutex::new(0)),
+                Err(kvm::Error::IncompleteMsrs { .. }) => {
+                    tracing::info!(
+                        "KVM lacks HV_X64_MSR_TSC_INVARIANT_CONTROL, so it does not hide \
+                         invariant TSC"
+                    );
+                    None
+                }
+                Err(err) => {
+                    return Err(routing_error(format!(
+                        "cannot write KVM's HV_X64_MSR_TSC_INVARIANT_CONTROL: {err:#}"
+                    )));
+                }
+            };
+        Ok(Self {
+            msrs,
+            kvm_invariant_control,
+        })
+    }
+
+    /// Handles a guest read of `msr` that exited to user space. `None` means
+    /// the MSR is not the time ABI's.
+    pub(crate) fn read_msr(&self, vp: VpIndex, msr: u32) -> Option<Result<u64, MsrError>> {
+        if msr == MSR_IA32_TSC_ADJUST {
+            tracelimit::info_ratelimited!(vp = vp.index(), "IA32_TSC_ADJUST read raises #GP");
+            return Some(Err(MsrError::InvalidAccess));
+        }
+        self.msrs.read(vp, msr)
+    }
+
+    /// Handles a guest write of `value` to `msr` that exited to user space.
+    /// `None` means the MSR is not the time ABI's.
+    ///
+    /// After an accepted `HV_X64_MSR_TSC_INVARIANT_CONTROL` write, the caller
+    /// mirrors it with [`Self::sync_invariant_control`] before resuming the
+    /// guest.
+    pub(crate) fn write_msr(
+        &self,
+        vp: VpIndex,
+        msr: u32,
+        value: u64,
+    ) -> Option<Result<(), MsrError>> {
+        if msr == MSR_IA32_TSC_ADJUST {
+            tracelimit::info_ratelimited!(
+                vp = vp.index(),
+                value,
+                "IA32_TSC_ADJUST write raises #GP"
+            );
+            return Some(Err(MsrError::InvalidAccess));
+        }
+        self.msrs.write(vp, msr, value)
+    }
+
+    /// Makes KVM's copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` equal the
+    /// guest-visible value, with a host-initiated write through `vp` when it
+    /// differs.
+    pub(crate) fn sync_invariant_control(
+        &self,
+        vp: &kvm::Processor<'_>,
+    ) -> Result<(), TimeAbiError> {
+        let Some(kvm_value) = &self.kvm_invariant_control else {
+            return Ok(());
+        };
+        // Hold the lock while writing so that concurrent callers apply the
+        // latest guest-visible value last.
+        let mut kvm_value = kvm_value.lock();
+        let value = self.msrs.tsc_invariant_control();
+        if *kvm_value != value {
+            vp.set_msrs(&[(MSR_TSC_INVARIANT_CONTROL, value)])
+                .map_err(|err| {
+                    routing_error(format!(
+                        "cannot mirror HV_X64_MSR_TSC_INVARIANT_CONTROL = {value} into KVM: {err:#}"
+                    ))
+                })?;
+            tracing::debug!(value, "mirrored HV_X64_MSR_TSC_INVARIANT_CONTROL into KVM");
+            *kvm_value = value;
+        }
+        Ok(())
+    }
+}
+
+impl KvmPartitionInner {
+    fn time_abi_vps(&self) -> impl Iterator<Item = (VpIndex, kvm::Processor<'_>)> {
+        self.vps.iter().map(|vp| {
+            (
+                vp.vp_info().base.vp_index,
+                self.kvm.vp(vp.vp_info().apic_id),
+            )
+        })
+    }
+}
+
+impl TimeAbiBackend for KvmPartitionInner {
+    fn native_tsc_hz(&self) -> Result<u64, TimeAbiError> {
+        self.vp_kvm(VpIndex::BSP).tsc_frequency_hz().map_err(|err| {
+            TimeAbiError::new(
+                TimeAbiCode::TscRateUnavailable,
+                format!("KVM_GET_TSC_KHZ failed on VP 0: {err:#}"),
+            )
+        })
+    }
+
+    fn lapic_hz(&self) -> Result<u64, TimeAbiError> {
+        // The partition never sets the bus cycle, so it is KVM's default,
+        // which KVM reports for the capability. Kernels before 6.11 lack the
+        // capability (0) and have the same fixed 1 ns cycle.
+        match self
+            .kvm
+            .check_extension(kvm::KVM_CAP_X86_APIC_BUS_CYCLES_NS)
+        {
+            Ok(0 | 1) => Ok(LAPIC_HZ_KVM),
+            Ok(ns) => Err(TimeAbiError::new(
+                TimeAbiCode::LapicRateUnavailable,
+                format!("KVM's default APIC bus cycle is {ns} ns, not 1 ns"),
+            )),
+            Err(err) => Err(TimeAbiError::new(
+                TimeAbiCode::LapicRateUnavailable,
+                format!("cannot query KVM_CAP_X86_APIC_BUS_CYCLES_NS: {err:#}"),
+            )),
+        }
+    }
+
+    fn preflight(&self) -> Result<BackendPreflight, TimeAbiError> {
+        // Partition creation fails with E_IDENTITY_ROUTING unless the MSR
+        // filter and the user-space MSR exits are installed, so a built
+        // partition always routes the identity MSRs to OpenVMM.
+        let native_khz = self.native_tsc_hz()? / 1000;
+        for (vp_index, vp) in self.time_abi_vps() {
+            if !vp.has_tsc_offset_attr() {
+                return Err(TimeAbiError::new(
+                    TimeAbiCode::TscSyncUnsupported,
+                    format!(
+                        "VP {} lacks KVM_VCPU_TSC_OFFSET (Linux 5.16 or later)",
+                        vp_index.index()
+                    ),
+                ));
+            }
+            let scaling = |message: String| {
+                TimeAbiError::new(
+                    TimeAbiCode::TscScalingActive,
+                    format!("VP {}: {message}", vp_index.index()),
+                )
+            };
+            let khz = vp.tsc_frequency_hz().map_err(|err| {
+                TimeAbiError::new(
+                    TimeAbiCode::TscRateUnavailable,
+                    format!("KVM_GET_TSC_KHZ failed on VP {}: {err:#}", vp_index.index()),
+                )
+            })? / 1000;
+            if khz != native_khz {
+                return Err(scaling(format!(
+                    "the TSC runs at {khz} kHz, VP 0 at {native_khz} kHz"
+                )));
+            }
+            // Without scaling, the guest TSC is the host TSC plus the offset.
+            // KVM scales only outside its tolerance (250 ppm by default), far
+            // more than the bracket width at any host TSC value.
+            let offset = vp
+                .tsc_offset()
+                .map_err(|err| scaling(format!("cannot read KVM_VCPU_TSC_OFFSET: {err:#}")))?;
+            let mut guest_tsc = [0];
+            let (bracket, result) =
+                HostTscBracket::around(|| vp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut guest_tsc));
+            result.map_err(|err| scaling(format!("cannot read IA32_TSC: {err:#}")))?;
+            if !tsc_is_unscaled(guest_tsc[0], offset, bracket) {
+                return Err(scaling(format!(
+                    "IA32_TSC {:#x} is not the host TSC in [{:#x}, {:#x}] plus the offset {offset:#x}",
+                    guest_tsc[0], bracket.start, bracket.end
+                )));
+            }
+        }
+        tracing::info!(
+            native_khz,
+            vps = self.vps.len(),
+            "time ABI KVM preflight: identity MSRs exit to OpenVMM, common TSC offset, no scaling"
+        );
+        Ok(BackendPreflight {
+            msr_route: IdentityMsrRoute::ExitToVmm,
+            sync: TscSyncMethod::CommonOffset,
+        })
+    }
+
+    fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
+        Ok(cpuid_leaves(&self.bsp_cpuid))
+    }
+
+    fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
+        let tsc_hz = self.native_tsc_hz()?;
+        // With every VP stopped, VP 0's TSC is the host TSC plus its offset
+        // (preflight verified that it is not scaled). Reading the offset once
+        // and pairing the host TSC with the host sample is much tighter than
+        // pairing the sample with a KVM_GET_MSRS round trip.
+        let offset = self.vp_kvm(VpIndex::BSP).tsc_offset().map_err(|err| {
+            TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                format!("cannot read VP 0's TSC offset: {err:#}"),
+            )
+        })?;
+        let paired = paired_host_sample(tsc_hz)?;
+        if paired.pairing_ns > MAX_ANCHOR_PAIRING_NS {
+            return Err(TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                format!(
+                    "cannot pair VP 0's TSC with a host time sample within \
+                     {MAX_ANCHOR_PAIRING_NS} ns: the best of {ANCHOR_ATTEMPTS} attempts is \
+                     {} ns",
+                    paired.pairing_ns
+                ),
+            ));
+        }
+        let tsc = paired.host_tsc.wrapping_add(offset);
+        tracing::debug!(
+            tsc,
+            sample = ?paired.sample,
+            pairing_ns = paired.pairing_ns,
+            "time ABI capture anchor"
+        );
+        Ok(TscAnchor {
+            tsc,
+            sample: paired.sample,
+            pairing_ns: paired.pairing_ns,
+        })
+    }
+
+    fn set_synchronized_tsc(
+        &self,
+        target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
+    ) -> Result<TscSetReport, TimeAbiError> {
+        let readback_error =
+            |message: String| TimeAbiError::new(TimeAbiCode::TscSyncReadback, message);
+        let tsc_hz = self.native_tsc_hz()?;
+        // The offsets the restore left, logged to show what KVM made of the
+        // saved IA32_TSC values (see the module documentation).
+        let previous = self
+            .time_abi_vps()
+            .map(|(vp_index, vp)| {
+                vp.tsc_offset().map_err(|err| {
+                    readback_error(format!(
+                        "cannot read VP {}'s TSC offset: {err:#}",
+                        vp_index.index()
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // The restore anchor. Every guest TSC equals the target at the host
+        // instant of `host_tsc` and runs from there.
+        let paired = paired_host_sample(tsc_hz)?;
+        if paired.pairing_ns > MAX_ANCHOR_PAIRING_NS {
+            tracelimit::warn_ratelimited!(
+                pairing_ns = paired.pairing_ns,
+                "time ABI restore anchor is paired loosely"
+            );
+        }
+        let host_tsc = paired.host_tsc;
+        let target_tsc = target(&paired.sample)?;
+        let offset = target_tsc.wrapping_sub(host_tsc);
+        for (vp_index, vp) in self.time_abi_vps() {
+            vp.set_tsc_offset(offset).map_err(|err| {
+                readback_error(format!(
+                    "cannot set VP {}'s TSC offset to {offset:#x}: {err:#}",
+                    vp_index.index()
+                ))
+            })?;
+        }
+        let readback = self
+            .time_abi_vps()
+            .map(|(vp_index, vp)| {
+                vp.tsc_offset()
+                    .map(|value| (vp_index, value))
+                    .map_err(|err| {
+                        readback_error(format!(
+                            "cannot read back VP {}'s TSC offset: {err:#}",
+                            vp_index.index()
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        check_offset_readback(offset, &readback)?;
+        tracing::info!(
+            target_tsc,
+            host_tsc,
+            offset = format_args!("{offset:#x}"),
+            pairing_ns = paired.pairing_ns,
+            vps = readback.len(),
+            previous_minus_target_cycles = ?previous
+                .iter()
+                .map(|previous| host_tsc.wrapping_add(*previous).wrapping_sub(target_tsc) as i64)
+                .collect::<Vec<_>>(),
+            "time ABI synchronized TSC set"
+        );
+        Ok(TscSetReport {
+            target: target_tsc,
+            sample: paired.sample,
+            readback,
+            method: TscSyncMethod::CommonOffset,
+        })
+    }
+}
+
+/// Reports the time ABI capabilities that the partition does not have.
+pub(crate) fn check_capabilities(caps: &virt::PartitionCapabilities) -> Result<(), KvmError> {
+    if caps.hv1 || caps.kvm_clock {
+        return Err(KvmError::TimeAbi(routing_error(format!(
+            "partition capabilities expose hv1 ({}) or the KVM clock ({})",
+            caps.hv1, caps.kvm_clock
+        ))));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use virt::time_abi::DeclaredRates;
+    use virt::time_abi::identity::time_abi_cpuid;
+    use virt::time_abi::msr::MSR_APIC_FREQUENCY;
+    use virt::time_abi::msr::MSR_TSC_FREQUENCY;
+    use virt::time_abi::msr::MSR_VP_INDEX;
+
+    #[test]
+    fn filter_denies_exactly_the_owned_msrs() {
+        let filter = identity_msr_filter();
+        let owned = [
+            (0x4000_0000, 0x4000_01ff),
+            (MSR_IA32_TSC_ADJUST, MSR_IA32_TSC_ADJUST),
+        ];
+        for (range, (first, last)) in filter.iter().zip(owned) {
+            assert_eq!(range.base, first);
+            assert_eq!(range.base + range.nmsrs - 1, last);
+            assert!(range.read && range.write);
+            assert!(range.bitmap.iter().all(|&byte| byte == 0));
+        }
+        assert_eq!(filter[0].nmsrs, 0x200);
+        assert_eq!(filter[1].nmsrs, 1);
+    }
+
+    fn kvm_like_base() -> Vec<CpuidLeaf> {
+        vec![
+            CpuidLeaf::new(0, [0x16, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+            CpuidLeaf::new(
+                1,
+                [
+                    0x0005_0654,
+                    0x0010_0800,
+                    0xfffa_3203 | (1 << 24),
+                    0x0f8b_fbff,
+                ],
+            ),
+            CpuidLeaf::new(6, [0x4, 0, 0, 0]),
+            CpuidLeaf::new(7, [0, 0xd19f_4fbb | (1 << 1), 0, 0]).indexed(0),
+            CpuidLeaf::new(0xa, [0x0740_4f04, 0, 0, 0x603]),
+            CpuidLeaf::new(0x15, [2, 0xd4, 0x017d_7840, 0]),
+            // KVM's signature and features, and a stray leaf at another
+            // hypervisor base.
+            CpuidLeaf::new(0x4000_0000, [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d]),
+            CpuidLeaf::new(0x4000_0001, [0x0100_8efb, 0, 0, 0]),
+            CpuidLeaf::new(0x4000_0100, [0x4000_0101, 0x4b4d_564b, 0x564b_4d56, 0x4d]),
+            CpuidLeaf::new(0x8000_0000, [0x8000_0008, 0, 0, 0]),
+            CpuidLeaf::new(0x8000_0001, [0, 0, 0x121, 0x2c10_0800]),
+            CpuidLeaf::new(0x8000_0007, [0, 0, 0, 0x100]),
+        ]
+    }
+
+    #[test]
+    fn composed_cpuid_carries_the_identity_and_time_bits() {
+        let config = time_abi_cpuid(4, true);
+        let cpuid = compose_cpuid(kvm_like_base(), &config);
+        let mut lookup = |leaf, subleaf| cpuid.result(leaf, subleaf, &[0; 4]);
+        virt::time_abi::identity::check_identity(&mut lookup, 4).unwrap();
+        virt::time_abi::identity::check_time_bits(&mut lookup, true).unwrap();
+        // The hypervisor range holds exactly the time ABI's leaves: no KVM
+        // signature survives at any base.
+        let hypervisor_leaves = |set: &CpuidLeafSet| -> Vec<u32> {
+            set.leaves()
+                .iter()
+                .map(|leaf| leaf.function)
+                .filter(|function| HYPERVISOR_CPUID_RANGE.contains(function))
+                .collect()
+        };
+        assert_eq!(hypervisor_leaves(&cpuid), hypervisor_leaves(&config));
+        assert_eq!(cpuid.result(0x4000_0100, 0, &[0; 4]), [0; 4]);
+        // The time bits are cleared or set; the other bits keep KVM's values.
+        assert_eq!(
+            cpuid.result(1, 0, &[0; 4])[2],
+            (0xfffa_3203 & !((1 << 24) | (1 << 15))) | (1 << 31)
+        );
+        assert_eq!(cpuid.result(7, 0, &[0; 4])[1], 0xd19f_4fbb & !(1 << 1));
+    }
+
+    #[test]
+    fn composed_cpuid_drops_hypervisor_leaves_of_every_source() {
+        let mut base = kvm_like_base();
+        // A later override of a hypervisor leaf does not survive either.
+        base.push(CpuidLeaf::new(0x4000_0003, [!0; 4]));
+        let cpuid = compose_cpuid(base, &time_abi_cpuid(1, true));
+        assert_eq!(cpuid.result(0x4000_0003, 0, &[0; 4]), [0x8860, 0, 0, 0x100]);
+    }
+
+    #[test]
+    fn capabilities_of_the_composed_cpuid_exclude_hv1_and_kvm_clock() {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .build(2)
+            .unwrap();
+        let cpuid = compose_cpuid(kvm_like_base(), &time_abi_cpuid(2, true));
+        let mut lookup = |leaf, subleaf| {
+            let mut result = cpuid.result(leaf, subleaf, &[0; 4]);
+            if leaf == 1 {
+                // Match the topology's APIC mode and drop XSAVE, which the
+                // fake CPUID does not describe.
+                result[2] &= !((1 << 21) | (1 << 26) | (1 << 27));
+                if topology.apic_mode() != vm_topology::processor::x86::ApicMode::XApic {
+                    result[2] |= 1 << 21;
+                }
+            }
+            result
+        };
+        let caps = virt::PartitionCapabilities::from_cpuid(
+            &topology,
+            &mut virt::time_abi::identity::capabilities_cpuid(&mut lookup),
+        )
+        .unwrap();
+        check_capabilities(&caps).unwrap();
+        let unmasked = virt::PartitionCapabilities::from_cpuid(&topology, &mut lookup).unwrap();
+        assert!(check_capabilities(&unmasked).is_err());
+    }
+
+    #[test]
+    fn cpuid_leaves_keep_significant_indices() {
+        let entries = [
+            kvm::kvm_cpuid_entry2 {
+                function: 7,
+                index: 0,
+                flags: kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+                ebx: 0x1234,
+                ..Default::default()
+            },
+            kvm::kvm_cpuid_entry2 {
+                function: 0x4000_0001,
+                index: 0,
+                flags: 0,
+                eax: 0x3123_7648,
+                ..Default::default()
+            },
+        ];
+        let leaves = cpuid_leaves(&entries);
+        assert_eq!(
+            (leaves[0].function, leaves[0].index, leaves[0].result),
+            (7, Some(0), [0, 0x1234, 0, 0])
+        );
+        assert_eq!(
+            (leaves[1].function, leaves[1].index, leaves[1].result),
+            (0x4000_0001, None, [0x3123_7648, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn host_sample_pairing_uses_the_bracket_midpoint() {
+        // 2 GHz: 2 cycles per ns.
+        let hz = 2_000_000_000;
+        let bracket = HostTscBracket {
+            start: 1_000,
+            end: 1_401,
+        };
+        // Midpoint 1200, half width 201 cycles rounds up to 101 ns.
+        assert_eq!(pair_host_sample(bracket, hz), Some((1_200, 101)));
+        // A 10 us half width is at the anchor bound.
+        let at_bound = HostTscBracket {
+            start: 0,
+            end: 40_000,
+        };
+        assert_eq!(
+            pair_host_sample(at_bound, hz),
+            Some((20_000, MAX_ANCHOR_PAIRING_NS))
+        );
+        let beyond = HostTscBracket {
+            start: 0,
+            end: 40_002,
+        };
+        assert_eq!(
+            pair_host_sample(beyond, hz),
+            Some((20_001, MAX_ANCHOR_PAIRING_NS + 1))
+        );
+        // A TSC that went backwards cannot be paired.
+        let backwards = HostTscBracket { start: 10, end: 9 };
+        assert_eq!(pair_host_sample(backwards, hz), None);
+        // Near the top of the TSC range.
+        let high = HostTscBracket {
+            start: u64::MAX - 100,
+            end: u64::MAX,
+        };
+        assert_eq!(pair_host_sample(high, hz), Some((u64::MAX - 50, 25)));
+    }
+
+    #[test]
+    fn unscaled_tsc_is_host_plus_offset() {
+        let bracket = HostTscBracket {
+            start: 5_000,
+            end: 6_000,
+        };
+        // Offsets wrap: a guest TSC below the host TSC has an offset above
+        // 2^63.
+        for offset in [0, 1 << 40, 0u64.wrapping_sub(4_000)] {
+            assert!(tsc_is_unscaled(
+                5_500u64.wrapping_add(offset),
+                offset,
+                bracket
+            ));
+            assert!(tsc_is_unscaled(
+                5_000u64.wrapping_add(offset),
+                offset,
+                bracket
+            ));
+            assert!(tsc_is_unscaled(
+                6_000u64.wrapping_add(offset),
+                offset,
+                bracket
+            ));
+            assert!(!tsc_is_unscaled(
+                4_999u64.wrapping_add(offset),
+                offset,
+                bracket
+            ));
+            assert!(!tsc_is_unscaled(
+                6_001u64.wrapping_add(offset),
+                offset,
+                bracket
+            ));
+        }
+        // 250 ppm of scaling at a host TSC of 10^12 is far outside the
+        // bracket.
+        let host = 1_000_000_000_000u64;
+        let bracket = HostTscBracket {
+            start: host,
+            end: host + 20_000,
+        };
+        let scaled = host + host / 4_000;
+        assert!(!tsc_is_unscaled(scaled, 0, bracket));
+    }
+
+    #[test]
+    fn common_offset_reaches_the_target_at_the_anchor() {
+        for (target, host_tsc) in [
+            (5_000_000u64, 1_000u64),
+            (1_000, 5_000_000),
+            (u64::MAX, 0),
+            (0, u64::MAX),
+        ] {
+            let offset = target.wrapping_sub(host_tsc);
+            assert_eq!(host_tsc.wrapping_add(offset), target);
+        }
+    }
+
+    #[test]
+    fn offset_readback_requires_every_vp() {
+        let vps = |values: &[u64]| -> Vec<(VpIndex, u64)> {
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, &value)| (VpIndex::new(index as u32), value))
+                .collect()
+        };
+        check_offset_readback(7, &vps(&[7, 7, 7, 7])).unwrap();
+        check_offset_readback(7, &[]).unwrap();
+        let error = check_offset_readback(7, &vps(&[7, 8, 7, 9])).unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::TscSyncReadback);
+        assert!(error.message.contains("VP 1: 0x8"), "{}", error.message);
+        assert!(error.message.contains("VP 3: 0x9"), "{}", error.message);
+    }
+
+    fn time_abi(msrs: Arc<TimeAbiMsrs>) -> KvmTimeAbi {
+        KvmTimeAbi {
+            msrs,
+            kvm_invariant_control: None,
+        }
+    }
+
+    /// Maps an MSR exit result to `Some(Ok(value))`, `Some(Err(()))` for #GP,
+    /// or `None` when the time ABI does not handle the MSR.
+    fn outcome<T>(result: Option<Result<T, MsrError>>) -> Option<Result<T, ()>> {
+        result.map(|result| {
+            result.map_err(|err| assert!(matches!(err, MsrError::InvalidAccess), "{err:?}"))
+        })
+    }
+
+    #[test]
+    fn msr_exits_serve_the_identity_and_hide_tsc_adjust() {
+        let msrs = Arc::new(TimeAbiMsrs::new());
+        msrs.declare(DeclaredRates {
+            tsc_hz: 2_194_804_000,
+            apic_hz: LAPIC_HZ_KVM,
+        })
+        .unwrap();
+        let time_abi = time_abi(msrs.clone());
+        let vp = VpIndex::new(2);
+        let read = |msr| outcome(time_abi.read_msr(vp, msr));
+        let write = |msr, value| outcome(time_abi.write_msr(vp, msr, value));
+        assert_eq!(read(MSR_VP_INDEX), Some(Ok(2)));
+        assert_eq!(read(MSR_TSC_FREQUENCY), Some(Ok(2_194_804_000)));
+        assert_eq!(read(MSR_APIC_FREQUENCY), Some(Ok(1_000_000_000)));
+        // Hyper-V MSRs that KVM would emulate raise #GP.
+        for msr in [
+            0x4000_0000,
+            0x4000_0001,
+            0x4000_0020,
+            0x4000_0021,
+            0x4000_00b0,
+        ] {
+            assert_eq!(read(msr), Some(Err(())), "{msr:#x}");
+            assert_eq!(write(msr, 1), Some(Err(())), "{msr:#x}");
+        }
+        assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(Err(())));
+        assert_eq!(write(MSR_IA32_TSC_ADJUST, 0), Some(Err(())));
+        // Other unknown MSRs keep their existing handling.
+        assert_eq!(read(0x88), None);
+        assert_eq!(write(0x4000_0200, 0), None);
+        // The invariant TSC control is guest state in the shared handler.
+        assert_eq!(write(MSR_TSC_INVARIANT_CONTROL, 2), Some(Err(())));
+        assert_eq!(write(MSR_TSC_INVARIANT_CONTROL, 1), Some(Ok(())));
+        assert_eq!(msrs.tsc_invariant_control(), 1);
+        assert_eq!(read(MSR_TSC_INVARIANT_CONTROL), Some(Ok(1)));
+    }
+
+    #[test]
+    fn cycle_conversion_rounds_up() {
+        assert_eq!(cycles_to_ns_ceil(0, 2_000_000_000), 0);
+        assert_eq!(cycles_to_ns_ceil(1, 2_000_000_000), 1);
+        // One millisecond at the prometheus32 rate, and a hair over a
+        // microsecond.
+        assert_eq!(cycles_to_ns_ceil(2_194_804, 2_194_804_000), 1_000_000);
+        assert_eq!(cycles_to_ns_ceil(2_195, 2_194_804_000), 1_001);
+        assert_eq!(cycles_to_ns_ceil(u64::MAX, 1), u64::MAX);
+    }
+}
+
+/// Tests against the host's KVM.
+#[cfg(test)]
+mod kvm_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn partition(vp_count: u32) -> kvm::Partition {
+        let kvm = kvm::Kvm::new().unwrap();
+        let mut vm = kvm.new_vm(kvm::VmType::Default).unwrap();
+        for vcpu in 0..vp_count {
+            vm.add_vp(vcpu).unwrap();
+        }
+        vm
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn identity_msr_filter_installs() {
+        let vm = partition(1);
+        install_identity_msr_filter(&vm).unwrap();
+        // Host-initiated accesses bypass the filter.
+        let mut value = [0];
+        vm.vp(0)
+            .get_msrs(&[x86defs::X86X_MSR_TSC], &mut value)
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn common_offset_is_exact_on_every_vcpu() {
+        for vp_count in [1, 2, 4, 8] {
+            let vm = partition(vp_count);
+            let hz = vm.vp(0).tsc_frequency_hz().unwrap();
+            // Desynchronize the vCPUs first, as a restore's IA32_TSC writes
+            // may.
+            for vcpu in 0..vp_count {
+                vm.vp(vcpu)
+                    .set_tsc_offset(u64::from(vcpu) * 1_000_003)
+                    .unwrap();
+            }
+            let (bracket, ()) = HostTscBracket::around(|| ());
+            let target = hz * 3600;
+            let offset = target.wrapping_sub(bracket.end);
+            for vcpu in 0..vp_count {
+                vm.vp(vcpu).set_tsc_offset(offset).unwrap();
+            }
+            for vcpu in 0..vp_count {
+                let vp = vm.vp(vcpu);
+                assert!(vp.has_tsc_offset_attr());
+                assert_eq!(
+                    vp.tsc_offset().unwrap(),
+                    offset,
+                    "vCPU {vcpu} of {vp_count}"
+                );
+                let mut guest = [0];
+                let (bracket, result) =
+                    HostTscBracket::around(|| vp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut guest));
+                result.unwrap();
+                assert!(
+                    tsc_is_unscaled(guest[0], offset, bracket),
+                    "vCPU {vcpu} of {vp_count}: {:#x} {bracket:x?}",
+                    guest[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn host_samples_pair_within_the_anchor_bound() {
+        let vm = partition(1);
+        let hz = vm.vp(0).tsc_frequency_hz().unwrap();
+        let mut worst = 0;
+        for _ in 0..1000 {
+            worst = worst.max(paired_host_sample(hz).unwrap().pairing_ns);
+        }
+        tracing::info!(worst, "worst host sample pairing, ns");
+        assert!(worst <= MAX_ANCHOR_PAIRING_NS);
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn invariant_control_mirror_reaches_kvm() {
+        let vm = partition(2);
+        let msrs = Arc::new(TimeAbiMsrs::new());
+        let time_abi = KvmTimeAbi::new(&vm, &[0, 1], msrs.clone()).unwrap();
+        if time_abi.kvm_invariant_control.is_none() {
+            tracing::info!("KVM does not implement HV_X64_MSR_TSC_INVARIANT_CONTROL");
+            return;
+        }
+        msrs.write(VpIndex::BSP, MSR_TSC_INVARIANT_CONTROL, 1)
+            .unwrap()
+            .unwrap();
+        time_abi.sync_invariant_control(&vm.vp(1)).unwrap();
+        let mut value = [0];
+        // The control is partition-wide: every vCPU reads the mirrored value.
+        vm.vp(0)
+            .get_msrs(&[MSR_TSC_INVARIANT_CONTROL], &mut value)
+            .unwrap();
+        assert_eq!(value[0], 1);
+        // A reset returns it to 0, which a host write may set in KVM.
+        msrs.reset();
+        time_abi.sync_invariant_control(&vm.vp(0)).unwrap();
+        vm.vp(1)
+            .get_msrs(&[MSR_TSC_INVARIANT_CONTROL], &mut value)
+            .unwrap();
+        assert_eq!(value[0], 0);
+    }
+}
