@@ -15,6 +15,7 @@ hypervisor_resources.workspace = true
 net_backend_resources.workspace = true
 openvmm_defs.workspace = true
 pal.workspace = true
+virt.workspace = true
 vm_resource.workspace = true
 
 mesh.workspace = true

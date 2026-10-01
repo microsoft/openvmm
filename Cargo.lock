@@ -6209,6 +6209,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "tracing",
+ "virt",
  "vm_resource",
  "windows-sys 0.61.0",
 ]
