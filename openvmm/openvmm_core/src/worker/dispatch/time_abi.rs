@@ -333,25 +333,27 @@ fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Ve
         .collect()
 }
 
-/// Checks that the backend supports the CPU profile (`E_PROFILE_UNSUPPORTED`)
-/// when it reports its CPU surface, and returns whether it did. Until every
-/// backend reports one, verification mode checks support from the backend's
-/// CPU fingerprint instead.
+/// Checks that the backend supports the CPU profile, from the CPU surface it
+/// reports (`E_PROFILE_UNSUPPORTED`), at every cold boot and restore. A
+/// backend that reports no surface fails the check.
 pub(super) fn check_profile_support(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
     profile: &CpuProfile,
-) -> anyhow::Result<bool> {
-    let Some(surface) = backend(partition, hypervisor)?.supported_cpu_surface()? else {
-        tracing::info!(
-            hypervisor,
-            cpu_profile = profile.id(),
-            "the backend reports no CPU surface; profile support is checked in verification mode"
-        );
-        return Ok(false);
-    };
+) -> anyhow::Result<()> {
+    let surface = backend(partition, hypervisor)?
+        .supported_cpu_surface()?
+        .ok_or_else(|| {
+            TimeAbiError::new(
+                TimeAbiCode::ProfileUnsupported,
+                format!(
+                    "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
+                    profile.id()
+                ),
+            )
+        })?;
     cpu_profile::verify_support(profile, &host_cpu_surface(&surface))?;
-    Ok(true)
+    Ok(())
 }
 
 /// Converts a backend's CPU surface to the profile crate's form.
