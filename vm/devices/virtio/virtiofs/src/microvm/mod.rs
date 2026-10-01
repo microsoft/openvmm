@@ -14,6 +14,8 @@ pub mod profile;
 pub(crate) mod resolver;
 pub(crate) mod saved_state;
 pub(crate) mod state;
+#[cfg(test)]
+mod symlink_tests;
 
 const MAX_FUSE_REQUEST_HEADER_BYTES: usize = 4096;
 
