@@ -60,13 +60,17 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for Micro
             )
             .await
             .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
-        Ok(MicrovmPortb::new(
+        let portb = MicrovmPortb::new(
             io.0.into_io(),
             resource.generation_id,
             resource.restore_entropy,
         )
-        .with_output_drain(resource.output_drain)
-        .into())
+        .with_output_drain(resource.output_drain);
+        let portb = match resource.time_abi {
+            Some(time_abi) => portb.with_time_abi(time_abi),
+            None => portb,
+        };
+        Ok(portb.into())
     }
 }
 
