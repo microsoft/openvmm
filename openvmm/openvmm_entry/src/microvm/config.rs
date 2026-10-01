@@ -680,6 +680,25 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 memory_range::MemoryRange::new(range.gpa_start..range.gpa_start + range.length)
             })
             .collect();
+        if opt.microvm.x_time_abi_v1 {
+            anyhow::ensure!(
+                cfg.machine_profile == MachineProfile::Microvm,
+                "--x-time-abi-v1 requires the microVM machine profile"
+            );
+            anyhow::ensure!(
+                opt.restore_snapshot.is_none(),
+                "time ABI v1 snapshot restore is not implemented yet"
+            );
+            anyhow::ensure!(
+                opt.microvm.snapshot_destination.is_none(),
+                "time ABI v1 snapshot capture is not implemented yet"
+            );
+            cfg.microvm.time_abi = Some(openvmm_defs::time_abi::TimeAbiParameters {
+                cpu_profile: "auto".to_owned(),
+                generation: 0,
+                hooks: Default::default(),
+            });
+        }
 
         let requested_hypervisor = opt
             .hypervisor
