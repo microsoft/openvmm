@@ -15,7 +15,8 @@
 //! capability. Features that no bit controls (for example PKU), the
 //! descriptive leaves (caches, the brand string), and the time policy bits a
 //! host lacks (ARAT and invariant TSC on Azure) reach the guest through the
-//! CPUID results ([`profile_cpuid_results`] and the time ABI CPUID).
+//! time ABI's CPUID results: the partition's complete effective CPUID, which
+//! `configure` programs with `CpuidResultList2`.
 //!
 //! The hardware test `features_control_the_mapped_cpuid_bits` checks the table
 //! against what WHP presents on a host.
@@ -28,10 +29,6 @@ use hvdef::HvX64PartitionProcessorFeatures1 as Bank1;
 use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
-use whp::abi::WHV_CPUID_OUTPUT;
-use whp::abi::WHV_X64_CPUID_RESULT2;
-use whp::abi::WHV_X64_CPUID_RESULT2_FLAGS;
-use whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
 
 /// `IA32_ARCH_CAPABILITIES`.
 const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
@@ -375,48 +372,6 @@ pub(crate) fn profile_features(
     Ok(features)
 }
 
-/// Returns the CPUID results that present `profile`'s pinned bits: one
-/// `CpuidResultList2` entry per profile leaf, with the profile's mask, so the
-/// pinned bits (features, descriptors, the brand string) come from the
-/// profile and the rest (runtime state such as OSXSAVE, and the VM-owned
-/// topology fields) from WHP and OpenVMM. The VM-owned topology leaves are
-/// left to OpenVMM's CPUID exits.
-///
-/// WHP returns these results for leaves without an exit, and as the default
-/// result of a CPUID exit, on which OpenVMM applies the time ABI CPUID.
-pub(crate) fn profile_cpuid_results(profile: &CpuProfile) -> Vec<WHV_X64_CPUID_RESULT2> {
-    profile
-        .cpuid()
-        .iter()
-        .filter_map(|entry| {
-            let (leaf, subleaf) = entry.key();
-            let mask = entry.masks();
-            if cpu_profile::VM_OWNED_LEAVES.contains(&leaf) || mask == [0; 4] {
-                return None;
-            }
-            let values = entry.values();
-            let output = |registers: [u32; 4]| WHV_CPUID_OUTPUT {
-                Eax: registers[EAX],
-                Ebx: registers[EBX],
-                Ecx: registers[ECX],
-                Edx: registers[EDX],
-            };
-            Some(WHV_X64_CPUID_RESULT2 {
-                Function: leaf,
-                Index: subleaf.unwrap_or(0),
-                VpIndex: 0,
-                Flags: if subleaf.is_some() {
-                    WHvX64CpuidResult2FlagSubleafSpecific
-                } else {
-                    WHV_X64_CPUID_RESULT2_FLAGS(0)
-                },
-                Output: output(std::array::from_fn(|i| values[i] & mask[i])),
-                Mask: output(mask),
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,81 +517,6 @@ mod tests {
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 27)), Pinned::Unpinned);
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 26)), Pinned::Set);
     }
-
-    #[test]
-    fn profile_results_present_every_pinned_leaf() {
-        for (id, _) in HOSTS {
-            let profile = profile(id);
-            let results = profile_cpuid_results(profile);
-            let pinned_entries = profile
-                .cpuid()
-                .iter()
-                .filter(|entry| {
-                    !cpu_profile::VM_OWNED_LEAVES.contains(&entry.key().0)
-                        && entry.masks() != [0; 4]
-                })
-                .count();
-            assert_eq!(results.len(), pinned_entries, "{id}");
-            for result in &results {
-                assert!(!cpu_profile::VM_OWNED_LEAVES.contains(&result.Function));
-                let entry = profile
-                    .cpuid()
-                    .iter()
-                    .find(|entry| {
-                        let (leaf, subleaf) = entry.key();
-                        leaf == result.Function
-                            && subleaf.unwrap_or(0) == result.Index
-                            && subleaf.is_some()
-                                == result.Flags.is_set(WHvX64CpuidResult2FlagSubleafSpecific)
-                    })
-                    .unwrap();
-                let output = [
-                    result.Output.Eax,
-                    result.Output.Ebx,
-                    result.Output.Ecx,
-                    result.Output.Edx,
-                ];
-                let mask = [
-                    result.Mask.Eax,
-                    result.Mask.Ebx,
-                    result.Mask.Ecx,
-                    result.Mask.Edx,
-                ];
-                assert_eq!(mask, entry.masks(), "{id} {:#x}", result.Function);
-                for register in 0..4 {
-                    assert_eq!(
-                        output[register],
-                        entry.values()[register] & mask[register],
-                        "{id} {:#x}",
-                        result.Function
-                    );
-                }
-            }
-            // The brand string is the profile's generic one, not the host's.
-            let brand: String = [0x8000_0002, 0x8000_0003, 0x8000_0004]
-                .iter()
-                .flat_map(|&leaf| {
-                    let result = results.iter().find(|r| r.Function == leaf).unwrap();
-                    [
-                        result.Output.Eax,
-                        result.Output.Ebx,
-                        result.Output.Ecx,
-                        result.Output.Edx,
-                    ]
-                })
-                .flat_map(u32::to_le_bytes)
-                .take_while(|&byte| byte != 0)
-                .map(char::from)
-                .collect();
-            assert!(
-                brand.starts_with("Intel(R) Xeon(R) Processor ("),
-                "{id}: {brand}"
-            );
-            // Runtime state stays with the hypervisor: OSXSAVE is unpinned.
-            let leaf1 = results.iter().find(|r| r.Function == 1).unwrap();
-            assert_eq!(leaf1.Mask.Ecx & (1 << 27), 0, "{id}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -646,9 +526,13 @@ mod whp_tests {
 
     use super::*;
     use cpu_profile::HostCpuSignature;
+    use whp::abi::WHV_CPUID_OUTPUT;
     use whp::abi::WHV_PROCESSOR_FEATURES;
     use whp::abi::WHV_PROCESSOR_FEATURES1;
     use whp::abi::WHV_PROCESSOR_XSAVE_FEATURES;
+    use whp::abi::WHV_X64_CPUID_RESULT2;
+    use whp::abi::WHV_X64_CPUID_RESULT2_FLAGS;
+    use whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
 
     /// The leaves whose feature bits the WHP features control.
     const FEATURE_LEAVES: [(u32, u32); 14] = [
