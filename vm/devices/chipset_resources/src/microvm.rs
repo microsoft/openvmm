@@ -33,6 +33,17 @@ pub struct MicrovmSnapshotBoundaryRequest {
     pub transaction_complete: mesh::rpc::Rpc<(), ()>,
 }
 
+/// How the microVM portb device completes an output drain request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, MeshPayload)]
+pub enum MicrovmPortbDrain {
+    /// Write and flush the accepted output, keeping the endpoint open, before
+    /// a snapshot capture that may still roll back.
+    Flush,
+    /// Write and flush the accepted output, then close the endpoint so a host
+    /// relay sees EOF, before the VM process exits.
+    Close,
+}
+
 /// The microVM bidirectional portb console at ports `0xe9` and `0xea`.
 #[derive(MeshPayload)]
 pub struct MicrovmPortbHandle {
@@ -42,8 +53,9 @@ pub struct MicrovmPortbHandle {
     pub generation_id: [u8; 16],
     /// Fresh entropy exposed only through the private restore-input selector.
     pub restore_entropy: Vec<u8>,
-    /// Requests to drain and close output before terminating the VM process.
-    pub output_drain: Option<mesh::Receiver<mesh::rpc::FailableRpc<(), ()>>>,
+    /// Requests to deliver accepted output before a snapshot capture or before
+    /// terminating the VM process.
+    pub output_drain: Option<mesh::Receiver<mesh::rpc::FailableRpc<MicrovmPortbDrain, ()>>>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for MicrovmPortbHandle {

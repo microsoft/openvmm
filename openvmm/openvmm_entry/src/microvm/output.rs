@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Drains the microVM portb device and its host output relay before process exit.
+//! Delivers microVM portb output to the host before a guest-requested snapshot
+//! capture and drains it, with its host output relay, before process exit.
 
 use anyhow::Context;
+use chipset_resources::microvm::MicrovmPortbDrain;
 use futures::AsyncRead;
 use futures::AsyncWriteExt;
 use futures::executor::block_on;
@@ -39,16 +41,33 @@ pub(crate) fn spawn_output(
 }
 
 pub(crate) struct MicrovmOutputDrain {
-    portb: mesh::Sender<FailableRpc<(), ()>>,
+    portb: mesh::Sender<FailableRpc<MicrovmPortbDrain, ()>>,
     output: Option<OutputCompletion>,
 }
 
 impl MicrovmOutputDrain {
     pub(crate) fn new(
         output: Option<OutputCompletion>,
-    ) -> (Self, mesh::Receiver<FailableRpc<(), ()>>) {
+    ) -> (Self, mesh::Receiver<FailableRpc<MicrovmPortbDrain, ()>>) {
         let (portb, requests) = mesh::channel();
         (Self { portb, output }, requests)
+    }
+
+    /// Writes and flushes the output accepted by portb to its endpoint, which
+    /// stays open, and fails after `timeout`.
+    ///
+    /// The host relay is not awaited because it completes only once the
+    /// endpoint closes.
+    pub(crate) async fn flush(&self, timeout: Duration) -> anyhow::Result<()> {
+        CancelContext::new()
+            .with_timeout(timeout)
+            .until_cancelled(
+                self.portb
+                    .call_failable(std::convert::identity, MicrovmPortbDrain::Flush),
+            )
+            .await
+            .context("microVM console output flush timed out")?
+            .context("failed to flush the microVM portb endpoint")
     }
 
     pub(crate) async fn drain(self) -> anyhow::Result<()> {
@@ -60,7 +79,7 @@ impl MicrovmOutputDrain {
             .with_timeout(timeout)
             .until_cancelled(async {
                 self.portb
-                    .call_failable(std::convert::identity, ())
+                    .call_failable(std::convert::identity, MicrovmPortbDrain::Close)
                     .await
                     .context("failed to drain the microVM portb endpoint")?;
                 if let Some(output) = self.output {
@@ -95,10 +114,59 @@ mod tests {
             let (drain, mut requests) = MicrovmOutputDrain::new(Some(completed));
             let mut drain = pin!(drain.drain());
             assert!(poll!(&mut drain).is_pending());
-            requests.recv().await.unwrap().complete(Ok(()));
+            let request = requests.recv().await.unwrap();
+            assert_eq!(*request.input(), MicrovmPortbDrain::Close);
+            request.complete(Ok(()));
             assert!(poll!(&mut drain).is_pending());
             complete.send(Ok(()));
             drain.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn flush_keeps_the_endpoint_open_without_waiting_for_the_relay() {
+        block_on(async {
+            let (_complete, completed) = oneshot();
+            let (drain, mut requests) = MicrovmOutputDrain::new(Some(completed));
+            {
+                let mut flush = pin!(drain.flush(Duration::from_secs(5)));
+                assert!(poll!(&mut flush).is_pending());
+                let request = requests.recv().await.unwrap();
+                assert_eq!(*request.input(), MicrovmPortbDrain::Flush);
+                request.complete(Ok(()));
+                flush.await.unwrap();
+            }
+            // The same handle still drains and closes portb at process exit.
+            let mut exit = pin!(drain.drain());
+            assert!(poll!(&mut exit).is_pending());
+            assert_eq!(
+                *requests.recv().await.unwrap().input(),
+                MicrovmPortbDrain::Close
+            );
+        });
+    }
+
+    #[test]
+    fn flush_reports_endpoint_failure() {
+        block_on(async {
+            let (drain, mut requests) = MicrovmOutputDrain::new(None);
+            let mut flush = pin!(drain.flush(Duration::from_secs(5)));
+            assert!(poll!(&mut flush).is_pending());
+            requests
+                .recv()
+                .await
+                .unwrap()
+                .fail(io::Error::from(io::ErrorKind::BrokenPipe));
+            assert!(format!("{:#}", flush.await.unwrap_err()).contains("portb endpoint"));
+        });
+    }
+
+    #[test]
+    fn flush_has_a_bounded_deadline() {
+        block_on(async {
+            let (drain, _requests) = MicrovmOutputDrain::new(None);
+            let error = drain.flush(Duration::from_millis(10)).await.unwrap_err();
+            assert!(format!("{error:#}").contains("timed out"));
         });
     }
 
