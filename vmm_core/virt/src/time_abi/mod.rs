@@ -23,6 +23,8 @@ pub use backend::BackendPreflight;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::IdentityMsrRoute;
 #[cfg(guest_arch = "x86_64")]
+pub use backend::NegotiatedRates;
+#[cfg(guest_arch = "x86_64")]
 pub use backend::TimeAbiBackend;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::TscAnchor;
@@ -30,6 +32,8 @@ pub use backend::TscAnchor;
 pub use backend::TscSetReport;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::TscSyncMethod;
+#[cfg(guest_arch = "x86_64")]
+pub use backend::negotiate_rates;
 pub use downtime::CaptureTimeRecord;
 pub use downtime::Downtime;
 pub use downtime::DowntimeSource;
@@ -319,6 +323,62 @@ impl TimeAbiTestHooks {
     }
 }
 
+/// Kernel parameters that configure guest clocks and that the time ABI
+/// forbids.
+pub const CLOCK_TOKENS: [&str; 2] = ["tsc_early_khz", "lapic_timer_hz"];
+
+/// Rejects a kernel command line that sets a [`CLOCK_TOKENS`] parameter
+/// (`E_CMDLINE_CLOCK_TOKEN`).
+///
+/// It follows the kernel's parsing: parameters are separated by unquoted
+/// whitespace, `-` and `_` are equivalent in names, a parameter may be
+/// quoted as a whole, and parsing stops at the `--` delimiter, after which
+/// arguments belong to init.
+pub fn check_command_line_clock_tokens(cmdline: &str) -> Result<(), TimeAbiError> {
+    fn normalized(name: &str) -> impl Iterator<Item = u8> + '_ {
+        name.bytes().map(|b| if b == b'-' { b'_' } else { b })
+    }
+
+    let mut tokens = Vec::new();
+    let mut start = None;
+    let mut in_quote = false;
+    for (offset, c) in cmdline.char_indices() {
+        if c == '"' {
+            in_quote = !in_quote;
+        }
+        if c.is_ascii_whitespace() && !in_quote {
+            if let Some(start) = start.take() {
+                tokens.push(&cmdline[start..offset]);
+            }
+        } else if start.is_none() {
+            start = Some(offset);
+        }
+    }
+    if let Some(start) = start {
+        tokens.push(&cmdline[start..]);
+    }
+
+    for token in tokens {
+        let unquoted = token
+            .strip_prefix('"')
+            .map_or(token, |rest| rest.strip_suffix('"').unwrap_or(rest));
+        if unquoted == "--" {
+            break;
+        }
+        let name = unquoted.split_once('=').map_or(unquoted, |(name, _)| name);
+        if CLOCK_TOKENS
+            .iter()
+            .any(|clock| normalized(name).eq(normalized(clock)))
+        {
+            return Err(TimeAbiError::new(
+                TimeAbiCode::CmdlineClockToken,
+                format!("kernel command line sets the clock parameter '{token}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Time ABI configuration of a partition, set in
 /// [`ProtoPartitionConfig::time_abi`](crate::ProtoPartitionConfig::time_abi).
 ///
@@ -408,6 +468,38 @@ mod tests {
                 .code,
             TimeAbiCode::TscRateImplausible
         );
+    }
+
+    #[test]
+    fn clock_tokens_are_rejected() {
+        for cmdline in [
+            "console=hvc0 tsc_early_khz=2500000",
+            "lapic_timer_hz=200000000 console=hvc0",
+            "console=hvc0 tsc-early-khz=1",
+            "console=hvc0 lapic-timer_hz",
+            r#"console=hvc0 "tsc_early_khz=1""#,
+            "console=hvc0\ttsc_early_khz=1\n",
+        ] {
+            assert_eq!(
+                check_command_line_clock_tokens(cmdline).unwrap_err().code,
+                TimeAbiCode::CmdlineClockToken,
+                "{cmdline}"
+            );
+        }
+    }
+
+    #[test]
+    fn clock_token_check_follows_kernel_parsing() {
+        for cmdline in [
+            "",
+            "console=hvc0 clocksource=tsc",
+            "console=hvc0 -- tsc_early_khz=1",
+            r#"console=hvc0 "--" lapic_timer_hz=1"#,
+            r#"console=hvc0 note="tsc_early_khz=1 lapic_timer_hz=1""#,
+            "xtsc_early_khz=1 tsc_early_khzx=1",
+        ] {
+            check_command_line_clock_tokens(cmdline).unwrap();
+        }
     }
 
     #[test]
