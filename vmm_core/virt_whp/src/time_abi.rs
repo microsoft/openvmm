@@ -56,6 +56,7 @@ use crate::cpu_contract::CpuidTopology;
 use crate::cpu_contract::fixup_vp_topology_cpuid;
 use crate::profile_features::WhpFeatures;
 use crate::profile_features::profile_features;
+use crate::profile_features::supported_surface;
 use cpu_profile::CpuProfile;
 use inspect::Inspect;
 use std::sync::Arc;
@@ -80,6 +81,7 @@ use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::surface::SupportedCpuSurface;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
@@ -331,6 +333,24 @@ impl WhpTimeAbi {
 
 fn routing_error(message: impl Into<String>) -> TimeAbiError {
     TimeAbiError::new(TimeAbiCode::IdentityRouting, message)
+}
+
+/// Returns the host's CPUID as the root partition sees it: every leaf and
+/// subleaf that [`cpu_profile::cpuid::enumerate`] walks. It describes the
+/// processor that WHP virtualizes, for [`supported_surface`].
+pub(crate) fn host_cpuid() -> Vec<cpu_profile::cpuid::CpuidEntry> {
+    // The CPUID instruction exists only on x86-64 hosts, the only hosts of
+    // x86-64 WHP partitions.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    let query = |leaf, subleaf| {
+        let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+        Ok::<_, std::convert::Infallible>([result.eax, result.ebx, result.ecx, result.edx])
+    };
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(not(target_arch = "x86_64"))]
+    let query = |_, _| Ok::<_, std::convert::Infallible>([0; 4]);
+    cpu_profile::cpuid::enumerate(query).unwrap_or_else(|never| match never {})
 }
 
 /// Returns the pinned CPU profile that `id` names. Core selects and verifies
@@ -966,6 +986,40 @@ impl TimeAbiBackend for WhpPartitionInner {
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
         let state = self.time_abi_state()?;
         self.effective_record(state, &mut NativeCpuid::new(&self.vtl0.whp))
+    }
+
+    fn supported_cpu_surface(&self) -> Result<Option<SupportedCpuSurface>, TimeAbiError> {
+        let started = std::time::Instant::now();
+        let unsupported = |what: &str, err: whp::WHvError| {
+            TimeAbiError::new(
+                TimeAbiCode::ProfileUnsupported,
+                format!("cannot query {what}: {err}"),
+            )
+        };
+        let banks = whp::capabilities::processor_features()
+            .map_err(|err| unsupported("the processor features", err))?;
+        let xsave = whp::capabilities::processor_xsave_features()
+            .map_err(|err| unsupported("the XSAVE features", err))?;
+        let physical_address_width = self
+            .vtl0
+            .whp
+            .physical_address_width()
+            .map_err(|err| unsupported("the physical address width", err))?;
+        let surface = supported_surface(
+            &host_cpuid(),
+            WhpFeatures {
+                banks: [banks.bank0.0, banks.bank1.0],
+                xsave: xsave.0,
+            },
+            physical_address_width.try_into().unwrap_or(u8::MAX),
+        );
+        tracing::info!(
+            cpuid = surface.cpuid.len(),
+            physical_address_width = surface.physical_address_width,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "time ABI: WHP supported CPU surface"
+        );
+        Ok(Some(surface))
     }
 
     fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
