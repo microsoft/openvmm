@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod kvm_clock;
-
 use super::KvmProcessor;
 use super::regs::register_to_msr;
 use crate::KvmError;
@@ -566,13 +564,11 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn synic_msrs(&mut self) -> Result<vp::SyntheticMsrs, Self::Error> {
-        self.synthetic_msrs()
+        self.get_register_state()
     }
 
     fn set_synic_msrs(&mut self, value: &vp::SyntheticMsrs) -> Result<(), Self::Error> {
-        if !self.set_synthetic_msrs(value)? {
-            return Ok(());
-        }
+        self.set_register_state(value)?;
 
         // Mirror the restored synic MSRs into the processor's tracked state and
         // overlay pages. Runs before set_synic_{message,event_flags}_page (per

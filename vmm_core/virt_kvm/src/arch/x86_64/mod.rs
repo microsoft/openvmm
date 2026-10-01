@@ -10,7 +10,6 @@ mod fingerprint;
 mod regs;
 pub(crate) mod snp;
 mod time_abi;
-mod tsc;
 mod vm_state;
 mod vp_state;
 
@@ -225,7 +224,7 @@ impl virt::Hypervisor for Kvm {
             .filter_map(|entry| {
                 // Filter out KVM CPUID entries.
                 if entry.function & 0xf0000000 == 0x40000000 {
-                    return cpu_contract::hypervisor_leaf(&entry, config.versioned_cpu_contract);
+                    return None;
                 }
                 let mut leaf =
                     CpuidLeaf::new(entry.function, [entry.eax, entry.ebx, entry.ecx, entry.edx]);
@@ -236,8 +235,6 @@ impl virt::Hypervisor for Kvm {
                 Some(leaf)
             })
             .collect::<Vec<_>>();
-
-        cpuid_entries.extend(cpu_contract::hypervisor_bit(config.versioned_cpu_contract));
 
         // When nested virt is disabled, strip the virtualization
         // CPUID bit for the host's vendor.
@@ -578,10 +575,6 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             self.vm.add_vp(vp_info.apic_id)?;
         }
 
-        let cpuid = match &self.config.time_abi {
-            None => tsc::add_frequency_leaves(&self.vm, bsp_apic_id, cpuid)?,
-            Some(_) => cpuid,
-        };
         let mut caps = if self.config.time_abi.is_some() {
             // The identity leaves must not make the partition model Hyper-V
             // or the KVM clock.
@@ -874,32 +867,6 @@ impl Partition for KvmPartition {
 
     fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
         virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
-    }
-
-    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        self.inner.tsc_frequency_hz()
-    }
-
-    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
-        if self.inner.time_abi.is_some() {
-            return Err(KvmError::TimeAbiUnsupported(
-                "TSC scaling (KVM_SET_TSC_KHZ)",
-            ));
-        }
-        self.inner.set_tsc_frequency_hz(frequency_hz)
-    }
-
-    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        Ok(Some(tsc::APIC_FREQUENCY_HZ))
-    }
-
-    fn advance_snapshot_time(&self, duration: Duration) -> Result<(), Self::Error> {
-        if self.inner.time_abi.is_some() {
-            return Err(KvmError::TimeAbiUnsupported(
-                "the KVM clock (KVM_SET_CLOCK)",
-            ));
-        }
-        self.inner.advance_snapshot_time(duration)
     }
 
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
@@ -2036,11 +2003,6 @@ impl<'p> Processor for KvmProcessor<'p> {
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         KvmVpStateAccess::new(self)
-    }
-
-    fn advance_tsc(&mut self, cycles: u64) -> anyhow::Result<()> {
-        tsc::advance_tsc(&self.partition.kvm.vp(self.inner.vp_info.apic_id), cycles)?;
-        Ok(())
     }
 }
 
