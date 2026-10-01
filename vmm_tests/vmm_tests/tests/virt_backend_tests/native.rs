@@ -97,6 +97,12 @@ macro_rules! backend {
 #[cfg(target_os = "linux")]
 backend!(kvm, Kvm, virt_kvm::Kvm, |_| Ok(virt_kvm::Kvm::new()?));
 #[cfg(target_os = "linux")]
+backend!(kvm_tsc_fallback, Kvm, virt_kvm::Kvm, |_| {
+    let mut kvm = virt_kvm::Kvm::new()?;
+    kvm.force_tsc_fallback(true);
+    Ok(kvm)
+});
+#[cfg(target_os = "linux")]
 backend!(mshv, Mshv, virt_mshv::LinuxMshv, |_| Ok(
     virt_mshv::LinuxMshv::new()?
 ));
@@ -114,6 +120,8 @@ macro_rules! backend_test {
     ($test:ident, hv1: $hv1:literal, requires: [$($requirement:ident),* $(,)?]) => {
         #[cfg(target_os = "linux")]
         $crate::native::backend_test!(@backend kvm, $test, $hv1, [$($requirement),*]);
+        #[cfg(target_os = "linux")]
+        $crate::native::backend_test!(@backend kvm_tsc_fallback, $test, $hv1, [$($requirement),*]);
         #[cfg(target_os = "linux")]
         $crate::native::backend_test!(@backend mshv, $test, $hv1, [$($requirement),*]);
         #[cfg(windows)]

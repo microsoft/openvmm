@@ -281,10 +281,27 @@ coverage from the presence of the freeze interface.
 
 ### KVM
 
-Non-isolated x86 supports freeze with stable TSC and `KVM_VCPU_TSC_OFFSET`.
-Clocks start cached at zero; thaw rebases reference time and TSC together,
-preserving per-VP differences without TSC-MSR heuristics or a deliberate lead.
-This assumes identity TSC scaling, not different-frequency host migration.
+Non-isolated x86 supports software freeze without requiring a stable TSC.
+Clocks start cached at zero. With stable clock correlation and
+`KVM_VCPU_TSC_OFFSET`, capture uses a common host-TSC anchor and thaw rebases
+reference time and TSC together, preserving per-VP differences. This
+optimization assumes identity TSC scaling, not different-frequency migration.
+Otherwise, freeze captures each VP's TSC through KVM and thaw reinstalls the
+cached values. Explicit offset writes remain preferred: the fallback samples
+the current guest TSC and adjusts its offset by the difference to the saved
+value, without requiring a known frequency or a userspace host-TSC anchor.
+Capture and restoration are sequential, so this path has per-VP sampling skew.
+On older kernels without offset access, restore first writes a distant
+temporary TSC with VPs stopped and LAPIC timers disarmed, then the saved value.
+This avoids KVM's legacy nearby-write synchronization heuristic retaining a
+short pause. A saved zero is restored as one tick because a zero MSR write
+unconditionally requests synchronization. Frozen state still reads as zero.
+SEV-isolated partitions do not expose software freeze.
+
+`--hypervisor kvm:force_tsc_fallback` forces per-VP capture/restore for testing
+on stable hosts; it does not make the host TSC unstable. The option is carried
+by the KVM hypervisor resource handle. Backend contract tests register this
+configuration separately as `kvm_tsc_fallback`.
 Reference time is saved/reset without Hyper-V too, rounded up to 100 ns for
 snapshots. `KVM_SET_CLOCK` flags zero exclude UTC downtime.
 

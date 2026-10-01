@@ -109,6 +109,7 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
+    force_tsc_fallback: bool,
 }
 
 impl Kvm {
@@ -116,13 +117,23 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
+            force_tsc_fallback: false,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self { kvm })
+        Ok(Self {
+            kvm,
+            force_tsc_fallback: false,
+        })
+    }
+
+    /// Forces per-VP TSC capture/restore instead of the common-clock
+    /// optimization, for testing. Does not change the host's TSC stability.
+    pub fn force_tsc_fallback(&mut self, force: bool) {
+        self.force_tsc_fallback = force;
     }
 }
 
@@ -446,6 +457,7 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
             nested_virt,
             supported_mce_cap,
+            force_tsc_fallback: self.force_tsc_fallback,
         })
     }
 }
@@ -461,6 +473,7 @@ pub struct KvmProtoPartition<'a> {
     /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
     /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
     supported_mce_cap: u64,
+    force_tsc_fallback: bool,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -535,6 +548,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             bsp_apic_id,
             self.config.processor_topology.vps().len(),
             self.sev.is_some(),
+            self.force_tsc_fallback,
         )?;
 
         let mut gsi_routing = GsiRouting::new();

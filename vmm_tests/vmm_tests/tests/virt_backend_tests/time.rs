@@ -164,6 +164,18 @@ fn freeze_thaw(
     frozen.check_frozen(partition, processor)?;
     control.freeze_time();
     frozen.check(partition, processor)?;
+    let before_thaw = std::time::Instant::now();
+    control.thaw_time();
+    let resumed = ClockState::read(partition, processor)?;
+    let thaw_elapsed = before_thaw.elapsed();
+    anyhow::ensure!(resumed.tsc >= frozen.tsc, "thaw moved TSC backward");
+    if let (Some(before), Some(after)) = (frozen.reference, resumed.reference) {
+        let limit = (thaw_elapsed + Duration::from_millis(1)).as_nanos() / 100;
+        anyhow::ensure!(
+            after >= before && u128::from(after - before) <= limit,
+            "thaw included paused reference time: {before} -> {after}, limit {limit}"
+        );
+    }
     Ok(())
 }
 

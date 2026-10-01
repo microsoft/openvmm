@@ -51,6 +51,9 @@ Add the function and its declaration in the relevant test module; there is no
 central case enum or registration table to update. Shared helpers construct
 the partition and bind its single VP before invoking the function. Cases have
 names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
+KVM cases also run as `time::kvm_tsc_fallback::*`, forcing per-VP clock
+capture/restore on stable hosts. This exercises the fallback without changing
+the host's clocksource or TSC stability.
 Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
 enlightenment offload on WHP.
 Host requirements select the matching backend. Execution-host discovery probes
