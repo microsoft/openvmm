@@ -883,8 +883,7 @@ impl VmService {
         let smbios_requested = req_config.smbios_config.is_some();
         let smbios = Box::new(smbios_config_from_proto(req_config.smbios_config.take())?);
 
-        let isolation_config = req_config.isolation_config.take();
-        let isolation = match isolation_config.as_ref() {
+        let isolation = match req_config.isolation_config.take() {
             // Unset isolation config defaults to no isolation
             None => None,
             Some(config) => match config.isolation_type() {
@@ -895,24 +894,27 @@ impl VmService {
                         config.isolation_type
                     )
                 }
-                vmservice::isolation_config::Type::None => None,
-                vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
-            },
-        };
-        let snp_host_data: Option<[u8; 32]> = match isolation_config {
-            Some(config) if !config.host_data.is_empty() => {
-                if isolation != Some(IsolationType::Snp) {
-                    bail!("VM-service host data only applies to SNP isolation");
+                vmservice::isolation_config::Type::None => {
+                    if !config.host_data.is_empty() {
+                        bail!("VM-service host data only applies to SNP isolation");
+                    }
+                    None
                 }
-                Some(
-                    config
-                        .host_data
-                        .as_slice()
-                        .try_into()
-                        .context("SNP host data must be exactly 32 bytes")?,
-                )
-            }
-            _ => None,
+                vmservice::isolation_config::Type::Snp => {
+                    let host_data: Option<[u8; 32]> = if config.host_data.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            config
+                                .host_data
+                                .as_slice()
+                                .try_into()
+                                .context("SNP host data must be exactly 32 bytes")?,
+                        )
+                    };
+                    Some(IsolationType::Snp { host_data })
+                }
+            },
         };
 
         // The boot configuration also determines the base chipset, since the
@@ -951,7 +953,7 @@ impl VmService {
                 if smbios_requested {
                     bail!("VM-service IGVM boot does not support SMBIOS overrides");
                 }
-                if isolation != Some(IsolationType::Snp) {
+                if !matches!(isolation, Some(IsolationType::Snp { .. })) {
                     bail!("VM-service IGVM boot currently supports only SNP isolation");
                 }
                 let base_chipset_type = match boot.personality() {
@@ -1156,7 +1158,6 @@ impl VmService {
             hypervisor: HypervisorConfig {
                 with_hv: !req_config.disable_hv,
                 with_isolation: isolation,
-                snp_host_data,
                 ..Default::default()
             },
             #[cfg(windows)]

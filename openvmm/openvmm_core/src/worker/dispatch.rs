@@ -746,7 +746,6 @@ fn resolve_proto_partition_isolation(
     isolation: virt::IsolationType,
     load_mode: &LoadMode,
     igvm_file: Option<&IgvmFile>,
-    snp_host_data: Option<[u8; 32]>,
 ) -> anyhow::Result<virt::ProtoPartitionIsolation> {
     Ok(match isolation {
         virt::IsolationType::None => virt::ProtoPartitionIsolation::None,
@@ -767,7 +766,6 @@ fn resolve_proto_partition_isolation(
                 LoadMode::Igvm { .. } => virt::SnpPartitionConfig::Igvm(Box::new(
                     super::vm_loaders::igvm::snp_isolation_config(
                         igvm_file.context("missing parsed SNP IGVM file")?,
-                        snp_host_data,
                     )
                     .context("reading IGVM SNP configuration failed")?,
                 )),
@@ -804,7 +802,7 @@ mod tests {
                 restricted_injection,
             });
             assert_eq!(
-                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None, None)
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
                     .unwrap(),
                 virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                     restricted_injection,
@@ -820,7 +818,7 @@ mod tests {
             linux_load_mode(openvmm_defs::config::LinuxIsolationConfig::None),
         ] {
             assert!(
-                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None, None)
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
                     .is_err()
             );
         }
@@ -838,7 +836,7 @@ mod tests {
             (virt::IsolationType::Cca, virt::ProtoPartitionIsolation::Cca),
         ] {
             assert_eq!(
-                resolve_proto_partition_isolation(isolation, &LoadMode::None, None, None).unwrap(),
+                resolve_proto_partition_isolation(isolation, &LoadMode::None, None).unwrap(),
                 expected,
             );
         }
@@ -1144,6 +1142,10 @@ impl InitializedVm {
             .with_isolation
             .map(Into::into)
             .unwrap_or(virt::IsolationType::None);
+        let snp_host_data = match cfg.hypervisor.with_isolation {
+            Some(openvmm_defs::config::IsolationType::Snp { host_data }) => host_data,
+            _ => None,
+        };
         // Pre-parse the IGVM file early so the backend can consume opaque
         // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
@@ -1156,12 +1158,16 @@ impl InitializedVm {
         } else {
             None
         };
-        let proto_partition_isolation = resolve_proto_partition_isolation(
+        let mut proto_partition_isolation = resolve_proto_partition_isolation(
             partition_isolation,
             &cfg.load_mode,
             igvm_file.as_ref(),
-            cfg.hypervisor.snp_host_data,
         )?;
+        if let virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(config)) =
+            &mut proto_partition_isolation
+        {
+            config.host_data = snp_host_data;
+        }
 
         let hv_config = if cfg.hypervisor.with_hv {
             cfg_if::cfg_if! {
@@ -1364,7 +1370,10 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+        if matches!(
+            cfg.hypervisor.with_isolation,
+            Some(openvmm_defs::config::IsolationType::Snp { .. })
+        ) {
             if !matches!(
                 cfg.load_mode,
                 LoadMode::Linux { .. } | LoadMode::Igvm { .. }
@@ -3373,7 +3382,7 @@ impl LoadedVmInner {
                         openvmm_defs::config::LinuxIsolationConfig::Snp {
                             restricted_injection,
                         },
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
                         super::vm_loaders::linux::SnpKernelConfig {
                             c_bit: self
@@ -3386,7 +3395,7 @@ impl LoadedVmInner {
                     ),
                     (
                         openvmm_defs::config::LinuxIsolationConfig::None,
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
                     (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
                         anyhow::bail!("SNP Linux loader configuration requires SNP isolation")

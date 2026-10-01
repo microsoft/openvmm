@@ -1799,7 +1799,10 @@ async fn vm_config_from_command_line(
 
                 Some(openvmm_defs::config::IsolationType::Vbs)
             }
-            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp),
+            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp {
+                // SNP host data is currently only configurable via TTRPC.
+                host_data: None,
+            }),
         }
     } else {
         None
@@ -2153,8 +2156,6 @@ async fn vm_config_from_command_line(
             arch: Some(topology_arch),
         },
         hypervisor: HypervisorConfig {
-            // SNP host data is currently only configurable via TTRPC.
-            snp_host_data: None,
             with_hv,
             with_vtl2: opt.vtl2.then_some(Vtl2Config {
                 vtl0_alias_map: !opt.no_alias_map,
@@ -2219,7 +2220,10 @@ async fn vm_config_from_command_line(
 }
 
 fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
-    if cfg.hypervisor.with_isolation != Some(openvmm_defs::config::IsolationType::Snp) {
+    if !matches!(
+        cfg.hypervisor.with_isolation,
+        Some(openvmm_defs::config::IsolationType::Snp { .. })
+    ) {
         return Ok(());
     }
 
