@@ -886,21 +886,12 @@ impl VmService {
         let isolation = match req_config.isolation_config.take() {
             // Unset isolation config defaults to no isolation
             None => None,
-            Some(config) => match config.isolation_type() {
-                // Setting isolation config with an unspecified type returns an error
-                vmservice::isolation_config::Type::Unspecified => {
-                    bail!(
-                        "unspecified or invalid isolation type {}",
-                        config.isolation_type
-                    )
-                }
-                vmservice::isolation_config::Type::None => {
-                    if !config.host_data.is_empty() {
-                        bail!("VM-service host data only applies to SNP isolation");
-                    }
-                    None
-                }
-                vmservice::isolation_config::Type::Snp => {
+            Some(config) => match config
+                .isolation_type
+                .context("missing or unsupported isolation type")?
+            {
+                vmservice::isolation_config::IsolationType::None(_) => None,
+                vmservice::isolation_config::IsolationType::Snp(config) => {
                     let host_data: Option<[u8; 32]> = if config.host_data.is_empty() {
                         None
                     } else {
