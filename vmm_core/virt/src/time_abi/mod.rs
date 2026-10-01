@@ -105,6 +105,9 @@ time_abi_codes! {
     ProfileUnsupported => "E_PROFILE_UNSUPPORTED",
     /// The recomputed effective CPUID differs from the recorded one.
     CpuSurface => "E_CPU_SURFACE",
+    /// The hypervisor presents a non-zero CPUID entry outside the profile's
+    /// tables, which would expose a host feature in a reserved entry.
+    CpuUnlisted => "E_CPU_UNLISTED",
     /// The backend cannot deliver the identity CPUID or MSRs.
     IdentityRouting => "E_IDENTITY_ROUTING",
     /// The backend lacks the synchronized TSC set.
@@ -435,6 +438,7 @@ mod tests {
                 "E_CPU_GENERATION",
                 "E_PROFILE_UNSUPPORTED",
                 "E_CPU_SURFACE",
+                "E_CPU_UNLISTED",
                 "E_IDENTITY_ROUTING",
                 "E_TSC_SYNC_UNSUPPORTED",
                 "E_TSC_SCALING_ACTIVE",
