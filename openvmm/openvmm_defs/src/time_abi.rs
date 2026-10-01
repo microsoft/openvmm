@@ -133,6 +133,10 @@ pub struct RestoreTimeInput {
     pub destination: HostIdentity,
     /// Receives the sealed time fields of the restore packet.
     pub restore_record: mesh::OneshotSender<RestoreTimeRecord>,
+    /// With profiling enabled, notified when the guest first selects the
+    /// restore packet; it divides the guest's resume from its repair in the
+    /// restore profile.
+    pub packet_selected: Option<mesh::OneshotReceiver<()>>,
 }
 
 /// Time ABI parameters of every microVM worker.
