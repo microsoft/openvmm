@@ -66,7 +66,7 @@ pub(crate) enum SnpLaunchState {
 
 #[derive(Debug, inspect::Inspect)]
 pub(crate) struct MshvSnpConfig {
-    #[inspect(skip)]
+    #[inspect(hex)]
     host_data: Option<[u8; 32]>,
     #[inspect(hex)]
     snp_policy: u64,
@@ -901,17 +901,25 @@ struct SnpGuestRequest {
     response_gpa: u64,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Error, Copy, Clone, Eq, PartialEq)]
 enum SnpGuestRequestError {
+    #[error("response address bit is not set in the GHCB valid bitmap")]
     ResponseAddressValidBitNotSet,
+    #[error("request and response addresses are identical")]
     SameRequestAndResponseAddress,
+    #[error("page at {0:#x} is the active GHCB")]
+    AddressMatchesGhcb(u64),
+    #[error("address {0:#x} is not page-aligned")]
     UnalignedAddress(u64),
+    #[error("page at {0:#x} overflows the address space")]
     AddressOverflow(u64),
+    #[error("page at {0:#x} is not fully within guest RAM")]
     PageOutsideGuestRam(u64),
 }
 
 fn parse_snp_guest_request(
     ghcb: &x86defs::snp::GhcbPage,
+    ghcb_gpa: u64,
     mem_layout: &vm_topology::memory::MemoryLayout,
 ) -> Result<SnpGuestRequest, SnpGuestRequestError> {
     if !ghcb_exit_info2_is_valid(ghcb) {
@@ -922,10 +930,13 @@ fn parse_snp_guest_request(
     if request_gpa == response_gpa {
         return Err(SnpGuestRequestError::SameRequestAndResponseAddress);
     }
-    // GHCB spec requires distinct, page-aligned pages.
+    // GHCB specification 56421, section 4.1.7, requires distinct, page-aligned pages.
     for gpa in [request_gpa, response_gpa] {
         if !gpa.is_multiple_of(hvdef::HV_PAGE_SIZE) {
             return Err(SnpGuestRequestError::UnalignedAddress(gpa));
+        }
+        if gpa == ghcb_gpa {
+            return Err(SnpGuestRequestError::AddressMatchesGhcb(gpa));
         }
         let end = gpa
             .checked_add(hvdef::HV_PAGE_SIZE)
@@ -1739,7 +1750,7 @@ impl MshvProcessor<'_> {
                 self.handle_snp_ap_create(info, ghcb_gpa)?;
             }
             exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_GUEST_REQUEST) => {
-                self.handle_snp_guest_request(info)?;
+                self.handle_snp_guest_request(info, ghcb_gpa)?;
             }
             exit_code => {
                 tracelimit::warn_ratelimited!(
@@ -1759,6 +1770,7 @@ impl MshvProcessor<'_> {
     fn handle_snp_guest_request(
         &mut self,
         info: &hvdef::HvX64VmgexitInterceptMessage,
+        ghcb_gpa: u64,
     ) -> Result<(), VpHaltReason> {
         let request_gpa = info.ghcb_page.standard.sw_exit_info1;
         let response_gpa = info.ghcb_page.standard.sw_exit_info2;
@@ -1775,16 +1787,17 @@ impl MshvProcessor<'_> {
                 );
                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
             }
-            match parse_snp_guest_request(ghcb, &self.partition.mem_layout) {
+            match parse_snp_guest_request(ghcb, ghcb_gpa, &self.partition.mem_layout) {
                 Ok(request) => request,
                 Err(error) => {
                     tracelimit::warn_ratelimited!(
-                        ?error,
+                        error = &error as &dyn std::error::Error,
                         request_gpa,
                         response_gpa,
                         "rejected invalid SNP guest request"
                     );
-                    // Set Invalid GHCB Reason Code
+                    // AMD GHCB specification 56421, revision 2.04, section 4.1, Table 8 (p. 49):
+                    // https://docs.amd.com/api/khub/documents/oJly8EPzLO1Bt7ncrkCytw/content
                     let reason = match error {
                         SnpGuestRequestError::ResponseAddressValidBitNotSet => {
                             GHCB_ERROR_MISSING_VALID_BITMAP_BIT
@@ -2130,7 +2143,7 @@ mod tests {
             ghcb.save.sw_exit_info1 = request_gpa;
             ghcb.save.sw_exit_info2 = response_gpa;
             assert_eq!(
-                parse_snp_guest_request(&ghcb, &layout),
+                parse_snp_guest_request(&ghcb, 0x8000, &layout),
                 Ok(SnpGuestRequest {
                     request_gpa,
                     response_gpa,
@@ -2178,7 +2191,7 @@ mod tests {
         ] {
             ghcb.save.sw_exit_info1 = request_gpa;
             ghcb.save.sw_exit_info2 = response_gpa;
-            assert_eq!(parse_snp_guest_request(&ghcb, &layout), Err(error));
+            assert_eq!(parse_snp_guest_request(&ghcb, 0x8000, &layout), Err(error));
         }
     }
 
@@ -2189,12 +2202,12 @@ mod tests {
         ghcb.save.sw_exit_info1 = 0x1000;
         ghcb.save.sw_exit_info2 = 0x2000;
         assert_eq!(
-            parse_snp_guest_request(&ghcb, &layout),
+            parse_snp_guest_request(&ghcb, 0x8000, &layout),
             Err(SnpGuestRequestError::ResponseAddressValidBitNotSet)
         );
         ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO2_VALID_BIT;
         assert_eq!(
-            parse_snp_guest_request(&ghcb, &layout),
+            parse_snp_guest_request(&ghcb, 0x8000, &layout),
             Ok(SnpGuestRequest {
                 request_gpa: 0x1000,
                 response_gpa: 0x2000,
