@@ -191,15 +191,11 @@ mod x86 {
         }
 
         fn tsc(&mut self) -> Result<vp::Tsc, Self::Error> {
-            if let Some(tsc) = self.restored_tsc()? {
-                return Ok(tsc);
-            }
             self.run.vp.get_register_state(self.vtl)
         }
 
         fn set_tsc(&mut self, value: &vp::Tsc) -> Result<(), Self::Error> {
-            self.run.vp.set_register_state(self.vtl, value)?;
-            self.restore_tsc(value)
+            self.run.vp.set_register_state(self.vtl, value)
         }
 
         fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {

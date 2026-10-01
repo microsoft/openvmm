@@ -137,9 +137,6 @@ struct WhpPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     #[inspect(flatten)]
     cpuid_topology: cpu_contract::CpuidTopology,
-    #[cfg(guest_arch = "x86_64")]
-    #[inspect(flatten)]
-    clock: tsc::PartitionClock,
     /// The NVX time ABI state, for a partition built with it.
     #[cfg(guest_arch = "x86_64")]
     time_abi: Option<time_abi::WhpTimeAbi>,
@@ -563,8 +560,6 @@ impl virt::ResetPartition for WhpPartition {
     type Error = Error;
 
     fn reset(&self) -> Result<(), Error> {
-        #[cfg(guest_arch = "x86_64")]
-        self.inner.reset_restored_tsc()?;
         self.inner.vtl0.reset()?;
         self.validate_is_reset(Vtl::Vtl0);
 
@@ -646,31 +641,6 @@ impl virt::Partition for WhpPartition {
     #[cfg(guest_arch = "x86_64")]
     fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
         virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn tsc_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        Ok(Some(self.inner.clock.tsc_frequency_hz))
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<(), Self::Error> {
-        self.inner.clock.check_frequency(frequency_hz)
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn advance_snapshot_time(&self, _duration: std::time::Duration) -> Result<(), Self::Error> {
-        if self.inner.time_abi.is_some() {
-            // The time ABI's synchronized TSC set replaces the restored-TSC
-            // clock.
-            return Err(Error::NotWithTimeAbi("legacy snapshot time advance"));
-        }
-        self.inner.advance_snapshot_time()
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn apic_frequency_hz(&self) -> Result<Option<u64>, Self::Error> {
-        self.inner.apic_frequency_hz()
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -911,17 +881,9 @@ pub enum Error {
     NestedVirtIncompatibleWithIsolation,
     #[error("WHP does not support {0:?} isolation")]
     IsolationNotSupported(IsolationType),
-    #[error("saved TSC frequency {saved} Hz does not match destination frequency {destination} Hz")]
-    TscFrequencyMismatch { saved: u64, destination: u64 },
-    #[cfg(guest_arch = "x86_64")]
-    #[error("timestamp intercept arrived without a restored TSC clock")]
-    UnexpectedTimestampExit,
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     TimeAbi(#[from] virt::time_abi::TimeAbiError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("{0} is not available on a time ABI partition")]
-    NotWithTimeAbi(&'static str),
 }
 
 trait WhpResultExt<T> {
@@ -1456,8 +1418,6 @@ impl WhpPartitionInner {
                 None => cpu_contract::CpuidTopology::new(proto_config.processor_topology),
             },
             #[cfg(guest_arch = "x86_64")]
-            clock: tsc::PartitionClock::new(tsc_frequency),
-            #[cfg(guest_arch = "x86_64")]
             time_abi,
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
@@ -1618,22 +1578,13 @@ impl VtlPartition {
             .for_op("set processor count")?;
 
         #[cfg(guest_arch = "x86_64")]
-        let time_abi = match &config.time_abi {
-            Some(time_abi) => Some(time_abi::WhpTimeAbi::configure(
-                time_abi,
-                &mut whp_config,
-                &mut extended_exits,
-            )?),
-            None => {
-                if config.versioned_cpu_contract {
-                    cpu_contract::configure_versioned_contract(
-                        &mut whp_config,
-                        &mut extended_exits,
-                    )?;
-                }
-                None
-            }
-        };
+        let time_abi = config
+            .time_abi
+            .as_ref()
+            .map(|time_abi| {
+                time_abi::WhpTimeAbi::configure(time_abi, &mut whp_config, &mut extended_exits)
+            })
+            .transpose()?;
 
         #[cfg(guest_arch = "x86_64")]
         if nested_virt {
