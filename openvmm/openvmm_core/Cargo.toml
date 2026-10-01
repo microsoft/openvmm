@@ -45,6 +45,7 @@ igvm = { workspace = true, features = ["corim"] }
 igvm_defs.workspace = true
 loader.workspace = true
 virt.workspace = true
+cpu_profile.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
 vmgs_broker.workspace = true
