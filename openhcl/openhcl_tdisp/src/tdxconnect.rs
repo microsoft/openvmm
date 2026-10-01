@@ -111,7 +111,7 @@ impl TdispTdxConnectResourceValidator {
     }
 
     /// Format a failed TDCALL status for tracing, naming the codes that carry
-    /// specific meaning for a TDI read..
+    /// specific meaning for a TDI read.
     fn describe_status(result: TdCallResult) -> String {
         format!(
             "{}, raw rax {:#x}",
@@ -290,6 +290,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         target_vtl: Vtl,
         device_id: u16,
     ) -> anyhow::Result<Option<TdispTdiState>> {
+        let mshv_vtl = Self::open_mshv_vtl()?;
         let function_id = Self::function_id(device_id);
 
         // Output buffer gpa must be zero since GET_TDISP_STATE returns its
@@ -297,14 +298,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         let raw = match mshv_vtl.tdx_tdi_rd(function_id, TdiRdField::GET_TDISP_STATE, 0) {
             Ok(raw) => raw,
             Err(e) => {
-                // These statuses mean the TDI is unbound rather than the call
-                // being malformed, so report it as `Unlocked`.
+                // These statuses unambiguously mean the TDI is unbound, so
+                // report it as `Unlocked`. TDI_INVALID_STATE is deliberately
+                // excluded, as it also covers the TDISP error state.
                 let code = e.code();
                 if matches!(
                     code,
-                    TdCallResultCode::TDI_NOT_PRESENT
-                        | TdCallResultCode::TDI_INVALID_METADATA
-                        | TdCallResultCode::TDI_INVALID_STATE
+                    TdCallResultCode::TDI_NOT_PRESENT | TdCallResultCode::TDI_INVALID_METADATA
                 ) {
                     tracelimit::info_ratelimited!(
                         ?target_vtl,

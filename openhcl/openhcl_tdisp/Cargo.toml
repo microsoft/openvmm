@@ -20,7 +20,7 @@ anyhow.workspace = true
 futures.workspace = true
 tracing.workspace = true
 
-# The SEV-TIO and TDX Connect validators talk to /dev/mshv_vtl and /dev/sev-guest.
+# Both validators talk to /dev/mshv_vtl, and SEV-TIO also to /dev/sev-guest.
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 sev_guest_device.workspace = true
