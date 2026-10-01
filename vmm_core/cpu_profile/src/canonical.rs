@@ -33,10 +33,19 @@ pub(crate) fn to_pretty(value: &Value) -> String {
 /// Returns `sha256:` and the hex SHA-256 of the compact canonical encoding of
 /// `value`.
 pub(crate) fn digest(value: &Value) -> String {
-    let hash = sha2::Sha256::digest(to_compact(value).as_bytes());
+    format_digest(&sha256(to_compact(value).as_bytes()))
+}
+
+/// Returns the SHA-256 of `bytes`.
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
+    sha2::Sha256::digest(bytes).into()
+}
+
+/// Returns `sha256:` and the lowercase hex of `hash`.
+pub(crate) fn format_digest(hash: &[u8; 32]) -> String {
     let mut out = String::with_capacity(DIGEST_PREFIX.len() + 64);
     out.push_str(DIGEST_PREFIX);
-    for byte in hash.iter() {
+    for byte in hash {
         out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap());
         out.push(char::from_digit(u32::from(byte & 0xf), 16).unwrap());
     }
@@ -148,5 +157,11 @@ mod tests {
             digest(&json!({"a": 1, "b": 2})),
             digest(&serde_json::from_str(r#"{"b": 2, "a": 1}"#).unwrap())
         );
+    }
+
+    #[test]
+    fn digest_strings_are_prefixed_lowercase_hex() {
+        let text = super::format_digest(&super::sha256(b"{}"));
+        assert_eq!(text, digest(&json!({})));
     }
 }
