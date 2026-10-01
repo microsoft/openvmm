@@ -11,4 +11,5 @@ pub mod entrypoint;
 pub mod microvm;
 pub mod profile;
 pub mod rpc;
+pub mod time_abi;
 pub mod worker;

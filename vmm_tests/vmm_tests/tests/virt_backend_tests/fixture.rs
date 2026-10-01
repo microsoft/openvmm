@@ -68,6 +68,8 @@ impl Fixture {
             nested_virt: false,
             user_mode_memory_faults: false,
             lazy_memory_registration: false,
+            #[cfg(guest_arch = "x86_64")]
+            time_abi: None,
             versioned_cpu_contract: false,
         })?;
         let (partition, binders) = proto.build(virt::PartitionConfig {
