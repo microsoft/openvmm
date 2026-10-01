@@ -38,18 +38,18 @@
 //! - **LAPIC.** The in-kernel LAPIC timer counts KVM's fixed 1 GHz bus clock;
 //!   `KVM_CAP_X86_APIC_BUS_CYCLES_NS` is never set.
 //!
-//! **Restore and the saved per-VP TSC.** VP state restore still writes each
-//! VP's saved `IA32_TSC`. KVM passes host-initiated `IA32_TSC` writes through
-//! its TSC synchronization heuristic: a value within about one second of the
-//! TSC that KVM expects is treated as a synchronization attempt, and KVM
-//! keeps its current offset instead. Linux 6.6 applies this to the first
-//! write after vCPU creation as well, so it discards the saved TSC of any
-//! snapshot taken within about a second of the guest's boot; Linux 6.7 and
-//! later honor the first user-space write. The synchronized set overwrites
-//! every vCPU's offset before any VP runs, so what KVM made of the saved
-//! values never reaches the guest, on either kernel. KVM computes the LAPIC
-//! timer's TSC deadline when the LAPIC state is set, so the restore
-//! orchestrator re-applies the LAPIC state after the synchronized set.
+//! **Restore and the saved per-VP TSC.** A time ABI restore omits every VP's
+//! saved TSC (core strips the `tsc` element before VP state restore), so no
+//! host-initiated `IA32_TSC` write reaches KVM's TSC synchronization
+//! heuristic. That heuristic treats a write within about a second of the TSC
+//! KVM expects as a synchronization attempt and keeps its own offset; Linux
+//! 6.6 applies it to the first write after vCPU creation too, which would
+//! discard the saved TSC of a snapshot taken within about a second of the
+//! guest's boot. Each vCPU instead keeps its creation-time offset until the
+//! synchronized set writes the common offset, before any VP runs, on every
+//! kernel. KVM computes the LAPIC timer's TSC deadline when the LAPIC state is
+//! set, so the restore orchestrator re-applies the LAPIC state after the
+//! synchronized set.
 
 use super::KvmPartitionInner;
 use crate::KvmError;
@@ -544,8 +544,8 @@ impl TimeAbiBackend for KvmPartitionInner {
         let readback_error =
             |message: String| TimeAbiError::new(TimeAbiCode::TscSyncReadback, message);
         let tsc_hz = self.native_tsc_hz()?;
-        // The offsets the restore left, logged to show what KVM made of the
-        // saved IA32_TSC values (see the module documentation).
+        // The offsets before the set, logged for diagnosis: each vCPU's
+        // creation-time offset, since a time ABI restore writes no saved TSC.
         let previous = self
             .time_abi_vps()
             .map(|(vp_index, vp)| {
@@ -769,22 +769,23 @@ mod tests {
         };
         // Midpoint 1200, half width 201 cycles rounds up to 101 ns.
         assert_eq!(pair_host_sample(bracket, hz), Some((1_200, 101)));
-        // A 10 us half width is at the anchor bound.
+        // A half width of MAX_ANCHOR_PAIRING_NS (2 cycles per ns) is at the
+        // anchor bound.
         let at_bound = HostTscBracket {
             start: 0,
-            end: 40_000,
+            end: 4 * MAX_ANCHOR_PAIRING_NS,
         };
         assert_eq!(
             pair_host_sample(at_bound, hz),
-            Some((20_000, MAX_ANCHOR_PAIRING_NS))
+            Some((2 * MAX_ANCHOR_PAIRING_NS, MAX_ANCHOR_PAIRING_NS))
         );
         let beyond = HostTscBracket {
             start: 0,
-            end: 40_002,
+            end: 4 * MAX_ANCHOR_PAIRING_NS + 2,
         };
         assert_eq!(
             pair_host_sample(beyond, hz),
-            Some((20_001, MAX_ANCHOR_PAIRING_NS + 1))
+            Some((2 * MAX_ANCHOR_PAIRING_NS + 1, MAX_ANCHOR_PAIRING_NS + 1))
         );
         // A TSC that went backwards cannot be paired.
         let backwards = HostTscBracket { start: 10, end: 9 };
@@ -806,8 +807,10 @@ mod tests {
 
     #[test]
     fn anchors_sample_again_until_paired_within_the_bound() {
-        // 1 GHz: one cycle per ns. Two wide brackets, then a tight one.
-        let mut brackets = [(0, 30_000), (0, 25_000), (1_000, 1_100)].into_iter();
+        // 1 GHz: one cycle per ns. Two brackets wider than the bound, then a
+        // tight one.
+        let wide = 2 * MAX_ANCHOR_PAIRING_NS;
+        let mut brackets = [(0, wide + 10_000), (0, wide + 5_000), (1_000, 1_100)].into_iter();
         let paired = pair_within_bound(1_000_000_000, "capture anchor", || {
             let (start, end) = brackets.next().unwrap();
             (HostTscBracket { start, end }, Ok(host_sample(start)))
@@ -822,7 +825,7 @@ mod tests {
         let mut attempts = 0;
         let error = pair_within_bound(1_000_000_000, "restore anchor", || {
             attempts += 1;
-            let end = 20_000 + attempts as u64;
+            let end = 2 * MAX_ANCHOR_PAIRING_NS + attempts as u64;
             (HostTscBracket { start: 0, end }, Ok(host_sample(0)))
         })
         .unwrap_err();
@@ -833,11 +836,8 @@ mod tests {
             "{}",
             error.message
         );
-        assert!(
-            error.message.contains("tightest pairing: 10001 ns"),
-            "{}",
-            error.message
-        );
+        let tightest = format!("tightest pairing: {} ns", MAX_ANCHOR_PAIRING_NS + 1);
+        assert!(error.message.contains(&tightest), "{}", error.message);
 
         let error = pair_within_bound(1_000_000_000, "capture anchor", || {
             (HostTscBracket { start: 10, end: 9 }, Ok(host_sample(0)))
