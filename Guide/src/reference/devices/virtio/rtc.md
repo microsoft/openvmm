@@ -16,17 +16,10 @@ read the clock. Cross-timestamp capability queries succeed with no supported
 pairs. Cross-timestamp reads return `EOPNOTSUPP`. Alarms are not advertised,
 there is no alarm queue, and alarm requests return `ENODEV`.
 
-The implementation uses one request virtqueue and no device-specific
-configuration registers. It follows the existing small-device worker
-pattern, reusing OpenVMM's virtqueue, guest-memory, and task-control
-infrastructure. A single request handler reads the common header once;
-each command then reads its typed body and checks buffer sizes before
-execution. The header stays in the handler and is not reread or copied into
-the body.
-Requests are processed sequentially. The device has no mutable clock state
-and supports transport save/restore; reads after restore
-return current host time. Additional clocks and optional features are
-follow-up work.
+The device uses one request virtqueue and no device-specific configuration
+registers. Requests are processed sequentially. The device supports
+transport save/restore; reads after restore return current host time.
+Additional clocks and optional features are follow-up work.
 
 ## Configuration
 
@@ -56,8 +49,4 @@ Linux exposes it through the associated `/dev/ptpN` clock, read using
 CMOS RTC or the guest's system clock. Providing the device does not
 automatically synchronize guest system time.
 
-See the [`virtio_rtc` API documentation][rustdoc] for implementation details.
-
-[spec]:
-  https://docs.oasis-open.org/virtio/virtio/v1.4/virtio-v1.4.html#x1-86300023
-[rustdoc]: https://openvmm.dev/rustdoc/virtio_rtc/index.html
+[spec]: https://docs.oasis-open.org/virtio/virtio/v1.4/virtio-v1.4.html

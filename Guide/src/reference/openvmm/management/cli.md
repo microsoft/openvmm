@@ -534,7 +534,7 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 For `--virtio-rtc`, select the named PCIe port in its options:
 
-```bash
+```sh
 --virtio-rtc bus=pcie:rp0
 ```
 
