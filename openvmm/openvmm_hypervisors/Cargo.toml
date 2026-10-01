@@ -21,6 +21,7 @@ virt_hvf = []
 
 [dependencies]
 anyhow.workspace = true
+cpu_profile.workspace = true
 fs-err.workspace = true
 hypervisor_resources.workspace = true
 vm_resource.workspace = true
