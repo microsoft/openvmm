@@ -74,6 +74,7 @@ use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::surface::is_interim_cpu_profile;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
 use whp::abi::WHV_PROCESSOR_FEATURES;
 use whp::abi::WHV_PROCESSOR_FEATURES1;
@@ -192,15 +193,16 @@ impl WhpTimeAbi {
     /// processor features, and the unhandled-MSR exits. The partition must
     /// have passed [`validate_partition`].
     ///
-    /// With a CPU `profile`, the processor feature banks and the XSAVE
-    /// features derive from it ([`profile_features`]); without one, the banks
-    /// are WHP's capability without the hidden time features.
+    /// With a pinned CPU profile (`config.cpu_profile`), the processor feature
+    /// banks and the XSAVE features derive from it ([`profile_features`]);
+    /// with an interim profile, the banks are WHP's capability without the
+    /// hidden time features.
     pub(crate) fn configure(
         config: &TimeAbiConfig,
-        profile: Option<&CpuProfile>,
         whp_config: &mut whp::PartitionConfig,
         extended_exits: &mut WHV_EXTENDED_VM_EXITS,
     ) -> Result<Self, TimeAbiError> {
+        let profile = pinned_profile(&config.cpu_profile)?;
         let amd = match whp::capabilities::processor_vendor() {
             Ok(whp::abi::WHvProcessorVendorIntel) => false,
             Ok(whp::abi::WHvProcessorVendorAmd | whp::abi::WHvProcessorVendorHygon) => true,
@@ -336,6 +338,22 @@ impl WhpTimeAbi {
 
 fn routing_error(message: impl Into<String>) -> TimeAbiError {
     TimeAbiError::new(TimeAbiCode::IdentityRouting, message)
+}
+
+/// Returns the pinned CPU profile that `id` names, or `None` for an interim
+/// profile, which keeps WHP's own CPU features. Core selects and verifies the
+/// profile before the partition exists, so an unknown ID is an internal
+/// error (`E_PROFILE_UNKNOWN`).
+fn pinned_profile(id: &str) -> Result<Option<&'static CpuProfile>, TimeAbiError> {
+    if is_interim_cpu_profile(id) {
+        return Ok(None);
+    }
+    cpu_profile::pinned(id).map(Some).ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnknown,
+            format!("CPU profile {id:?} is not pinned in this OpenVMM"),
+        )
+    })
 }
 
 /// Fails unless the partition can carry the time ABI: no isolation, no
@@ -1072,6 +1090,21 @@ mod tests {
 
     const VP_COUNT: u32 = 8;
 
+    #[test]
+    fn cpu_profile_ids_resolve_to_pinned_profiles() {
+        let interim = virt::time_abi::surface::interim_cpu_profile_id("whp");
+        assert!(pinned_profile(&interim).unwrap().is_none());
+        let skylake = pinned_profile("intel.skylake-sp.v1").unwrap().unwrap();
+        assert_eq!(skylake.id(), "intel.skylake-sp.v1");
+        for id in ["intel.skylake-sp.whp.v1", ""] {
+            assert_eq!(
+                pinned_profile(id).unwrap_err().code,
+                TimeAbiCode::ProfileUnknown,
+                "{id:?}"
+            );
+        }
+    }
+
     /// WHP's own results on an Intel host without synthetic features: no
     /// hypervisor leaves, and every time bit wrong.
     fn whp_cpuid(function: u32, index: u32) -> [u32; 4] {
@@ -1587,15 +1620,17 @@ mod whp_tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(vp_count, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
-            cpu_profile: String::new(),
+            cpu_profile: profile.map_or_else(
+                || virt::time_abi::surface::interim_cpu_profile_id("whp"),
+                |profile| profile.id().to_owned(),
+            ),
         };
         let mut whp_config = whp::PartitionConfig::new().unwrap();
         whp_config
             .set_property(whp::PartitionProperty::ProcessorCount(vp_count))
             .unwrap();
         let mut exits = WHV_EXTENDED_VM_EXITS(0);
-        let time_abi =
-            WhpTimeAbi::configure(&config, profile, &mut whp_config, &mut exits).unwrap();
+        let time_abi = WhpTimeAbi::configure(&config, &mut whp_config, &mut exits).unwrap();
         whp_config
             .set_property(whp::PartitionProperty::LocalApicEmulationMode(
                 whp::abi::WHvX64LocalApicEmulationModeXApic,
