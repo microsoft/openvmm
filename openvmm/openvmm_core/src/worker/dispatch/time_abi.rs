@@ -451,7 +451,9 @@ impl LoadedVm {
         let tsc_hz = input.contract.tsc_frequency_hz;
         let apic_hz = input.contract.apic_frequency_hz;
 
+        let started = std::time::Instant::now();
         self.inner.partition_unit.check_one_shot_timers().await?;
+        let timers_checked = started.elapsed();
 
         let partition = self.inner.partition.clone();
         let mut downtime = None;
@@ -470,6 +472,7 @@ impl LoadedVm {
             })?;
         let downtime =
             downtime.context("the backend set the TSC without selecting the downtime")?;
+        let tsc_set = started.elapsed();
         if let Some(step_ns) = downtime.host_wall_clock_step_ns {
             tracing::warn!(
                 step_ns,
@@ -489,10 +492,22 @@ impl LoadedVm {
             .partition_unit
             .advance_lapic_timers(downtime.nanos, apic_hz)
             .await?;
+        let lapic_advanced = started.elapsed();
         self.state_units
             .advance_time(Duration::from_nanos(downtime.nanos))
             .await
             .context("failed to advance restored VM time")?;
+        let finished = started.elapsed();
+        // Per-phase durations attribute the restore.time_abi_clock profile
+        // phase.
+        tracing::info!(
+            timers_us = timers_checked.as_micros() as u64,
+            tsc_set_us = (tsc_set - timers_checked).as_micros() as u64,
+            lapic_us = (lapic_advanced - tsc_set).as_micros() as u64,
+            vm_time_us = (finished - lapic_advanced).as_micros() as u64,
+            total_us = finished.as_micros() as u64,
+            "time ABI restore clock"
+        );
 
         input.restore_record.send(RestoreTimeRecord {
             downtime_ns: downtime.nanos,
