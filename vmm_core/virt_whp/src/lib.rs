@@ -237,6 +237,11 @@ struct WhpVp {
     vtl2_wake: AtomicBool,
     /// Enable VTL2 at the next opportunity.
     vtl2_enable: AtomicBool,
+    /// Set when the VMM writes this VP's offloaded VTL0 LAPIC state. The next
+    /// VP run consumes it and asserts the highest pending edge-triggered
+    /// vector again (see `WhpProcessor::assert_pending_interrupt`).
+    #[cfg(guest_arch = "x86_64")]
+    lapic_written: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
 }
@@ -411,6 +416,8 @@ impl WhpVp {
             interrupt: NeedsYield::new(),
             vtl2_wake: false.into(),
             vtl2_enable: vtl2_enabled.into(),
+            #[cfg(guest_arch = "x86_64")]
+            lapic_written: false.into(),
             vp_info: vp,
             waker: Default::default(),
         }
