@@ -330,8 +330,9 @@ impl TimeAbiTestHooks {
 #[derive(Debug, Clone)]
 pub struct TimeAbiConfig {
     /// CPUID results the backend programs on every VP. Until CPU profiles
-    /// land this is [`identity::time_abi_cpuid`]: the identity leaves and the
-    /// CPU time bits, applied over the backend's own CPUID.
+    /// land this is [`identity::time_abi_cpuid`]: the identity leaves, the
+    /// explicit zero leaves, and the CPU time bits, applied over the
+    /// backend's own CPUID.
     pub cpuid: std::sync::Arc<crate::CpuidLeafSet>,
     /// The identity MSR handler, shared with the worker's `time-abi` state
     /// unit.

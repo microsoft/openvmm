@@ -17,6 +17,11 @@ pub const IDENTITY_CPUID_RANGE: RangeInclusive<u32> = 0x4000_0000..=0x4000_00ff;
 pub const HYPERVISOR_CPUID_RANGE: RangeInclusive<u32> = 0x4000_0000..=0x4fff_ffff;
 /// The highest identity leaf.
 pub const IDENTITY_MAX_LEAF: u32 = 0x4000_0005;
+/// Leaves beyond the identity that every backend programs as zero, because
+/// Linux and Hyper-V-aware software probe them and KVM cannot list the whole
+/// range.
+pub const IDENTITY_ZERO_LEAVES: [RangeInclusive<u32>; 2] =
+    [0x4000_0006..=0x4000_000f, 0x4000_0080..=0x4000_0082];
 /// `"Microsoft Hv"` in EBX, ECX, and EDX of leaf `0x40000000`.
 pub const VENDOR_SIGNATURE: [u32; 3] = [0x7263_694d, 0x666f_736f, 0x7648_2074];
 /// `"Hv#1"` in EAX of leaf `0x40000001`.
@@ -70,6 +75,14 @@ pub fn identity_cpuid_leaves(vp_count: u32) -> [CpuidLeaf; 6] {
     ]
 }
 
+/// Returns the explicit zero leaves of [`IDENTITY_ZERO_LEAVES`].
+pub fn identity_zero_cpuid_leaves() -> impl Iterator<Item = CpuidLeaf> {
+    IDENTITY_ZERO_LEAVES
+        .into_iter()
+        .flatten()
+        .map(|leaf| CpuidLeaf::new(leaf, [0; 4]))
+}
+
 /// Returns CPUID results that enforce the CPU time bits over another CPUID
 /// source. Bits outside the time bits keep that source's values.
 ///
@@ -104,13 +117,15 @@ pub fn time_bits_cpuid_leaves(invariant_tsc: bool) -> Vec<CpuidLeaf> {
 }
 
 /// Returns the time ABI CPUID results a backend applies over its own CPUID
-/// until CPU profiles land: the identity leaves and the CPU time bits.
+/// until CPU profiles land: the identity leaves, the explicit zero leaves,
+/// and the CPU time bits.
 ///
 /// The caller must also ensure that no other leaf in
 /// [`HYPERVISOR_CPUID_RANGE`] is exposed.
 pub fn time_abi_cpuid(vp_count: u32, invariant_tsc: bool) -> CpuidLeafSet {
     let mut leaves = time_bits_cpuid_leaves(invariant_tsc);
     leaves.extend(identity_cpuid_leaves(vp_count));
+    leaves.extend(identity_zero_cpuid_leaves());
     CpuidLeafSet::new(leaves)
 }
 
@@ -134,13 +149,18 @@ pub fn capabilities_cpuid<'a>(
     }
 }
 
-/// Checks the identity leaves of an effective CPUID: the six leaves exactly
-/// and no hypervisor signature at any base `0x40000100..=0x4000ff00`.
+/// Checks the identity leaves of an effective CPUID: the six leaves exactly,
+/// the explicit zero leaves, and no hypervisor signature at any base
+/// `0x40000100..=0x4000ff00`. `cpuid` returns zeros for leaves absent from
+/// the CPUID table being checked.
 pub fn check_identity(
     cpuid: &mut dyn FnMut(u32, u32) -> [u32; 4],
     vp_count: u32,
 ) -> Result<(), TimeAbiError> {
-    for leaf in identity_cpuid_leaves(vp_count) {
+    let expected = identity_cpuid_leaves(vp_count)
+        .into_iter()
+        .chain(identity_zero_cpuid_leaves());
+    for leaf in expected {
         let actual = cpuid(leaf.function, 0);
         if actual != leaf.result {
             return Err(TimeAbiError::new(
@@ -390,6 +410,38 @@ mod tests {
             check_identity(&mut cpuid, 3).unwrap_err().code,
             TimeAbiCode::IdentityRouting
         );
+        // A "VS#1" interface signature, which the explicit zero leaves rule
+        // out.
+        let mut cpuid = |leaf, subleaf| {
+            if leaf == 0x4000_0081 {
+                [0x3123_5356, 0, 0, 0]
+            } else {
+                effective(leaf, subleaf, &overlay)
+            }
+        };
+        assert_eq!(
+            check_identity(&mut cpuid, 2).unwrap_err().code,
+            TimeAbiCode::IdentityRouting
+        );
+    }
+
+    #[test]
+    fn overlay_programs_explicit_zero_leaves() {
+        let overlay = time_abi_cpuid(1, true);
+        let listed: Vec<u32> = overlay
+            .leaves()
+            .iter()
+            .map(|leaf| leaf.function)
+            .filter(|function| HYPERVISOR_CPUID_RANGE.contains(function))
+            .collect();
+        let mut expected: Vec<u32> = (0x4000_0000..=0x4000_000f).collect();
+        expected.extend(0x4000_0080..=0x4000_0082);
+        assert_eq!(listed, expected);
+        for leaf in overlay.leaves() {
+            if (0x4000_0006..=0x4000_0082).contains(&leaf.function) {
+                assert_eq!((leaf.result, leaf.mask), ([0; 4], [!0; 4]));
+            }
+        }
     }
 
     #[test]
