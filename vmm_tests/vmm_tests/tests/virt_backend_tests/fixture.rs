@@ -70,7 +70,6 @@ impl Fixture {
             lazy_memory_registration: false,
             #[cfg(guest_arch = "x86_64")]
             time_abi: None,
-            versioned_cpu_contract: false,
         })?;
         let (partition, binders) = proto.build(virt::PartitionConfig {
             mem_layout: &self.memory_layout,

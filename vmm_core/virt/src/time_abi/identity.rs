@@ -134,9 +134,8 @@ pub fn time_abi_cpuid(vp_count: u32, invariant_tsc: bool) -> CpuidLeafSet {
 ///
 /// Backends pass this view to
 /// [`X86PartitionCapabilities::from_cpuid`](crate::x86::X86PartitionCapabilities::from_cpuid),
-/// so the identity leaves never make `hv1` or `kvm_clock` true: the time ABI
-/// exposes neither the synthetic MSR, SynIC, and reference-time state that
-/// `hv1` implies nor the KVM clock.
+/// so the identity leaves never make `hv1` true: the time ABI does not expose
+/// the synthetic MSR, SynIC, and reference-time state that `hv1` implies.
 pub fn capabilities_cpuid<'a>(
     cpuid: &'a mut dyn FnMut(u32, u32) -> [u32; 4],
 ) -> impl FnMut(u32, u32) -> [u32; 4] + 'a {
@@ -467,7 +466,6 @@ mod tests {
             X86PartitionCapabilities::from_cpuid(&topology, &mut capabilities_cpuid(&mut cpuid))
                 .unwrap();
         assert!(!masked.hv1);
-        assert!(!masked.kvm_clock);
         assert!(!masked.tsc_deadline);
     }
 }

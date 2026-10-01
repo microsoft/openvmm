@@ -103,8 +103,6 @@ mod ioctl {
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, kvm_debugregs);
     #[cfg(target_arch = "x86_64")]
-    ioctl_write_int_bad!(kvm_set_tsc_khz, request_code_none!(KVMIO, 0xa2));
-    #[cfg(target_arch = "x86_64")]
     ioctl_write_int_bad!(kvm_get_tsc_khz, request_code_none!(KVMIO, 0xa3));
     ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, kvm_enable_cap);
     #[cfg(target_arch = "x86_64")]
@@ -299,9 +297,6 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[error("GetTscFrequency")]
     GetTscFrequency(#[source] nix::Error),
-    #[cfg(target_arch = "x86_64")]
-    #[error("SetTscFrequency")]
-    SetTscFrequency(#[source] nix::Error),
     #[cfg(target_arch = "x86_64")]
     #[error("GetTscOffset")]
     GetTscOffset(#[source] nix::Error),
@@ -1546,18 +1541,6 @@ impl<'a> Processor<'a> {
             return Err(Error::GetTscFrequency(nix::errno::Errno::EINVAL));
         }
         Ok(khz as u64 * 1000)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub fn set_tsc_frequency_hz(&self, frequency_hz: u64) -> Result<()> {
-        let khz = frequency_hz
-            .checked_div(1000)
-            .and_then(|khz| libc::c_int::try_from(khz).ok())
-            .ok_or(Error::SetTscFrequency(nix::errno::Errno::EINVAL))?;
-        // SAFETY: Calling the documented vCPU ioctl with its integer value.
-        unsafe { ioctl::kvm_set_tsc_khz(self.get().vcpu.as_raw_fd(), khz) }
-            .map_err(Error::SetTscFrequency)?;
-        Ok(())
     }
 
     /// Gets the guest TSC offset, in guest TSC cycles.
