@@ -104,6 +104,19 @@ fn failure_line(hypervisor: &str, err: &anyhow::Error) -> String {
     format!("{PREFIX} v=1 status=fail backend={hypervisor} code={code} detail=\"{escaped}\"")
 }
 
+/// Formats the process's fatal-error message. A time ABI failure leads with
+/// its stable code wherever the error chain carries it, so callers can match
+/// the start of the message.
+pub(crate) fn fatal_error_message(err: &anyhow::Error) -> String {
+    let chain = format!("{err:#}");
+    match time_abi_code(&chain) {
+        Some(code) if !chain.starts_with(&format!("[{code}]")) => {
+            format!("fatal error: [{code}] {err:?}")
+        }
+        _ => format!("fatal error: {err:?}"),
+    }
+}
+
 /// Returns the first bracketed time ABI code, such as `E_TSC_SYNC_UNSUPPORTED`,
 /// in an error chain.
 fn time_abi_code(detail: &str) -> Option<&str> {
@@ -173,5 +186,24 @@ mod tests {
         assert!(failure_line("kvm", &err).contains(" code=none "));
         let long = anyhow::anyhow!("{}", "x".repeat(1000));
         assert!(failure_line("kvm", &long).ends_with("...\""));
+    }
+
+    #[test]
+    fn fatal_error_message_leads_with_the_time_abi_code() {
+        let err = anyhow::anyhow!("[E_TSC_SYNC_UNSUPPORTED] no synchronized set")
+            .context("failed to create the partition")
+            .context("failed to launch vm worker");
+        let message = fatal_error_message(&err);
+        assert!(
+            message.starts_with("fatal error: [E_TSC_SYNC_UNSUPPORTED] failed to launch vm worker"),
+            "{message}"
+        );
+
+        let err = anyhow::anyhow!("[E_TEST_HOOK] unknown hook");
+        let message = fatal_error_message(&err);
+        assert_eq!(message, "fatal error: [E_TEST_HOOK] unknown hook");
+
+        let err = anyhow::anyhow!("no code here");
+        assert_eq!(fatal_error_message(&err), "fatal error: no code here");
     }
 }
