@@ -12,9 +12,10 @@
 //! value. The partition then behaves as the profile's CPUID describes.
 //!
 //! Bits without a CPUID feature, such as the nested-paging details, keep WHP's
-//! capability. Features that no bit controls (for example PKU) and the time
-//! policy bits a host lacks (ARAT and invariant TSC on Azure) reach the guest
-//! through the CPUID results instead.
+//! capability. Features that no bit controls (for example PKU), the
+//! descriptive leaves (caches, the brand string), and the time policy bits a
+//! host lacks (ARAT and invariant TSC on Azure) reach the guest through the
+//! CPUID results ([`profile_cpuid_results`] and the time ABI CPUID).
 //!
 //! The hardware test `features_control_the_mapped_cpuid_bits` checks the table
 //! against what WHP presents on a host.
@@ -27,6 +28,10 @@ use hvdef::HvX64PartitionProcessorFeatures1 as Bank1;
 use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
+use whp::abi::WHV_CPUID_OUTPUT;
+use whp::abi::WHV_X64_CPUID_RESULT2;
+use whp::abi::WHV_X64_CPUID_RESULT2_FLAGS;
+use whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
 
 /// `IA32_ARCH_CAPABILITIES`.
 const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
@@ -370,6 +375,48 @@ pub(crate) fn profile_features(
     Ok(features)
 }
 
+/// Returns the CPUID results that present `profile`'s pinned bits: one
+/// `CpuidResultList2` entry per profile leaf, with the profile's mask, so the
+/// pinned bits (features, descriptors, the brand string) come from the
+/// profile and the rest (runtime state such as OSXSAVE, and the VM-owned
+/// topology fields) from WHP and OpenVMM. The VM-owned topology leaves are
+/// left to OpenVMM's CPUID exits.
+///
+/// WHP returns these results for leaves without an exit, and as the default
+/// result of a CPUID exit, on which OpenVMM applies the time ABI CPUID.
+pub(crate) fn profile_cpuid_results(profile: &CpuProfile) -> Vec<WHV_X64_CPUID_RESULT2> {
+    profile
+        .cpuid()
+        .iter()
+        .filter_map(|entry| {
+            let (leaf, subleaf) = entry.key();
+            let mask = entry.masks();
+            if cpu_profile::VM_OWNED_LEAVES.contains(&leaf) || mask == [0; 4] {
+                return None;
+            }
+            let values = entry.values();
+            let output = |registers: [u32; 4]| WHV_CPUID_OUTPUT {
+                Eax: registers[EAX],
+                Ebx: registers[EBX],
+                Ecx: registers[ECX],
+                Edx: registers[EDX],
+            };
+            Some(WHV_X64_CPUID_RESULT2 {
+                Function: leaf,
+                Index: subleaf.unwrap_or(0),
+                VpIndex: 0,
+                Flags: if subleaf.is_some() {
+                    WHvX64CpuidResult2FlagSubleafSpecific
+                } else {
+                    WHV_X64_CPUID_RESULT2_FLAGS(0)
+                },
+                Output: output(std::array::from_fn(|i| values[i] & mask[i])),
+                Mask: output(mask),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +562,81 @@ mod tests {
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 27)), Pinned::Unpinned);
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 26)), Pinned::Set);
     }
+
+    #[test]
+    fn profile_results_present_every_pinned_leaf() {
+        for (id, _) in HOSTS {
+            let profile = profile(id);
+            let results = profile_cpuid_results(profile);
+            let pinned_entries = profile
+                .cpuid()
+                .iter()
+                .filter(|entry| {
+                    !cpu_profile::VM_OWNED_LEAVES.contains(&entry.key().0)
+                        && entry.masks() != [0; 4]
+                })
+                .count();
+            assert_eq!(results.len(), pinned_entries, "{id}");
+            for result in &results {
+                assert!(!cpu_profile::VM_OWNED_LEAVES.contains(&result.Function));
+                let entry = profile
+                    .cpuid()
+                    .iter()
+                    .find(|entry| {
+                        let (leaf, subleaf) = entry.key();
+                        leaf == result.Function
+                            && subleaf.unwrap_or(0) == result.Index
+                            && subleaf.is_some()
+                                == result.Flags.is_set(WHvX64CpuidResult2FlagSubleafSpecific)
+                    })
+                    .unwrap();
+                let output = [
+                    result.Output.Eax,
+                    result.Output.Ebx,
+                    result.Output.Ecx,
+                    result.Output.Edx,
+                ];
+                let mask = [
+                    result.Mask.Eax,
+                    result.Mask.Ebx,
+                    result.Mask.Ecx,
+                    result.Mask.Edx,
+                ];
+                assert_eq!(mask, entry.masks(), "{id} {:#x}", result.Function);
+                for register in 0..4 {
+                    assert_eq!(
+                        output[register],
+                        entry.values()[register] & mask[register],
+                        "{id} {:#x}",
+                        result.Function
+                    );
+                }
+            }
+            // The brand string is the profile's generic one, not the host's.
+            let brand: String = [0x8000_0002, 0x8000_0003, 0x8000_0004]
+                .iter()
+                .flat_map(|&leaf| {
+                    let result = results.iter().find(|r| r.Function == leaf).unwrap();
+                    [
+                        result.Output.Eax,
+                        result.Output.Ebx,
+                        result.Output.Ecx,
+                        result.Output.Edx,
+                    ]
+                })
+                .flat_map(u32::to_le_bytes)
+                .take_while(|&byte| byte != 0)
+                .map(char::from)
+                .collect();
+            assert!(
+                brand.starts_with("Intel(R) Xeon(R) Processor ("),
+                "{id}: {brand}"
+            );
+            // Runtime state stays with the hypervisor: OSXSAVE is unpinned.
+            let leaf1 = results.iter().find(|r| r.Function == 1).unwrap();
+            assert_eq!(leaf1.Mask.Ecx & (1 << 27), 0, "{id}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -560,7 +682,7 @@ mod whp_tests {
     fn probe_partition_with(
         features: WhpFeatures,
         vp_count: u32,
-        results: &[whp::abi::WHV_X64_CPUID_RESULT2],
+        results: &[WHV_X64_CPUID_RESULT2],
     ) -> Result<whp::Partition, whp::WHvError> {
         let mut config = whp::PartitionConfig::new()?;
         config.set_property(whp::PartitionProperty::ProcessorCount(vp_count))?;
@@ -768,8 +890,8 @@ mod whp_tests {
         assert!(failures.is_empty(), "mapped bits differ: {failures:?}");
     }
 
-    fn output(registers: [u32; 4]) -> whp::abi::WHV_CPUID_OUTPUT {
-        whp::abi::WHV_CPUID_OUTPUT {
+    fn output(registers: [u32; 4]) -> WHV_CPUID_OUTPUT {
+        WHV_CPUID_OUTPUT {
             Eax: registers[0],
             Ebx: registers[1],
             Ecx: registers[2],
@@ -783,15 +905,15 @@ mod whp_tests {
         vp: Option<u32>,
         value: [u32; 4],
         mask: [u32; 4],
-    ) -> whp::abi::WHV_X64_CPUID_RESULT2 {
-        let mut flags = whp::abi::WHV_X64_CPUID_RESULT2_FLAGS(0);
+    ) -> WHV_X64_CPUID_RESULT2 {
+        let mut flags = WHV_X64_CPUID_RESULT2_FLAGS(0);
         if subleaf.is_some() {
-            flags |= whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
+            flags |= WHvX64CpuidResult2FlagSubleafSpecific;
         }
         if vp.is_some() {
             flags |= whp::abi::WHvX64CpuidResult2FlagVpSpecific;
         }
-        whp::abi::WHV_X64_CPUID_RESULT2 {
+        WHV_X64_CPUID_RESULT2 {
             Function: leaf,
             Index: subleaf.unwrap_or(0),
             VpIndex: vp.unwrap_or(0),
@@ -913,5 +1035,124 @@ mod whp_tests {
                 total - enumerated
             );
         }
+    }
+
+    /// Runs `cpuid; hlt` in real mode at the reset vector and checks how
+    /// `CpuidResultList2` reaches the guest: a leaf that also exits reports
+    /// the programmed result as the exit's default result, which OpenVMM's
+    /// exit handler starts from, and a leaf that does not exit returns it
+    /// directly. The time ABI exits some profile leaves (1, 4, 6, 7, ...), so
+    /// their profile values depend on the former.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn cpuid_result_list2_feeds_exit_defaults() {
+        const EXIT_LEAF: u32 = 0x16;
+        const PLAIN_LEAF: u32 = 0x8000_0002;
+        let exit_value = [0x1111_0001, 0x2222_0002, 0x3333_0003, 0x4444_0004];
+        let plain_value = [0x4141_4141, 0x4242_4242, 0x4343_4343, 0x4444_4444];
+        let results = [
+            result2(EXIT_LEAF, None, None, exit_value, [!0; 4]),
+            result2(PLAIN_LEAF, None, None, plain_value, [!0; 4]),
+        ];
+        let mut config = whp::PartitionConfig::new().unwrap();
+        config
+            .set_property(whp::PartitionProperty::ProcessorCount(1))
+            .unwrap();
+        config
+            .set_property(whp::PartitionProperty::ExtendedVmExits(
+                whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit,
+            ))
+            .unwrap();
+        config
+            .set_property(whp::PartitionProperty::CpuidExitList(&[EXIT_LEAF]))
+            .unwrap();
+        config
+            .set_property(whp::PartitionProperty::CpuidResultList2(&results))
+            .unwrap();
+        let partition = config.create().unwrap();
+        partition.create_vp(0).create().unwrap();
+
+        // At 0xffff0: cpuid; hlt; jmp back to the cpuid.
+        let layout = std::alloc::Layout::from_size_align(4096, 4096).unwrap();
+        // SAFETY: the layout has a nonzero size.
+        let page = unsafe { std::alloc::alloc_zeroed(layout) };
+        assert!(!page.is_null());
+        let code = [0x0f, 0xa2, 0xf4, 0xeb, 0xfb];
+        // SAFETY: `page` is a fresh allocation of 4096 bytes.
+        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), page.add(0xff0), code.len()) };
+        let rwx = whp::abi::WHV_MAP_GPA_RANGE_FLAGS(
+            whp::abi::WHvMapGpaRangeFlagRead.0
+                | whp::abi::WHvMapGpaRangeFlagWrite.0
+                | whp::abi::WHvMapGpaRangeFlagExecute.0,
+        );
+        // SAFETY: `page` stays allocated until after the partition is dropped.
+        unsafe { partition.map_range(None, page, 4096, 0xff000, rwx) }.unwrap();
+
+        let vp = partition.vp(0);
+        let registers = |vp: &whp::Processor<'_>| {
+            [
+                whp::Register64::Rax,
+                whp::Register64::Rbx,
+                whp::Register64::Rcx,
+                whp::Register64::Rdx,
+            ]
+            .map(|register| vp.get_register(register).unwrap() as u32)
+        };
+        vp.set_register(whp::Register64::Rax, EXIT_LEAF.into())
+            .unwrap();
+        vp.set_register(whp::Register64::Rcx, 0).unwrap();
+        let mut runner = vp.runner();
+
+        // The exiting leaf: its default result is the programmed one.
+        let (default, next_rip) = match runner.run().unwrap() {
+            whp::Exit {
+                vp_context,
+                reason: whp::ExitReason::Cpuid(info),
+            } => (
+                [
+                    info.DefaultResultRax as u32,
+                    info.DefaultResultRbx as u32,
+                    info.DefaultResultRcx as u32,
+                    info.DefaultResultRdx as u32,
+                ],
+                vp_context.Rip + u64::from(vp_context.InstructionLength()),
+            ),
+            exit => panic!("expected a CPUID exit: {exit:#x?}"),
+        };
+        println!("exit leaf {EXIT_LEAF:#x}: default result {default:08x?}");
+        // Complete the CPUID with the default result and continue to the HLT.
+        for (register, value) in [
+            whp::Register64::Rax,
+            whp::Register64::Rbx,
+            whp::Register64::Rcx,
+            whp::Register64::Rdx,
+        ]
+        .into_iter()
+        .zip(default)
+        {
+            vp.set_register(register, value.into()).unwrap();
+        }
+        vp.set_register(whp::Register64::Rip, next_rip).unwrap();
+        match runner.run().unwrap().reason {
+            whp::ExitReason::Halt => {}
+            reason => panic!("expected a halt: {reason:#x?}"),
+        }
+
+        // The plain leaf: the guest gets the programmed result directly.
+        vp.set_register(whp::Register64::Rax, PLAIN_LEAF.into())
+            .unwrap();
+        vp.set_register(whp::Register64::Rcx, 0).unwrap();
+        match runner.run().unwrap().reason {
+            whp::ExitReason::Halt => {}
+            reason => panic!("expected a halt: {reason:#x?}"),
+        }
+        let plain = registers(&vp);
+        println!("plain leaf {PLAIN_LEAF:#x}: guest result {plain:08x?}");
+
+        drop(partition);
+        // SAFETY: the partition that mapped the page is gone.
+        unsafe { std::alloc::dealloc(page, layout) };
+        assert_eq!(default, exit_value, "the exit's default result");
+        assert_eq!(plain, plain_value, "the guest's result");
     }
 }
