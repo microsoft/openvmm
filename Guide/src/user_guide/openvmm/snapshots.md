@@ -23,6 +23,14 @@ These are stored as three required files and one optional paired file:
 | `memory.bin`    | Memory backing file                         |
 | `scratch.img`   | Paired microVM scratch, when declared       |
 
+MicroVM manifests also record the NVX time ABI contract: the declared TSC and
+LAPIC rates, the capture anchor (VP 0's TSC paired with host UTC and host
+monotonic time), the capture host's identity, and the CPU profile with the
+effective CPUID that the guest observes. Every microVM snapshot is manifest
+version 6, and microVM restore accepts only version 6; recapture snapshots
+taken by earlier versions. See
+[Time and CPU compatibility](#time-and-cpu-compatibility).
+
 ## Prerequisites
 
 Host-driven snapshots require **file-backed guest memory**. Pass `file=<PATH>`
@@ -164,9 +172,38 @@ The no-ACPI microVM portb contract exposes a process-local 16-byte generation
 ID. Status bit 5 advertises the feature; writing `0xa6` to status port `0xea`
 and reading 16 bytes from data port `0xe9` returns the ID. It is repeatable
 within one process and is never restored from snapshot state. A restore derives
-the ID from the first 16 bytes of the fresh entropy packet, so the guest can
-reject an unchanged clone identity, reseed Linux, refresh runtime identifiers,
-and acknowledge the input gate without another PMIO transfer.
+the ID from the first 16 bytes of the restore packet's fresh entropy, so the
+guest can reject an unchanged clone identity, reseed Linux, refresh runtime
+identifiers, and acknowledge the input gate without another PMIO transfer.
+
+Every microVM restore exposes restore packet version 4. Status bit 1
+advertises it, and writing `0xa5` to the status port selects it for reading
+from the data port. Its 32-byte little-endian header holds:
+
+- the magic `OVR` and version 4;
+- flags: bit 0, the downtime came from host UTC; bit 1, a memory target;
+  bit 2, the guest must acknowledge the restore through port `0x605`; bit 3,
+  a test hook is active;
+- the online-VP target (0 for none), the memory-range count, and a reserved
+  zero byte;
+- the generation counter (`u32`), which is 0 at cold boot and one more than
+  the snapshot's at each restore;
+- the TSC rate deviation (`i32`, ppm scaled by 2^16);
+- the downtime in nanoseconds (`u64`); and
+- host UTC in nanoseconds since the Unix epoch (`u64`), latched when the guest
+  first selects the packet.
+
+The `(u64 GPA start, u64 length)` memory ranges and 64 bytes of fresh entropy
+follow the header. Status bits 2, 3, and 4 report an online-VP target, a
+memory target, and one or more memory ranges, so a zero-range target can skip
+post-restore repair.
+
+Status bit 6 advertises the time sample. Writing `0xa7` to the status port
+latches a 16-byte sample: version 1, flags (bit 3: a test hook is active), two
+reserved zero bytes, the generation counter (`u32`), and host UTC in
+nanoseconds (`u64`). The guest reads it from window port `0xeb`, so samples
+never interleave with console input on the data port. The selected packet and
+the window can be read one, two, or four bytes at a time.
 
 A microVM template may opt into restore-time vCPU activation by booting with an
 explicit canonical `maxcpus=1`, `2`, `4`, or `8` value below or equal to its
@@ -178,41 +215,20 @@ onlines and verifies that prefix before acknowledging the restore gate.
 On MSHV, an explicit target instantiates and binds only that VP prefix; saving
 such a reduced-prefix runtime is unsupported. MSHV restores without an explicit
 target, and all KVM and WHP restores, instantiate the full VP capacity.
-Versioned MSHV CPU contracts do not expose `IA32_TSC_ADJUST` because snapshot
-state cannot preserve that register independently of `IA32_TSC`; this prevents
-host-side TSC correction from appearing as per-VP firmware adjustment skew.
-KVM advances snapshot downtime through each VP's TSC offset rather than an
-`IA32_TSC` write. KVM's synchronization heuristic can discard sub-second
-counter writes, leaving `kvm-clock` ahead of the TSC and triggering Linux's
-clocksource watchdog. Relative offset updates preserve per-VP synchronization
-without adding host read/write latency. KVM snapshot resume requires
-`KVM_VCPU_TSC_CTRL` / `KVM_VCPU_TSC_OFFSET` support; unavailable offset access
-fails restore explicitly instead of falling back to imprecise counter writes.
-All backends read back the adjusted TSC before resume and reject a discarded
-or incomplete downtime adjustment.
-When more than one VP is instantiated, MSHV and WHP freeze partition time
-after restoring counters and advancing snapshot time, and align every
-instantiated VP's TSC to the BSP's advanced counter before any VP runs. The
-first VP run thaws time. Setting counters while time is running would
-introduce inter-VP skew from host scheduling delays, which can make Linux
-reject the TSC clocksource during CPU activation.
-For restored WHP partitions with multiple VPs, RDTSC, RDTSCP, and
-`IA32_TSC` reads additionally use one partition-reference-time epoch anchored
-to the advanced BSP counter. This clock has 100-nanosecond resolution and
-keeps unmodified guest counters synchronized after time resumes; equal
-frozen WHP register values alone do not guarantee equal live counters.
-RDTSCP retains the guest's TSC_AUX value, and timestamp access restrictions
-remain enforced. Explicit guest writes to `IA32_TSC`, or changes to
-`IA32_TSC_ADJUST`, retain native WHP counter and deadline-timer semantics on
-the affected VP. Reset restores the original intercept configuration.
-Ordinary boots, single-VP partitions, and configurations exposing nested
-virtualization to the guest retain their native counter path.
-Snapshots without the explicit capture-time `maxcpus` opt-in, including legacy
-snapshots, reject a restore target. This is not a post-readiness hotplug API and
-cannot add VPs absent from the saved topology.
+A microVM restore sets the TSC of every instantiated VP in one synchronized
+operation before any VP runs: each TSC continues from the capture anchor,
+advanced by the host downtime at the declared rate. KVM sets one common TSC
+offset; MSHV and WHP freeze partition time, write the same TSC to every VP,
+and resume partition time. Every backend reads each VP's TSC back and rejects
+a restore whose values differ (`E_TSC_SYNC_READBACK`), and one-shot LAPIC
+timers advance by the same downtime. The guest TSC is never scaled, and
+RDTSC is never trapped or emulated.
+Snapshots without the explicit capture-time `maxcpus` opt-in reject a restore
+target. This is not a post-readiness hotplug API and cannot add VPs absent
+from the saved topology.
 
 ```admonish warning
-Versions 3 through 5 do not contain or validate embedded checksums for
+Versions 3 through 6 do not contain or validate embedded checksums for
 `state.bin` or `memory.bin`. Restore still requires regular files, bounded
 manifest and state decoding, exact artifact lengths, and a compatible machine
 contract, but same-length payload changes are not detected. Paired
@@ -228,6 +244,49 @@ the snapshot manifest. If they do not match, OpenVMM will report a
 validation error and refuse to start.
 ```
 
+## Time and CPU compatibility
+
+Every microVM uses the NVX time ABI v1. The guest sees a minimal Hyper-V
+identity: CPUID leaves `0x40000000` through `0x40000005`, explicit zero leaves
+`0x40000006` through `0x4000000f` and `0x40000080` through `0x40000082`, and
+identity MSRs that return the declared TSC rate (`0x40000022`) and LAPIC rate
+(`0x40000023`). Linux takes both rates from these MSRs, so a cold-boot kernel
+command line must not set `tsc_early_khz=` or `lapic_timer_hz=`
+(`E_CMDLINE_CLOCK_TOKEN`). The TSC is invariant, and the LAPIC timer runs in
+one-shot mode at a fixed rate: 1 GHz on KVM and 200 MHz on MSHV and WHP.
+TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed.
+
+The guest CPU is a pinned CPU profile: one per CPU generation, the same on
+every backend. `--cpu-profile <ID>` selects one; the default, `auto`, selects
+the profile of the host's generation, and a host without one fails
+(`E_PROFILE_HOST_UNKNOWN`). Every boot checks that the backend supports the
+profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its effective CPUID
+(`E_CPU_SURFACE`). A snapshot records the profile and the effective CPUID.
+Restore requires the same profile, pinned in this OpenVMM with the same
+digest, a host of the profile's generation, and an identical effective CPUID.
+
+Restore also requires:
+
+- the backend that captured the snapshot;
+- a native TSC rate within 250 ppm of the snapshot's
+  (`E_TSC_RATE_TOLERANCE`), and the identical LAPIC rate
+  (`E_LAPIC_RATE_MISMATCH`); and
+- a downtime between 0 and 30 days (`E_DOWNTIME_NEGATIVE`,
+  `E_DOWNTIME_EXCESSIVE`).
+
+The declared rates never change across a restore; the restore packet reports
+the rate deviation so the guest can compensate. The downtime is host monotonic
+time when capture and restore run on the same host boot, and host UTC
+otherwise. Capture and restore reject an armed periodic or TSC-deadline LAPIC
+timer and a counting PIT channel 0 (`E_LAPIC_PERIODIC`,
+`E_LAPIC_TSC_DEADLINE`, `E_PIT_ACTIVE`).
+
+A time ABI error leads its message with a stable code in brackets, for
+example `[E_TSC_RATE_TOLERANCE]`, and OpenVMM exits with status 1. For host
+qualification, `--x-time-abi-verify` builds the partition, runs these checks
+without starting the guest, prints one `NVX-TIME-ABI-VERIFY:` line, and exits
+with status 0 or 1.
+
 ## Device configuration on restore
 
 For standard-machine snapshots, device flags must still be supplied on restore
@@ -235,25 +294,6 @@ and must reproduce the saved machine. For microVM snapshots, the manifest is
 authoritative for RAM, topology, ABI, fixed devices, placement,
 features, interrupts, and the effective Linux direct command line. Restore-time
 guest-visible overrides are rejected.
-
-The CPU contract records the effective CPUID/XSTATE surface and TSC frequency.
-Restore recreates and validates that rate before any vCPU runs. KVM snapshots
-likewise require the destination to reproduce their saved backend CPU and
-clock contract.
-
-For a microVM boot configured with `--snapshot-destination`, OpenVMM adds
-the backend TSC frequency to the effective kernel command line so the captured
-guest clock matches this contract. Ordinary boots that cannot publish a
-snapshot retain the guest's normal TSC discovery path.
-
-All cold microVM boots also receive `lapic_timer_hz=<Hz>` when the backend
-reports its LAPIC clock frequency. The NVX kernel uses this authoritative rate
-instead of verifying a counting LAPIC against scheduling-sensitive emulated
-PIT interrupts. TSC-deadline timers are unchanged. The parameter is canonicalized
-before device discovery and `--`; conflicting, duplicate, malformed, or
-out-of-range values are rejected. Platform snapshot validation checks a saved parameter
-against its APIC frequency contract, while snapshots without the parameter
-remain supported.
 
 Every snapshot records a complete state-unit inventory. Each emulated device
 saves state under a unique name (for example `"pit"`, `"vmbus"`, or `"ide"`),
@@ -389,3 +429,5 @@ immediately with a clear error if any active device does not support it.
   `--processors`. MicroVM restore reads them authoritatively from the manifest
   and rejects overrides. Persisted microVM ABI and boot-layout value 2 are
   supported.
+- MicroVM restore requires the backend, CPU generation, and CPU profile of
+  the capture. Snapshots from manifest versions before 6 must be recaptured.

@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI v1 in the VM worker, selected by the hidden `--x-time-abi-v1`
-//! development switch: the partition configuration, the backend preflight
-//! and rate policy, the `time-abi` state unit, the capture records, and the
-//! restore clock.
+//! NVX time ABI v1 in the VM worker, which every microVM uses: the partition
+//! configuration, the backend preflight and rate policy, the `time-abi` state
+//! unit, the capture records, and the restore clock.
 
 #![cfg(guest_arch = "x86_64")]
 

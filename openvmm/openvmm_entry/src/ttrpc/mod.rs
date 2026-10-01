@@ -1367,23 +1367,7 @@ impl VmService {
                     snapshot_restore_guards: worker_fields.snapshot_restore_guards,
                     snapshot_boundary_requests: worker_fields.snapshot_boundary_requests,
                     snapshot_ready: worker_fields.snapshot_ready,
-                    snapshot_capture_enabled: worker_fields.snapshot_capture_enabled,
-                    restore_downtime: worker_fields
-                        .restore_time
-                        .as_ref()
-                        .map(|(downtime, _, _, _)| *downtime),
-                    restore_tsc_frequency_hz: worker_fields
-                        .restore_time
-                        .as_ref()
-                        .map(|(_, frequency, _, _)| *frequency),
-                    restore_apic_frequency_hz: worker_fields
-                        .restore_time
-                        .as_ref()
-                        .and_then(|(_, _, frequency, _)| *frequency),
-                    restore_cpu_contract: worker_fields
-                        .restore_time
-                        .map(|(_, _, _, cpu_contract)| cpu_contract),
-                    restore_time: None,
+                    restore_time: worker_fields.restore_time,
                     restore_ready_sink,
                     restore_gate_timeout: worker_fields.restore_gate_timeout,
                     restore_vp_count: worker_fields.restore_vp_count,

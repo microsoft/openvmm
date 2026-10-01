@@ -73,18 +73,8 @@ pub struct VmWorkerParameters {
     /// Notifies the controller after the worker establishes the boundary.
     pub snapshot_ready:
         Option<mesh::Sender<chipset_resources::microvm::MicrovmSnapshotScratchPolicy>>,
-    /// Whether this cold boot can publish a microVM snapshot.
-    pub snapshot_capture_enabled: bool,
-    /// Host downtime to apply before starting a restored VM.
-    pub restore_downtime: Option<std::time::Duration>,
-    /// Saved effective TSC frequency required by restore.
-    pub restore_tsc_frequency_hz: Option<u64>,
-    /// Saved local APIC timer frequency required by restore.
-    pub restore_apic_frequency_hz: Option<u64>,
-    /// Saved canonical CPU contract required by restore.
-    pub restore_cpu_contract: Option<Vec<u8>>,
     /// The time ABI inputs of a restored microVM, validated by the
-    /// controller. They replace the four fields above under the time ABI.
+    /// controller.
     pub restore_time: Option<crate::time_abi::RestoreTimeInput>,
     /// Single-use process-local sink for the restore readiness event.
     pub restore_ready_sink: Option<std::fs::File>,

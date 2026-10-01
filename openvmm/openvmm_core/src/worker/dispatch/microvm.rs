@@ -83,8 +83,6 @@ impl From<MicrovmConfig> for MicrovmManifest {
 pub(super) struct MicrovmParameters {
     /// Snapshot boundary channels handed to the loaded VM.
     pub(super) snapshot_boundary: SnapshotBoundary,
-    /// Whether this cold boot can publish a microVM snapshot.
-    snapshot_capture_enabled: bool,
 }
 
 impl MicrovmParameters {
@@ -96,30 +94,22 @@ impl MicrovmParameters {
             ready: parameters.snapshot_ready.take(),
             ..Default::default()
         };
-        let snapshot_capture_enabled = parameters.snapshot_capture_enabled;
         openvmm_defs::microvm::validate_machine_config(
             &parameters.cfg,
             Some(parameters.hypervisor.id()),
         )?;
-        Ok(Self {
-            snapshot_boundary,
-            snapshot_capture_enabled,
-        })
+        Ok(Self { snapshot_boundary })
     }
 
-    /// Prepares the kernel command line of a microVM cold boot, before the VM
-    /// is loaded.
-    pub(super) fn prepare_cold_boot(
+    /// Checks the kernel command line of a microVM cold boot, before the VM
+    /// is loaded: the time ABI declares both clock rates, so the command line
+    /// must not set them (`E_CMDLINE_CLOCK_TOKEN`).
+    pub(super) fn check_cold_boot(
         &self,
-        vm: &mut InitializedVm,
+        vm: &InitializedVm,
         restored_from_snapshot: bool,
     ) -> anyhow::Result<()> {
-        prepare_cold_boot_command_line(
-            &mut vm.cfg,
-            vm.partition.as_ref(),
-            restored_from_snapshot,
-            self.snapshot_capture_enabled,
-        )
+        check_cold_boot_command_line(&vm.cfg, restored_from_snapshot)
     }
 }
 
@@ -137,8 +127,6 @@ pub(super) struct SnapshotBoundary {
     stop_guard: Option<StopGuard>,
     /// Completes the guest's snapshot transaction when the boundary is released.
     transaction_complete: Option<Rpc<(), ()>>,
-    /// Host wall time at the stopped capture boundary.
-    capture_wall_clock: Option<mesh::payload::Timestamp>,
     /// Input-gate timeout of the active boundary.
     input_gate_timeout: Option<Duration>,
 }
@@ -269,8 +257,6 @@ impl LoadedVm {
                 );
                 self.snapshot_boundary.stop_guard = Some(stop_guard);
                 self.snapshot_boundary.transaction_complete = Some(request.transaction_complete);
-                self.snapshot_boundary.capture_wall_clock =
-                    Some(std::time::SystemTime::now().into());
                 self.snapshot_boundary.input_gate_timeout = Some(request.input_gate_timeout);
                 snapshot_ready.send(request.scratch_policy);
                 true
@@ -305,7 +291,6 @@ impl LoadedVm {
             .take()
             .context("snapshot boundary is missing its vCPU stop guard")?;
         let restore_gate_profile = self.snapshot_restore.gate_profile.take();
-        self.snapshot_boundary.capture_wall_clock = None;
         self.snapshot_boundary.input_gate_timeout = None;
         self.snapshot_restore.gate_timeout = None;
         self.snapshot_restore.gate_deadline = None;
@@ -351,26 +336,9 @@ impl LoadedVm {
 
         // Time ABI capture steps 1 and 2: the LAPIC timers, then the capture
         // anchor and records. The PIT checks itself when saved.
-        #[cfg(guest_arch = "x86_64")]
-        let time = match &self.inner.time_abi {
-            Some(state) => {
-                let rollback_safe = |error: anyhow::Error| {
-                    openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
-                };
-                self.inner
-                    .partition_unit
-                    .check_one_shot_timers()
-                    .await
-                    .map_err(rollback_safe)?;
-                Some(
-                    super::time_abi::capture_records(self.inner.partition.as_ref(), state)
-                        .map_err(rollback_safe)?,
-                )
-            }
-            None => None,
-        };
-        #[cfg(not(guest_arch = "x86_64"))]
-        let time = None;
+        let time = self.capture_time_abi().await.map_err(|error| {
+            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+        })?;
 
         let save_state = openvmm_defs::profile::ProfileSpan::start();
         let saved_state = self.save().await.map_err(|error| {
@@ -400,60 +368,31 @@ impl LoadedVm {
                 ));
             }
         };
-        if let Some(time) = time {
-            return Ok(openvmm_defs::rpc::SnapshotSaveResponse {
-                state_unit_names: saved_state.inventory.clone(),
-                saved_state: ProtobufMessage::new(saved_state),
-                effective_command_line,
-                tsc_frequency_hz: 0,
-                apic_frequency_hz: 0,
-                capture_wall_clock: mesh::payload::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                },
-                cpu_contract: Vec::new(),
-                time: Some(time),
-            });
-        }
-        let tsc_frequency_hz = self
-            .inner
-            .partition
-            .tsc_frequency_hz()
-            .map_err(|error| {
-                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
-            })?
-            .ok_or_else(|| {
-                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
-                    anyhow::anyhow!("backend does not expose a guest TSC frequency"),
-                ))
-            })?;
-        let apic_frequency_hz = self
-            .inner
-            .partition
-            .apic_frequency_hz()
-            .map_err(|error| {
-                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
-            })?
-            .ok_or_else(|| {
-                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
-                    anyhow::anyhow!("backend does not expose a local APIC frequency"),
-                ))
-            })?;
-        let capture_wall_clock = self.snapshot_boundary.capture_wall_clock.ok_or_else(|| {
-            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(
-                anyhow::anyhow!("snapshot boundary has no wall-clock timestamp"),
-            ))
-        })?;
         Ok(openvmm_defs::rpc::SnapshotSaveResponse {
             state_unit_names: saved_state.inventory.clone(),
             saved_state: ProtobufMessage::new(saved_state),
             effective_command_line,
-            tsc_frequency_hz,
-            apic_frequency_hz,
-            capture_wall_clock,
-            cpu_contract: mesh::payload::encode(self.inner.partition.cpu_compatibility_contract()),
-            time: None,
+            time,
         })
+    }
+
+    /// Takes the time ABI records of a capture: checks the LAPIC timers, then
+    /// takes the capture anchor and records (capture steps 1 to 3 of the
+    /// specification).
+    #[cfg(guest_arch = "x86_64")]
+    async fn capture_time_abi(&mut self) -> anyhow::Result<openvmm_defs::time_abi::TimeCapture> {
+        let state = self
+            .inner
+            .time_abi
+            .as_ref()
+            .context("a microVM snapshot requires the time ABI")?;
+        self.inner.partition_unit.check_one_shot_timers().await?;
+        super::time_abi::capture_records(self.inner.partition.as_ref(), state)
+    }
+
+    #[cfg(not(guest_arch = "x86_64"))]
+    async fn capture_time_abi(&mut self) -> anyhow::Result<openvmm_defs::time_abi::TimeCapture> {
+        anyhow::bail!("microVM snapshots require an x86-64 guest")
     }
 
     /// Resumes the VM after a rollback-safe snapshot failure and releases the
@@ -741,10 +680,6 @@ pub(super) fn uses_lazy_memory_registration(
         && shared_memory.is_some_and(SharedMemoryBacking::is_copy_on_write)
 }
 
-pub(super) fn uses_versioned_cpu_contract(machine_profile: MachineProfile) -> bool {
-    machine_profile == MachineProfile::Microvm
-}
-
 /// Returns the number of virtio-mmio slots that the memory layout allocates.
 /// MicroVM devices use fixed slots in the low MMIO aperture instead.
 pub(super) fn virtio_mmio_count(
@@ -770,69 +705,30 @@ pub(super) fn trace_unknown_pio(machine_profile: MachineProfile) -> bool {
 }
 
 #[cfg(guest_arch = "x86_64")]
-fn prepare_cold_boot_command_line(
-    cfg: &mut Manifest,
-    partition: &dyn HvlitePartition,
+fn check_cold_boot_command_line(
+    cfg: &Manifest,
     restored_from_snapshot: bool,
-    snapshot_capture_enabled: bool,
 ) -> anyhow::Result<()> {
     if restored_from_snapshot || cfg.machine_profile != MachineProfile::Microvm {
         return Ok(());
     }
 
-    let cmdline = match &mut cfg.load_mode {
-        openvmm_defs::config::LoadMode::Linux {
-            cmdline,
-            boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
-            ..
-        } => Some(cmdline),
-        _ => None,
-    };
-    let Some(cmdline) = cmdline else {
+    let openvmm_defs::config::LoadMode::Linux {
+        cmdline,
+        boot_mode: openvmm_defs::config::LinuxDirectBootMode::MpTable,
+        ..
+    } = &cfg.load_mode
+    else {
         anyhow::bail!("microVM has no supported cold-boot command line");
     };
-    if cfg.microvm.time_abi.is_some() {
-        // The time ABI declares both rates through the identity MSRs.
-        virt::time_abi::check_command_line_clock_tokens(cmdline)?;
-        return Ok(());
-    }
-    match partition
-        .tsc_frequency_hz()
-        .context("failed to query the backend guest TSC frequency")?
-    {
-        Some(frequency_hz) => {
-            crate::worker::vm_loaders::microvm::propagate_snapshot_tsc_frequency(
-                cmdline,
-                frequency_hz,
-                snapshot_capture_enabled,
-            )
-            .context("failed to propagate the guest TSC frequency")?;
-        }
-        None => tracing::warn!(
-            "backend does not expose a guest TSC frequency; preserving the microVM command line"
-        ),
-    }
-    match partition
-        .apic_frequency_hz()
-        .context("failed to query the backend guest LAPIC frequency")?
-    {
-        Some(frequency_hz) => {
-            crate::worker::vm_loaders::microvm::propagate_apic_frequency(cmdline, frequency_hz)
-                .context("failed to propagate the guest LAPIC frequency")?;
-        }
-        None => tracing::warn!(
-            "backend does not expose a guest LAPIC frequency; retaining guest timer calibration"
-        ),
-    }
+    virt::time_abi::check_command_line_clock_tokens(cmdline)?;
     Ok(())
 }
 
 #[cfg(not(guest_arch = "x86_64"))]
-fn prepare_cold_boot_command_line(
-    _cfg: &mut Manifest,
-    _partition: &dyn HvlitePartition,
+fn check_cold_boot_command_line(
+    _cfg: &Manifest,
     _restored_from_snapshot: bool,
-    _snapshot_capture_enabled: bool,
 ) -> anyhow::Result<()> {
     Ok(())
 }

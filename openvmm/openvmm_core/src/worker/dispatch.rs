@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 mod amd_iommu_wiring;
-mod clock;
 mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
@@ -358,19 +357,18 @@ impl Worker for VmWorker {
             .shared_memory
             .map(|fd| restore_params.shared_memory_backing(fd));
 
-        let mut vm = block_on(InitializedVm::new(
+        let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor.0,
             manifest,
             shared_memory,
         ))?;
-        restore::validate_restore_cpu_contract(vm.partition.as_ref(), restore_params.cpu_contract)?;
         let saved_state = parameters
             .saved_state
             .map(|m| m.parse())
             .transpose()
             .context("failed to decode saved state")?;
-        microvm_params.prepare_cold_boot(&mut vm, saved_state.is_some())?;
+        microvm_params.check_cold_boot(&vm, saved_state.is_some())?;
 
         let mut vm =
             block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
@@ -1282,11 +1280,6 @@ impl InitializedVm {
             }
             _ => (None, None),
         };
-        #[cfg(guest_arch = "x86_64")]
-        let versioned_cpu_contract =
-            microvm::uses_versioned_cpu_contract(cfg.machine_profile) && time_abi_config.is_none();
-        #[cfg(not(guest_arch = "x86_64"))]
-        let versioned_cpu_contract = microvm::uses_versioned_cpu_contract(cfg.machine_profile);
 
         let partition_prototype = openvmm_defs::profile::ProfileSpan::start();
         let proto = hypervisor
@@ -1300,7 +1293,7 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
                 user_mode_memory_faults,
                 lazy_memory_registration,
-                versioned_cpu_contract,
+                versioned_cpu_contract: false,
                 #[cfg(guest_arch = "x86_64")]
                 time_abi: time_abi_config,
             })

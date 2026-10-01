@@ -289,8 +289,8 @@ describes the source definitions.
   does not upload it.
 * `--restore-snapshot <DIR>`: Restore a microVM from a committed snapshot.
   The manifest supplies the authoritative RAM size, topology, ABI,
-  fixed device inventory, effective kernel command line, source backend, CPU
-  contract, and TSC frequency. Kernel, initrd, command-line, ordinary
+  fixed device inventory, effective kernel command line, source backend, time
+  contract, and CPU profile. Kernel, initrd, command-line, ordinary
   `--memory`, processor, device, and topology overrides are not accepted;
   expansion-capable snapshots use only `--restore-memory`. Repeat the
   snapshot's exact `--processors` count; a mismatch is rejected before any VP
@@ -343,39 +343,43 @@ describes the source definitions.
   and stops the VM. The peer must accept and read the event while startup is
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
-* `--restore-entropy`: Make a fresh `OPENVMM_ENTROPY_V1` packet available on
-  the private portb restore channel. The guest must consume the packet and
-  explicitly reseed its RNG. Restoring cloned RNG state without this option is
-  unsafe for cryptographic workloads and emits a warning.
-  Processor activation uses `OPENVMM_ENTROPY_V2`. Memory expansion uses the
-  backward-compatible `OPENVMM_ENTROPY_V3` packet. Its exact format is the
-  19-byte `OPENVMM_ENTROPY_V3\0` header, a one-byte online-VP target (zero
-  means none), a one-byte expansion-range count, that many little-endian
-  `(u64 GPA start, u64 byte length)` pairs, and 64 bytes of fresh entropy.
-  Explicitly selecting the snapshot base size with `--restore-memory` still
-  emits V3 with an expansion-range count of zero; omitting the option preserves
-  V1/V2 behavior. Private portb status bit 3 reports a V3 memory target, while
-  bit 4 additionally reports that the packet contains one or more expansion
-  ranges, allowing a zero-range target to avoid post-restore repair.
+* `--restore-entropy`: Accepted for compatibility; it has no effect. Every
+  microVM restore makes restore packet version 4 available on the private
+  portb restore channel. The packet carries 64 bytes of fresh entropy, the
+  online-VP target, the memory-expansion ranges, the downtime, and the TSC
+  rate deviation; the guest must consume it and explicitly reseed its RNG.
+  [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
+  the portb status bits, and the time sample.
   Every microVM portb device also reports generation-ID support in status bit
   5. Writing `0xa6` to the status port and reading 16 bytes from the data port
   returns an opaque ID that is stable for that VM process and may be selected
   repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
-  On restore, it is the first 16 bytes of the fresh entropy packet, allowing
-  the guest repair path to update clone identity without additional port I/O.
+  On restore, it is the first 16 bytes of the restore packet's fresh entropy,
+  allowing the guest repair path to update clone identity without additional
+  port I/O.
 * `--restore-processors <COUNT>`: For an opt-in microVM snapshot, bring the
   contiguous VP prefix `0..COUNT-1` online before restore readiness. The
   snapshot's manifest VP count remains immutable capacity and must still match
   `--processors`. The target must be 1, 2, 4, or 8 and satisfy
-  `boot-online <= target <= capacity`. This option implies a version-2 private
-  restore packet and the post-restore gate. Snapshots without activation
-  metadata reject it. An
+  `boot-online <= target <= capacity`. This option sets the restore packet's
+  online-VP target and implies the post-restore gate. Snapshots without
+  activation metadata reject it. An
   explicit MSHV restore instantiates and binds only the requested prefix while
   validating the full saved VP inventory; that reduced-prefix process cannot
   be saved again. MSHV restores without this option, and KVM and WHP restores,
   instantiate the full VP capacity.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
+* `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, or `auto`
+  (the default) for the profile of the host's CPU generation. A host without a
+  profile, or a profile of another generation, fails before the partition is
+  created. A restore uses the snapshot's profile and rejects any other. See
+  [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
+* `--x-time-abi-verify`: Build the microVM partition and run the time ABI
+  checks (CPU profile support, effective CPUID, rates) without starting the
+  guest, print one `NVX-TIME-ABI-VERIFY:` line, and exit with status 0 or 1.
+  Host qualification uses it; it cannot be combined with snapshot capture or
+  restore.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
@@ -388,7 +392,7 @@ private writable copy-on-write mapping and paired scratch is privately copied,
 so clone-policy snapshots can be restored repeatedly without modifying
 artifacts. Instance-checkpoint snapshots permit one restore attempt.
 
-Versions 3 through 5 do not embed or validate checksums for `state.bin` or `memory.bin`;
+Versions 3 through 6 do not embed or validate checksums for `state.bin` or `memory.bin`;
 legacy version 2 checksum fields are accepted without re-hashing their
 payloads. This format does not detect same-length payload changes,
 authenticate, or encrypt a snapshot. Treat all three artifacts as sensitive

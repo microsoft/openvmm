@@ -296,26 +296,12 @@ impl VmController {
                     block.identity.clear();
                 }
             }
-            let (clock, version, format_magic) = match response.time {
-                Some(time) => (
-                    openvmm_helpers::snapshot::microvm::MicrovmClockContract::TimeAbi {
-                        time: time.time,
-                        cpu_profile: time.cpu_profile,
-                    },
-                    openvmm_helpers::snapshot::format::TIME_ABI_MANIFEST_VERSION,
-                    openvmm_helpers::snapshot::format::TIME_ABI_SNAPSHOT_FORMAT_MAGIC,
-                ),
-                None => (
-                    openvmm_helpers::snapshot::microvm::MicrovmClockContract::Legacy {
-                        capture_wall_clock: response.capture_wall_clock,
-                        tsc_frequency_hz: response.tsc_frequency_hz,
-                        apic_frequency_hz: Some(response.apic_frequency_hz),
-                        cpu_contract: response.cpu_contract,
-                    },
-                    openvmm_helpers::snapshot::MANIFEST_VERSION,
-                    openvmm_helpers::snapshot::format::SNAPSHOT_FORMAT_MAGIC,
-                ),
+            let clock = openvmm_helpers::snapshot::microvm::MicrovmClockContract::TimeAbi {
+                time: response.time.time,
+                cpu_profile: response.time.cpu_profile,
             };
+            let version = openvmm_helpers::snapshot::format::TIME_ABI_MANIFEST_VERSION;
+            let format_magic = openvmm_helpers::snapshot::format::TIME_ABI_SNAPSHOT_FORMAT_MAGIC;
             let machine_contract =
                 openvmm_helpers::snapshot::microvm::microvm_machine_contract_with_clock(
                     &self.microvm.source_hypervisor,

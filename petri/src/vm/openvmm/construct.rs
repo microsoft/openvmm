@@ -669,7 +669,7 @@ impl PetriVmConfigOpenVmm {
         let config = Config {
             // Firmware
             machine_profile,
-            microvm: Default::default(),
+            microvm: super::microvm::microvm_config(machine_profile),
             load_mode,
             firmware_event_send: super::microvm::firmware_event_send(
                 machine_profile,

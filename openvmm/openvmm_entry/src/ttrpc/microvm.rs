@@ -45,7 +45,6 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vmotherboard::ChipsetDeviceHandle;
 
-type RestoreTime = (Duration, u64, Option<u64>, Vec<u8>);
 type SerialPorts = [Option<Resource<SerialBackendHandle>>; 4];
 
 struct AuthoritativeRestore {
@@ -75,7 +74,6 @@ pub(super) struct CreateVm {
     restore_filesystem_config: Option<vmservice::VirtioFs>,
     restored_filesystem: Option<RestoredFilesystem>,
     snapshot_destination: Option<PathBuf>,
-    restore_entropy: bool,
     restore_online_vp_count: Option<u32>,
     restore_gate_timeout: Duration,
     snapshot_quiesce_timeout: Duration,
@@ -85,7 +83,8 @@ pub(super) struct CreateVm {
     shared_memory: Option<SharedMemoryFd>,
     snapshot_restore_guards: Option<SnapshotRestoreGuards>,
     saved_state: Option<mesh::payload::message::ProtobufMessage>,
-    restore_time: Option<RestoreTime>,
+    /// The time ABI restore validated by the restore preflight.
+    restore_time: Option<crate::microvm::TimeAbiRestore>,
     snapshot_notify: Option<mesh::Sender<MicrovmSnapshotBoundaryRequest>>,
     snapshot_ready: Option<mesh::Sender<MicrovmSnapshotScratchPolicy>>,
     snapshot_requests: Option<mesh::Receiver<MicrovmSnapshotScratchPolicy>>,
@@ -335,7 +334,6 @@ impl CreateVm {
                 restore_filesystem_config,
                 restored_filesystem: None,
                 snapshot_destination,
-                restore_entropy,
                 restore_online_vp_count,
                 restore_gate_timeout,
                 snapshot_quiesce_timeout,
@@ -472,6 +470,9 @@ impl CreateVm {
                 restore.machine_contract.microvm_network.is_none(),
                 "ttrpc restore does not yet expose microVM network attachments"
             );
+            // The management endpoint restores with the snapshot's CPU
+            // profile and no time ABI test hooks.
+            let hooks = virt::time_abi::TimeAbiTestHooks::default();
             let prepared = crate::snapshot_restore::prepare_snapshot_restore_for_config(
                 restore
                     .snapshot
@@ -481,43 +482,34 @@ impl CreateVm {
                 restore.selected_memory_size,
                 restore.vp_count,
                 Some((
-                    &self.source_hypervisor,
-                    &restore.machine_contract.effective_command_line,
-                    None,
-                    self.restored_filesystem.as_ref().map(|filesystem| {
-                        (
-                            &filesystem.config,
-                            Path::new(&filesystem.root_path),
-                            &filesystem.attachment,
-                        )
-                    }),
-                    restore
-                        .machine_contract
-                        .attachments
-                        .iter()
-                        .find(|attachment| attachment.stable_id == "console:microvm-virtio0"),
-                    None,
-                    restore.machine_contract.microvm_sandbox_blocks.clone(),
+                    (
+                        &self.source_hypervisor,
+                        &restore.machine_contract.effective_command_line,
+                        None,
+                        self.restored_filesystem.as_ref().map(|filesystem| {
+                            (
+                                &filesystem.config,
+                                Path::new(&filesystem.root_path),
+                                &filesystem.attachment,
+                            )
+                        }),
+                        restore
+                            .machine_contract
+                            .attachments
+                            .iter()
+                            .find(|attachment| attachment.stable_id == "console:microvm-virtio0"),
+                        None,
+                        restore.machine_contract.microvm_sandbox_blocks.clone(),
+                    ),
+                    crate::microvm::TimeAbiRestoreOptions {
+                        cpu_profile: "auto",
+                        hooks: &hooks,
+                    },
                 )),
-                None,
             )?;
-            let restore_time = match prepared
+            let restore_time = prepared
                 .restore_time
-                .context("microVM snapshot is missing its restore-time contract")?
-            {
-                crate::microvm::RestoreClock::Legacy(restore_time) => restore_time,
-                crate::microvm::RestoreClock::TimeAbi(_) => {
-                    anyhow::bail!("ttrpc restore does not support time ABI snapshots yet")
-                }
-            };
-            if !self.restore_entropy
-                && self.restore_online_vp_count.is_none()
-                && !restore.restore_memory_target_requested
-            {
-                tracing::warn!(
-                    "restoring cloned guest RNG state without fresh entropy injection; cryptographic workloads are unsafe"
-                );
-            }
+                .context("microVM snapshot is missing its time ABI records")?;
             self.shared_memory = Some(prepared.shared_memory);
             self.snapshot_restore_guards = Some(prepared.guards);
             self.saved_state = Some(prepared.saved_state);
@@ -729,36 +721,41 @@ impl CreateVm {
             self.resources.output_drain = Some(drain);
             requests
         });
-        let restore_memory_ranges = self
-            .authoritative_restore
-            .as_ref()
-            .map(|restore| restore.restore_memory_ranges.as_slice())
-            .unwrap_or_default();
-        let restore_memory_target_requested = self
-            .authoritative_restore
-            .as_ref()
-            .is_some_and(|restore| restore.restore_memory_target_requested);
-        let (generation_id, restore_entropy) = if self.restore_entropy
-            || self.restore_online_vp_count.is_some()
-            || restore_memory_target_requested
-        {
-            crate::microvm::fresh_microvm_restore_packet(
-                self.restore_online_vp_count,
-                restore_memory_target_requested,
-                restore_memory_ranges,
-            )?
-        } else {
-            (crate::microvm::fresh_microvm_generation_id()?, Vec::new())
+        let gate_required = self.restore_gate_required();
+        let (generation_id, restore) = match &self.restore_time {
+            Some(restore_time) => {
+                let restore = self
+                    .authoritative_restore
+                    .as_ref()
+                    .context("time ABI restore is missing its snapshot")?;
+                let (generation_id, base) = crate::microvm::restore_packet_base(
+                    restore_time.contract(),
+                    self.restore_online_vp_count,
+                    restore.restore_memory_target_requested,
+                    &restore.restore_memory_ranges,
+                    gate_required,
+                )?;
+                (
+                    generation_id,
+                    Some(self.resources.time_abi_restore_packet(base)),
+                )
+            }
+            None => (crate::microvm::fresh_microvm_generation_id()?, None),
         };
+        let time_abi = crate::microvm::time_abi_chipset(
+            devices,
+            &virt::time_abi::TimeAbiTestHooks::default(),
+            restore,
+        );
         devices.extend([
             ChipsetDeviceHandle {
                 name: MicrovmPortbHandle::ID.to_owned(),
                 resource: MicrovmPortbHandle {
                     io,
                     generation_id,
-                    restore_entropy,
+                    restore_entropy: Vec::new(),
                     output_drain,
-                    time_abi: None,
+                    time_abi: Some(time_abi),
                 }
                 .into_resource(),
             },
@@ -815,6 +812,20 @@ impl CreateVm {
             }));
             config.hypervisor.with_hv = false;
             config.vmbus = None;
+            // A restore uses the snapshot's CPU profile and the next
+            // generation counter; a cold boot selects the host's profile.
+            let (cpu_profile, generation) = match &self.restore_time {
+                Some(restore_time) => (
+                    restore_time.cpu_profile().id.clone(),
+                    restore_time.contract().capture_generation.saturating_add(1),
+                ),
+                None => ("auto".to_owned(), 0),
+            };
+            config.microvm.time_abi = Some(openvmm_defs::time_abi::TimeAbiParameters {
+                cpu_profile,
+                generation,
+                hooks: Default::default(),
+            });
         }
         config.microvm.filesystem_bootstrap = self
             .authoritative_restore
@@ -1240,12 +1251,24 @@ impl CreateVm {
                 file,
             )?);
         }
-        let restore_gate_timeout = (self.restore_online_vp_count.is_some()
-            || self
-                .authoritative_restore
-                .as_ref()
-                .is_some_and(|restore| !restore.restore_memory_ranges.is_empty()))
-        .then_some(self.restore_gate_timeout);
+        let restore_gate_timeout = self
+            .restore_gate_required()
+            .then_some(self.restore_gate_timeout);
+        let restore_time = self
+            .restore_time
+            .take()
+            .map(|restore_time| -> anyhow::Result<_> {
+                let restore_record = self
+                    .resources
+                    .restore_time_record
+                    .take()
+                    .context("time ABI restore is missing its restore packet")?;
+                Ok(restore_time.into_input(
+                    restore_record,
+                    self.resources.restore_packet_selected.take(),
+                ))
+            })
+            .transpose()?;
         Ok(WorkerFields {
             saved_state: self.saved_state.take(),
             shared_memory: self.shared_memory.take(),
@@ -1253,11 +1276,21 @@ impl CreateVm {
             snapshot_restore_guards: self.snapshot_restore_guards.take(),
             snapshot_boundary_requests: self.resources.snapshot_requests.take(),
             snapshot_ready: self.snapshot_ready.take(),
-            snapshot_capture_enabled: self.snapshot_destination.is_some(),
-            restore_time: self.restore_time.take(),
+            restore_time,
             restore_gate_timeout,
             restore_vp_count: self.restore_online_vp_count,
         })
+    }
+
+    /// Returns whether a restore arms the post-restore input gate, which the
+    /// guest acknowledges through port `0x605`: with a restore-time VP or RAM
+    /// target.
+    fn restore_gate_required(&self) -> bool {
+        self.restore_online_vp_count.is_some()
+            || self
+                .authoritative_restore
+                .as_ref()
+                .is_some_and(|restore| !restore.restore_memory_ranges.is_empty())
     }
 
     /// Converts the remaining state into VM-controller launch fields.
@@ -1293,8 +1326,7 @@ pub(super) struct WorkerFields {
     pub(super) snapshot_restore_guards: Option<SnapshotRestoreGuards>,
     pub(super) snapshot_boundary_requests: Option<mesh::Receiver<MicrovmSnapshotBoundaryRequest>>,
     pub(super) snapshot_ready: Option<mesh::Sender<MicrovmSnapshotScratchPolicy>>,
-    pub(super) snapshot_capture_enabled: bool,
-    pub(super) restore_time: Option<RestoreTime>,
+    pub(super) restore_time: Option<openvmm_defs::time_abi::RestoreTimeInput>,
     pub(super) restore_gate_timeout: Option<Duration>,
     pub(super) restore_vp_count: Option<u32>,
 }
