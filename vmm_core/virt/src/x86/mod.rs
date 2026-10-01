@@ -5,7 +5,6 @@
 
 pub mod apic_software_device;
 pub mod cpu_contract;
-pub mod cpu_profile;
 pub mod snp;
 pub mod topology;
 pub mod tsc;
