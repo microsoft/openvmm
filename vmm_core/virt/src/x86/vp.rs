@@ -2010,6 +2010,14 @@ state_trait! {
     (200, "nested_state", nested_state, set_nested_state, NestedState),
 }
 
+impl VpSavedState {
+    /// Removes the saved TSC, so restoring this state leaves the VP's TSC to
+    /// the NVX time ABI's synchronized TSC set.
+    pub fn clear_tsc(&mut self) {
+        self.tsc = None;
+    }
+}
+
 /// Resets register state for an x86 INIT via the APIC.
 pub fn x86_init<T: AccessVpState>(access: &mut T, vp_info: &X86VpInfo) -> Result<(), T::Error> {
     // Reset core register and debug register state, but preserve a few bits of cr0.
@@ -2039,4 +2047,26 @@ pub fn x86_init<T: AccessVpState>(access: &mut T, vp_info: &X86VpInfo) -> Result
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_tsc_keeps_the_other_elements() {
+        let mut state = VpSavedState {
+            tsc: Some(Tsc { value: 7 }),
+            tsc_aux: Some(TscAux { value: 3 }),
+            ..Default::default()
+        };
+        state.clear_tsc();
+        assert_eq!(
+            state,
+            VpSavedState {
+                tsc_aux: Some(TscAux { value: 3 }),
+                ..Default::default()
+            }
+        );
+    }
 }
