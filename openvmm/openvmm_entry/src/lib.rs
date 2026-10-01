@@ -231,19 +231,17 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 }
 
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
-    if opt.igvm.is_some() {
-        match opt.igvm_personality {
-            None => BaseChipsetType::HclHost,
-            Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
-            Some(IgvmPersonalityCli::LinuxDirect)
+    if let Some(personality) = opt.igvm_personality {
+        match personality {
+            IgvmPersonalityCli::Openhcl => BaseChipsetType::HclHost,
+            IgvmPersonalityCli::Uefi => BaseChipsetType::HypervGen2Uefi,
+            IgvmPersonalityCli::LinuxDirect
                 if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
             {
                 BaseChipsetType::EnlightenedLinuxDirect
             }
-            Some(IgvmPersonalityCli::LinuxDirect) if opt.hv => {
-                BaseChipsetType::HyperVGen2LinuxDirect
-            }
-            Some(IgvmPersonalityCli::LinuxDirect) => BaseChipsetType::UnenlightenedLinuxDirect,
+            IgvmPersonalityCli::LinuxDirect if opt.hv => BaseChipsetType::HyperVGen2LinuxDirect,
+            IgvmPersonalityCli::LinuxDirect => BaseChipsetType::UnenlightenedLinuxDirect,
         }
     } else if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
         BaseChipsetType::EnlightenedLinuxDirect
@@ -1294,7 +1292,9 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if uefi.is_some() || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi)) {
+    if (uefi.is_some() && opt.igvm.is_none())
+        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
+    {
         let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1376,8 +1376,9 @@ async fn vm_config_from_command_line(
             .into();
         let cmdline = opt.cmdline.join(" ");
         with_hv = match opt.igvm_personality {
-            None | Some(IgvmPersonalityCli::Uefi) => true,
+            Some(IgvmPersonalityCli::Openhcl | IgvmPersonalityCli::Uefi) => true,
             Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
+            None => anyhow::bail!("--igvm-personality is required for IGVM boots"),
         };
 
         load_mode = LoadMode::Igvm {
@@ -3227,16 +3228,146 @@ mod tests {
                 BaseChipsetType::EnlightenedLinuxDirect,
             ),
             (
-                vec!["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"],
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    "openhcl",
+                    "--hv",
+                    "--vtl2",
+                ],
                 BaseChipsetType::HclHost,
             ),
         ] {
             let opt = Options::try_parse_from(args).unwrap();
+            opt.validate_igvm_options().unwrap();
             assert!(
                 std::mem::discriminant(&base_chipset_type(&opt))
                     == std::mem::discriminant(&expected)
             );
         }
+    }
+
+    #[test]
+    fn builds_openhcl_igvm_config_without_host_uefi() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let igvm_path = temp_dir.path().join("guest.igvm");
+            File::create(&igvm_path).unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            for (extra, expected_alias, expected_policy) in [
+                (vec![], true, Some(LateMapVtl0MemoryPolicy::Halt)),
+                (
+                    vec!["--uefi", "console=com1,disable_frontpage"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--net", "uh:consomme", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--isolation", "vbs", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--no-alias-map", "--late-map-vtl0-policy", "exception"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::InjectException),
+                ),
+                (
+                    vec!["--late-map-vtl0-policy", "log"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Log),
+                ),
+                (
+                    vec!["--igvm-vtl2-relocation-type", "vtl2=filesize"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec![
+                        "--igvm-vtl2-relocation-type",
+                        "vtl2=filesize",
+                        "--late-map-vtl0-policy",
+                        "off",
+                    ],
+                    true,
+                    None,
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    igvm_path.to_str().unwrap(),
+                    "--igvm-personality",
+                    "openhcl",
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let (config, resources) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .unwrap();
+
+                assert!(matches!(config.load_mode, LoadMode::Igvm { .. }));
+                assert!(config.hypervisor.with_hv);
+                let vtl2 = config.hypervisor.with_vtl2.as_ref().unwrap();
+                assert_eq!(vtl2.vtl0_alias_map, expected_alias);
+                assert_eq!(vtl2.late_map_vtl0_memory, expected_policy);
+                assert!(config.vmbus.is_some());
+                assert!(config.vtl2_vmbus.is_some());
+                assert!(resources.ged_rpc.is_some());
+                for id in ["ged", "gel"] {
+                    assert!(
+                        config.vmbus_devices.iter().any(|(vtl, resource)| {
+                            *vtl == DeviceVtl::Vtl2 && resource.id() == id
+                        })
+                    );
+                }
+                assert!(
+                    config
+                        .chipset_devices
+                        .iter()
+                        .all(|device| { device.resource.id() != "hyperv_firmware_uefi" })
+                );
+            }
+            for (extra, expected_error) in [
+                (
+                    ["--net", "uh:consomme"],
+                    "must specify --no-alias-map to offer NICs to VTL2",
+                ),
+                (
+                    ["--isolation", "vbs"],
+                    "alias map not supported with isolation",
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    igvm_path.to_str().unwrap(),
+                    "--igvm-personality",
+                    "openhcl",
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let err = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(err.to_string(), expected_error);
+            }
+            mesh.shutdown().await;
+        });
     }
 
     #[test]

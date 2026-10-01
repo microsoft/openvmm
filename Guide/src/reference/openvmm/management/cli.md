@@ -138,19 +138,19 @@ describes the source definitions.
   * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
   * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
 
-  With `--igvm --vtl2`, `--uefi` configures the UEFI firmware that OpenHCL
-  loads into VTL0. All options except `firmware` and
+  With `--igvm-personality openhcl`, `--uefi` configures the UEFI firmware
+  that OpenHCL loads into VTL0. All options except `firmware` and
   `force_firmware_version` are supported in this mode. Those options apply
   only when OpenVMM loads an external firmware image and are rejected with
   `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
 
   The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--igvm <FILE>`: Boot from an IGVM file.
-* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
-  device shape for an IGVM boot without VTL2. This option is required with
-  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
-  boots. The personality does not select the isolation platform. Use
+* `--igvm <FILE>`: Boot from an IGVM file. Requires `--igvm-personality`.
+* `--igvm-personality <openhcl|uefi|linux-direct>`: Select the chipset and
+  device shape for an IGVM boot. This option is required for every `--igvm`
+  boot, including VTL2 boots; there is no default. The personality does not
+  select the isolation platform. Use
   `--isolation` separately when required by the IGVM.
 
   The `uefi` personality uses the Gen2 device shape, but firmware is loaded
@@ -160,8 +160,10 @@ describes the source definitions.
   fails explicitly on backend and isolation combinations that cannot provide
   them.
 
-  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
-  existing HCL-host device shape and VBS-compatible IGVM behavior.
+  The `openhcl` personality hosts the OpenHCL paravisor in VTL2 and requires
+  explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
+  add a host UEFI device. You can pass `--uefi` settings for the firmware
+  loaded by OpenHCL.
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.

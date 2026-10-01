@@ -769,16 +769,18 @@ options:
     pub pcat_firmware: Option<PathBuf>,
 
     /// boot IGVM file
-    #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
-    pub igvm: Option<PathBuf>,
-
-    /// select the chipset and device personality for a non-VTL2 IGVM
     #[clap(
         long,
-        requires("igvm"),
-        conflicts_with_all = ["vtl2", "uefi", "pcat"],
-        value_enum
+        requires("igvm_personality"),
+        conflicts_with("kernel"),
+        value_name = "FILE"
     )]
+    pub igvm: Option<PathBuf>,
+
+    /// select the chipset and device personality for an IGVM (required)
+    ///
+    /// The openhcl personality requires explicit --hv --vtl2.
+    #[clap(long, requires("igvm"), conflicts_with("pcat"), value_enum)]
     pub igvm_personality: Option<IgvmPersonalityCli>,
 
     /// specify igvm vtl2 relocation type
@@ -1415,9 +1417,6 @@ impl Options {
     pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
         let mut uefi = match &self.uefi {
             Some(uefi) => uefi.clone(),
-            None if self.igvm.is_some() && !self.pcat && self.igvm_personality.is_none() => {
-                UefiCli::default()
-            }
             None => return Ok(None),
         };
 
@@ -1540,8 +1539,27 @@ impl Options {
 
     /// Validates IGVM personality selection.
     pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
-        if self.igvm.is_some() && !self.vtl2 && self.igvm_personality.is_none() {
-            anyhow::bail!("--igvm-personality is required for non-VTL2 IGVM boots");
+        if self.igvm.is_some() && self.igvm_personality.is_none() {
+            anyhow::bail!("--igvm-personality is required for IGVM boots");
+        }
+        match self.igvm_personality {
+            Some(IgvmPersonalityCli::Openhcl) => {
+                anyhow::ensure!(
+                    self.hv && self.vtl2,
+                    "--igvm-personality openhcl requires --hv --vtl2"
+                );
+            }
+            Some(IgvmPersonalityCli::Uefi | IgvmPersonalityCli::LinuxDirect) => {
+                anyhow::ensure!(
+                    !self.vtl2,
+                    "--vtl2 requires --igvm-personality openhcl for IGVM boots"
+                );
+                anyhow::ensure!(
+                    self.uefi.is_none(),
+                    "--uefi is only supported with --igvm-personality openhcl"
+                );
+            }
+            None => {}
         }
         Ok(())
     }
@@ -3229,7 +3247,11 @@ pub enum IsolationCli {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
 pub enum IgvmPersonalityCli {
+    /// OpenHCL paravisor hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware loaded directly from the IGVM.
     Uefi,
+    /// Linux kernel loaded directly from the IGVM.
     LinuxDirect,
 }
 
@@ -5691,12 +5713,16 @@ mod tests {
     }
 
     #[test]
-    fn test_igvm_personality_required_without_vtl2() {
-        let opt = Options::try_parse_from(["openvmm", "--igvm", "guest.igvm"]).unwrap();
-        assert_eq!(
-            opt.validate_igvm_options().unwrap_err().to_string(),
-            "--igvm-personality is required for non-VTL2 IGVM boots"
-        );
+    fn test_igvm_personality_required() {
+        for extra in [vec![], vec!["--hv", "--vtl2"]] {
+            let mut args = vec!["openvmm", "--igvm", "guest.igvm"];
+            args.extend(extra);
+            let err = Options::try_parse_from(args).err().unwrap();
+            assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+            assert!(err.to_string().contains("--igvm-personality"));
+        }
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        opt.validate_igvm_options().unwrap();
     }
 
     #[test]
@@ -5730,45 +5756,105 @@ mod tests {
     }
 
     #[test]
-    fn test_vtl2_igvm_keeps_implicit_hcl_personality() {
-        let opt =
-            Options::try_parse_from(["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"]).unwrap();
+    fn test_openhcl_igvm_personality() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "guest.igvm",
+            "--igvm-personality",
+            "openhcl",
+            "--hv",
+            "--vtl2",
+        ])
+        .unwrap();
         opt.validate_igvm_options().unwrap();
-        assert_eq!(opt.igvm_personality, None);
+        assert_eq!(opt.igvm_personality, Some(IgvmPersonalityCli::Openhcl));
+        assert!(opt.effective_uefi().unwrap().is_none());
     }
 
     #[test]
-    fn test_igvm_personality_conflicts_with_vtl2() {
-        assert!(
-            Options::try_parse_from([
+    fn test_openhcl_igvm_requires_explicit_vtl2_and_hv() {
+        for extra in [vec![], vec!["--hv"], vec!["--vtl2"]] {
+            let mut args = vec![
                 "openvmm",
                 "--igvm",
                 "guest.igvm",
-                "--hv",
-                "--vtl2",
                 "--igvm-personality",
-                "linux-direct",
-            ])
-            .is_err()
+                "openhcl",
+            ];
+            args.extend(extra);
+            match Options::try_parse_from(args) {
+                Ok(opt) => assert_eq!(
+                    opt.validate_igvm_options().unwrap_err().to_string(),
+                    "--igvm-personality openhcl requires --hv --vtl2"
+                ),
+                Err(err) => {
+                    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+                    assert!(err.to_string().contains("--hv"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_igvm_personality_requires_igvm() {
+        assert!(
+            Options::try_parse_from(["openvmm", "--igvm-personality", "linux-direct",]).is_err()
         );
     }
 
     #[test]
-    fn test_igvm_personality_conflicts_with_external_firmware() {
+    fn test_non_openhcl_igvm_personalities_reject_vtl2_and_uefi() {
         for personality in ["uefi", "linux-direct"] {
-            for firmware in ["--uefi", "--pcat"] {
-                assert!(
-                    Options::try_parse_from([
-                        "openvmm",
-                        "--igvm",
-                        "guest.igvm",
-                        "--igvm-personality",
-                        personality,
-                        firmware,
-                    ])
-                    .is_err()
-                );
+            for extra in [vec!["--uefi"], vec!["--hv", "--vtl2"]] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    personality,
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                assert!(opt.validate_igvm_options().is_err());
             }
+        }
+    }
+
+    #[test]
+    fn test_openhcl_igvm_accepts_uefi_settings() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "guest.igvm",
+            "--igvm-personality",
+            "openhcl",
+            "--hv",
+            "--vtl2",
+            "--uefi",
+            "console=com1,disable_frontpage",
+        ])
+        .unwrap();
+        opt.validate_igvm_options().unwrap();
+        let uefi = opt.effective_uefi().unwrap().unwrap();
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(uefi.disable_frontpage);
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_pcat() {
+        for personality in ["openhcl", "uefi", "linux-direct"] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--igvm",
+                    "guest.igvm",
+                    "--igvm-personality",
+                    personality,
+                    "--pcat",
+                ])
+                .is_err()
+            );
         }
     }
 
