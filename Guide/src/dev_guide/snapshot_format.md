@@ -23,18 +23,21 @@ The manifest is a protobuf message defined as
 in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
 crate's protobuf encoding.
 
-New snapshots use manifest version 5. The legacy `state_sha256` and
-`memory_sha256` protobuf tags remain reserved so version 2 manifests can be
-decoded; versions 3 through 5 require both fields to be absent. Restore accepts
-versions 2 through 4 for compatibility. Tiered microVM snapshots require version
-5, which records capture tier, clone/resume policy, and consumed configuration
-sections.
+Every snapshot uses manifest version 6 with format magic
+`OPENVMM_SNAPSHOT_V6\0`. Restore rejects any other version or magic with
+`E_SNAPSHOT_VERSION`, which asks for a recapture. A microVM snapshot's machine
+contract carries the NVX time ABI records (the time contract and the CPU
+profile record), and a host-driven standard-machine snapshot has no machine
+contract. The `SnapshotManifest` tags 9 and 10 (the version 2 artifact
+digests) and the machine contract tags 11 to 15, 17, and 20 (the clock fields
+of versions 2 to 5) are retired and never reused. Tiered microVM snapshots
+record capture tier, clone/resume policy, and consumed configuration sections.
 
 The default format is a local machine-state contract, not an authenticated
-container. All versions receive the same regular-file, no-follow/no-reparse,
+container. Every snapshot receives the same regular-file, no-follow/no-reparse,
 bounded decoding, exact-length, inventory, and machine-contract validation,
 but the on-disk format does not authenticate same-length payload changes.
-Versions 4 and 5 record the SHA-256 and exact length of `scratch.img`, because guest
+A paired capture records the SHA-256 and exact length of `scratch.img`, because guest
 RAM and a mounted writable filesystem must be restored as one exact pair.
 Export or transport layers must provide broader integrity and authentication
 outside this format.
@@ -179,7 +182,8 @@ Key unsupported categories:
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
-tag number. The protobuf encoding is forward-compatible: older readers will
+tag number, never a retired one; the struct definitions list the retired tags.
+The protobuf encoding is forward-compatible: older readers will
 ignore unknown fields. However, removing or reordering existing fields is a
 breaking change. See [Save State](contrib/save-state.md) for the full set of
 compatibility rules.
