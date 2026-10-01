@@ -536,20 +536,13 @@ fn set_page_attr(
         Ok(()) => {
             #[cfg(debug_assertions)]
             {
-                // TDX Connect gives MMIO pages different ATTR.WR/ATTR.RD rules,
-                // so a readback is not required to report back what the write
-                // asked for. Skip the check on a TDX Connect partition.
-                let config_flags = x86defs::tdx::TdConfigFlags::from_bits(
-                    tdcall_vm_rd(call, x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS)
-                        .expect("TDG.VM.RD should not fail for CONFIG_FLAGS"),
-                );
+                let result =
+                    tdcall_page_attr_rd(call, mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE)
+                        .unwrap();
 
-                if !config_flags.tdx_connect() {
-                    let result = tdcall_page_attr_rd(
-                        call,
-                        mapping.gpa_page_number() * x86defs::X64_PAGE_SIZE,
-                    )
-                    .unwrap();
+                // TDX Connect gives MMIO pages different ATTR.WR/ATTR.RD rules,
+                // so their readback does not report what the write asked for.
+                if !result.mapping.mmio() {
                     assert_eq!(u64::from(mapping), result.mapping.into());
                     assert_eq!(attributes.l1(), result.attributes.l1());
                     assert_eq!(
