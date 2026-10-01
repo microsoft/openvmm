@@ -219,6 +219,11 @@ impl LoadedVm {
             return true;
         };
 
+        if self.snapshot_restore.input_gated {
+            // A boundary under the armed post-restore input gate is the
+            // guest's acknowledgement of the restore.
+            self.snapshot_restore.restore_acknowledged();
+        }
         if !self.snapshot_restore.input_gated {
             let input_gate = openvmm_defs::profile::ProfileSpan::start();
             if let Err(error) = self

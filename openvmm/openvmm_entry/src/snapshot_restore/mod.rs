@@ -144,7 +144,8 @@ impl SnapshotRestore {
                 let restore_record = microvm
                     .take_restore_time_record()
                     .context("time ABI restore is missing its restore packet")?;
-                self.worker.time = Some(time.into_input(restore_record));
+                let packet_selected = microvm.take_restore_packet_selected();
+                self.worker.time = Some(time.into_input(restore_record, packet_selected));
             }
             None => {}
         }
