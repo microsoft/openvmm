@@ -49,6 +49,7 @@ pub(crate) use restore::fresh_microvm_generation_id;
 pub(crate) use restore::fresh_microvm_restore_packet;
 pub(crate) use restore::prepare_restore;
 pub(crate) use restore::validate_restore_contract;
+pub(crate) use verify::fatal_error_message;
 pub(crate) use verify::report_time_abi_verification;
 
 use crate::storage_builder::microvm::MicrovmSandboxBlockSource;

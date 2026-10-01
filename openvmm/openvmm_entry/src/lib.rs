@@ -167,7 +167,7 @@ pub fn openvmm_main() {
     let exit_code = match do_main(&mut pidfile_guard) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("fatal error: {:?}", err);
+            eprintln!("{}", microvm::fatal_error_message(&err));
             1
         }
     };
