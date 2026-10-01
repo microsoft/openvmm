@@ -96,6 +96,11 @@ pub struct BackendPreflight {
     pub sync: TscSyncMethod,
 }
 
+/// The largest accepted capture-anchor pairing, in nanoseconds; a capture
+/// anchor beyond it fails with `E_TSC_ANCHOR`. The restore anchor is only
+/// logged beyond it.
+pub const MAX_ANCHOR_PAIRING_NS: u64 = 10_000;
+
 /// The capture anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TscAnchor {
@@ -103,8 +108,8 @@ pub struct TscAnchor {
     pub tsc: u64,
     /// The host sample paired with `tsc`.
     pub sample: HostTimeSample,
-    /// The pairing uncertainty: the most the host instant of `sample` can
-    /// differ from the instant `tsc` was read, in nanoseconds.
+    /// The pairing uncertainty: half the width of the host-time bracket
+    /// around the TSC read, in nanoseconds.
     pub pairing_ns: u64,
 }
 
