@@ -5,63 +5,86 @@
 //! profile checks of cold boot and restore.
 
 use crate::canonical;
+use crate::derive::KNOWN_GENERATIONS;
+use crate::derive::KnownGeneration;
 use crate::error::ProfileError;
 use crate::error::ProfileErrorCode;
 use crate::profile::CpuProfile;
 use crate::signature::HostCpuSignature;
+use crate::signature::decode_signature;
 use std::sync::OnceLock;
 
 /// The `--cpu-profile` value that selects the profile of the host's
 /// generation.
 pub const AUTO: &str = "auto";
 
-/// A pinned profile: its pretty canonical JSON and its golden digest.
+/// A pinned profile: its ID, its generation, its golden digest, and its
+/// pretty canonical JSON.
 struct Pinned {
-    json: &'static str,
+    id: &'static str,
+    /// The generation that the profile serves, so that selection parses only
+    /// the profile it selects.
+    generation: &'static KnownGeneration,
     digest: &'static str,
+    json: &'static str,
 }
 
 /// The pinned profiles. Released profiles are immutable: a change is a new
-/// revision with a new ID, and a test checks every golden digest.
-const PINNED: &[Pinned] = &[
+/// revision with a new ID. The tests check every file's ID, generation,
+/// pretty canonical form, and golden digest, so an OpenVMM start checks none
+/// of them.
+const PINNED: [Pinned; 3] = [
     Pinned {
-        json: include_str!("../profiles/intel.skylake-sp.v1.json"),
+        id: "intel.skylake-sp.v1",
+        generation: &KNOWN_GENERATIONS[0],
         digest: "sha256:b36ef861ffec67350a28faff8c446d5a19f78d6d58862378fa9d2282dad87492",
+        json: include_str!("../profiles/intel.skylake-sp.v1.json"),
     },
     Pinned {
-        json: include_str!("../profiles/intel.icelake-sp.v1.json"),
+        id: "intel.icelake-sp.v1",
+        generation: &KNOWN_GENERATIONS[1],
         digest: "sha256:a35f3bb9bc30337b8b76af4939d5914f878ac7dc2a2d6d9d6bf4d8278b91f301",
+        json: include_str!("../profiles/intel.icelake-sp.v1.json"),
     },
     Pinned {
-        json: include_str!("../profiles/intel.emeraldrapids.v1.json"),
+        id: "intel.emeraldrapids.v1",
+        generation: &KNOWN_GENERATIONS[2],
         digest: "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
+        json: include_str!("../profiles/intel.emeraldrapids.v1.json"),
     },
 ];
 
-/// Returns every pinned profile.
-pub fn pinned_profiles() -> &'static [CpuProfile] {
-    static CATALOG: OnceLock<Vec<CpuProfile>> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        PINNED
-            .iter()
-            .map(|pinned| {
-                let profile = CpuProfile::from_pretty_json(pinned.json)
-                    .unwrap_or_else(|error| panic!("invalid pinned CPU profile: {error}"));
-                assert_eq!(
-                    profile.digest_string(),
-                    pinned.digest,
-                    "pinned CPU profile {} changed, but released profiles are immutable",
-                    profile.id()
-                );
-                profile
-            })
-            .collect()
+/// Each pinned profile, parsed on first use, so that a cold boot or a
+/// restore parses only its own.
+static PARSED: [OnceLock<CpuProfile>; PINNED.len()] = [const { OnceLock::new() }; PINNED.len()];
+
+/// Returns the pinned profile at `index` in [`PINNED`], parsing and
+/// validating it on first use.
+fn load(index: usize) -> &'static CpuProfile {
+    PARSED[index].get_or_init(|| {
+        let pinned = &PINNED[index];
+        let profile = CpuProfile::from_pinned_json(pinned.json)
+            .unwrap_or_else(|error| panic!("invalid pinned CPU profile {}: {error}", pinned.id));
+        assert_eq!(profile.id(), pinned.id, "pinned CPU profile ID mismatch");
+        profile
     })
+}
+
+/// Returns the index in [`PINNED`] of the profile `id`.
+fn position(id: &str) -> Option<usize> {
+    PINNED.iter().position(|pinned| pinned.id == id)
+}
+
+/// Returns every pinned profile, parsing each on first use. Selecting by ID
+/// with [`pinned`] or [`pinned_for_restore`] parses only that profile.
+pub fn pinned_profiles() -> &'static [CpuProfile] {
+    static ALL: OnceLock<Vec<CpuProfile>> = OnceLock::new();
+    ALL.get_or_init(|| (0..PINNED.len()).map(|index| load(index).clone()).collect())
 }
 
 /// Returns the pinned profile `id`.
 pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
-    pinned_profiles().iter().find(|profile| profile.id() == id)
+    position(id).map(load)
 }
 
 /// Returns the name of the generation of the host CPU, if a pinned profile
@@ -73,28 +96,44 @@ pub fn generation_of(host: &HostCpuSignature) -> Option<&'static str> {
 }
 
 /// Selects the profile of the host CPU's generation: its latest pinned
-/// revision.
+/// revision. Only the profiles whose generation covers the host are parsed.
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN` when no pinned profile serves the
 /// host, or when profiles of more than one generation do; there is no host
 /// CPUID passthrough.
 pub fn select_auto(host: &HostCpuSignature) -> Result<&'static CpuProfile, ProfileError> {
-    select_auto_in(pinned_profiles(), host)
+    let candidates = (0..PINNED.len())
+        .filter(|&index| covers(PINNED[index].generation, host))
+        .map(load)
+        .collect::<Vec<_>>();
+    select_auto_in(&candidates, host, pinned_ids)
 }
 
-fn select_auto_in<'a>(
-    profiles: &'a [CpuProfile],
-    host: &HostCpuSignature,
-) -> Result<&'a CpuProfile, ProfileError> {
-    let ids = || {
-        profiles
+/// Returns whether `generation` covers the host CPU, as
+/// [`Generation::contains`](crate::Generation::contains) does for the
+/// generation of a parsed profile.
+fn covers(generation: &KnownGeneration, host: &HostCpuSignature) -> bool {
+    let vendor = generation.vendor.as_bytes();
+    let (family, model, stepping) = decode_signature(vendor, host.signature());
+    host.vendor().as_slice() == vendor
+        && generation
+            .cpus
             .iter()
-            .map(|profile| profile.id())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+            .any(|&(cpu_family, cpu_model, [first, last])| {
+                (cpu_family, cpu_model) == (family, model) && (first..=last).contains(&stepping)
+            })
+}
+
+/// Selects among `profiles`, as [`select_auto`] does; `ids` lists every
+/// pinned profile for the failure messages.
+fn select_auto_in<'a>(
+    profiles: &[&'a CpuProfile],
+    host: &HostCpuSignature,
+    ids: impl Fn() -> String,
+) -> Result<&'a CpuProfile, ProfileError> {
     let matches = profiles
         .iter()
+        .copied()
         .filter(|profile| profile.generation().contains(profile.vendor(), host))
         .collect::<Vec<_>>();
     let mut generations = matches
@@ -188,19 +227,22 @@ pub fn verify_profile_record(
 /// Returns the pinned profile that a snapshot recorded by ID and SHA-256.
 ///
 /// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin the ID, and
-/// with `E_PROFILE_DIGEST` when its pinned profile has another digest.
+/// with `E_PROFILE_DIGEST` when its pinned profile has another digest. The
+/// pinned profile's digest is its golden digest, which the catalog's tests
+/// check, so a restore encodes nothing here.
 pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile, ProfileError> {
-    let profile = pinned(id).ok_or_else(|| unknown(id))?;
-    if profile.digest().as_slice() != sha256 {
+    let index = position(id).ok_or_else(|| unknown(id))?;
+    let golden = PINNED[index].digest;
+    if !<&[u8; 32]>::try_from(sha256).is_ok_and(|sha256| canonical::format_digest(sha256) == golden)
+    {
         return Err(ProfileError::new(
             ProfileErrorCode::ProfileDigest,
             format!(
-                "the snapshot's CPU profile {id} differs from the pinned profile of the same ID ({})",
-                profile.digest_string()
+                "the snapshot's CPU profile {id} differs from the pinned profile of the same ID ({golden})"
             ),
         ));
     }
-    Ok(profile)
+    Ok(load(index))
 }
 
 /// Runs the profile checks of a restore: [`verify_profile_record`],
@@ -229,9 +271,9 @@ fn unknown(id: &str) -> ProfileError {
 }
 
 fn pinned_ids() -> String {
-    pinned_profiles()
+    PINNED
         .iter()
-        .map(|profile| profile.id())
+        .map(|pinned| pinned.id)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -266,20 +308,46 @@ mod tests {
 
     #[test]
     fn pins_the_three_generations_with_their_golden_digests() {
-        let pinned = pinned_profiles()
-            .iter()
-            .map(|profile| (profile.id(), profile.digest_string()))
-            .collect::<Vec<_>>();
-        let golden = PINNED
-            .iter()
-            .zip([
+        let ids = PINNED.iter().map(|pinned| pinned.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
                 "intel.skylake-sp.v1",
                 "intel.icelake-sp.v1",
                 "intel.emeraldrapids.v1",
-            ])
-            .map(|(pinned, id)| (id, pinned.digest.to_owned()))
-            .collect::<Vec<_>>();
-        assert_eq!(pinned, golden);
+            ]
+        );
+        for (index, pinned) in PINNED.iter().enumerate() {
+            // The checks that an OpenVMM start skips: the file is in pretty
+            // canonical form, under its ID and generation, with its golden
+            // digest.
+            let profile = CpuProfile::from_pretty_json(pinned.json).unwrap();
+            assert_eq!(profile.id(), pinned.id);
+            assert_eq!(profile.vendor(), pinned.generation.vendor);
+            assert_eq!(profile.generation().name, pinned.generation.name);
+            assert_eq!(
+                profile
+                    .generation()
+                    .cpus
+                    .iter()
+                    .map(|cpu| (cpu.family, cpu.model, cpu.steppings))
+                    .collect::<Vec<_>>(),
+                pinned.generation.cpus
+            );
+            assert_eq!(profile.digest_string(), pinned.digest, "{}", pinned.id);
+            assert_eq!(load(index), &profile);
+            assert!(std::ptr::eq(
+                pinned_for_restore(pinned.id, &profile.digest()).unwrap(),
+                load(index)
+            ));
+        }
+        assert_eq!(
+            pinned_profiles()
+                .iter()
+                .map(CpuProfile::id)
+                .collect::<Vec<_>>(),
+            ids
+        );
     }
 
     #[test]
@@ -347,13 +415,16 @@ mod tests {
         let variant =
             |from: &str, to: &str| CpuProfile::from_pretty_json(&json.replace(from, to)).unwrap();
         let host = intel(SKYLAKE);
+        let ids = || "the test's".to_owned();
         let revisions = [
             variant("intel.skylake-sp.v1", "intel.skylake-sp.v2"),
             variant("intel.skylake-sp.v1", "intel.skylake-sp.v10"),
             CpuProfile::from_pretty_json(&json).unwrap(),
         ];
         assert_eq!(
-            select_auto_in(&revisions, &host).unwrap().id(),
+            select_auto_in(&revisions.iter().collect::<Vec<_>>(), &host, ids)
+                .unwrap()
+                .id(),
             "intel.skylake-sp.v10"
         );
 
@@ -362,18 +433,51 @@ mod tests {
             CpuProfile::from_pretty_json(&json).unwrap(),
             variant("skylake-sp", "skylake-x"),
         ];
-        let error = select_auto_in(&ambiguous, &host).unwrap_err();
+        let ambiguous = ambiguous.iter().collect::<Vec<_>>();
+        let error = select_auto_in(&ambiguous, &host, ids).unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::ProfileHostUnknown);
         assert!(
-            error
-                .message
-                .contains("is in more than one CPU generation (skylake-sp, skylake-x)"),
+            error.message.contains(
+                "is in more than one CPU generation (skylake-sp, skylake-x); \
+                 pinned profiles: the test's"
+            ),
             "{error}"
         );
         assert_eq!(
-            code(select_auto_in(&ambiguous, &intel(ICELAKE))),
+            code(select_auto_in(&ambiguous, &intel(ICELAKE), ids)),
             ProfileErrorCode::ProfileHostUnknown
         );
+    }
+
+    /// Selection matches the host against each pinned entry's generation, to
+    /// parse only the profile it selects; that agrees with the profiles' own
+    /// generations.
+    #[test]
+    fn the_static_generations_cover_what_the_profiles_do() {
+        for (index, pinned) in PINNED.iter().enumerate() {
+            let profile = load(index);
+            for vendor in [*b"GenuineIntel", *b"AuthenticAMD"] {
+                for (family, model) in [(6u32, 85u32), (6, 106), (6, 143), (6, 207), (25, 17)] {
+                    for stepping in 0..16 {
+                        // Encode the display family and model as CPUID.1:EAX does.
+                        let extended_family = family.saturating_sub(15);
+                        let base_family = family - extended_family;
+                        let signature = extended_family << 20
+                            | (model >> 4) << 16
+                            | base_family << 8
+                            | (model & 0xf) << 4
+                            | stepping;
+                        let host = HostCpuSignature::new(vendor, signature);
+                        assert_eq!(
+                            covers(pinned.generation, &host),
+                            profile.generation().contains(profile.vendor(), &host),
+                            "{} on {host}",
+                            pinned.id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -34,16 +34,20 @@ use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::surface::SupportedMsrValue;
 
 /// `IA32_ARCH_CAPABILITIES`.
+#[cfg(test)]
 const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
 
 const EAX: usize = 0;
+#[cfg(test)]
 const EBX: usize = 1;
 const ECX: usize = 2;
 const EDX: usize = 3;
 
 /// The extended feature leaf.
+#[cfg(test)]
 const X1: u32 = 0x8000_0001;
 /// The advanced power management leaf.
+#[cfg(test)]
 const X7: u32 = 0x8000_0007;
 /// The AMD extended feature identifiers leaf.
 const X8: u32 = 0x8000_0008;
@@ -642,6 +646,7 @@ mod whp_tests {
         cpu_profile::cpuid::normalize(&mut cpuid);
         let cheap = cpu_profile::HostCpuSurface {
             cpuid,
+            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
             physical_address_width: cheap.physical_address_width,
             msrs: cheap
                 .msrs

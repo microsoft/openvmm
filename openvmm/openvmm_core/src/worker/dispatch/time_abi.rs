@@ -260,11 +260,18 @@ pub(super) fn declare_rates(
 /// Compares the effective CPUID recomputed for this partition with the one
 /// the snapshot recorded: restore step 8 of the specification
 /// (`E_PROFILE_DIGEST` if the record does not verify, `E_CPU_SURFACE` if the
-/// two differ).
+/// two differ). A record that is this partition's own canonical encoding
+/// needs no decoding; any other is decoded to name its differences.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
+    let encoded = effective_cpuid.encode();
+    if encoded == record.effective_cpuid
+        && sha2::Sha256::digest(&encoded).as_slice() == record.effective_cpuid_sha256.as_slice()
+    {
+        return Ok(());
+    }
     let recorded =
         EffectiveCpuid::decode_verified(&record.effective_cpuid, &record.effective_cpuid_sha256)?;
     effective_cpuid.check_matches(&recorded)?;
@@ -333,29 +340,36 @@ fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Ve
         .collect()
 }
 
-/// Checks that the backend supports the CPU profile (`E_PROFILE_UNSUPPORTED`)
-/// when it reports its CPU surface, and returns whether it did. Until every
-/// backend reports one, verification mode checks support from the backend's
-/// CPU fingerprint instead.
+/// Checks that the backend supports the CPU profile, from the CPU surface it
+/// reports (`E_PROFILE_UNSUPPORTED`), at every cold boot and restore. A
+/// backend that reports no surface fails the check.
 pub(super) fn check_profile_support(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
     profile: &CpuProfile,
-) -> anyhow::Result<bool> {
-    let Some(surface) = backend(partition, hypervisor)?.supported_cpu_surface()? else {
-        tracing::info!(
-            hypervisor,
-            cpu_profile = profile.id(),
-            "the backend reports no CPU surface; profile support is checked in verification mode"
-        );
-        return Ok(false);
-    };
-    cpu_profile::verify_support(profile, &host_cpu_surface(&surface))?;
-    Ok(true)
+) -> anyhow::Result<()> {
+    let surface = backend(partition, hypervisor)?
+        .supported_cpu_surface()?
+        .ok_or_else(|| {
+            TimeAbiError::new(
+                TimeAbiCode::ProfileUnsupported,
+                format!(
+                    "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
+                    profile.id()
+                ),
+            )
+        })?;
+    cpu_profile::verify_support(profile, &host_cpu_surface(&surface, hypervisor))?;
+    Ok(())
 }
 
-/// Converts a backend's CPU surface to the profile crate's form.
-fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+/// Converts a backend's CPU surface to the profile crate's form. KVM's is a
+/// table; MSHV and WHP build theirs from the host's CPUID, which does not show
+/// what a guest reads outside the profile's tables.
+fn host_cpu_surface(
+    surface: &SupportedCpuSurface,
+    hypervisor: &str,
+) -> cpu_profile::HostCpuSurface {
     let mut cpuid = surface
         .cpuid
         .iter()
@@ -364,6 +378,10 @@ fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurfac
     cpu_profile::cpuid::normalize(&mut cpuid);
     cpu_profile::HostCpuSurface {
         cpuid,
+        presentation: match hypervisor {
+            "kvm" => cpu_profile::CpuidPresentation::Table,
+            _ => cpu_profile::CpuidPresentation::PassThroughHostView,
+        },
         physical_address_width: surface.physical_address_width,
         msrs: surface
             .msrs
@@ -739,6 +757,17 @@ mod tests {
         tampered.effective_cpuid_sha256[0] ^= 1;
         assert_eq!(
             code(check_recorded_cpuid(&effective, &tampered)),
+            "E_PROFILE_DIGEST"
+        );
+
+        // A digest that verifies over bytes that are not the canonical
+        // encoding.
+        let mut noncanonical = record.clone();
+        noncanonical.effective_cpuid.insert(1, b' ');
+        noncanonical.effective_cpuid_sha256 =
+            sha2::Sha256::digest(&noncanonical.effective_cpuid).to_vec();
+        assert_eq!(
+            code(check_recorded_cpuid(&effective, &noncanonical)),
             "E_PROFILE_DIGEST"
         );
     }
