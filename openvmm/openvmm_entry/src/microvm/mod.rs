@@ -41,13 +41,13 @@ pub(crate) use filesystem::validate_microvm_filesystem_private_storage;
 pub(crate) use launch::MicrovmLaunch;
 pub(crate) use restore::ExpectedRestoreContract;
 pub(crate) use restore::MicrovmRestore;
-pub(crate) use restore::RestoreClock;
+pub(crate) use restore::TimeAbiRestore;
 pub(crate) use restore::TimeAbiRestoreOptions;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use restore::fresh_microvm_generation_id;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use restore::fresh_microvm_restore_packet;
 pub(crate) use restore::prepare_restore;
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+pub(crate) use restore::restore_packet_base;
 pub(crate) use restore::validate_restore_contract;
 pub(crate) use verify::fatal_error_message;
 pub(crate) use verify::report_time_abi_verification;
@@ -97,7 +97,7 @@ pub(crate) struct MicrovmResources {
 impl MicrovmResources {
     /// Returns the portb source of a time ABI restore packet with `base`, and
     /// keeps the restoring worker's ends of its channels.
-    fn time_abi_restore_packet(
+    pub(crate) fn time_abi_restore_packet(
         &mut self,
         base: chipset_resources::microvm_time::RestorePacketBase,
     ) -> chipset_resources::microvm::MicrovmRestorePacketSource {
@@ -113,5 +113,34 @@ impl MicrovmResources {
             time,
             selected,
         }
+    }
+}
+
+/// Configures the chipset devices of a microVM for the time ABI: puts the PIT
+/// in strict mode, which forbids a periodic channel 0 at capture and restore
+/// (`E_PIT_ACTIVE`), and returns the portb device's time ABI configuration,
+/// with the restore packet of a restore.
+pub(crate) fn time_abi_chipset(
+    chipset_devices: &mut [vmotherboard::ChipsetDeviceHandle],
+    hooks: &virt::time_abi::TimeAbiTestHooks,
+    restore: Option<chipset_resources::microvm::MicrovmRestorePacketSource>,
+) -> chipset_resources::microvm::MicrovmPortbTimeAbi {
+    use vm_resource::IntoResource;
+    use vm_resource::ResourceId;
+
+    for device in chipset_devices.iter_mut() {
+        if device.name == chipset_resources::pit::PitDeviceHandle::ID {
+            device.resource =
+                chipset_resources::pit::PitDeviceHandle { time_abi: true }.into_resource();
+        }
+    }
+    chipset_resources::microvm::MicrovmPortbTimeAbi {
+        generation: restore
+            .as_ref()
+            .map_or(0, |restore| restore.base.generation),
+        utc_offset_ms: hooks.utc_offset_ms,
+        sample_delay_us: hooks.sample_delay_us,
+        test_hooks: hooks.active(),
+        restore,
     }
 }
