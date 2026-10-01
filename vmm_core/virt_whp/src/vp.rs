@@ -1238,6 +1238,12 @@ mod x86 {
             info: &whp::abi::WHV_X64_MSR_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
         ) -> Result<(), VpHaltReason> {
+            if self
+                .handle_time_abi_msr(info, exit)
+                .map_err(|error| dev.fatal_error(error.into()))?
+            {
+                return Ok(());
+            }
             if self.handle_restored_tsc_msr_exit(dev, info, exit)? {
                 return Ok(());
             }

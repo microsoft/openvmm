@@ -251,6 +251,10 @@ pub enum PartitionProperty<'a> {
     AllowDeviceAssignment(bool),
     DisableSmt(bool),
     ProcessorFeatures(ProcessorFeatures),
+    /// Processor features banks 0 and 1, always set through the banks
+    /// property. Unlike [`Self::ProcessorFeatures`], a zero bank 1 is set
+    /// explicitly instead of keeping WHP's default.
+    ProcessorFeaturesBanks(ProcessorFeatures),
     ProcessorClFlushSize(u8),
     #[cfg(target_arch = "x86_64")]
     CpuidExitList(&'a [u32]),
@@ -443,6 +447,14 @@ impl Partition {
                     };
                     set(partition_prop::ProcessorFeaturesBanks, &banks)
                 }
+            }
+            PartitionProperty::ProcessorFeaturesBanks(val) => {
+                banks = abi::WHV_PROCESSOR_FEATURES_BANKS {
+                    BanksCount: 2,
+                    Reserved0: 0,
+                    Banks: [val.bank0.0, val.bank1.0],
+                };
+                set(partition_prop::ProcessorFeaturesBanks, &banks)
             }
             PartitionProperty::ProcessorClFlushSize(val) => {
                 set(partition_prop::ProcessorClFlushSize, val)
