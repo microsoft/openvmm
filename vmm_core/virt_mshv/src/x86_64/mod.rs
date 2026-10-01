@@ -6,6 +6,7 @@
 mod extint;
 pub(crate) mod finalize;
 mod fingerprint;
+mod profile_features;
 pub(crate) mod time_abi;
 mod tsc;
 mod vm_state;
@@ -135,10 +136,16 @@ impl virt::Hypervisor for LinuxMshv {
             x2apic,
             config.processor_topology.smt_enabled(),
         )?;
-        let create_args = if config.time_abi.is_some() {
-            time_abi::with_feature_banks(create_args)
-        } else {
-            tsc::with_features1(create_args, config.versioned_cpu_contract)
+        let (create_args, time_abi_host) = match &config.time_abi {
+            Some(time_abi) => {
+                let host = profile_features::host_features(&self.mshv)?;
+                let features = time_abi::partition_features(&time_abi.cpu_profile, host)?;
+                (time_abi::with_features(create_args, features), Some(host))
+            }
+            None => (
+                tsc::with_features1(create_args, config.versioned_cpu_contract),
+                None,
+            ),
         };
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
@@ -232,6 +239,7 @@ impl virt::Hypervisor for LinuxMshv {
         };
         let mut proto = MshvProtoPartition::new(config, vmfd)?;
         proto.isolation = isolation;
+        proto.time_abi_host = time_abi_host;
         Ok(proto)
     }
 }
@@ -544,11 +552,14 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             elapsed_us = started.elapsed().as_micros() as u64,
             "registered MSHV CPUID results"
         );
-        let time_abi = self
-            .config
-            .time_abi
-            .as_ref()
-            .map(|config| time_abi::MshvTimeAbi::new(config, &cpuid));
+        let time_abi = self.config.time_abi.as_ref().map(|config| {
+            time_abi::MshvTimeAbi::new(
+                config,
+                &cpuid,
+                self.time_abi_host
+                    .expect("a time ABI partition reads the host's features"),
+            )
+        });
 
         let apic_id_map = self
             .config
