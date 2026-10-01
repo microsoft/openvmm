@@ -442,6 +442,18 @@ impl HclNetworkVFManagerWorker {
         let device = self.mana_device.as_ref().expect("valid endpoint");
         let indices = (0..device.num_vports()).collect::<Vec<u32>>();
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+
+        // Preallocate adapter indices in vport order. NetworkAdapterIndex caches
+        // each MAC-to-index mapping, so it will not change during concurrent setup.
+        for index in &indices {
+            let config = device
+                .query_vport_config(*index)
+                .await
+                .with_context(|| format!("failed to query MANA vport {index} for {vtl2_vfid}"))?;
+            let mac_address = config.mac_addr.into();
+            self.network_adapter_index.next(&mac_address);
+        }
+
         let result = futures::future::try_join_all(
             indices.iter().zip(self.endpoint_controls.iter_mut()).map(
                 |(index, endpoint_control)| {
