@@ -23,12 +23,15 @@
 
 use cpu_profile::CpuProfile;
 use cpu_profile::TIME_POLICY_BITS;
+use cpu_profile::cpuid::CpuidEntry;
 use cpu_profile::hv_banks;
 use hvdef::HvX64PartitionProcessorFeatures as Bank0;
 use hvdef::HvX64PartitionProcessorFeatures1 as Bank1;
 use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
+use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::surface::SupportedMsrValue;
 
 /// `IA32_ARCH_CAPABILITIES`.
 const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
@@ -61,7 +64,6 @@ impl WhpFeatures {
         }
     }
 
-    #[cfg(test)]
     fn word(&self, bank: Bank) -> u64 {
         match bank {
             Bank::Features0 => self.banks[0],
@@ -372,6 +374,116 @@ pub(crate) fn profile_features(
     Ok(features)
 }
 
+/// Returns whether a partition with `available` features supports XSAVE
+/// state component `component` (an XCR0 or `IA32_XSS` bit). PKRU has no WHP
+/// feature: like PKU, it follows the host.
+fn xsave_component_enabled(component: u32, available: WhpFeatures) -> bool {
+    let xsave = XsaveBank::from(available.xsave);
+    let bank1 = Bank1::from(available.banks[1]);
+    if !xsave.xsave_support() {
+        return false;
+    }
+    match component {
+        // x87, SSE, and PKRU.
+        0 | 1 | 9 => true,
+        2 => xsave.avx_support(),
+        3 | 4 => xsave.mpx_support(),
+        5..=7 => xsave.avx512_support(),
+        // CET user and supervisor state.
+        11 | 12 => {
+            xsave.xsave_supervisor_support() && (bank1.cet_ss_support() || bank1.cet_ibt_support())
+        }
+        17 | 18 => xsave.amx_tile_support(),
+        _ => false,
+    }
+}
+
+/// Returns the CPU surface that WHP supports for a partition with every
+/// feature in `available`, without a probe partition: `host`, the host's
+/// CPUID as the root partition sees it, with
+///
+/// - every CPUID feature bit that a WHP feature controls ([`FEATURES`]) set
+///   exactly where `available` offers one of its features;
+/// - only the XSAVE state components that `available` enables, in leaf
+///   `0xD` (subleaves 0 and 1, and the component subleaves, whose layout is
+///   the host's);
+/// - no hypervisor-range leaf, since the partition has no synthetic
+///   processor features.
+///
+/// The guest physical address width, in the surface and in CPUID
+/// `0x80000008` EAX[7:0], is `physical_address_width`, the partition's: WHP's
+/// limit can differ from the host's. The other bits, the maximum leaves, and
+/// the linear address width are the host's. `IA32_ARCH_CAPABILITIES` is what
+/// the banks derive.
+pub(crate) fn supported_surface(
+    host: &[CpuidEntry],
+    available: WhpFeatures,
+    physical_address_width: u8,
+) -> SupportedCpuSurface {
+    let mut controlled = std::collections::BTreeMap::<(u32, u32, usize), [u32; 2]>::new();
+    for feature in FEATURES {
+        let bit = feature.cpuid;
+        let masks = controlled
+            .entry((bit.leaf, bit.subleaf, bit.register))
+            .or_default();
+        masks[0] |= 1 << bit.bit;
+        if available.word(feature.bank) & feature.mask != 0 {
+            masks[1] |= 1 << bit.bit;
+        }
+    }
+    let components = (0..64)
+        .filter(|&component| xsave_component_enabled(component, available))
+        .fold(0u64, |mask, component| mask | 1 << component);
+
+    let cpuid = host
+        .iter()
+        .filter(|entry| !(0x4000_0000..=0x4fff_ffff).contains(&entry.leaf.0))
+        .filter_map(|entry| {
+            let (leaf, subleaf) = entry.key();
+            let index = subleaf.unwrap_or(0);
+            if leaf == 0xd && (2..64).contains(&index) && components & (1 << index) == 0 {
+                return None;
+            }
+            let mut registers = entry.registers();
+            for (register, value) in registers.iter_mut().enumerate() {
+                if let Some(&[mask, offered]) = controlled.get(&(leaf, index, register)) {
+                    *value = (*value & !mask) | offered;
+                }
+            }
+            match (leaf, index) {
+                (0xd, 0) => {
+                    registers[EAX] &= components as u32;
+                    registers[EDX] &= (components >> 32) as u32;
+                }
+                (0xd, 1) => {
+                    registers[ECX] &= components as u32;
+                    registers[EDX] &= (components >> 32) as u32;
+                }
+                (X8, _) => {
+                    registers[EAX] = (registers[EAX] & !0xff) | u32::from(physical_address_width);
+                }
+                _ => {}
+            }
+            let result = virt::CpuidLeaf::new(leaf, registers);
+            Some(match subleaf {
+                Some(subleaf) => result.indexed(subleaf),
+                None => result,
+            })
+        })
+        .collect();
+
+    let arch_capabilities = hv_banks::arch_capabilities_msr(available.banks);
+    SupportedCpuSurface {
+        cpuid,
+        physical_address_width,
+        msrs: vec![SupportedMsrValue {
+            index: arch_capabilities.index,
+            supported: arch_capabilities.supported,
+            controllable: arch_capabilities.controllable,
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +628,58 @@ mod tests {
         // OSXSAVE is guest state: the profile leaves it unpinned.
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 27)), Pinned::Unpinned);
         assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 26)), Pinned::Set);
+    }
+    #[test]
+    fn the_supported_surface_follows_the_capability() {
+        // A host that reports every feature, AVX-512 and AMX state, and a
+        // hypervisor leaf.
+        let mut host = vec![
+            CpuidEntry::new(0, None, [0xd, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+            CpuidEntry::new(1, None, [0x0005_0654, 0, !0, !0]),
+            CpuidEntry::new(7, Some(0), [0, !0, !0, !0]),
+            CpuidEntry::new(0xd, Some(0), [0x6_02e7, 0x2b00, 0x2b00, 0]),
+            CpuidEntry::new(0xd, Some(1), [0xf, 0, 0x1800, 0]),
+            CpuidEntry::new(0x4000_0000, None, [0x4000_000b, 1, 2, 3]),
+            CpuidEntry::new(X8, None, [0x3_302e, 0, 0, 0]),
+        ];
+        for component in [2, 5, 6, 7, 9, 17, 18] {
+            host.push(CpuidEntry::new(0xd, Some(component), [8, 64, 0, 0]));
+        }
+        host.sort_by_key(CpuidEntry::key);
+        let mut available = AZURE_8370C;
+        available.xsave &= !XsaveBank::new().with_avx512_support(true).into_bits();
+        available.banks[0] &= !Bank0::new().with_smep_support(true).into_bits();
+        let surface = supported_surface(&host, available, 0x2e);
+        let lookup = |leaf: u32, subleaf: u32| {
+            surface
+                .cpuid
+                .iter()
+                .find(|result| result.matches(leaf, subleaf))
+                .map(|result| result.result)
+        };
+        // A feature WHP does not offer is cleared; one it offers stays.
+        assert_eq!(lookup(7, 0).unwrap()[EBX] & (1 << 7), 0, "SMEP");
+        assert_ne!(lookup(7, 0).unwrap()[EBX] & 1, 0, "FSGSBASE");
+        assert_eq!(lookup(7, 0).unwrap()[EBX] & (1 << 16), 0, "AVX512F");
+        // Bits no WHP feature controls keep the host's value.
+        assert_ne!(lookup(1, 0).unwrap()[EDX] & 1, 0, "FPU");
+        // Only the XSAVE components the features enable remain: no AVX-512
+        // and no AMX (the 8370C offers no AMX tiles).
+        assert_eq!(lookup(0xd, 0).unwrap()[EAX], 0x207);
+        assert!(lookup(0xd, 5).is_none() && lookup(0xd, 17).is_none());
+        assert_eq!(lookup(0xd, 2).unwrap(), [8, 64, 0, 0]);
+        // No hypervisor leaf; the physical address width is the partition's.
+        assert!(lookup(0x4000_0000, 0).is_none());
+        assert_eq!(surface.physical_address_width, 0x2e);
+        let narrow = supported_surface(&host, available, 0x27);
+        let x8 = narrow
+            .cpuid
+            .iter()
+            .find(|result| result.function == X8)
+            .unwrap();
+        assert_eq!(x8.result[EAX], 0x3_3027);
+        assert_eq!(surface.msrs.len(), 1);
+        assert_eq!(surface.msrs[0].index, MSR_ARCH_CAPABILITIES);
     }
 }
 
@@ -888,6 +1052,86 @@ mod whp_tests {
             }
         }
         assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    /// Compares the cheap supported surface (host CPUID and WHP's
+    /// capabilities) with the probe partition's (`--cpu-fingerprint`): every
+    /// pinned profile gets the same `verify_support` verdict from both, and
+    /// the host's own profile passes.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn cheap_surface_matches_the_probe_surface() {
+        let fingerprint = crate::fingerprint::cpu_fingerprint().unwrap();
+        let probe = cpu_profile::HostCpuSurface::from_fingerprint(&fingerprint);
+        let started = std::time::Instant::now();
+        let cheap = supported_surface(
+            &crate::time_abi::host_cpuid(),
+            available(),
+            probe.physical_address_width,
+        );
+        let elapsed = started.elapsed();
+        let mut cpuid: Vec<CpuidEntry> = cheap
+            .cpuid
+            .iter()
+            .map(|leaf| CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::cpuid::normalize(&mut cpuid);
+        let cheap = cpu_profile::HostCpuSurface {
+            cpuid,
+            physical_address_width: cheap.physical_address_width,
+            msrs: cheap
+                .msrs
+                .iter()
+                .map(|msr| cpu_profile::SupportedMsr {
+                    index: msr.index,
+                    supported: msr.supported,
+                    controllable: msr.controllable,
+                })
+                .collect(),
+        };
+        println!(
+            "cheap surface: {} entries in {} us; probe surface: {} entries; widths {} and {}",
+            cheap.cpuid.len(),
+            elapsed.as_micros(),
+            probe.cpuid.len(),
+            cheap.physical_address_width,
+            probe.physical_address_width
+        );
+        let host = cpu_profile::select_auto(&HostCpuSignature::current()).ok();
+        let mut mismatches = Vec::new();
+        for profile in cpu_profile::pinned_profiles() {
+            // Where the two surfaces differ on a leaf the profile lists.
+            for entry in profile.cpuid() {
+                let (leaf, subleaf) = entry.key();
+                let subleaf = subleaf.unwrap_or(0);
+                let ours =
+                    cpu_profile::cpuid::lookup(&cheap.cpuid, leaf, subleaf).unwrap_or_default();
+                let theirs =
+                    cpu_profile::cpuid::lookup(&probe.cpuid, leaf, subleaf).unwrap_or_default();
+                for register in 0..4 {
+                    let differs = ours[register] ^ theirs[register];
+                    if differs != 0 {
+                        println!(
+                            "{}: {leaf:#x}.{subleaf} register {register}: cheap {:#010x} probe {:#010x} pinned mask {:#010x}",
+                            profile.id(),
+                            ours[register],
+                            theirs[register],
+                            entry.masks()[register]
+                        );
+                    }
+                }
+            }
+            let ours = cpu_profile::support_violations(profile, &cheap);
+            let theirs = cpu_profile::support_violations(profile, &probe);
+            println!("{}: cheap {ours:?}; probe {theirs:?}", profile.id());
+            if ours.is_empty() != theirs.is_empty() {
+                mismatches.push(profile.id());
+            }
+            if host.is_some_and(|host| host.id() == profile.id()) {
+                assert!(ours.is_empty(), "{}: {ours:?}", profile.id());
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:?}");
     }
 
     /// Times what a WHP `supported_cpu_surface()` costs with a probe
