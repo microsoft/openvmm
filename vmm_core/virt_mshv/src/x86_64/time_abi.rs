@@ -19,8 +19,9 @@
 //! - CPUID intercept results apply the configured CPUID over the hypervisor's
 //!   own. The hypervisor reports no hypervisor leaf of its own, which
 //!   preflight verifies at sentinel leaves.
-//! - The processor feature banks keep the invariant TSC and hide the
-//!   TSC-deadline timer, `IA32_TSC_ADJUST`, and APERF/MPERF.
+//! - The processor feature banks follow the CPU profile (see
+//!   [`profile_features`](super::profile_features)), keep the invariant TSC,
+//!   and hide the TSC-deadline timer, `IA32_TSC_ADJUST`, and APERF/MPERF.
 //! - The synchronized TSC set freezes partition time, writes the target to
 //!   every created VP, reads it back, and resumes partition time right after a
 //!   good read-back. Guest time therefore runs from the restore anchor, as on
@@ -34,6 +35,7 @@ use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
 use crate::VcpuFdExt;
+use cpu_profile::hv_banks::HvFeatures;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMessage;
 use hvdef::HvPartitionPropertyCode;
@@ -69,6 +71,7 @@ use virt::time_abi::msr::MSR_APIC_FREQUENCY;
 use virt::time_abi::msr::MSR_TSC_FREQUENCY;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::MSR_VP_INDEX;
+use virt::time_abi::surface::SupportedCpuSurface;
 
 /// The identity MSRs that OpenVMM serves. The hypervisor raises #GP for
 /// every other MSR of the identity range.
@@ -123,15 +126,24 @@ pub(crate) struct MshvTimeAbi {
     /// Set by the synchronized TSC set. VP creation fails afterwards.
     #[inspect(with = "|x| x.load(Ordering::Relaxed)")]
     vp_set_sealed: AtomicBool,
+    /// The processor features the host partition offered at creation, for
+    /// the supported CPU surface.
+    #[inspect(skip)]
+    host_features: HvFeatures,
 }
 
 impl MshvTimeAbi {
-    pub(super) fn new(config: &TimeAbiConfig, registered_cpuid: &CpuidLeafSet) -> Self {
+    pub(super) fn new(
+        config: &TimeAbiConfig,
+        registered_cpuid: &CpuidLeafSet,
+        host_features: HvFeatures,
+    ) -> Self {
         Self {
             msrs: config.msrs.clone(),
             registered_cpuid: registered_cpuid.leaves().to_vec(),
             effective_cpuid: std::sync::OnceLock::new(),
             vp_set_sealed: AtomicBool::new(false),
+            host_features,
         }
     }
 
@@ -189,14 +201,40 @@ pub(super) fn processor_features1(
         .with_a_count_m_count_support(false)
 }
 
-/// Applies the time ABI's processor feature bank 1 to the partition creation
-/// arguments, whose banks hold the disabled features.
-pub(super) fn with_feature_banks(
+/// Returns the processor features of a time ABI partition with CPU profile
+/// `id` on a host whose partition offers `host`: the profile's, within what
+/// the host offers, under the time ABI's policy (see
+/// [`time_abi_features`](super::profile_features::time_abi_features)). Fails
+/// with `E_PROFILE_UNKNOWN` or `E_PROFILE_UNSUPPORTED`.
+pub(super) fn partition_features(id: &str, host: HvFeatures) -> Result<HvFeatures, TimeAbiError> {
+    let profile = cpu_profile::pinned(id).ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnknown,
+            format!("CPU profile {id} is not pinned"),
+        )
+    })?;
+    let features = super::profile_features::time_abi_features(profile, host)?;
+    tracing::info!(
+        cpu_profile = id,
+        bank0 = features.banks[0],
+        bank1 = features.banks[1],
+        xsave = features.xsave,
+        host_bank0 = host.banks[0],
+        host_bank1 = host.banks[1],
+        host_xsave = host.xsave,
+        "MSHV processor features from the CPU profile"
+    );
+    Ok(features)
+}
+
+/// Applies `features` to the partition creation arguments, whose banks hold
+/// the disabled features.
+pub(super) fn with_features(
     mut args: mshv_bindings::mshv_create_partition_v2,
+    features: HvFeatures,
 ) -> mshv_bindings::mshv_create_partition_v2 {
-    let mut banks = args.pt_cpu_fbanks;
-    banks[1] = !u64::from(processor_features1(super::supported_processor_features1()));
-    args.pt_cpu_fbanks = banks;
+    args.pt_cpu_fbanks = [!features.banks[0], !features.banks[1]];
+    args.pt_disabled_xsave = !features.xsave;
     args
 }
 
@@ -444,7 +482,7 @@ fn select_anchor(candidates: &[AnchorCandidate]) -> Result<TscAnchor, TimeAbiErr
 }
 
 /// Formats an error with its sources, for failure messages.
-fn error_chain(error: &dyn std::error::Error) -> String {
+pub(super) fn error_chain(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(error) = source {
@@ -712,6 +750,33 @@ impl TimeAbiBackend for MshvPartition {
 
     fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
         Ok(self.inner.time_abi_effective_cpuid()?.to_vec())
+    }
+
+    fn supported_cpu_surface(&self) -> Result<Option<SupportedCpuSurface>, TimeAbiError> {
+        let started = std::time::Instant::now();
+        let state = self.inner.time_abi_state()?;
+        let width = self
+            .inner
+            .vmfd
+            .get_partition_property(HvPartitionPropertyCode::PhysicalAddressWidth.0)
+            .map_err(|error| {
+                TimeAbiError::new(
+                    TimeAbiCode::ProfileUnsupported,
+                    format!(
+                        "cannot read the PhysicalAddressWidth partition property: {}",
+                        error_chain(&KernelError::from(error))
+                    ),
+                )
+            })?;
+        let surface =
+            super::profile_features::supported_cpu_surface(state.host_features, width as u8);
+        tracing::info!(
+            leaves = surface.cpuid.len(),
+            physical_address_width = surface.physical_address_width,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "MSHV supported CPU surface"
+        );
+        Ok(Some(surface))
     }
 
     fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
@@ -1084,16 +1149,30 @@ mod tests {
         let others = !u64::from(time_bits);
         assert_eq!(u64::from(features) & others, u64::from(supported) & others);
 
-        let args = with_feature_banks(
+        let features = HvFeatures {
+            banks: [0x1234, 0x5678],
+            xsave: 0x3f,
+        };
+        let args = with_features(
             super::super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)
                 .unwrap(),
+            features,
         );
         let banks = args.pt_cpu_fbanks;
-        assert_eq!(banks[1], !u64::from(features));
-        assert_eq!(
-            banks[0],
-            !u64::from(super::super::supported_processor_features())
-        );
+        let disabled_xsave = args.pt_disabled_xsave;
+        assert_eq!(banks, [!0x1234, !0x5678]);
+        assert_eq!(disabled_xsave, !0x3f);
+    }
+
+    #[test]
+    fn an_unpinned_cpu_profile_is_unknown() {
+        let error = partition_features(
+            "intel.skylake-sp.v0",
+            super::super::profile_features::legacy_features(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::ProfileUnknown);
+        assert!(error.message.contains("intel.skylake-sp.v0"), "{error}");
     }
 
     #[test]
@@ -1147,7 +1226,11 @@ mod tests {
             msrs: Arc::new(TimeAbiMsrs::new()),
             cpu_profile: String::new(),
         };
-        let state = MshvTimeAbi::new(&config, &partition_cpuid(Vec::new(), &config.cpuid));
+        let state = MshvTimeAbi::new(
+            &config,
+            &partition_cpuid(Vec::new(), &config.cpuid),
+            super::super::profile_features::legacy_features(),
+        );
         state.check_vp_creation(VpIndex::new(4)).unwrap();
         state.vp_set_sealed.store(true, Ordering::SeqCst);
         let error = state.check_vp_creation(VpIndex::new(4)).unwrap_err();
@@ -1262,6 +1345,38 @@ mod hw {
 
     const VP_CAPACITY: u32 = 4;
 
+    /// Returns the ID of the pinned CPU profile of this host's generation.
+    fn host_profile_id() -> String {
+        cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current())
+            .unwrap()
+            .id()
+            .to_owned()
+    }
+
+    /// Converts a backend's CPU surface to the profile crate's form, as core
+    /// does for the support check.
+    fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+        let mut cpuid = surface
+            .cpuid
+            .iter()
+            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::cpuid::normalize(&mut cpuid);
+        cpu_profile::HostCpuSurface {
+            cpuid,
+            physical_address_width: surface.physical_address_width,
+            msrs: surface
+                .msrs
+                .iter()
+                .map(|msr| cpu_profile::SupportedMsr {
+                    index: msr.index,
+                    supported: msr.supported,
+                    controllable: msr.controllable,
+                })
+                .collect(),
+        }
+    }
+
     fn percentile(sorted: &[u64], percent: usize) -> u64 {
         sorted[(sorted.len() - 1) * percent / 100]
     }
@@ -1296,7 +1411,7 @@ mod hw {
                     time_abi: Some(TimeAbiConfig {
                         cpuid: Arc::new(time_abi_cpuid(VP_CAPACITY, true)),
                         msrs: Arc::new(TimeAbiMsrs::new()),
-                        cpu_profile: String::new(),
+                        cpu_profile: host_profile_id(),
                     }),
                 })
                 .unwrap()
@@ -1343,6 +1458,16 @@ mod hw {
             let tsc_hz = backend.native_tsc_hz().unwrap();
             check_plausible_tsc_hz(tsc_hz).unwrap();
             assert_eq!(backend.lapic_hz().unwrap(), LAPIC_HZ_HYPERV);
+
+            // The supported surface is cheap and supports this host's profile.
+            let started = std::time::Instant::now();
+            let surface = backend
+                .supported_cpu_surface()
+                .unwrap()
+                .expect("MSHV reports its CPU surface");
+            let surface_us = started.elapsed().as_micros();
+            let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
+            cpu_profile::verify_support(profile, &host_cpu_surface(&surface)).unwrap();
 
             let started = std::time::Instant::now();
             let effective = CpuidLeafSet::new(backend.effective_cpuid().unwrap());
@@ -1465,9 +1590,12 @@ mod hw {
             println!(
                 "time ABI backend: created {created}/{VP_CAPACITY} tsc_hz={tsc_hz} \
                  build_us={build_us} preflight_us={preflight_us} effective_cpuid_us={effective_us} \
-                 ({} leaves) set_us={set_us} anchor_pairing_ns min={} p50={} p99={} max={} \
+                 ({} leaves) surface_us={surface_us} ({} leaves, {}-bit) set_us={set_us} \
+                 anchor_pairing_ns min={} p50={} p99={} max={} \
                  anchor_rate_deviation_ppm={deviation_ppm:.3} {osxsave} thawed={after:?}",
                 effective.leaves().len(),
+                surface.cpuid.len(),
+                surface.physical_address_width,
                 pairings[0],
                 percentile(&pairings, 50),
                 percentile(&pairings, 99),
@@ -1482,11 +1610,17 @@ mod hw {
     #[test]
     #[ignore = "requires /dev/mshv"]
     fn refused_msr_intercept_fails_identity_routing() {
-        let args = with_feature_banks(
+        let mshv = mshv_ioctls::Mshv::new().unwrap();
+        let features = partition_features(
+            &host_profile_id(),
+            super::super::profile_features::host_features(&mshv).unwrap(),
+        )
+        .unwrap();
+        let args = with_features(
             super::super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)
                 .unwrap(),
+            features,
         );
-        let mshv = mshv_ioctls::Mshv::new().unwrap();
         let vmfd = crate::create_vm_with_retry(&mshv, &args).unwrap();
         vmfd.initialize().unwrap();
         route_identity_msrs(&vmfd).unwrap();
