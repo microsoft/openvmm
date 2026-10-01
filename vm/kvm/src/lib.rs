@@ -133,6 +133,10 @@ mod ioctl {
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_has_device_attr, KVMIO, 0xe3, kvm_device_attr);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_x86_set_msr_filter, KVMIO, 0xc6, kvm_msr_filter);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -356,6 +360,12 @@ pub enum Error {
         requested: usize,
         failed_msr: u32,
     },
+    #[cfg(target_arch = "x86_64")]
+    #[error("SetMsrFilter")]
+    SetMsrFilter(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("invalid MSR filter: {0}")]
+    InvalidMsrFilter(&'static str),
     #[error("SetupMce")]
     SetupMce(#[source] nix::Error),
     #[error("GetMceCapSupported")]
@@ -625,6 +635,57 @@ struct Cpuid {
     entries: [kvm_cpuid_entry2; 256],
 }
 
+/// One range of an MSR filter installed with [`Partition::set_msr_filter`].
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MsrFilterRange {
+    /// The first MSR of the range.
+    pub base: u32,
+    /// The number of MSRs in the range.
+    pub nmsrs: u32,
+    /// Whether the range applies to reads.
+    pub read: bool,
+    /// Whether the range applies to writes.
+    pub write: bool,
+    /// One bit per MSR, LSB first: a set bit lets KVM handle the access, a
+    /// clear bit denies it. A denied access raises #GP in the guest or, with
+    /// `KVM_MSR_EXIT_REASON_FILTER` enabled, exits to user space. Holds
+    /// `nmsrs.div_ceil(8)` bytes.
+    pub bitmap: Vec<u8>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl MsrFilterRange {
+    /// Returns a range that denies reads and writes of every MSR in `msrs`.
+    pub fn deny(msrs: std::ops::RangeInclusive<u32>) -> Self {
+        let nmsrs = msrs.end() - msrs.start() + 1;
+        Self {
+            base: *msrs.start(),
+            nmsrs,
+            read: true,
+            write: true,
+            bitmap: vec![0; nmsrs.div_ceil(8) as usize],
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.nmsrs == 0 {
+            return Err(Error::InvalidMsrFilter("empty range"));
+        }
+        if !self.read && !self.write {
+            return Err(Error::InvalidMsrFilter("range applies to no access"));
+        }
+        if self.bitmap.len() != self.nmsrs.div_ceil(8) as usize
+            || self.bitmap.len() > KVM_MSR_FILTER_MAX_BITMAP_SIZE as usize
+        {
+            return Err(Error::InvalidMsrFilter(
+                "bitmap size does not match the range",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct Partition {
     vm: File,
@@ -831,6 +892,12 @@ impl Partition {
     }
 
     pub fn enable_unknown_msr_exits(&self) -> Result<()> {
+        self.enable_msr_exits(KVM_MSR_EXIT_REASON_UNKNOWN)
+    }
+
+    /// Enables user-space MSR exits (`KVM_CAP_X86_USER_SPACE_MSR`) for the
+    /// `KVM_MSR_EXIT_REASON_*` bits in `reasons`, replacing the previous set.
+    pub fn enable_msr_exits(&self, reasons: u32) -> Result<()> {
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         // TODO: We are not checking KVM_CAP_ENABLE_CAP_VM first.
         unsafe {
@@ -838,11 +905,52 @@ impl Partition {
                 self.vm.as_raw_fd(),
                 &kvm_enable_cap {
                     cap: KVM_CAP_X86_USER_SPACE_MSR,
-                    args: [KVM_MSR_EXIT_REASON_UNKNOWN.into(), 0, 0, 0],
+                    args: [reasons.into(), 0, 0, 0],
                     ..Default::default()
                 },
             )
             .map_err(|err| Error::EnableCap("user_space_msr", err))?;
+        }
+        Ok(())
+    }
+
+    /// Installs an MSR filter (`KVM_X86_SET_MSR_FILTER`), replacing the
+    /// previous one. KVM checks `ranges` in order and uses the first range
+    /// that covers the MSR and the access type; accesses no range covers are
+    /// allowed if `default_allow`, and denied otherwise.
+    ///
+    /// The filter applies to guest accesses only: host-initiated
+    /// `KVM_GET_MSRS` and `KVM_SET_MSRS` bypass it. KVM never filters the
+    /// x2APIC MSRs.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_msr_filter(&self, default_allow: bool, ranges: &[MsrFilterRange]) -> Result<()> {
+        if ranges.len() > KVM_MSR_FILTER_MAX_RANGES as usize {
+            return Err(Error::InvalidMsrFilter("too many ranges"));
+        }
+        let mut filter = kvm_msr_filter {
+            flags: if default_allow {
+                KVM_MSR_FILTER_DEFAULT_ALLOW
+            } else {
+                KVM_MSR_FILTER_DEFAULT_DENY
+            },
+            ..Default::default()
+        };
+        for (slot, range) in filter.ranges.iter_mut().zip(ranges) {
+            range.validate()?;
+            *slot = kvm_msr_filter_range {
+                flags: if range.read { KVM_MSR_FILTER_READ } else { 0 }
+                    | if range.write { KVM_MSR_FILTER_WRITE } else { 0 },
+                nmsrs: range.nmsrs,
+                base: range.base,
+                // KVM only reads the bitmap, and copies it during the ioctl.
+                bitmap: range.bitmap.as_ptr().cast_mut(),
+            };
+        }
+        // SAFETY: `filter` and the bitmaps it points to, which `ranges` owns,
+        // are valid for the duration of the ioctl.
+        unsafe {
+            ioctl::kvm_x86_set_msr_filter(self.vm.as_raw_fd(), &filter)
+                .map_err(Error::SetMsrFilter)?;
         }
         Ok(())
     }
@@ -1340,6 +1448,38 @@ impl<'a> Processor<'a> {
         unsafe {
             self.set_device_attr(KVM_VCPU_TSC_CTRL, KVM_VCPU_TSC_OFFSET, &offset, 0)
                 .map_err(Error::SetTscOffset)?;
+        }
+        Ok(())
+    }
+
+    /// Returns whether the vCPU supports the `KVM_VCPU_TSC_OFFSET` attribute
+    /// (`KVM_HAS_DEVICE_ATTR`, Linux 5.16 and later).
+    #[cfg(target_arch = "x86_64")]
+    pub fn has_tsc_offset_attr(&self) -> bool {
+        let attr = kvm_device_attr {
+            group: KVM_VCPU_TSC_CTRL,
+            attr: u64::from(KVM_VCPU_TSC_OFFSET),
+            addr: 0,
+            flags: 0,
+        };
+        // SAFETY: KVM_HAS_DEVICE_ATTR does not dereference `attr.addr`.
+        unsafe { ioctl::kvm_has_device_attr(self.get().vcpu.as_raw_fd(), &attr) }.is_ok()
+    }
+
+    /// Enables the vCPU capability `cap` with `args` (`KVM_ENABLE_CAP` on the
+    /// vCPU). `name` identifies the capability in errors.
+    pub fn enable_cap(&self, name: &'static str, cap: u32, args: [u64; 4]) -> Result<()> {
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        unsafe {
+            ioctl::kvm_enable_cap(
+                self.get().vcpu.as_raw_fd(),
+                &kvm_enable_cap {
+                    cap,
+                    args,
+                    ..Default::default()
+                },
+            )
+            .map_err(|err| Error::EnableCap(name, err))?;
         }
         Ok(())
     }
@@ -2335,5 +2475,51 @@ mod tests {
         assert_eq!(update.len, 0x2000);
         assert_eq!(update.type_, KVM_SEV_SNP_PAGE_TYPE_ZERO_UAPI);
         assert_eq!(update.flags, 0);
+    }
+
+    #[test]
+    fn msr_filter_deny_range_covers_every_msr() {
+        let range = MsrFilterRange::deny(0x4000_0000..=0x4000_01ff);
+        assert_eq!(range.base, 0x4000_0000);
+        assert_eq!(range.nmsrs, 0x200);
+        assert!(range.read && range.write);
+        assert_eq!(range.bitmap, vec![0; 0x40]);
+        range.validate().unwrap();
+
+        let single = MsrFilterRange::deny(0x3b..=0x3b);
+        assert_eq!((single.base, single.nmsrs), (0x3b, 1));
+        assert_eq!(single.bitmap, vec![0]);
+        single.validate().unwrap();
+    }
+
+    #[test]
+    fn msr_filter_rejects_malformed_ranges() {
+        let valid = MsrFilterRange::deny(0x10..=0x1f);
+        for range in [
+            MsrFilterRange {
+                nmsrs: 0,
+                bitmap: Vec::new(),
+                ..valid.clone()
+            },
+            MsrFilterRange {
+                read: false,
+                write: false,
+                ..valid.clone()
+            },
+            MsrFilterRange {
+                bitmap: vec![0; 3],
+                ..valid.clone()
+            },
+            MsrFilterRange {
+                nmsrs: (KVM_MSR_FILTER_MAX_BITMAP_SIZE + 1) * 8,
+                bitmap: vec![0; KVM_MSR_FILTER_MAX_BITMAP_SIZE as usize + 1],
+                ..valid.clone()
+            },
+        ] {
+            assert!(
+                matches!(range.validate(), Err(Error::InvalidMsrFilter(_))),
+                "{range:?}"
+            );
+        }
     }
 }
