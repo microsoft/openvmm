@@ -124,16 +124,23 @@ impl MshvPartitionInner {
 
     fn build_caps(&self, bsp: &VcpuFd) -> Result<virt::PartitionCapabilities, Error> {
         let mut cpuid_error = None;
-        let cpuid_caps = virt::PartitionCapabilities::from_cpuid(
-            &self.config.processor_topology,
-            &mut |function, index| {
-                bsp.get_cpuid_values(function, index, 0, 0)
-                    .unwrap_or_else(|error| {
-                        cpuid_error.get_or_insert(error);
-                        [0; 4]
-                    })
-            },
-        );
+        let mut cpuid = |function, index| {
+            bsp.get_cpuid_values(function, index, 0, 0)
+                .unwrap_or_else(|error| {
+                    cpuid_error.get_or_insert(error);
+                    [0; 4]
+                })
+        };
+        // The time ABI identity must not make the partition look like an hv1
+        // or KVM-clock guest, so its capabilities ignore the hypervisor range.
+        let cpuid_caps = if self.time_abi.is_some() {
+            virt::PartitionCapabilities::from_cpuid(
+                &self.config.processor_topology,
+                &mut virt::time_abi::identity::capabilities_cpuid(&mut cpuid),
+            )
+        } else {
+            virt::PartitionCapabilities::from_cpuid(&self.config.processor_topology, &mut cpuid)
+        };
         let mut caps = match (cpuid_caps, cpuid_error) {
             (Ok(caps), None) => caps,
             (result, error) => {
@@ -158,6 +165,13 @@ impl MshvPartitionInner {
         caps.xsaves_state_bv_broken = true;
         // Ordinary state access does not freeze the partition clock.
         caps.can_freeze_time = false;
+        if self.time_abi.is_some() && (caps.hv1 || caps.kvm_clock) {
+            return Err(virt::time_abi::TimeAbiError::new(
+                virt::time_abi::TimeAbiCode::IdentityRouting,
+                "the time ABI partition capabilities include hv1 or the KVM clock",
+            )
+            .into());
+        }
         Ok(caps)
     }
 }
