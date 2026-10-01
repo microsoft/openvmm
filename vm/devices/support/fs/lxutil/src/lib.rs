@@ -317,7 +317,8 @@ impl LxVolume {
     /// # Windows
     ///
     /// This will attempt to create an NTFS symbolic link, but will fall back to a WSL-style link
-    /// if this is not possible.
+    /// if this is not possible. With [`LxVolumeOptions::confine_paths`], it always creates a
+    /// WSL-style link, which Windows path resolution never follows.
     pub fn symlink(
         &self,
         path: impl AsRef<Path>,
@@ -753,6 +754,7 @@ pub struct LxVolumeOptions {
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
     readonly: bool,
+    confine_paths: bool,
 }
 
 impl LxVolumeOptions {
@@ -774,6 +776,7 @@ impl LxVolumeOptions {
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
             readonly: false,
+            confine_paths: false,
         }
     }
 
@@ -1094,6 +1097,24 @@ impl LxVolumeOptions {
     /// Returns whether the volume is configured as readonly.
     pub fn is_readonly(&self) -> bool {
         self.readonly
+    }
+
+    /// Only create symbolic links that host path resolution never follows.
+    ///
+    /// Use this when the paths come from an untrusted client that can also create symbolic links.
+    ///
+    /// # Unix
+    ///
+    /// This has no effect, because a volume never follows a symbolic link beneath its root.
+    ///
+    /// # Windows
+    ///
+    /// New symbolic links are always created as WSL-style links. Windows path resolution never
+    /// follows them, so a link created through the volume can never redirect a later host path
+    /// lookup. Existing NT symbolic links and junctions are not affected.
+    pub fn confine_paths(&mut self, enabled: bool) -> &mut Self {
+        self.confine_paths = enabled;
+        self
     }
 }
 
@@ -2487,6 +2508,49 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.value(), lx::EEXIST);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn confined_volume_creates_inert_lx_symlinks() {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+        let env = TestEnv::with_options(LxVolumeOptions::new().confine_paths(true));
+        env.create_file("dir/file", "data");
+
+        // Without confinement, targets inside the volume would become NT symlinks whenever the
+        // process may create them.
+        for (link, target) in [
+            ("file_link", "dir/file"),
+            ("dir_link", "dir"),
+            ("outside_link", "../outside"),
+        ] {
+            let stat = env
+                .volume
+                .symlink_stat(link, target, LxCreateOptions::new(0, 0, 0))
+                .unwrap();
+            assert_eq!(stat.mode & lx::S_IFMT, lx::S_IFLNK);
+            assert_eq!(env.volume.read_link(link).unwrap(), target);
+
+            let host = env.root_dir.path().join(link);
+            let metadata = fs::symlink_metadata(&host).unwrap();
+            assert_ne!(metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+            // A WSL-style link is neither an NT symlink nor something Windows follows.
+            assert!(fs::read_link(&host).is_err());
+            assert!(fs::metadata(&host).is_err());
+        }
+
+        assert!(
+            env.volume
+                .lstat(Path::from_lx("dir_link/file").unwrap())
+                .is_err()
+        );
+
+        // Renaming a link keeps its target.
+        env.volume.rename("file_link", "renamed_link", 0).unwrap();
+        assert_eq!(env.volume.read_link("renamed_link").unwrap(), "dir/file");
     }
 
     // This test is disabled in CI, because it requires NTFS support for setting the case sensitive
