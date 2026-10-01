@@ -44,15 +44,18 @@ each native backend and lists the capabilities it requires. For example:
 
 ```rust,ignore
 backend_test!(clock_restore, requires: [time_control, reset]);
+backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
 ```
 
 Add the function and its declaration in the relevant test module; there is no
 central case enum or registration table to update. Shared helpers construct
 the partition and bind its single VP before invoking the function. Cases have
 names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
+Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
+enlightenment offload on WHP.
 Host requirements select the matching backend. Execution-host discovery probes
-the actual partition capabilities so unsupported time control, reset, or
-TSC-deadline cases are reported as ignored, not passed. Probe errors fail the
+the selected fixture's capabilities so unsupported time control, reset, Hv1,
+or TSC-deadline cases are reported as ignored, not passed. Probe errors fail the
 selected tests rather than hiding them. Artifact-only discovery does not create
 partitions.
 

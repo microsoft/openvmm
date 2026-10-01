@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared unenlightened, single-VP fixture without mapped RAM or VP execution.
+//! Shared single-VP fixture without mapped RAM or VP execution.
 
 use anyhow::Context as _;
 use guestmem::GuestMemory;
@@ -47,13 +47,17 @@ impl Fixture {
     pub(crate) fn build<'a, H: Hypervisor>(
         &'a self,
         hv: &'a mut H,
+        hv1: bool,
     ) -> anyhow::Result<(H::Partition, impl BindProcessor)>
     where
         H::Partition: Partition,
     {
         let proto = hv.new_partition(virt::ProtoPartitionConfig {
             processor_topology: &self.topology,
-            hv_config: None,
+            hv_config: hv1.then_some(virt::HvConfig {
+                allow_device_assignment: false,
+                vtl2: None,
+            }),
             vmtime: &self.time_source,
             isolation: virt::ProtoPartitionIsolation::None,
             nested_virt: false,
