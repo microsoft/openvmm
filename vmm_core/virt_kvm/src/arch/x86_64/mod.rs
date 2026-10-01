@@ -181,6 +181,28 @@ impl virt::Hypervisor for Kvm {
             }
         }
         let supported_cpuid = self.kvm.supported_cpuid()?;
+        // The CPU surface for the profile's support check: this supported
+        // CPUID and KVM's IA32_ARCH_CAPABILITIES.
+        let cpu_surface = match &config.time_abi {
+            Some(_) => {
+                let arch_capabilities = self
+                    .kvm
+                    .feature_msr(time_abi::MSR_IA32_ARCH_CAPABILITIES)
+                    .map_err(|err| {
+                        virt::time_abi::TimeAbiError::new(
+                            virt::time_abi::TimeAbiCode::ProfileUnsupported,
+                            format!(
+                                "cannot read KVM's IA32_ARCH_CAPABILITIES feature MSR: {err:#}"
+                            ),
+                        )
+                    })?;
+                Some(time_abi::supported_surface(
+                    &supported_cpuid,
+                    arch_capabilities,
+                ))
+            }
+            None => None,
+        };
 
         // KVM's in-kernel LAPIC only exposes the CMCI LVT register (APIC
         // offset 0x2F0) when the guest's IA32_MCG_CAP advertises MCG_CMCI_P.
@@ -465,6 +487,7 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
             nested_virt,
             supported_mce_cap,
+            cpu_surface,
         })
     }
 }
@@ -480,6 +503,8 @@ pub struct KvmProtoPartition<'a> {
     /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
     /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
     supported_mce_cap: u64,
+    /// The CPU surface KVM supports, for the time ABI's CPU profile.
+    cpu_surface: Option<virt::time_abi::surface::SupportedCpuSurface>,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -488,7 +513,15 @@ impl ProtoPartition for KvmProtoPartition<'_> {
     type ProcessorBinder = KvmProcessorBinder;
 
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]))
+        match &self.config.time_abi {
+            // The guest sees the CPU profile's width.
+            Some(time_abi) => max_physical_address_size_from_cpuid(&|eax, ecx| {
+                time_abi.cpuid.result(eax, ecx, &[0; 4])
+            }),
+            None => max_physical_address_size_from_cpuid(&|eax, ecx| {
+                self.cpuid.result(eax, ecx, &[0; 4])
+            }),
+        }
     }
 
     fn build(
@@ -501,28 +534,31 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             return Err(SnpError::InvalidVmsaGpa(config.bsp.gpa).into());
         }
 
-        // Build topology leaves using the base cpuid before consuming it.
-        let mut topology_leaves = Vec::new();
-        virt::x86::topology::topology_cpuid(
-            self.config.processor_topology,
-            &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
-            &mut topology_leaves,
-        )
-        .map_err(KvmError::TopologyCpuid)?;
-
-        // Work around a KVM bug where PSFD is advertised in guest CPUID
-        // but the SPEC_CTRL MSR is not accessible. Check the KVM-reported
-        // CPUID (before user overrides) since that determines what KVM
-        // will allow.
-        let psfd_fixup = strip_psfd_leaf(&self.cpuid);
-
-        let mut cpuid = self.cpuid.into_leaves();
-        cpuid.extend(config.cpuid);
-        cpuid.extend(topology_leaves);
-        cpuid.extend(psfd_fixup);
         let cpuid = match &self.config.time_abi {
-            Some(time_abi) => time_abi::compose_cpuid(cpuid, &time_abi.cpuid),
-            None => CpuidLeafSet::new(cpuid),
+            Some(time_abi) => time_abi::partition_cpuid(&time_abi.cpuid),
+            None => {
+                // Build topology leaves using the base cpuid before consuming
+                // it.
+                let mut topology_leaves = Vec::new();
+                virt::x86::topology::topology_cpuid(
+                    self.config.processor_topology,
+                    &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
+                    &mut topology_leaves,
+                )
+                .map_err(KvmError::TopologyCpuid)?;
+
+                // Work around a KVM bug where PSFD is advertised in guest
+                // CPUID but the SPEC_CTRL MSR is not accessible. Check the
+                // KVM-reported CPUID (before user overrides) since that
+                // determines what KVM will allow.
+                let psfd_fixup = strip_psfd_leaf(&self.cpuid);
+
+                let mut cpuid = self.cpuid.into_leaves();
+                cpuid.extend(config.cpuid);
+                cpuid.extend(topology_leaves);
+                cpuid.extend(psfd_fixup);
+                CpuidLeafSet::new(cpuid)
+            }
         };
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -571,7 +607,22 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     .vps_arch()
                     .map(|vp_info| vp_info.apic_id)
                     .collect();
-                Some(KvmTimeAbi::new(&self.vm, &vcpus, config.msrs.clone())?)
+                let surface = self.cpu_surface.take().unwrap_or_default();
+                let profile = time_abi::pinned_profile(&config.cpu_profile)?;
+                let supported = surface
+                    .msrs
+                    .iter()
+                    .find(|msr| msr.index == time_abi::MSR_IA32_ARCH_CAPABILITIES)
+                    .map_or(0, |msr| msr.supported);
+                let arch_capabilities =
+                    time_abi::profile_arch_capabilities(profile, supported, &cpuid);
+                Some(KvmTimeAbi::new(
+                    &self.vm,
+                    &vcpus,
+                    config.msrs.clone(),
+                    surface,
+                    arch_capabilities,
+                )?)
             }
             None => None,
         };
@@ -1099,6 +1150,9 @@ impl virt::BindProcessor for KvmProcessorBinder {
             .collect::<Vec<_>>();
 
         kvm.set_cpuid(&cpuid_entries)?;
+        if let Some(time_abi) = &self.partition.time_abi {
+            time_abi.set_arch_capabilities(&kvm)?;
+        }
 
         let mut vp = KvmProcessor {
             partition: &self.partition,
