@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! The effective CPU surface record of a snapshot: the canonical CPUID
-//! encoding and its comparison, and the interim CPU profile used until CPU
-//! profiles land.
+//! encoding and its comparison, and the interim CPU profiles, which name the
+//! backends' own CPU features.
 
 use super::TimeAbiCode;
 use super::TimeAbiError;
@@ -151,25 +151,36 @@ pub fn check_effective_cpuid(effective: &[CpuidLeaf], recorded: &[u8]) -> Result
     ))
 }
 
-/// Returns the CPU profile ID recorded until CPU profiles land: the backend's
-/// own CPUID with the time ABI applied. Such a snapshot restores only on the
-/// same backend and host CPU signature, with an identical effective CPUID.
+/// Returns the ID of the interim CPU profile of `hypervisor`: the backend's
+/// own CPU features with the time ABI applied. A snapshot that records it
+/// restores only on the same backend and host CPU signature, with an
+/// identical effective CPUID.
 pub fn interim_cpu_profile_id(hypervisor: &str) -> String {
-    format!("interim.host.{hypervisor}.v1")
+    format!("{INTERIM_CPU_PROFILE_PREFIX}{hypervisor}.v1")
 }
 
-/// Resolves a requested CPU profile (`auto` or a profile ID) on `hypervisor`
-/// to the profile ID a VM uses (`E_PROFILE_UNKNOWN`). Until CPU profiles land,
-/// only the interim profile exists.
-pub fn resolve_cpu_profile(requested: &str, hypervisor: &str) -> Result<String, TimeAbiError> {
+/// The prefix of every interim CPU profile ID.
+const INTERIM_CPU_PROFILE_PREFIX: &str = "interim.host.";
+
+/// Returns whether `id` names an interim CPU profile rather than a pinned
+/// one. A VM uses an interim profile only when `--cpu-profile` requests it by
+/// ID or when it restores a snapshot that recorded one; `auto` selects a
+/// pinned profile.
+pub fn is_interim_cpu_profile(id: &str) -> bool {
+    id.starts_with(INTERIM_CPU_PROFILE_PREFIX)
+}
+
+/// Checks that the interim CPU profile `id` is the one of `hypervisor`
+/// (`E_PROFILE_UNKNOWN`).
+pub fn check_interim_cpu_profile(id: &str, hypervisor: &str) -> Result<(), TimeAbiError> {
     let interim = interim_cpu_profile_id(hypervisor);
-    if requested == "auto" || requested == interim {
-        Ok(interim)
+    if id == interim {
+        Ok(())
     } else {
         Err(TimeAbiError::new(
             TimeAbiCode::ProfileUnknown,
             format!(
-                "CPU profile '{requested}' is not pinned in this OpenVMM; the {hypervisor} backend offers '{interim}'"
+                "CPU profile '{id}' is not the interim profile of the {hypervisor} backend, '{interim}'"
             ),
         ))
     }
@@ -304,21 +315,20 @@ mod tests {
     }
 
     #[test]
-    fn interim_cpu_profile_resolution() {
-        assert_eq!(
-            resolve_cpu_profile("auto", "kvm").unwrap(),
-            "interim.host.kvm.v1"
-        );
-        assert_eq!(
-            resolve_cpu_profile("interim.host.mshv.v1", "mshv").unwrap(),
-            "interim.host.mshv.v1"
-        );
-        for (requested, hypervisor) in [
+    fn interim_cpu_profiles() {
+        assert_eq!(interim_cpu_profile_id("kvm"), "interim.host.kvm.v1");
+        assert!(is_interim_cpu_profile("interim.host.mshv.v1"));
+        for id in ["auto", "intel.icelake-sp.v1", "", "interim"] {
+            assert!(!is_interim_cpu_profile(id), "{id}");
+        }
+        check_interim_cpu_profile("interim.host.mshv.v1", "mshv").unwrap();
+        for (id, hypervisor) in [
             ("interim.host.kvm.v1", "mshv"),
-            ("intel.icelake-sp.kvm.v1", "kvm"),
+            ("interim.host.kvm.v2", "kvm"),
+            ("intel.icelake-sp.v1", "kvm"),
         ] {
             assert_eq!(
-                resolve_cpu_profile(requested, hypervisor).unwrap_err().code,
+                check_interim_cpu_profile(id, hypervisor).unwrap_err().code,
                 TimeAbiCode::ProfileUnknown
             );
         }
