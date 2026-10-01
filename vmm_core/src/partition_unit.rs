@@ -91,6 +91,9 @@ struct PartitionUnitRunner {
     req_recv: Receiver<PartitionRequest>,
     topology: ProcessorTopology,
     initial_regs: Option<Arc<InitialRegs>>,
+    /// Whether restores drop the VPs' saved TSC values (NVX time ABI).
+    #[cfg(guest_arch = "x86_64")]
+    omit_saved_tsc: bool,
 
     #[cfg(feature = "gdb")]
     debugger_state: debug::DebuggerState,
@@ -233,6 +236,8 @@ impl PartitionUnit {
             req_recv,
             topology: params.processor_topology.clone(),
             initial_regs: None,
+            #[cfg(guest_arch = "x86_64")]
+            omit_saved_tsc: false,
             #[cfg(feature = "gdb")]
             debugger_state: debug::DebuggerState::new(
                 params.vtl_guest_memory[0]
@@ -682,12 +687,19 @@ mod save_restore {
         pub async fn restore(&mut self, state: state::Partition) -> Result<(), RestoreError> {
             let state::Partition { partition, vps } = state;
             self.partition.restore(partition)?;
-            self.vp_set
-                .restore(
-                    vps.into_iter()
-                        .map(|state::Vp { vp_index, data }| (VpIndex::new(vp_index), data)),
-                )
-                .await?;
+            let vps = vps
+                .into_iter()
+                .map(|state::Vp { vp_index, data }| {
+                    #[cfg(guest_arch = "x86_64")]
+                    let data = if self.omit_saved_tsc {
+                        super::snapshot::without_saved_tsc(data)?
+                    } else {
+                        data
+                    };
+                    Ok((VpIndex::new(vp_index), data))
+                })
+                .collect::<Result<Vec<_>, RestoreError>>()?;
+            self.vp_set.restore(vps).await?;
             Ok(())
         }
     }

@@ -3421,7 +3421,7 @@ impl InitializedVm {
         };
 
         if let Some(saved_state) = saved_state {
-            let saved_state_restore = this.begin_snapshot_restore(&saved_state)?;
+            let saved_state_restore = this.begin_snapshot_restore(&saved_state).await?;
             this.restore(saved_state)
                 .await
                 .context("loadedvm restore failed")?;

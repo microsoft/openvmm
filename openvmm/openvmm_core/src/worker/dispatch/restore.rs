@@ -313,8 +313,9 @@ pub(super) fn validate_inventory(
 impl LoadedVm {
     /// Prepares to restore `saved_state` into the loaded VM: checks the saved
     /// time contract against the saved state and the destination clocks, and
-    /// starts the profile span of the restore.
-    pub(super) fn begin_snapshot_restore(
+    /// starts the profile span of the restore. A time ABI restore drops the
+    /// VPs' saved TSC values, which its synchronized TSC set supersedes.
+    pub(super) async fn begin_snapshot_restore(
         &mut self,
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_variables))] saved_state: &SavedState,
     ) -> anyhow::Result<ProfileSpan> {
@@ -325,6 +326,10 @@ impl LoadedVm {
         clock::validate_snapshot_restore_partition_presence(saved_state, restore_time)?;
 
         self.validate_restore_clock(restore_time)?;
+        #[cfg(guest_arch = "x86_64")]
+        if self.snapshot_restore.time_abi.is_some() {
+            self.inner.partition_unit.omit_saved_tsc().await;
+        }
         Ok(ProfileSpan::start())
     }
 
