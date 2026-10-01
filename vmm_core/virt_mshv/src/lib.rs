@@ -209,6 +209,8 @@ impl<'a> MshvProtoPartition<'a> {
             config,
             #[cfg(guest_arch = "x86_64")]
             isolation: arch::MshvProtoPartitionIsolation::None,
+            #[cfg(guest_arch = "x86_64")]
+            time_abi_host: None,
             vmfd,
             vps,
             #[cfg(guest_arch = "aarch64")]
@@ -231,6 +233,10 @@ pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     #[cfg(guest_arch = "x86_64")]
     isolation: arch::MshvProtoPartitionIsolation,
+    /// The processor features the host partition offered, read when the
+    /// partition carries the time ABI.
+    #[cfg(guest_arch = "x86_64")]
+    time_abi_host: Option<cpu_profile::hv_banks::HvFeatures>,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
     #[cfg(guest_arch = "aarch64")]
