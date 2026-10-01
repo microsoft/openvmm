@@ -11,6 +11,7 @@ pub mod fs;
 pub mod microvm;
 pub mod publish;
 pub mod restore;
+pub mod time;
 
 pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
@@ -223,14 +224,14 @@ mod tests {
         }
 
         let bytes = mesh::payload::encode(OldManifest {
-            version: 6,
+            version: 7,
             state_size_bytes: 4096,
         });
         let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
         assert!(manifest.snapshot_id.is_zero());
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
         assert!(
-            err.to_string().contains("version 6 is not supported"),
+            err.to_string().contains("version 7 is not supported"),
             "unexpected error: {err}"
         );
     }
