@@ -9,6 +9,7 @@
 //! pretty form indents by two spaces and is what fingerprints are written as.
 //! Both are independent of how `serde_json` orders map keys.
 
+use serde::Serialize;
 use serde_json::Value;
 use sha2::Digest;
 
@@ -19,6 +20,27 @@ pub(crate) const DIGEST_PREFIX: &str = "sha256:";
 pub(crate) fn to_compact(value: &Value) -> String {
     let mut out = String::new();
     write_value(&mut out, value, None, 0);
+    out
+}
+
+/// Returns the compact canonical encoding of a value whose serialization is
+/// already canonical: every object's fields are serialized in the byte order
+/// of their keys, and no map is unordered.
+///
+/// This serializes directly, without the [`Value`] tree that [`to_compact`]
+/// sorts, which costs a few hundred microseconds per profile on every
+/// OpenVMM start. Tests check that both give the same bytes for every type
+/// that uses it.
+pub(crate) fn to_compact_ordered<T: Serialize + ?Sized>(value: &T) -> Vec<u8> {
+    serde_json::to_vec(value).expect("serialization with string keys is infallible")
+}
+
+/// Returns the pretty canonical encoding of a value whose serialization is
+/// already canonical, as for [`to_compact_ordered`], with a final newline.
+pub(crate) fn to_pretty_ordered<T: Serialize + ?Sized>(value: &T) -> String {
+    let mut out =
+        serde_json::to_string_pretty(value).expect("serialization with string keys is infallible");
+    out.push('\n');
     out
 }
 

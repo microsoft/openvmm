@@ -15,9 +15,9 @@ use std::path::Path;
 /// `-`, and checks it against the CPU profile of the host's generation.
 ///
 /// The check prints one `NVX-CPU-PROFILE:` line to stderr and fails with its
-/// code (`E_PROFILE_HOST_UNKNOWN` or `E_PROFILE_UNSUPPORTED`) after the
-/// fingerprint is written, so hosts of new generations can still be
-/// fingerprinted.
+/// code (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNSUPPORTED`, or, for MSHV and
+/// WHP, `E_CPU_UNLISTED`) after the fingerprint is written, so hosts
+/// of new generations can still be fingerprinted.
 pub(crate) fn write(path: &Path, hypervisor: Option<&str>) -> anyhow::Result<()> {
     let backend = openvmm_helpers::hypervisor::cpu_fingerprint(hypervisor)
         .context("failed to fingerprint the hypervisor backend")?;
