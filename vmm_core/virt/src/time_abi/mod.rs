@@ -23,6 +23,8 @@ pub use backend::BackendPreflight;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::IdentityMsrRoute;
 #[cfg(guest_arch = "x86_64")]
+pub use backend::MAX_ANCHOR_PAIRING_NS;
+#[cfg(guest_arch = "x86_64")]
 pub use backend::NegotiatedRates;
 #[cfg(guest_arch = "x86_64")]
 pub use backend::TimeAbiBackend;
