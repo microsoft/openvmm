@@ -13,16 +13,20 @@ use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use sha2::Digest;
 use virt::time_abi::CaptureTimeRecord;
+use virt::time_abi::Downtime;
 use virt::time_abi::HostClockKind;
 use virt::time_abi::HostIdentity;
 use virt::time_abi::HostTimeSample;
 use virt::time_abi::TIME_ABI_VERSION;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
+use virt::time_abi::TimeAbiTestHooks;
+use virt::time_abi::downtime::select_downtime;
 use virt::time_abi::rate;
+use virt::time_abi::surface;
 
 /// The value of the retired capture wall clock in a version 6 manifest.
-const NO_TIMESTAMP: Timestamp = Timestamp {
+pub(super) const NO_TIMESTAMP: Timestamp = Timestamp {
     seconds: 0,
     nanos: 0,
 };
@@ -134,7 +138,12 @@ pub fn validate_cpu_profile_record(record: &SnapshotCpuProfile) -> Result<(), Ti
         return Err(manifest_error("CPU profile exceeds 1 MiB"));
     }
     verify_sha256(profile, sha256, "CPU profile")?;
-    if effective_cpuid.is_empty() || effective_cpuid.len() > MAX_EFFECTIVE_CPUID_BYTES {
+    if effective_cpuid.is_empty()
+        || effective_cpuid.len() > MAX_EFFECTIVE_CPUID_BYTES
+        || !effective_cpuid
+            .len()
+            .is_multiple_of(surface::ENCODED_CPUID_LEAF_LEN)
+    {
         return Err(manifest_error("effective CPUID record size is invalid"));
     }
     verify_sha256(effective_cpuid, effective_cpuid_sha256, "effective CPUID")
@@ -233,6 +242,93 @@ pub fn check_time_abi_manifest_version(
         )),
         _ => Ok(()),
     }
+}
+
+/// The controller's view of a time ABI restore after restore steps 2 to 5 of
+/// the specification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeAbiRestorePreflight {
+    /// The capture record.
+    pub capture: CaptureTimeRecord,
+    /// The preflight downtime. The worker measures `D` again at the restore
+    /// anchor.
+    pub downtime: Downtime,
+    /// The generation counter `g` of the restored process.
+    pub generation: u32,
+    /// The CPU profile the restored VM uses: the snapshot's.
+    pub cpu_profile: String,
+}
+
+/// Runs restore steps 2 to 5 of the specification on a version 6 machine
+/// contract: the time ABI records, the backend, the CPU profile and host CPU
+/// generation, and the downtime preflight against the destination host's
+/// identity and clocks.
+///
+/// Until CPU profiles land, the snapshot's profile must be the interim
+/// profile of `hypervisor` and the host must have the capture host's CPU
+/// signature; the worker compares the effective CPUID.
+pub fn preflight_time_abi_restore(
+    contract: &SnapshotMachineContract,
+    hypervisor: &str,
+    requested_cpu_profile: &str,
+    host_cpu_signature: Option<u32>,
+    destination: &HostIdentity,
+    now: &HostTimeSample,
+    hooks: &TimeAbiTestHooks,
+) -> Result<TimeAbiRestorePreflight, TimeAbiError> {
+    validate_time_abi_contract(contract)?;
+    let (Some(time), Some(record)) = (&contract.time, &contract.cpu_profile) else {
+        unreachable!("a validated time ABI contract carries both records");
+    };
+    if contract.source_hypervisor != hypervisor {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::BackendMismatch,
+            format!(
+                "the snapshot was captured on the {} backend and cannot be restored on {hypervisor}",
+                contract.source_hypervisor
+            ),
+        ));
+    }
+    let cpu_profile = surface::resolve_cpu_profile(&record.id, hypervisor)?;
+    if requested_cpu_profile != "auto" && requested_cpu_profile != record.id {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::ProfileUnknown,
+            format!(
+                "--cpu-profile {requested_cpu_profile} does not name the snapshot's profile '{}'",
+                record.id
+            ),
+        ));
+    }
+    if !record.profile.is_empty() {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::ProfileDigest,
+            format!(
+                "the snapshot's '{}' profile document is not the pinned one",
+                record.id
+            ),
+        ));
+    }
+    if host_cpu_signature != Some(record.capture_cpu_signature) {
+        let host = host_cpu_signature.map_or_else(
+            || "unavailable".to_owned(),
+            |signature| format!("{signature:#010x}"),
+        );
+        return Err(TimeAbiError::new(
+            TimeAbiCode::CpuGeneration,
+            format!(
+                "the host CPU signature {host} is not the capture host's {:#010x}",
+                record.capture_cpu_signature
+            ),
+        ));
+    }
+    let capture = capture_record(time)?;
+    let downtime = select_downtime(&capture, destination, now, hooks)?;
+    Ok(TimeAbiRestorePreflight {
+        capture,
+        downtime,
+        generation: time.capture_generation + 1,
+        cpu_profile,
+    })
 }
 
 #[cfg(test)]
@@ -454,5 +550,181 @@ pub(super) mod tests {
                 TimeAbiCode::SnapshotVersion
             );
         }
+    }
+
+    const SIGNATURE: u32 = 0x0005_0657;
+
+    /// A version 6 machine contract captured on WHP with the interim profile,
+    /// and a destination sample 5 s after its capture anchor on the same host
+    /// boot.
+    fn interim_restore() -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
+        let effective_cpuid = vec![7; 48];
+        let record = SnapshotCpuProfile {
+            id: "interim.host.whp.v1".to_owned(),
+            sha256: sha2::Sha256::digest(b"").to_vec(),
+            profile: Vec::new(),
+            effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
+            effective_cpuid,
+            capture_cpu_signature: SIGNATURE,
+        };
+        let mut manifest = crate::snapshot::tests::test_manifest();
+        manifest.machine_contract = Some(crate::snapshot::microvm::test_machine_contract());
+        set_time_abi_records(&mut manifest, test_time_contract(), record).unwrap();
+        let capture = capture_record(&test_time_contract()).unwrap();
+        let now = HostTimeSample {
+            utc_ns: capture.sample.utc_ns + 5_000_000_000,
+            monotonic_ns: capture.sample.monotonic_ns + 5_000_000_000,
+        };
+        (manifest.machine_contract.unwrap(), capture.identity, now)
+    }
+
+    fn preflight(
+        contract: &SnapshotMachineContract,
+        hypervisor: &str,
+        requested: &str,
+        signature: Option<u32>,
+        destination: &HostIdentity,
+        now: &HostTimeSample,
+        hooks: &TimeAbiTestHooks,
+    ) -> Result<TimeAbiRestorePreflight, TimeAbiError> {
+        preflight_time_abi_restore(
+            contract,
+            hypervisor,
+            requested,
+            signature,
+            destination,
+            now,
+            hooks,
+        )
+    }
+
+    #[test]
+    fn restore_preflight_selects_the_downtime_and_generation() {
+        let (contract, destination, now) = interim_restore();
+        let hooks = TimeAbiTestHooks::default();
+        for requested in ["auto", "interim.host.whp.v1"] {
+            let result = preflight(
+                &contract,
+                "whp",
+                requested,
+                Some(SIGNATURE),
+                &destination,
+                &now,
+                &hooks,
+            )
+            .unwrap();
+            assert_eq!(result.generation, 4);
+            assert_eq!(result.cpu_profile, "interim.host.whp.v1");
+            assert_eq!(result.downtime.nanos, 5_000_000_000);
+            assert_eq!(
+                result.downtime.source,
+                virt::time_abi::DowntimeSource::HostMonotonic
+            );
+        }
+
+        let hooks = TimeAbiTestHooks {
+            force_utc_downtime: true,
+            ..Default::default()
+        };
+        let result = preflight(
+            &contract,
+            "whp",
+            "auto",
+            Some(SIGNATURE),
+            &destination,
+            &now,
+            &hooks,
+        )
+        .unwrap();
+        assert_eq!(result.downtime.source, virt::time_abi::DowntimeSource::Utc);
+    }
+
+    #[test]
+    fn restore_preflight_failures_have_stable_codes() {
+        let (contract, destination, now) = interim_restore();
+        let hooks = TimeAbiTestHooks::default();
+        let fail = |contract: &SnapshotMachineContract,
+                    hypervisor: &str,
+                    requested: &str,
+                    signature: Option<u32>,
+                    now: &HostTimeSample,
+                    hooks: &TimeAbiTestHooks| {
+            preflight(
+                contract,
+                hypervisor,
+                requested,
+                signature,
+                &destination,
+                now,
+                hooks,
+            )
+            .unwrap_err()
+            .code
+        };
+
+        assert_eq!(
+            fail(&contract, "kvm", "auto", Some(SIGNATURE), &now, &hooks),
+            TimeAbiCode::BackendMismatch
+        );
+        assert_eq!(
+            fail(
+                &contract,
+                "whp",
+                "intel.icelake-sp.whp.v1",
+                Some(SIGNATURE),
+                &now,
+                &hooks
+            ),
+            TimeAbiCode::ProfileUnknown
+        );
+        assert_eq!(
+            fail(&contract, "whp", "auto", Some(SIGNATURE + 1), &now, &hooks),
+            TimeAbiCode::CpuGeneration
+        );
+        assert_eq!(
+            fail(&contract, "whp", "auto", None, &now, &hooks),
+            TimeAbiCode::CpuGeneration
+        );
+
+        let mut pinned = contract.clone();
+        let record = pinned.cpu_profile.as_mut().unwrap();
+        record.id = "intel.icelake-sp.whp.v1".to_owned();
+        assert_eq!(
+            fail(&pinned, "whp", "auto", Some(SIGNATURE), &now, &hooks),
+            TimeAbiCode::ProfileUnknown
+        );
+
+        let mut document = contract.clone();
+        let record = document.cpu_profile.as_mut().unwrap();
+        record.profile = b"profile".to_vec();
+        record.sha256 = sha2::Sha256::digest(&record.profile).to_vec();
+        assert_eq!(
+            fail(&document, "whp", "auto", Some(SIGNATURE), &now, &hooks),
+            TimeAbiCode::ProfileDigest
+        );
+
+        let mut exhausted = contract.clone();
+        exhausted.time.as_mut().unwrap().capture_generation = u32::MAX;
+        assert_eq!(
+            fail(&exhausted, "whp", "auto", Some(SIGNATURE), &now, &hooks),
+            TimeAbiCode::GenerationExhausted
+        );
+
+        let rollback = HostTimeSample {
+            utc_ns: now.utc_ns,
+            monotonic_ns: now.monotonic_ns - 10_000_000_000,
+        };
+        assert_eq!(
+            fail(&contract, "whp", "auto", Some(SIGNATURE), &rollback, &hooks),
+            TimeAbiCode::DowntimeNegative
+        );
+        let excessive = TimeAbiTestHooks {
+            downtime_add_s: 30 * 24 * 60 * 60,
+            ..Default::default()
+        };
+        assert_eq!(
+            fail(&contract, "whp", "auto", Some(SIGNATURE), &now, &excessive),
+            TimeAbiCode::DowntimeExcessive
+        );
     }
 }

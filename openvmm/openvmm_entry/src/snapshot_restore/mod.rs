@@ -31,6 +31,7 @@ pub(crate) use ready::restore_ready_sink;
 
 use crate::Options;
 use crate::microvm::MicrovmLaunch;
+use crate::microvm::RestoreClock;
 use anyhow::Context;
 use mesh::payload::message::ProtobufMessage;
 use openvmm_defs::profile::ProfileSpan;
@@ -62,6 +63,9 @@ pub(crate) struct WorkerRestore {
     pub(crate) apic_frequency_hz: Option<u64>,
     /// Saved canonical CPU contract of a restored microVM.
     pub(crate) cpu_contract: Option<Vec<u8>>,
+    /// The time ABI inputs of a restored microVM, validated by the
+    /// controller's restore preflight.
+    pub(crate) time: Option<openvmm_defs::time_abi::RestoreTimeInput>,
 }
 
 impl SnapshotRestore {
@@ -111,7 +115,7 @@ impl SnapshotRestore {
     pub(crate) fn prepare(
         &mut self,
         opt: &Options,
-        microvm: &MicrovmLaunch,
+        microvm: &mut MicrovmLaunch,
         expected_hypervisor: &str,
     ) -> anyhow::Result<(SharedMemoryFd, ProtobufMessage)> {
         let prepared = prepare::prepare_snapshot_restore(
@@ -124,13 +128,25 @@ impl SnapshotRestore {
         )?;
         self.worker.shared_memory_copy_on_write = true;
         self.worker.guards = Some(prepared.guards);
-        if let Some((downtime, tsc_frequency_hz, apic_frequency_hz, cpu_contract)) =
-            prepared.restore_time
-        {
-            self.worker.downtime = Some(downtime);
-            self.worker.tsc_frequency_hz = Some(tsc_frequency_hz);
-            self.worker.apic_frequency_hz = apic_frequency_hz;
-            self.worker.cpu_contract = Some(cpu_contract);
+        match prepared.restore_time {
+            Some(RestoreClock::Legacy((
+                downtime,
+                tsc_frequency_hz,
+                apic_frequency_hz,
+                cpu_contract,
+            ))) => {
+                self.worker.downtime = Some(downtime);
+                self.worker.tsc_frequency_hz = Some(tsc_frequency_hz);
+                self.worker.apic_frequency_hz = apic_frequency_hz;
+                self.worker.cpu_contract = Some(cpu_contract);
+            }
+            Some(RestoreClock::TimeAbi(time)) => {
+                let restore_record = microvm
+                    .take_restore_time_record()
+                    .context("time ABI restore is missing its restore packet")?;
+                self.worker.time = Some(time.into_input(restore_record));
+            }
+            None => {}
         }
         Ok((prepared.shared_memory, prepared.saved_state))
     }
