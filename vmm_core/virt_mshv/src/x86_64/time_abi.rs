@@ -51,6 +51,7 @@ use virt::VpIndex;
 use virt::time_abi::BackendPreflight;
 use virt::time_abi::HostTimeSample;
 use virt::time_abi::IdentityMsrRoute;
+use virt::time_abi::MAX_ANCHOR_PAIRING_NS;
 use virt::time_abi::TimeAbiBackend;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiConfig;
@@ -76,10 +77,6 @@ pub(crate) const ROUTED_MSRS: [u32; 4] = [
     MSR_APIC_FREQUENCY,
     MSR_TSC_INVARIANT_CONTROL,
 ];
-
-/// The most a capture anchor's host sample may differ from the instant VP 0's
-/// TSC was read, in nanoseconds.
-pub(crate) const MAX_ANCHOR_PAIRING_NS: u64 = 10_000;
 
 /// How many bracketed TSC reads a capture anchor tries before giving up.
 const ANCHOR_ATTEMPTS: usize = 64;
@@ -1172,11 +1169,13 @@ mod tests {
         assert_eq!((anchor.tsc, anchor.pairing_ns), (2, 4_000));
 
         // The bound applies to the pairing: half the bracket.
+        let widest = 2 * MAX_ANCHOR_PAIRING_NS;
         assert_eq!(
-            select_anchor(&[candidate(4, 20_000)]).unwrap().pairing_ns,
-            10_000
+            select_anchor(&[candidate(4, widest)]).unwrap().pairing_ns,
+            MAX_ANCHOR_PAIRING_NS
         );
-        let error = select_anchor(&[candidate(5, 20_001), candidate(6, 50_000)]).unwrap_err();
+        let error =
+            select_anchor(&[candidate(5, widest + 1), candidate(6, 5 * widest)]).unwrap_err();
         assert_eq!(error.code, TimeAbiCode::TscAnchor);
         assert_eq!(select_anchor(&[]).unwrap_err().code, TimeAbiCode::TscAnchor);
     }
