@@ -7,8 +7,6 @@ mod boundary;
 mod prefix;
 #[cfg(guest_arch = "x86_64")]
 mod time_abi;
-#[cfg(guest_arch = "x86_64")]
-mod tsc;
 
 use super::HaltReason;
 use super::HaltReasonReceiver;
@@ -84,10 +82,6 @@ trait ControlVp: ProtobufSaveRestore {
 
     /// Scrub per-VP state for a VTL.
     fn scrub(&mut self, vtl: Vtl) -> anyhow::Result<()>;
-
-    /// Advances the stopped vCPU TSC after snapshot downtime.
-    #[cfg(guest_arch = "x86_64")]
-    fn advance_tsc(&mut self, advance: tsc::TscAdvance) -> anyhow::Result<()>;
 
     /// Checks the stopped vCPU's LAPIC timer for the time ABI.
     #[cfg(guest_arch = "x86_64")]
@@ -192,11 +186,6 @@ where
                 })
             }
         }
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn advance_tsc(&mut self, advance: tsc::TscAdvance) -> anyhow::Result<()> {
-        advance.apply(self.vp)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -1145,8 +1134,6 @@ enum StateEvent {
     Reset(mesh::rpc::FailableRpc<(), ()>),
     Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
     #[cfg(guest_arch = "x86_64")]
-    AdvanceTsc(mesh::rpc::FailableRpc<tsc::TscAdvance, ()>),
-    #[cfg(guest_arch = "x86_64")]
     CheckTimers(mesh::rpc::FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
     AdvanceLapic(mesh::rpc::FailableRpc<time_abi::LapicAdvance, ()>),
@@ -1396,8 +1383,6 @@ impl RunnerInner {
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
             StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
             StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
-            #[cfg(guest_arch = "x86_64")]
-            StateEvent::AdvanceTsc(rpc) => rpc.handle_failable_sync(|tsc| vp.advance_tsc(tsc)),
             #[cfg(guest_arch = "x86_64")]
             StateEvent::CheckTimers(rpc) => {
                 rpc.handle_failable_sync(|()| vp.check_one_shot_timer())

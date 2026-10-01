@@ -14,8 +14,8 @@ use super::format::RESUME_CLAIM_FILE_NAME;
 use super::format::SCRATCH_FILE_NAME;
 use super::format::SNAPSHOT_RESTORE_POLICY_RESUME;
 use super::format::STATE_FILE_NAME;
+use super::format::validate_manifest_contents;
 use super::format::validate_manifest_header;
-use super::format::validate_manifest_version;
 use super::fs::OpenedFileGeneration;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
@@ -194,7 +194,7 @@ fn decode_snapshot_manifest(manifest_file: &std::fs::File) -> anyhow::Result<Sna
     let manifest: SnapshotManifest =
         mesh::payload::decode(&manifest_bytes).context("failed to decode snapshot manifest")?;
     validate_manifest_header(&manifest)?;
-    validate_manifest_version(&manifest)?;
+    validate_manifest_contents(&manifest)?;
     if let Some(contract) = &manifest.machine_contract {
         microvm::validate_machine_contract_shape(
             contract,
@@ -256,7 +256,7 @@ pub fn read_snapshot_artifacts_with_memory(
 ) -> anyhow::Result<(Vec<u8>, std::fs::File)> {
     let directory = OpenedSnapshotDirectory::open(dir)?;
     validate_manifest_header(manifest)?;
-    validate_manifest_version(manifest)?;
+    validate_manifest_contents(manifest)?;
     if let Some(contract) = &manifest.machine_contract {
         microvm::validate_machine_contract_shape(
             contract,
@@ -356,7 +356,7 @@ fn claim_snapshot_for_restore_in_directory(
     manifest: &SnapshotManifest,
 ) -> anyhow::Result<()> {
     validate_manifest_header(manifest)?;
-    validate_manifest_version(manifest)?;
+    validate_manifest_contents(manifest)?;
     if manifest.restore_policy != SNAPSHOT_RESTORE_POLICY_RESUME {
         return Ok(());
     }
@@ -422,9 +422,6 @@ fn validate_snapshot_directory(
 
 #[cfg(test)]
 mod tests {
-    use super::super::format::LEGACY_MANIFEST_VERSION;
-    use super::super::format::LEGACY_SNAPSHOT_FORMAT_MAGIC;
-    use super::super::format::SHA256_SIZE;
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
     use super::super::microvm::paired_scratch_manifest;
     use super::super::publish::write_snapshot;
@@ -466,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn read_snapshot_accepts_same_length_state_change_without_legacy_checksum_validation() {
+    fn read_snapshot_accepts_same_length_state_change_without_checksums() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
@@ -479,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn read_snapshot_accepts_same_length_memory_change_without_legacy_checksum_validation() {
+    fn read_snapshot_accepts_same_length_memory_change_without_checksums() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
@@ -513,59 +510,24 @@ mod tests {
     }
 
     #[test]
-    fn read_snapshot_accepts_legacy_v2_manifest_without_verifying_digests() {
+    fn read_snapshot_rejects_an_earlier_manifest_version() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
         std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
         let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
-        manifest.version = LEGACY_MANIFEST_VERSION;
-        manifest.format_magic = LEGACY_SNAPSHOT_FORMAT_MAGIC.to_vec();
-        manifest.state_sha256 = vec![0xa5; SHA256_SIZE];
-        manifest.memory_sha256 = vec![0x5a; SHA256_SIZE];
+        manifest.version = 5;
+        manifest.format_magic = b"OPENVMM_SNAPSHOT_V5\0".to_vec();
         std::fs::write(
             snap_dir.join(MANIFEST_FILE_NAME),
             mesh::payload::encode(manifest),
         )
         .unwrap();
-        std::fs::write(snap_dir.join(STATE_FILE_NAME), b"other").unwrap();
-        std::fs::write(snap_dir.join(MEMORY_FILE_NAME), vec![1_u8; 1024]).unwrap();
 
-        let (manifest, state) = read_snapshot(&snap_dir, 1024).unwrap();
-        assert_eq!(manifest.version, LEGACY_MANIFEST_VERSION);
-        assert_eq!(state, b"other");
-    }
-
-    #[test]
-    fn read_snapshot_rejects_malformed_legacy_digest_lengths() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-        let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
-        manifest.version = LEGACY_MANIFEST_VERSION;
-        manifest.format_magic = LEGACY_SNAPSHOT_FORMAT_MAGIC.to_vec();
-        manifest.state_sha256 = vec![0; SHA256_SIZE - 1];
-        manifest.memory_sha256 = vec![0; SHA256_SIZE];
-        std::fs::write(
-            snap_dir.join(MANIFEST_FILE_NAME),
-            mesh::payload::encode(manifest.clone()),
-        )
-        .unwrap();
-        let error = read_snapshot(&snap_dir, 1024).err().unwrap();
-        assert!(error.to_string().contains("state.bin SHA-256 digest"));
-
-        manifest.state_sha256 = vec![0; SHA256_SIZE];
-        manifest.memory_sha256 = vec![0; SHA256_SIZE + 1];
-        std::fs::write(
-            snap_dir.join(MANIFEST_FILE_NAME),
-            mesh::payload::encode(manifest),
-        )
-        .unwrap();
-        let error = read_snapshot(&snap_dir, 1024).err().unwrap();
-        assert!(error.to_string().contains("memory.bin SHA-256 digest"));
+        let error = format!("{:#}", read_snapshot(&snap_dir, 1024).err().unwrap());
+        assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+        assert!(error.contains("recapture the snapshot"), "{error}");
     }
 
     #[test]
