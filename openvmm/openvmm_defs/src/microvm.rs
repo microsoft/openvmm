@@ -1079,6 +1079,9 @@ pub struct MicrovmConfig {
     pub snapshot_memory_ranges: Vec<MemoryRange>,
     /// Fresh private GPA ranges selected for this restore launch.
     pub restore_memory_ranges: Vec<MemoryRange>,
+    /// Selects the NVX time ABI v1. Set by the hidden `--x-time-abi-v1`
+    /// development switch until the time ABI becomes the only microVM path.
+    pub time_abi: Option<crate::time_abi::TimeAbiParameters>,
 }
 
 fn validate_machine_load_mode(
@@ -1196,6 +1199,10 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
                 && config.microvm.snapshot_memory_ranges.is_empty()
                 && config.microvm.restore_memory_ranges.is_empty(),
             "microVM memory expansion configuration requires the microVM profile"
+        );
+        anyhow::ensure!(
+            config.microvm.time_abi.is_none(),
+            "the NVX time ABI requires the microVM profile"
         );
         return Ok(());
     };
