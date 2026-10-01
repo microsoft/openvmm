@@ -148,12 +148,21 @@ pub fn openat(
         return reopen(dirfd, flags);
     }
 
+    openat_name(dirfd.as_raw_fd(), &path_to_cstr(path)?, flags, options)
+}
+
+// Open a name relative to a directory descriptor.
+pub fn openat_name(
+    dirfd: RawFd,
+    name: &ffi::CStr,
+    flags: i32,
+    options: Option<crate::LxCreateOptions>,
+) -> lx::Result<std::fs::File> {
     let mode = options.unwrap_or_default().mode;
-    let path = path_to_cstr(path)?;
 
     // SAFETY: Calling C API as documented, with no special requirements.
     unsafe {
-        let fd = check_lx_errno(libc::openat(dirfd.as_raw_fd(), path.as_ptr(), flags, mode))?;
+        let fd = check_lx_errno(libc::openat(dirfd, name.as_ptr(), flags, mode))?;
 
         Ok(std::fs::File::from_raw_fd(fd))
     }
@@ -294,6 +303,119 @@ pub fn set_attr(fd: &std::fs::File, path: Option<&Path>, attr: &SetAttributes) -
 
         Ok(())
     }
+}
+
+/// Apply attributes to `name` in the directory `dirfd` without following a final symbolic link.
+///
+/// Changing the mode of a symbolic link fails with `EOPNOTSUPP`, as `lchmod` does on Linux.
+///
+/// Linux will remove the set-user-ID and set-group-ID bits as appropriate, so unlike the Windows
+/// version this doesn't need to be done explicitly.
+pub fn set_attr_confined(dirfd: RawFd, name: &ffi::CStr, attr: &SetAttributes) -> lx::Result<()> {
+    // Ctime is updated by most of the operations below, so don't explicitly
+    // update it if not needed.
+    let mut need_ctime_update = !attr.ctime.is_omit();
+
+    if let Some(size) = attr.size {
+        let file = openat_name(
+            dirfd,
+            name,
+            libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            None,
+        )?;
+
+        // SAFETY: Calling C API as documented, with no special requirements.
+        unsafe {
+            check_lx_errno(libc::ftruncate(file.as_raw_fd(), size))?;
+        }
+
+        need_ctime_update = false;
+    }
+
+    if let Some(mode) = attr.mode {
+        // `fchmodat` cannot be told not to follow a symbolic link. Pin the object without
+        // following it, and change the mode of exactly that object through its /proc link.
+        let object = openat_name(
+            dirfd,
+            name,
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            None,
+        )?;
+        let mut stat = mem::MaybeUninit::<libc::stat>::uninit();
+
+        // SAFETY: `stat` is valid for writes and `object` is open.
+        unsafe {
+            check_lx_errno(libc::fstat(object.as_raw_fd(), stat.as_mut_ptr()))?;
+        }
+
+        // SAFETY: fstat initialized `stat` because it succeeded.
+        if unsafe { stat.assume_init() }.st_mode & libc::S_IFMT == libc::S_IFLNK {
+            return Err(lx::Error::ENOTSUP);
+        }
+
+        let path = path_to_cstr(&get_proc_fd_path(&object))?;
+
+        // SAFETY: Calling C API as documented, with no special requirements.
+        unsafe {
+            check_lx_errno(libc::chmod(path.as_ptr(), mode))?;
+        }
+
+        need_ctime_update = false;
+    }
+
+    if attr.uid.is_some() || attr.gid.is_some() {
+        let uid = attr.uid.unwrap_or(lx::UID_INVALID);
+        let gid = attr.gid.unwrap_or(lx::GID_INVALID);
+
+        // SAFETY: Calling C API as documented, with no special requirements.
+        unsafe {
+            check_lx_errno(libc::fchownat(
+                dirfd,
+                name.as_ptr(),
+                uid,
+                gid,
+                libc::AT_SYMLINK_NOFOLLOW,
+            ))?;
+        }
+
+        need_ctime_update = false;
+    }
+
+    if !attr.atime.is_omit() || !attr.mtime.is_omit() {
+        let times = [
+            set_time_to_timespec(&attr.atime),
+            set_time_to_timespec(&attr.mtime),
+        ];
+
+        // SAFETY: Calling C API as documented, with no special requirements.
+        unsafe {
+            check_lx_errno(libc::utimensat(
+                dirfd,
+                name.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            ))?;
+        }
+
+        need_ctime_update = false;
+    }
+
+    // If a ctime update was requested and didn't already happen, perform a no-op operation that
+    // has a ctime update as a side-effect.
+    if need_ctime_update {
+        // SAFETY: Calling C API as documented, with no special requirements.
+        unsafe {
+            check_lx_errno(libc::fchownat(
+                dirfd,
+                name.as_ptr(),
+                lx::UID_INVALID,
+                lx::GID_INVALID,
+                libc::AT_SYMLINK_NOFOLLOW,
+            ))?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Create a timespec with either omit, now or a value.
