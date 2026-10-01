@@ -74,7 +74,7 @@ pub trait SynicEventClient: Send + Sync {
     fn map_event(&self, event_flag: u16, event: &Event) -> std::io::Result<()>;
 
     /// Unmaps an event previously mapped with `map_event`.
-    fn unmap_event(&self, event_flag: u16);
+    fn unmap_event(&self, event_flag: u16) -> std::io::Result<()>;
 
     /// Signals an event on the synic.
     fn signal_event(&self, connection_id: u32, event_flag: u16) -> std::io::Result<()>;
@@ -489,15 +489,84 @@ struct StepOutcome {
     pause_complete: bool,
 }
 
+fn inspect_core(core: &vmbus_client_core::ClientCore) -> impl Inspect + '_ {
+    inspect::adhoc(|req| {
+        req.respond()
+            .field("phase", inspect::AsDebug(core.phase()))
+            .field("pending_requests", core.pending_request_count())
+            .field(
+                "pending_hvsock_requests",
+                core.pending_hvsock_request_count(),
+            )
+            .field(
+                "pending_gpadl_teardowns",
+                core.pending_gpadl_teardown_count(),
+            )
+            .field(
+                "modify_connection_pending",
+                core.modify_connection_pending(),
+            )
+            .field("event_flags", core.event_flag_count())
+            .counter(
+                "malformed_host_messages",
+                core.malformed_host_message_count(),
+            )
+            .field(
+                "channels",
+                inspect::iter_by_key(core.channels().iter().map(|(channel_id, channel)| {
+                    (
+                        channel_id.0,
+                        inspect::adhoc(|req| {
+                            req.respond()
+                                .field("interface_id", channel.offer.interface_id)
+                                .field("instance_id", channel.offer.instance_id)
+                                .field("phase", inspect::AsDebug(&channel.phase))
+                                .field("connection_id", channel.connection_id)
+                                .field("client_released", channel.is_client_released)
+                                .field(
+                                    "modify_request",
+                                    inspect::AsDebug(channel.modify_request_id),
+                                )
+                                .field(
+                                    "gpadls",
+                                    inspect::iter_by_key(channel.gpadls.iter().map(
+                                        |(gpadl_id, phase)| (gpadl_id.0, inspect::AsDebug(phase)),
+                                    )),
+                                );
+                        }),
+                    )
+                })),
+            );
+    })
+}
+
+fn inspect_dispatched_requests(
+    requests: &HashMap<vmbus_client_core::RequestId, DispatchedRequest>,
+) -> impl Inspect + '_ {
+    inspect::iter_by_key(requests.iter().map(|(request_id, request)| {
+        let kind = match request {
+            DispatchedRequest::Connect { .. } => "connect",
+            DispatchedRequest::Unload(_) => "unload",
+            DispatchedRequest::ModifyConnection(_) => "modify_connection",
+            DispatchedRequest::HvsockConnect(_) => "hvsock_connect",
+            DispatchedRequest::Open(_) => "open",
+            DispatchedRequest::ModifyChannel(_) => "modify_channel",
+            DispatchedRequest::EstablishGpadl(_) => "establish_gpadl",
+            DispatchedRequest::TeardownGpadl(_) => "teardown_gpadl",
+        };
+        (request_id.0, kind)
+    }))
+}
+
 #[derive(Inspect)]
 struct ClientTask {
     #[inspect(flatten)]
     inner: ClientTaskInner,
-    #[inspect(skip)]
+    #[inspect(with = "inspect_core")]
     core: vmbus_client_core::ClientCore,
     #[inspect(skip)]
     runtime_channels: HashMap<ChannelId, RuntimeChannel>,
-    #[inspect(skip)]
+    #[inspect(with = "inspect_dispatched_requests")]
     dispatched_requests: HashMap<vmbus_client_core::RequestId, DispatchedRequest>,
     #[inspect(skip)]
     offer_send: Option<mesh::Sender<OfferInfo>>,
@@ -994,7 +1063,27 @@ impl ClientTask {
                     );
                 }
             }
-            Action::FreeEventFlag(flag) => self.inner.synic.free_event_flag(flag),
+            Action::FreeEventFlag(flag) => {
+                if let Err(err) = self.inner.synic.free_event_flag(flag) {
+                    if let Err(reserve_err) = self.core.reserve_event_flag(flag)
+                        && !matches!(
+                            reserve_err,
+                            vmbus_client_core::FlagAllocError::AlreadyInUse(_)
+                        )
+                    {
+                        tracelimit::error_ratelimited!(
+                            event_flag = flag,
+                            error = &reserve_err as &dyn std::error::Error,
+                            "failed to prevent reuse of an event flag whose unmap failed"
+                        );
+                    }
+                    tracelimit::warn_ratelimited!(
+                        event_flag = flag,
+                        error = &err as &dyn std::error::Error,
+                        "failed to unmap event flag; flag will not be reused"
+                    );
+                }
+            }
             Action::Complete { request_id, result } => {
                 self.handle_completion(request_id, result);
             }
@@ -1368,9 +1457,11 @@ impl SynicState {
         Ok(())
     }
 
-    fn free_event_flag(&mut self, flag: u16) {
-        assert!(self.events.remove(&flag).is_some());
-        self.event_client.unmap_event(flag);
+    fn free_event_flag(&mut self, flag: u16) -> std::io::Result<()> {
+        assert!(self.events.contains_key(&flag));
+        self.event_client.unmap_event(flag)?;
+        self.events.remove(&flag);
+        Ok(())
     }
 }
 
@@ -1619,11 +1710,42 @@ mod tests {
             Ok(())
         }
 
-        fn unmap_event(&self, _event_flag: u16) {}
+        fn unmap_event(&self, _event_flag: u16) -> std::io::Result<()> {
+            Ok(())
+        }
 
         fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Unsupported.into())
         }
+    }
+
+    struct FailingUnmapSynicEvents;
+
+    impl SynicEventClient for FailingUnmapSynicEvents {
+        fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn unmap_event(&self, _event_flag: u16) -> std::io::Result<()> {
+            Err(std::io::Error::other("test unmap failure"))
+        }
+
+        fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_event_unmap_retains_mapping() {
+        let mut synic = SynicState {
+            event_client: Arc::new(FailingUnmapSynicEvents),
+            events: HashMap::new(),
+        };
+        let event = Event::new();
+        synic.map_event(1, &event).unwrap();
+
+        assert!(synic.free_event_flag(1).is_err());
+        assert!(synic.events.contains_key(&1));
     }
 
     struct TestMessageSource {
