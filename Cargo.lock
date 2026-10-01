@@ -5895,6 +5895,7 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
+ "cpu_profile",
  "crc32fast",
  "cxl_spec",
  "debug_ptr",

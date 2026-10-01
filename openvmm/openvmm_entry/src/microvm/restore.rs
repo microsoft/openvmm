@@ -607,7 +607,7 @@ fn preflight_time_abi_restore(
         contract,
         hypervisor,
         options.cpu_profile,
-        virt::time_abi::surface::host_cpu_signature(),
+        openvmm_helpers::snapshot::time::host_cpu(),
         &destination,
         &now,
         options.hooks,

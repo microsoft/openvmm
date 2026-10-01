@@ -1587,6 +1587,7 @@ mod whp_tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(vp_count, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: String::new(),
         };
         let mut whp_config = whp::PartitionConfig::new().unwrap();
         whp_config
