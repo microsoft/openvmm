@@ -477,6 +477,14 @@ async fn test_ttrpc_interface(
                     pcie_root_port("rp3", false, Some(attachment_switch(switch))),
                     // Empty hotplug-capable port for AddPcieDevice.
                     pcie_root_port("rphp", true, None),
+                    // virtio-rtc behind a root port.
+                    pcie_root_port(
+                        "rp4",
+                        false,
+                        Some(attachment_device(virtio_device(
+                            vmservice::virtio_device::Kind::Rtc(vmservice::VirtioRtc {}),
+                        ))),
+                    ),
                 ],
                 ..Default::default()
             };
@@ -744,6 +752,31 @@ async fn test_ttrpc_interface(
                         port_name: "rphp".to_string(),
                         device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
                             vmservice::VirtioRng {},
+                        ))),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::RemovePcieDevice,
+                    vmservice::RemovePcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                        device: Some(virtio_device(vmservice::virtio_device::Kind::Rtc(
+                            vmservice::VirtioRtc {},
                         ))),
                     },
                 )

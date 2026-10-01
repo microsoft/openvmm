@@ -258,13 +258,13 @@ describes the source definitions.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rng-pcie-port` overrides this option.
-* `--virtio-rtc`: Add a Virtio 1.4 RTC device with one read-only
+* `--virtio-rtc [bus=BUS]`: Add a Virtio 1.4 RTC device with one read-only
   `UTC_MAYBE_SMEARED` clock backed by host wall time. Readings use nanosecond
   units; cross-timestamping and alarms are not supported. The guest needs a
-  Virtio RTC driver.
-* `--virtio-rtc-bus <BUS>`: Select the bus for the virtio-rtc device. Accepted
-  values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
-  `auto`. `--virtio-rtc-pcie-port` overrides this option.
+  Virtio RTC driver. The optional `bus` accepts `auto`, `mmio`, `pci`,
+  `pcie:PORT`, or `vpci`; bare `--virtio-rtc` uses `auto`. No device is added
+  unless the option is supplied. For example, use
+  `--virtio-rtc bus=pcie:rp0` to attach it to the named PCIe port `rp0`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
@@ -525,13 +525,17 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 --virtio-pmem pcie_port=rp0:/path/to/file
 ```
 
-For `--virtio-rng`, `--virtio-rtc`, and `--virtio-console`, use their separate
-PCIe port flags:
+For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
---virtio-rtc --virtio-rtc-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+For `--virtio-rtc`, select the named PCIe port in its options:
+
+```bash
+--virtio-rtc bus=pcie:rp0
 ```
 
 **vhost-user devices** (comma-separated option, Linux only): `--vhost-user`

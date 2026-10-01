@@ -244,6 +244,8 @@ message VirtioDevice {
         VhostUser     vhost_user = 6;
         // Built-in virtio-fs filesystem device.
         VirtioFs       fs        = 7;
+        // virtio-rtc real-time clock device.
+        VirtioRtc      rtc       = 8;
     }
 }
 
@@ -373,6 +375,10 @@ message VhostUserGeneric {
 
 // virtio-rng carries no config beyond the PCIe port it attaches to.
 message VirtioRng {
+}
+
+// virtio-rtc carries no device-specific configuration.
+message VirtioRtc {
 }
 
 // virtio-vsock socket device configuration.

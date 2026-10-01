@@ -26,14 +26,22 @@ follow-up work.
 
 ## Configuration
 
-- `--virtio-rtc` enables the device.
-- `--virtio-rtc-bus <BUS>` selects `auto`, `mmio`, `pci`, `pcie:PORT`, or
-  `vpci`; the default is `auto`.
-- `--virtio-rtc-pcie-port <PORT>` attaches the device to a named PCIe port,
-  requires `--virtio-rtc`, and overrides the bus selection.
+- `--virtio-rtc` enables the device with automatic bus selection.
+- `--virtio-rtc bus=BUS` selects `auto`, `mmio`, `pci`, `pcie:PORT`, or
+  `vpci`. For example, `--virtio-rtc bus=pcie:rp0` attaches it to the named
+  PCIe port `rp0`.
+
+The device is disabled when the option is absent. Omitting `bus` preserves
+the default `auto` selection: VPCI on Windows/macOS with Hyper-V
+enlightenments enabled, and PCI otherwise.
 
 See the [CLI reference](../../openvmm/management/cli.md) for device attachment
 options.
+
+The gRPC/ttrpc management API also accepts the fieldless `VirtioRtc` message.
+It supports boot-time PCIe attachment through `CreateVM` and the existing
+`AddPcieDevice` and `AddVpciDevice` paths, subject to their platform and
+topology requirements.
 
 ## Guest support
 

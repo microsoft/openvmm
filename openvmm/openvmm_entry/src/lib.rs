@@ -1977,17 +1977,10 @@ async fn vm_config_from_command_line(
         }
     }
 
-    if opt.virtio_rtc {
+    if let Some(rtc) = &opt.virtio_rtc {
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::rtc::VirtioRtcHandle.into_resource();
-        if let Some(pcie_port) = &opt.virtio_rtc_pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
-        } else {
-            add_virtio_device(opt.virtio_rtc_bus.clone(), resource, &mut pcie_devices);
-        }
+        add_virtio_device(rtc.bus.clone(), resource, &mut pcie_devices);
     }
 
     if let Some(backend) = virtio_console_backend {
