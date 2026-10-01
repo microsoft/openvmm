@@ -50,6 +50,8 @@ impl RunContext<'_> {
                 user_mode_memory_faults: true,
                 lazy_memory_registration: false,
                 versioned_cpu_contract: false,
+                #[cfg(guest_arch = "x86_64")]
+                time_abi: None,
             })
             .context("failed to create proto partition")?;
 
