@@ -400,11 +400,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     let no_incremental = cargo_flags.no_incremental;
     let locked = cargo_flags.locked.then_some("--locked");
     let verbose = cargo_flags.verbose.then_some("--verbose");
-    let cargo_profile = match &cargo_profile {
-        CargoBuildProfile::Debug => "dev",
-        CargoBuildProfile::Release => "release",
-        CargoBuildProfile::Custom(s) => s,
-    };
+    let cargo_profile = cargo_profile.as_cargo_profile();
     let target = target.to_string();
 
     let packages: Vec<String> = {
