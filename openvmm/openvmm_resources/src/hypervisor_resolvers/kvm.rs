@@ -19,6 +19,16 @@ impl vm_resource::ResolveResource<HypervisorKind, KvmHandle> for KvmResolver {
     fn resolve(&self, resource: KvmHandle, _input: ()) -> Result<Self::Output, Self::Error> {
         let kvm = resource.kvm;
         let backend = virt_kvm::Kvm::from_kvm(kvm)?;
+        #[cfg(guest_arch = "x86_64")]
+        let backend = {
+            let mut backend = backend;
+            backend.force_tsc_fallback(resource.force_tsc_fallback);
+            backend
+        };
+        #[cfg(guest_arch = "aarch64")]
+        if resource.force_tsc_fallback {
+            return Err(virt_kvm::KvmError::NotSupported);
+        }
         Ok(ResolvedHypervisorBackend::new(backend))
     }
 }

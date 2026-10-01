@@ -15,8 +15,77 @@ use x86defs::apic::TimerMode;
 use zerocopy::FromZeros;
 
 pub(crate) struct PartitionTime {
-    khz: Option<u32>,
+    tsc_access: TscAccess,
     frozen: Option<FrozenTime>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TscAccess {
+    Unsupported,
+    Msr,
+    Offset,
+    CommonClock { khz: u32 },
+}
+
+impl TscAccess {
+    fn select(isolated: bool, offsets: bool, common_khz: Option<u32>) -> Self {
+        if isolated {
+            Self::Unsupported
+        } else if offsets {
+            match common_khz {
+                Some(khz) => Self::CommonClock { khz },
+                None => Self::Offset,
+            }
+        } else {
+            Self::Msr
+        }
+    }
+
+    fn write(&self, processor: &kvm::Processor<'_>, value: u64) -> Result<(), KvmError> {
+        match self {
+            Self::Offset => {
+                // Sample through KVM, not userspace RDTSC: the vCPU may use
+                // a different host CPU or KVM's unstable-TSC compensation.
+                let current = get_msrs_state::<vp::Tsc, 1>(processor)?.value;
+                let offset = processor.tsc_offset()?;
+                processor.set_tsc_offset(rebase_offset(offset, current, value))?;
+            }
+            Self::CommonClock { .. } => {
+                processor.set_tsc_offset(value.wrapping_sub(host_tsc()))?;
+            }
+            Self::Msr | Self::Unsupported => {
+                set_msrs_state(processor, &vp::Tsc { value })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn restore(&self, processor: &kvm::Processor<'_>, value: u64) -> Result<(), KvmError> {
+        if *self == Self::Msr {
+            // Legacy TSC writes within a second of the previous write can
+            // reuse its offset, retaining paused time. Break that matching
+            // generation while VPs are stopped and LAPIC timers disarmed.
+            let [unmatched, target] = legacy_tsc_restore_values(value);
+            processor.set_msrs(&[
+                (x86defs::X86X_MSR_TSC, unmatched),
+                (x86defs::X86X_MSR_TSC, target),
+            ])?;
+            Ok(())
+        } else {
+            self.write(processor, value)
+        }
+    }
+}
+
+fn rebase_offset(offset: u64, current: u64, target: u64) -> u64 {
+    offset.wrapping_add(target.wrapping_sub(current))
+}
+
+fn legacy_tsc_restore_values(value: u64) -> [u64; 2] {
+    // Zero requests synchronization unconditionally in the legacy API.
+    // Restore it one tick later instead of reusing the temporary offset.
+    let target = value.max(1);
+    [target ^ (1 << 63), target]
 }
 
 struct FrozenTime {
@@ -117,30 +186,38 @@ impl PartitionTime {
         bsp: u32,
         vp_count: usize,
         isolated: bool,
+        force_tsc_fallback: bool,
     ) -> Result<Self, KvmError> {
         let unsupported = Self {
-            khz: None,
+            tsc_access: TscAccess::Unsupported,
             frozen: None,
         };
         if isolated {
             // KVM can accept offset writes without changing protected guest TSCs.
             return Ok(unsupported);
         }
-        if !kvm.vp(bsp).supports_tsc_offset()? {
-            tracing::warn!("KVM TSC-offset access unavailable; partition time control disabled");
-            return Ok(unsupported);
-        }
+        let offsets = kvm.vp(bsp).supports_tsc_offset()?;
         // Creation is the only point where this probe may rebase a clock before
         // exposing the interface. SET_CLOCK also refreshes KVM's masterclock
         // after vCPU creation, without needing to run guest instructions.
         kvm.set_clock_ns(0)?;
-        if kvm.get_clock_ns()?.flags & kvm::KVM_CLOCK_TSC_STABLE == 0 {
-            tracing::warn!("KVM stable TSC unavailable; partition time control disabled");
-            return Ok(unsupported);
-        }
-        let khz = kvm.vp(bsp).tsc_khz()?;
+        let common_khz = if !force_tsc_fallback
+            && offsets
+            && kvm.get_clock_ns()?.flags & kvm::KVM_CLOCK_TSC_STABLE != 0
+        {
+            match kvm.vp(bsp).tsc_khz() {
+                Ok(khz) => Some(khz),
+                Err(kvm::Error::GetTscKhz(err)) if err as i32 == libc::EIO => {
+                    tracing::info!("KVM TSC frequency unavailable; using per-VP clock capture");
+                    None
+                }
+                Err(err) => return Err(err.into()),
+            }
+        } else {
+            None
+        };
         Ok(Self {
-            khz: Some(khz),
+            tsc_access: TscAccess::select(isolated, offsets, common_khz),
             frozen: Some(FrozenTime {
                 clock_ns: 0,
                 vps: (0..vp_count).map(|_| FrozenVpTime::default()).collect(),
@@ -149,7 +226,7 @@ impl PartitionTime {
     }
 
     pub(crate) fn is_supported(&self) -> bool {
-        self.khz.is_some()
+        self.tsc_access != TscAccess::Unsupported
     }
 }
 
@@ -258,17 +335,20 @@ impl PartitionTime {
         // There is no atomic clock/timer snapshot UAPI. Disarm countdowns
         // before sampling clocks, so this skew delays rather than advances
         // their expiration relative to the frozen reference time.
-        let sample = sample_clock(kvm)?;
-        for (apic_id, frozen) in apic_ids.zip(&mut vps) {
-            // This backend does not configure KVM_SET_TSC_KHZ: guest TSCs
-            // use the host's rate with identity scaling. Revisit this
-            // conversion before introducing configurable TSC scaling.
-            frozen.tsc = sample.host_tsc.wrapping_add(kvm.vp(apic_id).tsc_offset()?);
-        }
-        self.frozen = Some(FrozenTime {
-            clock_ns: sample.clock.clock,
-            vps,
-        });
+        let clock_ns = if matches!(self.tsc_access, TscAccess::CommonClock { .. }) {
+            let sample = sample_clock(kvm)?;
+            for (apic_id, frozen) in apic_ids.zip(&mut vps) {
+                // This backend does not configure TSC scaling.
+                frozen.tsc = sample.host_tsc.wrapping_add(kvm.vp(apic_id).tsc_offset()?);
+            }
+            sample.clock.clock
+        } else {
+            for (apic_id, frozen) in apic_ids.zip(&mut vps) {
+                frozen.tsc = get_msrs_state::<vp::Tsc, 1>(&kvm.vp(apic_id))?.value;
+            }
+            kvm.get_clock_ns()?.clock
+        };
+        self.frozen = Some(FrozenTime { clock_ns, vps });
         Ok(())
     }
 
@@ -280,18 +360,23 @@ impl PartitionTime {
         let Some(frozen) = self.frozen.as_ref() else {
             return Ok(());
         };
-        let khz = self.khz.expect("frozen time requires TSC support");
         // Flags are zero: REALTIME would add the paused interval back.
         kvm.set_clock_ns(frozen.clock_ns)?;
-        let sample = sample_clock(kvm)?;
-        let elapsed = sample.clock.clock.wrapping_sub(frozen.clock_ns);
-        for (apic_id, saved) in apic_ids.clone().zip(&frozen.vps) {
-            kvm.vp(apic_id).set_tsc_offset(thaw_offset(
-                saved.tsc,
-                elapsed,
-                khz,
-                sample.host_tsc,
-            ))?;
+        if let TscAccess::CommonClock { khz } = self.tsc_access {
+            let sample = sample_clock(kvm)?;
+            let elapsed = sample.clock.clock.wrapping_sub(frozen.clock_ns);
+            for (apic_id, saved) in apic_ids.clone().zip(&frozen.vps) {
+                kvm.vp(apic_id).set_tsc_offset(thaw_offset(
+                    saved.tsc,
+                    elapsed,
+                    khz,
+                    sample.host_tsc,
+                ))?;
+            }
+        } else {
+            for (apic_id, saved) in apic_ids.clone().zip(&frozen.vps) {
+                self.tsc_access.restore(&kvm.vp(apic_id), saved.tsc)?;
+            }
         }
         for (apic_id, saved) in apic_ids.zip(&frozen.vps) {
             let processor = kvm.vp(apic_id);
@@ -367,11 +452,8 @@ impl KvmPartitionInner {
         let mut time = self.time.lock();
         if let Some(frozen) = &mut time.frozen {
             frozen.vps[vp.index() as usize].tsc = value.value;
-        } else if time.is_supported() {
-            self.vp_kvm(vp)
-                .set_tsc_offset(value.value.wrapping_sub(host_tsc()))?;
         } else {
-            set_msrs_state(&self.vp_kvm(vp), value)?;
+            time.tsc_access.write(&self.vp_kvm(vp), value.value)?;
         }
         Ok(())
     }
@@ -471,6 +553,109 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use test_with_tracing::test;
+
+    #[test]
+    fn ordinary_partitions_always_have_a_clock_strategy() {
+        for common_khz in [None, Some(3_000_000)] {
+            for offsets in [false, true] {
+                assert_eq!(
+                    TscAccess::select(true, offsets, common_khz),
+                    TscAccess::Unsupported
+                );
+                assert_ne!(
+                    TscAccess::select(false, offsets, common_khz),
+                    TscAccess::Unsupported
+                );
+            }
+        }
+        assert_eq!(TscAccess::select(false, false, None), TscAccess::Msr);
+        assert_eq!(TscAccess::select(false, true, None), TscAccess::Offset);
+        assert_eq!(
+            TscAccess::select(false, true, Some(3_000_000)),
+            TscAccess::CommonClock { khz: 3_000_000 }
+        );
+    }
+
+    #[test]
+    fn fallback_rebase_preserves_zero_wraparound_and_vp_skew() {
+        for host in [0, 123_456, u64::MAX - 10] {
+            for old_offset in [0, 17, u64::MAX - 42] {
+                let current = host.wrapping_add(old_offset);
+                let zero = rebase_offset(old_offset, current, 0);
+                assert_eq!(host.wrapping_add(zero), 0);
+                for target in [1, 123_456, u64::MAX] {
+                    let offset = rebase_offset(old_offset, current, target);
+                    assert_eq!(host.wrapping_add(offset), target);
+                    assert_eq!(offset.wrapping_sub(zero), target);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_restore_breaks_matching_without_a_zero_write() {
+        for value in [0, 1, 123_456, 1 << 63, u64::MAX] {
+            let [unmatched, target] = legacy_tsc_restore_values(value);
+            assert_ne!(target, 0);
+            assert_eq!(target.wrapping_sub(value), u64::from(value == 0));
+            assert_eq!(unmatched.wrapping_sub(target), 1 << 63);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn kvm_fallback_excludes_short_pauses_and_restores_zero() -> Result<(), KvmError> {
+        let kvm = kvm::Kvm::new()?;
+        let mut vm = kvm.new_vm(kvm::VmType::Default)?;
+        vm.enable_split_irqchip(24)?;
+        vm.add_vp(0)?;
+        vm.add_vp(1)?;
+        let mut time = PartitionTime::new(&vm, 0, 2, false, true)?;
+        assert!(time.is_supported());
+        assert!(!matches!(time.tsc_access, TscAccess::CommonClock { .. }));
+        let khz = vm.vp(0).tsc_khz()?;
+        for access in [time.tsc_access, TscAccess::Msr] {
+            time.tsc_access = access;
+            for values in [[0, 123_456], [123_456, 0], [u64::MAX - 1_000, 1]] {
+                let frozen = time.frozen.as_mut().unwrap();
+                frozen.clock_ns = 3_000_000_000;
+                for (vp, value) in frozen.vps.iter_mut().zip(values) {
+                    vp.tsc = value;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                let before = std::time::Instant::now();
+                time.thaw(&vm, [0, 1].into_iter())?;
+                for (apic_id, expected) in [0, 1].into_iter().zip(values) {
+                    let actual = get_msrs_state::<vp::Tsc, 1>(&vm.vp(apic_id))?.value;
+                    let limit =
+                        (before.elapsed().as_nanos() + 1_000_000) * u128::from(khz) / 1_000_000;
+                    assert!(u128::from(actual.wrapping_sub(expected)) <= limit);
+                }
+                time.freeze(&vm, [0, 1].into_iter())?;
+                let values: Vec<_> = time
+                    .frozen
+                    .as_ref()
+                    .unwrap()
+                    .vps
+                    .iter()
+                    .map(|vp| vp.tsc)
+                    .collect();
+                std::thread::sleep(Duration::from_millis(20));
+                time.freeze(&vm, [0, 1].into_iter())?;
+                assert_eq!(
+                    time.frozen
+                        .as_ref()
+                        .unwrap()
+                        .vps
+                        .iter()
+                        .map(|vp| vp.tsc)
+                        .collect::<Vec<_>>(),
+                    values
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn tsc_rebase_preserves_zero_and_per_vp_offsets() {
@@ -582,7 +767,7 @@ mod tests {
         let mut vm = kvm.new_vm(kvm::VmType::Default)?;
         vm.enable_split_irqchip(24)?;
         vm.add_vp(0)?;
-        let mut time = PartitionTime::new(&vm, 0, 1, false)?;
+        let mut time = PartitionTime::new(&vm, 0, 1, false, false)?;
         assert!(time.is_supported());
         let mut apic = timer_apic();
         let mut regs = *apic.registers();
@@ -592,7 +777,7 @@ mod tests {
         apic.registers = *regs.as_array();
         write_apic(&vm.vp(0), &apic)?;
         let deadline = vp::TscDeadline {
-            value: u64::from(time.khz.unwrap()) * 60_000,
+            value: u64::from(vm.vp(0).tsc_khz()?) * 60_000,
         };
         let saved = &mut time.frozen.as_mut().unwrap().vps[0];
         saved.set_apic(&apic);
@@ -616,8 +801,11 @@ mod tests {
         vm.enable_split_irqchip(24)?;
         vm.add_vp(0)?;
         vm.add_vp(1)?;
-        let mut time = PartitionTime::new(&vm, 0, 2, false)?;
+        let mut time = PartitionTime::new(&vm, 0, 2, false, false)?;
         assert!(time.is_supported());
+        let TscAccess::CommonClock { khz } = time.tsc_access else {
+            panic!("test requires common-clock support");
+        };
         let frozen = time.frozen.as_mut().unwrap();
         frozen.clock_ns = 3_000_000_000;
         frozen.vps[1].tsc = 123_456;
@@ -632,7 +820,7 @@ mod tests {
         time.thaw(&vm, [0, 1].into_iter())?;
         let mut tsc = [0];
         vm.vp(0).get_msrs(&[x86defs::X86X_MSR_TSC], &mut tsc)?;
-        assert!(tsc[0] < u64::from(time.khz.unwrap()) * 1_000);
+        assert!(tsc[0] < u64::from(khz) * 1_000);
         assert_eq!(
             vm.vp(1).tsc_offset()?.wrapping_sub(vm.vp(0).tsc_offset()?),
             123_456
@@ -669,7 +857,7 @@ mod tests {
         assert!(u128::from(resumed_clock - clock) <= max_elapsed_ns);
         assert!(
             u128::from(tsc[0].wrapping_sub(saved_tsc))
-                <= max_elapsed_ns * u128::from(time.khz.unwrap()) / 1_000_000
+                <= max_elapsed_ns * u128::from(khz) / 1_000_000
         );
         let resumed = read_apic(&vm.vp(0))?;
         assert_ne!(resumed.registers().irr[3] & (1 << 7), 0);
