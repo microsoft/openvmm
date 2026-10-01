@@ -314,10 +314,61 @@ impl WhpProcessor<'_> {
                     .whp(vtl)
                     .set_apic(&apic.as_page())
                     .for_op("set apic state")?;
+                self.assert_pending_interrupt(vtl, &apic)?;
+                if vtl == Vtl::Vtl0 {
+                    self.inner.lapic_written.store(true, Ordering::Release);
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Asserts the highest-priority pending edge-triggered vector of an
+    /// offloaded LAPIC state just written with `set_apic` through WHP's
+    /// interrupt path.
+    ///
+    /// A snapshot restore writes saved IRR bits this way, and so does the
+    /// restore clock when it queues the vector of a one-shot timer that
+    /// expired during the downtime. The hypervisor does not always deliver
+    /// such a vector to a halted VP: on prometheus28, 2 s after every legacy
+    /// 8-VP restore, a VP was still halted with the timer vector pending, and
+    /// its timers stalled until some other interrupt woke it. Asserting a
+    /// vector that is already pending is idempotent, and wakes the VP when
+    /// the vector is deliverable: the hypervisor still applies the PPR and IF
+    /// rules.
+    fn assert_pending_interrupt(&self, vtl: Vtl, apic: &vp::ApicRegisters) -> Result<(), Error> {
+        let Some(vector) = highest_pending_edge_vector(apic) else {
+            return Ok(());
+        };
+        self.vp
+            .partition
+            .vtlp(vtl)
+            .whp
+            .interrupt(
+                whp::abi::WHvX64InterruptTypeFixed,
+                whp::abi::WHvX64InterruptDestinationModePhysical,
+                whp::abi::WHvX64InterruptTriggerModeEdge,
+                self.inner.vp_info.apic_id,
+                vector.into(),
+            )
+            .for_op("assert a pending LAPIC vector")?;
+        Ok(())
+    }
+
+    /// Asserts the highest pending edge-triggered vector of the VP's current
+    /// offloaded VTL0 LAPIC state again, if the VMM wrote that state since the
+    /// VP last ran: partition time may have been suspended and resumed since
+    /// the write (the legacy restore clock does both), so the VP runs only
+    /// after the assertion.
+    pub(crate) fn reassert_written_lapic(&mut self) -> Result<(), Error> {
+        if !self.inner.lapic_written.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let apic = vp::ApicRegisters::from_page(
+            &self.vp.whp(Vtl::Vtl0).get_apic().for_op("get apic state")?,
+        );
+        self.assert_pending_interrupt(Vtl::Vtl0, &apic)
     }
     pub(crate) fn apic_write(&mut self, address: u64, data: &[u8], dev: &impl CpuIo) {
         if let Some(lapic) = self.state.vtls.lapic(self.state.active_vtl) {
@@ -748,5 +799,81 @@ impl ApicState {
         apic.reset();
         *startup_suspend = !is_bsp;
         *nmi_pending = false;
+    }
+}
+
+/// Returns the highest-priority vector pending in `apic`'s IRR that is
+/// edge-triggered (TMR clear). Vectors 0 to 15 are skipped: they are not valid
+/// fixed interrupts, and the Hyper-V LAPIC state page reuses their IRR bits
+/// (for example for the NMI pending bit). Level-triggered vectors are left to
+/// their IOAPIC, whose EOI handling an edge assertion would bypass.
+fn highest_pending_edge_vector(apic: &vp::ApicRegisters) -> Option<u8> {
+    (16..=255u8).rev().find(|&vector| {
+        let (word, bit) = (usize::from(vector / 32), vector % 32);
+        apic.irr[word] >> bit & 1 == 1 && apic.tmr[word] >> bit & 1 == 0
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::highest_pending_edge_vector;
+    use virt::x86::vp::ApicRegisters;
+    use zerocopy::FromZeros;
+
+    fn pending(irr: &[u8], level: &[u8]) -> ApicRegisters {
+        let mut apic = ApicRegisters::new_zeroed();
+        for &vector in irr {
+            apic.irr[usize::from(vector / 32)] |= 1 << (vector % 32);
+        }
+        for &vector in level {
+            apic.tmr[usize::from(vector / 32)] |= 1 << (vector % 32);
+        }
+        apic
+    }
+
+    #[test]
+    fn nothing_pending_asserts_nothing() {
+        assert_eq!(highest_pending_edge_vector(&pending(&[], &[])), None);
+    }
+
+    #[test]
+    fn the_expired_timer_vector_is_asserted() {
+        // Linux's LOCAL_TIMER_VECTOR, as the restore clock queues it.
+        assert_eq!(
+            highest_pending_edge_vector(&pending(&[0xec], &[])),
+            Some(0xec)
+        );
+    }
+
+    #[test]
+    fn the_highest_edge_vector_wins() {
+        assert_eq!(
+            highest_pending_edge_vector(&pending(&[0x30, 0xec, 0x41], &[])),
+            Some(0xec)
+        );
+        assert_eq!(
+            highest_pending_edge_vector(&pending(&[0xff, 0x10], &[])),
+            Some(0xff)
+        );
+    }
+
+    #[test]
+    fn level_triggered_vectors_are_left_to_their_ioapic() {
+        assert_eq!(
+            highest_pending_edge_vector(&pending(&[0x41], &[0x41])),
+            None
+        );
+        assert_eq!(
+            highest_pending_edge_vector(&pending(&[0x41, 0x30], &[0x41])),
+            Some(0x30)
+        );
+    }
+
+    #[test]
+    fn reserved_vectors_and_the_nmi_pending_bit_are_ignored() {
+        let mut apic = pending(&[], &[]);
+        apic.set_hv_apic_nmi_pending(true);
+        apic.irr[0] |= 0xffff;
+        assert_eq!(highest_pending_edge_vector(&apic), None);
     }
 }
