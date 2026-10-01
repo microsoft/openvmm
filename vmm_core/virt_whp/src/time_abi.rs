@@ -49,6 +49,7 @@ use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::profile_features::WhpFeatures;
+use crate::profile_features::profile_cpuid_results;
 use crate::profile_features::profile_features;
 use cpu_profile::CpuProfile;
 use inspect::Inspect;
@@ -182,6 +183,8 @@ pub(crate) struct WhpTimeAbi {
     features_xsave: Option<u64>,
     /// The CPU profile the features derive from, if any.
     cpu_profile: Option<String>,
+    /// How many `CpuidResultList2` entries present the CPU profile's leaves.
+    cpuid_results: usize,
     /// The effective CPUID record, computed once: it depends only on the
     /// configuration, because it excludes guest state.
     #[inspect(skip)]
@@ -282,6 +285,20 @@ impl WhpTimeAbi {
                     )
                 })?;
         }
+        let cpuid_results = profile.map(profile_cpuid_results).unwrap_or_default();
+        if !cpuid_results.is_empty() {
+            whp_config
+                .set_property(whp::PartitionProperty::CpuidResultList2(&cpuid_results))
+                .map_err(|err| {
+                    TimeAbiError::new(
+                        TimeAbiCode::ProfileUnsupported,
+                        format!(
+                            "cannot program the {} CPUID results of the CPU profile: {err}",
+                            cpuid_results.len()
+                        ),
+                    )
+                })?;
+        }
 
         let msr_exits = whp::capabilities::x64_msr_exit_bitmap()
             .map_err(|err| routing_error(format!("cannot query the MSR exits: {err}")))?;
@@ -299,6 +316,7 @@ impl WhpTimeAbi {
 
         tracing::info!(
             cpuid_exits = cpuid_exits.len(),
+            cpuid_results = cpuid_results.len(),
             cpu_profile = profile.map(|profile| profile.id()),
             available_bank0 = format_args!("{:#x}", available.bank0.0),
             available_bank1 = format_args!("{:#x}", available.bank1.0),
@@ -319,6 +337,7 @@ impl WhpTimeAbi {
             features_bank1: features.bank1.0,
             features_xsave: xsave,
             cpu_profile: profile.map(|profile| profile.id().to_owned()),
+            cpuid_results: cpuid_results.len(),
             effective: OnceLock::new(),
         })
     }
