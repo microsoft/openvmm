@@ -1148,6 +1148,7 @@ mod tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: String::new(),
         };
         let state = MshvTimeAbi::new(&config, &partition_cpuid(Vec::new(), &config.cpuid));
         state.check_vp_creation(VpIndex::new(4)).unwrap();
@@ -1298,6 +1299,7 @@ mod hw {
                     time_abi: Some(TimeAbiConfig {
                         cpuid: Arc::new(time_abi_cpuid(VP_CAPACITY, true)),
                         msrs: Arc::new(TimeAbiMsrs::new()),
+                        cpu_profile: String::new(),
                     }),
                 })
                 .unwrap()
