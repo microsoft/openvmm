@@ -11,8 +11,10 @@
 //! the profile decides ([`hv_banks::mapped_mask`]) follow the profile. The
 //! other bits, such as the nested-paging and VMX details, keep OpenVMM's
 //! legacy policy: what the host offers of OpenVMM's supported lists. The
-//! CPUID intercept results then present the profile's leaves verbatim,
-//! including the descriptive leaves and the time policy bits a host lacks.
+//! CPUID intercept results then present core's time ABI CPUID verbatim (the
+//! profile's complete effective CPUID), including the descriptive leaves and
+//! the time policy bits a host lacks. Only the banks and the surface read the
+//! profile itself.
 //!
 //! [`supported_cpu_surface`] reports what MSHV supports on this host without a
 //! probe partition: the host partition's processor features, the host's CPUID
@@ -113,24 +115,92 @@ fn host_cpuid(_leaf: u32, _subleaf: u32) -> [u32; 4] {
     [0; 4]
 }
 
-/// Returns the CPU surface that MSHV supports on this host, given the
-/// features the host partition offers and the guest physical address width.
+/// Returns the host's CPUID table, as the CPUID instruction enumerates it.
+pub(crate) fn host_cpuid_table() -> Vec<CpuidEntry> {
+    cpu_profile::cpuid::enumerate(|leaf, subleaf| {
+        Ok::<_, std::convert::Infallible>(host_cpuid(leaf, subleaf))
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+/// The leaves past each maximum leaf that read zero even beyond the host's
+/// own maximum leaf.
+const ZERO_LEAVES_PAST_MAXIMUM: u32 = 4;
+
+/// Returns the zero results that make the leaves and subleaves `cpuid` does
+/// not list read zero, as a CPU profile's effective CPUID requires, where the
+/// hypervisor would otherwise serve its own value.
+///
+/// MSHV serves its own value for anything without a registered result, and
+/// refuses a whole-leaf result and a subleaf result for the same leaf. So this
+/// returns:
+///
+/// - a subleaf result for every subleaf that `host` enumerates of a leaf that
+///   `cpuid` lists by subleaf, unless `cpuid` lists that subleaf;
+/// - a whole-leaf result for every basic and extended leaf that `cpuid` does
+///   not list at all, up to the host's maximum leaves or
+///   [`ZERO_LEAVES_PAST_MAXIMUM`] past `cpuid`'s, whichever is higher.
+///
+/// The hypervisor range belongs to the time ABI's identity and explicit zero
+/// leaves, which `cpuid` lists.
+pub(crate) fn unlisted_zero_results(
+    cpuid: &virt::CpuidLeafSet,
+    host: &[CpuidEntry],
+) -> Vec<CpuidLeaf> {
+    let leaves = cpuid.leaves();
+    let listed = |function: u32| leaves.iter().any(|leaf| leaf.function == function);
+    let by_subleaf = |function: u32| {
+        leaves
+            .iter()
+            .filter(|leaf| leaf.function == function)
+            .all(|leaf| leaf.index.is_some())
+    };
+    let host_max = |base: u32| cpu_profile::cpuid::lookup(host, base, 0).map_or(base, |r| r[0]);
+    let table_max = |base: u32| cpuid.result(base, 0, &[base, 0, 0, 0])[0];
+
+    let mut zeros = Vec::new();
+    // Unlisted subleaves of the leaves the table lists by subleaf.
+    for entry in host {
+        let (function, subleaf) = entry.key();
+        if let Some(subleaf) = subleaf {
+            if listed(function)
+                && by_subleaf(function)
+                && !leaves
+                    .iter()
+                    .any(|leaf| leaf.function == function && leaf.index == Some(subleaf))
+            {
+                zeros.push(CpuidLeaf::new(function, [0; 4]).indexed(subleaf));
+            }
+        }
+    }
+    // Unlisted leaves, including those past the maximum leaves.
+    for base in [0, EXTENDED_LEAF_BASE] {
+        let last = host_max(base).max(table_max(base) + ZERO_LEAVES_PAST_MAXIMUM);
+        if !(base..base + 0x100).contains(&last) {
+            continue;
+        }
+        for function in base..=last {
+            if !listed(function) {
+                zeros.push(CpuidLeaf::new(function, [0; 4]));
+            }
+        }
+    }
+    zeros
+}
+
+/// Returns the CPU surface that MSHV supports on this host, given the host's
+/// CPUID table ([`host_cpuid_table`]), the features the host partition
+/// offers, and the guest physical address width.
 ///
 /// This is what a partition that enables every offered feature presents,
 /// approximated without creating one: the host's CPUID without the mapped
 /// features `host` lacks. `IA32_ARCH_CAPABILITIES` follows the banks.
 pub(crate) fn supported_cpu_surface(
+    host_cpuid: Vec<CpuidEntry>,
     host: HvFeatures,
     physical_address_width: u8,
 ) -> SupportedCpuSurface {
-    surface_from_host_cpuid(
-        cpu_profile::cpuid::enumerate(|leaf, subleaf| {
-            Ok::<_, std::convert::Infallible>(host_cpuid(leaf, subleaf))
-        })
-        .unwrap_or_else(|never| match never {}),
-        host,
-        physical_address_width,
-    )
+    surface_from_host_cpuid(host_cpuid, host, physical_address_width)
 }
 
 fn surface_from_host_cpuid(
@@ -354,6 +424,54 @@ mod tests {
     }
 
     #[test]
+    fn unlisted_leaves_and_subleaves_get_zero_results() {
+        let entry = |leaf, subleaf, eax| CpuidEntry::new(leaf, subleaf, [eax, 1, 2, 3]);
+        let host = vec![
+            entry(0, None, 0xa),
+            entry(1, None, 0),
+            entry(2, None, 0),
+            entry(4, Some(0), 0x121),
+            entry(4, Some(1), 0x122),
+            entry(4, Some(2), 0x143),
+            entry(4, Some(3), 0x163),
+            entry(7, Some(0), 2),
+            entry(7, Some(1), 0),
+            entry(7, Some(2), 0),
+            entry(0xa, None, 0),
+            entry(0xd, Some(0), 0),
+            entry(0xd, Some(1), 0),
+            entry(0xd, Some(2), 0),
+            entry(HYPERVISOR_LEAF_BASE, None, HYPERVISOR_LEAF_BASE + 0xb),
+            entry(EXTENDED_LEAF_BASE, None, EXTENDED_LEAF_BASE + 8),
+        ];
+        let table = virt::CpuidLeafSet::new(vec![
+            CpuidLeaf::new(0, [7, 0, 0, 0]),
+            CpuidLeaf::new(1, [0; 4]),
+            CpuidLeaf::new(4, [0x121, 0, 0, 0]).indexed(0),
+            CpuidLeaf::new(4, [0x122, 0, 0, 0]).indexed(1),
+            CpuidLeaf::new(7, [0; 4]).indexed(0),
+            // A leaf listed whole gets no subleaf results: MSHV refuses both.
+            CpuidLeaf::new(0xd, [0; 4]),
+            CpuidLeaf::new(HYPERVISOR_LEAF_BASE, [HYPERVISOR_LEAF_BASE + 5, 0, 0, 0]),
+            CpuidLeaf::new(EXTENDED_LEAF_BASE, [EXTENDED_LEAF_BASE + 1, 0, 0, 0]),
+            CpuidLeaf::new(EXTENDED_LEAF_BASE + 1, [0; 4]),
+        ]);
+        let zeros: Vec<_> = unlisted_zero_results(&table, &host)
+            .iter()
+            .map(|leaf| {
+                assert_eq!((leaf.result, leaf.mask), ([0; 4], [!0; 4]));
+                (leaf.function, leaf.index)
+            })
+            .collect();
+        let mut expected = vec![(4, Some(2)), (4, Some(3)), (7, Some(1)), (7, Some(2))];
+        // Basic leaves up to the host's maximum (0xa) or four past the table's
+        // (0xb), whichever is higher; extended up to the host's 0x80000008.
+        expected.extend([2, 3, 5, 6, 8, 9, 0xa, 0xb].map(|leaf| (leaf, None)));
+        expected.extend((2..=8).map(|leaf| (EXTENDED_LEAF_BASE + leaf, None)));
+        assert_eq!(zeros, expected);
+    }
+
+    #[test]
     fn the_surface_supports_each_host_profile() {
         // On a host whose CPUID already matches its profile, the surface of the
         // fingerprinted banks supports the profile.
@@ -374,6 +492,7 @@ mod tests {
                     .iter()
                     .map(|leaf| CpuidEntry::new(leaf.function, leaf.index, leaf.result))
                     .collect(),
+                presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
                 physical_address_width: surface.physical_address_width,
                 msrs: surface
                     .msrs
@@ -387,6 +506,35 @@ mod tests {
             };
             let violations = cpu_profile::support_violations(profile, &host_surface);
             assert!(violations.is_empty(), "{id}: {violations:#?}");
+        }
+    }
+
+    /// Returns the XCR0 state components that MSHV enables with `features`:
+    /// x87 and SSE with XSAVE itself, then AVX, MPX's bound registers,
+    /// AVX-512's opmask and upper ZMM states, and AMX's tile configuration and
+    /// data. No MSHV feature controls PKRU.
+    fn xcr0_components(features: &HvFeatures) -> u64 {
+        let xsave = XsaveBank::from_bits(features.xsave);
+        [
+            (xsave.xsave_support(), 0x3),
+            (xsave.avx_support(), 1 << 2),
+            (xsave.mpx_support(), 0x3 << 3),
+            (xsave.avx512_support(), 0x7 << 5),
+            (xsave.amx_tile_support(), 0x3 << 17),
+        ]
+        .into_iter()
+        .filter(|&(enabled, _)| enabled)
+        .fold(0, |xcr0, (_, components)| xcr0 | components)
+    }
+
+    #[test]
+    fn the_xsave_features_enable_the_profile_xcr0() {
+        // The features derive from the profile's CPUID bits; the components
+        // they enable are the profile's XCR0, with MPX on Skylake-SP only.
+        for (id, host) in HOSTS {
+            let profile = profile(id);
+            let features = time_abi_features(profile, host).unwrap();
+            assert_eq!(xcr0_components(&features), profile.xcr0(), "{id}");
         }
     }
 }
@@ -544,6 +692,7 @@ mod hw {
         cpu_profile::cpuid::normalize(&mut cpuid);
         cpu_profile::HostCpuSurface {
             cpuid,
+            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
             physical_address_width: surface.physical_address_width,
             msrs: surface
                 .msrs
@@ -601,7 +750,7 @@ mod hw {
         let mut cheap = None;
         for _ in 0..10 {
             let started = std::time::Instant::now();
-            cheap = Some(supported_cpu_surface(host, width));
+            cheap = Some(supported_cpu_surface(host_cpuid_table(), host, width));
             timings.push(started.elapsed().as_micros());
         }
         timings.sort_unstable();
@@ -669,6 +818,54 @@ mod hw {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// Characterizes how MSHV composes CPUID results, using leaf 4, whose
+    /// subleaves differ natively:
+    ///
+    /// - A subleaf result applies over the hypervisor's own value, so the bits
+    ///   it leaves unmasked stay native (the per-VP APIC IDs and the runtime
+    ///   XSAVE sizes rely on this), and the subleaves it does not name stay
+    ///   native.
+    /// - A whole-leaf result answers every subleaf.
+    /// - The hypervisor refuses a whole-leaf result and a subleaf result for
+    ///   the same leaf, whichever comes second. So unlisted subleaves cannot
+    ///   read zero through one whole-leaf result under the listed ones.
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn cpuid_results_compose_over_native_values() {
+        let mshv = Mshv::new().unwrap();
+        let host = host_features(&mshv).unwrap();
+        let read = |probe: &Probe| -> Vec<[u32; 4]> {
+            (0..4)
+                .map(|subleaf| probe.vp.get_cpuid_values(4, subleaf, 0, 0).unwrap())
+                .collect()
+        };
+        let native = read(&probe_partition(&mshv, host).unwrap());
+        println!("native leaf 4: {native:#010x?}");
+        assert_ne!(native[1], [0; 4], "leaf 4 has no native subleaf 1");
+        let whole = CpuidLeaf::new(4, [0; 4]);
+        let pinned = [0x1111_1111, 0x2222_2222, 0x3333_3333];
+        // Subleaf 0 pins EBX through EDX and leaves EAX to the hypervisor.
+        let listed = CpuidLeaf::new(4, [0, pinned[0], pinned[1], pinned[2]])
+            .indexed(0)
+            .masked([0, !0, !0, !0]);
+
+        let probe = probe_partition(&mshv, host).unwrap();
+        super::super::register_cpuid_result(&probe.vmfd, &listed).unwrap();
+        let refused = super::super::register_cpuid_result(&probe.vmfd, &whole).unwrap_err();
+        let leaf4 = read(&probe);
+        println!("subleaf first: {leaf4:#010x?}; whole leaf refused: {refused}");
+        assert_eq!(leaf4[0][1..], pinned);
+        assert_eq!(leaf4[0][0], native[0][0], "unmasked bits stay native");
+        assert_eq!(leaf4[1..], native[1..], "unnamed subleaves stay native");
+
+        let probe = probe_partition(&mshv, host).unwrap();
+        super::super::register_cpuid_result(&probe.vmfd, &whole).unwrap();
+        let refused = super::super::register_cpuid_result(&probe.vmfd, &listed).unwrap_err();
+        let leaf4 = read(&probe);
+        println!("whole leaf first: {leaf4:#010x?}; subleaf refused: {refused}");
+        assert!(leaf4.iter().all(|subleaf| *subleaf == [0; 4]));
+    }
+
     /// Creates a partition with this host's profile features and no CPUID
     /// results, and checks that the banks alone present every mapped feature
     /// as the profile pins it. The CPUID results supply the rest.
@@ -721,5 +918,51 @@ mod hw {
             profile.id()
         );
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A partition with the derived features supports exactly the profile's
+    /// XSAVE state components: its own `CPUID.(0xd,0)` (XCR0) and
+    /// `CPUID.(0xd,1)` (IA32_XSS), before any CPUID result applies. A PKRU
+    /// state the profile lacks is reported rather than failed, because no MSHV
+    /// feature controls it.
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn host_profile_features_enable_the_profile_xsave_components() {
+        const XCR0_PKRU: u64 = 1 << 9;
+        let profile = cpu_profile::select_auto(&HostCpuSignature::current()).unwrap();
+        let mshv = Mshv::new().unwrap();
+        let host = host_features(&mshv).unwrap();
+        let features = time_abi_features(profile, host).unwrap();
+        let probe = probe_partition(&mshv, features).unwrap();
+        let partition = |subleaf, low: usize| {
+            let registers = probe.vp.get_cpuid_values(0xd, subleaf, 0, 0).unwrap();
+            u64::from(registers[low]) | u64::from(registers[3]) << 32
+        };
+        let host_cpuid = host_cpuid_table();
+        let root = |subleaf, low: usize| {
+            cpu_profile::cpuid::lookup(&host_cpuid, 0xd, subleaf).map_or(0, |registers| {
+                u64::from(registers[low]) | u64::from(registers[3]) << 32
+            })
+        };
+        let (xcr0, xss) = (partition(0, 0), partition(1, 2));
+        println!(
+            "{}: xsave features {:#x}: XCR0 {xcr0:#x} (profile {:#x}, root {:#x}), \
+             IA32_XSS {xss:#x} (profile {:#x}, root {:#x})",
+            profile.id(),
+            features.xsave,
+            profile.xcr0(),
+            root(0, 0),
+            profile.xss(),
+            root(1, 2)
+        );
+        let unpinned_pkru = XCR0_PKRU & !profile.xcr0();
+        if xcr0 & unpinned_pkru != 0 {
+            println!(
+                "{}: the partition supports PKRU, which the profile lacks",
+                profile.id()
+            );
+        }
+        assert_eq!(xcr0 & !unpinned_pkru, profile.xcr0(), "XCR0 components");
+        assert_eq!(xss, profile.xss(), "IA32_XSS components");
     }
 }

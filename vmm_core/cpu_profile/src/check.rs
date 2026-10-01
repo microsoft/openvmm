@@ -67,7 +67,9 @@ impl FingerprintCheck {
 
 /// Checks a host fingerprint: selects the profile of the host's generation
 /// (`E_PROFILE_HOST_UNKNOWN`) and verifies that the backend supports it
-/// (`E_PROFILE_UNSUPPORTED`).
+/// (`E_PROFILE_UNSUPPORTED`) and, for MSHV and WHP, whose fingerprints record
+/// a probe partition's view, that it presents zero at every CPUID entry
+/// outside the profile's tables (`E_CPU_UNLISTED`).
 pub fn check_fingerprint(fingerprint: &CpuFingerprint) -> FingerprintCheck {
     let cpu = &fingerprint.host.cpu;
     let mut vendor = [0; 12];
@@ -169,5 +171,42 @@ mod tests {
             "{}",
             check.summary_line(&no_avx512)
         );
+    }
+
+    #[test]
+    fn fails_pass_through_hosts_that_present_unlisted_entries() {
+        let profile = profile("intel.skylake-sp.v1");
+        // The RDT monitoring subleaf, which the profile does not list.
+        let mut entries = profile_entries(profile);
+        entries.push(CpuidEntry::new(0xf, Some(1), [0, 0xb, 0x6f, 0x7]));
+        entries.sort_by_key(CpuidEntry::key);
+        for backend in ["mshv", "whp"] {
+            let fingerprint = fingerprint_with(profile, backend, entries.clone());
+            let check = check_fingerprint(&fingerprint);
+            assert_eq!(
+                check.result.as_ref().unwrap_err().code,
+                ProfileErrorCode::CpuUnlisted
+            );
+            let line = check.summary_line(&fingerprint);
+            assert!(
+                line.starts_with(&format!(
+                    "NVX-CPU-PROFILE: status=fail backend={backend} generation=skylake-sp \
+                     profile=intel.skylake-sp.v1 profile_digest="
+                )),
+                "{line}"
+            );
+            assert!(
+                line.ends_with(
+                    " code=E_CPU_UNLISTED detail=\"the backend presents CPUID entries \
+                     outside CPU profile intel.skylake-sp.v1: CPUID 0xf.1 is outside the profile \
+                     and reads EAX 0x0, EBX 0xb, ECX 0x6f, EDX 0x7\""
+                ),
+                "{line}"
+            );
+        }
+
+        // KVM's table makes every unlisted entry read zero.
+        let fingerprint = fingerprint_with(profile, "kvm", entries);
+        check_fingerprint(&fingerprint).result.unwrap();
     }
 }

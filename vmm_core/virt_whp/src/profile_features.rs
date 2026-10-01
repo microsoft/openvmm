@@ -646,6 +646,7 @@ mod whp_tests {
         cpu_profile::cpuid::normalize(&mut cpuid);
         let cheap = cpu_profile::HostCpuSurface {
             cpuid,
+            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
             physical_address_width: cheap.physical_address_width,
             msrs: cheap
                 .msrs
