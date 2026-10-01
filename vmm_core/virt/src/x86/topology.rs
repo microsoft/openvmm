@@ -15,6 +15,7 @@ use x86defs::cpuid::ExtendedAddressSpaceSizesEcx;
 use x86defs::cpuid::ExtendedTopologyEax;
 use x86defs::cpuid::ExtendedTopologyEbx;
 use x86defs::cpuid::ExtendedTopologyEcx;
+use x86defs::cpuid::ProcessorTopologyDefinitionEax;
 use x86defs::cpuid::ProcessorTopologyDefinitionEbx;
 use x86defs::cpuid::ProcessorTopologyDefinitionEcx;
 use x86defs::cpuid::TopologyLevelType;
@@ -29,6 +30,39 @@ pub type CpuidFn<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 #[derive(Debug, Error)]
 #[error("unknown processor vendor {0}")]
 pub struct UnknownVendor(Vendor);
+
+/// Returns the bits of a CPUID result that hold a VP's own APIC identity,
+/// which backends set for each VP: the initial APIC ID in leaf 01h, the
+/// x2APIC ID in leaves 0Bh and 1Fh, and the extended APIC, compute unit, and
+/// node IDs in leaf 8000001Eh. The partition-wide results that
+/// [`topology_cpuid`] builds carry the BSP's identity in these bits.
+pub fn per_vp_cpuid_bits(function: u32) -> [u32; 4] {
+    match CpuidFunction(function) {
+        CpuidFunction::VersionAndFeatures => [
+            0,
+            VersionAndFeaturesEbx::new()
+                .with_initial_apic_id(0xff)
+                .into(),
+            0,
+            0,
+        ],
+        CpuidFunction::ExtendedTopologyEnumeration
+        | CpuidFunction::V2ExtendedTopologyEnumeration => [0, 0, 0, !0],
+        CpuidFunction::ProcessorTopologyDefinition => [
+            ProcessorTopologyDefinitionEax::new()
+                .with_extended_apic_id(!0)
+                .into(),
+            ProcessorTopologyDefinitionEbx::new()
+                .with_compute_unit_id(!0)
+                .into(),
+            ProcessorTopologyDefinitionEcx::new()
+                .with_node_id(!0)
+                .into(),
+            0,
+        ],
+        _ => [0; 4],
+    }
+}
 
 /// Adds appropriately masked leaves for reporting processor topology.
 ///
@@ -137,13 +171,14 @@ fn cache_parameters_cpuid(
             .with_cores_per_socket_minus_one(0x3f)
             .with_threads_sharing_cache_minus_one(0xfff);
 
+        // Each subleaf describes one cache, so the result applies to subleaf
+        // `i` only. An unindexed result would apply to every subleaf, and a
+        // backend that looks up the first matching result, such as KVM,
+        // would then report it for every cache.
         leaves.push(
-            CpuidLeaf::new(CpuidFunction::CacheParameters.0, [eax.into(), 0, 0, 0]).masked([
-                eax_mask.into(),
-                0,
-                0,
-                0,
-            ]),
+            CpuidLeaf::new(CpuidFunction::CacheParameters.0, [eax.into(), 0, 0, 0])
+                .indexed(i)
+                .masked([eax_mask.into(), 0, 0, 0]),
         )
     }
 }
@@ -240,4 +275,93 @@ fn amd_processor_topology_definition_cpuid(
         )
         .masked([0, ebx_mask.into(), ecx_mask.into(), 0]),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CpuidLeafSet;
+    use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::x86::X2ApicState;
+
+    /// An Intel CPU with maximum basic leaf 0x1f and four caches in leaf 4:
+    /// L1 data, L1 instruction, L2, and L3.
+    fn intel_cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
+        match (leaf, subleaf) {
+            (0, _) => [
+                0x1f,
+                u32::from_le_bytes(*b"Genu"),
+                u32::from_le_bytes(*b"ntel"),
+                u32::from_le_bytes(*b"ineI"),
+            ],
+            (4, 0) => [0x21, 0x1c0_003f, 0x3f, 0],
+            (4, 1) => [0x22, 0x1c0_003f, 0x3f, 0],
+            (4, 2) => [0x43, 0x3c0_003f, 0x3ff, 0],
+            (4, 3) => [0x63, 0x3c0_003f, 0xbfff, 4],
+            _ => [0; 4],
+        }
+    }
+
+    #[test]
+    fn cache_results_apply_to_their_own_subleaf() {
+        let topology = TopologyBuilder::new_x86()
+            .vps_per_socket(4)
+            .x2apic(X2ApicState::Supported)
+            .build(4)
+            .unwrap();
+        let mut leaves = Vec::new();
+        topology_cpuid(&topology, &intel_cpuid, &mut leaves).unwrap();
+
+        let caches: Vec<_> = leaves
+            .iter()
+            .filter(|leaf| leaf.function == CpuidFunction::CacheParameters.0)
+            .map(|leaf| leaf.index)
+            .collect();
+        assert_eq!(caches, [Some(0), Some(1), Some(2), Some(3)]);
+
+        // Over each cache's own descriptor, only the topology fields change:
+        // 4 cores per socket.
+        let set = CpuidLeafSet::new(leaves);
+        for subleaf in 0..4 {
+            let native = intel_cpuid(4, subleaf);
+            let result = set.result(4, subleaf, &native);
+            assert_eq!(result[1..], native[1..], "subleaf {subleaf}");
+            assert_eq!(result[0] & 0x3fff, native[0] & 0x3fff, "subleaf {subleaf}");
+            assert_eq!(
+                CacheParametersEax::from(result[0]).cores_per_socket_minus_one(),
+                3
+            );
+        }
+        // The null cache that ends the enumeration keeps its native value.
+        assert_eq!(set.result(4, 4, &[0; 4]), [0; 4]);
+    }
+
+    #[test]
+    fn per_vp_bits_cover_the_bsp_identity() {
+        let topology = TopologyBuilder::new_x86()
+            .vps_per_socket(2)
+            .x2apic(X2ApicState::Supported)
+            .build(2)
+            .unwrap();
+        let mut leaves = Vec::new();
+        topology_cpuid(&topology, &intel_cpuid, &mut leaves).unwrap();
+        for leaf in &leaves {
+            let per_vp = per_vp_cpuid_bits(leaf.function);
+            let expected = match CpuidFunction(leaf.function) {
+                CpuidFunction::VersionAndFeatures => [0, 0xff00_0000, 0, 0],
+                CpuidFunction::ExtendedTopologyEnumeration
+                | CpuidFunction::V2ExtendedTopologyEnumeration => [0, 0, 0, !0],
+                _ => [0; 4],
+            };
+            assert_eq!(per_vp, expected, "{leaf:?}");
+            for (mask, bits) in leaf.mask.iter().zip(per_vp) {
+                assert_eq!(mask & bits, bits);
+            }
+        }
+        assert_ne!(
+            per_vp_cpuid_bits(CpuidFunction::ProcessorTopologyDefinition.0),
+            [0; 4]
+        );
+        assert_eq!(per_vp_cpuid_bits(7), [0; 4]);
+    }
 }
