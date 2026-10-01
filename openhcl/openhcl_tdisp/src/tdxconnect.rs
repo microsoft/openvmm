@@ -548,9 +548,13 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
         let mshv_vtl = Self::open_mshv_vtl()?;
         Self::ensure_tdx_connect(&mshv_vtl)?;
 
-        // Map the TDX VM index from the VTL value. Example: VM_IDX 0 is L1,
-        // which is VTL0.
-        let target = DmarTarget::new().with_vm_idx(target_vtl as u8 + 1);
+        // VTL0 and VTL1 run in L2 VM1 and VM2. OpenHCL's VTL2 runs in L1.
+        let vm_idx = match target_vtl {
+            Vtl::Vtl0 => 1,
+            Vtl::Vtl1 => 2,
+            Vtl::Vtl2 => 0,
+        };
+        let target = DmarTarget::new().with_vm_idx(vm_idx);
 
         tracelimit::info_ratelimited!(
             "TDX Connect tdisp_unblock_dma: accepting DMA with TDG.DMAR.ACCEPT: \
@@ -617,7 +621,7 @@ impl TdispResourceValidationInterface for TdispTdxConnectResourceValidator {
 
     /// Does nothing, as unbinding the device is the only interface that tears
     /// down DMA. Unbind reverses the DMA protections where it can today, and
-    /// will handle this automatically in the future.
+    /// will handle this automatically once the unbind completes.
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         tracelimit::info_ratelimited!(
             vtom = self.vtom,

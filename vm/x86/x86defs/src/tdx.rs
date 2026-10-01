@@ -276,7 +276,7 @@ pub struct DmarTarget {
     pub reserved: u64,
 }
 
-/// RCX (`GPA_BASE_AND_LVL`) input to TDG.TDI.MMIO.ACCEPT; also decodes the
+/// RCX (`GPA_BASE_AND_LVL`) input to TDG.TDI.MMIO.ACCEPT. Also decodes the
 /// resumed GPA returned in RCX. Mirrors [`TdgMemPageAcceptRcx`].
 #[bitfield(u64)]
 pub struct TdgTdiMmioAcceptRcx {
@@ -291,7 +291,7 @@ pub struct TdgTdiMmioAcceptRcx {
     pub reserved2: u64,
 }
 
-/// R9 (`RANGE_SIZE_OFFSET`) input to TDG.TDI.MMIO.ACCEPT; also the remaining
+/// R9 (`RANGE_SIZE_OFFSET`) input to TDG.TDI.MMIO.ACCEPT. Also the remaining
 /// size/offset returned in R9 on resume (once the R9 output path is plumbed).
 #[bitfield(u64)]
 pub struct TdgTdiMmioAcceptR9 {
@@ -312,8 +312,8 @@ open_enum! {
     }
 }
 
-/// Defined by the TDISP standard; see the FUNCTION_ID table in the TDX Connect
-/// ABI EAS and [PCI-SIG, TDISP] v1.0.
+/// See the FUNCTION_ID table in the TDX Connect ABI EAS and [PCI-SIG, TDISP]
+/// v1.0.
 #[bitfield(u32)]
 pub struct TdxFunctionId {
     /// The PCIe requester ID (bus/device/function) of the interface.

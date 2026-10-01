@@ -237,13 +237,15 @@ pub fn new_resource_validator(
             let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
             Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?))
         }
+
         #[cfg(target_os = "linux")]
         IsolationType::Tdx => {
             let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
             Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?))
         }
-        // Isolation types with no validator of their own, and every type at all
-        // on a platform whose validators are Linux only.
+
+        // Isolation types with no validator of their own, or running in an
+        // environment outside of a OpenHCL Linux build
         _ => Ok(Arc::new(noop::TdispNoopResourceValidator::new())),
     }
 }
