@@ -342,6 +342,7 @@ mod tests {
                     user_mode_memory_faults: false,
                     lazy_memory_registration: false,
                     versioned_cpu_contract: false,
+                    time_abi: None,
                 })
                 .unwrap()
                 .build(PartitionConfig {
