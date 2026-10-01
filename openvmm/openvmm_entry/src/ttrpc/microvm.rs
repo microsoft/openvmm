@@ -747,6 +747,7 @@ impl CreateVm {
                     generation_id,
                     restore_entropy,
                     output_drain,
+                    time_abi: None,
                 }
                 .into_resource(),
             },
