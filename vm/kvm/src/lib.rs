@@ -39,11 +39,16 @@ mod ioctl {
 
     const KVMIO: u8 = 0xae;
 
+    ioctl_write_int_bad!(kvm_get_api_version, request_code_none!(KVMIO, 0x0));
     ioctl_write_int_bad!(kvm_create_vm, request_code_none!(KVMIO, 0x1));
+    #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite!(kvm_get_msr_index_list, KVMIO, 0x02, kvm_msr_list);
     ioctl_write_int_bad!(kvm_check_extension, request_code_none!(KVMIO, 0x03));
     ioctl_write_int_bad!(kvm_get_vcpu_mmap_size, request_code_none!(KVMIO, 0x04));
     #[cfg(target_arch = "x86_64")]
     ioctl_readwrite!(kvm_get_supported_cpuid, KVMIO, 0x05, kvm_cpuid2);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite!(kvm_get_msr_feature_index_list, KVMIO, 0x0a, kvm_msr_list);
     #[cfg(target_arch = "x86_64")]
     ioctl_readwrite!(kvm_get_supported_hv_cpuid, KVMIO, 0xc1, kvm_cpuid2);
     ioctl_write_int_bad!(kvm_create_vcpu, request_code_none!(KVMIO, 0x41));
@@ -402,6 +407,20 @@ pub enum Error {
     GetClock(#[source] nix::Error),
     #[error("SetClock")]
     SetClock(#[source] nix::Error),
+    #[error("GetApiVersion")]
+    GetApiVersion(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetMsrIndexList")]
+    GetMsrIndexList(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetMsrFeatureIndexList")]
+    GetMsrFeatureIndexList(#[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("GetFeatureMsr({0:#x})")]
+    GetFeatureMsr(u32, #[source] nix::Error),
+    #[cfg(target_arch = "x86_64")]
+    #[error("KVM did not report the MSR-based feature {0:#x}")]
+    FeatureMsrNotReported(u32),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -524,6 +543,111 @@ impl Kvm {
     pub fn check_extension(&self, extension: u32) -> nix::Result<libc::c_int> {
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe { ioctl::kvm_check_extension(self.as_fd().as_raw_fd(), extension as i32) }
+    }
+
+    /// Returns the KVM API version (`KVM_GET_API_VERSION`), which is 12 for
+    /// every stable KVM.
+    pub fn api_version(&self) -> Result<i32> {
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        unsafe { ioctl::kvm_get_api_version(self.as_fd().as_raw_fd(), 0) }
+            .map_err(Error::GetApiVersion)
+    }
+
+    /// Returns the MSRs that KVM can save and restore for a vCPU
+    /// (`KVM_GET_MSR_INDEX_LIST`).
+    #[cfg(target_arch = "x86_64")]
+    pub fn msr_index_list(&self) -> Result<Vec<u32>> {
+        self.msr_list(ioctl::kvm_get_msr_index_list)
+            .map_err(Error::GetMsrIndexList)
+    }
+
+    /// Returns the MSR-based features that KVM reports
+    /// (`KVM_GET_MSR_FEATURE_INDEX_LIST`).
+    #[cfg(target_arch = "x86_64")]
+    pub fn msr_feature_index_list(&self) -> Result<Vec<u32>> {
+        self.msr_list(ioctl::kvm_get_msr_feature_index_list)
+            .map_err(Error::GetMsrFeatureIndexList)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn msr_list(
+        &self,
+        get: unsafe fn(libc::c_int, *mut kvm_msr_list) -> nix::Result<libc::c_int>,
+    ) -> nix::Result<Vec<u32>> {
+        const MAX_MSR_LIST_ENTRIES: usize = 1024;
+
+        #[repr(C)]
+        struct MsrList {
+            header: kvm_msr_list,
+            indices: [u32; MAX_MSR_LIST_ENTRIES],
+        }
+
+        let mut list = MsrList {
+            header: kvm_msr_list {
+                nmsrs: MAX_MSR_LIST_ENTRIES as u32,
+                ..Default::default()
+            },
+            indices: [0; MAX_MSR_LIST_ENTRIES],
+        };
+        // SAFETY: The header is immediately followed by space for `nmsrs`
+        // indices, as the ioctl requires.
+        unsafe {
+            get(self.as_fd().as_raw_fd(), &mut list.header)?;
+        }
+        let count = (list.header.nmsrs as usize).min(MAX_MSR_LIST_ENTRIES);
+        Ok(list.indices[..count].to_vec())
+    }
+
+    /// Returns the value that KVM reports for the MSR-based feature `index`
+    /// (`KVM_GET_MSRS` on the system file descriptor).
+    #[cfg(target_arch = "x86_64")]
+    pub fn feature_msr(&self, index: u32) -> Result<u64> {
+        #[repr(C)]
+        struct Msrs {
+            header: kvm_msrs,
+            entries: [kvm_msr_entry; 1],
+        }
+
+        let mut msrs = Msrs {
+            header: kvm_msrs {
+                nmsrs: 1,
+                ..Default::default()
+            },
+            entries: [kvm_msr_entry {
+                index,
+                reserved: 0,
+                data: 0,
+            }],
+        };
+        // SAFETY: The header is immediately followed by `nmsrs` entries, as
+        // the ioctl requires.
+        let read = unsafe { ioctl::kvm_get_msrs(self.as_fd().as_raw_fd(), &mut msrs.header) }
+            .map_err(|err| Error::GetFeatureMsr(index, err))?;
+        if read != 1 {
+            return Err(Error::FeatureMsrNotReported(index));
+        }
+        Ok(msrs.entries[0].data)
+    }
+
+    /// Returns the XSAVE features that KVM supports for guests
+    /// (`KVM_X86_XCOMP_GUEST_SUPP`), including dynamically enabled features
+    /// that a VMM must request permission for before KVM reports them in
+    /// [`Self::supported_cpuid`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn xsave_guest_supported(&self) -> Result<u64> {
+        let mut value = 0u64;
+        let attr = kvm_device_attr {
+            group: KVM_X86_GRP_SYSTEM,
+            attr: u64::from(KVM_X86_XCOMP_GUEST_SUPP),
+            addr: std::ptr::from_mut(&mut value) as u64,
+            flags: 0,
+        };
+        // SAFETY: `attr.addr` points to `value` for the duration of the ioctl.
+        unsafe {
+            ioctl::kvm_get_device_attr(self.as_fd().as_raw_fd(), &attr)
+                .map_err(Error::GetDeviceAttr)?;
+        }
+        Ok(value)
     }
 
     pub fn new_vm(&self, vm_type: VmType) -> Result<Partition> {
@@ -727,6 +851,19 @@ impl Partition {
     pub fn check_extension(&self, extension: u32) -> nix::Result<libc::c_int> {
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe { ioctl::kvm_check_extension(self.vm.as_raw_fd(), extension as i32) }
+    }
+
+    /// Returns the TSC frequency, in Hz, that new vCPUs of this VM get
+    /// (`KVM_GET_TSC_KHZ` on the VM, which requires `KVM_CAP_VM_TSC_CONTROL`).
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_frequency_hz(&self) -> Result<u64> {
+        // SAFETY: Calling the documented VM ioctl with no pointer argument.
+        let khz = unsafe { ioctl::kvm_get_tsc_khz(self.vm.as_raw_fd(), 0) }
+            .map_err(Error::GetTscFrequency)?;
+        if khz <= 0 {
+            return Err(Error::GetTscFrequency(nix::errno::Errno::EINVAL));
+        }
+        Ok(khz as u64 * 1000)
     }
 
     #[cfg(target_arch = "aarch64")]
