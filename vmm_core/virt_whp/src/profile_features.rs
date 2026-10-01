@@ -1,37 +1,37 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! WHP processor features derived from a CPU profile.
+//! WHP processor features derived from a CPU profile, and the CPU surface
+//! that WHP supports.
 //!
 //! A WHP partition presents a CPU feature only when the feature's processor
 //! feature bank bit (or XSAVE feature bit) is set, and some of those bits also
 //! decide which MSRs the guest may use (for example `IA32_SPEC_CTRL`).
-//! [`profile_features`] starts from the features WHP offers, clears every bit
-//! whose CPUID feature the profile clears, and restricts the
+//! [`profile_features`] derives the partition's features from its CPU profile
+//! with the Hyper-V feature table that MSHV shares
+//! ([`hv_banks::HV_FEATURES`]): it starts from the features WHP offers, clears
+//! every bit whose CPUID feature the profile clears, and restricts the
 //! `IA32_ARCH_CAPABILITIES` bits that the banks derive to the profile's pinned
-//! value. The partition then behaves as the profile's CPUID describes.
+//! value. Features that no bit controls (for example PKU), the descriptive
+//! leaves (caches, the brand string), and the time policy bits a host lacks
+//! (ARAT and invariant TSC on Azure) reach the guest through the time ABI's
+//! CPUID results: the partition's complete effective CPUID, which
+//! `configure` programs with `CpuidResultList2`.
 //!
-//! Bits without a CPUID feature, such as the nested-paging details, keep WHP's
-//! capability. Features that no bit controls (for example PKU), the
-//! descriptive leaves (caches, the brand string), and the time policy bits a
-//! host lacks (ARAT and invariant TSC on Azure) reach the guest through the
-//! CPUID results ([`profile_cpuid_results`] and the time ABI CPUID).
-//!
-//! The hardware test `features_control_the_mapped_cpuid_bits` checks the table
-//! against what WHP presents on a host.
+//! [`supported_surface`] reports what WHP supports without a probe partition.
+//! The hardware tests check the table and the surface against what WHP
+//! presents on a host.
 
 use cpu_profile::CpuProfile;
-use cpu_profile::TIME_POLICY_BITS;
+use cpu_profile::cpuid::CpuidEntry;
 use cpu_profile::hv_banks;
-use hvdef::HvX64PartitionProcessorFeatures as Bank0;
+use cpu_profile::hv_banks::HvFeatures;
 use hvdef::HvX64PartitionProcessorFeatures1 as Bank1;
 use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
-use whp::abi::WHV_CPUID_OUTPUT;
-use whp::abi::WHV_X64_CPUID_RESULT2;
-use whp::abi::WHV_X64_CPUID_RESULT2_FLAGS;
-use whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
+use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::surface::SupportedMsrValue;
 
 /// `IA32_ARCH_CAPABILITIES`.
 const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
@@ -49,382 +49,127 @@ const X7: u32 = 0x8000_0007;
 const X8: u32 = 0x8000_0008;
 
 /// WHP processor features: feature banks 0 and 1, and the XSAVE features.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct WhpFeatures {
-    pub banks: [u64; 2],
-    pub xsave: u64,
-}
+pub(crate) type WhpFeatures = HvFeatures;
 
-impl WhpFeatures {
-    fn word_mut(&mut self, bank: Bank) -> &mut u64 {
-        match bank {
-            Bank::Features0 => &mut self.banks[0],
-            Bank::Features1 => &mut self.banks[1],
-            Bank::Xsave => &mut self.xsave,
-        }
-    }
-
-    #[cfg(test)]
-    fn word(&self, bank: Bank) -> u64 {
-        match bank {
-            Bank::Features0 => self.banks[0],
-            Bank::Features1 => self.banks[1],
-            Bank::Xsave => self.xsave,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Bank {
-    Features0,
-    Features1,
-    Xsave,
-}
-
-#[cfg(test)]
-impl Bank {
-    fn name(self) -> &'static str {
-        match self {
-            Bank::Features0 => "bank0",
-            Bank::Features1 => "bank1",
-            Bank::Xsave => "xsave",
-        }
-    }
-}
-
-/// A CPUID feature bit: leaf, subleaf, register (EAX through EDX), and bit.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct CpuidBit {
-    leaf: u32,
-    subleaf: u32,
-    register: usize,
-    bit: u32,
-}
-
-impl std::fmt::Display for CpuidBit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let register = ["eax", "ebx", "ecx", "edx"][self.register];
-        write!(
-            f,
-            "{:#x}.{}:{}[{}]",
-            self.leaf, self.subleaf, register, self.bit
-        )
-    }
-}
-
-const fn cpuid(leaf: u32, subleaf: u32, register: usize, bit: u32) -> CpuidBit {
-    CpuidBit {
-        leaf,
-        subleaf,
-        register,
-        bit,
-    }
-}
-
-/// A WHP feature bit and the CPUID feature bit it controls.
-struct Feature {
-    name: &'static str,
-    bank: Bank,
-    mask: u64,
-    cpuid: CpuidBit,
-}
-
-impl Feature {
-    fn name(&self) -> &'static str {
-        self.name.trim_start_matches("with_")
-    }
-
-    fn is_time_policy(&self) -> bool {
-        let bit = self.cpuid;
-        TIME_POLICY_BITS.contains(&(bit.leaf, bit.subleaf, bit.register, 1 << bit.bit))
-    }
-}
-
-macro_rules! feature {
-    ($bank:ident, $ty:ident, $with:ident, $leaf:expr, $subleaf:expr, $register:expr, $bit:expr) => {
-        Feature {
-            name: stringify!($with),
-            bank: Bank::$bank,
-            mask: $ty::new().$with(true).into_bits(),
-            cpuid: cpuid($leaf, $subleaf, $register, $bit),
-        }
-    };
-}
-
-macro_rules! bank0 {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Features0, Bank0, $with, $($cpuid),+)
-    };
-}
-
-macro_rules! bank1 {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Features1, Bank1, $with, $($cpuid),+)
-    };
-}
-
-macro_rules! xsave {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Xsave, XsaveBank, $with, $($cpuid),+)
-    };
-}
-
-/// The WHP feature bits with a CPUID feature, as leaf, subleaf, register, and
-/// bit. The leaves follow the Intel SDM and the AMD APM. The bits that the
-/// banks derive into `IA32_ARCH_CAPABILITIES` are [`hv_banks`]'s.
-const FEATURES: &[Feature] = &[
-    // Bank 0.
-    bank0!(with_sse3_support, 1, 0, ECX, 0),
-    bank0!(with_lahf_sahf_support, X1, 0, ECX, 0),
-    bank0!(with_ssse3_support, 1, 0, ECX, 9),
-    bank0!(with_sse4_1_support, 1, 0, ECX, 19),
-    bank0!(with_sse4_2_support, 1, 0, ECX, 20),
-    bank0!(with_sse4a_support, X1, 0, ECX, 6),
-    bank0!(with_xop_support, X1, 0, ECX, 11),
-    bank0!(with_pop_cnt_support, 1, 0, ECX, 23),
-    bank0!(with_cmpxchg16b_support, 1, 0, ECX, 13),
-    bank0!(with_altmovcr8_support, X1, 0, ECX, 4),
-    bank0!(with_lzcnt_support, X1, 0, ECX, 5),
-    bank0!(with_mis_align_sse_support, X1, 0, ECX, 7),
-    bank0!(with_mmx_ext_support, X1, 0, EDX, 22),
-    bank0!(with_amd3d_now_support, X1, 0, EDX, 31),
-    bank0!(with_extended_amd3d_now_support, X1, 0, EDX, 30),
-    bank0!(with_page_1gb_support, X1, 0, EDX, 26),
-    bank0!(with_aes_support, 1, 0, ECX, 25),
-    bank0!(with_pclmulqdq_support, 1, 0, ECX, 1),
-    bank0!(with_pcid_support, 1, 0, ECX, 17),
-    bank0!(with_fma4_support, X1, 0, ECX, 16),
-    bank0!(with_f16c_support, 1, 0, ECX, 29),
-    bank0!(with_rd_rand_support, 1, 0, ECX, 30),
-    bank0!(with_rd_wr_fs_gs_support, 7, 0, EBX, 0),
-    bank0!(with_smep_support, 7, 0, EBX, 7),
-    bank0!(with_enhanced_fast_string_support, 7, 0, EBX, 9),
-    bank0!(with_bmi1_support, 7, 0, EBX, 3),
-    bank0!(with_bmi2_support, 7, 0, EBX, 8),
-    bank0!(with_movbe_support, 1, 0, ECX, 22),
-    bank0!(with_dep_x87_fpu_save_support, 7, 0, EBX, 13),
-    bank0!(with_rd_seed_support, 7, 0, EBX, 18),
-    bank0!(with_adx_support, 7, 0, EBX, 19),
-    bank0!(with_intel_prefetch_support, X1, 0, ECX, 8),
-    bank0!(with_smap_support, 7, 0, EBX, 20),
-    bank0!(with_hle_support, 7, 0, EBX, 4),
-    bank0!(with_rtm_support, 7, 0, EBX, 11),
-    bank0!(with_rdtscp_support, X1, 0, EDX, 27),
-    bank0!(with_clflushopt_support, 7, 0, EBX, 23),
-    bank0!(with_clwb_support, 7, 0, EBX, 24),
-    bank0!(with_sha_support, 7, 0, EBX, 29),
-    bank0!(with_x87_pointers_saved_support, X8, 0, EBX, 2),
-    bank0!(with_invpcid_support, 7, 0, EBX, 10),
-    bank0!(with_ibrs_support, 7, 0, EDX, 26),
-    bank0!(with_stibp_support, 7, 0, EDX, 27),
-    // CPUID enumerates IBPB with IBRS; WHP derives the bit from IBRS.
-    bank0!(with_ibpb_support, 7, 0, EDX, 26),
-    bank0!(with_mdd_support, 7, 0, EDX, 31),
-    bank0!(with_fast_short_rep_mov_support, 7, 0, EDX, 4),
-    bank0!(with_l1d_cache_flush_support, 7, 0, EDX, 28),
-    bank0!(with_rd_pid_support, 7, 0, ECX, 22),
-    bank0!(with_umip_support, 7, 0, ECX, 2),
-    bank0!(with_mb_clear_support, 7, 0, EDX, 10),
-    // Bank 1.
-    bank1!(with_a_count_m_count_support, 6, 0, ECX, 0),
-    bank1!(with_tsc_invariant_support, X7, 0, EDX, 8),
-    bank1!(with_cl_zero_support, X8, 0, EBX, 0),
-    bank1!(with_rdpru_support, X8, 0, EBX, 4),
-    bank1!(with_la57_support, 7, 0, ECX, 16),
-    bank1!(with_nested_virt_support, 1, 0, ECX, 5),
-    bank1!(with_psfd_support, 7, 2, EDX, 0),
-    bank1!(with_cet_ss_support, 7, 0, ECX, 7),
-    bank1!(with_cet_ibt_support, 7, 0, EDX, 20),
-    bank1!(with_enqcmd_support, 7, 0, ECX, 29),
-    bank1!(with_umwait_tpause_support, 7, 0, ECX, 5),
-    bank1!(with_movdiri_support, 7, 0, ECX, 27),
-    bank1!(with_movdir64b_support, 7, 0, ECX, 28),
-    bank1!(with_cldemote_support, 7, 0, ECX, 25),
-    bank1!(with_serialize_support, 7, 0, EDX, 14),
-    bank1!(with_tsc_deadline_tmr_support, 1, 0, ECX, 24),
-    bank1!(with_tsc_adjust_support, 7, 0, EBX, 1),
-    bank1!(with_fz_l_rep_movsb, 7, 1, EAX, 10),
-    bank1!(with_fs_rep_stosb, 7, 1, EAX, 11),
-    bank1!(with_fs_rep_cmpsb, 7, 1, EAX, 12),
-    bank1!(with_tsx_ld_trk_support, 7, 0, EDX, 16),
-    bank1!(with_cmpccxadd_support, 7, 1, EAX, 7),
-    bank1!(with_bhi_dis_support, 7, 2, EDX, 4),
-    bank1!(with_prefetch_i_support, 7, 1, EDX, 14),
-    bank1!(with_sha512_support, 7, 1, EAX, 0),
-    bank1!(with_sm3_support, 7, 1, EAX, 1),
-    bank1!(with_sm4_support, 7, 1, EAX, 2),
-    bank1!(with_lass_support, 7, 1, EAX, 6),
-    // XSAVE features.
-    xsave!(with_xsave_support, 1, 0, ECX, 26),
-    xsave!(with_xsaveopt_support, 0xd, 1, EAX, 0),
-    xsave!(with_avx_support, 1, 0, ECX, 28),
-    xsave!(with_avx2_support, 7, 0, EBX, 5),
-    xsave!(with_fma_support, 1, 0, ECX, 12),
-    xsave!(with_mpx_support, 7, 0, EBX, 14),
-    xsave!(with_avx512_support, 7, 0, EBX, 16),
-    xsave!(with_avx512_dq_support, 7, 0, EBX, 17),
-    xsave!(with_avx512_cd_support, 7, 0, EBX, 28),
-    xsave!(with_avx512_bw_support, 7, 0, EBX, 30),
-    xsave!(with_avx512_vl_support, 7, 0, EBX, 31),
-    xsave!(with_xsave_comp_support, 0xd, 1, EAX, 1),
-    xsave!(with_xsave_supervisor_support, 0xd, 1, EAX, 3),
-    xsave!(with_xcr1_support, 0xd, 1, EAX, 2),
-    xsave!(with_avx512_bitalg_support, 7, 0, ECX, 12),
-    xsave!(with_avx512_ifma_support, 7, 0, EBX, 21),
-    xsave!(with_avx512_vbmi_support, 7, 0, ECX, 1),
-    xsave!(with_avx512_vbmi2_support, 7, 0, ECX, 6),
-    xsave!(with_avx512_vnni_support, 7, 0, ECX, 11),
-    xsave!(with_gfni_support, 7, 0, ECX, 8),
-    xsave!(with_vaes_support, 7, 0, ECX, 9),
-    xsave!(with_avx512_vpopcntdq_support, 7, 0, ECX, 14),
-    xsave!(with_vpclmulqdq_support, 7, 0, ECX, 10),
-    xsave!(with_avx512_bf16_support, 7, 1, EAX, 5),
-    xsave!(with_avx512_vp2_intersect_support, 7, 0, EDX, 8),
-    xsave!(with_avx512_fp16_support, 7, 0, EDX, 23),
-    xsave!(with_xfd_support, 0xd, 1, EAX, 4),
-    xsave!(with_amx_tile_support, 7, 0, EDX, 24),
-    xsave!(with_amx_bf16_support, 7, 0, EDX, 22),
-    xsave!(with_amx_int8_support, 7, 0, EDX, 25),
-    xsave!(with_avx_vnni_support, 7, 1, EAX, 4),
-    xsave!(with_avx_ifma_support, 7, 1, EAX, 23),
-    xsave!(with_avx_ne_convert_support, 7, 1, EDX, 5),
-    xsave!(with_avx_vnni_int8_support, 7, 1, EDX, 4),
-    xsave!(with_avx_vnni_int16_support, 7, 1, EDX, 10),
-    // CPUID enumerates AVX10 once; leaf 0x24 reports its vector lengths.
-    xsave!(with_avx10_1_256_support, 7, 1, EDX, 19),
-    xsave!(with_avx10_1_512_support, 7, 1, EDX, 19),
-    xsave!(with_amx_fp16_support, 7, 1, EAX, 21),
-];
-
-/// How a profile pins a CPUID feature bit.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Pinned {
-    Set,
-    Clear,
-    Unpinned,
-}
-
-/// Returns how `profile` pins `bit`. A leaf the profile does not list reads
-/// zero, pinned.
-fn pinned(profile: &CpuProfile, bit: CpuidBit) -> Pinned {
-    let (value, mask) = profile
-        .cpuid()
-        .iter()
-        .find(|entry| {
-            let (leaf, subleaf) = entry.key();
-            leaf == bit.leaf && subleaf.unwrap_or(0) == bit.subleaf
-        })
-        .map_or((0, !0), |entry| {
-            (entry.values()[bit.register], entry.masks()[bit.register])
-        });
-    let flag = 1 << bit.bit;
-    if mask & flag == 0 {
-        Pinned::Unpinned
-    } else if value & flag != 0 {
-        Pinned::Set
-    } else {
-        Pinned::Clear
-    }
-}
-
-/// Returns the WHP features for `profile`, given the features WHP offers.
-///
-/// Every feature bit whose CPUID feature the profile clears is cleared, and
-/// the `IA32_ARCH_CAPABILITIES` bits the banks derive are restricted to the
-/// profile's pinned value. Fails with `E_PROFILE_UNSUPPORTED` when the profile
-/// sets a CPUID feature whose bit WHP does not offer (except the time policy
-/// bits, which the CPUID results supply), or when the banks cannot present
-/// the profile's `IA32_ARCH_CAPABILITIES`.
+/// Returns the WHP features of a partition that presents `profile`, given
+/// the features WHP offers ([`hv_banks::profile_features`]). Fails with
+/// `E_PROFILE_UNSUPPORTED` when WHP cannot present the profile's features
+/// or its `IA32_ARCH_CAPABILITIES`.
 pub(crate) fn profile_features(
     profile: &CpuProfile,
     available: WhpFeatures,
 ) -> Result<WhpFeatures, TimeAbiError> {
-    let mut features = available;
-    let mut missing = Vec::new();
-    for feature in FEATURES {
-        let word = features.word_mut(feature.bank);
-        match pinned(profile, feature.cpuid) {
-            Pinned::Clear => *word &= !feature.mask,
-            Pinned::Set if *word & feature.mask == 0 && !feature.is_time_policy() => {
-                missing.push(feature.name().to_owned());
-            }
-            Pinned::Set | Pinned::Unpinned => {}
-        }
-    }
-    hv_banks::restrict_banks_to_profile(profile, &mut features.banks);
-    if let Some((value, mask)) = profile.msr(MSR_ARCH_CAPABILITIES) {
-        let presented = hv_banks::arch_capabilities_from_banks(features.banks);
-        if presented & mask != value & mask {
-            missing.push(format!(
-                "IA32_ARCH_CAPABILITIES {:#x} (the banks present {:#x} under mask {mask:#x})",
-                value & mask,
-                presented & mask
-            ));
-        }
-    }
-    if !missing.is_empty() {
-        return Err(TimeAbiError::new(
-            TimeAbiCode::ProfileUnsupported,
-            format!(
-                "WHP cannot present CPU profile {}: it lacks {}",
-                profile.id(),
-                missing.join(", ")
-            ),
-        ));
-    }
-    Ok(features)
+    hv_banks::profile_features(profile, available)
+        .map_err(|err| TimeAbiError::new(TimeAbiCode::ProfileUnsupported, err.message))
 }
 
-/// Returns the CPUID results that present `profile`'s pinned bits: one
-/// `CpuidResultList2` entry per profile leaf, with the profile's mask, so the
-/// pinned bits (features, descriptors, the brand string) come from the
-/// profile and the rest (runtime state such as OSXSAVE, and the VM-owned
-/// topology fields) from WHP and OpenVMM. The VM-owned topology leaves are
-/// left to OpenVMM's CPUID exits.
+/// Returns whether a partition with `available` features supports XSAVE
+/// state component `component` (an XCR0 or `IA32_XSS` bit). PKRU has no WHP
+/// feature: like PKU, it follows the host.
+fn xsave_component_enabled(component: u32, available: WhpFeatures) -> bool {
+    let xsave = XsaveBank::from(available.xsave);
+    let bank1 = Bank1::from(available.banks[1]);
+    if !xsave.xsave_support() {
+        return false;
+    }
+    match component {
+        // x87, SSE, and PKRU.
+        0 | 1 | 9 => true,
+        2 => xsave.avx_support(),
+        3 | 4 => xsave.mpx_support(),
+        5..=7 => xsave.avx512_support(),
+        // CET user and supervisor state.
+        11 | 12 => {
+            xsave.xsave_supervisor_support() && (bank1.cet_ss_support() || bank1.cet_ibt_support())
+        }
+        17 | 18 => xsave.amx_tile_support(),
+        _ => false,
+    }
+}
+
+/// Returns the CPU surface that WHP supports for a partition with every
+/// feature in `available`, without a probe partition: `host`, the host's
+/// CPUID as the root partition sees it, with
 ///
-/// WHP returns these results for leaves without an exit, and as the default
-/// result of a CPUID exit, on which OpenVMM applies the time ABI CPUID.
-pub(crate) fn profile_cpuid_results(profile: &CpuProfile) -> Vec<WHV_X64_CPUID_RESULT2> {
-    profile
-        .cpuid()
+/// - every CPUID feature bit that a WHP feature controls cleared where
+///   `available` lacks the feature ([`hv_banks::restrict_cpuid_to_features`]);
+/// - only the XSAVE state components that `available` enables, in leaf
+///   `0xD` (subleaves 0 and 1, and the component subleaves, whose layout is
+///   the host's);
+/// - no hypervisor-range leaf, since the partition has no synthetic
+///   processor features.
+///
+/// The guest physical address width, in the surface and in CPUID
+/// `0x80000008` EAX[7:0], is `physical_address_width`, the partition's: WHP's
+/// limit can differ from the host's. The other bits, the maximum leaves, and
+/// the linear address width are the host's. `IA32_ARCH_CAPABILITIES` is what
+/// the banks derive.
+pub(crate) fn supported_surface(
+    host: &[CpuidEntry],
+    available: WhpFeatures,
+    physical_address_width: u8,
+) -> SupportedCpuSurface {
+    let components = (0..64)
+        .filter(|&component| xsave_component_enabled(component, available))
+        .fold(0u64, |mask, component| mask | 1 << component);
+    let mut host: Vec<CpuidEntry> = host
+        .iter()
+        .filter(|entry| !(0x4000_0000..=0x4fff_ffff).contains(&entry.leaf.0))
+        .cloned()
+        .collect();
+    hv_banks::restrict_cpuid_to_features(&mut host, available);
+
+    let cpuid = host
         .iter()
         .filter_map(|entry| {
             let (leaf, subleaf) = entry.key();
-            let mask = entry.masks();
-            if cpu_profile::VM_OWNED_LEAVES.contains(&leaf) || mask == [0; 4] {
+            let index = subleaf.unwrap_or(0);
+            if leaf == 0xd && (2..64).contains(&index) && components & (1 << index) == 0 {
                 return None;
             }
-            let values = entry.values();
-            let output = |registers: [u32; 4]| WHV_CPUID_OUTPUT {
-                Eax: registers[EAX],
-                Ebx: registers[EBX],
-                Ecx: registers[ECX],
-                Edx: registers[EDX],
-            };
-            Some(WHV_X64_CPUID_RESULT2 {
-                Function: leaf,
-                Index: subleaf.unwrap_or(0),
-                VpIndex: 0,
-                Flags: if subleaf.is_some() {
-                    WHvX64CpuidResult2FlagSubleafSpecific
-                } else {
-                    WHV_X64_CPUID_RESULT2_FLAGS(0)
-                },
-                Output: output(std::array::from_fn(|i| values[i] & mask[i])),
-                Mask: output(mask),
+            let mut registers = entry.registers();
+            match (leaf, index) {
+                (0xd, 0) => {
+                    registers[EAX] &= components as u32;
+                    registers[EDX] &= (components >> 32) as u32;
+                }
+                (0xd, 1) => {
+                    registers[ECX] &= components as u32;
+                    registers[EDX] &= (components >> 32) as u32;
+                }
+                (X8, _) => {
+                    registers[EAX] = (registers[EAX] & !0xff) | u32::from(physical_address_width);
+                }
+                _ => {}
+            }
+            let result = virt::CpuidLeaf::new(leaf, registers);
+            Some(match subleaf {
+                Some(subleaf) => result.indexed(subleaf),
+                None => result,
             })
         })
-        .collect()
+        .collect();
+
+    let arch_capabilities = hv_banks::arch_capabilities_msr(available.banks);
+    SupportedCpuSurface {
+        cpuid,
+        physical_address_width,
+        msrs: vec![SupportedMsrValue {
+            index: arch_capabilities.index,
+            supported: arch_capabilities.supported,
+            controllable: arch_capabilities.controllable,
+        }],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hvdef::HvX64PartitionProcessorFeatures as Bank0;
 
     /// Feature capabilities that WHP reported on the fleet's hosts (CPU
-    /// fingerprints): prometheus28 (Skylake-SP, bare metal), the 8370C
-    /// runners (Ice Lake, nested), and the 8573C runners (Emerald Rapids,
-    /// nested).
+    /// fingerprints): prometheus28 (Skylake-SP, bare metal) and the 8370C
+    /// runners (Ice Lake, nested).
     const PROMETHEUS28: WhpFeatures = WhpFeatures {
         banks: [0x1001_f9ff_e7f7_859f, 0x0000_000f_1086_0063],
         xsave: 0x3fff,
@@ -433,209 +178,68 @@ mod tests {
         banks: [0x2e0a_8bff_e7f7_859f, 0x0001_000e_0000_00f1],
         xsave: 0x7f_ffdf,
     };
-    const AZURE_8573C: WhpFeatures = WhpFeatures {
-        banks: [0x0e0a_8bff_e7f7_859f, 0x0000_000c_0000_0051],
-        xsave: 0x7f_ffdf,
-    };
 
-    const HOSTS: [(&str, WhpFeatures); 3] = [
-        ("intel.skylake-sp.v1", PROMETHEUS28),
-        ("intel.icelake-sp.v1", AZURE_8370C),
-        ("intel.emeraldrapids.v1", AZURE_8573C),
-    ];
-
-    fn profile(id: &str) -> &'static CpuProfile {
-        cpu_profile::pinned(id).unwrap_or_else(|| panic!("profile {id} is not pinned"))
-    }
-
-    fn has(features: &WhpFeatures, bank: Bank, mask: u64) -> bool {
-        features.word(bank) & mask != 0
+    #[test]
+    fn profiles_derive_and_shortfalls_are_unsupported() {
+        let skylake = cpu_profile::pinned("intel.skylake-sp.v1").unwrap();
+        profile_features(skylake, PROMETHEUS28).unwrap();
+        let emerald = cpu_profile::pinned("intel.emeraldrapids.v1").unwrap();
+        let error = profile_features(emerald, PROMETHEUS28).unwrap_err();
+        assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
+        assert!(error.message.contains("avx512"), "{error}");
     }
 
     #[test]
-    fn every_feature_is_one_distinct_bit() {
-        let mut seen = Vec::new();
-        for feature in FEATURES {
-            assert_eq!(feature.mask.count_ones(), 1, "{}", feature.name());
-            assert!(
-                !seen.contains(&(feature.bank, feature.mask)),
-                "{} repeats a bit",
-                feature.name()
-            );
-            seen.push((feature.bank, feature.mask));
+    fn the_supported_surface_follows_the_capability() {
+        // A host that reports every feature, AVX-512 and AMX state, and a
+        // hypervisor leaf.
+        let mut host = vec![
+            CpuidEntry::new(0, None, [0xd, 0x756e_6547, 0x6c65_746e, 0x4965_6e69]),
+            CpuidEntry::new(1, None, [0x0005_0654, 0, !0, !0]),
+            CpuidEntry::new(7, Some(0), [0, !0, !0, !0]),
+            CpuidEntry::new(0xd, Some(0), [0x6_02e7, 0x2b00, 0x2b00, 0]),
+            CpuidEntry::new(0xd, Some(1), [0xf, 0, 0x1800, 0]),
+            CpuidEntry::new(0x4000_0000, None, [0x4000_000b, 1, 2, 3]),
+            CpuidEntry::new(X8, None, [0x3_302e, 0, 0, 0]),
+        ];
+        for component in [2, 5, 6, 7, 9, 17, 18] {
+            host.push(CpuidEntry::new(0xd, Some(component), [8, 64, 0, 0]));
         }
-    }
-
-    #[test]
-    fn pinned_profiles_derive_on_their_hosts() {
-        for (id, available) in HOSTS {
-            let profile = profile(id);
-            let features = profile_features(profile, available).unwrap();
-            for bank in [Bank::Features0, Bank::Features1, Bank::Xsave] {
-                assert_eq!(
-                    features.word(bank) & !available.word(bank),
-                    0,
-                    "{id}: {} gained bits",
-                    bank.name()
-                );
-            }
-            // Every mapped bit follows the profile's CPUID.
-            for feature in FEATURES {
-                let offered = has(&available, feature.bank, feature.mask);
-                let kept = has(&features, feature.bank, feature.mask);
-                match pinned(profile, feature.cpuid) {
-                    Pinned::Clear => assert!(!kept, "{id}: {}", feature.name()),
-                    Pinned::Set | Pinned::Unpinned => {
-                        assert_eq!(kept, offered, "{id}: {}", feature.name())
-                    }
-                }
-            }
-            // The time policy: no TSC-deadline, TSC_ADJUST, or APERF/MPERF.
-            for mask in [
-                Bank1::new().with_tsc_deadline_tmr_support(true).into_bits(),
-                Bank1::new().with_tsc_adjust_support(true).into_bits(),
-                Bank1::new().with_a_count_m_count_support(true).into_bits(),
-            ] {
-                assert!(!has(&features, Bank::Features1, mask), "{id}: {mask:#x}");
-            }
-            let (value, mask) = profile.msr(MSR_ARCH_CAPABILITIES).unwrap();
-            assert_eq!(
-                hv_banks::arch_capabilities_from_banks(features.banks) & mask,
-                value & mask,
-                "{id}"
-            );
-        }
-    }
-
-    #[test]
-    fn skylake_keeps_the_speculation_controls() {
-        // The Skylake-SP profile pins SPEC_CTRL, STIBP, SSBD, and MD_CLEAR
-        // (CPUID 7.0 EDX 0xac000400), which WHP's default features omit. The
-        // Azure profiles pin none of them (EDX 0x20000010), as Azure's WHP
-        // offers none.
-        let features = profile_features(profile("intel.skylake-sp.v1"), PROMETHEUS28).unwrap();
-        for mask in [
-            Bank0::new().with_ibrs_support(true).into_bits(),
-            Bank0::new().with_ibpb_support(true).into_bits(),
-            Bank0::new().with_stibp_support(true).into_bits(),
-            Bank0::new().with_mdd_support(true).into_bits(),
-            Bank0::new().with_mb_clear_support(true).into_bits(),
-        ] {
-            assert!(has(&features, Bank::Features0, mask), "{mask:#x}");
-        }
-    }
-
-    #[test]
-    fn invariant_tsc_follows_the_host_and_the_cpuid_results_supply_it() {
-        let invariant = Bank1::new().with_tsc_invariant_support(true).into_bits();
-        let skylake = profile_features(profile("intel.skylake-sp.v1"), PROMETHEUS28).unwrap();
-        assert!(has(&skylake, Bank::Features1, invariant));
-        // Azure's WHP offers no invariant TSC; the profile still pins it, and
-        // the derivation leaves it to the CPUID results.
-        let icelake = profile_features(profile("intel.icelake-sp.v1"), AZURE_8370C).unwrap();
-        assert!(!has(&icelake, Bank::Features1, invariant));
-    }
-
-    #[test]
-    fn a_missing_feature_is_unsupported() {
-        let mut available = PROMETHEUS28;
+        host.sort_by_key(CpuidEntry::key);
+        let mut available = AZURE_8370C;
         available.xsave &= !XsaveBank::new().with_avx512_support(true).into_bits();
-        available.banks[0] &= !Bank0::new().with_ibrs_support(true).into_bits();
-        let error = profile_features(profile("intel.skylake-sp.v1"), available).unwrap_err();
-        assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
-        assert!(error.message.contains("avx512_support"), "{error}");
-        assert!(error.message.contains("ibrs_support"), "{error}");
-    }
-
-    #[test]
-    fn a_newer_profile_is_unsupported_on_an_older_host() {
-        let error = profile_features(profile("intel.emeraldrapids.v1"), PROMETHEUS28).unwrap_err();
-        assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
-    }
-
-    #[test]
-    fn unlisted_leaves_read_zero_and_unmasked_bits_are_unpinned() {
-        let skylake = profile("intel.skylake-sp.v1");
-        // Skylake-SP lists no leaf 7.1, so its features are pinned clear.
-        assert_eq!(pinned(skylake, cpuid(7, 1, EAX, 5)), Pinned::Clear);
-        // OSXSAVE is guest state: the profile leaves it unpinned.
-        assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 27)), Pinned::Unpinned);
-        assert_eq!(pinned(skylake, cpuid(1, 0, ECX, 26)), Pinned::Set);
-    }
-
-    #[test]
-    fn profile_results_present_every_pinned_leaf() {
-        for (id, _) in HOSTS {
-            let profile = profile(id);
-            let results = profile_cpuid_results(profile);
-            let pinned_entries = profile
-                .cpuid()
+        available.banks[0] &= !Bank0::new().with_smep_support(true).into_bits();
+        let surface = supported_surface(&host, available, 0x2e);
+        let lookup = |leaf: u32, subleaf: u32| {
+            surface
+                .cpuid
                 .iter()
-                .filter(|entry| {
-                    !cpu_profile::VM_OWNED_LEAVES.contains(&entry.key().0)
-                        && entry.masks() != [0; 4]
-                })
-                .count();
-            assert_eq!(results.len(), pinned_entries, "{id}");
-            for result in &results {
-                assert!(!cpu_profile::VM_OWNED_LEAVES.contains(&result.Function));
-                let entry = profile
-                    .cpuid()
-                    .iter()
-                    .find(|entry| {
-                        let (leaf, subleaf) = entry.key();
-                        leaf == result.Function
-                            && subleaf.unwrap_or(0) == result.Index
-                            && subleaf.is_some()
-                                == result.Flags.is_set(WHvX64CpuidResult2FlagSubleafSpecific)
-                    })
-                    .unwrap();
-                let output = [
-                    result.Output.Eax,
-                    result.Output.Ebx,
-                    result.Output.Ecx,
-                    result.Output.Edx,
-                ];
-                let mask = [
-                    result.Mask.Eax,
-                    result.Mask.Ebx,
-                    result.Mask.Ecx,
-                    result.Mask.Edx,
-                ];
-                assert_eq!(mask, entry.masks(), "{id} {:#x}", result.Function);
-                for register in 0..4 {
-                    assert_eq!(
-                        output[register],
-                        entry.values()[register] & mask[register],
-                        "{id} {:#x}",
-                        result.Function
-                    );
-                }
-            }
-            // The brand string is the profile's generic one, not the host's.
-            let brand: String = [0x8000_0002, 0x8000_0003, 0x8000_0004]
-                .iter()
-                .flat_map(|&leaf| {
-                    let result = results.iter().find(|r| r.Function == leaf).unwrap();
-                    [
-                        result.Output.Eax,
-                        result.Output.Ebx,
-                        result.Output.Ecx,
-                        result.Output.Edx,
-                    ]
-                })
-                .flat_map(u32::to_le_bytes)
-                .take_while(|&byte| byte != 0)
-                .map(char::from)
-                .collect();
-            assert!(
-                brand.starts_with("Intel(R) Xeon(R) Processor ("),
-                "{id}: {brand}"
-            );
-            // Runtime state stays with the hypervisor: OSXSAVE is unpinned.
-            let leaf1 = results.iter().find(|r| r.Function == 1).unwrap();
-            assert_eq!(leaf1.Mask.Ecx & (1 << 27), 0, "{id}");
-        }
+                .find(|result| result.matches(leaf, subleaf))
+                .map(|result| result.result)
+        };
+        // A feature WHP does not offer is cleared; one it offers stays.
+        assert_eq!(lookup(7, 0).unwrap()[EBX] & (1 << 7), 0, "SMEP");
+        assert_ne!(lookup(7, 0).unwrap()[EBX] & 1, 0, "FSGSBASE");
+        assert_eq!(lookup(7, 0).unwrap()[EBX] & (1 << 16), 0, "AVX512F");
+        // Bits no WHP feature controls keep the host's value.
+        assert_ne!(lookup(1, 0).unwrap()[EDX] & 1, 0, "FPU");
+        // Only the XSAVE components the features enable remain: no AVX-512
+        // and no AMX (the 8370C offers no AMX tiles).
+        assert_eq!(lookup(0xd, 0).unwrap()[EAX], 0x207);
+        assert!(lookup(0xd, 5).is_none() && lookup(0xd, 17).is_none());
+        assert_eq!(lookup(0xd, 2).unwrap(), [8, 64, 0, 0]);
+        // No hypervisor leaf; the physical address width is the partition's.
+        assert!(lookup(0x4000_0000, 0).is_none());
+        assert_eq!(surface.physical_address_width, 0x2e);
+        let narrow = supported_surface(&host, available, 0x27);
+        let x8 = narrow
+            .cpuid
+            .iter()
+            .find(|result| result.function == X8)
+            .unwrap();
+        assert_eq!(x8.result[EAX], 0x3_3027);
+        assert_eq!(surface.msrs.len(), 1);
+        assert_eq!(surface.msrs[0].index, MSR_ARCH_CAPABILITIES);
     }
 }
 
@@ -646,9 +250,17 @@ mod whp_tests {
 
     use super::*;
     use cpu_profile::HostCpuSignature;
+    use cpu_profile::hv_banks::CpuidBit;
+    use cpu_profile::hv_banks::HV_FEATURES;
+    use cpu_profile::hv_banks::HvFeature;
+    use cpu_profile::hv_banks::HvFeatureWord;
+    use whp::abi::WHV_CPUID_OUTPUT;
     use whp::abi::WHV_PROCESSOR_FEATURES;
     use whp::abi::WHV_PROCESSOR_FEATURES1;
     use whp::abi::WHV_PROCESSOR_XSAVE_FEATURES;
+    use whp::abi::WHV_X64_CPUID_RESULT2;
+    use whp::abi::WHV_X64_CPUID_RESULT2_FLAGS;
+    use whp::abi::WHvX64CpuidResult2FlagSubleafSpecific;
 
     /// The leaves whose feature bits the WHP features control.
     const FEATURE_LEAVES: [(u32, u32); 14] = [
@@ -740,7 +352,7 @@ mod whp_tests {
                 let lost = base[index][register] & !probe[index][register];
                 for bit in 0..32 {
                     if lost & (1 << bit) != 0 {
-                        bits.push(cpuid(leaf, subleaf, register, bit));
+                        bits.push(CpuidBit::new(leaf, subleaf, register, bit));
                     }
                 }
             }
@@ -750,8 +362,8 @@ mod whp_tests {
 
     /// Whether another feature maps the same CPUID bit (as IBRS and IBPB
     /// do): WHP may derive the bit from either.
-    fn shared(feature: &Feature) -> bool {
-        FEATURES
+    fn shared(feature: &HvFeature) -> bool {
+        HV_FEATURES
             .iter()
             .any(|other| !std::ptr::eq(other, feature) && other.cpuid == feature.cpuid)
     }
@@ -779,13 +391,13 @@ mod whp_tests {
             available.banks[0], available.banks[1], available.xsave
         );
         let mut failures = Vec::new();
-        for bank in [Bank::Features0, Bank::Features1, Bank::Xsave] {
+        for bank in HvFeatureWord::ALL {
             let word = available.word(bank);
             for bit in (0..64).filter(|bit| word & (1 << bit) != 0) {
                 let mask = 1u64 << bit;
-                let feature = FEATURES
+                let feature = HV_FEATURES
                     .iter()
-                    .find(|feature| feature.bank == bank && feature.mask == mask);
+                    .find(|feature| feature.word == bank && feature.mask == mask);
                 let name = feature.map_or("(unmapped)", |feature| feature.name());
                 let mut features = available;
                 *features.word_mut(bank) &= !mask;
@@ -864,12 +476,12 @@ mod whp_tests {
                 }
                 let bits: Vec<_> = (0..32)
                     .filter(|bit| differs & (1 << bit) != 0)
-                    .map(|bit| cpuid(leaf, subleaf, register, bit))
+                    .map(|bit| CpuidBit::new(leaf, subleaf, register, bit))
                     .collect();
                 let mapped: Vec<_> = bits
                     .iter()
                     .filter(|&&bit| {
-                        FEATURES
+                        HV_FEATURES
                             .iter()
                             .any(|feature| feature.cpuid == bit && !feature.is_time_policy())
                     })
@@ -1004,6 +616,86 @@ mod whp_tests {
             }
         }
         assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    /// Compares the cheap supported surface (host CPUID and WHP's
+    /// capabilities) with the probe partition's (`--cpu-fingerprint`): every
+    /// pinned profile gets the same `verify_support` verdict from both, and
+    /// the host's own profile passes.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn cheap_surface_matches_the_probe_surface() {
+        let fingerprint = crate::fingerprint::cpu_fingerprint().unwrap();
+        let probe = cpu_profile::HostCpuSurface::from_fingerprint(&fingerprint);
+        let started = std::time::Instant::now();
+        let cheap = supported_surface(
+            &crate::time_abi::host_cpuid(),
+            available(),
+            probe.physical_address_width,
+        );
+        let elapsed = started.elapsed();
+        let mut cpuid: Vec<CpuidEntry> = cheap
+            .cpuid
+            .iter()
+            .map(|leaf| CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::cpuid::normalize(&mut cpuid);
+        let cheap = cpu_profile::HostCpuSurface {
+            cpuid,
+            physical_address_width: cheap.physical_address_width,
+            msrs: cheap
+                .msrs
+                .iter()
+                .map(|msr| cpu_profile::SupportedMsr {
+                    index: msr.index,
+                    supported: msr.supported,
+                    controllable: msr.controllable,
+                })
+                .collect(),
+        };
+        println!(
+            "cheap surface: {} entries in {} us; probe surface: {} entries; widths {} and {}",
+            cheap.cpuid.len(),
+            elapsed.as_micros(),
+            probe.cpuid.len(),
+            cheap.physical_address_width,
+            probe.physical_address_width
+        );
+        let host = cpu_profile::select_auto(&HostCpuSignature::current()).ok();
+        let mut mismatches = Vec::new();
+        for profile in cpu_profile::pinned_profiles() {
+            // Where the two surfaces differ on a leaf the profile lists.
+            for entry in profile.cpuid() {
+                let (leaf, subleaf) = entry.key();
+                let subleaf = subleaf.unwrap_or(0);
+                let ours =
+                    cpu_profile::cpuid::lookup(&cheap.cpuid, leaf, subleaf).unwrap_or_default();
+                let theirs =
+                    cpu_profile::cpuid::lookup(&probe.cpuid, leaf, subleaf).unwrap_or_default();
+                for register in 0..4 {
+                    let differs = ours[register] ^ theirs[register];
+                    if differs != 0 {
+                        println!(
+                            "{}: {leaf:#x}.{subleaf} register {register}: cheap {:#010x} probe {:#010x} pinned mask {:#010x}",
+                            profile.id(),
+                            ours[register],
+                            theirs[register],
+                            entry.masks()[register]
+                        );
+                    }
+                }
+            }
+            let ours = cpu_profile::support_violations(profile, &cheap);
+            let theirs = cpu_profile::support_violations(profile, &probe);
+            println!("{}: cheap {ours:?}; probe {theirs:?}", profile.id());
+            if ours.is_empty() != theirs.is_empty() {
+                mismatches.push(profile.id());
+            }
+            if host.is_some_and(|host| host.id() == profile.id()) {
+                assert!(ours.is_empty(), "{}: {ours:?}", profile.id());
+            }
+        }
+        assert!(mismatches.is_empty(), "{mismatches:?}");
     }
 
     /// Times what a WHP `supported_cpu_surface()` costs with a probe
