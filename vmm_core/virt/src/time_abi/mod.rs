@@ -75,6 +75,11 @@ macro_rules! time_abi_codes {
                     $(TimeAbiCode::$variant => $name,)*
                 }
             }
+
+            /// Returns the code with the stable name `name`, if any.
+            pub fn from_name(name: &str) -> Option<Self> {
+                Self::ALL.iter().copied().find(|code| code.as_str() == name)
+            }
         }
     };
 }
@@ -392,14 +397,21 @@ pub fn check_command_line_clock_tokens(cmdline: &str) -> Result<(), TimeAbiError
 #[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Clone)]
 pub struct TimeAbiConfig {
-    /// CPUID results the backend programs on every VP. Until CPU profiles
-    /// land this is [`identity::time_abi_cpuid`]: the identity leaves, the
-    /// explicit zero leaves, and the CPU time bits, applied over the
-    /// backend's own CPUID.
+    /// CPUID results the backend programs on every VP. Until the profile's
+    /// effective CPUID replaces it, this is [`identity::time_abi_cpuid`]: the
+    /// identity leaves, the explicit zero leaves, and the CPU time bits,
+    /// applied over the backend's own CPUID.
     pub cpuid: std::sync::Arc<crate::CpuidLeafSet>,
     /// The identity MSR handler, shared with the worker's `time-abi` state
     /// unit.
     pub msrs: std::sync::Arc<TimeAbiMsrs>,
+    /// The ID of the partition's CPU profile, selected or restored before the
+    /// partition is created. A pinned ID names the profile that
+    /// `cpu_profile::pinned` returns, from which a backend derives its
+    /// processor features. An interim ID ([`surface::is_interim_cpu_profile`])
+    /// names no profile: the backend presents its own CPU features, as before
+    /// CPU profiles.
+    pub cpu_profile: String,
 }
 
 #[cfg(test)]
@@ -445,6 +457,15 @@ mod tests {
                 "E_TEST_HOOK",
             ]
         );
+    }
+
+    #[test]
+    fn codes_parse_from_their_names() {
+        for &code in TimeAbiCode::ALL {
+            assert_eq!(TimeAbiCode::from_name(code.as_str()), Some(code));
+        }
+        assert_eq!(TimeAbiCode::from_name("E_NOT_A_CODE"), None);
+        assert_eq!(TimeAbiCode::from_name("e_test_hook"), None);
     }
 
     #[test]
