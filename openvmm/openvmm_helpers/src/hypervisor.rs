@@ -4,6 +4,7 @@
 //! Hypervisor resource construction and auto-detection for OpenVMM entry
 //! points.
 
+use cpu_profile::fingerprint::BackendFingerprint;
 use hypervisor_resources::HypervisorKind;
 use vm_resource::Resource;
 
@@ -55,4 +56,41 @@ pub fn hypervisor_resource(spec: &str) -> anyhow::Result<Resource<HypervisorKind
     let probe = hypervisor_resources::probe_by_name(name)
         .ok_or_else(|| anyhow::anyhow!("unknown hypervisor: {name}"))?;
     probe.new_resource(&params)
+}
+
+/// Returns the guest CPU surface that a hypervisor backend supports on this
+/// host, for a host CPU fingerprint.
+///
+/// `spec` selects the backend as for [`hypervisor_resource`]. Without it, the
+/// first available backend is used, as for [`choose_hypervisor`].
+pub fn cpu_fingerprint(spec: Option<&str>) -> anyhow::Result<BackendFingerprint> {
+    match spec {
+        Some(spec) => {
+            let (name, params) = parse_hypervisor_spec(spec)?;
+            let probe = hypervisor_resources::probe_by_name(name)
+                .ok_or_else(|| anyhow::anyhow!("unknown hypervisor: {name}"))?;
+            probe.cpu_fingerprint(&params)
+        }
+        None => {
+            for probe in hypervisor_resources::probes() {
+                if probe.try_new_resource()?.is_some() {
+                    return probe.cpu_fingerprint(&[]);
+                }
+            }
+            anyhow::bail!("no hypervisor available");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cpu_fingerprint;
+
+    #[test]
+    fn fingerprint_rejects_unknown_hypervisor() {
+        let error = cpu_fingerprint(Some("nosuch")).unwrap_err();
+        assert_eq!(error.to_string(), "unknown hypervisor: nosuch");
+        let error = cpu_fingerprint(Some(":x")).unwrap_err();
+        assert_eq!(error.to_string(), "empty hypervisor name in spec: :x");
+    }
 }

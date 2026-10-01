@@ -1,0 +1,843 @@
+{
+  "cpuid": [
+    {
+      "leaf": "0x00000000",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x0000001b",
+        "0x756e6547",
+        "0x6c65746e",
+        "0x49656e69"
+      ]
+    },
+    {
+      "leaf": "0x00000001",
+      "mask": [
+        "0xffffffff",
+        "0x0000ffff",
+        "0xf7dfffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x000606a6",
+        "0x00000800",
+        "0xf6da3203",
+        "0x0f8bfbff"
+      ]
+    },
+    {
+      "leaf": "0x00000002",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00feff01",
+        "0x000000f0",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000003",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000121",
+        "0x02c0003f",
+        "0x0000003f",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x00000122",
+        "0x01c0003f",
+        "0x0000003f",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000143",
+        "0x04c0003f",
+        "0x000003ff",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000003",
+      "value": [
+        "0x00000163",
+        "0x02c0003f",
+        "0x0000ffff",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000004",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000005",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000006",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000004",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffef",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000002",
+        "0xf1bf2fb9",
+        "0x00415f46",
+        "0x20000010"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000001"
+      ]
+    },
+    {
+      "leaf": "0x00000008",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000009",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000a",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000c",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0x00000000",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x000000e7",
+        "0x00000000",
+        "0x00000a80",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0x00000000",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x0000000f",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000100",
+        "0x00000240",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000005",
+      "value": [
+        "0x00000040",
+        "0x00000440",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000006",
+      "value": [
+        "0x00000200",
+        "0x00000480",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000007",
+      "value": [
+        "0x00000400",
+        "0x00000680",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000e",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000f",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000010",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000011",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000012",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000013",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000014",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000015",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000016",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000017",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000018",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000019",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000001a",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000001b",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000000",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x80000008",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000001",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000121",
+        "0x2c100800"
+      ]
+    },
+    {
+      "leaf": "0x80000002",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x65746e49",
+        "0x2952286c",
+        "0x6f655820",
+        "0x2952286e"
+      ]
+    },
+    {
+      "leaf": "0x80000003",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x6f725020",
+        "0x73736563",
+        "0x2820726f",
+        "0x20656349"
+      ]
+    },
+    {
+      "leaf": "0x80000004",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x656b614c",
+        "0x2950532d",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000005",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000006",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x01006040",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000100"
+      ]
+    },
+    {
+      "leaf": "0x80000008",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x0000392e",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    }
+  ],
+  "description": "Intel Xeon Scalable, third generation (Ice Lake-SP), on every backend; NVX time ABI v1",
+  "generation": {
+    "cpus": [
+      {
+        "family": 6,
+        "model": 106,
+        "steppings": [
+          0,
+          15
+        ]
+      }
+    ],
+    "name": "icelake-sp"
+  },
+  "id": "intel.icelake-sp.v1",
+  "msrs": [
+    {
+      "index": "0x0000010a",
+      "mask": "0x400000000c12e1bb",
+      "value": "0x0000000008000121"
+    }
+  ],
+  "physical_address_width": 46,
+  "provenance": {
+    "method": "derived by cpu_profile::derive under openvmm-cpu-profile-policy/v1: per-register consensus within each backend, then across backends, of the hosts' supported CPU surfaces",
+    "sources": [
+      {
+        "backend": "kvm",
+        "hosts": 5,
+        "surface_digests": [
+          "sha256:6286956acbefac80fa56363b3b1d5933567e6e1e3a9b15788ddc832e994e772f"
+        ]
+      },
+      {
+        "backend": "mshv",
+        "hosts": 1,
+        "surface_digests": [
+          "sha256:270942e3223b3b9ea22d62250659e51248a0de98d412aef3b1ba09ac01ac7379"
+        ]
+      },
+      {
+        "backend": "whp",
+        "hosts": 3,
+        "surface_digests": [
+          "sha256:ffc115da4f1554c9bb84f2ff8034bd64eeb8844cb7a8daeb8e1da8867fa2ef1e"
+        ]
+      }
+    ]
+  },
+  "schema": "openvmm-cpu-profile/v1",
+  "vendor": "GenuineIntel",
+  "xcr0": "0x00000000000000e7",
+  "xsave_components": [
+    {
+      "align64": false,
+      "index": 2,
+      "offset": 576,
+      "size": 256,
+      "supervisor": false,
+      "xfd": false
+    },
+    {
+      "align64": false,
+      "index": 5,
+      "offset": 1088,
+      "size": 64,
+      "supervisor": false,
+      "xfd": false
+    },
+    {
+      "align64": false,
+      "index": 6,
+      "offset": 1152,
+      "size": 512,
+      "supervisor": false,
+      "xfd": false
+    },
+    {
+      "align64": false,
+      "index": 7,
+      "offset": 1664,
+      "size": 1024,
+      "supervisor": false,
+      "xfd": false
+    }
+  ],
+  "xss": "0x0000000000000000"
+}

@@ -1007,6 +1007,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu_profile"
+version = "0.0.0"
+dependencies = [
+ "build_rs_guest_arch",
+ "safe_intrinsics",
+ "serde",
+ "serde_json",
+ "sha2",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "virt",
+ "vm_topology",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3862,6 +3878,7 @@ name = "hypervisor_resources"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cpu_profile",
  "linkme",
  "mesh",
  "vm_resource",
@@ -6359,6 +6376,7 @@ name = "openvmm_helpers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cpu_profile",
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
@@ -6390,9 +6408,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "cpu_profile",
  "fs-err",
  "hypervisor_resources",
  "test_with_tracing",
+ "virt_kvm",
  "virt_mshv",
  "virt_whp",
  "vm_resource",
@@ -10179,6 +10199,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "build_rs_guest_arch",
  "cfg-if",
+ "cpu_profile",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
@@ -10211,6 +10232,7 @@ dependencies = [
  "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
+ "cpu_profile",
  "fs-err",
  "guestmem",
  "headervec",
@@ -10366,6 +10388,7 @@ dependencies = [
  "arrayvec",
  "build_rs_guest_arch",
  "chipset_device",
+ "cpu_profile",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
