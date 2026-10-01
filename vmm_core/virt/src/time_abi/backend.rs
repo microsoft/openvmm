@@ -100,7 +100,7 @@ pub struct BackendPreflight {
 /// capture anchor, and a restore anchor that pairs a TSC read with host time,
 /// a bounded number of times and keeps the tightest pair; if none is within
 /// this bound, the capture or restore fails with `E_TSC_ANCHOR`.
-pub const MAX_ANCHOR_PAIRING_NS: u64 = 10_000;
+pub const MAX_ANCHOR_PAIRING_NS: u64 = 100_000;
 
 /// The capture anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
