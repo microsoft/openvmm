@@ -421,7 +421,10 @@ fn table(entries: &[cpuid::CpuidEntry]) -> Table {
             let (leaf, subleaf) = entry.key();
             let value = entry.registers();
             let mask = pinned_mask(leaf, subleaf, value);
-            ((leaf, subleaf), [0, 1, 2, 3].map(|register| value[register] & mask[register]))
+            (
+                (leaf, subleaf),
+                [0, 1, 2, 3].map(|register| value[register] & mask[register]),
+            )
         })
         .collect()
 }
@@ -771,7 +774,12 @@ mod tests {
                 set(entries, leaf, None, 0, |_| 0);
             }
         });
-        let derived = derive_profile(generation("icelake-sp"), 1, &[kvm, fingerprint(pinned, "whp")]).unwrap();
+        let derived = derive_profile(
+            generation("icelake-sp"),
+            1,
+            &[kvm, fingerprint(pinned, "whp")],
+        )
+        .unwrap();
         assert_eq!(derived.cpuid(), pinned.cpuid());
     }
 

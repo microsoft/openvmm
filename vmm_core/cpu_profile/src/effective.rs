@@ -15,6 +15,7 @@ use crate::profile::find;
 use crate::profile::vm_owned_bits;
 use serde::Deserialize;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// The schema of the effective-CPUID records this crate reads and writes.
@@ -185,42 +186,65 @@ impl EffectiveCpuid {
     }
 
     /// Checks that this effective CPUID, recomputed on the destination,
-    /// equals the `recorded` one (`E_CPU_SURFACE`, naming the first
-    /// difference).
+    /// equals the `recorded` one (`E_CPU_SURFACE`, naming every difference).
     pub fn check_matches(&self, recorded: &Self) -> Result<(), ProfileError> {
-        let mut ours = self.entries.iter().peekable();
-        let mut theirs = recorded.entries.iter().peekable();
+        let differences = self.differences(recorded);
+        if differences.is_empty() {
+            return Ok(());
+        }
+        Err(ProfileError::new(
+            ProfileErrorCode::CpuSurface,
+            format!(
+                "the effective CPUID differs from the snapshot's: {}",
+                differences.join("; ")
+            ),
+        ))
+    }
+
+    /// Lists every entry that differs between this effective CPUID and the
+    /// `recorded` one; both are sorted by leaf and subleaf.
+    fn differences(&self, recorded: &Self) -> Vec<String> {
+        let (ours, theirs) = (&self.entries, &recorded.entries);
+        let (mut i, mut j) = (0, 0);
+        let mut differences = Vec::new();
         loop {
-            let difference = match (ours.peek(), theirs.peek()) {
-                (None, None) => return Ok(()),
-                (Some(entry), None) => {
-                    format!("{} exists only on the destination", describe(entry))
-                }
-                (None, Some(entry)) => format!("{} exists only in the snapshot", describe(entry)),
-                (Some(a), Some(b)) if a.key() < b.key() => {
-                    format!("{} exists only on the destination", describe(a))
-                }
-                (Some(a), Some(b)) if a.key() > b.key() => {
-                    format!("{} exists only in the snapshot", describe(b))
-                }
-                (Some(a), Some(b)) if a != b => format!(
-                    "{} is {:#010x?} under mask {:#010x?} on the destination, but {:#010x?} under mask {:#010x?} in the snapshot",
-                    describe(a),
-                    a.values(),
-                    a.masks(),
-                    b.values(),
-                    b.masks()
-                ),
-                _ => {
-                    ours.next();
-                    theirs.next();
-                    continue;
-                }
+            let order = match (ours.get(i), theirs.get(j)) {
+                (None, None) => return differences,
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(a), Some(b)) => a.key().cmp(&b.key()),
             };
-            return Err(ProfileError::new(
-                ProfileErrorCode::CpuSurface,
-                format!("the effective CPUID differs from the snapshot's: {difference}"),
-            ));
+            match order {
+                Ordering::Less => {
+                    differences.push(format!(
+                        "{} exists only on the destination",
+                        describe(&ours[i])
+                    ));
+                    i += 1;
+                }
+                Ordering::Greater => {
+                    differences.push(format!(
+                        "{} exists only in the snapshot",
+                        describe(&theirs[j])
+                    ));
+                    j += 1;
+                }
+                Ordering::Equal => {
+                    let (a, b) = (&ours[i], &theirs[j]);
+                    if a != b {
+                        differences.push(format!(
+                            "{} is {:#010x?} under mask {:#010x?} on the destination, but {:#010x?} under mask {:#010x?} in the snapshot",
+                            describe(a),
+                            a.values(),
+                            a.masks(),
+                            b.values(),
+                            b.masks()
+                        ));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+            }
         }
     }
 }
@@ -519,7 +543,11 @@ mod tests {
             .unwrap();
         let error = other.check_matches(&effective).unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::CpuSurface);
-        assert!(error.message.contains("CPUID 0x1 is"), "{error}");
+        // Every difference is named: the logical processor counts of leaves
+        // 1, 4, and 0xB.
+        for difference in ["CPUID 0x1 is", "CPUID 0x4.0 is", "CPUID 0xb.1 is"] {
+            assert!(error.message.contains(difference), "{error}");
+        }
         let without_identity = profile
             .effective_cpuid(&vm_leaves(profile, 2), &[])
             .unwrap();
@@ -528,6 +556,13 @@ mod tests {
             error
                 .message
                 .contains("CPUID 0x40000000 exists only in the snapshot"),
+            "{error}"
+        );
+        let error = effective.check_matches(&without_identity).unwrap_err();
+        assert!(
+            error
+                .message
+                .ends_with(": CPUID 0x40000000 exists only on the destination"),
             "{error}"
         );
     }
