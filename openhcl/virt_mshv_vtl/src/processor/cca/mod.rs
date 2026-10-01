@@ -44,6 +44,7 @@ use virt_support_gic::ListRegisterInterrupt;
 use virt_support_gic::PendingInterrupt;
 use virt_support_gic::GicV3Model;
 use zerocopy::FromZeros;
+use std::collections::HashMap;
 
 #[derive(Debug, Error)]
 #[error("failed to run")]
@@ -430,6 +431,30 @@ fn queue_virtual_interrupt(candidates: &mut Vec<u64>, interrupt: PendingInterrup
             | if interrupt.group1 { ICH_LR_GROUP1 } else { 0 }
             | ICH_LR_PENDING,
     );
+}
+
+/// Adds an interrupt to an unbounded software active/pending list.
+fn queue_virtual_interrupts(candidates: &mut Vec<u64>, mut interrupts: HashMap<u64, PendingInterrupt>) {
+    for lr in candidates.iter_mut() {
+        if !lr_is_valid(*lr) {
+            continue;
+        }
+
+        let intid = *lr & ICH_LR_VINTID_MASK;
+
+        if interrupts.remove(&intid).is_some() {
+            *lr |= ICH_LR_PENDING;
+        }
+    }
+
+    for interrupt in interrupts.values() {
+        candidates.push(
+            u64::from(interrupt.intid)
+                | (u64::from(interrupt.priority) << ICH_LR_PRIORITY_SHIFT)
+                | if interrupt.group1 { ICH_LR_GROUP1 } else { 0 }
+                | ICH_LR_PENDING,
+        );
+    }
 }
 
 pub fn modify_using_pending_latch(lrs: &mut [u64], gic: &GicV3Model, vp: VpIndex) {
@@ -952,50 +977,49 @@ impl UhProcessor<'_, CcaBacked> {
             .map(|lr| lr & !ICH_LR_PENDING)
             .collect::<Vec<_>>();
 
-        loop {
-            let Some(interrupt) = self
-                .shared
-                .cvm
-                .gic
-                .next_pending_private_interrupt(vp, u8::MAX)
-            else {
-                break;
-            };
+        if let Some(interrupts) = self
+            .shared
+            .cvm
+            .gic
+            .next_pending_private_interrupts(vp, u8::MAX) {
 
-            queue_virtual_interrupt(&mut candidates, interrupt);
-            self.shared
-                .cvm
-                .gic
-                .mark_private_injected(vp, interrupt.intid);
-            tracing::debug!(
-                intid = interrupt.intid,
-                priority = interrupt.priority,
-                group1 = interrupt.group1,
-                ?vtl,
-                "injected CCA GIC interrupt"
-            );
+                for (&intid, interrupt) in &interrupts {
+                    self.shared
+                        .cvm
+                        .gic
+                        .mark_private_injected(vp, intid as u32);
+                    tracing::debug!(
+                        intid = interrupt.intid,
+                        priority = interrupt.priority,
+                        group1 = interrupt.group1,
+                        ?vtl,
+                        "injected CCA GIC interrupt"
+                    );
+                }
+
+                queue_virtual_interrupts(&mut candidates, interrupts);
+
         }
+
 
         // Device SPIs belong to VTL0.
         if vtl == GuestVtl::Vtl0 {
-            loop {
-                let Some(interrupt) = self
-                    .shared
-                    .cvm
-                    .gic
-                    .reserve_pending_spi_interrupt(vp, u8::MAX)
-                else {
-                    break;
-                };
-
-                queue_virtual_interrupt(&mut candidates, interrupt);
-                tracing::debug!(
-                    intid = interrupt.intid,
-                    priority = interrupt.priority,
-                    group1 = interrupt.group1,
-                    ?vtl,
-                    "queued pending CCA shared GIC interrupt"
-                );
+            if let Some(interrupts) = self
+                .shared
+                .cvm
+                .gic
+                .reserve_pending_spi_interrupts(vp, u8::MAX)
+            {
+                for (_, &interrupt) in &interrupts {
+                    tracing::debug!(
+                        intid = interrupt.intid,
+                        priority = interrupt.priority,
+                        group1 = interrupt.group1,
+                        ?vtl,
+                        "queued pending CCA shared GIC interrupt"
+                    );
+                }
+                queue_virtual_interrupts(&mut candidates, interrupts);
             }
         }
 
