@@ -22,8 +22,9 @@
 //! - The processor feature banks keep the invariant TSC and hide the
 //!   TSC-deadline timer, `IA32_TSC_ADJUST`, and APERF/MPERF.
 //! - The synchronized TSC set freezes partition time, writes the target to
-//!   every created VP, and reads it back. Partition time thaws when a VP first
-//!   runs, so the guest resumes exactly at the target.
+//!   every created VP, reads it back, and resumes partition time right after a
+//!   good read-back. Guest time therefore runs from the restore anchor, as on
+//!   the other backends, instead of waiting for the first VP run.
 //!
 //! These semantics were verified on hypervisor builds 10.0.26100.30000 (bare
 //! metal) and 10.0.26100.9444 (Azure nested), where they are identical.
@@ -762,8 +763,8 @@ impl TimeAbiBackend for MshvPartition {
             ));
         }
 
-        // Partition time stays frozen until a VP first runs, so every VP
-        // holds the target from the anchor until the guest resumes.
+        // Freeze partition time so that every VP holds the target from the
+        // anchor until the read-back, then resume it right away.
         self.inner.freeze_time().map_err(|error| {
             TimeAbiError::new(
                 TimeAbiCode::TscSyncUnsupported,
@@ -799,11 +800,23 @@ impl TimeAbiBackend for MshvPartition {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let result = check_readback(target, &readback);
+        // A failed set leaves time frozen; the restore fails and tears the
+        // partition down.
+        let thawed = result.is_ok();
+        if thawed {
+            self.inner.thaw_time().map_err(|error| {
+                TimeAbiError::new(
+                    TimeAbiCode::TscSyncUnsupported,
+                    format!("cannot resume partition time: {}", error_chain(&error)),
+                )
+            })?;
+        }
         tracing::info!(
             created_vps = created.len(),
             vp_capacity = self.inner.vps.len(),
             target,
             readback_equal = result.is_ok(),
+            thawed,
             freeze_us = frozen.as_micros() as u64,
             write_us = (written - frozen).as_micros() as u64,
             total_us = started.elapsed().as_micros() as u64,
@@ -1399,14 +1412,19 @@ mod hw {
             let expected: Vec<_> = (0..created).map(|vp| (VpIndex::new(vp), target)).collect();
             assert_eq!(report.readback, expected);
 
-            // Time stays frozen until a VP runs.
+            // Time resumes right after the read-back, and every VP advances
+            // from the target together.
+            assert!(!*partition.inner.time_frozen.lock());
             std::thread::sleep(std::time::Duration::from_millis(10));
-            for vp in 0..created {
-                assert_eq!(
-                    get_vp_tsc(&partition.inner.vmfd, VpIndex::new(vp)).unwrap(),
-                    target
-                );
-            }
+            let running: Vec<u64> = (0..created)
+                .map(|vp| get_vp_tsc(&partition.inner.vmfd, VpIndex::new(vp)).unwrap())
+                .collect();
+            assert!(
+                running.iter().all(|&tsc| tsc > target + tsc_hz / 200),
+                "{running:?}"
+            );
+            let spread = running.iter().max().unwrap() - running.iter().min().unwrap();
+            assert!(spread < tsc_hz / 1000, "{running:?}");
             if created < VP_CAPACITY {
                 let error = binders[created as usize].bind().err().unwrap();
                 assert!(
@@ -1415,21 +1433,32 @@ mod hw {
                 );
             }
 
-            // A failing target aborts the set.
+            // A failing target aborts the set and leaves time frozen.
             let error = backend
                 .set_synchronized_tsc(&mut |_| {
                     Err(TimeAbiError::new(TimeAbiCode::DowntimeNegative, "test"))
                 })
                 .unwrap_err();
             assert_eq!(error.code, TimeAbiCode::DowntimeNegative);
+            assert!(*partition.inner.time_frozen.lock());
+            let frozen_at: Vec<u64> = (0..created)
+                .map(|vp| get_vp_tsc(&partition.inner.vmfd, VpIndex::new(vp)).unwrap())
+                .collect();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            for (vp, &tsc) in frozen_at.iter().enumerate() {
+                assert_eq!(
+                    get_vp_tsc(&partition.inner.vmfd, VpIndex::new(vp as u32)).unwrap(),
+                    tsc
+                );
+            }
 
-            // After the thaw, every VP advances from the target together.
+            // A later thaw (the first VP run) resumes every VP together.
             partition.inner.thaw_time().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(10));
             let after: Vec<u64> = (0..created)
                 .map(|vp| get_vp_tsc(&partition.inner.vmfd, VpIndex::new(vp)).unwrap())
                 .collect();
-            assert!(after.iter().all(|&tsc| tsc > target + tsc_hz / 1000));
+            assert!(after.iter().all(|&tsc| tsc > running[0] + tsc_hz / 200));
 
             println!(
                 "time ABI backend: created {created}/{VP_CAPACITY} tsc_hz={tsc_hz} \
