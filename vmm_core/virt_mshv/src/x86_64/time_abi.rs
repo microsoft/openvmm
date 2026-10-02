@@ -121,7 +121,8 @@ pub(crate) struct MshvTimeAbi {
     #[inspect(skip)]
     registered_cpuid: Vec<CpuidLeaf>,
     /// The effective CPUID: VP 0's view of the registered leaves at reset,
-    /// read once before any VP runs. Later reads would fold in VP state (the
+    /// and of the host's entries outside the CPU profile's tables, read once
+    /// before any VP runs. Later reads would fold in VP state (the
     /// hypervisor applies the VP's XCR0, XSS, and control registers), so the
     /// capture and the restore of one snapshot would disagree.
     #[inspect(skip)]
@@ -137,6 +138,12 @@ pub(crate) struct MshvTimeAbi {
     /// and the supported CPU surface.
     #[inspect(skip)]
     host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
+    /// The entries the host's CPUID enumerates outside the CPU profile's
+    /// tables (`cpu_profile::unlisted_cpuid_candidates`). The effective CPUID
+    /// reports VP 0's view there, which core requires to be zero
+    /// (`E_CPU_UNLISTED`).
+    #[inspect(skip)]
+    unlisted_candidates: Vec<(u32, Option<u32>)>,
 }
 
 impl MshvTimeAbi {
@@ -146,6 +153,9 @@ impl MshvTimeAbi {
         host_features: HvFeatures,
         host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
     ) -> Self {
+        let unlisted_candidates = cpu_profile::pinned(&config.cpu_profile)
+            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &host_cpuid))
+            .unwrap_or_default();
         Self {
             msrs: config.msrs.clone(),
             registered_cpuid: registered_cpuid.leaves().to_vec(),
@@ -153,6 +163,7 @@ impl MshvTimeAbi {
             vp_set_sealed: AtomicBool::new(false),
             host_features,
             host_cpuid,
+            unlisted_candidates,
         }
     }
 
@@ -643,6 +654,7 @@ impl MshvPartitionInner {
                 None => leaf,
             })
         };
+        let started = std::time::Instant::now();
         let mut leaves = EFFECTIVE_CPUID_MAX_LEAVES
             .into_iter()
             .map(|function| read(function, None))
@@ -654,6 +666,19 @@ impl MshvPartitionInner {
                 read(leaf.function, leaf.index)?
             });
         }
+        // Guests read the hypervisor's own values outside the registered
+        // results, so the report also holds VP 0's view where the host's
+        // CPUID has entries outside the profile's tables, at subleaf 0 for a
+        // subleaf-independent entry. Core requires each to read zero.
+        for &(function, index) in &state.unlisted_candidates {
+            leaves.push(read(function, index)?);
+        }
+        tracing::info!(
+            leaves = leaves.len(),
+            unlisted_candidates = state.unlisted_candidates.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "MSHV effective CPUID read"
+        );
         // A concurrent first read stores identical values.
         let _ = state
             .effective_cpuid
@@ -1117,6 +1142,48 @@ mod tests {
     }
 
     #[test]
+    fn the_effective_cpuid_reads_the_host_entries_outside_the_profile() {
+        let profile = cpu_profile::pinned("intel.skylake-sp.v1").unwrap();
+        let entry = cpu_profile::cpuid::CpuidEntry::new;
+        let mut host: Vec<_> = profile
+            .cpuid()
+            .iter()
+            .map(|listed| {
+                let (leaf, subleaf) = listed.key();
+                entry(leaf, subleaf, listed.values())
+            })
+            .collect();
+        // A cache past the profile's terminator and leaves past its maxima.
+        host.push(entry(4, Some(5), [0x121, 0, 0, 0]));
+        host.push(entry(0x17, None, [1, 0, 0, 0]));
+        host.push(entry(0x8000_0009, None, [1, 0, 0, 0]));
+        // The VM's topology and the identity range are not candidates.
+        host.push(entry(0xb, Some(2), [0, 0, 2, 0]));
+        host.push(entry(0x4000_0000, None, [0x4000_000b, 0, 0, 0]));
+        host.sort_by_key(cpu_profile::cpuid::CpuidEntry::key);
+        let mut config = TimeAbiConfig {
+            cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
+            msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: profile.id().to_owned(),
+        };
+        let features = super::super::profile_features::legacy_features();
+        let state = MshvTimeAbi::new(
+            &config,
+            &partition_cpuid(&config.cpuid),
+            features,
+            host.clone(),
+        );
+        assert_eq!(
+            state.unlisted_candidates,
+            [(4, Some(5)), (0x17, None), (0x8000_0009, None)]
+        );
+        // A profile that isn't pinned has none.
+        config.cpu_profile = String::new();
+        let state = MshvTimeAbi::new(&config, &partition_cpuid(&config.cpuid), features, host);
+        assert!(state.unlisted_candidates.is_empty());
+    }
+
+    #[test]
     fn zero_fill_leaves_are_full_zero_leaves_past_the_identity() {
         for function in [0x4000_0006, 0x4000_0081, 0x4000_00ff] {
             assert!(is_zero_fill(&CpuidLeaf::new(function, [0; 4])));
@@ -1528,6 +1595,34 @@ mod hw {
             let mut lookup = |leaf, subleaf| effective.result(leaf, subleaf, &[0; 4]);
             check_time_bits(&mut lookup, true).unwrap();
             check_identity(&mut lookup, VP_CAPACITY).unwrap();
+
+            // The report holds VP 0's view at every entry the host's CPUID has
+            // outside the profile's tables, and each reads zero.
+            let candidates = cpu_profile::unlisted_cpuid_candidates(
+                profile,
+                &super::super::profile_features::host_cpuid_table(),
+            );
+            for &(function, index) in &candidates {
+                assert!(
+                    effective
+                        .leaves()
+                        .iter()
+                        .any(|leaf| leaf.function == function && leaf.index == index),
+                    "{function:#x} {index:?} is missing from the effective CPUID"
+                );
+            }
+            let entries: Vec<_> = effective
+                .leaves()
+                .iter()
+                .map(|leaf| {
+                    cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result)
+                })
+                .collect();
+            cpu_profile::check_unlisted_cpuid(profile, &entries).unwrap();
+            println!(
+                "time ABI backend: {} unlisted candidates read zero: {candidates:x?}",
+                candidates.len()
+            );
 
             // The hypervisor folds VP state into CPUID reads, so the effective
             // CPUID must stay VP 0's view at reset, whatever the guest does.
