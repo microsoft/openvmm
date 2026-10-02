@@ -18,6 +18,9 @@ pub fn new_mappable_from_file_copy_on_write(file: &File) -> io::Result<Mappable>
 
 impl SparseMapping {
     /// Maps a portion of a file privately at `offset`.
+    ///
+    /// Portable callers should unmap or map over a writable view only as a
+    /// whole, because Windows rejects doing either to part of it.
     pub fn map_file_copy_on_write(
         &self,
         offset: usize,

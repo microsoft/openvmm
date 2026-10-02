@@ -35,6 +35,11 @@ pub fn new_mappable_from_file_copy_on_write(file: &std::fs::File) -> io::Result<
 
 impl SparseMapping {
     /// Maps a portion of a file as a private copy-on-write view.
+    ///
+    /// Windows cannot unmap part of a view, so a writable view can only be
+    /// unmapped or mapped over as a whole: doing either to part of it fails
+    /// with [`io::ErrorKind::Unsupported`] instead of discarding the view's
+    /// private pages.
     pub fn map_file_copy_on_write(
         &self,
         offset: usize,
