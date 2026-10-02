@@ -137,16 +137,100 @@ pub(crate) struct MshvTimeAbi {
     /// the supported CPU surface.
     #[inspect(skip)]
     host_features: HvFeatures,
-    /// The host's CPUID table, read once at creation for the supported CPU
-    /// surface and the unlisted candidates.
+    /// The CPU profile, whose unlisted candidates the host's CPUID gives.
     #[inspect(skip)]
-    host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
+    cpu_profile: String,
+    /// Where the host's CPUID table comes from. After its first use, this
+    /// holds only the drained channel, if any, which the partition frees when
+    /// it drops.
+    #[inspect(skip)]
+    host_cpuid_source: parking_lot::Mutex<Option<HostCpuidSource>>,
+    /// The host's CPUID table and the CPU profile's unlisted candidates in
+    /// it, from [`Self::host_cpuid_source`] at first use.
+    #[inspect(skip)]
+    host_cpuid: std::sync::OnceLock<HostCpuid>,
+}
+
+/// The host's CPUID table, for the supported CPU surface and the unlisted
+/// candidates.
+pub(super) enum HostCpuidSource {
+    /// Already read.
+    Ready(HostCpuid),
+    /// Being read on another thread, which sends the table with its unlisted
+    /// candidates and how long it took, in microseconds. Every CPUID
+    /// instruction in the root partition exits to the hypervisor, so this
+    /// keeps the read off the start path: its first use comes after guest
+    /// memory registration.
+    Pending(std::sync::mpsc::Receiver<(HostCpuid, u64)>),
+}
+
+impl HostCpuidSource {
+    /// Starts reading the host's CPUID table and finding `cpu_profile`'s
+    /// unlisted candidates in it on another thread, or does both here if no
+    /// thread can start.
+    pub(super) fn spawn(cpu_profile: &str) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let thread_profile = cpu_profile.to_owned();
+        // The thread is detached, so it releases its own stack when it exits
+        // instead of a join on the start path.
+        let read = move || {
+            let started = std::time::Instant::now();
+            let host = HostCpuid::read(&thread_profile);
+            let _ = sender.send((host, started.elapsed().as_micros() as u64));
+        };
+        match std::thread::Builder::new()
+            .name("mshv-host-cpuid".into())
+            .spawn(read)
+        {
+            Ok(_) => Self::Pending(receiver),
+            Err(error) => {
+                tracing::warn!(
+                    error = &error as &dyn std::error::Error,
+                    "cannot start a thread to read the host CPUID, reading it now"
+                );
+                Self::Ready(HostCpuid::read(cpu_profile))
+            }
+        }
+    }
+}
+
+/// The host's CPUID table and the CPU profile's unlisted candidates in it.
+pub(super) struct HostCpuid {
+    table: Vec<cpu_profile::cpuid::CpuidEntry>,
     /// The entries the host's CPUID enumerates outside the CPU profile's
     /// tables (`cpu_profile::unlisted_cpuid_candidates`). The effective CPUID
     /// reports VP 0's view there, which core requires to be zero
     /// (`E_CPU_UNLISTED`).
-    #[inspect(skip)]
     unlisted_candidates: Vec<(u32, Option<u32>)>,
+    /// How long the other thread took to read the table and find the
+    /// candidates, in microseconds, if it did.
+    read_us: Option<u64>,
+    /// How long the first use waited for them, in microseconds. The
+    /// effective CPUID's log line reports both, so the first use logs
+    /// nothing of its own: a separate event cost about 25 us on the start
+    /// path.
+    wait_us: u64,
+}
+
+impl HostCpuid {
+    /// Finds `cpu_profile`'s unlisted candidates in `table`. A profile that
+    /// isn't pinned has none.
+    fn new(cpu_profile: &str, table: Vec<cpu_profile::cpuid::CpuidEntry>) -> Self {
+        let unlisted_candidates = cpu_profile::pinned(cpu_profile)
+            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &table))
+            .unwrap_or_default();
+        Self {
+            table,
+            unlisted_candidates,
+            read_us: None,
+            wait_us: 0,
+        }
+    }
+
+    /// Reads the host's CPUID table on this thread.
+    fn read(cpu_profile: &str) -> Self {
+        Self::new(cpu_profile, super::profile_features::host_cpuid_table())
+    }
 }
 
 impl MshvTimeAbi {
@@ -154,20 +238,47 @@ impl MshvTimeAbi {
         config: &TimeAbiConfig,
         registered_cpuid: &CpuidLeafSet,
         host_features: HvFeatures,
-        host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
+        host_cpuid: HostCpuidSource,
     ) -> Self {
-        let unlisted_candidates = cpu_profile::pinned(&config.cpu_profile)
-            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &host_cpuid))
-            .unwrap_or_default();
         Self {
             msrs: config.msrs.clone(),
             registered_cpuid: registered_cpuid.leaves().to_vec(),
             effective_cpuid: std::sync::OnceLock::new(),
             vp_set_sealed: AtomicBool::new(false),
             host_features,
-            host_cpuid,
-            unlisted_candidates,
+            cpu_profile: config.cpu_profile.clone(),
+            host_cpuid_source: parking_lot::Mutex::new(Some(host_cpuid)),
+            host_cpuid: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Returns the host's CPUID table and the unlisted candidates, waiting
+    /// for the read that partition creation started if it is still running.
+    fn host_cpuid(&self) -> &HostCpuid {
+        self.host_cpuid.get_or_init(|| {
+            let started = std::time::Instant::now();
+            let mut source = self.host_cpuid_source.lock();
+            let (mut host, read_us) = match source.take() {
+                Some(HostCpuidSource::Ready(host)) => (host, None),
+                Some(HostCpuidSource::Pending(receiver)) => {
+                    let received = receiver.recv();
+                    // Freeing the channel can hand its memory back to the
+                    // kernel, which took about 12 us here on prometheus30,
+                    // so the channel lives until the partition drops.
+                    *source = Some(HostCpuidSource::Pending(receiver));
+                    match received {
+                        Ok((host, read_us)) => (host, Some(read_us)),
+                        // The reading thread panicked.
+                        Err(_) => (HostCpuid::read(&self.cpu_profile), None),
+                    }
+                }
+                None => (HostCpuid::read(&self.cpu_profile), None),
+            };
+            drop(source);
+            host.read_us = read_us;
+            host.wait_us = started.elapsed().as_micros() as u64;
+            host
+        })
     }
 
     /// Fails with `E_VP_LATE_CREATION` once the synchronized TSC set has run.
@@ -742,7 +853,7 @@ impl MshvPartitionInner {
                     .filter(|leaf| !is_zero_fill(leaf))
                     .map(|leaf| (leaf.function, leaf.index)),
             )
-            .chain(state.unlisted_candidates.iter().copied())
+            .chain(state.host_cpuid().unlisted_candidates.iter().copied())
             .collect();
         let entries: Vec<(u32, u32)> = reads
             .iter()
@@ -771,11 +882,15 @@ impl MshvPartitionInner {
             });
         }
         leaves.extend(read);
+        let host = state.host_cpuid();
         tracing::info!(
             leaves = leaves.len(),
             reads = entries.len(),
             bulk,
-            unlisted_candidates = state.unlisted_candidates.len(),
+            unlisted_candidates = host.unlisted_candidates.len(),
+            host_cpuid_entries = host.table.len(),
+            host_cpuid_read_us = host.read_us,
+            host_cpuid_wait_us = host.wait_us,
             elapsed_us = started.elapsed().as_micros() as u64,
             "MSHV effective CPUID read"
         );
@@ -949,7 +1064,7 @@ impl TimeAbiBackend for MshvPartition {
                 )
             })?;
         let surface = super::profile_features::supported_cpu_surface(
-            state.host_cpuid.clone(),
+            state.host_cpuid().table.clone(),
             state.host_features,
             width as u8,
         );
@@ -1289,26 +1404,52 @@ mod tests {
         host.push(entry(0xb, Some(2), [0, 0, 2, 0]));
         host.push(entry(0x4000_0000, None, [0x4000_000b, 0, 0, 0]));
         host.sort_by_key(cpu_profile::cpuid::CpuidEntry::key);
-        let mut config = TimeAbiConfig {
+        let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
             cpu_profile: profile.id().to_owned(),
         };
-        let features = super::super::profile_features::legacy_features();
         let state = MshvTimeAbi::new(
             &config,
             &partition_cpuid(&config.cpuid),
-            features,
-            host.clone(),
+            super::super::profile_features::legacy_features(),
+            HostCpuidSource::Ready(HostCpuid::new(&config.cpu_profile, host.clone())),
         );
         assert_eq!(
-            state.unlisted_candidates,
+            state.host_cpuid().unlisted_candidates,
             [(4, Some(5)), (0x17, None), (0x8000_0009, None)]
         );
         // A profile that isn't pinned has none.
-        config.cpu_profile = String::new();
-        let state = MshvTimeAbi::new(&config, &partition_cpuid(&config.cpuid), features, host);
-        assert!(state.unlisted_candidates.is_empty());
+        assert!(HostCpuid::new("", host).unlisted_candidates.is_empty());
+    }
+
+    #[test]
+    fn the_host_cpuid_is_read_in_the_background() {
+        let config = TimeAbiConfig {
+            cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
+            msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: "intel.skylake-sp.v1".to_owned(),
+        };
+        let state = MshvTimeAbi::new(
+            &config,
+            &partition_cpuid(&config.cpuid),
+            super::super::profile_features::legacy_features(),
+            HostCpuidSource::spawn(&config.cpu_profile),
+        );
+        let here = HostCpuid::read(&config.cpu_profile);
+        // The reading thread may run on another CPU, whose per-CPU fields
+        // (the APIC IDs) differ, so compare the entries it enumerates. The
+        // candidates exclude the topology leaves, so they are the same.
+        let keys = |table: &[cpu_profile::cpuid::CpuidEntry]| {
+            table
+                .iter()
+                .map(cpu_profile::cpuid::CpuidEntry::key)
+                .collect::<Vec<_>>()
+        };
+        let host = state.host_cpuid();
+        assert!(host.read_us.is_some(), "read on another thread");
+        assert_eq!(keys(&host.table), keys(&here.table));
+        assert_eq!(host.unlisted_candidates, here.unlisted_candidates);
     }
 
     #[test]
@@ -1428,7 +1569,7 @@ mod tests {
             &config,
             &partition_cpuid(&config.cpuid),
             super::super::profile_features::legacy_features(),
-            Vec::new(),
+            HostCpuidSource::Ready(HostCpuid::new("", Vec::new())),
         );
         state.check_vp_creation(VpIndex::new(4)).unwrap();
         state.vp_set_sealed.store(true, Ordering::SeqCst);
