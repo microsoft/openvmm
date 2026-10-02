@@ -299,9 +299,19 @@ fn partition_create_args(
 /// leaf (and subleaf, if it has one), applied over the hypervisor's own result
 /// under the leaf's mask.
 fn register_cpuid_result(vmfd: &mshv_ioctls::VmFd, leaf: &virt::CpuidLeaf) -> Result<(), Error> {
+    register_cpuid_result_for(vmfd, hvdef::HV_ANY_VP, leaf)
+}
+
+/// Registers `leaf` as the result of CPUID intercepts for its leaf (and
+/// subleaf) on VP `vp_index` only, or on every VP for `HV_ANY_VP`.
+fn register_cpuid_result_for(
+    vmfd: &mshv_ioctls::VmFd,
+    vp_index: u32,
+    leaf: &virt::CpuidLeaf,
+) -> Result<(), Error> {
     let input = hvdef::hypercall::RegisterInterceptResultCpuid {
         partition_id: 0,
-        vp_index: hvdef::HV_ANY_VP,
+        vp_index,
         intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
         parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
             input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
@@ -563,14 +573,26 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         };
         let host_cpuid_us = started.elapsed().as_micros() as u64;
 
-        // Apply CPUID overrides partition-wide.
+        // Apply CPUID overrides partition-wide, except a time ABI partition's
+        // extended topology leaves: their EDX is each VP's x2APIC ID, which
+        // the hypervisor does not provide for these partitions, so every VP
+        // gets its own results when it is created (see `create_vp`).
         let started = std::time::Instant::now();
-        for leaf in cpuid.leaves().iter().chain(&zero_results) {
+        let per_vp = |leaf: &&virt::CpuidLeaf| {
+            self.config.time_abi.is_some() && time_abi::is_per_vp_leaf(leaf.function)
+        };
+        for leaf in cpuid
+            .leaves()
+            .iter()
+            .chain(&zero_results)
+            .filter(|leaf| !per_vp(leaf))
+        {
             register_cpuid_result(&self.vmfd, leaf)?;
         }
         tracing::info!(
             leaves = cpuid.leaves().len(),
             zero_results = zero_results.len(),
+            per_vp_leaves = cpuid.leaves().iter().filter(per_vp).count(),
             host_cpuid_us,
             elapsed_us = started.elapsed().as_micros() as u64,
             "registered MSHV CPUID results"
@@ -833,6 +855,11 @@ impl MshvPartitionInner {
     /// Creates the hypervisor VP and records that it exists. Every VP is
     /// created here, so restored-TSC synchronization sees exactly the created
     /// VPs.
+    ///
+    /// A time ABI partition's extended topology leaves get this VP's own
+    /// results here, with its x2APIC ID in EDX: the hypervisor does not
+    /// provide that ID for these partitions, and accepts a per-VP result only
+    /// once the VP exists.
     fn create_vp(&self, vp_index: VpIndex) -> Result<VcpuFd, Error> {
         if let Some(time_abi) = &self.time_abi {
             time_abi.check_vp_creation(vp_index)?;
@@ -843,6 +870,22 @@ impl MshvPartitionInner {
                 u8::try_from(vp_index.index()).expect("VP count validated at partition creation"),
             )
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+        if self.time_abi.is_some() {
+            let apic_id = self.vp(vp_index).vp_info.apic_id;
+            for leaf in self
+                .config
+                .cpuid
+                .leaves()
+                .iter()
+                .filter(|leaf| time_abi::is_per_vp_leaf(leaf.function))
+            {
+                register_cpuid_result_for(
+                    &self.vmfd,
+                    vp_index.index(),
+                    &time_abi::with_x2apic_id(leaf, apic_id),
+                )?;
+            }
+        }
         self.vp(vp_index)
             .created
             .store(true, std::sync::atomic::Ordering::SeqCst);

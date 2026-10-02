@@ -142,13 +142,17 @@ const ZERO_LEAVES_PAST_MAXIMUM: u32 = 4;
 ///   [`ZERO_LEAVES_PAST_MAXIMUM`] past `cpuid`'s, whichever is higher.
 ///
 /// The hypervisor range belongs to the time ABI's identity and explicit zero
-/// leaves, which `cpuid` lists.
+/// leaves, which `cpuid` lists. The extended topology leaves belong to the VM,
+/// whose topology `cpuid` lists, and the backend registers them once per VP
+/// (see [`is_per_vp_leaf`](super::time_abi::is_per_vp_leaf)), so they get no
+/// zero results. Their entries past the topology's terminator are reserved.
 pub(crate) fn unlisted_zero_results(
     cpuid: &virt::CpuidLeafSet,
     host: &[CpuidEntry],
 ) -> Vec<CpuidLeaf> {
     let leaves = cpuid.leaves();
     let listed = |function: u32| leaves.iter().any(|leaf| leaf.function == function);
+    let vm_owned = super::time_abi::is_per_vp_leaf;
     let by_subleaf = |function: u32| {
         leaves
             .iter()
@@ -163,7 +167,8 @@ pub(crate) fn unlisted_zero_results(
     for entry in host {
         let (function, subleaf) = entry.key();
         if let Some(subleaf) = subleaf {
-            if listed(function)
+            if !vm_owned(function)
+                && listed(function)
                 && by_subleaf(function)
                 && !leaves
                     .iter()
@@ -180,7 +185,7 @@ pub(crate) fn unlisted_zero_results(
             continue;
         }
         for function in base..=last {
-            if !listed(function) {
+            if !vm_owned(function) && !listed(function) {
                 zeros.push(CpuidLeaf::new(function, [0; 4]));
             }
         }
@@ -427,7 +432,7 @@ mod tests {
     fn unlisted_leaves_and_subleaves_get_zero_results() {
         let entry = |leaf, subleaf, eax| CpuidEntry::new(leaf, subleaf, [eax, 1, 2, 3]);
         let host = vec![
-            entry(0, None, 0xa),
+            entry(0, None, 0xb),
             entry(1, None, 0),
             entry(2, None, 0),
             entry(4, Some(0), 0x121),
@@ -438,6 +443,9 @@ mod tests {
             entry(7, Some(1), 0),
             entry(7, Some(2), 0),
             entry(0xa, None, 0),
+            entry(0xb, Some(0), 1),
+            entry(0xb, Some(1), 4),
+            entry(0xb, Some(2), 0),
             entry(0xd, Some(0), 0),
             entry(0xd, Some(1), 0),
             entry(0xd, Some(2), 0),
@@ -450,6 +458,9 @@ mod tests {
             CpuidLeaf::new(4, [0x121, 0, 0, 0]).indexed(0),
             CpuidLeaf::new(4, [0x122, 0, 0, 0]).indexed(1),
             CpuidLeaf::new(7, [0; 4]).indexed(0),
+            // The VM's topology: two levels, without the host's terminator.
+            CpuidLeaf::new(0xb, [0, 1, 0x100, 0]).indexed(0),
+            CpuidLeaf::new(0xb, [1, 1, 0x201, 0]).indexed(1),
             // A leaf listed whole gets no subleaf results: MSHV refuses both.
             CpuidLeaf::new(0xd, [0; 4]),
             CpuidLeaf::new(HYPERVISOR_LEAF_BASE, [HYPERVISOR_LEAF_BASE + 5, 0, 0, 0]),
@@ -463,10 +474,12 @@ mod tests {
                 (leaf.function, leaf.index)
             })
             .collect();
+        // The host's topology terminator 0xb.2 gets none: the topology leaves
+        // are the VM's.
         let mut expected = vec![(4, Some(2)), (4, Some(3)), (7, Some(1)), (7, Some(2))];
-        // Basic leaves up to the host's maximum (0xa) or four past the table's
-        // (0xb), whichever is higher; extended up to the host's 0x80000008.
-        expected.extend([2, 3, 5, 6, 8, 9, 0xa, 0xb].map(|leaf| (leaf, None)));
+        // Basic leaves up to the host's maximum or four past the table's (both
+        // 0xb), whichever is higher; extended up to the host's 0x80000008.
+        expected.extend([2, 3, 5, 6, 8, 9, 0xa].map(|leaf| (leaf, None)));
         expected.extend((2..=8).map(|leaf| (EXTENDED_LEAF_BASE + leaf, None)));
         assert_eq!(zeros, expected);
     }
