@@ -241,21 +241,82 @@ impl PackedQueueCompleteWork {
             .driver_event
             .read_plain(0)
             .map_err(QueueError::Memory)?;
+        let start = self.next_index;
+        // Keep the endpoint unwrapped so a completion can cross the ring boundary.
+        let end = start + context.descriptor_count;
         let send_signal = match driver_event.flags() {
             EventSuppressionFlags::Disabled => false,
             EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
-                driver_event.offset() == self.next_index && driver_event.wrap() == self.wrapped_bit
+                event_in_completed_range(
+                    driver_event,
+                    start,
+                    self.wrapped_bit,
+                    end,
+                    self.queue_size,
+                )
             }
             _ => true,
         };
         // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
-        let raw = self.next_index + context.descriptor_count;
-        self.next_index = if raw >= self.queue_size {
+        self.next_index = if end >= self.queue_size {
             self.wrapped_bit = !self.wrapped_bit;
-            raw - self.queue_size
+            end - self.queue_size
         } else {
-            raw
+            end
         };
         Ok(send_signal)
+    }
+}
+
+/// Returns whether the driver event lies in the completed range `[start, end)`.
+///
+/// Although the specification describes descriptor-specific events in terms of
+/// a descriptor being used, Linux can arm delayed notifications inside a
+/// descriptor chain. Treat the event as a used-cursor threshold so that
+/// advancing over it does not lose an interrupt.
+fn event_in_completed_range(
+    event: PackedEventSuppression,
+    start: u16,
+    start_wrap: bool,
+    end: u16,
+    queue_size: u16,
+) -> bool {
+    // Lift an event on the next lap into the same linear range as `end`.
+    let event = event.offset()
+        + if event.wrap() == start_wrap {
+            0
+        } else {
+            queue_size
+        };
+    (start..end).contains(&event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PackedEventSuppression;
+    use super::event_in_completed_range;
+
+    const RING: u16 = 8;
+
+    fn event(offset: u16, wrap: bool) -> PackedEventSuppression {
+        PackedEventSuppression::new()
+            .with_offset(offset)
+            .with_wrap(wrap)
+    }
+
+    #[test]
+    fn event_in_completed_range_without_wrap() {
+        assert!(event_in_completed_range(event(5, true), 5, true, 7, RING));
+        assert!(event_in_completed_range(event(6, true), 5, true, 7, RING));
+        assert!(!event_in_completed_range(event(2, true), 5, true, 7, RING));
+        assert!(!event_in_completed_range(event(7, true), 5, true, 7, RING));
+    }
+
+    #[test]
+    fn event_in_completed_range_with_wrap() {
+        assert!(event_in_completed_range(event(7, true), 7, true, 9, RING));
+        assert!(event_in_completed_range(event(0, false), 7, true, 9, RING));
+        assert!(!event_in_completed_range(event(6, true), 7, true, 9, RING));
+        assert!(!event_in_completed_range(event(1, false), 7, true, 9, RING));
     }
 }
