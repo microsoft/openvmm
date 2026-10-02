@@ -16,13 +16,16 @@ use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use openvmm_defs::time_abi::EffectiveCpuidEntry;
 use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_defs::time_abi::TimeCapture;
-use sha2::Digest as _;
+use openvmm_defs::time_abi::decode_effective_cpuid;
+use openvmm_defs::time_abi::encode_effective_cpuid;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use virt::CpuidLeaf;
@@ -261,23 +264,85 @@ pub(super) fn declare_rates(
 
 /// Compares the effective CPUID recomputed for this partition with the one
 /// the snapshot recorded: restore step 8 of the specification
-/// (`E_PROFILE_DIGEST` if the record does not verify, `E_CPU_SURFACE` if the
-/// two differ). A record that is this partition's own canonical encoding
-/// needs no decoding; any other is decoded to name its differences.
+/// (`E_CPU_SURFACE`). It compares the binary records, about a microsecond of
+/// work, and decodes the snapshot's only to name the differences.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
-    let encoded = effective_cpuid.encode();
-    if encoded == record.effective_cpuid
-        && sha2::Sha256::digest(&encoded).as_slice() == record.effective_cpuid_sha256.as_slice()
-    {
+    if encode_effective_cpuid(record_entries(effective_cpuid)) == record.effective_cpuid {
         return Ok(());
     }
-    let recorded =
-        EffectiveCpuid::decode_verified(&record.effective_cpuid, &record.effective_cpuid_sha256)?;
-    effective_cpuid.check_matches(&recorded)?;
-    Ok(())
+    let recorded = decode_effective_cpuid(&record.effective_cpuid).map_err(|err| {
+        TimeAbiError::new(
+            TimeAbiCode::ManifestTime,
+            format!("the snapshot's effective CPUID record is malformed: {err}"),
+        )
+    })?;
+    let differences = recorded_cpuid_differences(effective_cpuid, &recorded);
+    let count = differences.len();
+    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
+    Err(TimeAbiError::new(
+        TimeAbiCode::CpuSurface,
+        format!(
+            "the effective CPUID of CPU profile {} differs from the snapshot's in {count} entries: {}",
+            record.id,
+            shown.join("; ")
+        ),
+    )
+    .into())
+}
+
+/// Returns the entries of the snapshot record of `effective`, in its order.
+fn record_entries(effective: &EffectiveCpuid) -> impl Iterator<Item = EffectiveCpuidEntry> + '_ {
+    effective.results().map(|result| EffectiveCpuidEntry {
+        function: result.function,
+        index: result.index,
+        result: result.result,
+        mask: result.mask,
+    })
+}
+
+/// Lists the entries in which this partition's effective CPUID and a
+/// snapshot's `recorded` one differ.
+fn recorded_cpuid_differences(
+    effective: &EffectiveCpuid,
+    recorded: &[EffectiveCpuidEntry],
+) -> Vec<String> {
+    let key = |entry: &EffectiveCpuidEntry| (entry.function, entry.index);
+    let name = |(function, index): (u32, Option<u32>)| match index {
+        Some(index) => format!("CPUID {function:#x}.{index}"),
+        None => format!("CPUID {function:#x}"),
+    };
+    let ours: BTreeMap<_, _> = record_entries(effective)
+        .map(|entry| (key(&entry), entry))
+        .collect();
+    let theirs: BTreeMap<_, _> = recorded.iter().map(|entry| (key(entry), *entry)).collect();
+    let mut differences = Vec::new();
+    for (&entry_key, entry) in &ours {
+        match theirs.get(&entry_key) {
+            None => differences.push(format!("{} is not in the snapshot", name(entry_key))),
+            Some(theirs) if theirs != entry => differences.push(format!(
+                "{} is {:#x?} under mask {:#x?}, and {:#x?} under mask {:#x?} in the snapshot",
+                name(entry_key),
+                entry.result,
+                entry.mask,
+                theirs.result,
+                theirs.mask
+            )),
+            Some(_) => {}
+        }
+    }
+    for &entry_key in theirs
+        .keys()
+        .filter(|entry_key| !ours.contains_key(entry_key))
+    {
+        differences.push(format!("{} is only in the snapshot", name(entry_key)));
+    }
+    if differences.is_empty() {
+        differences.push("the snapshot lists the same entries in another order".to_owned());
+    }
+    differences
 }
 
 /// Checks that VP 0 observes the effective CPUID, on cold boot and restore
@@ -435,8 +500,8 @@ pub(super) fn capture_records(
         .context("the time ABI rates are not declared")?;
     let anchor = backend.capture_anchor()?;
     let identity = virt::time_abi::host::host_identity()?;
-    let profile = state.profile.encode();
-    let effective_cpuid = state.effective_cpuid.encode();
+    let pinned = cpu_profile::pinned_record(state.profile.id())
+        .with_context(|| format!("CPU profile {} is not pinned", state.profile.id()))?;
     tracing::info!(
         tsc = anchor.tsc,
         utc_ns = anchor.sample.utc_ns,
@@ -459,11 +524,10 @@ pub(super) fn capture_records(
             capture_generation: state.generation,
         },
         cpu_profile: SnapshotCpuProfile {
-            id: state.profile.id().to_owned(),
-            sha256: sha2::Sha256::digest(&profile).to_vec(),
-            profile,
-            effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
-            effective_cpuid,
+            id: pinned.id.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(&state.effective_cpuid)),
             capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
         },
     })
@@ -597,6 +661,7 @@ impl StateUnit for TimeAbiUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
@@ -839,39 +904,71 @@ mod tests {
     }
 
     #[test]
-    fn recorded_cpuid_verifies_and_must_match() {
+    fn recorded_cpuid_must_match() {
         let (_, _, effective) = test_config(2);
-        let profile = test_profile().encode();
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
         let record = SnapshotCpuProfile {
             id: TEST_PROFILE.to_owned(),
-            sha256: sha2::Sha256::digest(&profile).to_vec(),
-            profile,
-            effective_cpuid: effective.encode(),
-            effective_cpuid_sha256: effective.digest().to_vec(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(&effective)),
             capture_cpu_signature: 0,
         };
         check_recorded_cpuid(&effective, &record).unwrap();
 
+        // Another topology changes the topology leaves.
         let (_, _, other) = test_config(4);
-        assert_eq!(code(check_recorded_cpuid(&other, &record)), "E_CPU_SURFACE");
+        let message = format!("{:#}", check_recorded_cpuid(&other, &record).unwrap_err());
+        assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
+        assert!(message.contains("CPUID 0xb.1"), "{message}");
 
-        let mut tampered = record.clone();
-        tampered.effective_cpuid_sha256[0] ^= 1;
+        // One flipped bit is named.
+        let mut flipped = record.clone();
+        flipped.effective_cpuid[3 * 4] ^= 1;
+        let message = format!(
+            "{:#}",
+            check_recorded_cpuid(&effective, &flipped).unwrap_err()
+        );
+        assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
+        assert!(message.contains("CPUID 0x0 is"), "{message}");
+
+        // A missing entry, and the same entries in another order.
+        let mut truncated = record.clone();
+        truncated
+            .effective_cpuid
+            .truncate(record.effective_cpuid.len() - EFFECTIVE_CPUID_ENTRY_BYTES);
         assert_eq!(
-            code(check_recorded_cpuid(&effective, &tampered)),
-            "E_PROFILE_DIGEST"
+            code(check_recorded_cpuid(&effective, &truncated)),
+            "E_CPU_SURFACE"
+        );
+        let mut reordered = record.clone();
+        let (first, second) = reordered
+            .effective_cpuid
+            .split_at_mut(EFFECTIVE_CPUID_ENTRY_BYTES);
+        first.swap_with_slice(&mut second[..EFFECTIVE_CPUID_ENTRY_BYTES]);
+        assert_eq!(
+            code(check_recorded_cpuid(&effective, &reordered)),
+            "E_CPU_SURFACE"
         );
 
-        // A digest that verifies over bytes that are not the canonical
-        // encoding.
-        let mut noncanonical = record.clone();
-        noncanonical.effective_cpuid.insert(1, b' ');
-        noncanonical.effective_cpuid_sha256 =
-            sha2::Sha256::digest(&noncanonical.effective_cpuid).to_vec();
+        let mut malformed = record.clone();
+        malformed.effective_cpuid.pop();
         assert_eq!(
-            code(check_recorded_cpuid(&effective, &noncanonical)),
-            "E_PROFILE_DIGEST"
+            code(check_recorded_cpuid(&effective, &malformed)),
+            "E_MANIFEST_TIME"
         );
+    }
+
+    /// Capture copies the pinned profile's precomputed record, so restore
+    /// never encodes or hashes a profile.
+    #[test]
+    fn pinned_records_are_the_profiles() {
+        for profile in cpu_profile::pinned_profiles() {
+            let pinned = cpu_profile::pinned_record(profile.id()).unwrap();
+            assert_eq!(pinned.id, profile.id());
+            assert_eq!(pinned.encoding, profile.encode().as_slice());
+            assert_eq!(pinned.digest, profile.digest());
+        }
     }
 
     #[test]
