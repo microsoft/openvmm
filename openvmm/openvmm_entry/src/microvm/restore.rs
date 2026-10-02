@@ -24,7 +24,6 @@ use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_helpers::snapshot::SnapshotManifest;
-use openvmm_helpers::snapshot::microvm::MicrovmClockContract;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
@@ -219,16 +218,12 @@ pub(crate) fn prepare_restore(
             .expect("restore manifest requires a snapshot path");
         restore_gate_required =
             openvmm_helpers::snapshot::microvm::requires_post_restore_gate(manifest);
-        let contract = manifest
-            .machine_contract
-            .as_ref()
-            .context("microVM snapshot is missing its authoritative machine contract")?;
+        let contract = openvmm_helpers::snapshot::time::required_machine_contract(manifest)?;
         anyhow::ensure!(
             contract.machine_profile == "microvm",
             "snapshot machine profile does not match the requested microVM machine"
         );
         openvmm_helpers::snapshot::microvm::validate_supported_microvm_contract(contract)?;
-        openvmm_helpers::snapshot::time::check_time_abi_manifest_version(manifest)?;
         if let Some(time) = &contract.time {
             openvmm_helpers::snapshot::time::validate_time_contract(time)?;
         }
@@ -417,9 +412,10 @@ impl TimeAbiRestore {
 /// Validates the authoritative machine contract of a microVM snapshot against
 /// the restore-time configuration.
 ///
-/// The manifest must be version 6: the time ABI preflight checks its records,
-/// the backend, the CPU profile, and the downtime against this host before
-/// the rest of the contract is compared.
+/// The manifest, version 6 like every readable one, must carry the time ABI
+/// records: the time ABI preflight checks them, the backend, the CPU profile,
+/// and the downtime against this host before the rest of the contract is
+/// compared.
 pub(crate) fn validate_restore_contract(
     manifest: &SnapshotManifest,
     expected_memory_size: u64,
@@ -435,11 +431,7 @@ pub(crate) fn validate_restore_contract(
     ): ExpectedRestoreContract<'_>,
     time_abi: TimeAbiRestoreOptions<'_>,
 ) -> anyhow::Result<TimeAbiRestore> {
-    let saved_contract = manifest
-        .machine_contract
-        .as_ref()
-        .context("microVM snapshot is missing its authoritative machine contract")?;
-    openvmm_helpers::snapshot::time::check_time_abi_manifest_version(manifest)?;
+    let saved_contract = openvmm_helpers::snapshot::time::required_machine_contract(manifest)?;
     let destination = preflight_time_abi_restore(saved_contract, expected_hypervisor, time_abi)?;
     let (Some(contract), Some(cpu_profile)) = (
         saved_contract.time.clone(),
@@ -454,27 +446,24 @@ pub(crate) fn validate_restore_contract(
         .as_ref()
         .and(filesystem)
         .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()));
-    let mut expected_contract =
-        openvmm_helpers::snapshot::microvm::microvm_machine_contract_with_clock(
-            expected_hypervisor,
-            openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
-            effective_command_line.to_owned(),
-            network,
-            filesystem_slot,
-            filesystem,
-            console_attachment.cloned(),
-            control_console_attachment.cloned(),
-            sandbox_blocks,
-            expected_vp_count,
-            expected_memory_size,
-            (saved_contract.memory_expansion_version != 0)
-                .then_some(saved_contract.memory_capacity_bytes),
-            saved_contract.state_unit_names.clone(),
-            MicrovmClockContract::TimeAbi {
-                time: contract.clone(),
-                cpu_profile: cpu_profile.clone(),
-            },
-        )?;
+    let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
+        expected_hypervisor,
+        openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
+        effective_command_line.to_owned(),
+        network,
+        filesystem_slot,
+        filesystem,
+        console_attachment.cloned(),
+        control_console_attachment.cloned(),
+        sandbox_blocks,
+        expected_vp_count,
+        expected_memory_size,
+        (saved_contract.memory_expansion_version != 0)
+            .then_some(saved_contract.memory_capacity_bytes),
+        saved_contract.state_unit_names.clone(),
+        contract.clone(),
+        cpu_profile.clone(),
+    )?;
     align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
     align_restore_console_listener_contract(saved_contract, &mut expected_contract);
     openvmm_helpers::snapshot::microvm::validate_microvm_machine_contract(
@@ -523,10 +512,45 @@ fn preflight_time_abi_restore(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
     use test_with_tracing::test;
+
+    /// Returns a valid time contract for test machine contracts.
+    pub(crate) fn test_time_contract() -> SnapshotTimeContract {
+        SnapshotTimeContract {
+            time_abi_version: 1,
+            tsc_frequency_hz: 2_100_000_000,
+            tsc_tolerance_ppm: 250,
+            apic_frequency_hz: virt::time_abi::rate::LAPIC_HZ_HYPERV,
+            capture_tsc: 1,
+            capture_utc_ns: 2,
+            capture_monotonic_ns: 3,
+            host_clock: "linux-boottime".to_owned(),
+            host_id: vec![1; 16],
+            host_boot_id: vec![2; 16],
+            capture_generation: 0,
+        }
+    }
+
+    /// Returns a well-formed CPU profile record for test machine contracts.
+    pub(crate) fn test_cpu_profile() -> SnapshotCpuProfile {
+        SnapshotCpuProfile {
+            id: "intel.skylake-sp.v1".to_owned(),
+            sha256: vec![0; 32],
+            profile: vec![1],
+            effective_cpuid: openvmm_defs::time_abi::encode_effective_cpuid([
+                openvmm_defs::time_abi::EffectiveCpuidEntry {
+                    function: 0,
+                    index: None,
+                    result: [0xd, 0, 0, 0],
+                    mask: [!0, 0, 0, 0],
+                },
+            ]),
+            capture_cpu_signature: 0,
+        }
+    }
 
     #[test]
     fn listener_replacement_alignment_preserves_saved_machine_contract() {

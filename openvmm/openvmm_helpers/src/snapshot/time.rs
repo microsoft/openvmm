@@ -2,13 +2,10 @@
 // Licensed under the MIT License.
 
 //! The NVX time ABI records of a snapshot manifest: the time contract and the
-//! CPU profile record of manifest version 6.
+//! CPU profile record of a microVM machine contract.
 
 use super::SnapshotManifest;
-use super::format::TIME_ABI_MANIFEST_VERSION;
-use super::format::TIME_ABI_SNAPSHOT_FORMAT_MAGIC;
 use super::microvm::SnapshotMachineContract;
-use mesh::payload::Timestamp;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_defs::time_abi::decode_effective_cpuid;
@@ -23,12 +20,6 @@ use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::downtime::select_downtime;
 use virt::time_abi::rate;
-
-/// The value of the retired capture wall clock in a version 6 manifest.
-pub(super) const NO_TIMESTAMP: Timestamp = Timestamp {
-    seconds: 0,
-    nanos: 0,
-};
 
 /// The largest canonical CPU profile encoding a manifest may carry.
 pub const MAX_CPU_PROFILE_BYTES: usize = 1024 * 1024;
@@ -139,9 +130,8 @@ pub fn capture_record(contract: &SnapshotTimeContract) -> Result<CaptureTimeReco
     contract.capture_record()
 }
 
-/// Validates the time ABI part of a version 6 machine contract: both
-/// records are present and valid, every retired clock field is empty, and
-/// the command line sets no clock parameter.
+/// Validates the time ABI records of a microVM machine contract: both are
+/// present and valid, and the command line sets no clock parameter.
 pub fn validate_time_abi_contract(contract: &SnapshotMachineContract) -> Result<(), TimeAbiError> {
     let time = contract
         .time
@@ -153,61 +143,18 @@ pub fn validate_time_abi_contract(contract: &SnapshotMachineContract) -> Result<
         .ok_or_else(|| manifest_error("the CPU profile record is missing"))?;
     validate_time_contract(time)?;
     validate_cpu_profile_record(cpu_profile)?;
-    let retired_fields_empty = contract.capture_wall_clock == NO_TIMESTAMP
-        && contract.tsc_frequency_hz == 0
-        && contract.tsc_tolerance_ppm == 0
-        && contract.cpu_contract.is_empty()
-        && contract.cpu_contract_sha256.is_empty()
-        && contract.clock_policy.is_empty()
-        && contract.apic_frequency_hz.is_none();
-    if !retired_fields_empty {
-        return Err(manifest_error(
-            "a version 6 machine contract carries a retired clock field",
-        ));
-    }
     virt::time_abi::check_command_line_clock_tokens(&contract.effective_command_line)
 }
 
-/// Makes `manifest` a version 6 manifest carrying the time ABI records, and
-/// clears the retired clock fields of its machine contract.
-pub fn set_time_abi_records(
-    manifest: &mut SnapshotManifest,
-    time: SnapshotTimeContract,
-    cpu_profile: SnapshotCpuProfile,
-) -> anyhow::Result<()> {
-    let contract = manifest
-        .machine_contract
-        .as_mut()
-        .ok_or_else(|| manifest_error("the time ABI requires a microVM machine contract"))?;
-    contract.capture_wall_clock = NO_TIMESTAMP;
-    contract.tsc_frequency_hz = 0;
-    contract.tsc_tolerance_ppm = 0;
-    contract.cpu_contract.clear();
-    contract.cpu_contract_sha256.clear();
-    contract.clock_policy.clear();
-    contract.apic_frequency_hz = None;
-    contract.time = Some(time);
-    contract.cpu_profile = Some(cpu_profile);
-    manifest.version = TIME_ABI_MANIFEST_VERSION;
-    manifest.format_magic = TIME_ABI_SNAPSHOT_FORMAT_MAGIC.to_vec();
-    Ok(())
+/// Returns the machine contract of a microVM snapshot's manifest, which
+/// carries the time ABI records (`E_MANIFEST_TIME` when it is missing).
+pub fn required_machine_contract(
+    manifest: &SnapshotManifest,
+) -> Result<&SnapshotMachineContract, TimeAbiError> {
+    manifest.machine_contract.as_ref().ok_or_else(|| {
+        manifest_error("the microVM snapshot has no machine contract, so no time ABI records")
+    })
 }
-
-/// Requires manifest version 6, the time ABI's: every microVM restore uses
-/// the time ABI (`E_SNAPSHOT_VERSION`).
-pub fn check_time_abi_manifest_version(manifest: &SnapshotManifest) -> Result<(), TimeAbiError> {
-    if manifest.version == TIME_ABI_MANIFEST_VERSION {
-        return Ok(());
-    }
-    Err(TimeAbiError::new(
-        TimeAbiCode::SnapshotVersion,
-        format!(
-            "snapshot manifest version {} predates the time ABI; recapture the snapshot",
-            manifest.version
-        ),
-    ))
-}
-
 /// The controller's view of a time ABI restore after restore steps 2 to 5 of
 /// the specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -507,13 +454,12 @@ pub(super) mod tests {
     fn version_6_manifest() -> SnapshotManifest {
         let mut manifest = crate::snapshot::tests::test_manifest();
         manifest.machine_contract = Some(crate::snapshot::microvm::test_machine_contract());
-        set_time_abi_records(&mut manifest, test_time_contract(), test_cpu_profile()).unwrap();
         manifest
     }
 
     fn validate(manifest: &SnapshotManifest) -> anyhow::Result<()> {
         crate::snapshot::format::validate_manifest_header(manifest)?;
-        crate::snapshot::format::validate_manifest_version(manifest)?;
+        crate::snapshot::format::validate_manifest_contents(manifest)?;
         crate::snapshot::microvm::validate_microvm_machine_contract(
             manifest,
             &crate::snapshot::microvm::test_machine_contract(),
@@ -525,11 +471,7 @@ pub(super) mod tests {
         let manifest = version_6_manifest();
         assert_eq!(manifest.version, 6);
         assert_eq!(manifest.format_magic, b"OPENVMM_SNAPSHOT_V6\0");
-        // The destination's pre-v6 clock fields are not compared.
         validate(&manifest).unwrap();
-        let contract = manifest.machine_contract.as_ref().unwrap();
-        assert_eq!(contract.tsc_frequency_hz, 0);
-        assert!(contract.cpu_contract.is_empty() && contract.clock_policy.is_empty());
     }
 
     #[test]
@@ -544,27 +486,27 @@ pub(super) mod tests {
         let err = validate(&manifest).unwrap_err().to_string();
         assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
 
+        // A manifest without a machine contract is a regular VM's; a microVM
+        // restore requires the contract.
         let mut manifest = version_6_manifest();
         manifest.machine_contract = None;
-        let err = validate(&manifest).unwrap_err().to_string();
-        assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
+        crate::snapshot::format::validate_manifest_contents(&manifest).unwrap();
+        let err = required_machine_contract(&manifest).unwrap_err();
+        assert_eq!(err.code, TimeAbiCode::ManifestTime);
     }
 
     #[test]
-    fn version_6_manifest_rejects_retired_fields_and_clock_tokens() {
-        let mut manifest = version_6_manifest();
-        manifest.machine_contract.as_mut().unwrap().tsc_frequency_hz = 1;
-        let err = validate(&manifest).unwrap_err().to_string();
-        assert!(err.contains("retired clock field"), "{err}");
-
-        let mut manifest = version_6_manifest();
-        manifest
-            .machine_contract
-            .as_mut()
-            .unwrap()
-            .set_effective_command_line("console=hvc0 tsc_early_khz=2100000".to_owned());
-        let err = validate(&manifest).unwrap_err().to_string();
-        assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
+    fn version_6_manifest_rejects_clock_tokens_and_invalid_records() {
+        for token in ["tsc_early_khz=2100000", "lapic_timer_hz=200000000"] {
+            let mut manifest = version_6_manifest();
+            manifest
+                .machine_contract
+                .as_mut()
+                .unwrap()
+                .set_effective_command_line(format!("console=hvc0 {token}"));
+            let err = validate(&manifest).unwrap_err().to_string();
+            assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
+        }
 
         let mut manifest = version_6_manifest();
         manifest
@@ -579,39 +521,21 @@ pub(super) mod tests {
         assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
     }
 
-    #[test]
-    fn earlier_versions_cannot_carry_records() {
-        let mut manifest = version_6_manifest();
-        manifest.version = crate::snapshot::MANIFEST_VERSION;
-        manifest.format_magic = crate::snapshot::format::SNAPSHOT_FORMAT_MAGIC.to_vec();
-        let err = validate(&manifest).unwrap_err().to_string();
-        assert!(err.contains("cannot carry time ABI records"), "{err}");
-    }
-
-    #[test]
-    fn restore_requires_manifest_version_6() {
-        check_time_abi_manifest_version(&version_6_manifest()).unwrap();
-        let version_5 = crate::snapshot::tests::test_manifest();
-        let err = check_time_abi_manifest_version(&version_5).unwrap_err();
-        assert_eq!(err.code, TimeAbiCode::SnapshotVersion);
-        assert!(err.to_string().contains("recapture the snapshot"), "{err}");
-    }
-
     /// A version 6 machine contract captured on WHP with the test profile,
     /// and a destination sample 5 s after its capture anchor on the same host
     /// boot.
     fn test_restore() -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
-        let mut manifest = crate::snapshot::tests::test_manifest();
-        manifest.machine_contract = Some(crate::snapshot::microvm::test_machine_contract());
-        set_time_abi_records(&mut manifest, test_time_contract(), test_cpu_profile()).unwrap();
         let capture = capture_record(&test_time_contract()).unwrap();
         let now = HostTimeSample {
             utc_ns: capture.sample.utc_ns + 5_000_000_000,
             monotonic_ns: capture.sample.monotonic_ns + 5_000_000_000,
         };
-        (manifest.machine_contract.unwrap(), capture.identity, now)
+        (
+            crate::snapshot::microvm::test_machine_contract(),
+            capture.identity,
+            now,
+        )
     }
-
     fn preflight(
         contract: &SnapshotMachineContract,
         hypervisor: &str,

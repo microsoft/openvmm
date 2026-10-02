@@ -244,10 +244,8 @@ pub(crate) mod tests {
             ]
             .map(str::to_owned)
             .to_vec(),
-            std::time::SystemTime::now().into(),
-            1_000_000_000,
-            Some(1_000_000_000),
-            vec![1, 2, 3],
+            crate::microvm::restore::tests::test_time_contract(),
+            crate::microvm::restore::tests::test_cpu_profile(),
         )
         .unwrap()
     }

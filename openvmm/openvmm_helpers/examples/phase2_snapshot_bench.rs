@@ -181,8 +181,6 @@ fn run_iteration(
         page_size: SparseMapping::page_size() as u32,
         architecture: "x86_64".to_owned(),
         state_size_bytes: 0,
-        state_sha256: Vec::new(),
-        memory_sha256: Vec::new(),
         machine_contract: None,
         format_magic: openvmm_helpers::snapshot::format::SNAPSHOT_FORMAT_MAGIC.to_vec(),
         saved_state_schema_version: openvmm_helpers::snapshot::format::SAVED_STATE_SCHEMA_VERSION,

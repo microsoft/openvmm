@@ -194,10 +194,8 @@ impl CreateVm {
                 manifest.vp_count,
                 crate::system_page_size(),
             )?;
-            let machine_contract = manifest
-                .machine_contract
-                .as_ref()
-                .context("microVM snapshot is missing its authoritative machine contract")?;
+            let machine_contract =
+                openvmm_helpers::snapshot::time::required_machine_contract(manifest)?;
             anyhow::ensure!(
                 machine_contract.machine_profile == "microvm",
                 "snapshot machine profile is not microvm"
