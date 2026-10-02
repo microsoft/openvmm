@@ -897,7 +897,7 @@ impl TdispClientState {
             "tdisp_query_capabilities: device interface info",
         );
 
-        if device_interface_info.guest_protocol_type == target_protocol.into() {
+        if device_interface_info.guest_protocol_type == i32::from(target_protocol) {
             tracing::info!(
                 ?device_interface_info.guest_protocol_type,
                 "tdisp_query_capabilities: TDISP is supported",

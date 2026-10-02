@@ -1249,9 +1249,9 @@ impl WhpProcessor<'_> {
     }
 }
 
-/// Test support: the complete effective CPUID that core passes in
-/// [`TimeAbiConfig::cpuid`], built as core builds it, and core's check of the
-/// CPUID that VP 0 presents.
+/// Test support: topologies of the pinned CPU profiles, and core's check of
+/// the CPUID that VP 0 presents. `virt::time_abi::cpuid` builds the effective
+/// CPUID and the [`TimeAbiConfig::cpuid`] table.
 #[cfg(test)]
 pub(crate) mod test_cpuid {
     use cpu_profile::CpuProfile;
@@ -1279,37 +1279,6 @@ pub(crate) mod test_cpuid {
             .unwrap()
     }
 
-    /// Returns the effective CPUID of a partition with `profile` and
-    /// `topology`, as core's `time_abi::effective_cpuid` builds it, including
-    /// the subleaf that ends each extended topology leaf.
-    pub fn effective_cpuid(profile: &CpuProfile, topology: &ProcessorTopology) -> EffectiveCpuid {
-        let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
-            function: leaf.function,
-            index: leaf.index,
-            result: leaf.result,
-            mask: leaf.mask,
-        };
-        let mut topology_leaves = Vec::new();
-        virt::x86::topology::topology_cpuid(
-            topology,
-            &|leaf, subleaf| profile.lookup(leaf, subleaf),
-            &mut topology_leaves,
-        )
-        .unwrap();
-        virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
-        let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
-        vm.push(cpu_profile::x2apic_cpuid(!matches!(
-            topology.apic_mode(),
-            ApicMode::XApic
-        )));
-        let identity: Vec<_> = virt::time_abi::identity::identity_cpuid_leaves(topology.vp_count())
-            .iter()
-            .map(result)
-            .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
-            .collect();
-        profile.effective_cpuid(&vm, &identity).unwrap()
-    }
-
     /// Returns whether `effective` lists `function`/`index` as an extended
     /// topology subleaf past the core level: the subleaf that ends the
     /// enumeration, which the profile programming of `de39f6aab` left zero.
@@ -1319,27 +1288,6 @@ pub(crate) mod test_cpuid {
             && effective
                 .results()
                 .any(|result| result.function == function && result.index == Some(index))
-    }
-
-    /// Returns [`TimeAbiConfig::cpuid`](virt::time_abi::TimeAbiConfig::cpuid)
-    /// for `effective`, as core's `backend_cpuid` builds it: the per-VP APIC
-    /// identity bits unmasked.
-    pub fn config_cpuid(effective: &EffectiveCpuid) -> CpuidLeafSet {
-        CpuidLeafSet::new(
-            effective
-                .results()
-                .map(|result| {
-                    let per_vp = virt::x86::topology::per_vp_cpuid_bits(result.function);
-                    CpuidLeaf {
-                        function: result.function,
-                        index: result.index,
-                        result: result.result,
-                        mask: [0, 1, 2, 3]
-                            .map(|register| result.mask[register] & !per_vp[register]),
-                    }
-                })
-                .collect(),
-        )
     }
 
     /// Lists every result of `effective` that `presented` does not match
@@ -1580,9 +1528,12 @@ mod tests {
     impl Partition {
         fn new(profile: &str, vp_count: u32, x2apic: X2ApicState) -> Self {
             let topology = test_cpuid::topology(vp_count, x2apic);
-            let effective =
-                test_cpuid::effective_cpuid(cpu_profile::pinned(profile).unwrap(), &topology);
-            let config = test_cpuid::config_cpuid(&effective);
+            let effective = virt::time_abi::cpuid::effective_cpuid(
+                cpu_profile::pinned(profile).unwrap(),
+                &topology,
+            )
+            .unwrap();
+            let config = virt::time_abi::cpuid::backend_cpuid(&effective);
             let exits = cpuid_exits(&config);
             let whp = FakeWhp::new(&config);
             let own =
@@ -1608,7 +1559,7 @@ mod tests {
         fn profile_programmed(profile: &str, vp_count: u32, noise: bool) -> Self {
             let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
             let pinned = cpu_profile::pinned(profile).unwrap();
-            let effective = test_cpuid::effective_cpuid(pinned, &topology);
+            let effective = virt::time_abi::cpuid::effective_cpuid(pinned, &topology).unwrap();
             let programming = test_cpuid::profile_programming(pinned, vp_count);
             let whp = FakeWhp {
                 results: programming.results,
@@ -2392,9 +2343,9 @@ mod whp_tests {
             }
         };
         let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
-        let effective = test_cpuid::effective_cpuid(profile, &topology);
+        let effective = virt::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
         let config = TimeAbiConfig {
-            cpuid: Arc::new(test_cpuid::config_cpuid(&effective)),
+            cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(&effective)),
             msrs: Arc::new(TimeAbiMsrs::new()),
             cpu_profile: profile.id().to_owned(),
         };

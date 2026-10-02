@@ -1010,8 +1010,6 @@ dependencies = [
  "sha2",
  "test_with_tracing",
  "thiserror 2.0.16",
- "virt",
- "vm_topology",
  "windows-sys 0.61.0",
 ]
 
@@ -9856,6 +9854,7 @@ dependencies = [
  "aarch64defs",
  "anyhow",
  "build_rs_guest_arch",
+ "cpu_profile",
  "guestmem",
  "hvdef",
  "inspect",
