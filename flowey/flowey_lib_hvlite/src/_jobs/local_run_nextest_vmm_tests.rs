@@ -12,8 +12,8 @@ use crate::common::CommonTriple;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
 use std::num::NonZeroU64;
-use vmm_test_images::KnownTestArtifacts;
 
 flowey_request! {
     pub struct Params {
@@ -24,7 +24,7 @@ flowey_request! {
 
         // Subset of `VmmTestSelections`
         pub filter: String,
-        pub downloaded_artifacts: Vec<KnownTestArtifacts>,
+        pub downloaded_artifacts: Vec<ErasedVmmTestImage>,
         pub external_deps: VmmTestsExternalDeps,
         pub prep_steps_variants: Vec<String>,
         pub needs_test_igvm_agent_rpc_server: bool,

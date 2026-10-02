@@ -15,33 +15,35 @@
 pub fn hibernate() -> ! {
     uefi::println!("guest_test_uefi: requesting hibernation");
 
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: Writing the emulated ACPI PM control register (PM base 0x400 +
-    // control offset 0x04) with SLP_EN set and suspend type 1 requests S4
-    // (hibernate). The write has no memory effects on the guest.
-    unsafe {
-        core::arch::asm!(
-            "out dx, ax",
-            in("dx") 0x404u16,
-            in("ax") 0x2400u16,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    cfg_select! {
+        // SAFETY: Writing the emulated ACPI PM control register (PM base 0x400 +
+        // control offset 0x04) with SLP_EN set and suspend type 1 requests S4
+        // (hibernate). The write has no memory effects on the guest.
+        target_arch = "x86_64" => unsafe {
+            core::arch::asm!(
+                "out dx, ax",
+                in("dx") 0x404u16,
+                in("ax") 0x2400u16,
+                options(nomem, nostack, preserves_flags),
+            );
+        },
 
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: PSCI SYSTEM_OFF2 (SMC64 `0xC400_0015`) with type HIBERNATE (1)
-    // requests hibernation and does not return. Matches the Hyper-V UEFI
-    // convention: the Microsoft hypervisor traps SMC (via HCR_EL2.TSC) for PSCI
-    // power calls, and a 64-bit guest uses the SMC64 function ID. x0/x1 are
-    // marked clobbered (and flags not preserved) since the call may modify them
-    // if it unexpectedly returns.
-    unsafe {
-        core::arch::asm!(
-            "smc #0",
-            inlateout("x0") 0xC400_0015u64 => _,
-            inlateout("x1") 1u64 => _,
-            options(nomem, nostack),
-        );
+        // SAFETY: PSCI SYSTEM_OFF2 (SMC64 `0xC400_0015`) with type HIBERNATE (1)
+        // requests hibernation and does not return. Matches the Hyper-V UEFI
+        // convention: the Microsoft hypervisor traps SMC (via HCR_EL2.TSC) for PSCI
+        // power calls, and a 64-bit guest uses the SMC64 function ID. x0/x1 are
+        // marked clobbered (and flags not preserved) since the call may modify them
+        // if it unexpectedly returns.
+        target_arch = "aarch64" => unsafe {
+            core::arch::asm!(
+                "smc #0",
+                inlateout("x0") 0xC400_0015u64 => _,
+                inlateout("x1") 1u64 => _,
+                options(nomem, nostack),
+            );
+        },
+
+        _ => compile_error!("unsupported target architecture"),
     }
 
     // The platform should have halted this VP; if control returns, spin so we

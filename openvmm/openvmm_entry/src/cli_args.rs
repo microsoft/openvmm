@@ -563,6 +563,7 @@ flags:
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port
+    `serial=<value>`               1-20 printable ASCII bytes except comma and brackets
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
@@ -710,25 +711,41 @@ options:
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
-    /// boot UEFI firmware
-    #[clap(long, short = 'e')]
-    pub uefi: bool,
+    /// boot UEFI firmware, optionally configured with comma-separated options
+    #[clap(
+        long,
+        short = 'e',
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub uefi: Option<UefiCli>,
 
-    /// UEFI firmware file
-    #[clap(long, requires("uefi"), conflicts_with("igvm"), value_name = "FILE", default_value = default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE"))]
-    pub uefi_firmware: OptionalPathBuf,
+    /// UEFI firmware file (deprecated; use --uefi firmware=FILE)
+    #[clap(
+        long = "uefi-firmware",
+        hide = true,
+        requires("uefi"),
+        conflicts_with("igvm"),
+        value_name = "FILE"
+    )]
+    pub deprecated_uefi_firmware: Option<PathBuf>,
 
-    /// enable UEFI debugging on COM1
-    #[clap(long, requires("uefi"))]
-    pub uefi_debug: bool,
+    /// enable UEFI debugging on COM1 (deprecated; use --uefi debug)
+    #[clap(long = "uefi-debug", hide = true, requires("uefi"))]
+    pub deprecated_uefi_debug: bool,
 
-    /// enable memory protections in UEFI
-    #[clap(long, requires("uefi"))]
-    pub uefi_enable_memory_protections: bool,
+    /// enable memory protections in UEFI (deprecated; use --uefi enable_memory_protections)
+    #[clap(long = "uefi-enable-memory-protections", hide = true, requires("uefi"))]
+    pub deprecated_uefi_enable_memory_protections: bool,
 
-    /// force UEFI to bounce-buffer all DMA traffic
-    #[clap(long, requires("uefi"))]
-    pub uefi_force_dma_bounce: bool,
+    /// force UEFI to bounce-buffer all DMA traffic (deprecated; use --uefi force_dma_bounce)
+    #[clap(long = "uefi-force-dma-bounce", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_dma_bounce: bool,
+
+    /// continue with invalid UEFI firmware version information (deprecated; use --uefi force_firmware_version)
+    #[clap(long = "uefi-force-firmware-version", hide = true, requires("uefi"))]
+    pub deprecated_uefi_force_firmware_version: bool,
 
     /// set PCAT boot order as comma-separated string of boot device types
     /// (e.g: floppy,hdd,optical,net).
@@ -794,7 +811,7 @@ options:
     #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_fs_shmem: Vec<FsArgs>,
 
-    /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
+    /// add a virtio_fs device under the selected bus (auto | mmio | pci | pcie:port | vpci)
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_fs_bus: VirtioBusCli,
 
@@ -809,7 +826,7 @@ options:
     #[clap(long)]
     pub virtio_rng: bool,
 
-    /// add a virtio-rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | vpci | auto)
+    /// add a virtio-rng device under the selected bus (auto | mmio | pci | pcie:port | vpci)
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_rng_bus: VirtioBusCli,
 
@@ -829,7 +846,7 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
-    /// select the bus for virtio vsock devices (pci | mmio)
+    /// select the bus for virtio vsock devices (pci | pcie\[:port\] | mmio)
     #[clap(long, value_name = "BUS", value_parser = parse_virtio_vsock_bus)]
     pub virtio_vsock_bus: Option<VirtioBusCli>,
 
@@ -915,9 +932,9 @@ Examples:
     #[clap(long, value_name = "PATH")]
     pub device: Vec<String>,
 
-    /// instead of showing the frontpage the VM will shutdown instead
-    #[clap(long, requires("uefi"))]
-    pub disable_frontpage: bool,
+    /// instead of showing the frontpage the VM will shutdown instead (deprecated; use --uefi disable_frontpage)
+    #[clap(long = "disable-frontpage", hide = true, requires("uefi"))]
+    pub deprecated_disable_frontpage: bool,
 
     /// add a vtpm device, optionally selecting version 138 or 185 (default: 185)
     #[clap(
@@ -1160,9 +1177,9 @@ flags:
     #[clap(long)]
     pub hibernation: bool,
 
-    /// set the uefi console mode
-    #[clap(long)]
-    pub uefi_console_mode: Option<UefiConsoleModeCli>,
+    /// set the UEFI console mode (deprecated; use --uefi console=MODE)
+    #[clap(long = "uefi-console-mode", hide = true, requires("uefi"))]
+    pub deprecated_uefi_console_mode: Option<UefiConsoleModeCli>,
 
     /// set the EFI diagnostics log level
     #[clap(long_help = r#"
@@ -1173,12 +1190,12 @@ options:
     info                           info (ERROR, WARN, and INFO)
     full                           full (all log levels)
 "#)]
-    #[clap(long, requires("uefi"))]
-    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+    #[clap(long = "efi-diagnostics-log-level", hide = true, requires("uefi"))]
+    pub deprecated_efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
 
-    /// Perform a default boot even if boot entries exist and fail
-    #[clap(long)]
-    pub default_boot_always_attempt: bool,
+    /// Perform a default boot even if boot entries exist and fail (deprecated; use --uefi default_boot_always_attempt)
+    #[clap(long = "default-boot-always-attempt", hide = true)]
+    pub deprecated_default_boot_always_attempt: bool,
 
     /// Enable AMD IOMMU (AMD-Vi) emulation on specified root complexes.
     /// Repeat for each root complex that should have an IOMMU, e.g.:
@@ -1394,6 +1411,44 @@ Syntax: id=<name>
 }
 
 impl Options {
+    /// Returns the structured UEFI configuration with deprecated options merged in.
+    pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
+        let mut uefi = match &self.uefi {
+            Some(uefi) => uefi.clone(),
+            None if self.igvm.is_some() && !self.pcat && self.igvm_personality.is_none() => {
+                UefiCli::default()
+            }
+            None => return Ok(None),
+        };
+
+        if let Some(firmware) = &self.deprecated_uefi_firmware {
+            if uefi.firmware.is_some() {
+                anyhow::bail!("--uefi firmware=... conflicts with --uefi-firmware");
+            }
+            uefi.firmware = Some(firmware.clone());
+        }
+        if let Some(console) = self.deprecated_uefi_console_mode {
+            if uefi.console.is_some() {
+                anyhow::bail!("--uefi console=... conflicts with --uefi-console-mode");
+            }
+            uefi.console = Some(console);
+        }
+        if let Some(diagnostics) = self.deprecated_efi_diagnostics_log_level {
+            if uefi.diagnostics.is_some() {
+                anyhow::bail!("--uefi diagnostics=... conflicts with --efi-diagnostics-log-level");
+            }
+            uefi.diagnostics = Some(diagnostics);
+        }
+
+        uefi.debug |= self.deprecated_uefi_debug;
+        uefi.enable_memory_protections |= self.deprecated_uefi_enable_memory_protections;
+        uefi.force_dma_bounce |= self.deprecated_uefi_force_dma_bounce;
+        uefi.force_firmware_version |= self.deprecated_uefi_force_firmware_version;
+        uefi.disable_frontpage |= self.deprecated_disable_frontpage;
+        uefi.default_boot_always_attempt |= self.deprecated_default_boot_always_attempt;
+        Ok(Some(uefi))
+    }
+
     /// Returns the effective guest RAM size.
     pub fn memory_size(&self) -> u64 {
         self.memory.size.map(|m| m.0).unwrap_or(DEFAULT_MEMORY_SIZE)
@@ -1460,12 +1515,15 @@ impl Options {
             anyhow::bail!("--snp-restricted-injection requires --hypervisor mshv");
         }
         if self.snp_restricted_injection
-            && (self.uefi || self.pcat || self.igvm.is_some() || self.restore_snapshot.is_some())
+            && (self.uefi.is_some()
+                || self.pcat
+                || self.igvm.is_some()
+                || self.restore_snapshot.is_some())
         {
             anyhow::bail!("--snp-restricted-injection requires Linux direct boot");
         }
         if matches!(self.isolation, Some(IsolationCli::Snp)) {
-            if self.uefi {
+            if self.uefi.is_some() {
                 anyhow::bail!("SNP isolation currently only supports Linux direct boot");
             }
             if self.memory.hugepages
@@ -1487,6 +1545,25 @@ impl Options {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Default, vmm_cli::KeyValueArgs)]
+pub struct UefiCli {
+    pub firmware: Option<PathBuf>,
+    #[kv(flag)]
+    pub debug: bool,
+    #[kv(flag)]
+    pub enable_memory_protections: bool,
+    #[kv(flag)]
+    pub force_dma_bounce: bool,
+    #[kv(flag)]
+    pub force_firmware_version: bool,
+    #[kv(flag)]
+    pub disable_frontpage: bool,
+    pub console: Option<UefiConsoleModeCli>,
+    pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
+    #[kv(flag)]
+    pub default_boot_always_attempt: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1577,18 +1654,52 @@ fn parse_guest_power_action(s: &str) -> Result<GuestPowerAction, String> {
     }
 }
 
-#[derive(Copy, Clone, clap::ValueEnum)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VirtioBusCli {
     Auto,
     Mmio,
     Pci,
+    Pcie(String),
     Vpci,
 }
 
+impl FromStr for VirtioBusCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_virtio_bus(value, false)
+    }
+}
+
+fn parse_virtio_bus(value: &str, ignore_case: bool) -> Result<VirtioBusCli, String> {
+    let eq = |value: &str, expected: &str| {
+        if ignore_case {
+            value.eq_ignore_ascii_case(expected)
+        } else {
+            value == expected
+        }
+    };
+
+    match value.split_once(':') {
+        None if eq(value, "auto") => Ok(VirtioBusCli::Auto),
+        None if eq(value, "mmio") => Ok(VirtioBusCli::Mmio),
+        None if eq(value, "pci") => Ok(VirtioBusCli::Pci),
+        None if eq(value, "vpci") => Ok(VirtioBusCli::Vpci),
+        Some((bus, port)) if eq(bus, "pcie") && !port.is_empty() && !port.contains(':') => {
+            Ok(VirtioBusCli::Pcie(port.to_string()))
+        }
+        _ => Err("expected auto, mmio, pci, pcie:<port>, or vpci".to_string()),
+    }
+}
+
 fn parse_virtio_vsock_bus(value: &str) -> Result<VirtioBusCli, String> {
-    match VirtioBusCli::from_str(value, true) {
-        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci)) => Ok(bus),
-        _ => Err("expected mmio or pci".to_string()),
+    if value.eq_ignore_ascii_case("pcie") {
+        return Ok(VirtioBusCli::Pcie("vsock".to_string()));
+    }
+
+    match parse_virtio_bus(value, true) {
+        Ok(bus @ (VirtioBusCli::Mmio | VirtioBusCli::Pci | VirtioBusCli::Pcie(_))) => Ok(bus),
+        _ => Err("expected mmio, pci, pcie, or pcie:<port>".to_string()),
     }
 }
 
@@ -2328,6 +2439,7 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
+    pub serial: Option<String>,
     pub controller: Option<String>,
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
@@ -2381,6 +2493,7 @@ struct DiskArgs {
     #[kv(flag, key = "uh-nvme")]
     uh_nvme: bool,
     pcie_port: Option<String>,
+    serial: Option<String>,
     #[kv(key = "on")]
     controller: Option<String>,
     nsid: Option<u32>,
@@ -2404,10 +2517,19 @@ impl FromStr for DiskCli {
         let is_dvd = args.dvd;
         let vtl = args.vtl;
         let pcie_port = args.pcie_port;
+        let serial = args.serial;
         let controller = args.controller;
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+
+        if serial.as_ref().is_some_and(|serial| {
+            serial.bytes().any(|byte| {
+                !(byte.is_ascii_graphic() || byte == b' ') || matches!(byte, b'[' | b']')
+            })
+        }) {
+            anyhow::bail!("`serial` must contain only printable ASCII characters and no brackets");
+        }
 
         if underhill.is_some() && vtl != DeviceVtl::Vtl0 {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
@@ -2458,6 +2580,7 @@ impl FromStr for DiskCli {
             is_dvd,
             underhill,
             pcie_port,
+            serial,
             controller,
             nsid,
             lun,
@@ -3152,12 +3275,28 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+impl FromStr for UefiConsoleModeCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum EfiDiagnosticsLogLevelCli {
     #[default]
     Default,
     Info,
     Full,
+}
+
+impl FromStr for EfiDiagnosticsLogLevelCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3626,6 +3765,10 @@ fn default_value_from_arch_env(name: &str) -> OsString {
     std::env::var_os(name)
         .or_else(|| std::env::var_os(prefixed))
         .unwrap_or_default()
+}
+
+pub fn default_uefi_firmware() -> Option<PathBuf> {
+    OptionalPathBuf::from(default_value_from_arch_env("OPENVMM_UEFI_FIRMWARE").as_os_str()).0
 }
 
 /// Workaround to use `Option<PathBuf>` alongside [`default_value_from_arch_env`]
@@ -5612,18 +5755,20 @@ mod tests {
 
     #[test]
     fn test_igvm_personality_conflicts_with_external_firmware() {
-        for firmware in ["--uefi", "--pcat"] {
-            assert!(
-                Options::try_parse_from([
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
-                    firmware,
-                ])
-                .is_err()
-            );
+        for personality in ["uefi", "linux-direct"] {
+            for firmware in ["--uefi", "--pcat"] {
+                assert!(
+                    Options::try_parse_from([
+                        "openvmm",
+                        "--igvm",
+                        "guest.igvm",
+                        "--igvm-personality",
+                        personality,
+                        firmware,
+                    ])
+                    .is_err()
+                );
+            }
         }
     }
 
@@ -5643,7 +5788,7 @@ mod tests {
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "--uefi"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V185));
-        assert!(opt.uefi);
+        assert!(opt.uefi.is_some());
 
         let opt = Options::try_parse_from(["openvmm", "--tpm", "138"]).unwrap();
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
@@ -5655,6 +5800,57 @@ mod tests {
         assert_eq!(opt.tpm, Some(TpmVersionCli::V138));
 
         assert!(Options::try_parse_from(["openvmm", "--tpm", "137"]).is_err());
+    }
+
+    #[test]
+    fn test_uefi_options() {
+        let options = Options::try_parse_from(["openvmm", "--uefi"]).unwrap();
+        assert!(options.effective_uefi().unwrap().is_some());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=foo/bar,debug,force_firmware_version,console=com1,diagnostics=full",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("foo/bar".into()));
+        assert!(uefi.debug);
+        assert!(uefi.force_firmware_version);
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(matches!(
+            uefi.diagnostics,
+            Some(EfiDiagnosticsLogLevelCli::Full)
+        ));
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "--uefi-firmware",
+            "legacy.fd",
+            "--uefi-debug",
+        ])
+        .unwrap();
+        let uefi = options.effective_uefi().unwrap().unwrap();
+        assert_eq!(uefi.firmware, Some("legacy.fd".into()));
+        assert!(uefi.debug);
+
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "unknown"]).is_err());
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=on"]).unwrap();
+        assert!(options.effective_uefi().unwrap().unwrap().debug);
+        let options = Options::try_parse_from(["openvmm", "--uefi", "debug=off"]).unwrap();
+        assert!(!options.effective_uefi().unwrap().unwrap().debug);
+        assert!(Options::try_parse_from(["openvmm", "--uefi", "debug,debug"]).is_err());
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--uefi",
+            "firmware=new.fd",
+            "--uefi-firmware",
+            "legacy.fd",
+        ])
+        .unwrap();
+        assert!(options.effective_uefi().is_err());
     }
 
     #[test]
@@ -5835,6 +6031,10 @@ mod tests {
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "3"]).unwrap();
         assert_eq!(opt.virtio_vsock_vhost_cid, Some(3));
 
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-path", "/tmp/vsock"]).unwrap();
+        assert_eq!(opt.virtio_vsock_path.as_deref(), Some("/tmp/vsock"));
+
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-vhost-cid", "2"]).is_err());
         assert!(
             Options::try_parse_from([
@@ -5851,13 +6051,43 @@ mod tests {
     #[test]
     fn test_virtio_vsock_bus_cli() {
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "mmio"]).unwrap();
-        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio)));
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Mmio));
 
         let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pci"]).unwrap();
-        assert!(matches!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci)));
+        assert_eq!(opt.virtio_vsock_bus, Some(VirtioBusCli::Pci));
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("vsock".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "PCIE:custom"]).unwrap();
+        assert_eq!(
+            opt.virtio_vsock_bus,
+            Some(VirtioBusCli::Pcie("custom".to_string()))
+        );
 
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "auto"]).is_err());
         assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "vpci"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:"]).is_err());
+        assert!(
+            Options::try_parse_from(["openvmm", "--virtio-vsock-bus", "pcie:custom:extra"])
+                .is_err()
+        );
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
+                .unwrap();
+        assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
     }
 
     #[test]
@@ -5910,6 +6140,17 @@ mod tests {
         let d = DiskCli::from_str("file:disk.vhd,on=nvme0").unwrap();
         assert_eq!(d.controller.as_deref(), Some("nvme0"));
         assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_serial() {
+        let d = DiskCli::from_str("file:disk.vhd,serial=DATA-DISK").unwrap();
+        assert_eq!(d.serial.as_deref(), Some("DATA-DISK"));
+        assert!(DiskCli::from_str("file:disk.vhd,serial=").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA[1]").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA,DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=DATA\u{1f}DISK").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,serial=non-ascii-\u{e9}").is_err());
     }
 
     #[test]

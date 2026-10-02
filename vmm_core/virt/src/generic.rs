@@ -291,6 +291,18 @@ pub struct SnpConfig {
     pub id_block: Option<SnpIdBlock>,
 }
 
+/// SNP boot configuration needed before a backend creates a partition.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum SnpPartitionConfig {
+    /// A loader-generated Linux direct-boot VMSA.
+    DirectBoot {
+        /// Enables restricted interrupt injection in the partition and VMSA.
+        restricted_injection: bool,
+    },
+    /// Launch configuration extracted from an IGVM file.
+    Igvm(Box<SnpConfig>),
+}
+
 /// Isolation configuration needed before a backend creates a partition.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum ProtoPartitionIsolation {
@@ -298,8 +310,8 @@ pub enum ProtoPartitionIsolation {
     None,
     /// Hypervisor-based isolation.
     Vbs,
-    /// AMD SEV-SNP, optionally with launch configuration from an IGVM file.
-    Snp(Option<Box<SnpConfig>>),
+    /// AMD SEV-SNP with explicit boot configuration.
+    Snp(SnpPartitionConfig),
     /// Intel Trust Domain Extensions.
     Tdx,
     /// Arm Confidential Compute Architecture.
@@ -321,18 +333,6 @@ impl ProtoPartitionIsolation {
     /// Returns whether the partition is isolated.
     pub fn is_isolated(&self) -> bool {
         self.isolation_type().is_isolated()
-    }
-}
-
-impl From<IsolationType> for ProtoPartitionIsolation {
-    fn from(value: IsolationType) -> Self {
-        match value {
-            IsolationType::None => Self::None,
-            IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp(None),
-            IsolationType::Tdx => Self::Tdx,
-            IsolationType::Cca => Self::Cca,
-        }
     }
 }
 
@@ -537,6 +537,13 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Returns a trait object to reset the partition, if supported.
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = <Self as Hv1>::Error>>;
 
+    /// Returns an interface to control partition time, if supported.
+    ///
+    /// Partitions exposing this interface start with time frozen.
+    fn supports_time_control(&self) -> Option<&dyn PartitionTimeControl> {
+        None
+    }
+
     /// Returns a trait object to reset VTL state, if supported.
     fn supports_vtl_scrub(&self) -> Option<&dyn ScrubVtl<Error = <Self as Hv1>::Error>> {
         None
@@ -618,6 +625,35 @@ pub trait AcceptInitialPages {
     fn accept_initial_pages(&self, pages: &[InitialPageImport]) -> Result<(), Self::Error>;
 }
 
+/// Controls the passage of partition time independently of VP execution.
+///
+/// This controls backend time, not the software device clock in
+/// [`vmcore::vmtime`]. Stopping VPs alone does not freeze time. A full VM stop
+/// must freeze time after stopping all VPs, and resume must thaw time before
+/// running any VP. Temporary VP stops need not freeze time.
+///
+/// State access while frozen must observe frozen time, and restoring time
+/// must not thaw it. Implementations may provide this behavior in software.
+/// These transitions are infallible lifecycle operations; a backend must
+/// treat an unexpected failure as fatal rather than return with unknown time
+/// state.
+pub trait PartitionTimeControl {
+    /// Freezes partition time until [`Self::thaw_time`] is called.
+    ///
+    /// The caller must ensure that all VPs are stopped. Violating this
+    /// precondition has backend-specific behavior; implementations need not
+    /// check it. This is a no-op if time is already frozen.
+    fn freeze_time(&self);
+
+    /// Resumes partition time, including any time state replaced by reset or
+    /// VTL scrub.
+    ///
+    /// The caller must ensure that all VPs are stopped. Violating this
+    /// precondition has backend-specific behavior; implementations need not
+    /// check it. This is a no-op for time that is already running.
+    fn thaw_time(&self);
+}
+
 /// Extension trait for resetting the partition.
 pub trait ResetPartition {
     type Error: std::error::Error;
@@ -626,6 +662,8 @@ pub trait ResetPartition {
     /// state.
     ///
     /// The caller must ensure that no VPs are running when this is called.
+    /// If the partition supports [`PartitionTimeControl`], time must be frozen
+    /// and remains frozen after reset.
     ///
     /// This resets partition-level (VM-wide) state. After this completes,
     /// the caller dispatches [`Processor::reset`] to each VP's thread to
@@ -645,6 +683,8 @@ pub trait ScrubVtl {
     /// and restarting a higher VTL without touching the lower VTL.
     ///
     /// The caller must ensure that no VPs are running when this is called.
+    /// A scrub may freeze the target VTL's time. After restoring its VP state,
+    /// call [`PartitionTimeControl::thaw_time`] before resuming execution.
     ///
     /// This scrubs partition-level state. After this completes, the caller
     /// dispatches [`Processor::scrub`] to each VP's thread to scrub per-VP

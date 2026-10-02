@@ -80,9 +80,11 @@ impl FixedGuestLayout {
             .context("RAM size overflow")?;
         let memory = MemoryLayout::new(memory_size, &[], &[], &[], None)
             .context("building memory layout")?;
-        let processors = TopologyBuilder::new_x86()
+        let mut processors = TopologyBuilder::new_x86()
             .build(processor_count)
             .context("building processor topology")?;
+        // Match the single RAM node instead of inheriting per-socket vnodes.
+        processors.set_vnodes(&vec![0; processor_count as usize]);
 
         Ok(Self {
             memory,
@@ -375,6 +377,11 @@ mod tests {
     use super::*;
     use crate::vp_context_builder::VpContextBuilder;
     use crate::vp_context_builder::snp::SnpHardwareContext;
+    use acpi_spec::Header;
+    use acpi_spec::srat::SratApic;
+    use acpi_spec::srat::SratHeader;
+    use acpi_spec::srat::SratMemory;
+    use acpi_spec::srat::SratX2Apic;
     use igvm::IgvmDirectiveHeader;
     use igvm::IgvmFile;
     use igvm::IgvmInitializationHeader;
@@ -537,11 +544,43 @@ mod tests {
     }
 
     #[test]
-    fn fixed_layout_supports_one_and_many_processors() {
-        for processor_count in [1, 4] {
+    fn fixed_layout_srat_assigns_all_cpus_and_memory_to_node_zero() {
+        for processor_count in [1, 2, 4, 8, 256] {
             let layout = FixedGuestLayout::new(64, processor_count).unwrap();
             assert_eq!(layout.processors.vp_count(), processor_count);
             assert_eq!(layout.memory.ram().len(), 1);
+            assert!(layout.processors.vps().all(|vp| vp.vnode == 0));
+
+            let srat = layout.acpi_builder().build_srat();
+            let (header, data) = Header::read_from_prefix(&srat).unwrap();
+            assert_eq!(header.signature, *b"SRAT");
+            assert_eq!(header.length.get() as usize, srat.len());
+            assert_eq!(
+                srat.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)),
+                0
+            );
+            let (_, mut entries) = SratHeader::read_from_prefix(data).unwrap();
+
+            for apic_id in 0..processor_count {
+                if apic_id <= 0xfe {
+                    let (entry, rest) = SratApic::read_from_prefix(entries).unwrap();
+                    assert_eq!(entry.as_bytes(), SratApic::new(apic_id as u8, 0).as_bytes());
+                    entries = rest;
+                } else {
+                    let (entry, rest) = SratX2Apic::read_from_prefix(entries).unwrap();
+                    assert_eq!(entry.as_bytes(), SratX2Apic::new(apic_id, 0).as_bytes());
+                    entries = rest;
+                }
+            }
+            for range in layout.memory.ram() {
+                let (entry, rest) = SratMemory::read_from_prefix(entries).unwrap();
+                assert_eq!(
+                    entry.as_bytes(),
+                    SratMemory::new(range.range.start(), range.range.len(), 0).as_bytes(),
+                );
+                entries = rest;
+            }
+            assert!(entries.is_empty());
         }
     }
 

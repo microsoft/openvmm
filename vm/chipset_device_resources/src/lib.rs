@@ -174,8 +174,12 @@ impl ChipsetDevice for ErasedChipsetDevice {
         self.0.supports_acknowledge_pic_interrupt()
     }
 
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
-        self.0.supports_tdisp()
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        self.0.supports_tdisp_host()
+    }
+
+    fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
+        self.0.supports_tdisp_relay()
     }
 }
 

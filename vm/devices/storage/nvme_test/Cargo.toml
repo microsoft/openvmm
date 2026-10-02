@@ -17,14 +17,16 @@ device_emulators.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
 tdisp.workspace = true
+tdisp_proto.workspace = true
 
 chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
-guid.workspace = true
-inspect.workspace = true
+anyhow.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 pal_async.workspace = true
 async-trait.workspace = true

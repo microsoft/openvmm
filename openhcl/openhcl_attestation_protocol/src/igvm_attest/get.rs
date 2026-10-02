@@ -492,6 +492,8 @@ pub mod runtime_claims {
         pub console_enabled: bool,
         /// Whether the serial console, if enabled, is interactive
         pub interactive_console_enabled: bool,
+        /// Whether the IPMI KCS interface is enabled
+        pub ipmi_enabled: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,
         /// Whether the TPM is enabled
@@ -519,24 +521,5 @@ pub mod runtime_claims {
         pub vmgs_provisioner: Option<VmgsProvisioner>,
         /// Hardware sealing policy
         pub hardware_sealing_policy: HardwareSealingPolicy,
-    }
-
-    impl Default for AttestationVmConfig {
-        fn default() -> Self {
-            Self {
-                current_time: None,
-                root_cert_thumbprint: String::new(),
-                console_enabled: false,
-                interactive_console_enabled: false,
-                secure_boot: false,
-                tpm_enabled: true,
-                tpm_version: AttestationTpmVersion::V138,
-                tpm_persisted: true,
-                filtered_vpci_devices_allowed: false,
-                vm_unique_id: String::new(),
-                vmgs_provisioner: None,
-                hardware_sealing_policy: HardwareSealingPolicy::None,
-            }
-        }
     }
 }

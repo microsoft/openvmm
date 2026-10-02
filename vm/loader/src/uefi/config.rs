@@ -336,8 +336,9 @@ pub struct Flags {
     pub vmbus_disabled: bool,
     pub pci_resources_pre_assigned: bool,
     pub force_dma_bounce_enabled: bool,
+    pub ipmi_enabled: bool,
 
-    #[bits(31)]
+    #[bits(30)]
     _reserved: u64,
 }
 

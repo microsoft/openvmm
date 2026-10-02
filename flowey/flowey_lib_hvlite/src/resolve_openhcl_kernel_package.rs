@@ -6,6 +6,7 @@
 
 use crate::common::CommonArch;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
@@ -133,7 +134,7 @@ impl FlowNodeWithConfig for Node {
                 .chain(modules_reqs.keys())
                 .chain(pkg_reqs.keys())
                 .chain(metadata_reqs.keys())
-                .cloned()
+                .copied()
                 .collect();
 
         // Verify we have either local paths or versions for each requested architecture
@@ -192,10 +193,10 @@ impl FlowNodeWithConfig for Node {
                     .into_iter()
                     .map(|(arch, (k, m))| (arch, (k.claim(ctx), m.claim(ctx))))
                     .collect();
-                let local_reqs = local_reqs.clone();
+                let local_reqs = group_by(local_reqs.into_iter().map(|(kind, arch)| (arch, kind)));
 
                 move |rt| {
-                    for (_, arch) in local_reqs {
+                    for (arch, kinds) in local_reqs {
                         let (kernel_var, modules_var) = local_paths.get(&arch).unwrap();
                         let kernel_path = rt.read(kernel_var.clone());
                         let modules_path = rt.read(modules_var.clone());
@@ -206,55 +207,32 @@ impl FlowNodeWithConfig for Node {
                             modules_path
                         );
 
-                        // Write kernel paths for all kinds matching this arch
-                        for kind in [
-                            OpenhclKernelPackageKind::Main,
-                            OpenhclKernelPackageKind::Dev,
-                            OpenhclKernelPackageKind::Cvm,
-                            OpenhclKernelPackageKind::CvmDev,
-                        ] {
+                        let package_root = kernel_path.parent().map(Path::to_path_buf);
+                        let metadata_path = package_root
+                            .as_ref()
+                            .map(|root| root.join("kernel_build_metadata.json"));
+                        for kind in kinds {
                             if let Some(vars) = kernel_reqs.remove(&(kind, arch)) {
                                 rt.write_all(vars, &kernel_path);
                             }
-                        }
-
-                        // Write modules paths for all kinds matching this arch
-                        for kind in [
-                            OpenhclKernelPackageKind::Main,
-                            OpenhclKernelPackageKind::Dev,
-                            OpenhclKernelPackageKind::Cvm,
-                            OpenhclKernelPackageKind::CvmDev,
-                        ] {
                             if let Some(vars) = modules_reqs.remove(&(kind, arch)) {
                                 rt.write_all(vars, &modules_path);
                             }
-                        }
-
-                        // Write package root paths (parent of kernel)
-                        if let Some(parent) = kernel_path.parent() {
-                            let parent_buf = parent.to_path_buf();
-                            for kind in [
-                                OpenhclKernelPackageKind::Main,
-                                OpenhclKernelPackageKind::Dev,
-                                OpenhclKernelPackageKind::Cvm,
-                                OpenhclKernelPackageKind::CvmDev,
-                            ] {
-                                if let Some(vars) = pkg_reqs.remove(&(kind, arch)) {
-                                    rt.write_all(vars, &parent_buf);
-                                }
+                            if let Some(vars) = pkg_reqs.remove(&(kind, arch)) {
+                                rt.write_all(
+                                    vars,
+                                    package_root
+                                        .as_ref()
+                                        .context("local kernel path has no package directory")?,
+                                );
                             }
-
-                            // Write metadata paths (kernel_build_metadata.json in same dir as kernel)
-                            let metadata_path = parent_buf.join("kernel_build_metadata.json");
-                            for kind in [
-                                OpenhclKernelPackageKind::Main,
-                                OpenhclKernelPackageKind::Dev,
-                                OpenhclKernelPackageKind::Cvm,
-                                OpenhclKernelPackageKind::CvmDev,
-                            ] {
-                                if let Some(vars) = metadata_reqs.remove(&(kind, arch)) {
-                                    rt.write_all(vars, &metadata_path);
-                                }
+                            if let Some(vars) = metadata_reqs.remove(&(kind, arch)) {
+                                rt.write_all(
+                                    vars,
+                                    metadata_path
+                                        .as_ref()
+                                        .context("local kernel path has no metadata directory")?,
+                                );
                             }
                         }
                     }
@@ -313,51 +291,13 @@ impl FlowNodeWithConfig for Node {
                 CommonArch::Aarch64 => "Image",
             };
 
-            let has_kernel_req = kernel_reqs_download.contains_key(&(kind, arch));
-            let has_modules_req = modules_reqs_download.contains_key(&(kind, arch));
-            let has_pkg_req = pkg_reqs_download.contains_key(&(kind, arch));
-            let has_metadata_req = metadata_reqs_download.contains_key(&(kind, arch));
-
             ctx.emit_rust_step("extract and resolve kernel package", |ctx| {
                 let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
-                let kernel_vars = if has_kernel_req {
-                    Some(
-                        kernel_reqs_download
-                            .remove(&(kind, arch))
-                            .unwrap()
-                            .claim(ctx),
-                    )
-                } else {
-                    None
-                };
-                let modules_vars = if has_modules_req {
-                    Some(
-                        modules_reqs_download
-                            .remove(&(kind, arch))
-                            .unwrap()
-                            .claim(ctx),
-                    )
-                } else {
-                    None
-                };
-                let pkg_vars = if has_pkg_req {
-                    Some(pkg_reqs_download.remove(&(kind, arch)).unwrap().claim(ctx))
-                } else {
-                    None
-                };
-                let metadata_vars = if has_metadata_req {
-                    Some(
-                        metadata_reqs_download
-                            .remove(&(kind, arch))
-                            .unwrap()
-                            .claim(ctx),
-                    )
-                } else {
-                    None
-                };
+                let kernel_vars = kernel_reqs_download.remove(&(kind, arch)).claim(ctx);
+                let modules_vars = modules_reqs_download.remove(&(kind, arch)).claim(ctx);
+                let pkg_vars = pkg_reqs_download.remove(&(kind, arch)).claim(ctx);
+                let metadata_vars = metadata_reqs_download.remove(&(kind, arch)).claim(ctx);
                 let kernel_package_tar_gz = kernel_package_tar_gz.claim(ctx);
-                let file_name = file_name.clone();
-                let kernel_file_name = kernel_file_name.to_string();
 
                 move |rt| {
                     let kernel_package_tar_gz = rt.read(kernel_package_tar_gz);
@@ -371,7 +311,7 @@ impl FlowNodeWithConfig for Node {
                     )?;
 
                     // The extracted directory contains: vmlinux/Image, modules/, kernel_build_metadata.json
-                    let kernel_path = extract_dir.join(&kernel_file_name);
+                    let kernel_path = extract_dir.join(kernel_file_name);
                     let modules_path = extract_dir.join("modules");
                     let metadata_path = extract_dir.join("kernel_build_metadata.json");
 

@@ -3,6 +3,7 @@
 
 //! Integration tests for x86_64 guests.
 
+mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
 mod storage;
@@ -359,6 +360,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                     VirtioBlkHandle {
                         disk: disk_resource,
                         read_only: false,
+                        serial: None,
                     }
                     .into_resource(),
                 ));

@@ -12,8 +12,11 @@
 //! In practice, ring buffers always come in pairs so that packets can be both
 //! sent and received. However, this module's interfaces operate on them singly.
 
+#![cfg_attr(not(test), no_std)]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
+
+extern crate alloc;
 
 pub mod gparange;
 
@@ -22,19 +25,20 @@ pub use protocol::PAGE_SIZE;
 pub use protocol::TransferPageRange;
 
 use crate::gparange::GpaRange;
-use guestmem::AccessError;
-use guestmem::MemoryRead;
-use guestmem::MemoryWrite;
-use guestmem::ranges::PagedRange;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt::Debug;
+use core::sync::atomic::AtomicU8;
+use core::sync::atomic::AtomicU32;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
+use guestmem_core::AccessError;
+use guestmem_core::MemoryRead;
+use guestmem_core::MemoryWrite;
+use guestmem_core::ranges::PagedRange;
 use inspect::Inspect;
 use protocol::*;
 use safeatomic::AtomicSliceOps;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -71,11 +75,11 @@ mod pipe_protocol {
 
 mod protocol {
     use crate::CONTROL_WORD_COUNT;
+    use core::fmt::Debug;
+    use core::sync::atomic::AtomicU32;
+    use core::sync::atomic::Ordering;
     use inspect::Inspect;
     use safeatomic::AtomicSliceOps;
-    use std::fmt::Debug;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
@@ -99,7 +103,7 @@ mod protocol {
     pub struct Control<'a>(pub &'a [AtomicU32; CONTROL_WORD_COUNT]);
 
     impl<'a> Control<'a> {
-        pub fn from_page(page: &'a guestmem::Page) -> Option<Self> {
+        pub fn from_page(page: &'a guestmem_core::Page) -> Option<Self> {
             let slice = page.as_atomic_slice()?[..CONTROL_WORD_COUNT]
                 .try_into()
                 .unwrap();
@@ -141,7 +145,7 @@ mod protocol {
     }
 
     impl Debug for Control<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("Control")
                 .field("inp", self.inp())
                 .field("outp", self.outp())
@@ -601,7 +605,7 @@ impl FlatRingMem {
 }
 
 impl Debug for FlatRingMem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FlatRingMem").finish()
     }
 }
@@ -1246,14 +1250,14 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 /// # Panics
 ///
 /// Panics if control_page is not aligned.
-pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
+pub fn inspect_ring(control_page: &guestmem_core::Page, response: &mut inspect::Response<'_>) {
     let control = Control::from_page(control_page).expect("control page is not aligned");
     response.field("control", control);
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
-pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
+pub fn reader_needs_signal(control_page: &guestmem_core::Page) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         control.interrupt_mask().load(Ordering::Relaxed) == 0
             && (control.inp().load(Ordering::Relaxed) != control.outp().load(Ordering::Relaxed))
@@ -1262,7 +1266,7 @@ pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
 
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
-pub fn writer_needs_signal(control_page: &guestmem::Page, ring_size: u32) -> bool {
+pub fn writer_needs_signal(control_page: &guestmem_core::Page, ring_size: u32) -> bool {
     Control::from_page(control_page).is_some_and(|control| {
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
         pending_size != 0
@@ -1275,7 +1279,7 @@ pub fn writer_needs_signal(control_page: &guestmem::Page, ring_size: u32) -> boo
 }
 
 impl<M: RingMem> Debug for InnerRing<M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InnerRing")
             .field("control", &self.control())
             .field("size", &self.size)

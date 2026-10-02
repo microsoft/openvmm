@@ -89,7 +89,7 @@ watchdog_core.workspace = true
 cache_topology.workspace = true
 debug_ptr.workspace = true
 fdt.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true

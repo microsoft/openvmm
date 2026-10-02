@@ -13,7 +13,6 @@
 #![forbid(unsafe_code)]
 
 pub mod ak_cert;
-pub mod logger;
 mod recover;
 pub mod resolver;
 use tpm_lib::AllocateNvIndicesParams;
@@ -40,8 +39,6 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use logger::TpmLogEvent;
-use logger::TpmLogger;
 use ms_tcg_tpm_sys::MsTpm185Platform;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
@@ -58,8 +55,11 @@ use tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+use tpm_resources::TpmLogEvent;
+use tpm_resources::TpmLogger;
 use tpm_resources::TpmRegisterLayout;
 use tpm_resources::TpmVersion;
+use tpm_resources::default_vtpm_size;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -101,22 +101,15 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 // blob.
 const LEGACY_VTPM_SIZE: usize = 16 * 1024;
 const STANDARD_VTPM_SIZE: usize = 32 * 1024;
-// The 1.85 reference implementation is compiled for a 128kB NVRAM region.
-const LARGE_VTPM_SIZE: usize = 128 * 1024;
 
-/// Default vTPM NVRAM size provisioned for a new VMGS.
-///
-/// Each reference implementation is compiled for a fixed NVRAM size and reads
-/// and writes anywhere in that range, so this must match the library in use.
-pub const fn default_vtpm_size(version: TpmVersion) -> usize {
-    match version {
-        TpmVersion::V138 => ms_tpm_20_ref::NV_MEMORY_SIZE,
-        TpmVersion::V185 => ms_tcg_tpm_sys::NV_MEMORY_SIZE,
-    }
-}
-
-static_assertions::const_assert_eq!(ms_tpm_20_ref::NV_MEMORY_SIZE, STANDARD_VTPM_SIZE);
-static_assertions::const_assert_eq!(ms_tcg_tpm_sys::NV_MEMORY_SIZE, LARGE_VTPM_SIZE);
+static_assertions::const_assert_eq!(
+    ms_tpm_20_ref::NV_MEMORY_SIZE,
+    default_vtpm_size(TpmVersion::V138)
+);
+static_assertions::const_assert_eq!(
+    ms_tcg_tpm_sys::NV_MEMORY_SIZE,
+    default_vtpm_size(TpmVersion::V185)
+);
 
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
@@ -2184,13 +2177,13 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ak_cert::RequestAkCert;
     use crate::ak_cert::TpmAkCertType;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use std::sync::Arc;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
     use tpm_protocol::tpm20proto::TpmaNvBits;
+    use tpm_resources::RequestAkCert;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
     struct TestRequestAkCertHelper;

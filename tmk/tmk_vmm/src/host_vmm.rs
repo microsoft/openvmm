@@ -95,6 +95,9 @@ impl RunContext<'_> {
                 test,
                 async |_this, runner| {
                     let [vp] = vps.try_into().ok().unwrap();
+                    if let Some(time) = partition.supports_time_control() {
+                        time.thaw_time();
+                    }
                     threads.push(start_vp(partition.clone(), vp, runner).await?);
                     Ok(())
                 },

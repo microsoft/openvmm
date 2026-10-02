@@ -77,13 +77,11 @@ pub(crate) struct MshvSnpConfig {
     vmsa_memory: GuestMemory,
     #[inspect(hex)]
     sev_features: u64,
-    restricted_injection: bool,
 }
 
-pub(super) fn prepare_snp_config(
+pub(super) fn snp_sev_features(
     config: &virt::SnpConfig,
-    physical_address_width: u8,
-) -> Result<MshvSnpConfig, Error> {
+) -> Result<x86defs::snp::SevFeatures, Error> {
     if config.highest_vtl != 0 {
         return Err(ErrorInner::UnsupportedSnpVtl(config.highest_vtl).into());
     }
@@ -98,18 +96,15 @@ pub(super) fn prepare_snp_config(
     }
 
     let vmsa = &config.vp_contexts[0];
-    let vmsa_end = vmsa
-        .gpa
-        .checked_add(hvdef::HV_PAGE_SIZE)
-        .ok_or(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa))?;
     if !vmsa.gpa.is_multiple_of(hvdef::HV_PAGE_SIZE)
-        || (physical_address_width < u64::BITS as u8 && vmsa_end > (1u64 << physical_address_width))
+        || vmsa.gpa.checked_add(hvdef::HV_PAGE_SIZE).is_none()
     {
         return Err(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa).into());
     }
 
     let (parsed_vmsa, _) = x86defs::snp::SevVmsa::read_from_prefix(vmsa.page.as_ref())
         .map_err(|_| ErrorInner::InvalidSnpIgvmVmsa)?;
+    // This mask permits either injection mode; it does not select one.
     let allowed_features = x86defs::snp::SevFeatures::new()
         .with_snp(true)
         .with_restrict_injection(true);
@@ -125,22 +120,36 @@ pub(super) fn prepare_snp_config(
         .into());
     }
 
+    Ok(parsed_vmsa.sev_features)
+}
+
+pub(super) fn prepare_snp_config(
+    config: &virt::SnpConfig,
+    physical_address_width: u8,
+) -> Result<MshvSnpConfig, Error> {
+    let sev_features = snp_sev_features(config)?;
+    let vmsa = &config.vp_contexts[0];
+    let vmsa_end = vmsa
+        .gpa
+        .checked_add(hvdef::HV_PAGE_SIZE)
+        .ok_or(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa))?;
+    if physical_address_width < u64::BITS as u8 && vmsa_end > (1u64 << physical_address_width) {
+        return Err(ErrorInner::InvalidSnpVmsaGpa(vmsa.gpa).into());
+    }
+
     let mut vmsa_memory = GuestMemory::allocate(hvdef::HV_PAGE_SIZE as usize);
     let Some(vmsa_bytes) = vmsa_memory.inner_buf_mut() else {
         return Err(ErrorInner::InvalidSnpVmsaBacking.into());
     };
     vmsa_bytes.copy_from_slice(vmsa.page.as_ref());
     let vmsa_gpa = vmsa.gpa;
-    let sev_features = parsed_vmsa.sev_features.into_bits();
-    let restricted_injection = parsed_vmsa.sev_features.restrict_injection();
 
     Ok(MshvSnpConfig {
         snp_policy: config.policy,
         id_block: config.id_block.clone(),
         vmsa_gpa,
         vmsa_memory,
-        sev_features,
-        restricted_injection,
+        sev_features: sev_features.into_bits(),
     })
 }
 
@@ -315,26 +324,6 @@ pub(super) fn set_ghcb_gp(ghcb: &mut x86defs::snp::GhcbPage, index: usize, value
     true
 }
 
-pub(super) fn read_snp_start_vp_input(
-    vcpufd: &VcpuFd,
-    gpa: u64,
-) -> Result<hvdef::hypercall::StartVirtualProcessorX64, mshv_ioctls::MshvError> {
-    let mut data = [0; size_of::<hvdef::hypercall::StartVirtualProcessorX64>()];
-    for (offset, chunk) in data.chunks_mut(16).enumerate() {
-        let mut request = mshv_bindings::mshv_read_write_gpa {
-            base_gpa: gpa + (offset * 16) as u64,
-            byte_count: chunk.len() as u32,
-            ..Default::default()
-        };
-        let result = vcpufd.gpa_read(&mut request)?;
-        chunk.copy_from_slice(&result.data[..chunk.len()]);
-    }
-    Ok(
-        hvdef::hypercall::StartVirtualProcessorX64::read_from_bytes(&data)
-            .expect("buffer is exactly the StartVirtualProcessor input size"),
-    )
-}
-
 pub(super) fn ghcb_rax_is_valid(ghcb: &x86defs::snp::GhcbPage) -> bool {
     ghcb.save.valid_bitmap0 & GHCB_RAX_VALID_BIT != 0
 }
@@ -426,31 +415,14 @@ pub(super) fn vp_index_for_apic_id(
         .find_map(|(vp_index, candidate)| (candidate == apic_id).then_some(vp_index))
 }
 
-pub(super) fn snp_host_access_flags(visibility: u32) -> Option<u8> {
-    let acquire = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE;
-    let readable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE;
-    let writable = 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE;
-    match visibility {
-        0 => Some(0),
-        // The current MSHV kernel tests the readable flag when setting
-        // writable access, so a read-only request would become read-write.
-        1 => None,
-        3 => Some(acquire | readable | writable),
-        _ => None,
-    }
-}
-
 pub(crate) fn acquire_snp_host_access(
     partition: &MshvPartitionInner,
     addr: u64,
     size: u64,
 ) -> anyhow::Result<()> {
-    // TODO: The current prototype implementation does not coordinate
-    // acquisition with guest visibility changes. In particular, there is no
-    // per-page state preventing a fault on another thread from acquiring
-    // access while a GPA attribute intercept is revoking it. A complete
-    // implementation must serialize acquisition with revocation and block or
-    // fail this request if the guest is making the page private.
+    // TODO: Coordinate acquisition with guest visibility changes using
+    // per-page state before supporting revocation. GPA attribute intercepts
+    // currently halt the VP rather than revoke host access.
     anyhow::ensure!(
         addr.is_multiple_of(hvdef::HV_PAGE_SIZE)
             && size.is_multiple_of(hvdef::HV_PAGE_SIZE)
@@ -479,40 +451,6 @@ pub(crate) fn acquire_snp_host_access(
     };
     partition.vmfd.modify_gpa_host_access(args)?;
     Ok(())
-}
-
-pub(super) fn parse_snp_gpa_range(
-    range: hvdef::hypercall::HvGpaRange,
-) -> Result<(u64, u64), VpHaltReason> {
-    const PAGES_PER_2MB: u64 = 512;
-    const PAGES_PER_1GB: u64 = 512 * PAGES_PER_2MB;
-
-    let page = range.as_extended();
-    let unit_count = page
-        .additional_pages()
-        .checked_add(1)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    if !page.large_page() {
-        return Ok((page.gpa_page_number(), unit_count));
-    }
-
-    let page = range.as_extended_large_page();
-    let pages_per_unit = if page.page_size() {
-        PAGES_PER_1GB
-    } else {
-        PAGES_PER_2MB
-    };
-    if page.page_size() && !page.gpa_large_page_number().is_multiple_of(PAGES_PER_2MB) {
-        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-    }
-    let start_pfn = page
-        .gpa_large_page_number()
-        .checked_mul(PAGES_PER_2MB)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    let page_count = unit_count
-        .checked_mul(pages_per_unit)
-        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-    Ok((start_pfn, page_count))
 }
 
 pub(super) fn sanitize_snp_cpuid(
@@ -889,7 +827,9 @@ impl MshvPartitionInner {
             snp_policy,
             id_block_enabled = parameters.id_block_enabled != 0,
             vmsa_gpa = config.map(|config| config.vmsa_gpa),
-            restricted_injection = config.map(|config| config.restricted_injection),
+            restricted_injection = config.map(|config| {
+                x86defs::snp::SevFeatures::from(config.sev_features).restrict_injection()
+            }),
             "completing MSHV SNP launch"
         );
         data.import_data.psp_parameters = parameters;
@@ -1052,12 +992,7 @@ impl MshvProcessor<'_> {
         Ok(regs)
     }
 
-    fn dispatch_snp_hypercall(
-        &mut self,
-        info: &hvdef::HvX64HypercallInterceptMessage,
-        regs: &mut HvX64RegisterPage,
-    ) -> (u16, u8) {
-        let vcpufd = self.runner.vcpufd;
+    fn dispatch_snp_hypercall(&mut self, regs: &mut HvX64RegisterPage) -> (u16, u8) {
         let mut handler = MshvHypercallHandler {
             partition: self.partition,
             reg_page: regs,
@@ -1067,49 +1002,10 @@ impl MshvProcessor<'_> {
             modified_xmm: 0,
         };
 
-        if info.rcx as u16 == hvdef::HypercallCode::HvCallStartVirtualProcessor.0 {
-            let input_end = info
-                .rdx
-                .checked_add(size_of::<hvdef::hypercall::StartVirtualProcessorX64>() as u64);
-            let result = input_end
-                .ok_or(hvdef::HvError::InvalidParameter)
-                .and_then(|_| {
-                    read_snp_start_vp_input(vcpufd, info.rdx).map_err(|err| {
-                        tracelimit::warn_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            input_gpa = info.rdx,
-                            "failed to read SNP StartVirtualProcessor input"
-                        );
-                        hvdef::HvError::InvalidParameter
-                    })
-                })
-                .and_then(|input| {
-                    if input.rsvd0 != 0 || input.rsvd1 != 0 {
-                        return Err(hvdef::HvError::InvalidParameter);
-                    }
-                    hv1_hypercall::StartVirtualProcessor::start_virtual_processor(
-                        &mut handler,
-                        input.partition_id,
-                        input.vp_index,
-                        Vtl::try_from(input.target_vtl)?,
-                        &input.vp_context,
-                    )
-                });
-            let output = match result {
-                Ok(()) => hvdef::hypercall::HypercallOutput::SUCCESS,
-                Err(err) => err.into(),
-            };
-            hv1_hypercall::X64RegisterState::set_gp(
-                &mut handler,
-                hv1_hypercall::X64HypercallRegister::Rax,
-                output.into(),
-            );
-        } else {
-            MshvHypercallHandler::DISPATCHER.dispatch(
-                &self.partition.gm,
-                X64RegisterIo::new(&mut handler, true, false),
-            );
-        }
+        MshvHypercallHandler::DISPATCHER.dispatch(
+            &self.partition.gm,
+            X64RegisterIo::new(&mut handler, true, false),
+        );
         (handler.modified_gp, handler.modified_xmm)
     }
 
@@ -1142,7 +1038,7 @@ impl MshvProcessor<'_> {
     fn handle_snp_hypercall_intercept(&mut self, message: &HvMessage) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
         let mut regs = self.snp_hypercall_registers(info)?;
-        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(info, &mut regs);
+        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(&mut regs);
         self.write_snp_hypercall_output(&regs, modified_gp, modified_xmm)
     }
 
@@ -1162,7 +1058,7 @@ impl MshvProcessor<'_> {
                 Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
             }
             HvMessageType::HvMessageTypeGpaAttributeIntercept => {
-                self.handle_snp_gpa_attribute_intercept(exit)
+                Self::handle_snp_gpa_attribute_intercept(exit)
             }
             HvMessageType::HvMessageTypeHypercallIntercept => {
                 tracing::trace!("HYPERCALL_INTERCEPT");
@@ -1228,92 +1124,36 @@ impl MshvProcessor<'_> {
         Ok(())
     }
 
-    pub(super) fn modify_gpa_host_access(
-        &self,
-        gpas: &[u64],
-        flags: u8,
-    ) -> Result<(), VpHaltReason> {
-        if gpas.is_empty() {
-            return Ok(());
-        }
-
-        let mut buf =
-            HeaderVec::<ModifyGpaHostAccessHeader, u64, 0>::new(ModifyGpaHostAccessHeader {
-                flags,
-                rsvd: [0; 7],
-                page_count: gpas.len() as u64,
-            });
-        buf.extend_tail_from_slice(gpas);
-        // SAFETY: The custom header matches `mshv_modify_gpa_host_access`
-        // followed by `page_count` contiguous GPA values. Despite the UAPI
-        // field name `guest_pfns`, the kernel converts each entry with
-        // `HVPFN_DOWN`, so the variable array contains byte GPAs.
-        let args = unsafe {
-            &*buf
-                .as_ptr()
-                .cast::<mshv_bindings::mshv_modify_gpa_host_access>()
-        };
-        self.partition
-            .vmfd
-            .modify_gpa_host_access(args)
-            .map_err(|err| {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    first_gpa = gpas[0],
-                    page_count = gpas.len(),
-                    flags,
-                    "failed to modify SNP GPA host access"
-                );
-                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
-            })
-    }
-
     pub(super) fn handle_snp_gpa_attribute_intercept(
-        &self,
         message: &HvMessage,
     ) -> Result<(), VpHaltReason> {
-        const BATCH_PAGES: usize = 256;
         let info = message.as_message::<hvdef::HvX64GpaAttributeInterceptMessage>();
         let range_count = info.flags.range_count() as usize;
-        let ranges = &info.ranges;
-        if range_count == 0 || range_count > ranges.len() {
-            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-        }
-
-        let flags = snp_host_access_flags(info.flags.host_visibility())
-            .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
         if info.flags.adjust() || info.flags.memory_type() != 0 {
+            // Normal guest visibility changes require adjust permission.
+            // TODO: Support host-access revocation by blocking new acquisitions
+            // and draining active host/device users before releasing access and
+            // resuming the VP. Until then, fail closed.
+            tracelimit::warn_ratelimited!(
+                vp_index = info.vp_index,
+                adjust = info.flags.adjust(),
+                host_visibility = info.flags.host_visibility(),
+                memory_type = info.flags.memory_type(),
+                range_count,
+                ranges = ?info.ranges.get(..range_count),
+                "unsupported SNP GPA attribute change; halting VP"
+            );
             return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
         }
 
-        // TODO: The current prototype implementation assumes that no
-        // virtstack component is using these pages. Before revoking host
-        // access, mark the ranges as revoking so that new GuestMemory faults
-        // cannot reacquire them, then drain active GuestMemory accesses,
-        // acquisitions already in progress, locked ranges, and device/DMA
-        // users. Only after the release ioctl succeeds should the ranges be
-        // marked private and the VP resumed, allowing the pending guest
-        // visibility hypercall to be re-executed. If the accesses cannot be
-        // drained, deny the intercept instead of reporting success.
-        let mut gpas = Vec::with_capacity(BATCH_PAGES);
-        for range in &ranges[..range_count] {
-            let (start_pfn, page_count) = parse_snp_gpa_range(*range)?;
-            let end_pfn = start_pfn
-                .checked_add(page_count)
-                .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?;
-
-            for pfn in start_pfn..end_pfn {
-                gpas.push(
-                    pfn.checked_mul(hvdef::HV_PAGE_SIZE)
-                        .ok_or(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })?,
-                );
-                if gpas.len() == BATCH_PAGES {
-                    self.modify_gpa_host_access(&gpas, flags)?;
-                    gpas.clear();
-                }
-            }
-        }
-        self.modify_gpa_host_access(&gpas, flags)
+        tracelimit::warn_ratelimited!(
+            vp_index = info.vp_index,
+            host_visibility = info.flags.host_visibility(),
+            range_count,
+            ranges = ?info.ranges.get(..range_count),
+            "unsupported SNP GPA attribute intercept; halting VP"
+        );
+        Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
     }
 
     pub(super) fn sev_set_reg(
@@ -1864,6 +1704,188 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
+    fn snp_config(features: x86defs::snp::SevFeatures) -> virt::SnpConfig {
+        let mut page = Box::new([0; 4096]);
+        let (vmsa, _) = x86defs::snp::SevVmsa::mut_from_prefix(page.as_mut()).unwrap();
+        vmsa.sev_features = features;
+        vmsa.rip = 0x1234;
+        virt::SnpConfig {
+            policy: 0x30000,
+            highest_vtl: 0,
+            shared_gpa_boundary: 0,
+            has_relocation: false,
+            vp_contexts: vec![virt::SnpVpContext {
+                gpa: 0x1000,
+                vp_index: VpIndex::BSP,
+                page,
+            }],
+            id_block: None,
+        }
+    }
+
+    #[test]
+    fn snp_igvm_injection_selects_creation_policy_and_preserves_vmsa() {
+        let restricted_args = partition_create_args(
+            &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }),
+            false,
+            false,
+        )
+        .unwrap();
+        for restricted in [false, true] {
+            let features = x86defs::snp::SevFeatures::new()
+                .with_snp(true)
+                .with_restrict_injection(restricted);
+            let config = snp_config(features);
+            let sev_features = snp_sev_features(&config).unwrap();
+            assert_eq!(sev_features.restrict_injection(), restricted);
+            let args = partition_create_args(
+                &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
+                    config.clone(),
+                ))),
+                false,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                args.pt_flags ^ restricted_args.pt_flags,
+                if restricted {
+                    0
+                } else {
+                    MSHV_PT_SNP_NORMAL_INJECTION << MSHV_PT_SNP_INJECTION_POLICY_SHIFT
+                },
+            );
+            assert_eq!(
+                (args.pt_flags >> MSHV_PT_SNP_INJECTION_POLICY_SHIFT) & 3,
+                if restricted { 0 } else { 1 },
+            );
+
+            let mut prepared = prepare_snp_config(&config, 48).unwrap();
+            assert_eq!(prepared.sev_features, features.into_bits());
+            assert_eq!(prepared.snp_policy, config.policy);
+            assert_eq!(prepared.vmsa_gpa, config.vp_contexts[0].gpa);
+            assert_eq!(
+                prepared.vmsa_memory.inner_buf_mut().unwrap(),
+                config.vp_contexts[0].page.as_ref(),
+            );
+        }
+    }
+
+    #[test]
+    fn snp_direct_boot_partition_policy_matches_vmsa() {
+        for restricted_injection in [false, true] {
+            let args = partition_create_args(
+                &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                    restricted_injection,
+                }),
+                false,
+                false,
+            )
+            .unwrap();
+            let vmsa = virt::x86::snp::vmsa_from_initial_regs(
+                &virt::x86::X86InitialRegs {
+                    registers: Default::default(),
+                    mtrrs: Default::default(),
+                    pat: Default::default(),
+                },
+                virt::x86::snp::SnpVmsaConfig {
+                    restricted_injection,
+                },
+            );
+            assert_eq!(vmsa.sev_features.restrict_injection(), restricted_injection);
+            assert_eq!(
+                (args.pt_flags >> MSHV_PT_SNP_INJECTION_POLICY_SHIFT) & 3,
+                if vmsa.sev_features.restrict_injection() {
+                    0
+                } else {
+                    1
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn injection_policy_is_snp_only() {
+        let args =
+            partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap();
+        assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
+    }
+
+    #[test]
+    fn snp_igvm_rejects_unsupported_injection_features_before_creation() {
+        let features = x86defs::snp::SevFeatures::new().with_snp(true);
+        for features in [
+            features.with_snp(false),
+            features.with_alternate_injection(true),
+            features.with_secure_avic(true),
+            features
+                .with_restrict_injection(true)
+                .with_alternate_injection(true),
+            features.with_vtom(true),
+        ] {
+            let config = snp_config(features);
+            assert!(matches!(
+                partition_create_args(
+                    &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
+                        config
+                    ))),
+                    false,
+                    false,
+                )
+                .unwrap_err()
+                .0,
+                ErrorInner::UnsupportedSnpIgvmVmsa { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn snp_igvm_rejects_invalid_topology_before_creation() {
+        let mut config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+        config.vp_contexts[0].vp_index = VpIndex::new(1);
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+        config.vp_contexts[0].vp_index = VpIndex::BSP;
+        config.vp_contexts.push(config.vp_contexts[0].clone());
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+        config.vp_contexts.clear();
+        assert!(matches!(
+            snp_sev_features(&config).unwrap_err().0,
+            ErrorInner::InvalidSnpIgvmTopology
+        ));
+    }
+
+    #[test]
+    fn snp_igvm_rejects_invalid_vmsa_gpa_before_creation() {
+        for gpa in [0x1001, !(hvdef::HV_PAGE_SIZE - 1)] {
+            let mut config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+            config.vp_contexts[0].gpa = gpa;
+            assert!(matches!(
+                snp_sev_features(&config).unwrap_err().0,
+                ErrorInner::InvalidSnpVmsaGpa(invalid) if invalid == gpa
+            ));
+        }
+    }
+
+    #[test]
+    fn snp_igvm_preparation_checks_partition_address_width() {
+        let config = snp_config(x86defs::snp::SevFeatures::new().with_snp(true));
+        snp_sev_features(&config).unwrap();
+        assert!(matches!(
+            prepare_snp_config(&config, 12).unwrap_err().0,
+            ErrorInner::InvalidSnpVmsaGpa(0x1000)
+        ));
+        for width in [13, 48, 64] {
+            prepare_snp_config(&config, width).unwrap();
+        }
+    }
+
     #[test]
     fn snp_hypercall_requires_valid_consistent_registers() {
         let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
@@ -2192,56 +2214,30 @@ mod tests {
     }
 
     #[test]
-    fn builds_snp_host_access_flags() {
-        assert_eq!(snp_host_access_flags(0), Some(0));
-        assert_eq!(snp_host_access_flags(1), None);
-        assert_eq!(
-            snp_host_access_flags(3),
-            Some(
-                1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_ACQUIRE
-                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_READABLE
-                    | 1 << mshv_bindings::MSHV_GPA_HOST_ACCESS_BIT_WRITABLE
-            )
-        );
-        assert_eq!(snp_host_access_flags(2), None);
-    }
-
-    #[test]
-    fn parses_snp_gpa_ranges() {
-        let mut range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtended::new()
-                .with_additional_pages(2)
-                .with_gpa_page_number(0x1234)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x1234, 3));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_additional_pages(1)
-                .with_large_page(true)
-                .with_gpa_large_page_number(1)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (0x200, 1024));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_large_page(true)
-                .with_page_size(true)
-                .with_gpa_large_page_number(512)
-                .into_bits(),
-        );
-        assert_eq!(parse_snp_gpa_range(range).unwrap(), (512 * 512, 512 * 512));
-
-        range = hvdef::hypercall::HvGpaRange(
-            hvdef::hypercall::HvGpaRangeExtendedLargePage::new()
-                .with_large_page(true)
-                .with_page_size(true)
-                .with_gpa_large_page_number(1)
-                .into_bits(),
-        );
-        assert!(parse_snp_gpa_range(range).is_err());
+    fn rejects_snp_gpa_attribute_intercepts() {
+        for adjust in [false, true] {
+            for memory_type in [0, 1] {
+                for host_visibility in 0..4 {
+                    for range_count in [0, 1, 29, 30, 31] {
+                        let mut info = hvdef::HvX64GpaAttributeInterceptMessage::new_zeroed();
+                        info.flags = hvdef::HvX64GpaAttributeInterceptMessageFlags::new()
+                            .with_adjust(adjust)
+                            .with_memory_type(memory_type)
+                            .with_host_visibility(host_visibility)
+                            .with_range_count(range_count);
+                        let message = HvMessage::new(
+                            HvMessageType::HvMessageTypeGpaAttributeIntercept,
+                            0,
+                            info.as_bytes(),
+                        );
+                        assert!(matches!(
+                            MshvProcessor::handle_snp_gpa_attribute_intercept(&message),
+                            Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 })
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

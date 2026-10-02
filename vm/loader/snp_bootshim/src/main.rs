@@ -1,7 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Accepts sparse SNP IGVM RAM before entering a direct-boot Linux kernel.
+//! Measured SEV-SNP boot stage that accepts sparse guest RAM before entering a
+//! direct-boot Linux kernel.
+//!
+//! The IGVM generator starts this x86_64 bare-metal payload with `RSI` pointing
+//! to a measured [`SnpBootShimParams`] page. After validating that complete
+//! handoff, the shim makes each omitted RAM range private through the GHCB MSR
+//! protocol, executes `PVALIDATE`, repairs its cache state, and jumps to the
+//! measured Linux entry point with the architectural direct-boot registers.
+//!
+//! It has no command-line interface and is only useful as an IGVM component.
+//! SNP Linux-direct image generation builds and embeds it; invalid parameters
+//! or page-state transitions fault instead of continuing with unsafe memory.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: The bootshim issues PVALIDATE, reads freshly accepted pages, and

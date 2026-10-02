@@ -847,8 +847,9 @@ impl IoasManager {
         // IOAS for identity DMA.
         let (nesting, accel_state_id) = if let Some(vsmmu) = vsmmu {
             // Query the physical SMMU's capabilities backing this device.
-            let host_caps = crate::iommufd_nesting::query_host_caps(&self.ctx, devid)
-                .context("failed to query host SMMU capabilities")?;
+            let (host_caps, device_caps) =
+                crate::iommufd_nesting::query_host_caps(&self.ctx, devid)
+                    .context("failed to query host SMMU capabilities")?;
 
             // Get or create the shared vIOMMU for this emulated SMMU. The
             // first device behind the SMMU allocates it; the rest reuse it
@@ -889,6 +890,7 @@ impl IoasManager {
                 Some(NestingOutput {
                     accel_state,
                     host_caps,
+                    device_caps,
                 }),
                 Some(accel_state_id),
             )
@@ -1066,6 +1068,8 @@ pub(crate) struct NestingOutput {
     pub accel_state: Arc<crate::iommufd_nesting::SmmuAccelState>,
     /// Host SMMU capabilities, to finalize the emulated SMMU's parameters.
     pub host_caps: smmu::HostSmmuCaps,
+    /// Per-device PASID capabilities used only for endpoint PCI emulation.
+    pub device_caps: crate::iommufd_nesting::DeviceIommuCaps,
 }
 
 /// Dispatches cdev device requests to per-iommu [`IoasManager`] tasks.
