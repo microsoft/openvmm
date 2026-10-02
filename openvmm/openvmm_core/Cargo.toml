@@ -107,7 +107,6 @@ futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true

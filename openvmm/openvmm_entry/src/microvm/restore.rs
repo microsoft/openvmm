@@ -778,7 +778,6 @@ mod tests {
             sha256: Vec::new(),
             profile: Vec::new(),
             effective_cpuid: Vec::new(),
-            effective_cpuid_sha256: Vec::new(),
             capture_cpu_signature: 0,
         });
         MicrovmRestore {

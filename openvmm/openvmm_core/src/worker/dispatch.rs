@@ -1964,6 +1964,7 @@ impl InitializedVm {
                     saved_state.is_some() == restore.is_some(),
                     "a time ABI restore requires both the saved state and the time ABI restore inputs"
                 );
+                let checks_started = std::time::Instant::now();
                 if let Some(input) = restore {
                     anyhow::ensure!(
                         input.cpu_profile.id == profile.id(),
@@ -1973,13 +1974,23 @@ impl InitializedVm {
                     );
                     time_abi::check_recorded_cpuid(&effective_cpuid, &input.cpu_profile)?;
                 }
+                let recorded_done = std::time::Instant::now();
                 time_abi::check_presented_cpuid(
                     partition.as_ref(),
                     hypervisor,
                     profile,
                     &effective_cpuid,
                 )?;
+                let presented_done = std::time::Instant::now();
                 time_abi::check_profile_support(partition.as_ref(), hypervisor, profile)?;
+                let support_done = std::time::Instant::now();
+                tracing::info!(
+                    cpu_profile = profile.id(),
+                    recorded_cpuid_us = (recorded_done - checks_started).as_micros() as u64,
+                    presented_cpuid_us = (presented_done - recorded_done).as_micros() as u64,
+                    profile_support_us = (support_done - presented_done).as_micros() as u64,
+                    "time ABI CPU checks passed"
+                );
                 let report = time_abi::declare_rates(
                     partition.as_ref(),
                     &msrs,
