@@ -748,30 +748,7 @@ impl MshvPartitionInner {
             .iter()
             .map(|&(function, index)| (function, index.unwrap_or(0)))
             .collect();
-        let (values, bulk) = match vp_cpuid_many(bsp, VpIndex::BSP.index(), &entries) {
-            Ok(values) => (values, true),
-            Err(error) => {
-                tracing::warn!(
-                    error = &error as &dyn std::error::Error,
-                    "MSHV bulk CPUID read failed, reading one entry per call"
-                );
-                let values = entries
-                    .iter()
-                    .map(|&(function, index)| {
-                        vp_cpuid(bsp, function, index).map_err(|error| {
-                            TimeAbiError::new(
-                                TimeAbiCode::CpuSurface,
-                                format!(
-                                    "cannot read CPUID {function:#x}/{index:#x} of VP 0: {}",
-                                    error_chain(&error)
-                                ),
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                (values, false)
-            }
-        };
+        let (values, bulk) = vp0_cpuid_entries(bsp, &entries, TimeAbiCode::CpuSurface)?;
         let mut read = reads
             .iter()
             .zip(values)
@@ -821,19 +798,47 @@ impl MshvPartitionInner {
             let actual = effective.result(leaf.function, leaf.index.unwrap_or(0), &[0; 4]);
             check_leaf(leaf, actual)?;
         }
-        for function in PREFLIGHT_SENTINEL_LEAVES {
-            let actual = vp_cpuid(bsp, function, 0).map_err(|error| {
-                TimeAbiError::new(
-                    TimeAbiCode::IdentityRouting,
-                    format!(
-                        "cannot read CPUID {function:#x} of VP 0: {}",
-                        error_chain(&error)
-                    ),
-                )
-            })?;
+        let sentinels = PREFLIGHT_SENTINEL_LEAVES.map(|function| (function, 0));
+        let (values, _) = vp0_cpuid_entries(bsp, &sentinels, TimeAbiCode::IdentityRouting)?;
+        for (&(function, _), actual) in sentinels.iter().zip(values) {
             check_leaf(&CpuidLeaf::new(function, [0; 4]), actual)?;
         }
         Ok(())
+    }
+}
+
+/// Reads CPUID `entries` of VP 0 in one bulk call ([`vp_cpuid_many`]),
+/// falling back to one read per entry, with a warning, if the bulk call
+/// fails. Returns the values and whether the bulk call served them; a read
+/// that fails fails with `code`.
+fn vp0_cpuid_entries(
+    bsp: &VcpuFd,
+    entries: &[(u32, u32)],
+    code: TimeAbiCode,
+) -> Result<(Vec<[u32; 4]>, bool), TimeAbiError> {
+    match vp_cpuid_many(bsp, VpIndex::BSP.index(), entries) {
+        Ok(values) => Ok((values, true)),
+        Err(error) => {
+            tracing::warn!(
+                error = &error as &dyn std::error::Error,
+                "MSHV bulk CPUID read failed, reading one entry per call"
+            );
+            let values = entries
+                .iter()
+                .map(|&(function, index)| {
+                    vp_cpuid(bsp, function, index).map_err(|error| {
+                        TimeAbiError::new(
+                            code,
+                            format!(
+                                "cannot read CPUID {function:#x}/{index:#x} of VP 0: {}",
+                                error_chain(&error)
+                            ),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((values, false))
+        }
     }
 }
 
