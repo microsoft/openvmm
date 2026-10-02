@@ -37,6 +37,10 @@ fn position(id: &str) -> Option<usize> {
 
 /// Returns every pinned profile. Selecting by ID with [`pinned`] or
 /// [`pinned_for_restore`] builds only that profile.
+///
+/// Offline only: this builds every profile, for tools and tests. A cold boot
+/// or restore selects its one profile with [`select`] or
+/// [`pinned_for_restore`].
 pub fn pinned_profiles() -> &'static [CpuProfile] {
     static ALL: OnceLock<Vec<CpuProfile>> = OnceLock::new();
     ALL.get_or_init(|| (0..PINNED.len()).map(|index| load(index).clone()).collect())
@@ -48,7 +52,8 @@ pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
 }
 
 /// Returns the precomputed record of the pinned profile `id`: its canonical
-/// encoding and digest, for a snapshot's CPU profile record.
+/// encoding and digest, constants that a snapshot's CPU profile record
+/// copies at capture and that the restore preflight compares byte for byte.
 pub fn pinned_record(id: &str) -> Option<PinnedRecord> {
     position(id).map(|index| PINNED[index].record())
 }
@@ -163,39 +168,14 @@ pub fn check_generation(profile: &CpuProfile, host: &HostCpuSignature) -> Result
     }
 }
 
-/// Verifies the CPU profile record of a snapshot: the embedded canonical
-/// profile matches its recorded SHA-256 and recorded ID, and decodes
-/// (`E_PROFILE_DIGEST`).
-pub fn verify_profile_record(
-    id: &str,
-    sha256: &[u8],
-    embedded: &[u8],
-) -> Result<CpuProfile, ProfileError> {
-    if canonical::sha256(embedded).as_slice() != sha256 {
-        return Err(ProfileError::new(
-            ProfileErrorCode::ProfileDigest,
-            format!("the embedded CPU profile {id} does not match its recorded digest"),
-        ));
-    }
-    let profile = CpuProfile::decode(embedded)?;
-    if profile.id() != id {
-        return Err(ProfileError::new(
-            ProfileErrorCode::ProfileDigest,
-            format!(
-                "the embedded CPU profile is {}, but the record names {id}",
-                profile.id()
-            ),
-        ));
-    }
-    Ok(profile)
-}
-
 /// Returns the pinned profile that a snapshot recorded by ID and SHA-256.
 ///
 /// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin the ID, and
 /// with `E_PROFILE_DIGEST` when its pinned profile has another digest. The
 /// pinned profile's digest is a constant, which the catalog's tests check, so
-/// a restore encodes and hashes nothing here.
+/// a restore encodes and hashes nothing here. The restore preflight also
+/// compares the recorded document with [`pinned_record`]'s encoding, and
+/// checks the destination host with [`check_generation`].
 pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile, ProfileError> {
     let index = position(id).ok_or_else(|| unknown(id))?;
     let golden = &PINNED[index].digest;
@@ -209,21 +189,6 @@ pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile
         ));
     }
     Ok(load(index))
-}
-
-/// Runs the profile checks of a restore: [`verify_profile_record`],
-/// [`pinned_for_restore`], and [`check_generation`] for the destination
-/// host.
-pub fn restore_profile(
-    id: &str,
-    sha256: &[u8],
-    embedded: &[u8],
-    host: &HostCpuSignature,
-) -> Result<&'static CpuProfile, ProfileError> {
-    verify_profile_record(id, sha256, embedded)?;
-    let profile = pinned_for_restore(id, sha256)?;
-    check_generation(profile, host)?;
-    Ok(profile)
 }
 
 fn unknown(id: &str) -> ProfileError {
@@ -488,48 +453,40 @@ mod tests {
     }
 
     #[test]
-    fn restore_checks_the_record_the_pinned_profile_and_the_host() {
+    fn restore_checks_the_pinned_record_and_the_host() {
         let profile = profile("intel.icelake-sp.v1");
-        let bytes = profile.encode();
         let digest = profile.digest();
         let host = intel(ICELAKE);
+        assert_eq!(pinned_for_restore(profile.id(), &digest).unwrap(), profile);
+        check_generation(profile, &host).unwrap();
+        // The preflight compares the recorded document with the pinned
+        // encoding, which is the profile's.
         assert_eq!(
-            restore_profile(profile.id(), &digest, &bytes, &host).unwrap(),
-            profile
+            pinned_record(profile.id()).unwrap().encoding,
+            profile.encode().as_slice()
         );
 
-        // A corrupted record.
-        let mut corrupted = bytes.clone();
+        // A corrupted, short, or another profile's digest.
+        let mut corrupted = digest;
         corrupted[10] ^= 1;
         assert_eq!(
-            code(restore_profile(profile.id(), &digest, &corrupted, &host)),
+            code(pinned_for_restore(profile.id(), &corrupted)),
             ProfileErrorCode::ProfileDigest
         );
         assert_eq!(
-            code(restore_profile(profile.id(), &digest[..31], &bytes, &host)),
+            code(pinned_for_restore(profile.id(), &digest[..31])),
             ProfileErrorCode::ProfileDigest
         );
         assert_eq!(
-            code(restore_profile(
-                "intel.skylake-sp.v1",
-                &digest,
-                &bytes,
-                &host
-            )),
+            code(pinned_for_restore("intel.skylake-sp.v1", &digest)),
             ProfileErrorCode::ProfileDigest
         );
 
         // A profile this OpenVMM does not pin.
         let mut unknown = profile.clone();
         unknown.id = "intel.icelake-sp.v9".to_owned();
-        let unknown_bytes = unknown.encode();
         assert_eq!(
-            code(restore_profile(
-                unknown.id(),
-                &unknown.digest(),
-                &unknown_bytes,
-                &host
-            )),
+            code(pinned_for_restore(unknown.id(), &unknown.digest())),
             ProfileErrorCode::ProfileUnknown
         );
 
@@ -537,23 +494,13 @@ mod tests {
         let mut changed = profile.clone();
         changed.description.push('!');
         assert_eq!(
-            code(restore_profile(
-                changed.id(),
-                &changed.digest(),
-                &changed.encode(),
-                &host
-            )),
+            code(pinned_for_restore(changed.id(), &changed.digest())),
             ProfileErrorCode::ProfileDigest
         );
 
         // Another generation on the destination.
         assert_eq!(
-            code(restore_profile(
-                profile.id(),
-                &digest,
-                &bytes,
-                &intel(EMERALDRAPIDS)
-            )),
+            code(check_generation(profile, &intel(EMERALDRAPIDS))),
             ProfileErrorCode::CpuGeneration
         );
     }
