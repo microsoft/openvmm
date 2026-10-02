@@ -84,6 +84,7 @@ impl SimpleFlowNode for Node {
 
         let firmware = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
             arch: CommonArch::X86_64,
+            flavor: None,
             msvm_fd: v,
         });
         let runtime_archive = match runtime_archive {

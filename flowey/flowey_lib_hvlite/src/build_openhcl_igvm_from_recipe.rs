@@ -582,6 +582,7 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
         /// Add the confidential debug flag to the measured OpenHCL command
         /// line, enabling confidential diagnostics on CVM builds.
         pub confidential_debug: bool,
@@ -620,6 +621,7 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            uefi_firmware_flavor,
             confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
@@ -708,8 +710,11 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource: Option<UefiResource> = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx
-                .reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v }),
+            msvm_fd: ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
