@@ -35,6 +35,8 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use user_driver::memory::MemoryBlock;
 
+const RSI_PLANE_EXIT_INVALID: u64 = u64::MAX;
+
 #[derive(Debug, Error)]
 #[expect(missing_docs)]
 pub enum GetIpaStateError {
@@ -136,6 +138,16 @@ impl Cca {
 }
 
 impl ProcessorRunner<'_, Cca> {
+    /// Runs the CCA plane and returns whether the RMM produced a fresh plane
+    /// exit.
+    pub fn run_cca_plane(&mut self) -> Result<bool, Error> {
+        self.state.plane_run_mut().exit.exit_reason = RSI_PLANE_EXIT_INVALID;
+
+        let intercepted = self.run()?;
+
+        Ok(intercepted && self.state.plane_run_ref().exit.exit_reason != RSI_PLANE_EXIT_INVALID)
+    }
+
     /// Returns a reference to the current VTL's CPU context.
     pub fn cpu_context(&self) -> &u64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
