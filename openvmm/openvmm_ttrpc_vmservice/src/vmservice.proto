@@ -27,14 +27,16 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
-    // SnapshotVM captures the VM's memory, device state, and processor state
-    // into a snapshot directory. The VM is paused by this call and remains
-    // paused after it completes.
-    rpc SnapshotVM(SnapshotVMRequest) returns (google.protobuf.Empty);
+    // SaveVM captures the VM's memory, device state, and processor state into
+    // a snapshot directory and returns a unique snapshot ID, which is also
+    // stored in the snapshot manifest. The VM is paused by this call and
+    // remains paused after it completes.
+    rpc SaveVM(SaveVMRequest) returns (SaveVmResult);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device
-    // configuration. The service must not already contain a VM.
-    rpc RestoreVM(RestoreVMRequest) returns (google.protobuf.Empty);
+    // configuration. The service must not already contain a VM. The VM stays
+    // paused unless resume is set.
+    rpc RestoreVM(RestoreVMRequest) returns (RestoreVmResult);
 
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
     // via TeardownVM.
@@ -128,8 +130,8 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
-    // Optional host file used to back guest memory. LINK snapshots require
-    // file-backed memory.
+    // Optional host file used to back guest memory. SaveVM requires
+    // file-backed memory. Must not be set for RestoreVM.
     optional string backing_file_path = 10;
 }
 
@@ -678,38 +680,29 @@ message CreateVMRequest {
     string log_id = 2;
 }
 
-enum SnapshotMemoryMode {
-    // Hard-link the VM's file-backed guest memory into the snapshot.
-    Link = 0;
-    // Write the VM's current memory contents into a new snapshot backing file.
-    // This mode is reserved for snapshots of copy-on-write restores.
-    Materialize = 1;
+message SaveVMRequest {
+    string destination_dir = 1;
 }
 
-message SnapshotVMRequest {
-    string destination_path = 1;
-    SnapshotMemoryMode memory_mode = 2;
-}
-
-enum MemoryRestoreMode {
-    // Use memory.bin directly as mutable shared guest memory.
-    SharedInPlace = 0;
-    // Eagerly copy memory into private guest memory.
-    Copy = 1;
-    // Map memory.bin copy-on-write.
-    CopyOnWrite = 2;
-    // Populate private guest memory lazily.
-    OnDemand = 3;
+message SaveVmResult {
+    // OpenVMM-generated UUID for the snapshot.
+    bytes snapshot_id = 1;
 }
 
 message RestoreVMRequest {
-    string source_path = 1;
-    MemoryRestoreMode memory_restore_mode = 2;
+    string source_dir = 1;
     // Device and boot configuration must be compatible with the snapshot.
-    VMConfig config = 3;
+    VMConfig config = 2;
+    // If set, restore fails unless it matches the snapshot ID in the
+    // snapshot manifest.
+    optional bytes expected_snapshot_id = 3;
     // Resume the restored VM immediately. Otherwise it remains paused.
     bool resume = 4;
-    string log_id = 5;
+}
+
+message RestoreVmResult {
+    // Snapshot ID read from the snapshot manifest.
+    bytes snapshot_id = 1;
 }
 
 message MemoryStats {

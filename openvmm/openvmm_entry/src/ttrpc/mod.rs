@@ -560,19 +560,25 @@ enum VmLifecycle {
 }
 
 struct RestoreParameters {
-    source_path: PathBuf,
+    source_dir: PathBuf,
+    expectations: openvmm_helpers::snapshot::SnapshotExpectations,
     resume: bool,
+}
+
+struct PreparedRestore {
+    shared_memory: openvmm_defs::worker::SharedMemoryFd,
+    saved_state: mesh::payload::message::ProtobufMessage,
+    snapshot_id: Vec<u8>,
 }
 
 fn prepare_snapshot_restore(
     snapshot_dir: &Path,
+    expectations: &openvmm_helpers::snapshot::SnapshotExpectations,
     expected_memory_size: u64,
     expected_vp_count: u32,
-) -> anyhow::Result<(
-    openvmm_defs::worker::SharedMemoryFd,
-    mesh::payload::message::ProtobufMessage,
-)> {
+) -> anyhow::Result<PreparedRestore> {
     let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+    openvmm_helpers::snapshot::validate_expectations(&manifest, expectations)?;
     openvmm_helpers::snapshot::validate_manifest(
         &manifest,
         crate::GUEST_ARCH,
@@ -598,7 +604,11 @@ fn prepare_snapshot_restore(
         openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
     let saved_state = mesh::payload::decode(&state_bytes)
         .context("failed to decode saved state from snapshot")?;
-    Ok((shared_memory, saved_state))
+    Ok(PreparedRestore {
+        shared_memory,
+        saved_state,
+        snapshot_id: manifest.snapshot_id,
+    })
 }
 
 impl From<&VmLifecycle> for vmservice::VmState {
@@ -695,8 +705,8 @@ impl VmService {
             vmservice::Vm::ResumeVm((), response) => {
                 response.send(map_grpc(self.resume_vm().await));
             }
-            vmservice::Vm::SnapshotVm(request, response) => {
-                response.send(map_grpc(self.snapshot_vm(request).await));
+            vmservice::Vm::SaveVm(request, response) => {
+                response.send(map_grpc(self.save_vm(request).await));
             }
             vmservice::Vm::RestoreVm(request, response) => {
                 response.send(map_grpc(self.restore_vm(request).await));
@@ -796,41 +806,42 @@ impl VmService {
 
     async fn create_vm(&mut self, request: vmservice::CreateVmRequest) -> anyhow::Result<()> {
         let req_config = request.config.context("missing configuration")?;
-        self.create_vm_inner(req_config, None).await
+        self.create_vm_inner(req_config, None).await.map(drop)
     }
 
-    async fn restore_vm(&mut self, request: vmservice::RestoreVmRequest) -> anyhow::Result<()> {
-        let source_path = PathBuf::from(request.source_path);
-        if source_path.as_os_str().is_empty() {
-            bail!("missing snapshot source path");
-        }
-
-        let memory_restore_mode =
-            vmservice::MemoryRestoreMode::from_i32(request.memory_restore_mode)
-                .context("unknown memory restore mode")?;
-        if memory_restore_mode != vmservice::MemoryRestoreMode::SharedInPlace {
-            bail!(
-                "memory restore mode {:?} is not implemented",
-                memory_restore_mode
-            );
+    async fn restore_vm(
+        &mut self,
+        request: vmservice::RestoreVmRequest,
+    ) -> anyhow::Result<vmservice::RestoreVmResult> {
+        let source_dir = PathBuf::from(request.source_dir);
+        if source_dir.as_os_str().is_empty() {
+            bail!("missing snapshot source directory");
         }
 
         let config = request.config.context("missing configuration")?;
-        self.create_vm_inner(
-            config,
-            Some(RestoreParameters {
-                source_path,
-                resume: request.resume,
-            }),
-        )
-        .await
+        let snapshot_id = self
+            .create_vm_inner(
+                config,
+                Some(RestoreParameters {
+                    source_dir,
+                    expectations: openvmm_helpers::snapshot::SnapshotExpectations {
+                        snapshot_id: request.expected_snapshot_id,
+                    },
+                    resume: request.resume,
+                }),
+            )
+            .await?
+            .context("restore did not produce a snapshot ID")?;
+        Ok(vmservice::RestoreVmResult { snapshot_id })
     }
 
+    /// Creates a VM, optionally restoring it from a snapshot. Returns the
+    /// snapshot ID from the manifest when restoring.
     async fn create_vm_inner(
         &mut self,
         mut req_config: vmservice::VmConfig,
         restore: Option<RestoreParameters>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<Vec<u8>>> {
         if self.vm.is_some() {
             bail!("VM already created");
         }
@@ -1216,25 +1227,32 @@ impl VmService {
             .await
             .context("spawning vm process failed")?;
 
-        let (shared_memory, saved_state, active_memory_backing_file) = if let Some(restore) =
-            &restore
-        {
-            let (shared_memory, saved_state) =
-                prepare_snapshot_restore(&restore.source_path, config_mem_size, config_proc_count)?;
-            (
-                Some(shared_memory),
-                Some(saved_state),
-                Some(restore.source_path.join("memory.bin")),
-            )
-        } else {
-            let shared_memory = memory_backing_file
-                .as_ref()
-                .map(|path| {
-                    openvmm_helpers::shared_memory::open_memory_backing_file(path, config_mem_size)
-                })
-                .transpose()?;
-            (shared_memory, None, memory_backing_file)
-        };
+        let (shared_memory, saved_state, active_memory_backing_file, snapshot_id) =
+            if let Some(restore) = &restore {
+                let prepared = prepare_snapshot_restore(
+                    &restore.source_dir,
+                    &restore.expectations,
+                    config_mem_size,
+                    config_proc_count,
+                )?;
+                (
+                    Some(prepared.shared_memory),
+                    Some(prepared.saved_state),
+                    Some(restore.source_dir.join("memory.bin")),
+                    Some(prepared.snapshot_id),
+                )
+            } else {
+                let shared_memory = memory_backing_file
+                    .as_ref()
+                    .map(|path| {
+                        openvmm_helpers::shared_memory::open_memory_backing_file(
+                            path,
+                            config_mem_size,
+                        )
+                    })
+                    .transpose()?;
+                (shared_memory, None, memory_backing_file, None)
+            };
 
         let mut worker = vm_host
             .launch_worker(
@@ -1300,12 +1318,12 @@ impl VmService {
             worker_rpc: send,
         }));
         self.snapshot_saved = false;
-        if restore_resume {
-            self.lifecycle = VmLifecycle::Running;
+        self.lifecycle = if restore_resume {
+            VmLifecycle::Running
         } else {
-            self.lifecycle = VmLifecycle::Paused;
-        }
-        Ok(())
+            VmLifecycle::Paused
+        };
+        Ok(snapshot_id)
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
@@ -1402,20 +1420,17 @@ impl VmService {
         Ok(())
     }
 
-    async fn snapshot_vm(&mut self, request: vmservice::SnapshotVmRequest) -> anyhow::Result<()> {
-        let memory_mode = vmservice::SnapshotMemoryMode::from_i32(request.memory_mode)
-            .context("unknown snapshot memory mode")?;
-        if memory_mode != vmservice::SnapshotMemoryMode::Link {
-            bail!("snapshot memory mode {:?} is not implemented", memory_mode);
-        }
-
-        if request.destination_path.is_empty() {
-            bail!("missing snapshot destination path");
+    async fn save_vm(
+        &mut self,
+        request: vmservice::SaveVmRequest,
+    ) -> anyhow::Result<vmservice::SaveVmResult> {
+        if request.destination_dir.is_empty() {
+            bail!("missing snapshot destination directory");
         }
 
         let controller = self.vm_controller.as_ref().context("VM not created yet")?;
-        controller
-            .call(VmControllerRpc::SaveSnapshot, request.destination_path)
+        let snapshot_id = controller
+            .call(VmControllerRpc::SaveSnapshot, request.destination_dir)
             .await
             .map_err(anyhow::Error::from)?
             .map_err(anyhow::Error::from)
@@ -1423,7 +1438,7 @@ impl VmService {
 
         self.lifecycle = VmLifecycle::Paused;
         self.snapshot_saved = true;
-        Ok(())
+        Ok(vmservice::SaveVmResult { snapshot_id })
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) {

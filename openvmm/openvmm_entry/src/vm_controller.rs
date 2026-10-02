@@ -55,8 +55,8 @@ pub enum VmControllerRpc {
     RemoveVtl0ScsiDiskByNvmeNsid(
         Rpc<RemoveVtl0ScsiDiskByNvmeNsidParams, Result<Option<u32>, mesh::error::RemoteError>>,
     ),
-    /// Save a VM snapshot to a directory.
-    SaveSnapshot(Rpc<String, Result<(), mesh::error::RemoteError>>),
+    /// Save a VM snapshot to a directory. Returns the generated snapshot ID.
+    SaveSnapshot(Rpc<String, Result<Vec<u8>, mesh::error::RemoteError>>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     DumpState(Rpc<String, Result<(), mesh::error::RemoteError>>),
     /// Service (update) the VTL2 firmware.
@@ -459,7 +459,7 @@ impl VmController {
         deferred.inspect(obj);
     }
 
-    async fn handle_save_snapshot(&self, dir: &Path) -> anyhow::Result<()> {
+    async fn handle_save_snapshot(&self, dir: &Path) -> anyhow::Result<Vec<u8>> {
         let memory_file_path = self
             .memory_backing_file
             .as_ref()
@@ -481,13 +481,16 @@ impl VmController {
         // Serialize the ProtobufMessage to bytes for writing to disk.
         let saved_state_bytes = mesh::payload::encode(saved_state_msg);
 
-        // Fsync the memory backing file.
-        let memory_file = fs_err::File::open(memory_file_path)?;
+        // Open for write: Windows FlushFileBuffers requires write access.
+        let memory_file = fs_err::OpenOptions::new()
+            .write(true)
+            .open(memory_file_path)?;
         memory_file
             .sync_all()
             .context("failed to fsync memory backing file")?;
 
         // Build manifest.
+        let snapshot_id = <[u8; 16]>::from(Guid::new_random()).to_vec();
         let manifest = openvmm_helpers::snapshot::SnapshotManifest {
             version: openvmm_helpers::snapshot::MANIFEST_VERSION,
             created_at: std::time::SystemTime::now().into(),
@@ -496,6 +499,7 @@ impl VmController {
             vp_count: self.processors,
             page_size: crate::system_page_size(),
             architecture: crate::GUEST_ARCH.to_string(),
+            snapshot_id: snapshot_id.clone(),
         };
 
         // Write snapshot directory.
@@ -507,7 +511,7 @@ impl VmController {
         )?;
 
         // VM stays paused. Do NOT resume.
-        Ok(())
+        Ok(snapshot_id)
     }
 
     async fn handle_dump_state(&self, path: &Path) -> anyhow::Result<()> {

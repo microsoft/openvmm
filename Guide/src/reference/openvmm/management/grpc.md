@@ -32,7 +32,7 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
-* SnapshotVM
+* SaveVM
 * RestoreVM
 * WaitVM
 * CapabilitiesVM
@@ -44,21 +44,22 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
-`SnapshotVM` is a compound operation that pauses the VM and writes
-`manifest.bin`, `state.bin`, and `memory.bin` to the requested directory. The
-VM must use the `MemoryConfig.backing_file_path` setting. The currently
-supported `Link` memory mode hard-links that backing file into the snapshot,
-and the VM remains paused and cannot be resumed afterward. `Materialize` is
-reserved for creating a new independent snapshot from a copy-on-write restore
-and currently returns an unsupported error.
+`SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
+`state.bin`, and `memory.bin` to the requested directory. The VM must use the
+`MemoryConfig.backing_file_path` setting. The currently supported
+implementation hard-links that backing file into the snapshot, and the VM
+remains paused and cannot be resumed afterward. Each save generates a unique
+snapshot ID (a GUID, as 16 bytes) that is stored in `manifest.bin` and
+returned in `SaveVmResult.snapshot_id`.
 
-`RestoreVM` creates a VM from a snapshot and a compatible `VMConfig`. Device
-configuration is not stored in the snapshot and must be supplied by the
-caller. `SharedInPlace` is currently the only supported memory restore mode;
-it uses `memory.bin` directly as mutable guest memory. `Copy`, `CopyOnWrite`,
-and `OnDemand` are represented in the API but currently return unsupported
-errors. Set `resume` to start the restored VM immediately; otherwise it is
-created paused.
+`RestoreVM` creates a VM from a snapshot directory and a compatible
+`VMConfig`. Device configuration is not stored in the snapshot and must be
+supplied by the caller. `memory.bin` is used directly as mutable guest memory,
+so `MemoryConfig.backing_file_path` must not be set. If
+`expected_snapshot_id` is provided, the restore fails unless it matches the
+snapshot ID in `manifest.bin`. The restored snapshot's ID is returned in
+`RestoreVmResult.snapshot_id`. Set `resume` to start the restored VM
+immediately; otherwise it is created paused.
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host

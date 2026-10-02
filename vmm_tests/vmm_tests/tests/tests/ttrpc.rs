@@ -793,40 +793,33 @@ async fn test_ttrpc_interface(
                     "after ResumeVm, expected RUNNING"
                 );
 
-                client
+                let save_result = client
                     .call()
                     .start(
-                        vmservice::Vm::SnapshotVm,
-                        vmservice::SnapshotVmRequest {
-                            destination_path: snapshot_path.to_string_lossy().into_owned(),
-                            memory_mode: vmservice::SnapshotMemoryMode::Materialize as i32,
-                        },
-                    )
-                    .await
-                    .unwrap_err();
-
-                client
-                    .call()
-                    .start(
-                        vmservice::Vm::SnapshotVm,
-                        vmservice::SnapshotVmRequest {
-                            destination_path: snapshot_path.to_string_lossy().into_owned(),
-                            memory_mode: vmservice::SnapshotMemoryMode::Link as i32,
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
                         },
                     )
                     .await
                     .unwrap();
+                let snapshot_id = save_result.snapshot_id;
+                assert_eq!(snapshot_id.len(), 16, "SaveVm should return a GUID");
+                assert!(
+                    snapshot_id.iter().any(|&b| b != 0),
+                    "SaveVm should return a non-zero snapshot ID"
+                );
                 for name in ["manifest.bin", "state.bin", "memory.bin"] {
                     assert!(
                         snapshot_path.join(name).exists(),
-                        "SnapshotVm should create {name}"
+                        "SaveVm should create {name}"
                     );
                 }
                 let props = query_props().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
-                    "SnapshotVm should leave the VM paused"
+                    "SaveVm should leave the VM paused"
                 );
                 client
                     .call()
@@ -842,34 +835,38 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap_err();
 
+                let mut wrong_snapshot_id = snapshot_id.clone();
+                wrong_snapshot_id[0] ^= 0xff;
                 client
                     .call()
                     .start(
                         vmservice::Vm::RestoreVm,
                         vmservice::RestoreVmRequest {
-                            source_path: snapshot_path.to_string_lossy().into_owned(),
-                            memory_restore_mode: vmservice::MemoryRestoreMode::Copy as i32,
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
                             config: restore_config.clone(),
+                            expected_snapshot_id: Some(wrong_snapshot_id),
                             resume: false,
-                            log_id: String::new(),
                         },
                     )
                     .await
                     .unwrap_err();
-                client
+                let restore_result = client
                     .call()
                     .start(
                         vmservice::Vm::RestoreVm,
                         vmservice::RestoreVmRequest {
-                            source_path: snapshot_path.to_string_lossy().into_owned(),
-                            memory_restore_mode: vmservice::MemoryRestoreMode::SharedInPlace as i32,
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
                             config: restore_config,
+                            expected_snapshot_id: Some(snapshot_id.clone()),
                             resume: false,
-                            log_id: String::new(),
                         },
                     )
                     .await
                     .unwrap();
+                assert_eq!(
+                    restore_result.snapshot_id, snapshot_id,
+                    "RestoreVm should return the snapshot ID from the manifest"
+                );
                 let props = query_props().await.unwrap();
                 assert_eq!(
                     props.state,
