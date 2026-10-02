@@ -103,12 +103,12 @@ impl FlowNodeWithConfig for Node {
 
                 if flowey_lib_common::_util::running_in_wsl(rt) && !use_native_linux_on_wsl2 {
                     let windows_user_profile_path_windows = flowey::shell_cmd!(rt, "cmd.exe /c echo %UserProfile%").read().map_err(|_| anyhow::anyhow!("Unable to run cmd.exe, please restart WSL by running `wsl --shutdown` in powershell and try again."))?;
-                    let windows_user_profile_path = wslpath::win_to_linux(rt, windows_user_profile_path_windows);
+                    let windows_user_profile_path = wslpath::win_to_linux(rt, windows_user_profile_path_windows)?;
                     let gcm_path_opt_1 = windows_user_profile_path.join("AppData/Local/Programs/Git Credential Manager/git-credential-manager.exe");
-                    let gcm_path_opt_2 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\ucrt64\libexec\git-core\git-credential-manager.exe"#);
-                    let gcm_path_opt_3 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\mingw64\bin\git-credential-manager.exe"#);
-                    let gcm_path_opt_4 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\mingw64\libexec\git-core\git-credential-manager.exe"#);
-                    let gcm_path_opt_5 = wslpath::win_to_linux(rt, r#"C:\Program Files (x86)\Git Credential Manager\git-credential-manager.exe"#);
+                    let gcm_path_opt_2 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\ucrt64\libexec\git-core\git-credential-manager.exe"#)?;
+                    let gcm_path_opt_3 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\mingw64\bin\git-credential-manager.exe"#)?;
+                    let gcm_path_opt_4 = wslpath::win_to_linux(rt, r#"C:\Program Files\Git\mingw64\libexec\git-core\git-credential-manager.exe"#)?;
+                    let gcm_path_opt_5 = wslpath::win_to_linux(rt, r#"C:\Program Files (x86)\Git Credential Manager\git-credential-manager.exe"#)?;
 
                     let gcm_path = if rt.sh.path_exists(&gcm_path_opt_1) {
                         &gcm_path_opt_1
@@ -155,7 +155,10 @@ impl FlowNodeWithConfig for Node {
                     }
 
                     // Have to do this weird string business due to requiring the escaped space character in Program\ Files
-                    let gcm_path_str = gcm_path.to_str().expect("Invalid git credential manager path").to_string().replace(' ', "\\ ");
+                    let gcm_path_str = gcm_path
+                        .to_str()
+                        .context("Git Credential Manager path is not valid UTF-8")?
+                        .replace(' ', "\\ ");
                     flowey::shell_cmd!(rt, "git config --global credential.helper {gcm_path_str}").run()?;
                     flowey::shell_cmd!(rt, "git config --global credential.https://dev.azure.com.useHttpPath true").run()?;
                 } else if matches!(rt.platform(), FlowPlatform::Windows) {

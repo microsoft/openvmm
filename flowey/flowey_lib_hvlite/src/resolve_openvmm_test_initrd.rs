@@ -107,17 +107,17 @@ impl FlowNodeWithConfig for Node {
         // single `initrd` file at the archive root. Download one archive per
         // requested architecture.
         let needed_archives: BTreeSet<CommonArch> = deps.keys().copied().collect();
+        let version = version.context("missing openvmm-test-initrd version")?;
 
         let mut archives = BTreeMap::new();
         for arch in needed_archives {
-            let version = version.clone().expect("local requests handled above");
             let arch_str = match arch {
                 CommonArch::X86_64 => "x86_64",
                 CommonArch::Aarch64 => "aarch64",
             };
             let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                 needs_auth: false,
                 tag: version.clone(),
                 file_name: format!("openvmm-test-initrd.{arch_str}.{version}.tar.gz"),
@@ -132,7 +132,7 @@ impl FlowNodeWithConfig for Node {
             let persistent_dir = persistent_dir.claim(ctx);
             let archives = archives.claim(ctx);
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
+            let version = version.clone();
             move |rt| {
                 let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
@@ -149,7 +149,12 @@ impl FlowNodeWithConfig for Node {
                 }
 
                 for (arch, vars) in deps {
-                    let path = extract_dirs[&arch].join("initrd");
+                    let path = extract_dirs
+                        .get(&arch)
+                        .with_context(|| {
+                            format!("missing extracted openvmm-test-initrd archive for {arch:?}")
+                        })?
+                        .join("initrd");
                     rt.write_all(vars, &path)
                 }
 
