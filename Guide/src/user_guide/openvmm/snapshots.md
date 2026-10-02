@@ -264,6 +264,9 @@ profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its effective CPUID
 (`E_CPU_SURFACE`). A snapshot records the profile and the effective CPUID.
 Restore requires the same profile, pinned in this OpenVMM with the same
 digest, a host of the profile's generation, and an identical effective CPUID.
+OpenVMM computes the effective CPUID, including its own leaves and the bits
+it owns, such as the cache topology, so an OpenVMM build that computes it
+differently rejects earlier snapshots with `E_CPU_SURFACE`.
 
 Restore also requires:
 
@@ -430,4 +433,6 @@ immediately with a clear error if any active device does not support it.
   and rejects overrides. Persisted microVM ABI and boot-layout value 2 are
   supported.
 - MicroVM restore requires the backend, CPU generation, and CPU profile of
-  the capture. Snapshots from manifest versions before 6 must be recaptured.
+  the capture, and an OpenVMM build that computes the same effective CPUID.
+  Snapshots from manifest versions before 6, or from a build that computes a
+  different effective CPUID, must be recaptured.
