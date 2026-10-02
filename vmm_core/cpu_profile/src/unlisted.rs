@@ -3,13 +3,17 @@
 
 //! CPUID entries outside a profile's tables.
 //!
-//! KVM installs a VM's effective CPUID as the guest's whole CPUID table, so
-//! every entry the table does not list reads zero. MSHV and WHP program the
-//! effective CPUID over the hypervisor's own CPUID instead, so every entry it
-//! does not list reads the hypervisor's value. The time ABI reserves the
-//! entries past a profile's advertised maxima, and verification requires that
-//! a pass-through backend presents zero at every entry outside the profile's
-//! tables (`E_CPU_UNLISTED`), so no host data reaches the guest
+//! No CPUID entry outside a VM's effective CPUID carries host data. KVM
+//! installs the effective CPUID as the guest's whole CPUID table and answers
+//! every other entry from it: zero, or a value the architecture's rules derive
+//! from the table (Intel's out-of-range result, the highest basic leaf's,
+//! above the maximum basic leaf, and an invalid level with the x2APIC ID past
+//! the last topology level). MSHV and WHP program the effective CPUID over the
+//! hypervisor's own guest view instead, so an entry it does not list reads
+//! that view unless the backend registers a result there. The time ABI
+//! reserves the entries past a profile's advertised maxima, and verification
+//! requires that a pass-through backend presents zero at every entry outside
+//! the profile's tables (`E_CPU_UNLISTED`), so no host data reaches the guest
 //! there.
 
 use crate::cpuid::CpuidEntry;
@@ -110,8 +114,8 @@ pub(crate) fn unlisted_cpuid_error(profile: &CpuProfile, violations: &[String]) 
 /// walks it. It reaches every entry the processor implements, including those
 /// past the profile's maxima and those that only the root partition sees, so
 /// these are the entries where a pass-through backend's guest may read the
-/// hypervisor's value. A backend reads VP 0's view there, at subleaf 0 for a
-/// subleaf-independent key, for [`check_unlisted_cpuid`].
+/// hypervisor's own guest view. A backend reads VP 0's view there, at subleaf
+/// 0 for a subleaf-independent key, for [`check_unlisted_cpuid`].
 pub fn unlisted_cpuid_candidates(
     profile: &CpuProfile,
     host: &[CpuidEntry],
