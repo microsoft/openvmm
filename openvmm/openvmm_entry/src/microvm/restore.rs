@@ -461,8 +461,8 @@ pub(crate) fn validate_restore_contract(
         (saved_contract.memory_expansion_version != 0)
             .then_some(saved_contract.memory_capacity_bytes),
         saved_contract.state_unit_names.clone(),
-        contract.clone(),
-        cpu_profile.clone(),
+        contract,
+        cpu_profile,
     )?;
     align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
     align_restore_console_listener_contract(saved_contract, &mut expected_contract);
@@ -470,6 +470,14 @@ pub(crate) fn validate_restore_contract(
         manifest,
         &expected_contract,
     )?;
+    // The validation leaves the time ABI records to the preflight, so take
+    // them back rather than copying them.
+    let (Some(contract), Some(cpu_profile)) = (
+        expected_contract.time.take(),
+        expected_contract.cpu_profile.take(),
+    ) else {
+        unreachable!("the expected contract holds the records it was built with");
+    };
     Ok(TimeAbiRestore {
         contract,
         cpu_profile,

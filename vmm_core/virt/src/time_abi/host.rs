@@ -163,9 +163,25 @@ mod sys {
     }
 
     fn read_id(path: &str) -> Result<[u8; 16], TimeAbiError> {
-        let text = std::fs::read_to_string(path)
+        use std::io::Read;
+
+        // The identity files hold 33 to 37 bytes, which one read returns. Read
+        // them into a stack buffer with no metadata query: every system call
+        // is costly in a Hyper-V root partition.
+        let mut buf = [0; 64];
+        let mut file = std::fs::File::open(path)
             .map_err(|err| host_error(format!("cannot read {path}: {err}")))?;
-        parse_hex_id(&text).ok_or_else(|| host_error(format!("{path} is malformed")))
+        let len = loop {
+            match file.read(&mut buf) {
+                Ok(len) => break len,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(err) => return Err(host_error(format!("cannot read {path}: {err}"))),
+            }
+        };
+        std::str::from_utf8(&buf[..len])
+            .ok()
+            .and_then(parse_hex_id)
+            .ok_or_else(|| host_error(format!("{path} is malformed")))
     }
 
     pub(super) fn host_identity() -> Result<HostIdentity, TimeAbiError> {
