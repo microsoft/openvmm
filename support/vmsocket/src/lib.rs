@@ -25,7 +25,7 @@ use std::io::Read;
 use std::io::Write;
 
 /// Gets the local AF_VSOCK CID.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn local_vsock_cid() -> io::Result<u32> {
     sys::local_cid()
 }
