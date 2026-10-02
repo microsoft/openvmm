@@ -199,7 +199,9 @@ fn cache_parameters_cpuid(
         }
 
         // The level 3 cache is not per-VP; indicate that it is per-socket.
-        if eax.cache_level() == 3 {
+        // The level comes from the cache's own descriptor: `eax` carries only
+        // the topology fields.
+        if CacheParametersEax::from(result[0]).cache_level() == 3 {
             eax.set_threads_sharing_cache_minus_one(topology.reserved_vps_per_socket() - 1);
         }
 
@@ -370,6 +372,49 @@ mod tests {
         }
         // The null cache that ends the enumeration keeps its native value.
         assert_eq!(set.result(4, 4, &[0; 4]), [0; 4]);
+    }
+
+    /// The L1 and L2 caches belong to a core, and the L3 cache to the socket.
+    /// Leaf 4 counts addressable IDs, so the socket's VP count is rounded up
+    /// to a power of two.
+    #[test]
+    fn l3_cache_is_shared_by_the_socket() {
+        for vps in [1, 2, 6, 8] {
+            for smt in [false, true] {
+                let topology = TopologyBuilder::new_x86()
+                    .vps_per_socket(vps)
+                    .smt_enabled(smt)
+                    .x2apic(X2ApicState::Supported)
+                    .build(vps)
+                    .unwrap();
+                let threads_per_core = if topology.smt_enabled() { 2 } else { 1 };
+                let reserved = topology.reserved_vps_per_socket();
+                let mut leaves = Vec::new();
+                topology_cpuid(&topology, &intel_cpuid, &mut leaves).unwrap();
+                let set = CpuidLeafSet::new(leaves);
+                for subleaf in 0..4 {
+                    let eax = CacheParametersEax::from(
+                        set.result(4, subleaf, &intel_cpuid(4, subleaf))[0],
+                    );
+                    let sharing = if eax.cache_level() == 3 {
+                        reserved
+                    } else {
+                        threads_per_core
+                    };
+                    let context = format!("{vps} VPs, smt {smt}, subleaf {subleaf}");
+                    assert_eq!(
+                        eax.threads_sharing_cache_minus_one() + 1,
+                        sharing,
+                        "{context}"
+                    );
+                    assert_eq!(
+                        eax.cores_per_socket_minus_one() + 1,
+                        reserved / threads_per_core,
+                        "{context}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
