@@ -100,6 +100,10 @@ fn virtio_class_code(device_id: VirtioDeviceType) -> (ClassCode, Subclass) {
             ClassCode::SIMPLE_COMMUNICATION_CONTROLLER,
             Subclass::SIMPLE_COMMUNICATION_CONTROLLER_OTHER,
         ),
+        VirtioDeviceType::RTC => (
+            ClassCode::BASE_SYSTEM_PERIPHERAL,
+            Subclass::BASE_SYSTEM_PERIPHERAL_RTC,
+        ),
         // These device types have no well-established class code; report a
         // generic base system peripheral.
         VirtioDeviceType::RNG

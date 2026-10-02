@@ -156,6 +156,7 @@ OpenVMM snapshots:
 | virtio-net | Virtio (PCI/MMIO) | Yes |
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
+| virtio-rtc | Virtio (PCI/MMIO) | Yes |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |

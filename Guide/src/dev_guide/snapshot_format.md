@@ -111,7 +111,8 @@ Key unsupported categories:
 - **VGA / GDMA** — marked `todo!()` (will panic on save).
 - **Virtio devices** — the `VirtioDevice` trait defaults
   `supports_save_restore()` to `false`. Only `virtio-blk`,
-  `virtio-net`, `virtio-pmem`, and `virtio-rng` override it to `true`.
+  `virtio-net`, `virtio-pmem`, `virtio-rng`, and `virtio-rtc` override it to
+  `true`.
   Devices with host-side session state (`virtio-9p`, `virtiofs`,
   `virtio-console`) intentionally leave it `false`.
 - **Some VMBus devices** — `GuestCrashDevice`, `GuestEmulationDevice`,
