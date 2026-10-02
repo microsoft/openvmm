@@ -284,7 +284,8 @@ hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
 hyperv_keyboard_protocol = { path = "vm/devices/input/hyperv_keyboard_protocol" }
-cxl_spec = { path = "vm/devices/cxl" }
+cxl = { path = "vm/devices/cxl" }
+cxl_spec = { path = "vm/devices/cxl/cxl_spec" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }

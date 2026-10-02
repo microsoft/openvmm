@@ -26,7 +26,7 @@ use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device::pci::PciConfigByteEnable;
 use chipset_device::poll_device::PollDevice;
-use cxl_spec::CxlComponentRegisters;
+use cxl::CxlComponentRegisters;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
@@ -1026,8 +1026,8 @@ mod tests {
     use chipset_device::pci::ByteEnabledDwordRead;
     use chipset_device::pci::ByteEnabledDwordWrite;
     use chipset_device::pci::PciConfigSpace;
+    use cxl::component_registers::test_helper::TestCxlComponentRegisterBlock;
     use cxl_spec::CxlComponentRegisterType;
-    use cxl_spec::component_registers::test_helper::TestCxlComponentRegisterBlock;
     use pal_async::async_test;
     use parking_lot::Mutex;
     use pci_core::test_helpers::TestCfgAccess;
@@ -1175,7 +1175,7 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
         let chbcr = MemoryRange::new(
-            chbcr_start..(chbcr_start + cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES),
+            chbcr_start..(chbcr_start + cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES),
         );
         let rc_bus_range = AssignedBusRange::new();
         rc_bus_range.set_bus_range(start_bus, end_bus);

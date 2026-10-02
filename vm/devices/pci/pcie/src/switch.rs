@@ -583,7 +583,7 @@ mod save_restore {
     mod state {
         use super::ConfigSpaceType1Emulator;
         use super::SaveRestore;
-        use cxl_spec::CxlComponentRegisters;
+        use cxl::CxlComponentRegisters;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 

@@ -21,7 +21,7 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
-use cxl_spec::spec::CfmwsWindowRestrictions;
+use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
