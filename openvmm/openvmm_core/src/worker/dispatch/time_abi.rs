@@ -282,15 +282,38 @@ pub(super) fn check_recorded_cpuid(
 /// before any VP runs (`E_CPU_SURFACE`): the backend's report, looked up as
 /// the guest's CPUID instruction finds it, equals every governed leaf under
 /// its masks, and a leaf without a subleaf is read at subleaf 0.
+///
+/// The report of a pass-through backend also holds VP 0's view at the host's
+/// entries outside the profile's tables
+/// (`cpu_profile::unlisted_cpuid_candidates`); each must read zero, so that
+/// no reserved entry exposes a host feature (`E_CPU_UNLISTED`). A table
+/// backend reports none, and its guests read zero there by construction.
 pub(super) fn check_presented_cpuid(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
     profile: &CpuProfile,
     effective_cpuid: &EffectiveCpuid,
 ) -> anyhow::Result<()> {
-    let presented = CpuidLeafSet::new(backend(partition, hypervisor)?.effective_cpuid()?);
+    let leaves = backend(partition, hypervisor)?.effective_cpuid()?;
+    check_presented(profile, effective_cpuid, leaves)
+}
+
+/// Checks a backend's report of VP 0's CPUID, as [`check_presented_cpuid`]
+/// describes.
+fn check_presented(
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    leaves: Vec<CpuidLeaf>,
+) -> anyhow::Result<()> {
+    let presented = CpuidLeafSet::new(leaves);
     let differences = cpuid_differences(&presented, effective_cpuid);
     if differences.is_empty() {
+        let entries: Vec<_> = presented
+            .leaves()
+            .iter()
+            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::check_unlisted_cpuid(profile, &entries)?;
         return Ok(());
     }
     let count = differences.len();
@@ -698,6 +721,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A pass-through backend's report may hold VP 0's view at the host's
+    /// entries outside the profile: zero there passes, and anything else is
+    /// `E_CPU_UNLISTED`. A report of the table alone passes, for every pinned
+    /// profile and topology.
+    #[test]
+    fn presented_cpuid_rejects_non_zero_unlisted_entries() {
+        for profile in cpu_profile::pinned_profiles() {
+            for vp_count in [1, 2, 8, 64] {
+                for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
+                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
+                    let (_, config) = partition_config(profile, &effective);
+                    check_presented(profile, &effective, config.cpuid.leaves().to_vec())
+                        .unwrap_or_else(|err| {
+                            panic!("{} with {vp_count} VPs, {x2apic:?}: {err:#}", profile.id())
+                        });
+                }
+            }
+        }
+
+        let (_, config, effective) = test_config(2);
+        let profile = test_profile();
+        let table = config.cpuid.leaves().to_vec();
+
+        // Leaf 0x1D is above Ice Lake-SP's maximum basic leaf (0x1B).
+        let mut zero = table.clone();
+        zero.push(CpuidLeaf::new(0x1d, [0; 4]));
+        check_presented(profile, &effective, zero).unwrap();
+
+        let mut leaked = table.clone();
+        leaked.push(CpuidLeaf::new(0x1d, [1, 0, 0, 0]));
+        assert_eq!(
+            code(check_presented(profile, &effective, leaked.clone())),
+            "E_CPU_UNLISTED"
+        );
+
+        // A governed difference is reported first.
+        leaked.retain(|leaf| leaf.function != 0x8000_0002);
+        assert_eq!(
+            code(check_presented(profile, &effective, leaked)),
+            "E_CPU_SURFACE"
+        );
     }
 
     #[test]

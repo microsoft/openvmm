@@ -44,6 +44,13 @@ pub trait TimeAbiBackend: Send + Sync {
     /// with the CPU profile's effective CPUID under its masks
     /// (`E_CPU_SURFACE`). Fails with `E_CPU_SURFACE`.
     ///
+    /// A backend whose guests read the hypervisor's own values outside that
+    /// table (MSHV, WHP) also returns VP 0's view at every entry the host's
+    /// CPUID enumerates outside the profile's tables
+    /// (`cpu_profile::unlisted_cpuid_candidates`), at subleaf 0 for a
+    /// subleaf-independent entry. Core requires each to read zero
+    /// (`E_CPU_UNLISTED`), so that no reserved entry exposes a host feature.
+    ///
     /// Core calls it with all VPs stopped, before any VP runs and before any
     /// VP state is restored, on cold boot and restore. Core's first call to
     /// this method or to [`Self::preflight`] comes before any VP runs, so a
