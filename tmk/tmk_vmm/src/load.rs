@@ -178,6 +178,8 @@ pub struct TestInfo {
     pub index: u64,
     pub expected_failure: bool,
     pub linux_only: bool,
+    pub time_control: bool,
+    pub tsc_deadline: bool,
 }
 
 /// Enumerate the tests from a TMK binary.
@@ -232,6 +234,8 @@ pub fn enumerate_tests(tmk: &File) -> anyhow::Result<Vec<TestInfo>> {
             index: i as u64,
             expected_failure: t.flags.expected_failure(),
             linux_only: t.flags.linux_only(),
+            time_control: t.flags.time_control(),
+            tsc_deadline: t.flags.tsc_deadline(),
         });
     }
 

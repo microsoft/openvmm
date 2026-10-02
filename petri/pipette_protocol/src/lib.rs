@@ -35,6 +35,8 @@ pub struct PipetteBootstrap {
 }
 
 /// A request to the agent.
+///
+/// Append new variants to preserve the existing implicit wire tags.
 #[derive(MeshPayload)]
 pub enum PipetteRequest {
     /// Pings the agent to check if it's alive.
@@ -58,6 +60,19 @@ pub enum PipetteRequest {
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
+    /// Starts or samples a monotonic timer probe, retained across reconnections.
+    TimerProbe(FailableRpc<Option<std::time::Duration>, TimerProbe>),
+}
+
+/// Guest monotonic clock samples for a timer that survives agent reconnections.
+#[derive(Debug, MeshPayload)]
+pub struct TimerProbe {
+    /// Clock value when the timer was armed, in nanoseconds.
+    pub started_ns: u64,
+    /// Clock value at this sample, in nanoseconds.
+    pub now_ns: u64,
+    /// Clock value when the timer completed, if it has fired.
+    pub fired_ns: Option<u64>,
 }
 
 /// A request to execute a command inside the guest.

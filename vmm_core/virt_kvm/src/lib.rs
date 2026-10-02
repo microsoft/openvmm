@@ -131,6 +131,9 @@ struct KvmPartitionInner {
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
     caps: virt::PartitionCapabilities,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    time: Mutex<arch::time::PartitionTime>,
 
     // This is used for debugging via Inspect
     #[cfg(guest_arch = "x86_64")]

@@ -362,6 +362,11 @@ impl PetriVmOpenVmm {
         pub async fn resume(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Saves, resets, and restores once, preserving the prior paused state.
+        /// Unlike `verify_save_restore`, fails if reset is not supported.
+        pub async fn pulse_save_restore(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Perform a pulse save/restore cycle: pause the VM, save all state,
         /// reset, restore, and resume. Useful for verifying that device state
         /// survives a save/restore round-trip.
@@ -818,6 +823,11 @@ impl PetriVmInner {
             }
         }
 
+        Ok(())
+    }
+
+    async fn pulse_save_restore(&self) -> anyhow::Result<()> {
+        self.worker.pulse_save_restore().await?;
         Ok(())
     }
 

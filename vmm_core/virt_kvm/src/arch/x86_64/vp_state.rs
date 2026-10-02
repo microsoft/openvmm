@@ -440,30 +440,11 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        let mut apic_base = 0;
-        self.kvm().get_msrs(
-            &[x86defs::X86X_MSR_APIC_BASE],
-            std::slice::from_mut(&mut apic_base),
-        )?;
-
-        let mut state = FromZeros::new_zeroed();
-        self.kvm().get_lapic(&mut state)?;
-
-        Ok(vp::Apic::new(
-            apic_base.into(),
-            vp::ApicRegisters::from_page(&state),
-            [0; 8],
-        ))
+        self.vp.partition.read_apic(self.vp.vpindex)
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
-        // Set this first to set the APIC mode before updating the APIC register
-        // state.
-        self.kvm()
-            .set_msrs(&[(x86defs::X86X_MSR_APIC_BASE, value.apic_base)])?;
-
-        self.kvm().set_lapic(&value.registers().as_page())?;
-        Ok(())
+        self.vp.partition.write_apic(self.vp.vpindex, value)
     }
 
     fn xcr(&mut self) -> Result<vp::Xcr0, Self::Error> {
@@ -532,11 +513,19 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn tsc(&mut self) -> Result<vp::Tsc, Self::Error> {
-        self.get_register_state()
+        self.vp.partition.read_tsc(self.vp.vpindex)
     }
 
     fn set_tsc(&mut self, tsc: &vp::Tsc) -> Result<(), Self::Error> {
-        self.set_register_state(tsc)
+        self.vp.partition.write_tsc(self.vp.vpindex, tsc)
+    }
+
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.vp.partition.read_tsc_deadline(self.vp.vpindex)
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        self.vp.partition.write_tsc_deadline(self.vp.vpindex, value)
     }
 
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
@@ -629,6 +618,9 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
+        if let Some(timers) = self.vp.partition.restored_stimers(self.vp.vpindex) {
+            return Ok(timers);
+        }
         let mut msrs = [0; 8];
         self.kvm().get_msrs(
             &[
@@ -679,17 +671,7 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     fn set_synic_timers(&mut self, value: &vp::SynicTimers) -> Result<(), Self::Error> {
         // KVM does not yet provide a way to set the expiration time or pending
         // message state.
-        self.kvm().set_msrs(&[
-            (hvdef::HV_X64_MSR_STIMER0_CONFIG, value.timers[0].config),
-            (hvdef::HV_X64_MSR_STIMER0_COUNT, value.timers[0].count),
-            (hvdef::HV_X64_MSR_STIMER1_CONFIG, value.timers[1].config),
-            (hvdef::HV_X64_MSR_STIMER1_COUNT, value.timers[1].count),
-            (hvdef::HV_X64_MSR_STIMER2_CONFIG, value.timers[2].config),
-            (hvdef::HV_X64_MSR_STIMER2_COUNT, value.timers[2].count),
-            (hvdef::HV_X64_MSR_STIMER3_CONFIG, value.timers[3].config),
-            (hvdef::HV_X64_MSR_STIMER3_COUNT, value.timers[3].count),
-        ])?;
-        Ok(())
+        self.vp.partition.write_stimers(self.vp.vpindex, value)
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
