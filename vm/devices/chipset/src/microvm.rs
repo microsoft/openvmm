@@ -47,12 +47,10 @@ const STATUS_PORT: u16 = 0xea;
 const TIME_WINDOW_PORT: u16 = chipset_resources::microvm_time::TIME_WINDOW_PORT;
 const SHUTDOWN_PORT: u16 = 0x604;
 const SNAPSHOT_PORT: u16 = 0x605;
-const RESTORE_ENTROPY_SELECT: u8 = 0xa5;
+const RESTORE_PACKET_SELECT: u8 = 0xa5;
 const GENERATION_ID_SELECT: u8 = 0xa6;
 const TIME_SAMPLE_SELECT: u8 = chipset_resources::microvm_time::TIME_SAMPLE_SELECT;
 const GENERATION_ID_SIZE: usize = 16;
-const RESTORE_PROCESSOR_TARGET_PACKET_HEADER: &[u8] = b"OPENVMM_ENTROPY_V2\0";
-const RESTORE_MEMORY_TARGET_PACKET_HEADER: &[u8] = b"OPENVMM_ENTROPY_V3\0";
 const STATUS_INPUT_AVAILABLE: u8 = 1 << 0;
 const STATUS_RESTORE_PACKET_AVAILABLE: u8 = 1 << 1;
 const STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE: u8 = 1 << 2;
@@ -135,15 +133,16 @@ pub struct MicrovmPortb {
     tx_buffer: VecDeque<u8>,
     generation_id: [u8; GENERATION_ID_SIZE],
     generation_id_read_index: Option<usize>,
+    /// The encoded restore packet, from its first selection until it is read.
     #[inspect(with = "VecDeque::len")]
-    restore_entropy: VecDeque<u8>,
-    restore_entropy_selected: bool,
+    restore_packet: VecDeque<u8>,
+    restore_packet_selected: bool,
     restore_processor_target_available: bool,
     restore_memory_target_available: bool,
     restore_memory_expansion_available: bool,
     input_gated: bool,
     #[inspect(skip)]
-    time_abi: Option<PortbTimeAbi>,
+    time_abi: PortbTimeAbi,
     #[inspect(with = "VecDeque::len")]
     time_window: VecDeque<u8>,
     #[inspect(skip)]
@@ -157,37 +156,57 @@ pub struct MicrovmPortb {
 }
 
 impl MicrovmPortb {
-    /// Creates a portb console using `io` as its host endpoint.
+    /// Creates a portb console using `io` as its host endpoint, with the NVX
+    /// time ABI v1 configuration `time_abi`: restore packet version 4 and the
+    /// time-sample window at port `0xeb`.
     pub fn new(
         io: Box<dyn SerialIo>,
         generation_id: [u8; GENERATION_ID_SIZE],
-        restore_entropy: Vec<u8>,
+        time_abi: MicrovmPortbTimeAbi,
     ) -> Self {
-        let restore_processor_target_available = restore_entropy
-            .starts_with(RESTORE_PROCESSOR_TARGET_PACKET_HEADER)
-            || (restore_entropy.starts_with(RESTORE_MEMORY_TARGET_PACKET_HEADER)
-                && restore_entropy
-                    .get(RESTORE_MEMORY_TARGET_PACKET_HEADER.len())
-                    .is_some_and(|online_vp_count| *online_vp_count != 0));
-        let restore_memory_target_available =
-            restore_entropy.starts_with(RESTORE_MEMORY_TARGET_PACKET_HEADER);
-        let restore_memory_expansion_available = restore_entropy
-            .get(RESTORE_MEMORY_TARGET_PACKET_HEADER.len() + 1)
-            .is_some_and(|range_count| restore_memory_target_available && *range_count != 0);
+        let MicrovmPortbTimeAbi {
+            generation,
+            utc_offset_ms,
+            sample_delay_us,
+            test_hooks,
+            restore,
+        } = time_abi;
+        let (processor_target, memory_target, memory_expansion) =
+            restore.as_ref().map_or((false, false, false), |source| {
+                (
+                    source.base.online_vp_count != 0,
+                    source.base.memory_target,
+                    !source.base.ranges.is_empty(),
+                )
+            });
+        let (restore, packet_selected) = match restore {
+            Some(source) => (
+                RestorePacketState::Pending(source.base, source.time),
+                source.selected,
+            ),
+            None => (RestorePacketState::None, None),
+        };
         Self {
-            io_region: ("microvm-portb", DATA_PORT..=STATUS_PORT),
+            io_region: ("microvm-portb", DATA_PORT..=TIME_WINDOW_PORT),
             io,
             rx_buffer: VecDeque::new(),
             tx_buffer: VecDeque::new(),
             generation_id,
             generation_id_read_index: None,
-            restore_entropy: restore_entropy.into(),
-            restore_entropy_selected: false,
-            restore_processor_target_available,
-            restore_memory_target_available,
-            restore_memory_expansion_available,
+            restore_packet: VecDeque::new(),
+            restore_packet_selected: false,
+            restore_processor_target_available: processor_target,
+            restore_memory_target_available: memory_target,
+            restore_memory_expansion_available: memory_expansion,
             input_gated: false,
-            time_abi: None,
+            time_abi: PortbTimeAbi {
+                generation,
+                utc_offset_ns: i128::from(utc_offset_ms) * 1_000_000,
+                sample_delay: std::time::Duration::from_micros(sample_delay_us.into()),
+                test_hooks,
+                restore,
+                packet_selected,
+            },
             time_window: VecDeque::new(),
             rx_waker: None,
             tx_waker: None,
@@ -196,52 +215,10 @@ impl MicrovmPortb {
         }
     }
 
-    /// Selects the NVX time ABI v1: restore packet version 4 instead of the
-    /// entropy packets, and the time-sample window at port `0xeb`.
-    pub fn with_time_abi(mut self, config: MicrovmPortbTimeAbi) -> Self {
-        let MicrovmPortbTimeAbi {
-            generation,
-            utc_offset_ms,
-            sample_delay_us,
-            test_hooks,
-            restore,
-        } = config;
-        if !self.restore_entropy.is_empty() {
-            tracing::warn!("ignoring microVM entropy packet under the time ABI");
-            self.restore_entropy.clear();
-        }
-        self.io_region = ("microvm-portb", DATA_PORT..=TIME_WINDOW_PORT);
-        self.restore_processor_target_available = false;
-        self.restore_memory_target_available = false;
-        self.restore_memory_expansion_available = false;
-        let mut packet_selected = None;
-        let restore = match restore {
-            Some(source) => {
-                self.restore_processor_target_available = source.base.online_vp_count != 0;
-                self.restore_memory_target_available = source.base.memory_target;
-                self.restore_memory_expansion_available = !source.base.ranges.is_empty();
-                packet_selected = source.selected;
-                RestorePacketState::Pending(source.base, source.time)
-            }
-            None => RestorePacketState::None,
-        };
-        self.time_abi = Some(PortbTimeAbi {
-            generation,
-            utc_offset_ns: i128::from(utc_offset_ms) * 1_000_000,
-            sample_delay: std::time::Duration::from_micros(sample_delay_us.into()),
-            test_hooks,
-            restore,
-            packet_selected,
-        });
-        self
-    }
-
-    /// Handles selector `0xa5` under the time ABI: encodes the sealed packet
-    /// with host UTC at its first selection, then selects it.
-    fn select_restore_packet_v4(&mut self) {
-        let Some(time_abi) = &mut self.time_abi else {
-            return;
-        };
+    /// Handles selector `0xa5`: encodes the sealed packet with host UTC at
+    /// its first selection, then selects it.
+    fn select_restore_packet(&mut self) {
+        let time_abi = &mut self.time_abi;
         if time_abi.poll_sealed() {
             let RestorePacketState::Sealed(base, time) =
                 std::mem::replace(&mut time_abi.restore, RestorePacketState::Encoded)
@@ -257,7 +234,7 @@ impl MicrovmPortb {
                 utc_ns: time_abi.latch_utc_ns(),
             };
             match packet.encode() {
-                Ok(bytes) => self.restore_entropy = bytes.into(),
+                Ok(bytes) => self.restore_packet = bytes.into(),
                 Err(error) => {
                     tracelimit::error_ratelimited!(
                         error = &error as &dyn std::error::Error,
@@ -268,34 +245,29 @@ impl MicrovmPortb {
                 }
             }
         }
-        if !self.restore_entropy.is_empty() {
+        if !self.restore_packet.is_empty() {
             self.generation_id_read_index = None;
-            self.restore_entropy_selected = true;
+            self.restore_packet_selected = true;
         }
     }
 
     /// Handles selector `0xa7`: latches a fresh time sample into the window.
     fn latch_time_sample(&mut self) {
-        let Some(time_abi) = &self.time_abi else {
-            return;
-        };
         let sample = TimeSample {
-            test_hooks: time_abi.test_hooks,
-            generation: time_abi.generation,
-            utc_ns: time_abi.latch_utc_ns(),
+            test_hooks: self.time_abi.test_hooks,
+            generation: self.time_abi.generation,
+            utc_ns: self.time_abi.latch_utc_ns(),
         };
         self.time_window = sample.encode().into();
     }
 
     fn clear_restore_packet(&mut self) {
-        self.restore_entropy.clear();
-        self.restore_entropy_selected = false;
+        self.restore_packet.clear();
+        self.restore_packet_selected = false;
         self.restore_processor_target_available = false;
         self.restore_memory_target_available = false;
         self.restore_memory_expansion_available = false;
-        if let Some(time_abi) = &mut self.time_abi {
-            time_abi.restore = RestorePacketState::None;
-        }
+        self.time_abi.restore = RestorePacketState::None;
     }
 
     /// Installs the output drain request channel.
@@ -420,17 +392,10 @@ impl ChangeDeviceState for MicrovmPortb {
     async fn reset(&mut self) {
         self.rx_buffer.clear();
         self.tx_buffer.clear();
-        self.restore_entropy.clear();
         self.generation_id_read_index = None;
-        self.restore_entropy_selected = false;
-        self.restore_processor_target_available = false;
-        self.restore_memory_target_available = false;
-        self.restore_memory_expansion_available = false;
         self.input_gated = false;
         self.time_window.clear();
-        if let Some(time_abi) = &mut self.time_abi {
-            time_abi.restore = RestorePacketState::None;
-        }
+        self.clear_restore_packet();
     }
 }
 
@@ -517,17 +482,12 @@ impl PortIoIntercept for MicrovmPortb {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
         data.fill(0);
-        // The time ABI reads selected records 1, 2, or 4 bytes at a time;
-        // console input stays one byte per read.
-        let record_len = if self.time_abi.is_some() {
-            data.len()
-        } else {
-            1
-        };
         match io_port {
+            // Selected records are read 1, 2, or 4 bytes at a time; console
+            // input stays one byte per read.
             DATA_PORT => {
                 if self.generation_id_read_index.is_some() {
-                    for byte in &mut data[..record_len] {
+                    for byte in data.iter_mut() {
                         let Some(index) = self.generation_id_read_index else {
                             break;
                         };
@@ -535,15 +495,15 @@ impl PortIoIntercept for MicrovmPortb {
                         self.generation_id_read_index =
                             (index + 1 < self.generation_id.len()).then_some(index + 1);
                     }
-                } else if self.restore_entropy_selected {
-                    for byte in &mut data[..record_len] {
-                        let Some(value) = self.restore_entropy.pop_front() else {
+                } else if self.restore_packet_selected {
+                    for byte in data.iter_mut() {
+                        let Some(value) = self.restore_packet.pop_front() else {
                             break;
                         };
                         *byte = value;
                     }
-                    if self.restore_entropy.is_empty() {
-                        self.restore_entropy_selected = false;
+                    if self.restore_packet.is_empty() {
+                        self.restore_packet_selected = false;
                         self.restore_processor_target_available = false;
                         self.restore_memory_target_available = false;
                         self.restore_memory_expansion_available = false;
@@ -556,29 +516,23 @@ impl PortIoIntercept for MicrovmPortb {
             STATUS_PORT => {
                 data[0] = if !self.input_gated
                     && self.generation_id_read_index.is_none()
-                    && !self.restore_entropy_selected
+                    && !self.restore_packet_selected
                     && !self.rx_buffer.is_empty()
                 {
                     STATUS_INPUT_AVAILABLE
                 } else {
                     0
                 };
-                let sealed_packet = self
-                    .time_abi
-                    .as_mut()
-                    .is_some_and(|time_abi| time_abi.poll_sealed());
-                if self
-                    .time_abi
-                    .as_ref()
-                    .is_some_and(|time_abi| matches!(time_abi.restore, RestorePacketState::None))
-                    && self.restore_entropy.is_empty()
+                let sealed_packet = self.time_abi.poll_sealed();
+                if matches!(self.time_abi.restore, RestorePacketState::None)
+                    && self.restore_packet.is_empty()
                 {
-                    // An unsealed time ABI packet was dropped: no targets.
+                    // An unsealed packet was dropped: no targets.
                     self.restore_processor_target_available = false;
                     self.restore_memory_target_available = false;
                     self.restore_memory_expansion_available = false;
                 }
-                if !self.restore_entropy.is_empty() || sealed_packet {
+                if !self.restore_packet.is_empty() || sealed_packet {
                     data[0] |= STATUS_RESTORE_PACKET_AVAILABLE;
                 }
                 if self.restore_processor_target_available {
@@ -590,12 +544,9 @@ impl PortIoIntercept for MicrovmPortb {
                 if self.restore_memory_expansion_available {
                     data[0] |= STATUS_RESTORE_MEMORY_EXPANSION_AVAILABLE;
                 }
-                data[0] |= STATUS_GENERATION_ID_AVAILABLE;
-                if self.time_abi.is_some() {
-                    data[0] |= STATUS_TIME_SAMPLE_AVAILABLE;
-                }
+                data[0] |= STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE;
             }
-            TIME_WINDOW_PORT if self.time_abi.is_some() => {
+            TIME_WINDOW_PORT => {
                 for byte in data.iter_mut() {
                     let Some(value) = self.time_window.pop_front() else {
                         break;
@@ -622,23 +573,15 @@ impl PortIoIntercept for MicrovmPortb {
                 self.wake_tx();
             }
             STATUS_PORT => match data.first() {
-                Some(&RESTORE_ENTROPY_SELECT) if self.time_abi.is_some() => {
-                    self.select_restore_packet_v4();
-                }
-                Some(&RESTORE_ENTROPY_SELECT) if !self.restore_entropy.is_empty() => {
-                    self.generation_id_read_index = None;
-                    self.restore_entropy_selected = true;
-                }
+                Some(&RESTORE_PACKET_SELECT) => self.select_restore_packet(),
                 Some(&GENERATION_ID_SELECT) => {
-                    self.restore_entropy_selected = false;
+                    self.restore_packet_selected = false;
                     self.generation_id_read_index = Some(0);
                 }
-                Some(&TIME_SAMPLE_SELECT) if self.time_abi.is_some() => {
-                    self.latch_time_sample();
-                }
+                Some(&TIME_SAMPLE_SELECT) => self.latch_time_sample(),
                 _ => {}
             },
-            TIME_WINDOW_PORT if self.time_abi.is_some() => {}
+            TIME_WINDOW_PORT => {}
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
         IoResult::Ok
@@ -672,7 +615,7 @@ impl SaveRestore for MicrovmPortb {
         self.rx_buffer = state.rx_buffer.into();
         self.tx_buffer = state.tx_buffer.into();
         self.generation_id_read_index = None;
-        self.restore_entropy_selected = false;
+        self.restore_packet_selected = false;
         self.time_window.clear();
         Ok(())
     }
@@ -957,6 +900,18 @@ mod tests {
 
     const TEST_GENERATION_ID: [u8; GENERATION_ID_SIZE] = [0x3c; GENERATION_ID_SIZE];
 
+    fn test_time_abi(
+        restore: Option<chipset_resources::microvm::MicrovmRestorePacketSource>,
+    ) -> MicrovmPortbTimeAbi {
+        MicrovmPortbTimeAbi {
+            generation: 7,
+            utc_offset_ms: 0,
+            sample_delay_us: 0,
+            test_hooks: true,
+            restore,
+        }
+    }
+
     #[derive(Default)]
     struct OutputState {
         bytes: Vec<u8>,
@@ -1022,7 +977,7 @@ mod tests {
         let mut portb = MicrovmPortb::new(
             Box::new(Connected::new(BufferedOutput(state.clone()))),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         )
         .with_output_drain(Some(receiver));
         let payload = b"OPENVMM-SNAPSHOT-RESTORE-OK\n\0\xff";
@@ -1058,7 +1013,7 @@ mod tests {
         let mut portb = MicrovmPortb::new(
             Box::new(Connected::new(BufferedOutput(state.clone()))),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         )
         .with_output_drain(Some(receiver));
         assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
@@ -1089,7 +1044,7 @@ mod tests {
         let mut portb = MicrovmPortb::new(
             Box::new(Connected::new(BufferedOutput(state.clone()))),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         )
         .with_output_drain(Some(receiver));
         // The guest writes a marker just before its snapshot request, while
@@ -1132,8 +1087,12 @@ mod tests {
     #[test]
     fn portb_snapshot_flush_without_endpoint_keeps_output_for_restore() {
         let (requests, receiver) = mesh::channel();
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new())
-            .with_output_drain(Some(receiver));
+        let mut portb = MicrovmPortb::new(
+            Box::new(Disconnected),
+            TEST_GENERATION_ID,
+            test_time_abi(None),
+        )
+        .with_output_drain(Some(receiver));
         assert!(matches!(portb.io_write(DATA_PORT, b"marker"), IoResult::Ok));
         let flush = requests.call_failable(std::convert::identity, MicrovmPortbDrain::Flush);
         portb.poll_device(&mut Context::from_waker(Waker::noop()));
@@ -1151,7 +1110,7 @@ mod tests {
         let mut portb = MicrovmPortb::new(
             Box::new(Connected::new(BufferedOutput(state.clone()))),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         )
         .with_output_drain(Some(receiver));
         let mut cx = Context::from_waker(Waker::noop());
@@ -1197,7 +1156,7 @@ mod tests {
         let mut portb = MicrovmPortb::new(
             Box::new(Connected::new(BufferedOutput(state.clone()))),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         );
         assert!(matches!(portb.io_write(DATA_PORT, b"lost"), IoResult::Ok));
         portb.poll_device(&mut cx);
@@ -1272,7 +1231,7 @@ mod tests {
 
     #[test]
     fn portb_preserves_wide_binary_output_and_zero_fills_reads() {
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new());
+        let mut portb = time_abi_portb(None);
         assert!(matches!(
             portb.io_write(DATA_PORT, b"\0\xffA\x80"),
             IoResult::Ok
@@ -1288,7 +1247,9 @@ mod tests {
         assert_eq!(
             status,
             [
-                STATUS_INPUT_AVAILABLE | STATUS_GENERATION_ID_AVAILABLE,
+                STATUS_INPUT_AVAILABLE
+                    | STATUS_GENERATION_ID_AVAILABLE
+                    | STATUS_TIME_SAMPLE_AVAILABLE,
                 0,
                 0,
                 0
@@ -1301,13 +1262,32 @@ mod tests {
     }
 
     #[test]
-    fn pending_portb_bytes_survive_restore_and_fresh_entropy_is_private() {
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), [1; 16], Vec::new());
+    fn pending_portb_bytes_survive_restore_and_the_restore_packet_is_private() {
+        let mut portb = time_abi_portb(None);
         portb.rx_buffer.extend([1, 2, 3]);
         portb.tx_buffer.extend([4, 5, 6]);
         let state = portb.save().unwrap();
 
-        let mut restored = MicrovmPortb::new(Box::new(Disconnected), [2; 16], vec![7, 8]);
+        let base = RestorePacketBase {
+            online_vp_count: 0,
+            memory_target: false,
+            ack_required: false,
+            generation: 8,
+            ranges: Vec::new(),
+            entropy: [0x7e; 64],
+        };
+        let (send, recv) = mesh::oneshot();
+        let mut restored = MicrovmPortb::new(
+            Box::new(Disconnected),
+            [2; 16],
+            test_time_abi(Some(
+                chipset_resources::microvm::MicrovmRestorePacketSource {
+                    base: base.clone(),
+                    time: recv,
+                    selected: None,
+                },
+            )),
+        );
         restored.restore(state).unwrap();
         assert_eq!(restored.rx_buffer, [1, 2, 3]);
         assert_eq!(restored.tx_buffer, [4, 5, 6]);
@@ -1326,32 +1306,25 @@ mod tests {
             IoResult::Ok
         ));
         assert_eq!(data, [0]);
-        assert_eq!(restored.restore_entropy, [7, 8]);
 
+        // The restored process serves its own packet, never saved state.
+        send.send(RestoreTimeRecord {
+            downtime_ns: 1_000,
+            downtime_utc: false,
+            rate_deviation: 0,
+            test_hooks: true,
+        });
         assert!(matches!(
-            restored.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
+            restored.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
             IoResult::Ok
         ));
-        assert!(matches!(
-            restored.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE | STATUS_GENERATION_ID_AVAILABLE]
-        );
-        for expected in [7, 8] {
-            assert!(matches!(
-                restored.io_read(DATA_PORT, &mut data),
-                IoResult::Ok
-            ));
-            assert_eq!(data, [expected]);
-        }
+        let bytes = read_record(&mut restored, DATA_PORT, base.encoded_len());
+        assert_eq!(RestorePacketV4::decode(&bytes).unwrap().base, base);
     }
 
     #[test]
     fn generation_id_is_repeatable_and_not_consumed() {
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new());
+        let mut portb = time_abi_portb(None);
         let mut data = [0];
 
         for _ in 0..2 {
@@ -1359,7 +1332,10 @@ mod tests {
                 portb.io_read(STATUS_PORT, &mut data),
                 IoResult::Ok
             ));
-            assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
+            assert_eq!(
+                data,
+                [STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE]
+            );
             assert!(matches!(
                 portb.io_write(STATUS_PORT, &[GENERATION_ID_SELECT]),
                 IoResult::Ok
@@ -1372,156 +1348,75 @@ mod tests {
     }
 
     #[test]
-    fn processor_target_restore_packet_has_distinct_status() {
-        let packet = [RESTORE_PROCESSOR_TARGET_PACKET_HEADER, &[2]].concat();
-        let mut portb =
-            MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, packet.clone());
-        let mut data = [0];
-
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
-        assert!(matches!(
-            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
-            IoResult::Ok
-        ));
-        for expected in packet {
-            assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-            assert_eq!(data, [expected]);
+    fn restore_packet_v4_advertises_its_targets() {
+        let range = chipset_resources::microvm_time::RestoreMemoryRange {
+            gpa_start: 0x2000_0000,
+            length: 0x2000_0000,
+        };
+        for (online_vp_count, memory_target, ranges, targets) in [
+            (
+                2,
+                false,
+                Vec::new(),
+                STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE,
+            ),
+            (0, true, Vec::new(), STATUS_RESTORE_MEMORY_TARGET_AVAILABLE),
+            (
+                0,
+                true,
+                vec![range],
+                STATUS_RESTORE_MEMORY_TARGET_AVAILABLE | STATUS_RESTORE_MEMORY_EXPANSION_AVAILABLE,
+            ),
+            (
+                2,
+                true,
+                vec![range],
+                STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE
+                    | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
+                    | STATUS_RESTORE_MEMORY_EXPANSION_AVAILABLE,
+            ),
+        ] {
+            let base = RestorePacketBase {
+                online_vp_count,
+                memory_target,
+                ack_required: true,
+                generation: 7,
+                ranges,
+                entropy: [0x5a; 64],
+            };
+            let (send, recv) = mesh::oneshot();
+            let mut portb = time_abi_portb(Some(
+                chipset_resources::microvm::MicrovmRestorePacketSource {
+                    base: base.clone(),
+                    time: recv,
+                    selected: None,
+                },
+            ));
+            send.send(RestoreTimeRecord {
+                downtime_ns: 0,
+                downtime_utc: false,
+                rate_deviation: 0,
+                test_hooks: true,
+            });
+            assert_eq!(
+                read_status(&mut portb),
+                STATUS_RESTORE_PACKET_AVAILABLE
+                    | targets
+                    | STATUS_GENERATION_ID_AVAILABLE
+                    | STATUS_TIME_SAMPLE_AVAILABLE
+            );
+            assert!(matches!(
+                portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
+                IoResult::Ok
+            ));
+            let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
+            assert_eq!(RestorePacketV4::decode(&bytes).unwrap().base, base);
+            // Reading the whole packet clears every target.
+            assert_eq!(
+                read_status(&mut portb),
+                STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
+            );
         }
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
-    }
-
-    #[test]
-    fn base_memory_target_restore_packet_has_memory_status() {
-        let packet = [RESTORE_MEMORY_TARGET_PACKET_HEADER, &[0, 0], &[0x5a; 64]].concat();
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, packet);
-        let mut data = [0];
-
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
-    }
-
-    #[test]
-    fn memory_target_restore_packet_has_distinct_status() {
-        let packet = [
-            RESTORE_MEMORY_TARGET_PACKET_HEADER,
-            &[2, 1],
-            &0x2000_0000_u64.to_le_bytes(),
-            &0x2000_0000_u64.to_le_bytes(),
-            &[0x5a; 64],
-        ]
-        .concat();
-        let mut portb =
-            MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, packet.clone());
-        let mut data = [0];
-
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_EXPANSION_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
-        assert!(matches!(
-            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
-            IoResult::Ok
-        ));
-        for expected in packet {
-            assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-            assert_eq!(data, [expected]);
-        }
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
-
-        let memory_only_packet = [
-            RESTORE_MEMORY_TARGET_PACKET_HEADER,
-            &[0, 1],
-            &0x2000_0000_u64.to_le_bytes(),
-            &0x2000_0000_u64.to_le_bytes(),
-            &[0x5a; 64],
-        ]
-        .concat();
-        let mut portb = MicrovmPortb::new(
-            Box::new(Disconnected),
-            TEST_GENERATION_ID,
-            memory_only_packet,
-        );
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_EXPANSION_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
-
-        let processor_only_packet =
-            [RESTORE_MEMORY_TARGET_PACKET_HEADER, &[2, 0], &[0x5a; 64]].concat();
-        let mut portb = MicrovmPortb::new(
-            Box::new(Disconnected),
-            TEST_GENERATION_ID,
-            processor_only_packet,
-        );
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
-
-        let explicit_base_packet =
-            [RESTORE_MEMORY_TARGET_PACKET_HEADER, &[0, 0], &[0x5a; 64]].concat();
-        let mut portb = MicrovmPortb::new(
-            Box::new(Disconnected),
-            TEST_GENERATION_ID,
-            explicit_base_packet,
-        );
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_RESTORE_PACKET_AVAILABLE
-                | STATUS_RESTORE_MEMORY_TARGET_AVAILABLE
-                | STATUS_GENERATION_ID_AVAILABLE]
-        );
     }
 
     #[test]
@@ -1532,7 +1427,7 @@ mod tests {
                 byte: Some(0x5a),
             }),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         );
         portb.poll_device(&mut Context::from_waker(Waker::noop()));
         assert_eq!(portb.rx_buffer, [0x5a]);
@@ -1541,14 +1436,10 @@ mod tests {
     fn time_abi_portb(
         restore: Option<chipset_resources::microvm::MicrovmRestorePacketSource>,
     ) -> MicrovmPortb {
-        MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new()).with_time_abi(
-            MicrovmPortbTimeAbi {
-                generation: 7,
-                utc_offset_ms: 0,
-                sample_delay_us: 0,
-                test_hooks: true,
-                restore,
-            },
+        MicrovmPortb::new(
+            Box::new(Disconnected),
+            TEST_GENERATION_ID,
+            test_time_abi(restore),
         )
     }
 
@@ -1589,10 +1480,10 @@ mod tests {
         );
         // No packet on a cold boot: selecting it reads console input.
         assert!(matches!(
-            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
+            portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
             IoResult::Ok
         ));
-        assert!(!portb.restore_entropy_selected);
+        assert!(!portb.restore_packet_selected);
 
         // The window is empty until a sample is latched.
         assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
@@ -1666,7 +1557,7 @@ mod tests {
 
         let before = now_ns();
         assert!(matches!(
-            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
+            portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
             IoResult::Ok
         ));
         let after = now_ns();
@@ -1682,10 +1573,10 @@ mod tests {
             STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
         );
         assert!(matches!(
-            portb.io_write(STATUS_PORT, &[RESTORE_ENTROPY_SELECT]),
+            portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
             IoResult::Ok
         ));
-        assert!(!portb.restore_entropy_selected);
+        assert!(!portb.restore_packet_selected);
     }
 
     #[test]
@@ -1732,24 +1623,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_portb_keeps_single_byte_records_and_two_ports() {
-        let mut portb = MicrovmPortb::new(Box::new(Disconnected), TEST_GENERATION_ID, Vec::new());
-        assert_eq!(portb.get_static_regions()[0].1, 0xe9..=0xea);
-        assert!(matches!(
-            portb.io_write(STATUS_PORT, &[GENERATION_ID_SELECT]),
-            IoResult::Ok
-        ));
-        let mut data = [0xff; 4];
-        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-        assert_eq!(data, [TEST_GENERATION_ID[0], 0, 0, 0]);
-        assert!(matches!(
-            portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
-            IoResult::Ok
-        ));
-        assert!(portb.time_window.is_empty());
-    }
-
-    #[test]
     fn portb_input_gate_blocks_rx_but_not_tx() {
         let mut portb = MicrovmPortb::new(
             Box::new(ConnectWithByte {
@@ -1757,7 +1630,7 @@ mod tests {
                 byte: Some(0x5a),
             }),
             TEST_GENERATION_ID,
-            Vec::new(),
+            test_time_abi(None),
         );
         portb.rx_buffer.push_back(0x44);
         futures::executor::block_on(portb.quiesce_input()).unwrap();
@@ -1768,7 +1641,10 @@ mod tests {
             portb.io_read(STATUS_PORT, &mut data),
             IoResult::Ok
         ));
-        assert_eq!(data, [STATUS_GENERATION_ID_AVAILABLE]);
+        assert_eq!(
+            data,
+            [STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE]
+        );
         assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
         assert_eq!(data, [0]);
         assert_eq!(portb.rx_buffer, [0x44]);

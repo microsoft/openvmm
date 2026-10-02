@@ -411,9 +411,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
             resource: MicrovmPortbHandle {
                 io,
                 generation_id,
-                restore_entropy: Vec::new(),
                 output_drain: Some(output_drain),
-                time_abi: Some(time_abi),
+                time_abi,
             }
             .into_resource(),
         });

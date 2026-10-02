@@ -172,15 +172,14 @@ pub(super) fn attach_chipset_devices(
             resource: MicrovmPortbHandle {
                 io,
                 generation_id: [0x5a; 16],
-                restore_entropy: Vec::new(),
                 output_drain: None,
-                time_abi: Some(MicrovmPortbTimeAbi {
+                time_abi: MicrovmPortbTimeAbi {
                     generation: 0,
                     utc_offset_ms: 0,
                     sample_delay_us: 0,
                     test_hooks: false,
                     restore: None,
-                }),
+                },
             }
             .into_resource(),
         },

@@ -139,13 +139,14 @@ restore flow over both transports:
   Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
   fields are rejected. A saved listener is reconstructed from the manifest; a saved
   client requires the matching path configuration.
-* `restore_entropy` requests fresh entropy and is valid only with
-  `restore_path`. Every microVM process also receives a fresh, non-serialized
-  16-byte generation ID through the fixed portb selector. On restore, the ID is
-  the first 16 bytes of the entropy packet.
+* `restore_entropy` is accepted for compatibility and is valid only with
+  `restore_path`; it has no effect, because every restore delivers restore
+  packet version 4 with fresh entropy. Every microVM process also receives a
+  fresh, non-serialized 16-byte generation ID through the fixed portb selector.
+  On restore, the ID is the first 16 bytes of the restore packet's entropy.
 * `restore_processor_count` requests restore-time activation of the contiguous
-  VP prefix `0..count-1`. Zero preserves legacy behavior. A nonzero value is
-  valid only for a snapshot that advertises processor activation, implies fresh entropy and the
+  VP prefix `0..count-1`. Zero requests no activation. A nonzero value is
+  valid only for a snapshot that advertises processor activation, implies the
   post-restore gate, and must satisfy the snapshot's boot-online and immutable
   capacity bounds. `ProcessorConfig.processor_count`, when present, remains an
   exact capacity assertion. On MSHV, a nonzero value instantiates and binds
@@ -153,10 +154,10 @@ restore flow over both transports:
   target, and all KVM and WHP restores, instantiate the full VP capacity.
 * `restore_memory_bytes` selects a 128-MiB-aligned total RAM target between the
   snapshot base and immutable capacity. Zero selects the base. Expansion uses
-  fresh private zeroed backing, implies fresh restore packet delivery and the
-  post-restore repair gate, and is rejected for legacy snapshots. An explicit
-  base-size value emits restore packet V3 with zero expansion ranges; zero
-  preserves V1/V2 packet selection.
+  fresh private zeroed backing, implies the post-restore repair gate, and is
+  rejected for snapshots without a RAM capacity contract. A nonzero value sets
+  the memory-target flag of restore packet version 4, with the expansion
+  ranges (none at the base size); zero leaves the flag clear.
 * `restore_gate_timeout_ms` bounds gated guest repair. Zero selects the
   60-second default; a nonzero value is valid only with `restore_path`.
 * `restore_ready_path` names an existing Unix domain socket on Linux or a
