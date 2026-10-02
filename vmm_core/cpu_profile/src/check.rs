@@ -205,7 +205,8 @@ mod tests {
             );
         }
 
-        // KVM's table makes every unlisted entry read zero.
+        // KVM answers unlisted entries from its table, so the check does not
+        // apply.
         let fingerprint = fingerprint_with(profile, "kvm", entries);
         check_fingerprint(&fingerprint).result.unwrap();
     }
