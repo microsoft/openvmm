@@ -347,10 +347,12 @@ fn routing_error(message: impl Into<String>) -> TimeAbiError {
 }
 
 /// Returns the host's CPUID as the root partition sees it: every leaf and
-/// subleaf that [`cpu_profile::cpuid::enumerate`] walks, read once per
+/// subleaf of the basic and extended ranges that
+/// [`cpu_profile::cpuid::enumerate_basic_and_extended`] walks, read once per
 /// process. It describes the processor that WHP virtualizes, for
 /// [`supported_surface`] and for the host entries outside the profile
-/// ([`unlisted_cpuid`]).
+/// ([`unlisted_cpuid`]). Neither uses the hypervisor range, which describes
+/// the root's hypervisor, and each of its queries exits in a root partition.
 pub(crate) fn host_cpuid() -> &'static [cpu_profile::cpuid::CpuidEntry] {
     static HOST_CPUID: OnceLock<Vec<cpu_profile::cpuid::CpuidEntry>> = OnceLock::new();
     HOST_CPUID.get_or_init(|| {
@@ -365,7 +367,8 @@ pub(crate) fn host_cpuid() -> &'static [cpu_profile::cpuid::CpuidEntry] {
         // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(not(target_arch = "x86_64"))]
         let query = |_, _| Ok::<_, std::convert::Infallible>([0; 4]);
-        cpu_profile::cpuid::enumerate(query).unwrap_or_else(|never| match never {})
+        cpu_profile::cpuid::enumerate_basic_and_extended(query)
+            .unwrap_or_else(|never| match never {})
     })
 }
 
