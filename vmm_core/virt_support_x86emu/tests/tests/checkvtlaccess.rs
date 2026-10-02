@@ -240,7 +240,7 @@ fn validate_vtl_access_event(
         hvdef::HV_X64_PENDING_EVENT_MEMORY_INTERCEPT
     );
 
-    assert_eq!(event.target_vtl, expected_vtl.into());
+    assert_eq!(event.target_vtl, u8::from(expected_vtl));
 
     if check_execute {
         assert_eq!(event.access_type, hvdef::HvInterceptAccessType::EXECUTE);

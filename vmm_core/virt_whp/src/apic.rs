@@ -331,7 +331,7 @@ impl WhpProcessor<'_> {
     /// A snapshot restore writes saved IRR bits this way, and so does the
     /// restore clock when it queues the vector of a one-shot timer that
     /// expired during the downtime. The hypervisor does not always deliver
-    /// such a vector to a halted VP: on prometheus28, 2 s after every legacy
+    /// such a vector to a halted VP: on a bare-metal host, 2 s after every legacy
     /// 8-VP restore, a VP was still halted with the timer vector pending, and
     /// its timers stalled until some other interrupt woke it. Asserting a
     /// vector that is already pending is idempotent, and wakes the VP when
