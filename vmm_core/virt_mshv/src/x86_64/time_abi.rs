@@ -1942,7 +1942,10 @@ mod hw {
     /// test times both ways. Farther out, where no guest enumeration reaches
     /// (subleaves 64 to 255, leaves up to 0xff and 0x800000ff, the hypervisor
     /// range up to 0x400001ff, and a few distant leaves), every unlisted entry
-    /// must read zero as well (see `sweep_probes`).
+    /// must read zero as well (see `sweep_probes`). Last, a non-zero value
+    /// planted at a reserved entry that the host enumerates must reach the
+    /// backend's effective CPUID report and fail core's `E_CPU_UNLISTED`
+    /// check.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
@@ -2053,12 +2056,27 @@ mod hw {
             "bulk and single CPUID reads differ"
         );
         // Time both ways over the entries that the effective CPUID report
-        // reads, as `time_abi_effective_cpuid` does.
+        // reads, as `time_abi_effective_cpuid` does, and the bulk read with
+        // the host's unlisted candidates as well.
         let report: Vec<(u32, u32)> = effective
             .results()
             .map(|result| (result.function, result.index.unwrap_or(0)))
             .collect();
-        let (mut single_us, mut bulk_us) = (Vec::new(), Vec::new());
+        let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
+        let candidates = cpu_profile::unlisted_cpuid_candidates(
+            profile,
+            &super::super::profile_features::host_cpuid_table(),
+        );
+        let with_candidates: Vec<(u32, u32)> = report
+            .iter()
+            .copied()
+            .chain(
+                candidates
+                    .iter()
+                    .map(|&(function, index)| (function, index.unwrap_or(0))),
+            )
+            .collect();
+        let (mut single_us, mut bulk_us, mut candidates_us) = (Vec::new(), Vec::new(), Vec::new());
         for _ in 0..11 {
             let started = std::time::Instant::now();
             for &(function, index) in &report {
@@ -2068,15 +2086,21 @@ mod hw {
             let started = std::time::Instant::now();
             vp_cpuid_many(bsp, 0, &report).unwrap();
             bulk_us.push(started.elapsed().as_micros() as u64);
+            let started = std::time::Instant::now();
+            vp_cpuid_many(bsp, 0, &with_candidates).unwrap();
+            candidates_us.push(started.elapsed().as_micros() as u64);
         }
         single_us.sort_unstable();
         bulk_us.sort_unstable();
+        candidates_us.sort_unstable();
         println!(
-            "bulk CPUID read: {} probes match single reads; {} entries in {} us one per call, {} us in one call (p50 of 11)",
+            "bulk CPUID read: {} probes match single reads; {} entries in {} us one per call, {} us in one call, {} us with the {} unlisted candidates (p50 of 11)",
             probes.len(),
             report.len(),
             single_us[5],
-            bulk_us[5]
+            bulk_us[5],
+            candidates_us[5],
+            candidates.len()
         );
 
         // Farther out, every entry the effective CPUID does not list must read
@@ -2104,6 +2128,40 @@ mod hw {
             println!("  {line}");
         }
         assert!(far_unlisted.is_empty(), "{far_unlisted:#?}");
+
+        // The negative path of verification step 6. A non-zero value at a
+        // reserved entry that the host enumerates, planted here as a
+        // registered result, must reach the backend's effective CPUID report,
+        // which core then rejects with E_CPU_UNLISTED: the report reads the
+        // hypervisor's view at the candidates and never synthesizes zero.
+        // Nothing has read the report before, so its first read sees the plant.
+        let &(function, index) = candidates
+            .first()
+            .expect("the host enumerates reserved entries");
+        let planted = CpuidLeaf::new(function, [0x5a5a_5a5a, 0, 0, 0]);
+        let planted = match index {
+            Some(index) => planted.indexed(index),
+            None => planted,
+        };
+        super::super::register_cpuid_result(&partition.inner.vmfd, &planted).unwrap();
+        let backend_report = partition.inner.time_abi_effective_cpuid().unwrap();
+        assert!(
+            backend_report.iter().any(|leaf| leaf.function == function
+                && leaf.index == index
+                && leaf.result == planted.result),
+            "the report lacks the planted {function:#x} {index:?}"
+        );
+        let entries: Vec<_> = backend_report
+            .iter()
+            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        let error = cpu_profile::check_unlisted_cpuid(profile, &entries).unwrap_err();
+        assert_eq!(
+            error.code,
+            cpu_profile::ProfileErrorCode::CpuUnlisted,
+            "{error}"
+        );
+        println!("planted {function:#x}.{index:?} = {planted:x?}: {error}");
     }
 
     /// Every VP of a time ABI partition reads its own x2APIC ID in `EDX` of
