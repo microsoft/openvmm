@@ -25,7 +25,10 @@
 //! Bits without a CPUID feature, such as the nested-paging details, are the
 //! backend's to decide. Features that no bit controls (for example PKU), the
 //! descriptive leaves (caches, the brand string), and the time policy bits a
-//! host lacks reach the guest through the backend's CPUID results.
+//! host lacks reach the guest through the backend's CPUID results. No XSAVE
+//! feature bit controls PKRU either: a root that offered PKRU would let a
+//! partition enable it in XCR0 under a profile without PKU, although the
+//! guest's CPUID hides it. The roots of the fleet's hosts do not offer it.
 //!
 //! The hypervisor refuses some feature sets. MSHV fails to create a partition
 //! with `mb_clear_support` cleared on its own on a Skylake-SP host, with
@@ -457,7 +460,7 @@ pub enum Pinned {
 }
 
 /// Returns how `profile` pins `bit`. A leaf or subleaf the profile does not
-/// list reads zero, pinned.
+/// list counts as zero, pinned.
 pub fn pinned(profile: &CpuProfile, bit: CpuidBit) -> Pinned {
     let (value, mask) = profile
         .cpuid()
