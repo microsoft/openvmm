@@ -26,17 +26,21 @@ pub enum ProfileErrorCode {
     /// `E_CPU_SURFACE`: an effective CPUID differs from the recorded one, or
     /// the VM's CPUID inputs cannot complete the profile.
     CpuSurface,
+    /// `E_CPU_UNLISTED`: a pass-through backend presents a non-zero CPUID
+    /// entry outside the profile's tables.
+    CpuUnlisted,
 }
 
 impl ProfileErrorCode {
-    /// Every code.
-    pub const ALL: [Self; 6] = [
+    /// Every code, in specification order.
+    pub const ALL: [Self; 7] = [
         Self::ProfileUnknown,
         Self::ProfileDigest,
         Self::ProfileHostUnknown,
         Self::CpuGeneration,
         Self::ProfileUnsupported,
         Self::CpuSurface,
+        Self::CpuUnlisted,
     ];
 
     /// Returns the code as the specification spells it, such as
@@ -49,6 +53,7 @@ impl ProfileErrorCode {
             Self::CpuGeneration => "E_CPU_GENERATION",
             Self::ProfileUnsupported => "E_PROFILE_UNSUPPORTED",
             Self::CpuSurface => "E_CPU_SURFACE",
+            Self::CpuUnlisted => "E_CPU_UNLISTED",
         }
     }
 }

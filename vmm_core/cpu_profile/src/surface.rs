@@ -13,6 +13,8 @@ use crate::fingerprint::IA32_ARCH_CAPABILITIES;
 use crate::hv_banks;
 use crate::profile::CpuProfile;
 use crate::profile::describe;
+use crate::unlisted::unlisted_cpuid_error;
+use crate::unlisted::unlisted_cpuid_violations;
 
 /// The register names, for messages.
 const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
@@ -23,9 +25,14 @@ const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 pub struct HostCpuSurface {
     /// Every CPUID leaf and subleaf the backend can expose, with every
     /// feature it can expose set, normalized with [`cpuid::normalize`]. KVM
-    /// reports `KVM_GET_SUPPORTED_CPUID`; MSHV and WHP report a partition with
-    /// every available processor and XSAVE feature enabled.
+    /// reports `KVM_GET_SUPPORTED_CPUID`. A CPU fingerprint of MSHV or WHP
+    /// records a probe partition with every available processor and XSAVE
+    /// feature enabled, and their `supported_cpu_surface()` approximates it
+    /// from the host's CPUID and processor features.
     pub cpuid: Vec<CpuidEntry>,
+    /// How the backend presents the CPUID entries outside a profile's
+    /// tables, and what `cpuid` holds there.
+    pub presentation: CpuidPresentation,
     /// The widest guest physical address the backend supports, in bits.
     ///
     /// Support checks use this rather than the CPUID's `0x80000008:EAX[7:0]`:
@@ -35,6 +42,35 @@ pub struct HostCpuSurface {
     pub physical_address_width: u8,
     /// The MSR values the backend can present to a guest.
     pub msrs: Vec<SupportedMsr>,
+}
+
+/// How a backend presents the CPUID entries that a VM's effective CPUID does
+/// not list, and what a [`HostCpuSurface`] holds there, which decides whether
+/// [`verify_support`] checks them (`E_CPU_UNLISTED`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuidPresentation {
+    /// A table backend, KVM: `KVM_SET_CPUID2` installs the effective CPUID as
+    /// the guest's whole CPUID table, and every entry it does not list reads
+    /// zero. The surface lists what the backend can support, not what a
+    /// guest reads, so there is nothing to check.
+    Table,
+    /// A pass-through backend, MSHV or WHP, which programs the effective
+    /// CPUID over the hypervisor's own: every entry the effective CPUID does
+    /// not list reads the hypervisor's value. The surface is what the
+    /// hypervisor presents to a guest, as a probe partition enumerates it for
+    /// `--cpu-fingerprint`, so every non-zero entry outside the profile's
+    /// tables fails the check.
+    PassThroughGuestView,
+    /// A pass-through backend whose surface comes from the host's own CPUID,
+    /// as the cheap `supported_cpu_surface()` of MSHV and WHP builds it.
+    /// Outside the profile's tables, the host's view is not the guest's: the
+    /// root partition sees entries that guests never do, such as Intel PT's
+    /// subleaf `0x14.1` on Skylake-SP. [`verify_support`] skips the check,
+    /// which [`check_unlisted_cpuid`](crate::check_unlisted_cpuid) makes on VP
+    /// 0's view at the host's
+    /// [`unlisted_cpuid_candidates`](crate::unlisted_cpuid_candidates)
+    /// instead.
+    PassThroughHostView,
 }
 
 /// The values of one MSR that a backend can present to a guest.
@@ -54,7 +90,9 @@ impl HostCpuSurface {
     /// Returns the surface that a CPU fingerprint recorded.
     ///
     /// `IA32_ARCH_CAPABILITIES` comes from the KVM feature MSR, or, for the
-    /// Hyper-V backends, from the processor feature banks.
+    /// Hyper-V backends, from the processor feature banks. A KVM fingerprint
+    /// is a [`CpuidPresentation::Table`] surface; any other records a probe
+    /// partition, a [`CpuidPresentation::PassThroughGuestView`].
     pub fn from_fingerprint(backend: &BackendFingerprint) -> Self {
         let width = cpuid::lookup(&backend.cpuid, EXTENDED_LEAF_BASE + 8, 0).unwrap_or_default()[0];
         let mut msrs = Vec::new();
@@ -69,6 +107,10 @@ impl HostCpuSurface {
         }
         Self {
             cpuid: backend.cpuid.clone(),
+            presentation: match backend.name.as_str() {
+                "kvm" => CpuidPresentation::Table,
+                _ => CpuidPresentation::PassThroughGuestView,
+            },
             physical_address_width: (width & 0xff) as u8,
             msrs,
         }
@@ -123,22 +165,41 @@ pub(crate) fn register_class(leaf: u32, subleaf: u32, register: usize) -> Regist
 /// Checks that the backend described by `surface` supports `profile`: every
 /// feature bit the profile sets except the [`TIME_POLICY_BITS`], every
 /// numeric limit, the exact XSAVE layout of every enabled component, the
-/// guest physical address width, and every pinned MSR value.
+/// guest physical address width, and every pinned MSR value. For a
+/// [`CpuidPresentation::PassThroughGuestView`] surface, it also checks that
+/// every entry outside the profile's tables reads zero, as
+/// [`check_unlisted_cpuid`](crate::check_unlisted_cpuid) does.
 ///
 /// Fails with `E_PROFILE_UNSUPPORTED`, naming every violation at once: each
 /// missing leaf, subleaf, register, and bit, as [`support_violations`] lists
-/// them.
+/// them, then each non-zero entry outside the profile's tables. A surface
+/// whose only violations are such entries fails with
+/// `E_CPU_UNLISTED`.
 pub fn verify_support(profile: &CpuProfile, surface: &HostCpuSurface) -> Result<(), ProfileError> {
     let violations = support_violations(profile, surface);
+    let unlisted = match surface.presentation {
+        CpuidPresentation::PassThroughGuestView => {
+            unlisted_cpuid_violations(profile, &surface.cpuid)
+        }
+        CpuidPresentation::Table | CpuidPresentation::PassThroughHostView => Vec::new(),
+    };
     if violations.is_empty() {
-        return Ok(());
+        if unlisted.is_empty() {
+            return Ok(());
+        }
+        return Err(unlisted_cpuid_error(profile, &unlisted));
     }
     Err(ProfileError::new(
         ProfileErrorCode::ProfileUnsupported,
         format!(
             "the backend does not support CPU profile {}: {}",
             profile.id(),
-            violations.join("; ")
+            violations
+                .iter()
+                .chain(&unlisted)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
         ),
     ))
 }
@@ -287,7 +348,9 @@ fn bits_phrase(bits: u64) -> String {
 mod tests {
     use super::*;
     use crate::test_support::fingerprint;
+    use crate::test_support::fingerprint_with;
     use crate::test_support::profile;
+    use crate::test_support::profile_entries;
     use test_with_tracing::test;
 
     const ICELAKE: &str = "intel.icelake-sp.v1";
@@ -325,7 +388,76 @@ mod tests {
     fn every_pinned_profile_supports_itself() {
         for profile in crate::pinned_profiles() {
             verify_support(profile, &surface(profile)).unwrap();
+            for backend in ["mshv", "whp"] {
+                let surface =
+                    HostCpuSurface::from_fingerprint(&fingerprint(profile, backend).backend);
+                assert_eq!(
+                    surface.presentation,
+                    CpuidPresentation::PassThroughGuestView
+                );
+                verify_support(profile, &surface).unwrap();
+            }
         }
+    }
+
+    #[test]
+    fn checks_unlisted_entries_of_a_pass_through_guest_view_only() {
+        let profile = profile(ICELAKE);
+        // Intel PT's subleaf 1, which the profile does not list, as the root
+        // partition of a Skylake-SP host reads it.
+        let mut entries = profile_entries(profile);
+        entries.push(CpuidEntry::new(
+            0x14,
+            Some(1),
+            [0x0249_0002, 0x003f_3fff, 0, 0],
+        ));
+        entries.sort_by_key(CpuidEntry::key);
+        const PT: &str = "CPUID 0x14.1 is outside the profile and reads EAX 0x2490002, \
+                          EBX 0x3f3fff, ECX 0x0, EDX 0x0";
+
+        let whp = HostCpuSurface::from_fingerprint(
+            &fingerprint_with(profile, "whp", entries.clone()).backend,
+        );
+        let error = verify_support(profile, &whp).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuUnlisted);
+        assert_eq!(
+            error.message,
+            format!(
+                "the backend presents CPUID entries outside CPU profile intel.icelake-sp.v1: {PT}"
+            )
+        );
+        assert!(support_violations(profile, &whp).is_empty());
+
+        // KVM installs the effective CPUID as the guest's whole table.
+        let kvm = HostCpuSurface::from_fingerprint(
+            &fingerprint_with(profile, "kvm", entries.clone()).backend,
+        );
+        assert_eq!(kvm.presentation, CpuidPresentation::Table);
+        verify_support(profile, &kvm).unwrap();
+
+        // The host's own view does not show what a guest reads there.
+        let host_view = HostCpuSurface {
+            presentation: CpuidPresentation::PassThroughHostView,
+            ..whp.clone()
+        };
+        verify_support(profile, &host_view).unwrap();
+
+        // An unlisted entry that reads zero is what the profile requires.
+        let mut zero = whp.clone();
+        edit(&mut zero, 0x14, 1, 0, |_| 0);
+        edit(&mut zero, 0x14, 1, 1, |_| 0);
+        verify_support(profile, &zero).unwrap();
+
+        // Every violation is named at once, the missing features first.
+        let mut both = whp;
+        edit(&mut both, 7, 0, 1, |ebx| ebx & !(1 << 16));
+        assert_eq!(
+            unsupported(profile, &both),
+            format!(
+                "the backend does not support CPU profile intel.icelake-sp.v1: \
+                 CPUID 0x7.0 EBX bit 16 is not supported; {PT}"
+            )
+        );
     }
 
     #[test]
