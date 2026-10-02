@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! Partition unit support for snapshots: validating the instantiated VP prefix,
-//! stopping VPs at a deferred I/O boundary for capture, and advancing TSC after
-//! restore downtime.
+//! stopping VPs at a deferred I/O boundary for capture, and the NVX time ABI's
+//! LAPIC timer checks and restore advance.
 
 use super::Error;
 use super::PartitionRequest;
@@ -17,8 +17,6 @@ use mesh::rpc::RpcSend;
 /// Snapshot requests handled by the partition unit runner.
 pub(super) enum SnapshotRequest {
     StopVpsAtIoBoundary(FailableRpc<(mesh::OneshotSender<()>, mesh::OneshotReceiver<()>), ()>),
-    #[cfg(guest_arch = "x86_64")]
-    AdvanceTsc(FailableRpc<(std::time::Duration, u64, Option<u64>), ()>),
     #[cfg(guest_arch = "x86_64")]
     CheckTimers(FailableRpc<(), ()>),
     #[cfg(guest_arch = "x86_64")]
@@ -68,23 +66,6 @@ impl PartitionUnit {
             )
             .await?;
         Ok(StopGuard(self.req_send.clone()))
-    }
-
-    /// Advances TSC state on all stopped vCPUs.
-    #[cfg(guest_arch = "x86_64")]
-    pub async fn advance_tsc(
-        &mut self,
-        duration: std::time::Duration,
-        frequency_hz: u64,
-        apic_frequency_hz: Option<u64>,
-    ) -> anyhow::Result<()> {
-        self.req_send
-            .call_failable(
-                |rpc| PartitionRequest::Snapshot(SnapshotRequest::AdvanceTsc(rpc)),
-                (duration, frequency_hz, apic_frequency_hz),
-            )
-            .await?;
-        Ok(())
     }
 
     /// Checks the LAPIC timer of every stopped vCPU for the NVX time ABI
@@ -144,15 +125,6 @@ impl PartitionUnitRunner {
                     self.vp_stop_count += 1;
                     self.vp_set
                         .stop_at_io_boundary(release_io, io_completed)
-                        .await
-                })
-                .await
-            }
-            #[cfg(guest_arch = "x86_64")]
-            SnapshotRequest::AdvanceTsc(rpc) => {
-                rpc.handle_failable(async |(duration, frequency_hz, apic_frequency_hz)| {
-                    self.vp_set
-                        .advance_tsc(duration, frequency_hz, apic_frequency_hz)
                         .await
                 })
                 .await

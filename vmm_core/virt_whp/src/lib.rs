@@ -639,11 +639,6 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
-        virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
         self.inner.time_abi.as_ref().map(|_| &*self.inner as _)
     }
@@ -1346,10 +1341,10 @@ impl WhpPartitionInner {
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
             caps.nested_virt = nested_virt;
-            if time_abi.is_some() && (caps.hv1 || caps.kvm_clock) {
+            if time_abi.is_some() && caps.hv1 {
                 return Err(virt::time_abi::TimeAbiError::new(
                     virt::time_abi::TimeAbiCode::IdentityRouting,
-                    "the time ABI partition capabilities include hv1 or the KVM clock",
+                    "the time ABI partition capabilities include hv1",
                 )
                 .into());
             }

@@ -865,10 +865,6 @@ impl Partition for KvmPartition {
         virt::InitialVpStateSource::Registers
     }
 
-    fn cpu_compatibility_contract(&self) -> virt::x86::CpuCompatibilityContract {
-        virt::x86::CpuCompatibilityContract::new(&self.inner.caps, &self.inner.cpuid)
-    }
-
     fn time_abi(&self) -> Option<&dyn virt::time_abi::TimeAbiBackend> {
         self.inner
             .time_abi

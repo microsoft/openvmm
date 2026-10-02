@@ -1293,7 +1293,6 @@ impl InitializedVm {
                 device_assignment_msi_iova_range,
                 user_mode_memory_faults,
                 lazy_memory_registration,
-                versioned_cpu_contract: false,
                 #[cfg(guest_arch = "x86_64")]
                 time_abi: time_abi_config,
             })

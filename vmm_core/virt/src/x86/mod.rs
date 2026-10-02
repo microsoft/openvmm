@@ -4,7 +4,6 @@
 //! x86-specific state.
 
 pub mod apic_software_device;
-pub mod cpu_contract;
 pub mod snp;
 pub mod topology;
 pub mod tsc;
@@ -12,7 +11,6 @@ pub mod vm;
 pub mod vp;
 
 use crate::state::StateElement;
-pub use cpu_contract::CpuCompatibilityContract;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
@@ -79,8 +77,6 @@ pub struct X86PartitionCapabilities {
     pub tsc_aux: bool,
     /// IA32_TSC_DEADLINE is supported.
     pub tsc_deadline: bool,
-    /// KVM's paravirtual clock and its configuration MSRs are exposed.
-    pub kvm_clock: bool,
     /// The address of the virtual top of memory, for encrypted VMs.
     ///
     /// This is computed from the Hyper-V isolation leaf. It is guaranteed to be
@@ -141,7 +137,6 @@ impl X86PartitionCapabilities {
             sgx: false,
             tsc_aux: false,
             tsc_deadline: false,
-            kvm_clock: false,
             vtom: None,
             physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
             snp_c_bit: snp_c_bit_from_cpuid(&mut *f),
@@ -227,7 +222,6 @@ impl X86PartitionCapabilities {
 
         // Hypervisor info.
         if hypervisor {
-            this.kvm_clock = tsc::kvm_clock_from_cpuid(&mut *f);
             let hv_max = f(hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0)[0];
             if hv_max >= hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION
                 && f(hvdef::HV_CPUID_FUNCTION_HV_INTERFACE, 0)[0] == u32::from_le_bytes(*b"Hv#1")

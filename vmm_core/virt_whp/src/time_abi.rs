@@ -2343,7 +2343,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_exclude_hv1_and_the_kvm_clock() {
+    fn capabilities_exclude_hv1() {
         for profile in test_cpuid::PROFILES {
             let partition = Partition::new(profile, 1, X2ApicState::Supported);
             let mut lookup = |function, index| partition.observe(0, function, index);
@@ -2353,7 +2353,6 @@ mod tests {
             )
             .unwrap();
             assert!(!caps.hv1, "{profile}");
-            assert!(!caps.kvm_clock, "{profile}");
             assert!(!caps.tsc_deadline, "{profile}");
         }
     }
