@@ -14,6 +14,7 @@ use anyhow::Context as _;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
+use futures_concurrency::future::Join;
 use inspect::Inspect;
 use inspect::InspectMut;
 use openvmm_defs::time_abi::EffectiveCpuidEntry;
@@ -539,10 +540,11 @@ impl LoadedVm {
     /// restored VP runs.
     ///
     /// It performs the synchronized TSC set at the downtime selected at the
-    /// restore anchor, advances and sets every LAPIC, advances VM time and
-    /// the RTC, and seals the time fields of the restore packet. The LAPIC
-    /// advance rejects a periodic or TSC-deadline timer, so restore needs no
-    /// separate timer check, and the PIT checks itself when restored.
+    /// restore anchor, then concurrently advances and sets every LAPIC and
+    /// advances VM time and the RTC, and seals the time fields of the restore
+    /// packet. The LAPIC advance rejects a periodic or TSC-deadline timer, so
+    /// restore needs no separate timer check, and the PIT checks itself when
+    /// restored.
     pub(super) async fn time_abi_restore(&mut self, input: RestoreTimeInput) -> anyhow::Result<()> {
         let state = self
             .inner
@@ -593,22 +595,37 @@ impl LoadedVm {
             "time ABI synchronized TSC set"
         );
 
-        self.inner
-            .partition_unit
-            .advance_lapic_timers(downtime.nanos, apic_hz)
-            .await?;
-        let lapic_advanced = started.elapsed();
-        self.state_units
-            .advance_time(Duration::from_nanos(downtime.nanos))
-            .await
-            .context("failed to advance restored VM time")?;
+        // Steps 14 and 15 touch disjoint state, since no backend's LAPIC
+        // reads VM time under the time ABI, so they run concurrently. Both
+        // run to completion, so a failure never cancels a state unit
+        // operation midway.
+        let downtime_ns = downtime.nanos;
+        let partition_unit = &mut self.inner.partition_unit;
+        let state_units = &mut self.state_units;
+        let lapic_advance = async move {
+            let result = partition_unit
+                .advance_lapic_timers(downtime_ns, apic_hz)
+                .await;
+            (result, started.elapsed())
+        };
+        let vm_time_advance = async move {
+            let result = state_units
+                .advance_time(Duration::from_nanos(downtime_ns))
+                .await;
+            (result, started.elapsed())
+        };
+        let ((lapic_result, lapic_advanced), (vm_time_result, vm_time_advanced)) =
+            (lapic_advance, vm_time_advance).join().await;
+        lapic_result?;
+        vm_time_result.context("failed to advance restored VM time")?;
         let finished = started.elapsed();
         // Per-phase durations attribute the restore.time_abi_clock profile
-        // phase.
+        // phase. The LAPIC and VM time phases overlap; each is measured from
+        // the end of the TSC set.
         tracing::info!(
             tsc_set_us = tsc_set.as_micros() as u64,
             lapic_us = (lapic_advanced - tsc_set).as_micros() as u64,
-            vm_time_us = (finished - lapic_advanced).as_micros() as u64,
+            vm_time_us = (vm_time_advanced - tsc_set).as_micros() as u64,
             total_us = finished.as_micros() as u64,
             "time ABI restore clock"
         );
