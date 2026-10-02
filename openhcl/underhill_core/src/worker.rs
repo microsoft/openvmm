@@ -2329,6 +2329,7 @@ async fn new_underhill_vm(
     let vmtime_source = vmtime_keeper.builder().build(tp.driver(0)).await.unwrap();
     let vmtime = state_units
         .add("vmtime")
+        .advances_time()
         .spawn(&tp, |recv| {
             let mut vmtime = vmtime_keeper;
             async move {

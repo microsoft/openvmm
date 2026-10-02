@@ -1934,6 +1934,7 @@ impl InitializedVm {
 
         let vmtime = state_units
             .add("vmtime")
+            .advances_time()
             .spawn(driver_source.simple(), {
                 |recv| {
                     let mut vmtime = vmtime_keeper;

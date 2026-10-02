@@ -249,6 +249,10 @@ impl ChangeDeviceState for Rtc {
     async fn advance_time(&mut self, duration: Duration) -> anyhow::Result<()> {
         self.advance_clock(duration)
     }
+
+    fn advances_time(&self) -> bool {
+        true
+    }
 }
 
 impl ChipsetDevice for Rtc {

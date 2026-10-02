@@ -98,6 +98,7 @@ trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
     async fn stop(&mut self);
     async fn reset(&mut self);
     async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()>;
+    fn advances_time(&self) -> bool;
 }
 
 #[async_trait]
@@ -124,6 +125,9 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Dy
     }
     async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
         self.advance_time(duration).await
+    }
+    fn advances_time(&self) -> bool {
+        ChangeDeviceState::advances_time(self)
     }
 }
 
@@ -170,6 +174,10 @@ impl ChangeDeviceState for ErasedChipsetDevice {
 
     async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
         self.0.advance_time(duration).await
+    }
+
+    fn advances_time(&self) -> bool {
+        self.0.advances_time()
     }
 }
 

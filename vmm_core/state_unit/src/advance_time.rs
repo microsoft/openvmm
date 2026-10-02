@@ -12,6 +12,9 @@ use std::time::Duration;
 
 impl StateUnits {
     /// Advances guest-visible time on all stopped units in dependency order.
+    /// Only units added with [`UnitBuilder::advances_time`](crate::UnitBuilder::advances_time)
+    /// receive the request; the others pass through the operation without a
+    /// round trip.
     pub async fn advance_time(&mut self, duration: Duration) -> Result<(), StateTransitionError> {
         assert!(!self.running);
         let results = self
@@ -22,7 +25,7 @@ impl StateUnits {
                 State::AdvancingTime,
                 State::Stopped,
                 StateRequest::AdvanceTime,
-                |_, _| Some(duration),
+                |_, unit| unit.advances_time.then_some(duration),
                 |unit| &unit.dependencies,
             )
             .await;

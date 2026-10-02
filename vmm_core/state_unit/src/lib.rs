@@ -140,7 +140,8 @@ pub trait StateUnit: InspectMut {
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
 
     /// Advance guest-visible time after restore. Most units derive their
-    /// deadlines from VM time and need no direct adjustment.
+    /// deadlines from VM time and need no direct adjustment; only units added
+    /// with [`UnitBuilder::advances_time`] receive this request.
     async fn advance_time(&mut self, _duration: std::time::Duration) -> anyhow::Result<()> {
         Ok(())
     }
@@ -282,6 +283,7 @@ struct Unit {
     dependents: Vec<u64>,
     state: State,
     inspect_sensitivity: inspect::SensitivityLevel,
+    advances_time: bool,
 }
 
 /// An error returned when a state unit name is already in use.
@@ -497,6 +499,7 @@ impl StateUnits {
             dependencies: Vec::new(),
             dependents: Vec::new(),
             inspect_sensitivity: inspect::SensitivityLevel::Unspecified,
+            advances_time: false,
         }
     }
 
@@ -871,9 +874,18 @@ pub struct UnitBuilder<'a> {
     dependencies: Vec<u64>,
     dependents: Vec<u64>,
     inspect_sensitivity: inspect::SensitivityLevel,
+    advances_time: bool,
 }
 
 impl UnitBuilder<'_> {
+    /// Marks this new unit as one whose [`StateUnit::advance_time`] does
+    /// work, so that [`StateUnits::advance_time`] sends it the request.
+    /// Other units derive their deadlines from VM time and are not contacted.
+    pub fn advances_time(mut self) -> Self {
+        self.advances_time = true;
+        self
+    }
+
     /// Adds `handle` as a dependency of this new unit.
     ///
     /// Operations will be ordered to ensure that a dependency will stop after
@@ -942,6 +954,7 @@ impl UnitBuilder<'_> {
                     dependents: self.dependents,
                     state: State::Stopped,
                     inspect_sensitivity: self.inspect_sensitivity,
+                    advances_time: self.advances_time,
                 },
             );
             let unit_id = UnitId {
@@ -1151,6 +1164,65 @@ mod tests {
         fn inspect_mut(&mut self, req: inspect::Request<'_>) {
             req.respond();
         }
+    }
+
+    /// A unit that records whether it was asked to advance time.
+    struct TimeUnit(Arc<AtomicBool>);
+
+    impl StateUnit for TimeUnit {
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+            Ok(None)
+        }
+
+        async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+            Ok(())
+        }
+
+        async fn advance_time(&mut self, _duration: Duration) -> anyhow::Result<()> {
+            self.0.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl InspectMut for TimeUnit {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.respond();
+        }
+    }
+
+    #[async_test]
+    async fn advance_time_reaches_only_units_that_advance_time(driver: DefaultDriver) {
+        let mut units = StateUnits::new();
+        let flagged = Arc::new(AtomicBool::new(false));
+        let unflagged = Arc::new(AtomicBool::new(false));
+        let a = units
+            .add("flagged")
+            .advances_time()
+            .spawn(&driver, |recv| run_unit(TimeUnit(flagged.clone()), recv))
+            .unwrap();
+        let _b = units
+            .add("unflagged")
+            .depends_on(a.handle())
+            .spawn(&driver, |recv| run_unit(TimeUnit(unflagged.clone()), recv))
+            .unwrap();
+
+        units.advance_time(Duration::from_secs(1)).await.unwrap();
+        assert!(flagged.load(Ordering::Relaxed));
+        assert!(!unflagged.load(Ordering::Relaxed));
+
+        // Both units are stopped again and can start.
+        units.start().await.unwrap();
+        units.stop().await;
     }
 
     #[async_test]
