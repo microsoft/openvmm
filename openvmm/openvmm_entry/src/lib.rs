@@ -236,7 +236,7 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
             IgvmPersonalityCli::Openhcl => BaseChipsetType::HclHost,
             IgvmPersonalityCli::Uefi => BaseChipsetType::HypervGen2Uefi,
             IgvmPersonalityCli::LinuxDirect
-                if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
+                if opt.isolation.is_some() =>
             {
                 BaseChipsetType::EnlightenedLinuxDirect
             }
