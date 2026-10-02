@@ -174,7 +174,7 @@ mod tests {
     /// Feature capabilities that WHP reported on the fleet's hosts (CPU
     /// fingerprints): the bare-metal Skylake-SP host and the 8370C
     /// runners (Ice Lake, nested).
-    const PROMETHEUS28: WhpFeatures = WhpFeatures {
+    const SKYLAKE_SP_WHP_HOST: WhpFeatures = WhpFeatures {
         banks: [0x1001_f9ff_e7f7_859f, 0x0000_000f_1086_0063],
         xsave: 0x3fff,
     };
@@ -186,9 +186,9 @@ mod tests {
     #[test]
     fn profiles_derive_and_shortfalls_are_unsupported() {
         let skylake = cpu_profile::pinned("intel.skylake-sp.v1").unwrap();
-        profile_features(skylake, PROMETHEUS28).unwrap();
+        profile_features(skylake, SKYLAKE_SP_WHP_HOST).unwrap();
         let emerald = cpu_profile::pinned("intel.emeraldrapids.v1").unwrap();
-        let error = profile_features(emerald, PROMETHEUS28).unwrap_err();
+        let error = profile_features(emerald, SKYLAKE_SP_WHP_HOST).unwrap_err();
         assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
         assert!(error.message.contains("avx512"), "{error}");
     }
