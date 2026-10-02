@@ -26,9 +26,9 @@ These are stored as three required files and one optional paired file:
 MicroVM manifests also record the NVX time ABI contract: the declared TSC and
 LAPIC rates, the capture anchor (VP 0's TSC paired with host UTC and host
 monotonic time), the capture host's identity, and the CPU profile with the
-effective CPUID that the guest observes. Every microVM snapshot is manifest
-version 6, and microVM restore accepts only version 6; recapture snapshots
-taken by earlier versions. See
+effective CPUID that the guest observes. Every snapshot, microVM or standard
+machine, is manifest version 6, and restore accepts only version 6
+(`E_SNAPSHOT_VERSION`); recapture snapshots taken by earlier versions. See
 [Time and CPU compatibility](#time-and-cpu-compatibility).
 
 ## Prerequisites
@@ -228,7 +228,7 @@ target. This is not a post-readiness hotplug API and cannot add VPs absent
 from the saved topology.
 
 ```admonish warning
-Versions 3 through 6 do not contain or validate embedded checksums for
+Snapshots do not contain or validate embedded checksums for
 `state.bin` or `memory.bin`. Restore still requires regular files, bounded
 manifest and state decoding, exact artifact lengths, and a compatible machine
 contract, but same-length payload changes are not detected. Paired
@@ -278,7 +278,7 @@ The declared rates never change across a restore; the restore packet reports
 the rate deviation so the guest can compensate. The downtime is host monotonic
 time when capture and restore run on the same host boot, and host UTC
 otherwise. Capture and restore reject an armed periodic or TSC-deadline LAPIC
-timer and a counting PIT channel 0 (`E_LAPIC_PERIODIC`,
+timer and a periodically counting PIT channel 0 (`E_LAPIC_PERIODIC`,
 `E_LAPIC_TSC_DEADLINE`, `E_PIT_ACTIVE`).
 
 A time ABI error leads its message with a stable code in brackets, for
