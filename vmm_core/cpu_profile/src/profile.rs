@@ -313,14 +313,6 @@ impl CpuProfile {
         Ok(this)
     }
 
-    /// Parses and validates a profile pinned in this crate. Unlike
-    /// [`Self::from_pretty_json`], it does not re-encode the profile to
-    /// check its form: the catalog's tests check every pinned file's form and
-    /// golden digest, and this runs on every OpenVMM start.
-    pub(crate) fn from_pinned_json(text: &str) -> Result<Self, ProfileError> {
-        Self::parse(text)
-    }
-
     fn parse(text: &str) -> Result<Self, ProfileError> {
         let schema_error = |schema: Option<&str>| {
             invalid(format!(
