@@ -260,11 +260,18 @@ pub(super) fn declare_rates(
 /// Compares the effective CPUID recomputed for this partition with the one
 /// the snapshot recorded: restore step 8 of the specification
 /// (`E_PROFILE_DIGEST` if the record does not verify, `E_CPU_SURFACE` if the
-/// two differ).
+/// two differ). A record that is this partition's own canonical encoding
+/// needs no decoding; any other is decoded to name its differences.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
+    let encoded = effective_cpuid.encode();
+    if encoded == record.effective_cpuid
+        && sha2::Sha256::digest(&encoded).as_slice() == record.effective_cpuid_sha256.as_slice()
+    {
+        return Ok(());
+    }
     let recorded =
         EffectiveCpuid::decode_verified(&record.effective_cpuid, &record.effective_cpuid_sha256)?;
     effective_cpuid.check_matches(&recorded)?;
@@ -741,6 +748,17 @@ mod tests {
         tampered.effective_cpuid_sha256[0] ^= 1;
         assert_eq!(
             code(check_recorded_cpuid(&effective, &tampered)),
+            "E_PROFILE_DIGEST"
+        );
+
+        // A digest that verifies over bytes that are not the canonical
+        // encoding.
+        let mut noncanonical = record.clone();
+        noncanonical.effective_cpuid.insert(1, b' ');
+        noncanonical.effective_cpuid_sha256 =
+            sha2::Sha256::digest(&noncanonical.effective_cpuid).to_vec();
+        assert_eq!(
+            code(check_recorded_cpuid(&effective, &noncanonical)),
             "E_PROFILE_DIGEST"
         );
     }
