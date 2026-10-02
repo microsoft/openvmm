@@ -461,7 +461,7 @@ async fn cross_page_memory_fault() {
                 ));
                 assert!(event.event_pending());
                 assert_eq!(event.event_type(), hvdef::HV_X64_PENDING_EVENT_EXCEPTION);
-                assert_eq!(event.vector(), x86defs::Exception::PAGE_FAULT.0.into());
+                assert_eq!(event.vector(), u16::from(x86defs::Exception::PAGE_FAULT.0));
                 assert!(event.deliver_error_code());
                 assert_eq!(
                     event.error_code(),
@@ -790,7 +790,7 @@ async fn cmpxchg_mismatch_requires_write_access() {
             let event = hvdef::HvX64PendingExceptionEvent::from(u128::from(
                 support.injected_event().unwrap().reg_0,
             ));
-            assert_eq!(event.vector(), x86defs::Exception::PAGE_FAULT.0.into());
+            assert_eq!(event.vector(), u16::from(x86defs::Exception::PAGE_FAULT.0));
             assert_eq!(
                 event.error_code(),
                 u32::from(
@@ -855,7 +855,7 @@ async fn cmov_false_still_faults_on_source() {
     let event = hvdef::HvX64PendingExceptionEvent::from(u128::from(
         support.injected_event().unwrap().reg_0,
     ));
-    assert_eq!(event.vector(), x86defs::Exception::PAGE_FAULT.0.into());
+    assert_eq!(event.vector(), u16::from(x86defs::Exception::PAGE_FAULT.0));
     assert_eq!(event.error_code(), 0);
     assert_eq!(event.exception_parameter(), 0x400);
     assert_eq!(support.state.gps, gps);
@@ -978,9 +978,9 @@ async fn canonical_address_faults_and_la57() {
                         assert_eq!(
                             event.vector(),
                             if stack {
-                                x86defs::Exception::STACK_SEGMENT_FAULT.0.into()
+                                u16::from(x86defs::Exception::STACK_SEGMENT_FAULT.0)
                             } else {
-                                x86defs::Exception::GENERAL_PROTECTION_FAULT.0.into()
+                                u16::from(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
                             }
                         );
                         assert!(event.deliver_error_code());
@@ -1078,9 +1078,9 @@ async fn long_mode_segment_overrides() {
                         assert_eq!(
                             event.vector(),
                             if stack && !fs_gs {
-                                x86defs::Exception::STACK_SEGMENT_FAULT.0.into()
+                                u16::from(x86defs::Exception::STACK_SEGMENT_FAULT.0)
                             } else {
-                                x86defs::Exception::GENERAL_PROTECTION_FAULT.0.into()
+                                u16::from(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
                             },
                             "base {base:?}, prefix {prefix:?}",
                         );
@@ -1149,9 +1149,9 @@ async fn canonical_address_range_checks_the_last_byte() {
             assert_eq!(
                 event.vector(),
                 if stack {
-                    x86defs::Exception::STACK_SEGMENT_FAULT.0.into()
+                    u16::from(x86defs::Exception::STACK_SEGMENT_FAULT.0)
                 } else {
-                    x86defs::Exception::GENERAL_PROTECTION_FAULT.0.into()
+                    u16::from(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
                 }
             );
             assert!(event.deliver_error_code());
@@ -1275,7 +1275,7 @@ async fn translate_gva_page_faults() {
 
         assert_eq!(
             injected_event.vector(),
-            x86defs::Exception::PAGE_FAULT.0.into(),
+            u16::from(x86defs::Exception::PAGE_FAULT.0),
             "expected page fault vector type for {:?}",
             c
         );
