@@ -80,6 +80,10 @@ impl ChangeDeviceState for Piix4CmosRtc {
     async fn advance_time(&mut self, duration: std::time::Duration) -> anyhow::Result<()> {
         self.inner.advance_time(duration).await
     }
+
+    fn advances_time(&self) -> bool {
+        self.inner.advances_time()
+    }
 }
 
 impl ChipsetDevice for Piix4CmosRtc {

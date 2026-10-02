@@ -60,6 +60,9 @@ fn restore_preserves_guest_epoch_and_advances_downtime() {
         clock.get_time() - captured_time,
         Duration::from_secs(3).into()
     );
+    // The RTC keeps its own guest-visible time, so the state unit that wraps
+    // it must receive the advance.
+    assert!(rtc.advances_time());
 }
 
 #[test]
