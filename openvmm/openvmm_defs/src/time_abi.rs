@@ -89,6 +89,12 @@ impl SnapshotTimeContract {
 }
 
 /// The manifest's CPU profile record.
+///
+/// Capture writes it from constants and a cheap binary encoding, and restore
+/// checks it by comparison, so neither encodes a document nor computes a
+/// digest: `sha256` and `profile` are the pinned profile's precomputed digest
+/// and canonical encoding, and `effective_cpuid` is
+/// [`encode_effective_cpuid`] of the partition's effective CPUID.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
 pub struct SnapshotCpuProfile {
@@ -101,15 +107,97 @@ pub struct SnapshotCpuProfile {
     /// The canonical profile encoding.
     #[mesh(3)]
     pub profile: Vec<u8>,
-    /// The canonical encoding of the effective guest CPUID.
+    /// The effective guest CPUID, as [`encode_effective_cpuid`] writes it.
     #[mesh(4)]
     pub effective_cpuid: Vec<u8>,
-    /// The 32-byte digest of `effective_cpuid`.
-    #[mesh(5)]
-    pub effective_cpuid_sha256: Vec<u8>,
     /// CPUID.1:EAX of the capture host, for diagnostics.
     #[mesh(6)]
     pub capture_cpu_signature: u32,
+}
+
+/// The size of one entry of [`SnapshotCpuProfile::effective_cpuid`].
+pub const EFFECTIVE_CPUID_ENTRY_BYTES: usize = 44;
+
+/// The most entries [`SnapshotCpuProfile::effective_cpuid`] may hold.
+pub const MAX_EFFECTIVE_CPUID_ENTRIES: usize = 1024;
+
+/// One entry of the effective CPUID record: a CPUID result and the mask of
+/// the bits it defines, for one leaf and subleaf, or for every subleaf of the
+/// leaf when `index` is `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectiveCpuidEntry {
+    /// The leaf.
+    pub function: u32,
+    /// The subleaf, or `None` for every subleaf.
+    pub index: Option<u32>,
+    /// `EAX`, `EBX`, `ECX`, and `EDX`.
+    pub result: [u32; 4],
+    /// The bits of each register that `result` defines.
+    pub mask: [u32; 4],
+}
+
+/// Encodes the effective CPUID record: for each entry, in order, eleven
+/// little-endian `u32` values, namely the leaf, 1 and the subleaf (or 0 and 0
+/// for every subleaf), the four registers, and their four masks.
+pub fn encode_effective_cpuid(entries: impl IntoIterator<Item = EffectiveCpuidEntry>) -> Vec<u8> {
+    let entries = entries.into_iter();
+    let mut out = Vec::with_capacity(entries.size_hint().0 * EFFECTIVE_CPUID_ENTRY_BYTES);
+    for entry in entries {
+        let (has_index, index) = match entry.index {
+            Some(index) => (1, index),
+            None => (0, 0),
+        };
+        for value in [entry.function, has_index, index]
+            .into_iter()
+            .chain(entry.result)
+            .chain(entry.mask)
+        {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Decodes an effective CPUID record that [`encode_effective_cpuid`] wrote,
+/// with between 1 and [`MAX_EFFECTIVE_CPUID_ENTRIES`] entries, or describes
+/// why it is malformed.
+pub fn decode_effective_cpuid(bytes: &[u8]) -> Result<Vec<EffectiveCpuidEntry>, String> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(EFFECTIVE_CPUID_ENTRY_BYTES) {
+        return Err(format!(
+            "{} bytes is not a whole number of {EFFECTIVE_CPUID_ENTRY_BYTES}-byte entries",
+            bytes.len()
+        ));
+    }
+    let count = bytes.len() / EFFECTIVE_CPUID_ENTRY_BYTES;
+    if count > MAX_EFFECTIVE_CPUID_ENTRIES {
+        return Err(format!(
+            "{count} entries is more than {MAX_EFFECTIVE_CPUID_ENTRIES}"
+        ));
+    }
+    bytes
+        .as_chunks::<EFFECTIVE_CPUID_ENTRY_BYTES>()
+        .0
+        .iter()
+        .map(|entry| {
+            let word = |i: usize| u32::from_le_bytes(entry[4 * i..4 * i + 4].try_into().unwrap());
+            let index = match (word(1), word(2)) {
+                (1, index) => Some(index),
+                (0, 0) => None,
+                _ => {
+                    return Err(format!(
+                        "the entry for leaf {:#x} has an invalid subleaf",
+                        word(0)
+                    ));
+                }
+            };
+            Ok(EffectiveCpuidEntry {
+                function: word(0),
+                index,
+                result: [word(3), word(4), word(5), word(6)],
+                mask: [word(7), word(8), word(9), word(10)],
+            })
+        })
+        .collect()
 }
 
 /// The time ABI records the worker returns at capture.
@@ -149,4 +237,61 @@ pub struct TimeAbiParameters {
     pub generation: u32,
     /// The active test hooks.
     pub hooks: TimeAbiTestHooks,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_cpuid_records_round_trip() {
+        let entries = [
+            EffectiveCpuidEntry {
+                function: 0,
+                index: None,
+                result: [0x16, 1, 2, 3],
+                mask: [!0; 4],
+            },
+            EffectiveCpuidEntry {
+                function: 0xb,
+                index: Some(2),
+                result: [0, 0, 2, 7],
+                mask: [!0, !0, !0, 0],
+            },
+        ];
+        let bytes = encode_effective_cpuid(entries);
+        assert_eq!(bytes.len(), 2 * EFFECTIVE_CPUID_ENTRY_BYTES);
+        assert_eq!(&bytes[44..56], &[0xb, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(decode_effective_cpuid(&bytes).unwrap(), entries);
+    }
+
+    #[test]
+    fn malformed_effective_cpuid_records_fail() {
+        let entry = EffectiveCpuidEntry {
+            function: 1,
+            index: None,
+            result: [0; 4],
+            mask: [0; 4],
+        };
+        let bytes = encode_effective_cpuid([entry]);
+        assert!(decode_effective_cpuid(&[]).is_err());
+        assert!(decode_effective_cpuid(&bytes[1..]).is_err());
+
+        // A subleaf-independent entry must record subleaf 0, and the flag
+        // is 0 or 1.
+        let mut stray_index = bytes.clone();
+        stray_index[8] = 1;
+        assert!(decode_effective_cpuid(&stray_index).is_err());
+        let mut bad_flag = bytes.clone();
+        bad_flag[4] = 2;
+        assert!(decode_effective_cpuid(&bad_flag).is_err());
+
+        let full = encode_effective_cpuid(vec![entry; MAX_EFFECTIVE_CPUID_ENTRIES]);
+        assert_eq!(
+            decode_effective_cpuid(&full).unwrap().len(),
+            MAX_EFFECTIVE_CPUID_ENTRIES
+        );
+        let over = encode_effective_cpuid(vec![entry; MAX_EFFECTIVE_CPUID_ENTRIES + 1]);
+        assert!(decode_effective_cpuid(&over).is_err());
+    }
 }

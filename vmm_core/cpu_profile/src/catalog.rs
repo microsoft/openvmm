@@ -5,10 +5,11 @@
 //! profile checks of cold boot and restore.
 
 use crate::canonical;
-use crate::derive::KNOWN_GENERATIONS;
 use crate::derive::KnownGeneration;
 use crate::error::ProfileError;
 use crate::error::ProfileErrorCode;
+use crate::pinned::PinnedRecord;
+use crate::pinned_data::PINNED;
 use crate::profile::CpuProfile;
 use crate::signature::HostCpuSignature;
 use crate::signature::decode_signature;
@@ -18,56 +19,15 @@ use std::sync::OnceLock;
 /// generation.
 pub const AUTO: &str = "auto";
 
-/// A pinned profile: its ID, its generation, its golden digest, and its
-/// pretty canonical JSON.
-struct Pinned {
-    id: &'static str,
-    /// The generation that the profile serves, so that selection parses only
-    /// the profile it selects.
-    generation: &'static KnownGeneration,
-    digest: &'static str,
-    json: &'static str,
-}
+/// Each pinned profile, built from its static data on first use, so that a
+/// cold boot or a restore builds only its own.
+static PROFILES: [OnceLock<CpuProfile>; PINNED.len()] = [const { OnceLock::new() }; PINNED.len()];
 
-/// The pinned profiles. Released profiles are immutable: a change is a new
-/// revision with a new ID. The tests check every file's ID, generation,
-/// pretty canonical form, and golden digest, so an OpenVMM start checks none
-/// of them.
-const PINNED: [Pinned; 3] = [
-    Pinned {
-        id: "intel.skylake-sp.v1",
-        generation: &KNOWN_GENERATIONS[0],
-        digest: "sha256:b36ef861ffec67350a28faff8c446d5a19f78d6d58862378fa9d2282dad87492",
-        json: include_str!("../profiles/intel.skylake-sp.v1.json"),
-    },
-    Pinned {
-        id: "intel.icelake-sp.v1",
-        generation: &KNOWN_GENERATIONS[1],
-        digest: "sha256:a35f3bb9bc30337b8b76af4939d5914f878ac7dc2a2d6d9d6bf4d8278b91f301",
-        json: include_str!("../profiles/intel.icelake-sp.v1.json"),
-    },
-    Pinned {
-        id: "intel.emeraldrapids.v1",
-        generation: &KNOWN_GENERATIONS[2],
-        digest: "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
-        json: include_str!("../profiles/intel.emeraldrapids.v1.json"),
-    },
-];
-
-/// Each pinned profile, parsed on first use, so that a cold boot or a
-/// restore parses only its own.
-static PARSED: [OnceLock<CpuProfile>; PINNED.len()] = [const { OnceLock::new() }; PINNED.len()];
-
-/// Returns the pinned profile at `index` in [`PINNED`], parsing and
-/// validating it on first use.
+/// Returns the pinned profile at `index` in [`PINNED`], building it from its
+/// constants on first use: no parsing, no validation, and no hashing, which
+/// the tests do for every pinned profile instead.
 fn load(index: usize) -> &'static CpuProfile {
-    PARSED[index].get_or_init(|| {
-        let pinned = &PINNED[index];
-        let profile = CpuProfile::from_pinned_json(pinned.json)
-            .unwrap_or_else(|error| panic!("invalid pinned CPU profile {}: {error}", pinned.id));
-        assert_eq!(profile.id(), pinned.id, "pinned CPU profile ID mismatch");
-        profile
-    })
+    PROFILES[index].get_or_init(|| PINNED[index].to_profile())
 }
 
 /// Returns the index in [`PINNED`] of the profile `id`.
@@ -75,8 +35,12 @@ fn position(id: &str) -> Option<usize> {
     PINNED.iter().position(|pinned| pinned.id == id)
 }
 
-/// Returns every pinned profile, parsing each on first use. Selecting by ID
-/// with [`pinned`] or [`pinned_for_restore`] parses only that profile.
+/// Returns every pinned profile. Selecting by ID with [`pinned`] or
+/// [`pinned_for_restore`] builds only that profile.
+///
+/// Offline only: this builds every profile, for tools and tests. A cold boot
+/// or restore selects its one profile with [`select`] or
+/// [`pinned_for_restore`].
 pub fn pinned_profiles() -> &'static [CpuProfile] {
     static ALL: OnceLock<Vec<CpuProfile>> = OnceLock::new();
     ALL.get_or_init(|| (0..PINNED.len()).map(|index| load(index).clone()).collect())
@@ -85,6 +49,13 @@ pub fn pinned_profiles() -> &'static [CpuProfile] {
 /// Returns the pinned profile `id`.
 pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
     position(id).map(load)
+}
+
+/// Returns the precomputed record of the pinned profile `id`: its canonical
+/// encoding and digest, constants that a snapshot's CPU profile record
+/// copies at capture and that the restore preflight compares byte for byte.
+pub fn pinned_record(id: &str) -> Option<PinnedRecord> {
+    position(id).map(|index| PINNED[index].record())
 }
 
 /// Returns the name of the generation of the host CPU, if a pinned profile
@@ -96,7 +67,7 @@ pub fn generation_of(host: &HostCpuSignature) -> Option<&'static str> {
 }
 
 /// Selects the profile of the host CPU's generation: its latest pinned
-/// revision. Only the profiles whose generation covers the host are parsed.
+/// revision. Only the profiles whose generation covers the host are built.
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN` when no pinned profile serves the
 /// host, or when profiles of more than one generation do; there is no host
@@ -197,67 +168,27 @@ pub fn check_generation(profile: &CpuProfile, host: &HostCpuSignature) -> Result
     }
 }
 
-/// Verifies the CPU profile record of a snapshot: the embedded canonical
-/// profile matches its recorded SHA-256 and recorded ID, and decodes
-/// (`E_PROFILE_DIGEST`).
-pub fn verify_profile_record(
-    id: &str,
-    sha256: &[u8],
-    embedded: &[u8],
-) -> Result<CpuProfile, ProfileError> {
-    if canonical::sha256(embedded).as_slice() != sha256 {
-        return Err(ProfileError::new(
-            ProfileErrorCode::ProfileDigest,
-            format!("the embedded CPU profile {id} does not match its recorded digest"),
-        ));
-    }
-    let profile = CpuProfile::decode(embedded)?;
-    if profile.id() != id {
-        return Err(ProfileError::new(
-            ProfileErrorCode::ProfileDigest,
-            format!(
-                "the embedded CPU profile is {}, but the record names {id}",
-                profile.id()
-            ),
-        ));
-    }
-    Ok(profile)
-}
-
 /// Returns the pinned profile that a snapshot recorded by ID and SHA-256.
 ///
 /// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin the ID, and
 /// with `E_PROFILE_DIGEST` when its pinned profile has another digest. The
-/// pinned profile's digest is its golden digest, which the catalog's tests
-/// check, so a restore encodes nothing here.
+/// pinned profile's digest is a constant, which the catalog's tests check, so
+/// a restore encodes and hashes nothing here. The restore preflight also
+/// compares the recorded document with [`pinned_record`]'s encoding, and
+/// checks the destination host with [`check_generation`].
 pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile, ProfileError> {
     let index = position(id).ok_or_else(|| unknown(id))?;
-    let golden = PINNED[index].digest;
-    if !<&[u8; 32]>::try_from(sha256).is_ok_and(|sha256| canonical::format_digest(sha256) == golden)
-    {
+    let golden = &PINNED[index].digest;
+    if sha256 != golden {
         return Err(ProfileError::new(
             ProfileErrorCode::ProfileDigest,
             format!(
-                "the snapshot's CPU profile {id} differs from the pinned profile of the same ID ({golden})"
+                "the snapshot's CPU profile {id} differs from the pinned profile of the same ID ({})",
+                canonical::format_digest(golden)
             ),
         ));
     }
     Ok(load(index))
-}
-
-/// Runs the profile checks of a restore: [`verify_profile_record`],
-/// [`pinned_for_restore`], and [`check_generation`] for the destination
-/// host.
-pub fn restore_profile(
-    id: &str,
-    sha256: &[u8],
-    embedded: &[u8],
-    host: &HostCpuSignature,
-) -> Result<&'static CpuProfile, ProfileError> {
-    verify_profile_record(id, sha256, embedded)?;
-    let profile = pinned_for_restore(id, sha256)?;
-    check_generation(profile, host)?;
-    Ok(profile)
 }
 
 fn unknown(id: &str) -> ProfileError {
@@ -306,47 +237,70 @@ mod tests {
         result.unwrap_err().code
     }
 
+    /// The pinned JSON files, the source of the static data, and their golden
+    /// digests. Released profiles are immutable: changing a golden digest is
+    /// a deliberate act, here.
+    const FILES: [(&str, &str, &str); 3] = [
+        (
+            "intel.skylake-sp.v1",
+            include_str!("../profiles/intel.skylake-sp.v1.json"),
+            "sha256:b36ef861ffec67350a28faff8c446d5a19f78d6d58862378fa9d2282dad87492",
+        ),
+        (
+            "intel.icelake-sp.v1",
+            include_str!("../profiles/intel.icelake-sp.v1.json"),
+            "sha256:a35f3bb9bc30337b8b76af4939d5914f878ac7dc2a2d6d9d6bf4d8278b91f301",
+        ),
+        (
+            "intel.emeraldrapids.v1",
+            include_str!("../profiles/intel.emeraldrapids.v1.json"),
+            "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
+        ),
+    ];
+
+    /// The checks that an OpenVMM start skips: every pinned file is a valid
+    /// profile in pretty canonical form with its golden digest, and the static
+    /// data generated from it holds the same profile, canonical encoding,
+    /// digest, and generation.
     #[test]
-    fn pins_the_three_generations_with_their_golden_digests() {
-        let ids = PINNED.iter().map(|pinned| pinned.id).collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            [
-                "intel.skylake-sp.v1",
-                "intel.icelake-sp.v1",
-                "intel.emeraldrapids.v1",
-            ]
-        );
-        for (index, pinned) in PINNED.iter().enumerate() {
-            // The checks that an OpenVMM start skips: the file is in pretty
-            // canonical form, under its ID and generation, with its golden
-            // digest.
-            let profile = CpuProfile::from_pretty_json(pinned.json).unwrap();
-            assert_eq!(profile.id(), pinned.id);
-            assert_eq!(profile.vendor(), pinned.generation.vendor);
-            assert_eq!(profile.generation().name, pinned.generation.name);
+    fn the_static_data_is_the_pinned_files() {
+        assert_eq!(PINNED.len(), FILES.len());
+        for (index, (pinned, (id, json, golden))) in PINNED.iter().zip(FILES).enumerate() {
+            let profile = CpuProfile::from_pretty_json(json).unwrap();
+            assert_eq!(profile.id(), id);
+            assert_eq!(profile.digest_string(), golden, "{id}");
+            assert_eq!(pinned.id, id);
+            assert_eq!(&pinned.to_profile(), &profile, "{id}");
+            assert_eq!(load(index), &profile, "{id}");
+            assert_eq!(pinned.encoding.as_bytes(), profile.encode(), "{id}");
+            assert_eq!(canonical::format_digest(&pinned.digest), golden, "{id}");
             assert_eq!(
-                profile
-                    .generation()
-                    .cpus
-                    .iter()
-                    .map(|cpu| (cpu.family, cpu.model, cpu.steppings))
-                    .collect::<Vec<_>>(),
-                pinned.generation.cpus
+                canonical::sha256(pinned.encoding.as_bytes()),
+                pinned.digest,
+                "{id}"
             );
-            assert_eq!(profile.digest_string(), pinned.digest, "{}", pinned.id);
-            assert_eq!(load(index), &profile);
+            assert_eq!(profile.vendor(), pinned.generation.vendor);
+            assert_eq!(profile.generation(), &pinned.generation.generation());
+            assert_eq!(
+                pinned_record(id),
+                Some(PinnedRecord {
+                    id: pinned.id,
+                    encoding: pinned.encoding.as_bytes(),
+                    digest: profile.digest(),
+                })
+            );
             assert!(std::ptr::eq(
-                pinned_for_restore(pinned.id, &profile.digest()).unwrap(),
+                pinned_for_restore(id, &profile.digest()).unwrap(),
                 load(index)
             ));
         }
+        assert_eq!(pinned_record("intel.icelake-sp.v2"), None);
         assert_eq!(
             pinned_profiles()
                 .iter()
                 .map(CpuProfile::id)
                 .collect::<Vec<_>>(),
-            ids
+            FILES.map(|(id, ..)| id)
         );
     }
 
@@ -499,48 +453,40 @@ mod tests {
     }
 
     #[test]
-    fn restore_checks_the_record_the_pinned_profile_and_the_host() {
+    fn restore_checks_the_pinned_record_and_the_host() {
         let profile = profile("intel.icelake-sp.v1");
-        let bytes = profile.encode();
         let digest = profile.digest();
         let host = intel(ICELAKE);
+        assert_eq!(pinned_for_restore(profile.id(), &digest).unwrap(), profile);
+        check_generation(profile, &host).unwrap();
+        // The preflight compares the recorded document with the pinned
+        // encoding, which is the profile's.
         assert_eq!(
-            restore_profile(profile.id(), &digest, &bytes, &host).unwrap(),
-            profile
+            pinned_record(profile.id()).unwrap().encoding,
+            profile.encode().as_slice()
         );
 
-        // A corrupted record.
-        let mut corrupted = bytes.clone();
+        // A corrupted, short, or another profile's digest.
+        let mut corrupted = digest;
         corrupted[10] ^= 1;
         assert_eq!(
-            code(restore_profile(profile.id(), &digest, &corrupted, &host)),
+            code(pinned_for_restore(profile.id(), &corrupted)),
             ProfileErrorCode::ProfileDigest
         );
         assert_eq!(
-            code(restore_profile(profile.id(), &digest[..31], &bytes, &host)),
+            code(pinned_for_restore(profile.id(), &digest[..31])),
             ProfileErrorCode::ProfileDigest
         );
         assert_eq!(
-            code(restore_profile(
-                "intel.skylake-sp.v1",
-                &digest,
-                &bytes,
-                &host
-            )),
+            code(pinned_for_restore("intel.skylake-sp.v1", &digest)),
             ProfileErrorCode::ProfileDigest
         );
 
         // A profile this OpenVMM does not pin.
         let mut unknown = profile.clone();
         unknown.id = "intel.icelake-sp.v9".to_owned();
-        let unknown_bytes = unknown.encode();
         assert_eq!(
-            code(restore_profile(
-                unknown.id(),
-                &unknown.digest(),
-                &unknown_bytes,
-                &host
-            )),
+            code(pinned_for_restore(unknown.id(), &unknown.digest())),
             ProfileErrorCode::ProfileUnknown
         );
 
@@ -548,23 +494,13 @@ mod tests {
         let mut changed = profile.clone();
         changed.description.push('!');
         assert_eq!(
-            code(restore_profile(
-                changed.id(),
-                &changed.digest(),
-                &changed.encode(),
-                &host
-            )),
+            code(pinned_for_restore(changed.id(), &changed.digest())),
             ProfileErrorCode::ProfileDigest
         );
 
         // Another generation on the destination.
         assert_eq!(
-            code(restore_profile(
-                profile.id(),
-                &digest,
-                &bytes,
-                &intel(EMERALDRAPIDS)
-            )),
+            code(check_generation(profile, &intel(EMERALDRAPIDS))),
             ProfileErrorCode::CpuGeneration
         );
     }

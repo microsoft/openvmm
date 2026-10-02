@@ -50,16 +50,18 @@ pub struct HostCpuSurface {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CpuidPresentation {
     /// A table backend, KVM: `KVM_SET_CPUID2` installs the effective CPUID as
-    /// the guest's whole CPUID table, and every entry it does not list reads
-    /// zero. The surface lists what the backend can support, not what a
-    /// guest reads, so there is nothing to check.
+    /// the guest's whole CPUID table, and KVM answers every entry it does not
+    /// list from the table itself: zero, or the architecture's out-of-range
+    /// and topology results, never host data. The surface lists what the
+    /// backend can support, not what a guest reads, so there is nothing to
+    /// check.
     Table,
     /// A pass-through backend, MSHV or WHP, which programs the effective
-    /// CPUID over the hypervisor's own: every entry the effective CPUID does
-    /// not list reads the hypervisor's value. The surface is what the
-    /// hypervisor presents to a guest, as a probe partition enumerates it for
-    /// `--cpu-fingerprint`, so every non-zero entry outside the profile's
-    /// tables fails the check.
+    /// CPUID over the hypervisor's own guest view: every entry the effective
+    /// CPUID does not list reads that view unless the backend registers a
+    /// result there. The surface is what the hypervisor presents to a guest,
+    /// as a probe partition enumerates it for `--cpu-fingerprint`, so every
+    /// non-zero entry outside the profile's tables fails the check.
     PassThroughGuestView,
     /// A pass-through backend whose surface comes from the host's own CPUID,
     /// as the cheap `supported_cpu_surface()` of MSHV and WHP builds it.
