@@ -26,6 +26,8 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmm_core::acpi_builder::GenericInitiator;
+use vmm_core::acpi_builder::SlitInfo;
 use vmotherboard::options::VmChipsetCapabilities;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -77,9 +79,59 @@ pub enum Error {
     Finalize(#[source] vtl0_config::Error),
     #[error("invalid acpi table: too short")]
     InvalidAcpiTableLength,
+    #[error("duplicate ACPI override {0:?}")]
+    DuplicateAcpiTable([u8; 4]),
+    #[error("present non-isolated IGVM SLIT has no original table bytes")]
+    MissingHostIgvmSlit,
+    #[error("invalid SLIT for generated ACPI topology")]
+    Slit(#[from] SlitValidationError),
     #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
+}
+
+/// An error validating SLIT generation inputs.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SlitValidationError {
+    /// The locality count is zero or cannot form an ACPI table.
+    #[error("invalid SLIT locality count {0}")]
+    Localities(usize),
+    /// The generated table exceeds the caller's size limit.
+    #[error("SLIT length {actual} exceeds limit {limit}")]
+    TooLarge {
+        /// The required table length.
+        actual: usize,
+        /// The permitted table length.
+        limit: usize,
+    },
+    /// An explicit distance references an absent locality.
+    #[error("SLIT distance index {src}->{dst} is outside {num_nodes} localities")]
+    Index {
+        /// The source locality.
+        src: u32,
+        /// The destination locality.
+        dst: u32,
+        /// The configured locality count.
+        num_nodes: usize,
+    },
+    /// An explicit distance uses a reserved value or a non-10 diagonal.
+    #[error("invalid SLIT distance {src}->{dst}: {distance}")]
+    Distance {
+        /// The source locality.
+        src: u32,
+        /// The destination locality.
+        dst: u32,
+        /// The invalid distance.
+        distance: u8,
+    },
+    /// A locally emitted SRAT domain is not covered by the SLIT.
+    #[error("SRAT domain {domain} is outside {num_nodes} SLIT localities")]
+    SratDomain {
+        /// The uncovered SRAT domain.
+        domain: u32,
+        /// The configured locality count.
+        num_nodes: usize,
+    },
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -183,6 +235,9 @@ pub fn load(
 
             let command_line = CString::new(command_line).expect("constructed from valid CStrings");
 
+            let slit_info = runtime_params
+                .slit()
+                .map(|slit| SlitInfo::from(&slit.parsed));
             load_linux(LoadLinuxParams {
                 gm,
                 mem_layout,
@@ -194,6 +249,7 @@ pub fn load(
                 kernel_entrypoint: *kernel_entrypoint,
                 initrd: *initrd,
                 command_line,
+                slit_info: slit_info.as_ref(),
             })?
         }
         LoadKind::Pcat => {
@@ -247,6 +303,73 @@ struct LoadLinuxParams<'a> {
     initrd: Option<(u64, u64)>,
     /// The command line to pass to the kernel.
     command_line: CString,
+    slit_info: Option<&'a SlitInfo>,
+}
+
+/// Checks the locality count, table size, distance indices, and distances before
+/// allocating the generated SLIT matrix.
+fn validate_slit_info(info: &SlitInfo, max_table_size: usize) -> Result<(), SlitValidationError> {
+    let n = info.num_nodes;
+    let invalid_count = || SlitValidationError::Localities(n);
+    if n == 0 || u32::try_from(n).is_err() {
+        return Err(invalid_count());
+    }
+
+    let table_size = n
+        .checked_mul(n)
+        .and_then(|matrix_size| {
+            matrix_size.checked_add(
+                size_of::<acpi_spec::Header>() + size_of::<acpi_spec::slit::SlitHeader>(),
+            )
+        })
+        .ok_or_else(invalid_count)?;
+    if u32::try_from(table_size).is_err() {
+        return Err(invalid_count());
+    }
+    if table_size > max_table_size {
+        return Err(SlitValidationError::TooLarge {
+            actual: table_size,
+            limit: max_table_size,
+        });
+    }
+
+    for &(src, dst, distance) in &info.distances {
+        if src as usize >= n || dst as usize >= n {
+            return Err(SlitValidationError::Index {
+                src,
+                dst,
+                num_nodes: n,
+            });
+        }
+        if distance < 10 || src == dst && distance != 10 {
+            return Err(SlitValidationError::Distance { src, dst, distance });
+        }
+    }
+    Ok(())
+}
+
+/// Checks that processor, memory, and generic-initiator domain IDs fit within
+/// the SLIT locality count.
+fn validate_slit_srat_domains(
+    info: &SlitInfo,
+    processor_topology: &ProcessorTopology,
+    mem_layout: &MemoryLayout,
+    generic_initiators: &[GenericInitiator],
+) -> Result<(), SlitValidationError> {
+    let domains = processor_topology
+        .vps()
+        .map(|vp| vp.vnode)
+        .chain(mem_layout.ram().iter().map(|range| range.vnode))
+        .chain(generic_initiators.iter().map(|gi| gi.vnode));
+    for domain in domains {
+        if domain as usize >= info.num_nodes {
+            return Err(SlitValidationError::SratDomain {
+                domain,
+                num_nodes: info.num_nodes,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Load Linux into VTL0.
@@ -263,14 +386,20 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         kernel_entrypoint,
         initrd,
         command_line,
+        slit_info,
     } = params;
+
+    if let Some(info) = slit_info {
+        validate_slit_info(info, vtl2_config::SLIT_MAX_SIZE)?;
+        validate_slit_srat_domains(info, processor_topology, mem_layout, &[])?;
+    }
 
     let acpi_builder = AcpiTablesBuilder {
         processor_topology,
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        slit_info: None,
+        slit_info,
         generic_initiators: &[],
         arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
             with_ioapic: true, // openhcl always runs with ioapic
@@ -464,9 +593,10 @@ pub fn write_uefi_config(
         entropy
     }));
 
-    // We will generate these tables unless trusted tables are passed via DevicePlatformSettings
     let mut build_madt = true;
     let mut build_srat = true;
+    let mut get_provided_slit = false;
+    let mut get_provided_pptt = false;
 
     #[cfg(not(guest_arch = "x86_64"))]
     let _ = chipset_capabilities;
@@ -475,14 +605,35 @@ pub fn write_uefi_config(
     // We can only trust these tables from the host if this is not an isolated VM
     if !isolated {
         for table in &platform_config.acpi_tables {
-            let header = acpi_spec::Header::ref_from_prefix(table)
-                .map_err(|_| Error::InvalidAcpiTableLength)? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                .0;
+            let (header, _) = acpi_spec::Header::read_from_prefix(table)
+                .map_err(|_| Error::InvalidAcpiTableLength)?;
             match &header.signature {
-                b"APIC" => build_madt = false,
-                b"SRAT" => build_srat = false,
+                b"APIC" => {
+                    if !build_madt {
+                        return Err(Error::DuplicateAcpiTable(header.signature));
+                    }
+                    build_madt = false;
+                }
+                b"SRAT" => {
+                    if !build_srat {
+                        return Err(Error::DuplicateAcpiTable(header.signature));
+                    }
+                    build_srat = false;
+                }
+                b"SLIT" => {
+                    if get_provided_slit {
+                        return Err(Error::DuplicateAcpiTable(header.signature));
+                    }
+                    get_provided_slit = true;
+                }
+                b"PPTT" => {
+                    if get_provided_pptt {
+                        return Err(Error::DuplicateAcpiTable(header.signature));
+                    }
+                    get_provided_pptt = true;
+                }
                 _ => {}
-            };
+            }
             cfg.add_raw(config::BlobStructureType::AcpiTable, table);
         }
     }
@@ -490,12 +641,16 @@ pub fn write_uefi_config(
     // - Data that comes from the IGVM parameters
 
     if build_madt || build_srat {
+        let slit_info = igvm_parameters
+            .slit()
+            .map(|slit| SlitInfo::from(&slit.parsed));
+
         let acpi_builder = AcpiTablesBuilder {
             processor_topology,
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            slit_info: None,
+            slit_info: slit_info.as_ref(),
             generic_initiators: &[],
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
@@ -529,6 +684,27 @@ pub fn write_uefi_config(
                 config::BlobStructureType::AcpiTable,
                 &acpi_builder.build_srat(),
             );
+        }
+        if !get_provided_slit {
+            if let Some(info) = &slit_info {
+                validate_slit_info(info, vtl2_config::SLIT_MAX_SIZE)?;
+                if build_srat {
+                    validate_slit_srat_domains(info, processor_topology, mem_layout, &[])?;
+                }
+            }
+            if let Some(slit) = acpi_builder.build_slit() {
+                cfg.add_raw(config::BlobStructureType::AcpiTable, &slit);
+            }
+        }
+    } else if !isolated && !get_provided_slit {
+        // The host supplied both MADT and SRAT. Keep the original IGVM SLIT
+        // until the host also supplies a SLIT override.
+        if let Some(slit) = igvm_parameters.slit() {
+            let bytes = slit
+                .host_igvm_parameter
+                .as_deref()
+                .ok_or(Error::MissingHostIgvmSlit)?;
+            cfg.add_raw(config::BlobStructureType::AcpiTable, bytes);
         }
     }
 
@@ -568,13 +744,11 @@ pub fn write_uefi_config(
             },
         });
 
-        if let Some(slit) = igvm_parameters.slit() {
-            cfg.add_raw(config::BlobStructureType::AcpiTable, slit);
-        }
-
-        // TODO: reconstruct this instead of getting it from the host.
-        if let Some(pptt) = igvm_parameters.pptt() {
-            cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
+        // TODO: Validate and reconstruct PPTT before enabling it for CCA guests.
+        if !isolated && !get_provided_pptt {
+            if let Some(pptt) = igvm_parameters.pptt() {
+                cfg.add_raw(config::BlobStructureType::AcpiTable, pptt);
+            }
         }
     }
 
@@ -798,5 +972,481 @@ fn determine_memory_protection_mode(general: &General, isolated: bool) -> config
                 config::MemoryProtection::Relaxed
             }
         }
+    }
+}
+
+#[cfg(all(test, guest_arch = "x86_64"))]
+mod tests {
+    use super::vtl2_config::tests::{checksum, runtime, slit_bytes, table};
+    use super::*;
+    use guest_emulation_transport::api::platform_settings::{
+        MemoryProtectionMode, PcatBootDevice, SecureBootTemplateType, Smbios, UefiConsoleMode,
+    };
+    use test_with_tracing::test;
+    use vm_topology::processor::TopologyBuilder;
+
+    /// Supplies host ACPI overrides with other platform settings disabled.
+    fn platform(acpi_tables: Vec<Vec<u8>>) -> DevicePlatformSettings {
+        DevicePlatformSettings {
+            acpi_tables,
+            smbios: Smbios {
+                serial_number: String::new(),
+                base_board_serial_number: String::new(),
+                chassis_serial_number: String::new(),
+                chassis_asset_tag: String::new(),
+                system_manufacturer: String::new(),
+                system_product_name: String::new(),
+                system_version: String::new(),
+                system_sku_number: String::new(),
+                system_family: String::new(),
+                bios_lock_string: String::new(),
+                memory_device_serial_number: String::new(),
+                processor_manufacturer: vec![],
+                processor_version: vec![],
+                processor_id: 0,
+                external_clock: 0,
+                max_speed: 0,
+                current_speed: 0,
+                processor_characteristics: 0,
+                processor_family2: 0,
+                processor_type: 0,
+                voltage: 0,
+                status: 0,
+                processor_upgrade: 0,
+            },
+            general: General {
+                secure_boot_enabled: false,
+                secure_boot_template: SecureBootTemplateType::None,
+                bios_guid: Default::default(),
+                console_mode: UefiConsoleMode::None,
+                battery_enabled: false,
+                processor_idle_enabled: false,
+                tpm_enabled: false,
+                ipmi_enabled: false,
+                com1_enabled: false,
+                com1_debugger_mode: false,
+                com1_vmbus_redirector: false,
+                com2_enabled: false,
+                com2_debugger_mode: false,
+                com2_vmbus_redirector: false,
+                firmware_debugging_enabled: false,
+                hibernation_enabled: false,
+                suppress_attestation: None,
+                generation_id: None,
+                legacy_memory_map: false,
+                pause_after_boot_failure: false,
+                pxe_ip_v6: false,
+                measure_additional_pcrs: false,
+                disable_frontpage: false,
+                disable_sha384_pcr: false,
+                media_present_enabled_by_default: false,
+                vpci_boot_enabled: false,
+                memory_protection_mode: MemoryProtectionMode::Default,
+                default_boot_always_attempt: false,
+                num_lock_enabled: false,
+                pcat_boot_device_order: [PcatBootDevice::HardDrive; 4],
+                vpci_instance_filter: None,
+                nvdimm_count: 0,
+                psp_enabled: false,
+                vmbus_redirection_enabled: false,
+                always_relay_host_mmio: false,
+                vtl2_settings: None,
+                is_servicing_scenario: false,
+                watchdog_enabled: false,
+                firmware_mode_is_pcat: false,
+                imc_enabled: false,
+                cxl_memory_enabled: false,
+                efi_diagnostics_log_level: Default::default(),
+                guest_state_lifetime: Default::default(),
+                guest_state_encryption_policy: Default::default(),
+                management_vtl_features: Default::default(),
+                force_dma_bounce_enabled: false,
+                hardware_sealing_policy: Default::default(),
+            },
+        }
+    }
+
+    /// Marks host override bytes so tests can distinguish their source.
+    fn get_table(signature: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = if signature == b"SLIT" {
+            slit_bytes()
+        } else {
+            table(signature, &[])
+        };
+        bytes[10..16].copy_from_slice(b"GETOEM");
+        bytes[16..24].copy_from_slice(b"GETTABLE");
+        checksum(&mut bytes);
+        bytes
+    }
+
+    /// Calls the UEFI config writer and extracts ACPI tables from its guest RAM
+    /// output. Checks the blob's structure count without booting a VM.
+    fn emit(
+        get: Vec<Vec<u8>>,
+        params: &RuntimeParameters,
+        isolated: bool,
+        memory_domain: u32,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        let gm = GuestMemory::allocate(16 * 1024 * 1024);
+        let topology = TopologyBuilder::new_x86().build(1)?;
+        let memory = MemoryLayout::new_from_ranges(
+            &[MemoryRangeWithNode {
+                range: MemoryRange::new(0..16 * 1024 * 1024),
+                vnode: memory_domain,
+            }],
+            &[],
+        )?;
+        let caps = virt::PartitionCapabilities::from_cpuid(&topology, &mut |leaf, _| match leaf {
+            0 => [1, 0, 0, 0],
+            1 => [0, 0, 1 << 21, 0],
+            _ => [0; 4],
+        })?;
+        write_uefi_config(
+            &gm,
+            &memory,
+            &topology,
+            &[],
+            params,
+            VmChipsetCapabilities {
+                with_ioapic: true,
+                with_pic: false,
+                with_pit: false,
+                with_generic_isa_dma: false,
+                with_psp: false,
+                with_guest_watchdog: false,
+                with_i440bx_host_pci_bridge: false,
+            },
+            &platform(get),
+            &caps,
+            false,
+            isolated,
+            &ChipsetMmioRanges {
+                low: MemoryRange::EMPTY,
+                high: MemoryRange::EMPTY,
+            },
+        )?;
+
+        let base = loader::uefi::CONFIG_BLOB_GPA_BASE;
+        let count: config::StructureCount =
+            gm.read_plain(base + size_of::<config::Header>() as u64)?;
+        let mut blob = vec![0; count.total_config_blob_size as usize];
+        gm.read_at(base, &mut blob)?;
+        let mut tables = vec![];
+        let mut remaining = blob.as_slice();
+        let mut structures = 0;
+        while !remaining.is_empty() {
+            let (header, body) = config::Header::read_from_prefix(remaining).unwrap();
+            let length = header.length as usize;
+            if header.structure_type == config::BlobStructureType::AcpiTable as u32 {
+                let (acpi_header, _) = acpi_spec::Header::read_from_prefix(body).unwrap();
+                let table_length = acpi_header.length.get() as usize;
+                assert!(table_length <= length - size_of::<config::Header>());
+                tables.push(body[..table_length].to_vec());
+            }
+            remaining = &remaining[length..];
+            structures += 1;
+        }
+        assert_eq!(structures, count.total_structure_count);
+        Ok(tables)
+    }
+
+    /// Identifies emitted tables in their config-blob order.
+    fn signatures(tables: &[Vec<u8>]) -> Vec<[u8; 4]> {
+        tables
+            .iter()
+            .map(|table| table[..4].try_into().unwrap())
+            .collect()
+    }
+
+    /// Keeps host override order and passes through original IGVM table bytes.
+    #[test]
+    fn emitted_raw_slit_preserves_host_bytes_and_get_order() {
+        let bytes = slit_bytes();
+        let pptt = table(b"PPTT", &[]);
+        let params = runtime(&bytes, &pptt, false).unwrap();
+        let get = vec![
+            get_table(b"APIC"),
+            get_table(b"SRAT"),
+            get_table(b"FACP"),
+            get_table(b"SSDT"),
+            get_table(b"SSDT"),
+        ];
+        let output = emit(get.clone(), &params, false, 0).unwrap();
+        assert_eq!(&output[..get.len()], get);
+        assert_eq!(
+            signatures(&output),
+            [
+                *b"APIC", *b"SRAT", *b"FACP", *b"SSDT", *b"SSDT", *b"SLIT", *b"PPTT"
+            ]
+        );
+        assert_eq!(output[get.len()], bytes);
+        assert_eq!(output[get.len() + 1], pptt);
+        assert_eq!(&output[get.len()][10..24], b"HOST  HOSTIGVM");
+    }
+
+    /// Reports missing original bytes instead of silently omitting a raw SLIT.
+    #[test]
+    fn raw_slit_requires_original_table_bytes() {
+        let params = runtime(&slit_bytes(), &[], true).unwrap();
+        let error = emit(
+            vec![get_table(b"APIC"), get_table(b"SRAT")],
+            &params,
+            false,
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::MissingHostIgvmSlit)
+        ));
+    }
+
+    /// Prefers host overrides and rejects duplicate singleton ACPI tables.
+    #[test]
+    fn emitted_get_precedence_and_duplicate_errors() {
+        let params = runtime(&slit_bytes(), &table(b"PPTT", &[]), false).unwrap();
+        for signatures_in in [
+            vec![*b"SLIT", *b"PPTT"],
+            vec![*b"APIC", *b"SRAT", *b"SLIT", *b"PPTT"],
+            vec![*b"APIC", *b"SRAT", *b"SLIT"],
+            vec![*b"APIC", *b"SRAT", *b"PPTT"],
+            vec![*b"APIC", *b"SLIT"],
+            vec![*b"SRAT", *b"SLIT"],
+            vec![*b"PPTT"],
+        ] {
+            let get: Vec<_> = signatures_in.iter().map(get_table).collect();
+            let output = emit(get.clone(), &params, false, 0).unwrap();
+            assert_eq!(&output[..get.len()], get);
+            let emitted = signatures(&output);
+            for sig in [*b"SLIT", *b"PPTT", *b"APIC", *b"SRAT"] {
+                assert_eq!(emitted.iter().filter(|&&s| s == sig).count(), 1);
+            }
+            for sig in [*b"SLIT", *b"PPTT"] {
+                if let Some(index) = signatures_in.iter().position(|&s| s == sig) {
+                    assert_eq!(output[index], get[index]);
+                }
+            }
+        }
+        for sig in [b"APIC", b"SRAT", b"SLIT", b"PPTT"] {
+            let error = emit(vec![get_table(sig), get_table(sig)], &params, false, 0).unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Error>(), Some(Error::DuplicateAcpiTable(s)) if s == sig)
+            );
+        }
+        let error = emit(vec![vec![0]], &params, false, 0).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::InvalidAcpiTableLength)
+        ));
+    }
+
+    /// A GET SLIT takes precedence even if the unused IGVM SLIT does not cover
+    /// a local domain. Isolated VMs still validate their IGVM topology.
+    #[test]
+    fn get_slit_bypasses_unused_igvm_domain_validation() {
+        let params = runtime(&slit_bytes(), &[0; 36], false).unwrap();
+        let mut body = 3u64.to_le_bytes().to_vec();
+        body.extend_from_slice(&[10, 20, 20, 20, 10, 20, 20, 20, 10]);
+        let get_slit = table(b"SLIT", &body);
+        assert_eq!(
+            acpi::slit::Slit::parse(&get_slit, vtl2_config::SLIT_MAX_SIZE)
+                .unwrap()
+                .num_nodes(),
+            3
+        );
+
+        let output = emit(vec![get_slit.clone()], &params, false, 2).unwrap();
+        assert_eq!(signatures(&output), [*b"SLIT", *b"APIC", *b"SRAT"]);
+        assert_eq!(output[0], get_slit);
+
+        for (get, isolated) in [(vec![], false), (vec![get_slit], true)] {
+            let error = emit(get, &params, isolated, 2).unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<Error>(),
+                Some(Error::Slit(SlitValidationError::SratDomain {
+                    domain: 2,
+                    num_nodes: 2,
+                }))
+            ));
+        }
+    }
+
+    /// Rebuilds SLIT when either topology table is local, checking domains only
+    /// when SRAT is local.
+    #[test]
+    fn partial_overrides_regenerate_slit_with_conditional_srat_coverage() {
+        let bytes = slit_bytes();
+        let params = runtime(&bytes, &[0; 36], false).unwrap();
+        for (get_signature, expected) in [
+            (b"APIC", [*b"APIC", *b"SRAT", *b"SLIT"]),
+            (b"SRAT", [*b"SRAT", *b"APIC", *b"SLIT"]),
+        ] {
+            let output = emit(vec![get_table(get_signature)], &params, false, 0).unwrap();
+            assert_eq!(signatures(&output), expected);
+            let generated = &output[2];
+            assert_ne!(generated, &bytes);
+            assert_eq!(&generated[10..24], b"HVLITEHVLITETB");
+            let parsed = acpi::slit::Slit::parse(generated, vtl2_config::SLIT_MAX_SIZE).unwrap();
+            assert_eq!(parsed.num_nodes(), 2);
+            assert_eq!(
+                parsed.distances().collect::<Vec<_>>(),
+                [(0, 1, 17), (1, 0, 29)]
+            );
+        }
+        assert!(emit(vec![get_table(b"SRAT")], &params, false, 2).is_ok());
+        let error = emit(vec![get_table(b"APIC")], &params, false, 2).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::Slit(_))
+        ));
+        assert!(emit(vec![], &params, false, 2).is_err());
+    }
+
+    /// Ignores all host overrides for isolated VMs and emits no raw PPTT.
+    #[test]
+    fn isolated_output_ignores_get_and_never_emits_raw_pptt() {
+        // Even non-isolated parameters must not pass through the isolated output guard.
+        let params = runtime(&slit_bytes(), &table(b"PPTT", &[]), false).unwrap();
+        let get = vec![
+            vec![0],
+            get_table(b"APIC"),
+            get_table(b"APIC"),
+            get_table(b"SRAT"),
+            get_table(b"SRAT"),
+            get_table(b"SLIT"),
+            get_table(b"SLIT"),
+            get_table(b"PPTT"),
+        ];
+        let output = emit(get, &params, true, 0).unwrap();
+        assert_eq!(signatures(&output), [*b"APIC", *b"SRAT", *b"SLIT"]);
+        assert_eq!(&output[2][10..24], b"HVLITEHVLITETB");
+        assert_ne!(output[2], slit_bytes());
+        let isolated = runtime(&slit_bytes(), &[], true).unwrap();
+        assert_eq!(emit(vec![], &isolated, true, 0).unwrap(), output);
+    }
+
+    /// Omits SLIT and PPTT when IGVM supplies neither table.
+    #[test]
+    fn absent_igvm_tables_emit_only_required_local_tables() {
+        let params = runtime(&[0; 36], &[0; 36], false).unwrap();
+        let output = emit(vec![], &params, false, 0).unwrap();
+        assert_eq!(signatures(&output), [*b"APIC", *b"SRAT"]);
+        let get = vec![get_table(b"APIC"), get_table(b"SRAT")];
+        assert_eq!(emit(get.clone(), &params, false, 0).unwrap(), get);
+    }
+
+    /// Checks all three sources of domains used to build a local SRAT.
+    #[test]
+    fn validates_all_local_srat_domains() {
+        let info = SlitInfo {
+            num_nodes: 2,
+            distances: vec![],
+        };
+        for (vp_domain, memory_domain, initiator_domain) in [
+            (2, 0, 0),
+            (0, 2, 0),
+            (0, 0, 2),
+            (u32::MAX, 0, 0),
+            (0, u32::MAX, 0),
+            (0, 0, u32::MAX),
+            (1, 1, 1),
+        ] {
+            let mut topology = TopologyBuilder::new_x86().build(1).unwrap();
+            topology.set_vnodes(&[vp_domain]);
+            let memory = MemoryLayout::new_from_ranges(
+                &[MemoryRangeWithNode {
+                    range: MemoryRange::new(0..4096),
+                    vnode: memory_domain,
+                }],
+                &[],
+            )
+            .unwrap();
+            let initiators = [GenericInitiator {
+                segment: 0,
+                bus: 0,
+                device: 0,
+                function: 0,
+                vnode: initiator_domain,
+            }];
+            let result = validate_slit_srat_domains(&info, &topology, &memory, &initiators);
+            if vp_domain < 2 && memory_domain < 2 && initiator_domain < 2 {
+                assert_eq!(result, Ok(()));
+            } else {
+                let expected_domain = [vp_domain, memory_domain, initiator_domain]
+                    .into_iter()
+                    .find(|&domain| domain >= 2)
+                    .unwrap();
+                assert_eq!(
+                    result,
+                    Err(SlitValidationError::SratDomain {
+                        domain: expected_domain,
+                        num_nodes: 2,
+                    })
+                );
+            }
+        }
+    }
+
+    /// Rejects matrix indices and distances before SLIT construction.
+    #[test]
+    fn rejects_bad_slit_indices_and_distances() {
+        for distances in [
+            vec![(0, 2, 20)],
+            vec![(2, 0, 20)],
+            vec![(u32::MAX, 0, 20)],
+            vec![(0, u32::MAX, 20)],
+        ] {
+            let info = SlitInfo {
+                num_nodes: 2,
+                distances,
+            };
+            assert!(matches!(
+                validate_slit_info(&info, vtl2_config::SLIT_MAX_SIZE),
+                Err(SlitValidationError::Index { .. })
+            ));
+        }
+        for distances in [
+            vec![(0, 0, 9)],
+            vec![(0, 0, 11)],
+            vec![(1, 1, 255)],
+            vec![(0, 1, 0)],
+            vec![(1, 0, 9)],
+        ] {
+            let info = SlitInfo {
+                num_nodes: 2,
+                distances,
+            };
+            assert!(matches!(
+                validate_slit_info(&info, vtl2_config::SLIT_MAX_SIZE),
+                Err(SlitValidationError::Distance { .. })
+            ));
+        }
+    }
+
+    /// Checks locality overflow and the exact generated-table size limit.
+    #[test]
+    fn rejects_invalid_slit_sizes_before_allocation() {
+        for num_nodes in [0, 65536, u32::MAX as usize, usize::MAX] {
+            let info = SlitInfo {
+                num_nodes,
+                distances: vec![],
+            };
+            assert!(matches!(
+                validate_slit_info(&info, usize::MAX),
+                Err(SlitValidationError::Localities(_))
+            ));
+        }
+        let info = SlitInfo {
+            num_nodes: 2,
+            distances: vec![],
+        };
+        assert_eq!(
+            validate_slit_info(&info, 47),
+            Err(SlitValidationError::TooLarge {
+                actual: 48,
+                limit: 47,
+            })
+        );
+        assert_eq!(validate_slit_info(&info, 48), Ok(()));
     }
 }
