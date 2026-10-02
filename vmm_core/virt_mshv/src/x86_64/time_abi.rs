@@ -599,6 +599,92 @@ fn vp_cpuid(bsp: &VcpuFd, function: u32, index: u32) -> Result<[u32; 4], KernelE
     Ok(bsp.get_cpuid_values(function, index, 0, 0)?)
 }
 
+/// The most CPUID entries that one `HvCallGetVpCpuidValues` reads. Its input,
+/// a header and one leaf description per entry, must fit in the page that the
+/// kernel copies it to.
+const CPUID_READS_PER_CALL: usize = 128;
+
+/// The input of `HvCallGetVpCpuidValues` for up to [`CPUID_READS_PER_CALL`]
+/// entries.
+#[repr(C, packed)]
+struct VpCpuidValuesInput {
+    header: mshv_bindings::hv_input_get_vp_cpuid_values,
+    leaves: [mshv_bindings::hv_cpuid_leaf_info; CPUID_READS_PER_CALL],
+}
+
+const _: () = assert!(size_of::<VpCpuidValuesInput>() <= 4096);
+
+/// Reads CPUID `entries`, each a leaf and subleaf, as VP `vp_index` sees them
+/// with the registered results applied, which is how
+/// `VcpuFd::get_cpuid_values` reads one entry. `HvCallGetVpCpuidValues` is a
+/// rep hypercall, so one call reads up to [`CPUID_READS_PER_CALL`] entries
+/// instead of paying a hypercall per entry.
+fn vp_cpuid_many(
+    vp: &VcpuFd,
+    vp_index: u32,
+    entries: &[(u32, u32)],
+) -> Result<Vec<[u32; 4]>, KernelError> {
+    use mshv_bindings::hv_cpuid_leaf_info;
+    use mshv_bindings::hv_input_get_vp_cpuid_values;
+    use mshv_bindings::hv_output_get_vp_cpuid_values;
+
+    let mut input = VpCpuidValuesInput {
+        header: hv_input_get_vp_cpuid_values {
+            vp_index,
+            ..Default::default()
+        },
+        leaves: [hv_cpuid_leaf_info::default(); CPUID_READS_PER_CALL],
+    };
+    // SAFETY: both fields of the flags union are the same 32 bits.
+    unsafe {
+        let flags = &mut input.header.flags.__bindgen_anon_1;
+        flags.set_use_vp_xfem_xss(1);
+        flags.set_apply_registered_values(1);
+    }
+    let mut output = [hv_output_get_vp_cpuid_values::default(); CPUID_READS_PER_CALL];
+    let mut results = Vec::with_capacity(entries.len());
+    let mut pending = entries;
+    while !pending.is_empty() {
+        let count = pending.len().min(CPUID_READS_PER_CALL);
+        for (leaf, &(eax, ecx)) in input.leaves.iter_mut().zip(&pending[..count]) {
+            *leaf = hv_cpuid_leaf_info {
+                eax,
+                ecx,
+                xfem: 0,
+                xss: 0,
+            };
+        }
+        let mut args = mshv_bindings::mshv_root_hvcall {
+            code: hvdef::HypercallCode::HvCallGetVpCpuidValues.0,
+            reps: count as u16,
+            in_sz: (size_of::<hv_input_get_vp_cpuid_values>()
+                + count * size_of::<hv_cpuid_leaf_info>()) as u16,
+            in_ptr: std::ptr::addr_of!(input) as u64,
+            out_sz: (count * size_of::<hv_output_get_vp_cpuid_values>()) as u16,
+            out_ptr: output.as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        vp.hvcall(&mut args)?;
+        // A call that completes only some of its entries is continued with
+        // the rest.
+        let completed = usize::from(args.reps);
+        if completed == 0 || completed > count {
+            return Err(KernelError::Kernel(std::io::Error::from_raw_os_error(
+                libc::EINTR,
+            )));
+        }
+        // SAFETY: both fields of the output union are the same four
+        // registers.
+        results.extend(
+            output[..completed]
+                .iter()
+                .map(|values| unsafe { values.as_uint32 }),
+        );
+        pending = &pending[completed..];
+    }
+    Ok(results)
+}
+
 impl MshvPartitionInner {
     fn time_abi_state(&self) -> Result<&MshvTimeAbi, TimeAbiError> {
         self.time_abi.as_ref().ok_or_else(|| {
@@ -637,44 +723,79 @@ impl MshvPartitionInner {
             return Ok(leaves);
         }
         let bsp = self.time_abi_bsp(TimeAbiCode::CpuSurface)?;
-        let read = |function: u32, index: Option<u32>| {
-            let result = vp_cpuid(bsp, function, index.unwrap_or(0)).map_err(|error| {
-                TimeAbiError::new(
-                    TimeAbiCode::CpuSurface,
-                    format!(
-                        "cannot read CPUID {function:#x}/{:#x} of VP 0: {}",
-                        index.unwrap_or(0),
-                        error_chain(&error)
-                    ),
-                )
-            })?;
-            let leaf = CpuidLeaf::new(function, result);
-            Ok(match index {
-                Some(index) => leaf.indexed(index),
-                None => leaf,
-            })
-        };
         let started = std::time::Instant::now();
-        let mut leaves = EFFECTIVE_CPUID_MAX_LEAVES
+        // VP 0 reads, in the report's order: the maximum leaves, the
+        // registered results except the explicit zero leaves past the
+        // identity, which are reported as registered, and the entries outside
+        // the profile's tables where the host's CPUID has any. Guests read the
+        // hypervisor's own values there, at subleaf 0 for a subleaf-independent
+        // entry, and core requires each to read zero.
+        let reads: Vec<(u32, Option<u32>)> = EFFECTIVE_CPUID_MAX_LEAVES
             .into_iter()
-            .map(|function| read(function, None))
-            .collect::<Result<Vec<_>, TimeAbiError>>()?;
+            .map(|function| (function, None))
+            .chain(
+                state
+                    .registered_cpuid
+                    .iter()
+                    .filter(|leaf| !is_zero_fill(leaf))
+                    .map(|leaf| (leaf.function, leaf.index)),
+            )
+            .chain(state.unlisted_candidates.iter().copied())
+            .collect();
+        let entries: Vec<(u32, u32)> = reads
+            .iter()
+            .map(|&(function, index)| (function, index.unwrap_or(0)))
+            .collect();
+        let (values, bulk) = match vp_cpuid_many(bsp, VpIndex::BSP.index(), &entries) {
+            Ok(values) => (values, true),
+            Err(error) => {
+                tracing::warn!(
+                    error = &error as &dyn std::error::Error,
+                    "MSHV bulk CPUID read failed, reading one entry per call"
+                );
+                let values = entries
+                    .iter()
+                    .map(|&(function, index)| {
+                        vp_cpuid(bsp, function, index).map_err(|error| {
+                            TimeAbiError::new(
+                                TimeAbiCode::CpuSurface,
+                                format!(
+                                    "cannot read CPUID {function:#x}/{index:#x} of VP 0: {}",
+                                    error_chain(&error)
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (values, false)
+            }
+        };
+        let mut read = reads
+            .iter()
+            .zip(values)
+            .map(|(&(function, index), result)| {
+                let leaf = CpuidLeaf::new(function, result);
+                match index {
+                    Some(index) => leaf.indexed(index),
+                    None => leaf,
+                }
+            });
+        let mut leaves: Vec<_> = read
+            .by_ref()
+            .take(EFFECTIVE_CPUID_MAX_LEAVES.len())
+            .collect();
         for leaf in &state.registered_cpuid {
             leaves.push(if is_zero_fill(leaf) {
                 *leaf
             } else {
-                read(leaf.function, leaf.index)?
+                read.next().expect("one value per read")
             });
         }
-        // Guests read the hypervisor's own values outside the registered
-        // results, so the report also holds VP 0's view where the host's
-        // CPUID has entries outside the profile's tables, at subleaf 0 for a
-        // subleaf-independent entry. Core requires each to read zero.
-        for &(function, index) in &state.unlisted_candidates {
-            leaves.push(read(function, index)?);
-        }
+        leaves.extend(read);
         tracing::info!(
             leaves = leaves.len(),
+            reads = entries.len(),
+            bulk,
             unlisted_candidates = state.unlisted_candidates.len(),
             elapsed_us = started.elapsed().as_micros() as u64,
             "MSHV effective CPUID read"
@@ -1759,7 +1880,8 @@ mod hw {
     /// under their masks. A leaf or subleaf that the table does not list must
     /// read zero, which the zero results provide on MSHV, except past the
     /// extended topology leaves' terminators: those are reserved, and the
-    /// sweep only reports them.
+    /// sweep only reports them. One rep hypercall must read every probe as
+    /// the single reads do, and the test times both ways.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
@@ -1822,14 +1944,16 @@ mod hw {
         indexed.dedup();
         let max_basic = effective.lookup(0, 0)[0];
         let max_extended = effective.lookup(0x8000_0000, 0)[0];
-        let probes = indexed
+        let probes: Vec<(u32, u32)> = indexed
             .iter()
             .flat_map(|&function| (0..64).map(move |index| (function, index)))
             .chain((max_basic + 1..=max_basic + 4).map(|function| (function, 0)))
-            .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)));
+            .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)))
+            .collect();
         let (mut count, mut listed_failures, mut unlisted, mut reserved) =
             (0, Vec::new(), Vec::new(), Vec::new());
-        for (function, index) in probes {
+        let mut single = Vec::with_capacity(probes.len());
+        for &(function, index) in &probes {
             count += 1;
             let listed = effective.results().find(|result| {
                 result.function == function && result.index.is_none_or(|i| i == index)
@@ -1837,6 +1961,7 @@ mod hw {
             let (expected, mask) =
                 listed.map_or(([0; 4], [!0; 4]), |result| (result.result, result.mask));
             let actual = bsp.get_cpuid_values(function, index, 0, 0).unwrap();
+            single.push(actual);
             if (0..4).all(|register| (actual[register] ^ expected[register]) & mask[register] == 0)
             {
                 continue;
@@ -1863,6 +1988,40 @@ mod hw {
         }
         assert!(listed_failures.is_empty(), "{listed_failures:#?}");
         assert!(unlisted.is_empty(), "{unlisted:#?}");
+
+        // One rep hypercall reads the same values, registered results
+        // included, over several calls when the probes exceed one call.
+        assert_eq!(
+            vp_cpuid_many(bsp, 0, &probes).unwrap(),
+            single,
+            "bulk and single CPUID reads differ"
+        );
+        // Time both ways over the entries that the effective CPUID report
+        // reads, as `time_abi_effective_cpuid` does.
+        let report: Vec<(u32, u32)> = effective
+            .results()
+            .map(|result| (result.function, result.index.unwrap_or(0)))
+            .collect();
+        let (mut single_us, mut bulk_us) = (Vec::new(), Vec::new());
+        for _ in 0..11 {
+            let started = std::time::Instant::now();
+            for &(function, index) in &report {
+                bsp.get_cpuid_values(function, index, 0, 0).unwrap();
+            }
+            single_us.push(started.elapsed().as_micros() as u64);
+            let started = std::time::Instant::now();
+            vp_cpuid_many(bsp, 0, &report).unwrap();
+            bulk_us.push(started.elapsed().as_micros() as u64);
+        }
+        single_us.sort_unstable();
+        bulk_us.sort_unstable();
+        println!(
+            "bulk CPUID read: {} probes match single reads; {} entries in {} us one per call, {} us in one call (p50 of 11)",
+            probes.len(),
+            report.len(),
+            single_us[5],
+            bulk_us[5]
+        );
     }
 
     /// Every VP of a time ABI partition reads its own x2APIC ID in `EDX` of
