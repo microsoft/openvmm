@@ -814,19 +814,6 @@ impl MshvPartitionInner {
             .map_err(|error| TimeAbiError::new(code, format!("VP 0 is unavailable: {error}")))
     }
 
-    /// Checks that partition time can be frozen, leaving it as it was: a
-    /// frozen partition stays frozen until a VP runs.
-    fn probe_time_freeze(&self) -> Result<(), KernelError> {
-        let frozen = self.time_frozen.lock();
-        self.vmfd
-            .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)?;
-        if !*frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)?;
-        }
-        Ok(())
-    }
-
     /// Returns the effective CPUID, reading it from VP 0 the first time. The
     /// first read happens in preflight, before any VP runs, on both cold boot
     /// and restore, so it is VP 0's view at reset.
@@ -1028,7 +1015,11 @@ impl TimeAbiBackend for MshvPartition {
         let bsp = self.inner.time_abi_bsp(TimeAbiCode::IdentityRouting)?;
         self.inner.check_identity_cpuid(bsp)?;
 
-        self.inner.probe_time_freeze().map_err(|error| {
+        // Freezing partition time checks that it can be frozen. Time stays
+        // frozen, as after a reset, until the synchronized TSC set resumes it
+        // after its read-back or a VP first runs, so a restore freezes it
+        // only once.
+        self.inner.freeze_time().map_err(|error| {
             TimeAbiError::new(
                 TimeAbiCode::TscSyncUnsupported,
                 format!("cannot freeze partition time: {}", error_chain(&error)),
@@ -1898,6 +1889,10 @@ mod hw {
                     sync: TscSyncMethod::FrozenWrite,
                 }
             );
+            // Preflight leaves partition time frozen, as a reset does, until
+            // the synchronized TSC set or the first VP run resumes it.
+            assert!(*partition.inner.time_frozen.lock());
+            partition.inner.thaw_time().unwrap();
             let tsc_hz = backend.native_tsc_hz().unwrap();
             check_plausible_tsc_hz(tsc_hz).unwrap();
             assert_eq!(backend.lapic_hz().unwrap(), LAPIC_HZ_HYPERV);
