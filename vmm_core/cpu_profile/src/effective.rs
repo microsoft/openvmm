@@ -28,9 +28,9 @@ const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 
 /// One CPUID result and the mask of the bits it defines.
 ///
-/// The fields match `virt::CpuidLeaf` one for one, so converting between the
-/// two is field for field. `index` is `None` for a result that applies to
-/// every subleaf.
+/// The fields match `virt::CpuidLeaf` one for one, and `virt` converts a
+/// `CpuidLeaf` to a `CpuidResult` field for field. `index` is `None` for a
+/// result that applies to every subleaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuidResult {
     /// The leaf, the input value of `EAX`.
@@ -312,9 +312,15 @@ fn describe(entry: &CpuidLeafValue) -> String {
 impl CpuProfile {
     /// Builds the effective guest CPUID of a VM that uses this profile.
     ///
+    /// OpenVMM assembles the inputs from a VM's topology in one place,
+    /// `virt::time_abi::cpuid::effective_cpuid`, which core, the backends, and
+    /// their tests share.
+    ///
     /// `vm` holds the results that the VM configuration defines: the topology
     /// leaves and fields (`virt::x86::topology::topology_cpuid`, with the
-    /// profile's [`CpuProfile::lookup`] as its CPUID source) and the APIC
+    /// profile's [`CpuProfile::lookup`] as its CPUID source), the subleaf that
+    /// terminates each extended topology leaf
+    /// (`virt::x86::topology::terminate_extended_topology`), and the APIC
     /// mode ([`x2apic_cpuid`]). They may set only the bits that
     /// [`vm_owned_bits`] assigns to the VM, and together they must set all of
     /// them. A result for every subleaf (`index` of `None`) applies to each of
