@@ -1451,7 +1451,10 @@ impl WhpPartitionInner {
             #[cfg(guest_arch = "x86_64")]
             cpuid,
             #[cfg(guest_arch = "x86_64")]
-            cpuid_topology: cpu_contract::CpuidTopology::new(proto_config.processor_topology),
+            cpuid_topology: match &time_abi {
+                Some(time_abi) => time_abi.cpuid_topology(proto_config.processor_topology),
+                None => cpu_contract::CpuidTopology::new(proto_config.processor_topology),
+            },
             #[cfg(guest_arch = "x86_64")]
             clock: tsc::PartitionClock::new(tsc_frequency),
             #[cfg(guest_arch = "x86_64")]

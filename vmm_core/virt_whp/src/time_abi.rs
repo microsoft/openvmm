@@ -329,6 +329,17 @@ impl WhpTimeAbi {
         check_cpuid_delivery(&cpuid, &self.cpuid_exits)?;
         Ok(cpuid)
     }
+
+    /// Returns the topology parameters of the per-VP CPUID results for
+    /// `topology`. The extended topology subleaves past the core level that
+    /// the effective CPUID lists, such as the subleaf that ends the
+    /// enumeration, keep their values, with each VP's x2APIC ID.
+    pub(crate) fn cpuid_topology(
+        &self,
+        topology: &vm_topology::processor::ProcessorTopology,
+    ) -> CpuidTopology {
+        CpuidTopology::new(topology).with_listed_extended_topology(&self.cpuid)
+    }
 }
 
 fn routing_error(message: impl Into<String>) -> TimeAbiError {
@@ -1200,6 +1211,7 @@ pub(crate) mod test_cpuid {
     use virt::CpuidLeafSet;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::VpIndex;
     use vm_topology::processor::x86::ApicMode;
     use vm_topology::processor::x86::X2ApicState;
 
@@ -1220,7 +1232,8 @@ pub(crate) mod test_cpuid {
     }
 
     /// Returns the effective CPUID of a partition with `profile` and
-    /// `topology`, as core's `time_abi::effective_cpuid` builds it.
+    /// `topology`, as core's `time_abi::effective_cpuid` builds it, including
+    /// the subleaf that ends each extended topology leaf.
     pub fn effective_cpuid(profile: &CpuProfile, topology: &ProcessorTopology) -> EffectiveCpuid {
         let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
             function: leaf.function,
@@ -1235,6 +1248,7 @@ pub(crate) mod test_cpuid {
             &mut topology_leaves,
         )
         .unwrap();
+        terminate_extended_topology(topology, &mut topology_leaves);
         let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
         vm.push(cpu_profile::x2apic_cpuid(!matches!(
             topology.apic_mode(),
@@ -1246,6 +1260,40 @@ pub(crate) mod test_cpuid {
             .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
             .collect();
         profile.effective_cpuid(&vm, &identity).unwrap()
+    }
+
+    /// Adds the subleaf that ends each extended topology leaf in `leaves`
+    /// after its levels, as core's `terminate_extended_topology` does: an
+    /// invalid level with its own number in `ECX[7:0]` and the BSP's x2APIC
+    /// ID in `EDX`.
+    fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Vec<CpuidLeaf>) {
+        let bsp_apic_id = topology.vp_arch(VpIndex::BSP).apic_id;
+        for function in [0xb, 0x1f] {
+            let levels = leaves
+                .iter()
+                .filter(|leaf| leaf.function == function)
+                .count() as u32;
+            if levels == 0 {
+                continue;
+            }
+            let ecx = x86defs::cpuid::ExtendedTopologyEcx::new().with_level_number(levels as u8);
+            leaves.push(
+                CpuidLeaf::new(function, [0, 0, ecx.into(), bsp_apic_id])
+                    .indexed(levels)
+                    .masked([!0; 4]),
+            );
+        }
+    }
+
+    /// Returns whether `effective` lists `function`/`index` as an extended
+    /// topology subleaf past the core level: the subleaf that ends the
+    /// enumeration, which the profile programming of `de39f6aab` left zero.
+    pub fn is_listed_terminator(effective: &EffectiveCpuid, function: u32, index: u32) -> bool {
+        matches!(function, 0xb | 0x1f)
+            && index >= 2
+            && effective
+                .results()
+                .any(|result| result.function == function && result.index == Some(index))
     }
 
     /// Returns [`TimeAbiConfig::cpuid`](virt::time_abi::TimeAbiConfig::cpuid)
@@ -1516,7 +1564,8 @@ mod tests {
                 test_cpuid::own_cpuid(&topology, &|function, index| whp.native(function, index));
             let cpuid = partition_cpuid(own, &config, &exits).unwrap();
             check_cpuid_delivery(&cpuid, &exits).unwrap();
-            let cpuid_topology = CpuidTopology::new(&topology);
+            let cpuid_topology =
+                CpuidTopology::new(&topology).with_listed_extended_topology(&config);
             Self {
                 topology,
                 effective,
@@ -1816,7 +1865,10 @@ mod tests {
     /// of the CPUID. VP 0 observes exactly the CPUID of the profile
     /// programming of `de39f6aab` on every leaf and subleaf that either
     /// lists, on their unlisted subleaves, and past the maximum leaves, on a
-    /// WHP whose unprogrammed bits read zero.
+    /// WHP whose unprogrammed bits read zero. The one deliberate change is the
+    /// subleaf that ends each extended topology leaf: core's table lists it,
+    /// and VP 0 presents it as listed, where the profile programming read
+    /// zero.
     #[test]
     fn core_table_presents_what_the_profile_programming_did() {
         for profile in test_cpuid::PROFILES {
@@ -1830,6 +1882,12 @@ mod tests {
                     .iter()
                     .filter_map(|&(function, index)| {
                         let ours = normalize_cpuid(function, index, new.observe(0, function, index));
+                        if test_cpuid::is_listed_terminator(&new.effective, function, index) {
+                            let expected = new.effective.lookup(function, index);
+                            return (ours != expected).then(|| {
+                                format!("{function:#x}.{index}: terminator {ours:08x?}, not {expected:08x?}")
+                            });
+                        }
                         let theirs = normalize_cpuid(function, index, old.observe(0, function, index));
                         (ours != theirs).then(|| {
                             format!("{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}")
@@ -1851,6 +1909,35 @@ mod tests {
                     populated >= entries / 2,
                     "{profile}: {populated} populated results of {entries} profile entries"
                 );
+            }
+        }
+    }
+
+    /// Core's table lists the subleaf that ends leaf 0Bh, with VP 0's x2APIC
+    /// ID and `EDX` unmasked: every VP presents it with its own ID, and the
+    /// subleaves past it still read zero. Before core listed it, the exit
+    /// handler zeroed it, and VP 0's report failed `E_CPU_SURFACE`.
+    #[test]
+    fn extended_topology_terminator_carries_each_vps_x2apic_id() {
+        for profile in test_cpuid::PROFILES {
+            for vp_count in [1, 2, 8] {
+                let partition = Partition::new(profile, vp_count, X2ApicState::Supported);
+                assert!(test_cpuid::is_listed_terminator(
+                    &partition.effective,
+                    0xb,
+                    2
+                ));
+                for vp in partition.topology.vps_arch() {
+                    assert_eq!(
+                        partition.observe(vp.apic_id, 0xb, 2),
+                        [0, 0, 2, vp.apic_id],
+                        "{profile}, {vp_count} VPs"
+                    );
+                    assert_eq!(partition.observe(vp.apic_id, 0xb, 3), [0; 4]);
+                }
+                let presented = CpuidLeafSet::new(partition.record());
+                let differences = test_cpuid::differences(&presented, &partition.effective);
+                assert!(differences.is_empty(), "{profile}: {differences:#?}");
             }
         }
     }
@@ -2357,7 +2444,7 @@ mod whp_tests {
             native(&partition, function, index).unwrap()
         });
         let cpuid = time_abi.partition_cpuid(own).unwrap();
-        let cpuid_topology = CpuidTopology::new(&topology);
+        let cpuid_topology = time_abi.cpuid_topology(&topology);
         let started = std::time::Instant::now();
         let mut reads = 0;
         for vp in topology.vps_arch() {
@@ -2376,6 +2463,13 @@ mod whp_tests {
             })
             .unwrap();
             let record = CpuidLeafSet::new(record);
+            // Each VP ends leaf 0Bh with the listed terminator and its own
+            // x2APIC ID.
+            assert_eq!(
+                record.result(0xb, 2, &[0; 4]),
+                [0, 0, 2, vp.apic_id],
+                "VP {index}"
+            );
             if index == 0 {
                 println!(
                     "VP 0 record: {} results, {reads} native reads in {} us",
@@ -2421,12 +2515,14 @@ mod whp_tests {
 
     /// Sweeps subleaves 0 to 63 of every indexed leaf of the effective CPUID,
     /// and the four leaves past the maximum basic and extended leaves, and
-    /// checks that VP 0 observes the effective CPUID there. By the profile's
-    /// contract a subleaf or leaf that the table does not list reads zero,
-    /// while WHP serves its own value for anything not programmed: WHP reads
-    /// zero there on prometheus28, 8370C, and 8573C, so the backend programs
-    /// no explicit zero results. Listed results must match under their masks,
-    /// as `host_profile_configures_the_partition` checks too.
+    /// checks that VP 0 observes the effective CPUID there. Listed results
+    /// must match under their masks, as `host_profile_configures_the_partition`
+    /// checks too. The time ABI reserves the unlisted entries: a backend may
+    /// return zeros or the hypervisor's own values there, and WHP serves its
+    /// own value for anything not programmed. WHP reads zero there on
+    /// prometheus28, 8370C, and 8573C, which the fingerprint verification of
+    /// pass-through backends (`E_CPU_UNLISTED`) expects, so the backend
+    /// programs no explicit zero results.
     #[test]
     #[ignore = "requires WHP"]
     fn unlisted_subleaves_read_zero() {
@@ -2443,7 +2539,7 @@ mod whp_tests {
             native(&partition, function, index).unwrap()
         });
         let cpuid = time_abi.partition_cpuid(own).unwrap();
-        let cpuid_topology = CpuidTopology::new(&topology);
+        let cpuid_topology = time_abi.cpuid_topology(&topology);
         let vp0 = VpCpuid {
             cpuid: &cpuid,
             exits: &time_abi.cpuid_exits,
@@ -2504,7 +2600,9 @@ mod whp_tests {
     /// The comparison of `tests::core_table_presents_what_the_profile_programming_did`
     /// on WHP: two partitions with this host's profile and the same features,
     /// one programmed from core's complete table and one with the profile
-    /// programming of `de39f6aab`, present the same CPUID to VP 0.
+    /// programming of `de39f6aab`, present the same CPUID to VP 0, except the
+    /// listed subleaf that ends leaf 0Bh, which the profile programming left
+    /// zero.
     #[test]
     #[ignore = "requires WHP"]
     fn core_table_presents_what_the_profile_programming_did_on_whp() {
@@ -2552,7 +2650,8 @@ mod whp_tests {
             old.create_vp(vp).create().unwrap();
         }
 
-        let cpuid_topology = CpuidTopology::new(&new.topology);
+        let new_topology = new.time_abi.cpuid_topology(&new.topology);
+        let old_topology = CpuidTopology::new(&new.topology);
         let new_cpuid = new
             .time_abi
             .partition_cpuid(test_cpuid::own_cpuid(&new.topology, &|function, index| {
@@ -2567,19 +2666,23 @@ mod whp_tests {
             &programming.exits,
         )
         .unwrap();
-        let view =
-            |partition: &whp::Partition, cpuid: &CpuidLeafSet, exits: &[u32], function, index| {
-                let vp0 = VpCpuid {
-                    cpuid,
-                    exits,
-                    topology: &cpuid_topology,
-                    apic_id: 0,
-                };
-                let result = vp0
-                    .result(function, index, || native(partition, function, index))
-                    .unwrap();
-                normalize_cpuid(function, index, result)
+        let view = |partition: &whp::Partition,
+                    cpuid: &CpuidLeafSet,
+                    exits: &[u32],
+                    topology: &CpuidTopology,
+                    function,
+                    index| {
+            let vp0 = VpCpuid {
+                cpuid,
+                exits,
+                topology,
+                apic_id: 0,
             };
+            let result = vp0
+                .result(function, index, || native(partition, function, index))
+                .unwrap();
+            normalize_cpuid(function, index, result)
+        };
         let probes = test_cpuid::probes(&new.effective, profile);
         let mut populated = 0;
         let mut differences = Vec::new();
@@ -2588,11 +2691,28 @@ mod whp_tests {
                 &new.partition,
                 &new_cpuid,
                 &new.time_abi.cpuid_exits,
+                &new_topology,
                 function,
                 index,
             );
-            let theirs = view(&old, &old_cpuid, &programming.exits, function, index);
             populated += usize::from(ours != [0; 4]);
+            if test_cpuid::is_listed_terminator(&new.effective, function, index) {
+                let expected = new.effective.lookup(function, index);
+                if ours != expected {
+                    differences.push(format!(
+                        "{function:#x}.{index}: terminator {ours:08x?}, not {expected:08x?}"
+                    ));
+                }
+                continue;
+            }
+            let theirs = view(
+                &old,
+                &old_cpuid,
+                &programming.exits,
+                &old_topology,
+                function,
+                index,
+            );
             if ours != theirs {
                 differences.push(format!(
                     "{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}"
