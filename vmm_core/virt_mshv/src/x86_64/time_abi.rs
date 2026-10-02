@@ -1444,6 +1444,7 @@ mod hw {
             &mut topology_leaves,
         )
         .unwrap();
+        virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
         let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
         vm.push(cpu_profile::x2apic_cpuid(!matches!(
             topology.apic_mode(),
@@ -1756,9 +1757,9 @@ mod hw {
     /// 63 of every indexed leaf of the effective CPUID and the four leaves
     /// past the maximum basic and extended leaves. Listed results must match
     /// under their masks. A leaf or subleaf that the table does not list must
-    /// read zero, which the zero results provide on MSHV, except past the VM
-    /// topology's levels in the extended topology leaves: those are reserved,
-    /// and the sweep only reports them.
+    /// read zero, which the zero results provide on MSHV, except past the
+    /// extended topology leaves' terminators: those are reserved, and the
+    /// sweep only reports them.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
