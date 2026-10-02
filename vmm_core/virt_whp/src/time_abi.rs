@@ -1257,7 +1257,6 @@ pub(crate) mod test_cpuid {
     use virt::CpuidLeafSet;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
-    use vm_topology::processor::VpIndex;
     use vm_topology::processor::x86::ApicMode;
     use vm_topology::processor::x86::X2ApicState;
 
@@ -1294,7 +1293,7 @@ pub(crate) mod test_cpuid {
             &mut topology_leaves,
         )
         .unwrap();
-        terminate_extended_topology(topology, &mut topology_leaves);
+        virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
         let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
         vm.push(cpu_profile::x2apic_cpuid(!matches!(
             topology.apic_mode(),
@@ -1306,29 +1305,6 @@ pub(crate) mod test_cpuid {
             .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
             .collect();
         profile.effective_cpuid(&vm, &identity).unwrap()
-    }
-
-    /// Adds the subleaf that ends each extended topology leaf in `leaves`
-    /// after its levels, as core's `terminate_extended_topology` does: an
-    /// invalid level with its own number in `ECX[7:0]` and the BSP's x2APIC
-    /// ID in `EDX`.
-    fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Vec<CpuidLeaf>) {
-        let bsp_apic_id = topology.vp_arch(VpIndex::BSP).apic_id;
-        for function in [0xb, 0x1f] {
-            let levels = leaves
-                .iter()
-                .filter(|leaf| leaf.function == function)
-                .count() as u32;
-            if levels == 0 {
-                continue;
-            }
-            let ecx = x86defs::cpuid::ExtendedTopologyEcx::new().with_level_number(levels as u8);
-            leaves.push(
-                CpuidLeaf::new(function, [0, 0, ecx.into(), bsp_apic_id])
-                    .indexed(levels)
-                    .masked([!0; 4]),
-            );
-        }
     }
 
     /// Returns whether `effective` lists `function`/`index` as an extended
