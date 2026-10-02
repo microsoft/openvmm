@@ -93,6 +93,7 @@ mod tests {
     use test_with_tracing::test;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X2ApicState;
+    use x86defs::cpuid::CacheParametersEax;
 
     fn topology(vp_count: u32, x2apic: X2ApicState) -> ProcessorTopology {
         TopologyBuilder::new_x86()
@@ -128,6 +129,46 @@ mod tests {
                         effective
                     );
                 }
+            }
+        }
+    }
+
+    /// Every vCPU of a time ABI partition has its own L1 and L2 caches, and
+    /// all of them share the L3 cache, as in one socket of the profile's
+    /// generation.
+    #[test]
+    fn pinned_profiles_share_the_l3_cache_across_the_socket() {
+        for profile in cpu_profile::pinned_profiles() {
+            for vp_count in [1, 2, 8] {
+                let topology = topology(vp_count, X2ApicState::Supported);
+                let socket = topology.reserved_vps_per_socket();
+                let effective = effective_cpuid(profile, &topology).unwrap();
+                let mut levels = Vec::new();
+                for subleaf in 0..16 {
+                    let eax = CacheParametersEax::from(effective.lookup(4, subleaf)[0]);
+                    if eax.cache_type() == 0 {
+                        break;
+                    }
+                    let sharing = if eax.cache_level() == 3 {
+                        socket - 1
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        eax.threads_sharing_cache_minus_one(),
+                        sharing,
+                        "{}, {vp_count} VPs, subleaf {subleaf}",
+                        profile.id()
+                    );
+                    assert_eq!(
+                        eax.cores_per_socket_minus_one(),
+                        socket - 1,
+                        "{}, {vp_count} VPs, subleaf {subleaf}",
+                        profile.id()
+                    );
+                    levels.push(eax.cache_level());
+                }
+                assert_eq!(levels.last(), Some(&3), "{}", profile.id());
             }
         }
     }
