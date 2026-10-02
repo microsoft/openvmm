@@ -17,7 +17,10 @@
 //!   CPU ([`HostCpuSignature`]) to a pinned profile.
 //! - **Verification:** each backend reports the CPU surface it supports
 //!   ([`HostCpuSurface`]), and [`verify_support`] checks that it covers the
-//!   profile.
+//!   profile. A pass-through backend (MSHV, WHP) must also present zero at
+//!   every CPUID entry outside the profile's tables
+//!   ([`check_unlisted_cpuid`]), which KVM does by construction
+//!   ([`CpuidPresentation`]).
 //! - **Restore:** [`restore_profile`] checks a snapshot's profile record,
 //!   and [`EffectiveCpuid::check_matches`] its effective CPUID.
 //!
@@ -48,6 +51,7 @@ mod signature;
 mod surface;
 #[cfg(test)]
 mod test_support;
+mod unlisted;
 
 pub use catalog::AUTO;
 pub use catalog::check_generation;
@@ -84,8 +88,12 @@ pub use profile::pinned_mask;
 pub use profile::runtime_owned_bits;
 pub use profile::vm_owned_bits;
 pub use signature::HostCpuSignature;
+pub use surface::CpuidPresentation;
 pub use surface::HostCpuSurface;
 pub use surface::SupportedMsr;
 pub use surface::TIME_POLICY_BITS;
 pub use surface::support_violations;
 pub use surface::verify_support;
+pub use unlisted::check_unlisted_cpuid;
+pub use unlisted::unlisted_cpuid_candidates;
+pub use unlisted::unlisted_cpuid_violations;

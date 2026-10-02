@@ -547,7 +547,11 @@ pub fn profile_features(
 /// DS, ACPI, HTT, PT, TME, the hybrid bit, the topology fields, and leaves 5,
 /// 6, `0xA`, `0x14`, and `0x15`. They are harmless to
 /// [`verify_support`](crate::verify_support): no profile sets them, except
-/// ARAT in leaf 6, a time policy bit that support checks exempt.
+/// ARAT in leaf 6, a time policy bit that support checks exempt. The entries
+/// outside a profile's tables over-claim too: on Skylake-SP, the root of both
+/// MSHV and WHP reads Intel PT's subleaf `0x14.1` as non-zero, though neither
+/// gives guests PT. So a surface built here is a
+/// [`CpuidPresentation::PassThroughHostView`](crate::CpuidPresentation::PassThroughHostView).
 /// The surface's guest physical address width must come from the hypervisor,
 /// not from this CPUID (see [`HostCpuSurface`](crate::HostCpuSurface)).
 pub fn restrict_cpuid_to_features(cpuid: &mut [CpuidEntry], available: HvFeatures) {

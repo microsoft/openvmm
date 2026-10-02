@@ -1194,9 +1194,10 @@ guest; the backend may create, and then destroys, a transient probe partition.
 
 After writing the fingerprint, OpenVMM checks it against the pinned CPU profile
 of the host's generation and prints one "NVX-CPU-PROFILE:" line to stderr. It
-exits with status 1 and the failure code (E_PROFILE_HOST_UNKNOWN or
-E_PROFILE_UNSUPPORTED) if no profile serves the host or the backend does not
-support it.
+exits with status 1 and the failure code (E_PROFILE_HOST_UNKNOWN,
+E_PROFILE_UNSUPPORTED, or E_CPU_UNLISTED) if no profile serves the
+host, the backend does not support it, or MSHV or WHP presents a non-zero CPUID
+entry outside the profile's tables.
 
 Examples:
     --hypervisor kvm --cpu-fingerprint host.json

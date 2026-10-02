@@ -492,6 +492,7 @@ mod tests {
                     .iter()
                     .map(|leaf| CpuidEntry::new(leaf.function, leaf.index, leaf.result))
                     .collect(),
+                presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
                 physical_address_width: surface.physical_address_width,
                 msrs: surface
                     .msrs
@@ -688,6 +689,7 @@ mod hw {
         cpu_profile::cpuid::normalize(&mut cpuid);
         cpu_profile::HostCpuSurface {
             cpuid,
+            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
             physical_address_width: surface.physical_address_width,
             msrs: surface
                 .msrs
