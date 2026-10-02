@@ -19,7 +19,9 @@
 //! - CPUID intercept results present the configured CPUID verbatim: it is the
 //!   CPU profile's complete effective CPUID, and the backend adds nothing to
 //!   it except zero results for the leaves and subleaves it does not list. The
-//!   hypervisor reports no hypervisor leaf of its own, which preflight
+//!   extended topology leaves are registered once per VP with that VP's
+//!   x2APIC ID, which the hypervisor does not provide for these partitions.
+//!   The hypervisor reports no hypervisor leaf of its own, which preflight
 //!   verifies at sentinel leaves.
 //! - The processor feature banks follow the CPU profile (see
 //!   [`profile_features`](super::profile_features)), keep the invariant TSC,
@@ -293,6 +295,24 @@ fn install_msr_intercepts(vmfd: &VmFd, msrs: &[u32]) -> Result<(), TimeAbiError>
 /// every other hypervisor-range leaf as zero.
 pub(super) fn partition_cpuid(config: &CpuidLeafSet) -> CpuidLeafSet {
     CpuidLeafSet::new(config.leaves().to_vec())
+}
+
+/// Returns whether CPUID leaf `function` carries a field that differs per VP
+/// and that the hypervisor does not provide for a time ABI partition: the
+/// extended topology leaves `0xB` and `0x1F`, whose `EDX` is the VP's x2APIC
+/// ID. The hypervisor does not implement them for these partitions and reads
+/// that `EDX` as 0 on every VP, so each VP gets its own result. Leaf 1's
+/// initial APIC ID, the other per-VP field on Intel, is the hypervisor's own.
+pub(super) fn is_per_vp_leaf(function: u32) -> bool {
+    matches!(function, 0xb | 0x1f)
+}
+
+/// Returns `leaf` for the VP with x2APIC ID `apic_id`: its `EDX` is that ID.
+pub(super) fn with_x2apic_id(leaf: &CpuidLeaf, apic_id: u32) -> CpuidLeaf {
+    let mut leaf = *leaf;
+    leaf.result[3] = apic_id;
+    leaf.mask[3] = !0;
+    leaf
 }
 
 /// Returns whether `leaf` is an explicit zero leaf past the identity, which
@@ -1078,6 +1098,25 @@ mod tests {
     }
 
     #[test]
+    fn extended_topology_leaves_take_each_vp_x2apic_id() {
+        for function in [0xb, 0x1f] {
+            assert!(is_per_vp_leaf(function), "{function:#x}");
+        }
+        // Leaf 1's initial APIC ID is the hypervisor's own per-VP value.
+        for function in [0, 1, 4, 0xd, 0x4000_0000, 0x8000_001e] {
+            assert!(!is_per_vp_leaf(function), "{function:#x}");
+        }
+        let level = CpuidLeaf::new(0xb, [1, 2, 0x100, 0])
+            .indexed(0)
+            .masked([!0, !0, !0, 0]);
+        let leaf = with_x2apic_id(&level, 5);
+        assert_eq!(
+            (leaf.function, leaf.index, leaf.result, leaf.mask),
+            (0xb, Some(0), [1, 2, 0x100, 5], [!0; 4])
+        );
+    }
+
+    #[test]
     fn zero_fill_leaves_are_full_zero_leaves_past_the_identity() {
         for function in [0x4000_0006, 0x4000_0081, 0x4000_00ff] {
             assert!(is_zero_fill(&CpuidLeaf::new(function, [0; 4])));
@@ -1621,8 +1660,10 @@ mod hw {
     /// Sweeps, as VP 0 of a time ABI partition observes them, subleaves 0 to
     /// 63 of every indexed leaf of the effective CPUID and the four leaves
     /// past the maximum basic and extended leaves. Listed results must match
-    /// under their masks. By the profile's contract a leaf or subleaf that the
-    /// table does not list reads zero, which the zero results provide on MSHV.
+    /// under their masks. A leaf or subleaf that the table does not list must
+    /// read zero, which the zero results provide on MSHV, except past the VM
+    /// topology's levels in the extended topology leaves: those are reserved,
+    /// and the sweep only reports them.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
@@ -1690,7 +1731,8 @@ mod hw {
             .flat_map(|&function| (0..64).map(move |index| (function, index)))
             .chain((max_basic + 1..=max_basic + 4).map(|function| (function, 0)))
             .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)));
-        let (mut count, mut listed_failures, mut unlisted) = (0, Vec::new(), Vec::new());
+        let (mut count, mut listed_failures, mut unlisted, mut reserved) =
+            (0, Vec::new(), Vec::new(), Vec::new());
         for (function, index) in probes {
             count += 1;
             let listed = effective.results().find(|result| {
@@ -1706,22 +1748,130 @@ mod hw {
             let line = format!("{function:#x}.{index}: {actual:08x?}");
             if listed.is_some() {
                 listed_failures.push(format!("{line} expected {expected:08x?} mask {mask:08x?}"));
+            } else if is_per_vp_leaf(function) {
+                reserved.push(line);
             } else {
                 unlisted.push(line);
             }
         }
         println!(
-            "{}: {count} probes of {} indexed leaves (max basic {max_basic:#x}, max extended {max_extended:#x}); {} listed results differ, {} unlisted results are not zero",
+            "{}: {count} probes of {} indexed leaves (max basic {max_basic:#x}, max extended {max_extended:#x}); {} listed results differ, {} unlisted results are not zero, {} reserved topology entries are not zero",
             host_profile_id(),
             indexed.len(),
             listed_failures.len(),
-            unlisted.len()
+            unlisted.len(),
+            reserved.len()
         );
-        for line in listed_failures.iter().chain(&unlisted) {
+        for line in listed_failures.iter().chain(&unlisted).chain(&reserved) {
             println!("  {line}");
         }
         assert!(listed_failures.is_empty(), "{listed_failures:#?}");
         assert!(unlisted.is_empty(), "{unlisted:#?}");
+    }
+
+    /// Every VP of a time ABI partition reads its own x2APIC ID in `EDX` of
+    /// the extended topology leaves, which OpenVMM registers per VP because
+    /// the hypervisor reads it as 0 on every VP, and the table's other
+    /// registers. Leaf 1's initial APIC ID is the hypervisor's own and must
+    /// be the VP's too.
+    #[async_test]
+    #[ignore = "requires /dev/mshv"]
+    async fn extended_topology_reports_each_vp_x2apic_id(driver: DefaultDriver) {
+        const VPS: u32 = 4;
+        let processor_topology = TopologyBuilder::new_x86()
+            .x2apic(X2ApicState::Supported)
+            .build(VPS)
+            .unwrap();
+        let (_, table) = host_profile_cpuid(&processor_topology);
+        let topology_leaves: Vec<CpuidLeaf> = table
+            .leaves()
+            .iter()
+            .filter(|leaf| is_per_vp_leaf(leaf.function))
+            .copied()
+            .collect();
+        assert!(!topology_leaves.is_empty());
+        let mem_layout = MemoryLayout::new(0x400000, &[], &[], &[], None).unwrap();
+        let vmtime_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = vmtime_keeper.builder().build(&driver).await.unwrap();
+        let guest_memory = GuestMemory::allocate(mem_layout.end_of_ram() as usize);
+        let mut mshv = LinuxMshv::new().unwrap();
+        let (partition, mut binders) = mshv
+            .new_partition(ProtoPartitionConfig {
+                processor_topology: &processor_topology,
+                hv_config: None,
+                vmtime: &vmtime,
+                isolation: virt::ProtoPartitionIsolation::None,
+                nested_virt: false,
+                user_mode_memory_faults: false,
+                lazy_memory_registration: false,
+                versioned_cpu_contract: false,
+                time_abi: Some(TimeAbiConfig {
+                    cpuid: Arc::new(table),
+                    msrs: Arc::new(TimeAbiMsrs::new()),
+                    cpu_profile: host_profile_id(),
+                }),
+            })
+            .unwrap()
+            .build(PartitionConfig {
+                mem_layout: &mem_layout,
+                guest_memory: &guest_memory,
+                cpuid: &[],
+                vtl0_alias_map: None,
+                fault_resolver: None,
+            })
+            .unwrap();
+        let ram = guest_memory.inner_buf().unwrap();
+        // SAFETY: the guest memory outlives the partition.
+        unsafe {
+            partition.memory_mapper(Vtl::Vtl0).map_range(
+                ram.as_ptr().cast_mut().cast(),
+                ram.len(),
+                0,
+                true,
+                true,
+            )
+        }
+        .unwrap();
+        partition.finalize_memory().unwrap();
+        for binder in &mut binders {
+            binder.bind().unwrap();
+        }
+        let finalized = partition.inner.finalized().unwrap();
+        let mut checked = 0;
+        for (vp, binder) in processor_topology.vps_arch().zip(&binders) {
+            let vcpufd = if vp.base.vp_index.is_bsp() {
+                &finalized.bsp_vcpufd
+            } else {
+                binder.vcpufd.as_ref().unwrap()
+            };
+            for leaf in &topology_leaves {
+                let index = leaf.index.unwrap_or(0);
+                let actual = vcpufd.get_cpuid_values(leaf.function, index, 0, 0).unwrap();
+                let expected = with_x2apic_id(leaf, vp.apic_id);
+                assert!(
+                    (0..4).all(|r| (actual[r] ^ expected.result[r]) & expected.mask[r] == 0),
+                    "VP {} CPUID {:#x}.{index}: {actual:08x?}, expected {:08x?}",
+                    vp.base.vp_index.index(),
+                    leaf.function,
+                    expected.result
+                );
+                checked += 1;
+            }
+            let [_, ebx, _, _] = vcpufd.get_cpuid_values(1, 0, 0, 0).unwrap();
+            assert_eq!(
+                ebx >> 24,
+                vp.apic_id & 0xff,
+                "VP {} initial APIC ID",
+                vp.base.vp_index.index()
+            );
+        }
+        println!(
+            "{VPS} VPs with x2APIC IDs {:?}: {checked} extended topology entries carry each VP's ID, and leaf 1 its initial APIC ID",
+            processor_topology
+                .vps_arch()
+                .map(|vp| vp.apic_id)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// The negative path of identity routing: the hypervisor refuses an
