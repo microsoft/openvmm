@@ -296,31 +296,25 @@ impl VmController {
                     block.identity.clear();
                 }
             }
-            let clock = openvmm_helpers::snapshot::microvm::MicrovmClockContract::TimeAbi {
-                time: response.time.time,
-                cpu_profile: response.time.cpu_profile,
-            };
-            let version = openvmm_helpers::snapshot::format::TIME_ABI_MANIFEST_VERSION;
-            let format_magic = openvmm_helpers::snapshot::format::TIME_ABI_SNAPSHOT_FORMAT_MAGIC;
-            let machine_contract =
-                openvmm_helpers::snapshot::microvm::microvm_machine_contract_with_clock(
-                    &self.microvm.source_hypervisor,
-                    openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
-                    command_line,
-                    network,
-                    self.microvm.filesystem_slot,
-                    filesystem,
-                    self.microvm.resources.console_attachment.clone(),
-                    self.microvm.resources.control_console_attachment.clone(),
-                    blocks,
-                    self.processors,
-                    self.memory,
-                    self.microvm.memory_capacity,
-                    response.state_unit_names,
-                    clock,
-                )?;
+            let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
+                &self.microvm.source_hypervisor,
+                openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
+                command_line,
+                network,
+                self.microvm.filesystem_slot,
+                filesystem,
+                self.microvm.resources.console_attachment.clone(),
+                self.microvm.resources.control_console_attachment.clone(),
+                blocks,
+                self.processors,
+                self.memory,
+                self.microvm.memory_capacity,
+                response.state_unit_names,
+                response.time.time,
+                response.time.cpu_profile,
+            )?;
             let manifest = openvmm_helpers::snapshot::SnapshotManifest {
-                version,
+                version: openvmm_helpers::snapshot::MANIFEST_VERSION,
                 created_at: std::time::SystemTime::now().into(),
                 openvmm_version: env!("CARGO_PKG_VERSION").to_owned(),
                 memory_size_bytes: self.memory,
@@ -328,10 +322,8 @@ impl VmController {
                 page_size: crate::system_page_size(),
                 architecture: crate::GUEST_ARCH.to_owned(),
                 state_size_bytes: 0,
-                state_sha256: Vec::new(),
-                memory_sha256: Vec::new(),
                 machine_contract: Some(machine_contract),
-                format_magic: format_magic.to_vec(),
+                format_magic: openvmm_helpers::snapshot::format::SNAPSHOT_FORMAT_MAGIC.to_vec(),
                 saved_state_schema_version:
                     openvmm_helpers::snapshot::format::SAVED_STATE_SCHEMA_VERSION,
                 saved_state_root_type: openvmm_helpers::snapshot::format::SAVED_STATE_ROOT_TYPE

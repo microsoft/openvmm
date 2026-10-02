@@ -2,27 +2,19 @@
 // Licensed under the MIT License.
 
 //! Snapshot format identifiers and manifest format validation: format magic
-//! and supported versions, saved-state schema, capture tiers, restore
-//! policies, configuration sections, artifact names, and size limits.
+//! and version, saved-state schema, capture tiers, restore policies,
+//! configuration sections, artifact names, and size limits.
 
 use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use super::microvm;
 use mesh::payload::Timestamp;
 use sha2::Digest;
+use virt::time_abi::TimeAbiCode;
+use virt::time_abi::TimeAbiError;
 
 /// Magic identifying the OpenVMM snapshot manifest format.
-pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V5\0";
-/// Manifest version of snapshots that carry the NVX time ABI records.
-pub const TIME_ABI_MANIFEST_VERSION: u32 = 6;
-/// Magic identifying a time ABI snapshot manifest.
-pub const TIME_ABI_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V6\0";
-const VERSION_4_MANIFEST_VERSION: u32 = 4;
-const VERSION_4_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V4\0";
-pub(super) const PREVIOUS_MANIFEST_VERSION: u32 = 3;
-pub(super) const PREVIOUS_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V3\0";
-pub(super) const LEGACY_MANIFEST_VERSION: u32 = 2;
-pub(super) const LEGACY_SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V2\0";
+pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V6\0";
 /// Saved-state schema version used by the VM worker envelope.
 pub const SAVED_STATE_SCHEMA_VERSION: u32 = 1;
 /// Protobuf root type stored in `state.bin`.
@@ -76,8 +68,6 @@ impl Default for SnapshotManifest {
             page_size: 0,
             architecture: String::new(),
             state_size_bytes: 0,
-            state_sha256: Vec::new(),
-            memory_sha256: Vec::new(),
             machine_contract: None,
             format_magic: SNAPSHOT_FORMAT_MAGIC.to_vec(),
             saved_state_schema_version: SAVED_STATE_SCHEMA_VERSION,
@@ -111,21 +101,27 @@ pub(super) fn verify_digest(
     Ok(())
 }
 
+/// Validates the manifest's format identity: version 6, the matching magic,
+/// and the saved-state schema. Any other version or magic is
+/// `E_SNAPSHOT_VERSION`, which asks for a recapture.
 pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::Result<()> {
-    let expected_magic = match manifest.version {
-        LEGACY_MANIFEST_VERSION => LEGACY_SNAPSHOT_FORMAT_MAGIC,
-        PREVIOUS_MANIFEST_VERSION => PREVIOUS_SNAPSHOT_FORMAT_MAGIC,
-        VERSION_4_MANIFEST_VERSION => VERSION_4_SNAPSHOT_FORMAT_MAGIC,
-        MANIFEST_VERSION => SNAPSHOT_FORMAT_MAGIC,
-        TIME_ABI_MANIFEST_VERSION => TIME_ABI_SNAPSHOT_FORMAT_MAGIC,
-        version => anyhow::bail!(
-            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {TIME_ABI_MANIFEST_VERSION})"
-        ),
-    };
-    anyhow::ensure!(
-        manifest.format_magic == expected_magic,
-        "snapshot format magic is invalid"
-    );
+    if manifest.version != MANIFEST_VERSION {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::SnapshotVersion,
+            format!(
+                "snapshot manifest version {} is not supported (expected {MANIFEST_VERSION}); recapture the snapshot",
+                manifest.version
+            ),
+        )
+        .into());
+    }
+    if manifest.format_magic != SNAPSHOT_FORMAT_MAGIC {
+        return Err(TimeAbiError::new(
+            TimeAbiCode::SnapshotVersion,
+            "snapshot format magic is invalid; recapture the snapshot",
+        )
+        .into());
+    }
     anyhow::ensure!(
         manifest.saved_state_schema_version == SAVED_STATE_SCHEMA_VERSION,
         "snapshot saved-state schema version {} is unsupported",
@@ -139,122 +135,47 @@ pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::R
     Ok(())
 }
 
-pub(super) fn validate_manifest_version(manifest: &SnapshotManifest) -> anyhow::Result<()> {
-    if manifest.version < MANIFEST_VERSION {
-        anyhow::ensure!(
-            manifest.snapshot_tier.is_empty()
-                && manifest.restore_policy.is_empty()
-                && manifest.consumed_config_sections == 0,
-            "snapshot manifest version {} cannot contain snapshot tier metadata",
-            manifest.version,
-        );
-    }
-    match manifest.version {
-        LEGACY_MANIFEST_VERSION => {
-            anyhow::ensure!(
-                manifest.state_sha256.len() == SHA256_SIZE,
-                "legacy state.bin SHA-256 digest has invalid length {}",
-                manifest.state_sha256.len(),
-            );
-            anyhow::ensure!(
-                manifest.memory_sha256.len() == SHA256_SIZE,
-                "legacy memory.bin SHA-256 digest has invalid length {}",
-                manifest.memory_sha256.len(),
-            );
-            anyhow::ensure!(
-                !microvm::has_sandbox_blocks(manifest),
-                "snapshot manifest version {LEGACY_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
-            );
-        }
-        PREVIOUS_MANIFEST_VERSION
-        | VERSION_4_MANIFEST_VERSION
-        | MANIFEST_VERSION
-        | TIME_ABI_MANIFEST_VERSION => {
-            anyhow::ensure!(
-                manifest.state_sha256.is_empty() && manifest.memory_sha256.is_empty(),
-                "snapshot manifest version {} must not contain legacy artifact digests",
-                manifest.version,
-            );
-            if manifest.version == PREVIOUS_MANIFEST_VERSION {
-                anyhow::ensure!(
-                    !microvm::has_sandbox_blocks(manifest),
-                    "snapshot manifest version {PREVIOUS_MANIFEST_VERSION} cannot contain microVM sandbox blocks"
-                );
-            }
-            if manifest.version >= MANIFEST_VERSION {
-                microvm::validate_snapshot_tier(manifest)?;
-            }
-        }
-        version => anyhow::bail!(
-            "snapshot manifest version {version} is not supported (expected {LEGACY_MANIFEST_VERSION} through {TIME_ABI_MANIFEST_VERSION})"
-        ),
-    }
-    let contract = manifest.machine_contract.as_ref();
-    if manifest.version == TIME_ABI_MANIFEST_VERSION {
-        let contract = contract.ok_or_else(|| {
-            virt::time_abi::TimeAbiError::new(
-                virt::time_abi::TimeAbiCode::ManifestTime,
-                "a version 6 manifest requires a microVM machine contract",
-            )
-        })?;
+/// Validates the manifest's machine contract and capture tier. A microVM
+/// machine contract must carry valid time ABI records; a manifest without a
+/// machine contract, a regular VM's, has none.
+pub(super) fn validate_manifest_contents(manifest: &SnapshotManifest) -> anyhow::Result<()> {
+    // The time records come first, so a clock parameter on a platform
+    // snapshot's command line reports `E_CMDLINE_CLOCK_TOKEN`.
+    if let Some(contract) = &manifest.machine_contract {
         super::time::validate_time_abi_contract(contract)?;
-    } else {
-        anyhow::ensure!(
-            contract
-                .is_none_or(|contract| contract.time.is_none() && contract.cpu_profile.is_none()),
-            "snapshot manifest version {} cannot carry time ABI records",
-            manifest.version,
-        );
     }
-    Ok(())
+    microvm::validate_snapshot_tier(manifest)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::microvm::paired_scratch_manifest;
     use super::super::tests::test_manifest;
     use super::super::validate_manifest;
     use super::*;
 
     #[test]
-    fn version_4_manifest_has_no_snapshot_tier_metadata() {
-        let scratch = vec![0x5a; 512];
-        let mut manifest = paired_scratch_manifest(&scratch);
-        manifest.version = VERSION_4_MANIFEST_VERSION;
-        manifest.format_magic = VERSION_4_SNAPSHOT_FORMAT_MAGIC.to_vec();
-        manifest.snapshot_tier.clear();
-        manifest.restore_policy.clear();
-        manifest.consumed_config_sections = 0;
-        validate_manifest_header(&manifest).unwrap();
-        validate_manifest_version(&manifest).unwrap();
-
-        manifest.snapshot_tier = SNAPSHOT_TIER_WORKLOAD_START.to_owned();
-        assert!(validate_manifest_version(&manifest).is_err());
-    }
-
-    #[test]
-    fn current_manifest_rejects_legacy_payload_digests() {
-        let mut manifest = test_manifest();
-        manifest.state_sha256 = vec![0; SHA256_SIZE];
-        let error = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
-        assert!(error.to_string().contains("legacy artifact digests"));
-    }
-
-    #[test]
-    fn previous_v3_manifest_remains_accepted() {
-        let mut manifest = test_manifest();
-        manifest.version = PREVIOUS_MANIFEST_VERSION;
-        manifest.format_magic = PREVIOUS_SNAPSHOT_FORMAT_MAGIC.to_vec();
-
-        validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap();
+    fn other_versions_are_rejected_with_e_snapshot_version() {
+        for version in [0, 1, 2, 3, 4, 5, 7, u32::MAX] {
+            let mut manifest = test_manifest();
+            manifest.version = version;
+            let error = format!(
+                "{:#}",
+                validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err()
+            );
+            assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
+            assert!(error.contains("recapture the snapshot"), "{error}");
+        }
     }
 
     #[test]
     fn validate_manifest_wrong_magic() {
-        let mut manifest = test_manifest();
-        manifest.format_magic = b"NOT_OPENVMM".to_vec();
-        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
-        assert!(err.to_string().contains("format magic"));
+        for magic in [&b"NOT_OPENVMM"[..], b"OPENVMM_SNAPSHOT_V5\0"] {
+            let mut manifest = test_manifest();
+            manifest.format_magic = magic.to_vec();
+            let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
+            assert!(err.to_string().contains("[E_SNAPSHOT_VERSION]"), "{err}");
+            assert!(err.to_string().contains("format magic"), "{err}");
+        }
     }
 
     #[test]
@@ -271,5 +192,33 @@ mod tests {
         manifest.saved_state_root_type = "other.SavedState".to_owned();
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
         assert!(err.to_string().contains("root type"));
+    }
+
+    #[test]
+    fn retired_digest_fields_are_ignored_when_decoding() {
+        // A manifest encoded with fields 9 and 10 still decodes; the version
+        // check rejects every manifest that set them.
+        #[derive(mesh::payload::Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct WithDigests {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(9)]
+            state_sha256: Vec<u8>,
+            #[mesh(10)]
+            memory_sha256: Vec<u8>,
+        }
+        let bytes = mesh::payload::encode(WithDigests {
+            version: 2,
+            state_sha256: vec![0xa5; SHA256_SIZE],
+            memory_sha256: vec![0x5a; SHA256_SIZE],
+        });
+        let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
+        assert_eq!(manifest.version, 2);
+        let error = validate_manifest_header(&manifest).unwrap_err();
+        assert!(
+            error.to_string().contains("[E_SNAPSHOT_VERSION]"),
+            "{error}"
+        );
     }
 }
