@@ -559,17 +559,16 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             None => virt::CpuidLeafSet::new(tsc::add_cpuid_leaves(&self.vmfd, cpuid)?),
         };
 
-        // A time ABI partition's unlisted leaves and subleaves read zero, which
-        // takes explicit results on MSHV.
+        // A time ABI partition reads the host's CPUID once: its supported CPU
+        // surface derives from it, and its effective CPUID report covers the
+        // reserved entries the host enumerates (`E_CPU_UNLISTED`). Those
+        // entries need no results of their own: the hypervisor's guest view
+        // reads zero there, as the CPUID sweep hardware test checks.
         let started = std::time::Instant::now();
-        let (zero_results, host_cpuid) = if self.config.time_abi.is_some() {
-            let host_cpuid = profile_features::host_cpuid_table();
-            (
-                profile_features::unlisted_zero_results(&cpuid, &host_cpuid),
-                host_cpuid,
-            )
+        let host_cpuid = if self.config.time_abi.is_some() {
+            profile_features::host_cpuid_table()
         } else {
-            (Vec::new(), Vec::new())
+            Vec::new()
         };
         let host_cpuid_us = started.elapsed().as_micros() as u64;
 
@@ -581,17 +580,11 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         let per_vp = |leaf: &&virt::CpuidLeaf| {
             self.config.time_abi.is_some() && time_abi::is_per_vp_leaf(leaf.function)
         };
-        for leaf in cpuid
-            .leaves()
-            .iter()
-            .chain(&zero_results)
-            .filter(|leaf| !per_vp(leaf))
-        {
+        for leaf in cpuid.leaves().iter().filter(|leaf| !per_vp(leaf)) {
             register_cpuid_result(&self.vmfd, leaf)?;
         }
         tracing::info!(
             leaves = cpuid.leaves().len(),
-            zero_results = zero_results.len(),
             per_vp_leaves = cpuid.leaves().iter().filter(per_vp).count(),
             host_cpuid_us,
             elapsed_us = started.elapsed().as_micros() as u64,

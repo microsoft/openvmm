@@ -18,11 +18,14 @@
 //!   when they are intercepted, and for every other MSR of the identity range.
 //! - CPUID intercept results present the configured CPUID verbatim: it is the
 //!   CPU profile's complete effective CPUID, and the backend adds nothing to
-//!   it except zero results for the leaves and subleaves it does not list. The
-//!   extended topology leaves are registered once per VP with that VP's
-//!   x2APIC ID, which the hypervisor does not provide for these partitions.
-//!   The hypervisor reports no hypervisor leaf of its own, which preflight
-//!   verifies at sentinel leaves.
+//!   it. The extended topology leaves are registered once per VP with that
+//!   VP's x2APIC ID, which the hypervisor does not provide for these
+//!   partitions. Entries the effective CPUID does not list show the
+//!   hypervisor's own guest view, which reads zero there: the CPUID sweep
+//!   hardware test checks it, and verification (`E_CPU_UNLISTED`) checks the
+//!   ones the host enumerates at every boot and restore. The hypervisor
+//!   reports no hypervisor leaf of its own, which preflight verifies at
+//!   sentinel leaves.
 //! - The processor feature banks follow the CPU profile (see
 //!   [`profile_features`](super::profile_features)), keep the invariant TSC,
 //!   and hide the TSC-deadline timer, `IA32_TSC_ADJUST`, and APERF/MPERF.
@@ -134,8 +137,8 @@ pub(crate) struct MshvTimeAbi {
     /// the supported CPU surface.
     #[inspect(skip)]
     host_features: HvFeatures,
-    /// The host's CPUID table, read once at creation for the zero results
-    /// and the supported CPU surface.
+    /// The host's CPUID table, read once at creation for the supported CPU
+    /// surface and the unlisted candidates.
     #[inspect(skip)]
     host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
     /// The entries the host's CPUID enumerates outside the CPU profile's
@@ -300,10 +303,9 @@ fn install_msr_intercepts(vmfd: &VmFd, msrs: &[u32]) -> Result<(), TimeAbiError>
 /// leaves), so neither the worker's leaves nor the backend's own add a leaf or
 /// a bit. The hypervisor's own values show only where a result's mask is clear
 /// (each VP's APIC identity, the runtime XSAVE sizes) and where no result
-/// applies, which the zero results of
-/// [`unlisted_zero_results`](super::profile_features::unlisted_zero_results)
-/// cover. Without synthetic processor features, the hypervisor itself reports
-/// every other hypervisor-range leaf as zero.
+/// applies: the reserved entries, which its guest view reads as zero. Without
+/// synthetic processor features, the hypervisor itself reports every other
+/// hypervisor-range leaf as zero.
 pub(super) fn partition_cpuid(config: &CpuidLeafSet) -> CpuidLeafSet {
     CpuidLeafSet::new(config.leaves().to_vec())
 }
@@ -1623,6 +1625,61 @@ mod hw {
         sorted[(sorted.len() - 1) * percent / 100]
     }
 
+    /// Whether `effective` lists CPUID `function` at subleaf `index`.
+    fn is_listed(effective: &cpu_profile::EffectiveCpuid, function: u32, index: u32) -> bool {
+        effective
+            .results()
+            .any(|result| result.function == function && result.index.is_none_or(|i| i == index))
+    }
+
+    /// The CPUID entries that a sweep of VP 0 probes for `effective`.
+    ///
+    /// - Near, where guests enumerate: subleaves 0 to 63 of every indexed
+    ///   leaf, and the four leaves past each maximum.
+    /// - Far, where no enumeration reaches, without the entries `effective`
+    ///   lists: subleaves 64 to 255 of every indexed leaf, the leaves past the
+    ///   near ones up to 0xff and 0x800000ff, the hypervisor range up to
+    ///   0x400001ff, and a few distant leaves.
+    fn sweep_probes(effective: &cpu_profile::EffectiveCpuid) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+        let mut indexed: Vec<u32> = effective
+            .results()
+            .filter(|result| result.index.is_some())
+            .map(|result| result.function)
+            .collect();
+        indexed.dedup();
+        let max_basic = effective.lookup(0, 0)[0];
+        let max_extended = effective.lookup(0x8000_0000, 0)[0];
+        let near = indexed
+            .iter()
+            .flat_map(|&function| (0..64).map(move |index| (function, index)))
+            .chain((max_basic + 1..=max_basic + 4).map(|function| (function, 0)))
+            .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)))
+            .collect();
+        let far = indexed
+            .iter()
+            .flat_map(|&function| (64..256).map(move |index| (function, index)))
+            .chain((max_basic + 5..=0xff).map(|function| (function, 0)))
+            .chain((max_extended + 5..=0x8000_00ff).map(|function| (function, 0)))
+            .chain((0x4000_0000..=0x4000_01ff).map(|function| (function, 0)))
+            .chain(
+                [
+                    0x100,
+                    0x1000,
+                    0x2000_0000,
+                    0x3fff_ffff,
+                    0x8000_0100,
+                    0x8fff_ffff,
+                    0xc000_0000,
+                    0xc000_0001,
+                    0xffff_ffff,
+                ]
+                .map(|function| (function, 0)),
+            )
+            .filter(|&(function, index)| !is_listed(effective, function, index))
+            .collect();
+        (near, far)
+    }
+
     /// Builds a time ABI partition, binds the first `created` VPs, and runs
     /// every backend primitive against the hypervisor.
     #[async_test]
@@ -1878,14 +1935,14 @@ mod hw {
     /// 63 of every indexed leaf of the effective CPUID and the four leaves
     /// past the maximum basic and extended leaves. Listed results must match
     /// under their masks. A leaf or subleaf that the table does not list must
-    /// read zero, which the zero results provide on MSHV, except past the
-    /// extended topology leaves' terminators: those are reserved, and the
-    /// sweep only reports them. One rep hypercall must read every probe as
-    /// the single reads do, and the test times both ways. Farther out, where
-    /// no guest enumeration reaches (subleaves 64 to 255, leaves up to 0xff
-    /// and 0x800000ff, the hypervisor range up to 0x400001ff, and a few
-    /// distant leaves), every unlisted entry must read zero as well: no entry
-    /// outside the effective CPUID reads host data.
+    /// read zero, which is the hypervisor's own guest view there (the backend
+    /// registers no result for it), except past the extended topology leaves'
+    /// terminators: those are reserved, and the sweep only reports them. One
+    /// rep hypercall must read every probe as the single reads do, and the
+    /// test times both ways. Farther out, where no guest enumeration reaches
+    /// (subleaves 64 to 255, leaves up to 0xff and 0x800000ff, the hypervisor
+    /// range up to 0x400001ff, and a few distant leaves), every unlisted entry
+    /// must read zero as well (see `sweep_probes`).
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
@@ -1948,12 +2005,7 @@ mod hw {
         indexed.dedup();
         let max_basic = effective.lookup(0, 0)[0];
         let max_extended = effective.lookup(0x8000_0000, 0)[0];
-        let probes: Vec<(u32, u32)> = indexed
-            .iter()
-            .flat_map(|&function| (0..64).map(move |index| (function, index)))
-            .chain((max_basic + 1..=max_basic + 4).map(|function| (function, 0)))
-            .chain((max_extended + 1..=max_extended + 4).map(|function| (function, 0)))
-            .collect();
+        let (probes, far) = sweep_probes(&effective);
         let (mut count, mut listed_failures, mut unlisted, mut reserved) =
             (0, Vec::new(), Vec::new(), Vec::new());
         let mut single = Vec::with_capacity(probes.len());
@@ -2028,35 +2080,7 @@ mod hw {
         );
 
         // Farther out, every entry the effective CPUID does not list must read
-        // zero too: subleaves 64 to 255 of every indexed leaf, the leaves past
-        // the probes above up to 0xff and 0x800000ff, the rest of the
-        // hypervisor range up to 0x400001ff, and a few distant leaves.
-        let far: Vec<(u32, u32)> = indexed
-            .iter()
-            .flat_map(|&function| (64..256).map(move |index| (function, index)))
-            .chain((max_basic + 5..=0xff).map(|function| (function, 0)))
-            .chain((max_extended + 5..=0x8000_00ff).map(|function| (function, 0)))
-            .chain((0x4000_0000..=0x4000_01ff).map(|function| (function, 0)))
-            .chain(
-                [
-                    0x100,
-                    0x1000,
-                    0x2000_0000,
-                    0x3fff_ffff,
-                    0x8000_0100,
-                    0x8fff_ffff,
-                    0xc000_0000,
-                    0xc000_0001,
-                    0xffff_ffff,
-                ]
-                .map(|function| (function, 0)),
-            )
-            .filter(|&(function, index)| {
-                !effective.results().any(|result| {
-                    result.function == function && result.index.is_none_or(|i| i == index)
-                })
-            })
-            .collect();
+        // zero too (see `sweep_probes`).
         let values = vp_cpuid_many(bsp, 0, &far).unwrap();
         let (mut far_unlisted, mut far_reserved) = (Vec::new(), Vec::new());
         for (&(function, index), actual) in far.iter().zip(&values) {
