@@ -433,7 +433,7 @@ async fn translate_gva_page_faults() {
 
         assert_eq!(
             injected_event.vector(),
-            x86defs::Exception::PAGE_FAULT.0.into(),
+            u16::from(x86defs::Exception::PAGE_FAULT.0),
             "expected page fault vector type for {:?}",
             c
         );

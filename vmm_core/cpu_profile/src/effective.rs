@@ -28,9 +28,9 @@ const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 
 /// One CPUID result and the mask of the bits it defines.
 ///
-/// The fields match `virt::CpuidLeaf` one for one, so converting between the
-/// two is field for field. `index` is `None` for a result that applies to
-/// every subleaf.
+/// The fields match `virt::CpuidLeaf` one for one, and `virt` converts a
+/// `CpuidLeaf` to a `CpuidResult` field for field. `index` is `None` for a
+/// result that applies to every subleaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CpuidResult {
     /// The leaf, the input value of `EAX`.
@@ -312,9 +312,15 @@ fn describe(entry: &CpuidLeafValue) -> String {
 impl CpuProfile {
     /// Builds the effective guest CPUID of a VM that uses this profile.
     ///
+    /// OpenVMM assembles the inputs from a VM's topology in one place,
+    /// `virt::time_abi::cpuid::effective_cpuid`, which core, the backends, and
+    /// their tests share.
+    ///
     /// `vm` holds the results that the VM configuration defines: the topology
     /// leaves and fields (`virt::x86::topology::topology_cpuid`, with the
-    /// profile's [`CpuProfile::lookup`] as its CPUID source) and the APIC
+    /// profile's [`CpuProfile::lookup`] as its CPUID source), the subleaf that
+    /// terminates each extended topology leaf
+    /// (`virt::x86::topology::terminate_extended_topology`), and the APIC
     /// mode ([`x2apic_cpuid`]). They may set only the bits that
     /// [`vm_owned_bits`] assigns to the VM, and together they must set all of
     /// them. A result for every subleaf (`index` of `None`) applies to each of
@@ -661,63 +667,6 @@ mod tests {
                     canonical::to_compact(&value),
                     "{} at {vp_count} VPs",
                     profile.id()
-                );
-            }
-        }
-    }
-
-    /// The contract with core: OpenVMM's topology leaves and the time ABI's
-    /// identity leaves complete every pinned profile into an effective CPUID
-    /// that satisfies the CPU time bits and the identity.
-    #[cfg(guest_arch = "x86_64")]
-    #[test]
-    fn pinned_profiles_satisfy_the_time_abi_with_openvmm_topologies() {
-        use virt::time_abi::identity;
-        use vm_topology::processor::TopologyBuilder;
-        use vm_topology::processor::x86::X2ApicState;
-
-        let result = |leaf: &virt::CpuidLeaf| CpuidResult {
-            function: leaf.function,
-            index: leaf.index,
-            result: leaf.result,
-            mask: leaf.mask,
-        };
-        for profile in crate::pinned_profiles() {
-            for vp_count in [1, 2, 8] {
-                let topology = TopologyBuilder::new_x86()
-                    .vps_per_socket(vp_count)
-                    .x2apic(X2ApicState::Unsupported)
-                    .build(vp_count)
-                    .unwrap();
-                let mut topology_leaves = Vec::new();
-                virt::x86::topology::topology_cpuid(
-                    &topology,
-                    &|leaf, subleaf| profile.lookup(leaf, subleaf),
-                    &mut topology_leaves,
-                )
-                .unwrap();
-                let mut vm = topology_leaves.iter().map(result).collect::<Vec<_>>();
-                vm.push(x2apic_cpuid(false));
-                let identity_leaves = identity::identity_cpuid_leaves(vp_count)
-                    .iter()
-                    .map(result)
-                    .chain(identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
-                    .collect::<Vec<_>>();
-                let effective = profile.effective_cpuid(&vm, &identity_leaves).unwrap();
-
-                identity::check_time_bits(
-                    &mut |leaf, subleaf| effective.lookup(leaf, subleaf),
-                    true,
-                )
-                .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
-                identity::check_identity(
-                    &mut |leaf, subleaf| effective.lookup(leaf, subleaf),
-                    vp_count,
-                )
-                .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
-                assert_eq!(
-                    EffectiveCpuid::decode(&effective.encode()).unwrap(),
-                    effective
                 );
             }
         }

@@ -10,6 +10,8 @@
 
 #[cfg(guest_arch = "x86_64")]
 pub mod backend;
+#[cfg(guest_arch = "x86_64")]
+pub mod cpuid;
 pub mod downtime;
 pub mod host;
 #[cfg(guest_arch = "x86_64")]
@@ -187,6 +189,15 @@ impl fmt::Display for TimeAbiError {
 }
 
 impl std::error::Error for TimeAbiError {}
+
+impl From<cpu_profile::ProfileError> for TimeAbiError {
+    /// Keeps the code: every CPU profile code is a time ABI code.
+    fn from(error: cpu_profile::ProfileError) -> Self {
+        let code = TimeAbiCode::from_name(error.code.as_str())
+            .expect("every CPU profile code is a time ABI code");
+        Self::new(code, error.message)
+    }
+}
 
 /// The rates the guest reads from MSRs `0x40000022` and `0x40000023`.
 ///
@@ -421,6 +432,15 @@ pub struct TimeAbiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_errors_keep_their_codes() {
+        for code in cpu_profile::ProfileErrorCode::ALL {
+            let error = TimeAbiError::from(cpu_profile::ProfileError::new(code, "message"));
+            assert_eq!(error.code.as_str(), code.as_str());
+            assert_eq!(error.message, "message");
+        }
+    }
 
     #[test]
     fn codes_match_the_specification() {

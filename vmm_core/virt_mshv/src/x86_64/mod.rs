@@ -599,44 +599,43 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             None => virt::CpuidLeafSet::new(cpuid),
         };
 
-        // A time ABI partition reads the host's CPUID once: its supported CPU
-        // surface derives from it, and its effective CPUID report covers the
-        // reserved entries the host enumerates (`E_CPU_UNLISTED`). Those
-        // entries need no results of their own: the hypervisor's guest view
-        // reads zero there, as the CPUID sweep hardware test checks.
-        let started = std::time::Instant::now();
-        let host_cpuid = if self.config.time_abi.is_some() {
-            profile_features::host_cpuid_table()
-        } else {
-            Vec::new()
-        };
-        let host_cpuid_us = started.elapsed().as_micros() as u64;
+        // A time ABI partition reads the host's CPUID once, on another thread,
+        // which also finds the CPU profile's unlisted candidates in it: its
+        // supported CPU surface derives from the table, and its effective
+        // CPUID report covers the candidates (`E_CPU_UNLISTED`), both after
+        // guest memory registration. Those entries need no results of their
+        // own: the hypervisor's guest view reads zero there, as the CPUID
+        // sweep hardware test checks.
+        let spawned = std::time::Instant::now();
+        let host_cpuid = self
+            .config
+            .time_abi
+            .as_ref()
+            .map(|config| time_abi::HostCpuidSource::spawn(&config.cpu_profile));
+        let host_cpuid_spawn_us = spawned.elapsed().as_micros() as u64;
 
-        // Apply CPUID overrides partition-wide, except a time ABI partition's
-        // extended topology leaves: their EDX is each VP's x2APIC ID, which
-        // the hypervisor does not provide for these partitions, so every VP
-        // gets its own results when it is created (see `create_vp`).
-        let started = std::time::Instant::now();
-        let per_vp = |leaf: &&virt::CpuidLeaf| {
-            self.config.time_abi.is_some() && time_abi::is_per_vp_leaf(leaf.function)
-        };
-        for leaf in cpuid.leaves().iter().filter(|leaf| !per_vp(leaf)) {
-            register_cpuid_result(&self.vmfd, leaf)?;
+        // Apply CPUID overrides partition-wide. A time ABI partition registers
+        // its results once VP 0 exists, only where VP 0's own view differs
+        // (see `MshvTimeAbi::register_cpuid`).
+        if self.config.time_abi.is_none() {
+            let started = std::time::Instant::now();
+            for leaf in cpuid.leaves() {
+                register_cpuid_result(&self.vmfd, leaf)?;
+            }
+            tracing::info!(
+                leaves = cpuid.leaves().len(),
+                elapsed_us = started.elapsed().as_micros() as u64,
+                "registered MSHV CPUID results"
+            );
         }
-        tracing::info!(
-            leaves = cpuid.leaves().len(),
-            per_vp_leaves = cpuid.leaves().iter().filter(per_vp).count(),
-            host_cpuid_us,
-            elapsed_us = started.elapsed().as_micros() as u64,
-            "registered MSHV CPUID results"
-        );
         let time_abi = self.config.time_abi.as_ref().map(|config| {
             time_abi::MshvTimeAbi::new(
                 config,
                 &cpuid,
                 self.time_abi_host
                     .expect("a time ABI partition reads the host's features"),
-                host_cpuid,
+                host_cpuid.expect("started for a time ABI partition"),
+                host_cpuid_spawn_us,
             )
         });
 

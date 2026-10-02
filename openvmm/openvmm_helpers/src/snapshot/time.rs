@@ -218,8 +218,7 @@ pub fn preflight_time_abi_restore(
             "the host CPU cannot be identified",
         )
     })?;
-    let profile =
-        cpu_profile::pinned_for_restore(&record.id, &record.sha256).map_err(profile_error)?;
+    let profile = cpu_profile::pinned_for_restore(&record.id, &record.sha256)?;
     let pinned = cpu_profile::pinned_record(&record.id).ok_or_else(|| {
         TimeAbiError::new(
             TimeAbiCode::ProfileUnknown,
@@ -235,7 +234,7 @@ pub fn preflight_time_abi_restore(
             ),
         ));
     }
-    cpu_profile::check_generation(profile, &host).map_err(profile_error)?;
+    cpu_profile::check_generation(profile, &host)?;
     let capture = capture_record(time)?;
     let downtime = select_downtime(&capture, destination, now, hooks)?;
     Ok(TimeAbiRestorePreflight {
@@ -244,13 +243,6 @@ pub fn preflight_time_abi_restore(
         generation: time.capture_generation + 1,
         cpu_profile: record.id.clone(),
     })
-}
-
-/// Converts a CPU profile failure to the time ABI failure with the same code.
-pub fn profile_error(error: cpu_profile::ProfileError) -> TimeAbiError {
-    let code = TimeAbiCode::from_name(error.code.as_str())
-        .expect("every CPU profile code is a time ABI code");
-    TimeAbiError::new(code, error.message)
 }
 
 /// Returns the vendor and signature of the host CPU, or `None` on a host that
@@ -731,15 +723,6 @@ pub(super) mod tests {
             );
             let pinned = cpu_profile::pinned_record(profile.id()).unwrap();
             assert!(pinned.encoding.len() < MAX_CPU_PROFILE_BYTES / 16);
-        }
-    }
-
-    #[test]
-    fn profile_errors_keep_their_codes() {
-        for code in cpu_profile::ProfileErrorCode::ALL {
-            let error = profile_error(cpu_profile::ProfileError::new(code, "message"));
-            assert_eq!(error.code.as_str(), code.as_str());
-            assert_eq!(error.message, "message");
         }
     }
 }
