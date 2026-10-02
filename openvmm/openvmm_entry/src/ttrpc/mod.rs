@@ -1406,7 +1406,7 @@ impl VmService {
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
         if self.snapshot_saved {
-            bail!("cannot resume a VM after creating a LINK snapshot");
+            bail!("cannot resume a VM after SaveVM");
         }
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
