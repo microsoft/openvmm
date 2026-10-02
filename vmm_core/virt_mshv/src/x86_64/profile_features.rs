@@ -693,7 +693,13 @@ mod hw {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    fn host_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+    /// Converts `surface` to the profile crate's form. `presentation` says
+    /// whose view its CPUID is: the root's for the cheap surface, a guest's
+    /// for a probe partition.
+    fn host_surface(
+        surface: &SupportedCpuSurface,
+        presentation: cpu_profile::CpuidPresentation,
+    ) -> cpu_profile::HostCpuSurface {
         let mut cpuid = surface
             .cpuid
             .iter()
@@ -702,7 +708,7 @@ mod hw {
         cpu_profile::cpuid::normalize(&mut cpuid);
         cpu_profile::HostCpuSurface {
             cpuid,
-            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
+            presentation,
             physical_address_width: surface.physical_address_width,
             msrs: surface
                 .msrs
@@ -719,7 +725,9 @@ mod hw {
     /// Compares the cheap surface (host CPUID and banks) with the surface of a
     /// probe partition that enables every offered feature, which is how the
     /// CPU fingerprint measures it: every pinned profile must get the same
-    /// support verdict from both.
+    /// support verdict from both. The host's own profile must also pass the
+    /// full check on the probe's guest view, which requires the entries
+    /// outside its tables to read zero, as `--cpu-fingerprint` checks them.
     #[test]
     #[ignore = "requires /dev/mshv"]
     fn the_cheap_surface_gives_the_probe_verdicts() {
@@ -777,8 +785,11 @@ mod hw {
 
         // Report the bits that differ, for the record. The probe's bits that the
         // cheap surface lacks would make it under-report.
-        let cheap_host = host_surface(&cheap);
-        let probe_host = host_surface(&probe_surface);
+        let cheap_host = host_surface(&cheap, cpu_profile::CpuidPresentation::PassThroughHostView);
+        let probe_host = host_surface(
+            &probe_surface,
+            cpu_profile::CpuidPresentation::PassThroughGuestView,
+        );
         let mut under = 0;
         for entry in &probe_host.cpuid {
             let (leaf, subleaf) = entry.key();
@@ -825,6 +836,11 @@ mod hw {
             "{}",
             own.id()
         );
+        // The probe partition is a guest's view, as `--cpu-fingerprint`
+        // records it, so the full check also requires every entry outside the
+        // profile's tables to read zero there (`E_CPU_UNLISTED`).
+        cpu_profile::verify_support(own, &probe_host)
+            .unwrap_or_else(|error| panic!("probe partition: {error}"));
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
