@@ -79,6 +79,9 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
                 .map(|d| d.valid_lines().to_vec());
 
             let mut builder = self.builder.units.add(dev_name.clone());
+            if device.advances_time() {
+                builder = builder.advances_time();
+            }
             // Before stopping the device, the chipset interface must stop
             // running so that it stops issuing MMIO/PIO requests.
             if device.supports_mmio().is_some()
