@@ -633,7 +633,7 @@ mod whp_tests {
         let probe = cpu_profile::HostCpuSurface::from_fingerprint(&fingerprint);
         let started = std::time::Instant::now();
         let cheap = supported_surface(
-            &crate::time_abi::host_cpuid(),
+            crate::time_abi::host_cpuid(),
             available(),
             probe.physical_address_width,
         );
