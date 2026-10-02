@@ -6,6 +6,7 @@
 
 use crate::CpuidLeaf;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::ProcessorTopologyDefinitionEax;
 use x86defs::cpuid::ProcessorTopologyDefinitionEbx;
@@ -16,7 +17,7 @@ use x86defs::cpuid::VersionAndFeaturesEbx;
 /// [`super::topology_cpuid`]: the initial APIC ID in leaf 01h, the x2APIC ID
 /// in leaves 0Bh and 1Fh, and the extended APIC, compute unit, and node IDs
 /// in leaf 8000001Eh, each included in the leaf's mask.
-pub(super) fn apply(topology: &ProcessorTopology, leaves: &mut [CpuidLeaf]) {
+pub(super) fn apply(topology: &ProcessorTopology<X86Topology>, leaves: &mut [CpuidLeaf]) {
     let bsp_apic_id = topology.vp_arch(crate::VpIndex::BSP).apic_id;
     for leaf in leaves {
         match CpuidFunction(leaf.function) {
