@@ -11,8 +11,10 @@
 //! the profile decides ([`hv_banks::mapped_mask`]) follow the profile. The
 //! other bits, such as the nested-paging and VMX details, keep OpenVMM's
 //! legacy policy: what the host offers of OpenVMM's supported lists. The
-//! CPUID intercept results then present the profile's leaves verbatim,
-//! including the descriptive leaves and the time policy bits a host lacks.
+//! CPUID intercept results then present core's time ABI CPUID verbatim (the
+//! profile's complete effective CPUID), including the descriptive leaves and
+//! the time policy bits a host lacks. Only the banks and the surface read the
+//! profile itself.
 //!
 //! [`supported_cpu_surface`] reports what MSHV supports on this host without a
 //! probe partition: the host partition's processor features, the host's CPUID
@@ -505,6 +507,35 @@ mod tests {
             assert!(violations.is_empty(), "{id}: {violations:#?}");
         }
     }
+
+    /// Returns the XCR0 state components that MSHV enables with `features`:
+    /// x87 and SSE with XSAVE itself, then AVX, MPX's bound registers,
+    /// AVX-512's opmask and upper ZMM states, and AMX's tile configuration and
+    /// data. No MSHV feature controls PKRU.
+    fn xcr0_components(features: &HvFeatures) -> u64 {
+        let xsave = XsaveBank::from_bits(features.xsave);
+        [
+            (xsave.xsave_support(), 0x3),
+            (xsave.avx_support(), 1 << 2),
+            (xsave.mpx_support(), 0x3 << 3),
+            (xsave.avx512_support(), 0x7 << 5),
+            (xsave.amx_tile_support(), 0x3 << 17),
+        ]
+        .into_iter()
+        .filter(|&(enabled, _)| enabled)
+        .fold(0, |xcr0, (_, components)| xcr0 | components)
+    }
+
+    #[test]
+    fn the_xsave_features_enable_the_profile_xcr0() {
+        // The features derive from the profile's CPUID bits; the components
+        // they enable are the profile's XCR0, with MPX on Skylake-SP only.
+        for (id, host) in HOSTS {
+            let profile = profile(id);
+            let features = time_abi_features(profile, host).unwrap();
+            assert_eq!(xcr0_components(&features), profile.xcr0(), "{id}");
+        }
+    }
 }
 
 /// Hardware tests: `cargo test -p virt_mshv -- --ignored --nocapture
@@ -882,5 +913,51 @@ mod hw {
             profile.id()
         );
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A partition with the derived features supports exactly the profile's
+    /// XSAVE state components: its own `CPUID.(0xd,0)` (XCR0) and
+    /// `CPUID.(0xd,1)` (IA32_XSS), before any CPUID result applies. A PKRU
+    /// state the profile lacks is reported rather than failed, because no MSHV
+    /// feature controls it.
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn host_profile_features_enable_the_profile_xsave_components() {
+        const XCR0_PKRU: u64 = 1 << 9;
+        let profile = cpu_profile::select_auto(&HostCpuSignature::current()).unwrap();
+        let mshv = Mshv::new().unwrap();
+        let host = host_features(&mshv).unwrap();
+        let features = time_abi_features(profile, host).unwrap();
+        let probe = probe_partition(&mshv, features).unwrap();
+        let partition = |subleaf, low: usize| {
+            let registers = probe.vp.get_cpuid_values(0xd, subleaf, 0, 0).unwrap();
+            u64::from(registers[low]) | u64::from(registers[3]) << 32
+        };
+        let host_cpuid = host_cpuid_table();
+        let root = |subleaf, low: usize| {
+            cpu_profile::cpuid::lookup(&host_cpuid, 0xd, subleaf).map_or(0, |registers| {
+                u64::from(registers[low]) | u64::from(registers[3]) << 32
+            })
+        };
+        let (xcr0, xss) = (partition(0, 0), partition(1, 2));
+        println!(
+            "{}: xsave features {:#x}: XCR0 {xcr0:#x} (profile {:#x}, root {:#x}), \
+             IA32_XSS {xss:#x} (profile {:#x}, root {:#x})",
+            profile.id(),
+            features.xsave,
+            profile.xcr0(),
+            root(0, 0),
+            profile.xss(),
+            root(1, 2)
+        );
+        let unpinned_pkru = XCR0_PKRU & !profile.xcr0();
+        if xcr0 & unpinned_pkru != 0 {
+            println!(
+                "{}: the partition supports PKRU, which the profile lacks",
+                profile.id()
+            );
+        }
+        assert_eq!(xcr0 & !unpinned_pkru, profile.xcr0(), "XCR0 components");
+        assert_eq!(xss, profile.xss(), "IA32_XSS components");
     }
 }
