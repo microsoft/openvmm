@@ -172,7 +172,7 @@ mod tests {
     use hvdef::HvX64PartitionProcessorFeatures as Bank0;
 
     /// Feature capabilities that WHP reported on the fleet's hosts (CPU
-    /// fingerprints): prometheus28 (Skylake-SP, bare metal) and the 8370C
+    /// fingerprints): the bare-metal Skylake-SP host and the 8370C
     /// runners (Ice Lake, nested).
     const PROMETHEUS28: WhpFeatures = WhpFeatures {
         banks: [0x1001_f9ff_e7f7_859f, 0x0000_000f_1086_0063],

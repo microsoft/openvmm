@@ -2547,7 +2547,7 @@ mod whp_tests {
     /// checks too. The time ABI reserves the unlisted entries: a backend may
     /// return zeros or the hypervisor's own values there, and WHP serves its
     /// own value for anything not programmed. WHP reads zero there on
-    /// prometheus28, 8370C, and 8573C, which the fingerprint verification of
+    /// bare-metal, 8370C, and 8573C hosts, which the fingerprint verification of
     /// pass-through backends (`E_CPU_UNLISTED`) expects, so the backend
     /// programs no explicit zero results.
     #[test]

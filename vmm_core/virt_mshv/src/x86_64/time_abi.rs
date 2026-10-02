@@ -332,7 +332,7 @@ impl MshvTimeAbi {
                 Some(HostCpuidSource::Pending(receiver)) => {
                     let received = receiver.recv();
                     // Freeing the channel can hand its memory back to the
-                    // kernel, which took about 12 us here on prometheus30,
+                    // kernel, which took about 12 us on a bare-metal host,
                     // so the channel lives until the partition drops.
                     *source = Some(HostCpuidSource::Pending(receiver));
                     match received {
