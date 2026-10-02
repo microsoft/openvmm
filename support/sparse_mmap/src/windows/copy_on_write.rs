@@ -12,24 +12,20 @@ use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;
 use windows_sys::Win32::System::Memory::CreateFileMappingW;
-use windows_sys::Win32::System::Memory::PAGE_EXECUTE_WRITECOPY;
 use windows_sys::Win32::System::Memory::PAGE_READONLY;
 use windows_sys::Win32::System::Memory::PAGE_WRITECOPY;
 
 /// Creates a section whose writable views are private copies of file pages.
-pub fn new_mappable_from_file_copy_on_write(
-    file: &std::fs::File,
-    executable: bool,
-) -> io::Result<Mappable> {
-    let protection = if executable {
-        PAGE_EXECUTE_WRITECOPY
-    } else {
-        PAGE_WRITECOPY
-    };
-
+pub fn new_mappable_from_file_copy_on_write(file: &std::fs::File) -> io::Result<Mappable> {
     unsafe {
-        let section = CreateFileMappingW(file.as_raw_handle(), null_mut(), protection, 0, 0, null())
-            as RawHandle;
+        let section = CreateFileMappingW(
+            file.as_raw_handle(),
+            null_mut(),
+            PAGE_WRITECOPY,
+            0,
+            0,
+            null(),
+        ) as RawHandle;
         if section.is_null() {
             return Err(Error::last_os_error());
         }

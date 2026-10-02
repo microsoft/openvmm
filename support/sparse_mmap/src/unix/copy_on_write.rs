@@ -12,10 +12,7 @@ use std::io::Error;
 use std::os::unix::prelude::*;
 
 /// Creates a mappable whose writable views are private to the mapping.
-pub fn new_mappable_from_file_copy_on_write(
-    file: &File,
-    _executable: bool,
-) -> io::Result<Mappable> {
+pub fn new_mappable_from_file_copy_on_write(file: &File) -> io::Result<Mappable> {
     file.as_fd().try_clone_to_owned()
 }
 
@@ -29,6 +26,8 @@ impl SparseMapping {
         file_offset: u64,
         writable: bool,
     ) -> Result<(), Error> {
+        let file_offset = i64::try_from(file_offset)
+            .map_err(|_| Error::new(io::ErrorKind::InvalidInput, "file offset too large"))?;
         let prot = if writable {
             libc::PROT_READ | libc::PROT_WRITE
         } else {
@@ -43,7 +42,7 @@ impl SparseMapping {
                 prot,
                 libc::MAP_PRIVATE,
                 file_mapping.as_fd(),
-                file_offset as i64,
+                file_offset,
             )
         }
     }
