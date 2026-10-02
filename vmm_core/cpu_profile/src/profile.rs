@@ -263,22 +263,29 @@ impl CpuProfile {
     }
 
     /// Returns the canonical encoding: compact canonical JSON.
+    ///
+    /// Offline only, for tools and tests: a pinned profile's encoding is the
+    /// constant [`pinned_record`](crate::pinned_record) returns.
     pub fn encode(&self) -> Vec<u8> {
         canonical::to_compact_ordered(self)
     }
 
     /// Returns the profile as pretty canonical JSON, with a final newline:
-    /// the form in which profiles are pinned.
+    /// the form in which profiles are pinned. Offline only.
     pub fn to_pretty_json(&self) -> String {
         canonical::to_pretty_ordered(self)
     }
 
     /// Returns the profile digest: the SHA-256 of [`Self::encode`].
+    ///
+    /// Offline only, for tools and tests: a pinned profile's digest is the
+    /// constant [`pinned_record`](crate::pinned_record) returns.
     pub fn digest(&self) -> [u8; 32] {
         canonical::sha256(&self.encode())
     }
 
-    /// Returns the profile digest as `sha256:<hex>`.
+    /// Returns the profile digest as `sha256:<hex>`. Offline only, for
+    /// `--cpu-fingerprint` and tools.
     pub fn digest_string(&self) -> String {
         canonical::format_digest(&self.digest())
     }
@@ -287,6 +294,8 @@ impl CpuProfile {
     ///
     /// Bytes that are not exactly the canonical encoding of a valid profile
     /// fail with `E_PROFILE_DIGEST`: they cannot carry a verifiable digest.
+    /// Offline only: a restore compares the recorded document with the
+    /// pinned constant instead of decoding it.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProfileError> {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| invalid("the encoding is not UTF-8".to_owned()))?;
@@ -301,7 +310,7 @@ impl CpuProfile {
     }
 
     /// Parses a profile from pretty canonical JSON, the pinned form, and
-    /// validates it.
+    /// validates it. Offline only, for the profile generator and tests.
     pub fn from_pretty_json(text: &str) -> Result<Self, ProfileError> {
         let this = Self::parse(text)?;
         if this.to_pretty_json() != text {
