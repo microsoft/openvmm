@@ -793,7 +793,7 @@ const _: () = assert!(size_of::<VpCpuidValuesInput>() <= 4096);
 /// `VcpuFd::get_cpuid_values` reads one entry. `HvCallGetVpCpuidValues` is a
 /// rep hypercall, so one call reads up to [`CPUID_READS_PER_CALL`] entries
 /// instead of paying a hypercall per entry.
-fn vp_cpuid_many(
+pub(super) fn vp_cpuid_many(
     vp: &VcpuFd,
     vp_index: u32,
     entries: &[(u32, u32)],
