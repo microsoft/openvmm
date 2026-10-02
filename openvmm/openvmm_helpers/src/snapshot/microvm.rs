@@ -3,7 +3,6 @@
 
 //! microVM snapshot machine-contract types, construction, and validation.
 
-use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use super::format::SCRATCH_FILE_NAME;
 #[cfg(test)]
@@ -19,7 +18,6 @@ use super::format::validate_sha256;
 use super::format::verify_digest;
 use anyhow::Context;
 use mesh::payload::Protobuf;
-use mesh::payload::Timestamp;
 use sha2::Digest;
 use std::collections::HashSet;
 use std::path::Path;
@@ -35,8 +33,6 @@ pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 =
     openvmm_defs::microvm::MICROVM_MEMORY_BLOCK_SIZE_BYTES;
 /// Snapshot contract name for shared-status edge interrupts.
 pub const MICROVM_SHARED_STATUS_INTERRUPT_MODE: &str = "edge-shared-status";
-/// Clock policy applied when a snapshot is restored.
-pub const ADVANCE_BY_HOST_DOWNTIME: &str = "advance_by_host_downtime";
 const MAX_MEMORY_RANGES: usize = 128;
 const MAX_DEVICES: usize = 64;
 const MAX_DEVICE_RANGES: usize = 16;
@@ -44,7 +40,6 @@ const MAX_STATE_UNITS: usize = 512;
 const MAX_ATTACHMENTS: usize = 64;
 const MAX_ATTACHMENT_IDENTITY_BYTES: usize = 4096;
 const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
-const MAX_CPU_CONTRACT_BYTES: usize = 1024 * 1024;
 
 /// A guest RAM range and its corresponding offset in `memory.bin`.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
@@ -384,36 +379,17 @@ pub struct SnapshotMachineContract {
     /// Required host attachments.
     #[mesh(10)]
     pub attachments: Vec<SnapshotAttachment>,
-    /// Host wall time at the stopped capture boundary.
-    #[mesh(11)]
-    pub capture_wall_clock: Timestamp,
-    /// Effective guest TSC frequency.
-    #[mesh(12)]
-    pub tsc_frequency_hz: u64,
-    /// Accepted destination TSC frequency tolerance in parts per million.
-    #[mesh(13)]
-    pub tsc_tolerance_ppm: u32,
-    /// Canonical protobuf-encoded effective CPU contract.
-    #[mesh(14)]
-    pub cpu_contract: Vec<u8>,
-    /// SHA-256 of the canonical CPU contract.
-    #[mesh(15)]
-    pub cpu_contract_sha256: Vec<u8>,
+    // Fields 11 to 15, 17, and 20 held the clock fields of manifest versions
+    // 2 to 5. They are retired, and their numbers are never reused.
     /// Version of the fixed cold-boot and memory layout.
     #[mesh(16)]
     pub boot_layout_version: u32,
-    /// Policy used to advance clocks and deadlines over host downtime.
-    #[mesh(17)]
-    pub clock_policy: String,
     /// Static identity of the optional microVM virtio-net device.
     #[mesh(18)]
     pub microvm_network: Option<SnapshotMicrovmNetwork>,
     /// Guest-visible policy of the optional microVM virtio-fs device.
     #[mesh(19)]
     pub microvm_filesystem: Option<SnapshotMicrovmFilesystem>,
-    /// Effective local APIC timer frequency.
-    #[mesh(20)]
-    pub apic_frequency_hz: Option<u64>,
     /// Fixed-role sandbox blocks in guest-visible order.
     #[mesh(21)]
     pub microvm_sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
@@ -444,11 +420,10 @@ pub struct SnapshotMachineContract {
     /// Canonical capacity ranges absent from the captured boot memory map.
     #[mesh(30)]
     pub memory_expansion_ranges: Vec<SnapshotMemoryExpansionRange>,
-    /// The NVX time ABI time contract; required in manifest version 6, which
-    /// leaves fields 11 to 15, 17, and 20 empty.
+    /// The NVX time ABI time contract; required.
     #[mesh(31)]
     pub time: Option<openvmm_defs::time_abi::SnapshotTimeContract>,
-    /// The NVX time ABI CPU profile record; required in manifest version 6.
+    /// The NVX time ABI CPU profile record; required.
     #[mesh(32)]
     pub cpu_profile: Option<openvmm_defs::time_abi::SnapshotCpuProfile>,
 }
@@ -458,12 +433,6 @@ impl SnapshotMachineContract {
     pub fn set_effective_command_line(&mut self, command_line: String) {
         self.effective_command_line_sha256 = sha2::Sha256::digest(command_line.as_bytes()).to_vec();
         self.effective_command_line = command_line;
-    }
-
-    /// Sets the canonical CPU compatibility contract and its digest together.
-    pub fn set_cpu_compatibility_contract(&mut self, cpu_contract: Vec<u8>) {
-        self.cpu_contract_sha256 = sha2::Sha256::digest(&cpu_contract).to_vec();
-        self.cpu_contract = cpu_contract;
     }
 }
 
@@ -650,8 +619,8 @@ fn memory_expansion_prefix(
     Ok(prefix)
 }
 
-/// Builds the authoritative microVM machine contract with the clock fields of
-/// manifest versions 2 through 5.
+/// Builds the authoritative microVM machine contract, with the time ABI
+/// records `time` and `cpu_profile`.
 pub fn microvm_machine_contract(
     source_hypervisor: &str,
     boot_layout_version: u32,
@@ -674,83 +643,8 @@ pub fn microvm_machine_contract(
     memory_size: u64,
     memory_capacity: Option<u64>,
     state_unit_names: Vec<String>,
-    capture_wall_clock: Timestamp,
-    tsc_frequency_hz: u64,
-    apic_frequency_hz: Option<u64>,
-    cpu_contract: Vec<u8>,
-) -> anyhow::Result<SnapshotMachineContract> {
-    microvm_machine_contract_with_clock(
-        source_hypervisor,
-        boot_layout_version,
-        effective_command_line,
-        network,
-        filesystem_slot,
-        filesystem,
-        console_attachment,
-        control_console_attachment,
-        sandbox_blocks,
-        processor_count,
-        memory_size,
-        memory_capacity,
-        state_unit_names,
-        MicrovmClockContract::Legacy {
-            capture_wall_clock,
-            tsc_frequency_hz,
-            apic_frequency_hz,
-            cpu_contract,
-        },
-    )
-}
-
-/// The clock records of a microVM machine contract.
-#[derive(Clone, Debug)]
-pub enum MicrovmClockContract {
-    /// The clock fields of manifest versions 2 through 5.
-    Legacy {
-        /// Host UTC at capture.
-        capture_wall_clock: Timestamp,
-        /// The effective guest TSC frequency.
-        tsc_frequency_hz: u64,
-        /// The guest LAPIC timer frequency.
-        apic_frequency_hz: Option<u64>,
-        /// The canonical CPU compatibility contract.
-        cpu_contract: Vec<u8>,
-    },
-    /// The NVX time ABI records of manifest version 6, which leave the
-    /// retired clock fields empty.
-    TimeAbi {
-        /// The time contract.
-        time: openvmm_defs::time_abi::SnapshotTimeContract,
-        /// The CPU profile record.
-        cpu_profile: openvmm_defs::time_abi::SnapshotCpuProfile,
-    },
-}
-
-/// Builds the authoritative microVM machine contract with the given clock
-/// records.
-pub fn microvm_machine_contract_with_clock(
-    source_hypervisor: &str,
-    boot_layout_version: u32,
-    effective_command_line: String,
-    network: Option<(
-        &openvmm_defs::microvm::MicrovmNetworkConfig,
-        &net_backend_resources::egress::EgressPolicy,
-        SnapshotAttachment,
-    )>,
-    filesystem_slot: bool,
-    filesystem: Option<(
-        &openvmm_defs::microvm::MicrovmFilesystemConfig,
-        &Path,
-        SnapshotAttachment,
-    )>,
-    console_attachment: Option<SnapshotAttachment>,
-    control_console_attachment: Option<SnapshotAttachment>,
-    sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
-    processor_count: u32,
-    memory_size: u64,
-    memory_capacity: Option<u64>,
-    state_unit_names: Vec<String>,
-    clock: MicrovmClockContract,
+    time: openvmm_defs::time_abi::SnapshotTimeContract,
+    cpu_profile: openvmm_defs::time_abi::SnapshotCpuProfile,
 ) -> anyhow::Result<SnapshotMachineContract> {
     anyhow::ensure!(
         matches!(source_hypervisor, "kvm" | "mshv" | "whp"),
@@ -1173,39 +1067,6 @@ pub fn microvm_machine_contract_with_clock(
         attachments.push(attachment);
     }
 
-    let (
-        capture_wall_clock,
-        tsc_frequency_hz,
-        apic_frequency_hz,
-        clock_policy,
-        cpu_contract,
-        time,
-        cpu_profile,
-    ) = match clock {
-        MicrovmClockContract::Legacy {
-            capture_wall_clock,
-            tsc_frequency_hz,
-            apic_frequency_hz,
-            cpu_contract,
-        } => (
-            capture_wall_clock,
-            tsc_frequency_hz,
-            apic_frequency_hz,
-            ADVANCE_BY_HOST_DOWNTIME.to_owned(),
-            Some(cpu_contract),
-            None,
-            None,
-        ),
-        MicrovmClockContract::TimeAbi { time, cpu_profile } => (
-            super::time::NO_TIMESTAMP,
-            0,
-            None,
-            String::new(),
-            None,
-            Some(time),
-            Some(cpu_profile),
-        ),
-    };
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
         microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
@@ -1217,16 +1078,9 @@ pub fn microvm_machine_contract_with_clock(
         devices,
         state_unit_names,
         attachments,
-        capture_wall_clock,
-        tsc_frequency_hz,
-        tsc_tolerance_ppm: 0,
-        cpu_contract: Vec::new(),
-        cpu_contract_sha256: Vec::new(),
         boot_layout_version,
-        clock_policy,
         microvm_network,
         microvm_filesystem,
-        apic_frequency_hz,
         microvm_sandbox_blocks: sandbox_blocks,
         microvm_filesystem_slot_version: if filesystem_slot {
             MICROVM_FILESYSTEM_SLOT_VERSION
@@ -1241,35 +1095,24 @@ pub fn microvm_machine_contract_with_clock(
         memory_capacity_bytes,
         memory_block_size_bytes,
         memory_expansion_ranges,
-        time,
-        cpu_profile,
+        time: Some(time),
+        cpu_profile: Some(cpu_profile),
     };
     contract.set_effective_command_line(effective_command_line);
-    if let Some(cpu_contract) = cpu_contract {
-        contract.set_cpu_compatibility_contract(cpu_contract);
-    }
     validate_machine_contract_shape(&contract, memory_size, processor_count)?;
     Ok(contract)
 }
 
 /// Returns whether restore must hold external device input until guest repair completes.
 pub fn requires_post_restore_gate(manifest: &SnapshotManifest) -> bool {
-    manifest.version >= MANIFEST_VERSION
-        && manifest.machine_contract.as_ref().is_some_and(|contract| {
-            matches!(
-                contract.microvm_abi_version,
-                openvmm_defs::microvm::MICROVM_ABI_VERSION_2
-            )
-        })
-        && !manifest.snapshot_tier.is_empty()
+    manifest.machine_contract.as_ref().is_some_and(|contract| {
+        matches!(
+            contract.microvm_abi_version,
+            openvmm_defs::microvm::MICROVM_ABI_VERSION_2
+        )
+    }) && !manifest.snapshot_tier.is_empty()
 }
 
-pub(super) fn has_sandbox_blocks(manifest: &SnapshotManifest) -> bool {
-    manifest
-        .machine_contract
-        .as_ref()
-        .is_some_and(|contract| !contract.microvm_sandbox_blocks.is_empty())
-}
 pub(super) fn paired_scratch_block(
     manifest: &SnapshotManifest,
 ) -> Option<&SnapshotMicrovmSandboxBlock> {
@@ -1347,10 +1190,6 @@ pub fn validate_microvm_machine_contract(
         "snapshot virtio interrupt contract doesn't match the requested machine"
     );
     anyhow::ensure!(
-        contract.clock_policy == expected.clock_policy || contract.time.is_some(),
-        "snapshot clock policy doesn't match the requested machine"
-    );
-    anyhow::ensure!(
         contract.effective_command_line == expected.effective_command_line,
         "snapshot effective command line doesn't match the requested machine"
     );
@@ -1409,53 +1248,8 @@ pub fn validate_microvm_machine_contract(
         },
         "snapshot sandbox block topology or identity doesn't match the requested machine"
     );
-    if contract.time.is_some() {
-        // The time ABI replaces exact clock equality with the rate policy and
-        // the CPU profile checks of restore preflight.
-        return Ok(());
-    }
-    anyhow::ensure!(
-        contract.tsc_frequency_hz == expected.tsc_frequency_hz
-            && contract.tsc_tolerance_ppm == expected.tsc_tolerance_ppm,
-        "snapshot TSC frequency contract doesn't match the destination"
-    );
-    anyhow::ensure!(
-        contract.apic_frequency_hz == expected.apic_frequency_hz,
-        "snapshot APIC frequency contract doesn't match the destination"
-    );
-    anyhow::ensure!(
-        contract.cpu_contract == expected.cpu_contract,
-        "snapshot CPU compatibility contract doesn't match the destination"
-    );
-    Ok(())
-}
-
-/// Validates the clock fields of a machine contract before manifest version 6.
-fn validate_clock_contract(contract: &SnapshotMachineContract) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        contract.tsc_frequency_hz != 0,
-        "snapshot TSC frequency must be nonzero"
-    );
-    if let Some(apic_frequency_hz) = contract.apic_frequency_hz {
-        anyhow::ensure!(
-            apic_frequency_hz != 0,
-            "snapshot APIC frequency must be nonzero"
-        );
-    }
-    anyhow::ensure!(
-        !contract.cpu_contract.is_empty() && contract.cpu_contract.len() <= MAX_CPU_CONTRACT_BYTES,
-        "snapshot CPU contract size is invalid"
-    );
-    validate_sha256(&contract.cpu_contract_sha256, "CPU contract")?;
-    verify_digest(
-        &contract.cpu_contract,
-        &contract.cpu_contract_sha256,
-        "CPU contract",
-    )?;
-    let _: std::time::SystemTime = contract
-        .capture_wall_clock
-        .try_into()
-        .context("snapshot capture wall clock is invalid")?;
+    // The time ABI records are not compared: the restore preflight checks
+    // them against this host's rates and CPU profile.
     Ok(())
 }
 
@@ -1472,12 +1266,6 @@ pub(super) fn validate_machine_contract_shape(
             && contract.virtio_shared_status_page_size
                 == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
         "snapshot microVM shared-status interrupt contract is invalid"
-    );
-    let time_abi = contract.time.is_some() || contract.cpu_profile.is_some();
-    anyhow::ensure!(
-        contract.clock_policy == ADVANCE_BY_HOST_DOWNTIME || time_abi,
-        "snapshot clock policy '{}' is unsupported",
-        contract.clock_policy
     );
     anyhow::ensure!(
         contract.effective_command_line.len() < MAX_COMMAND_LINE_BYTES,
@@ -1496,11 +1284,7 @@ pub(super) fn validate_machine_contract_shape(
         &contract.effective_command_line_sha256,
         "effective command line",
     )?;
-    if time_abi {
-        super::time::validate_time_abi_contract(contract)?;
-    } else {
-        validate_clock_contract(contract)?;
-    }
+    super::time::validate_time_abi_contract(contract)?;
 
     anyhow::ensure!(
         !contract.memory_ranges.is_empty() && contract.memory_ranges.len() <= MAX_MEMORY_RANGES,
@@ -1970,17 +1754,6 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
         manifest.snapshot_tier,
     );
     if manifest.snapshot_tier == SNAPSHOT_TIER_PLATFORM {
-        let expected_tsc_frequency = format!("tsc_early_khz={}", contract.tsc_frequency_hz / 1000);
-        let tsc_frequency_tokens = contract
-            .effective_command_line
-            .split_ascii_whitespace()
-            .filter(|token| token.starts_with("tsc_early_khz="))
-            .collect::<Vec<_>>();
-        // A time ABI contract forbids the token instead.
-        anyhow::ensure!(
-            contract.time.is_some() || tsc_frequency_tokens == [expected_tsc_frequency.as_str()],
-            "platform snapshot command line TSC frequency does not match its machine contract"
-        );
         let control_tty_count = contract
             .effective_command_line
             .split_ascii_whitespace()
@@ -1990,22 +1763,6 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
             control_tty_count <= 1,
             "platform snapshot command line contains duplicate control tty configuration"
         );
-        let apic_frequency_tokens = contract
-            .effective_command_line
-            .split_ascii_whitespace()
-            .filter(|token| token.starts_with("lapic_timer_hz="))
-            .collect::<Vec<_>>();
-        if !apic_frequency_tokens.is_empty() {
-            let expected = contract
-                .apic_frequency_hz
-                .map(|frequency| format!("lapic_timer_hz={frequency}"));
-            anyhow::ensure!(
-                expected
-                    .as_deref()
-                    .is_some_and(|expected| apic_frequency_tokens == [expected]),
-                "platform snapshot command line LAPIC frequency does not match its machine contract"
-            );
-        }
         let processor_limit_tokens = contract
             .effective_command_line
             .split_ascii_whitespace()
@@ -2044,10 +1801,8 @@ fn platform_command_line_token_is_invariant(token: &str) -> bool {
             | "nvx_sandbox=1"
             | "nvx_config=0xd0010000,65536"
             | "nvx_snapshot_tier=platform"
-    ) || token.starts_with("tsc_early_khz=")
-        || token.starts_with("nr_cpus=")
+    ) || token.starts_with("nr_cpus=")
         || token == openvmm_defs::microvm::MICROVM_CONTROL_TTY_COMMAND_LINE
-        || token.starts_with("lapic_timer_hz=")
         || [
             "virtio_mmio.device=",
             "virtnet_ip=",
@@ -2164,16 +1919,9 @@ pub(super) fn test_machine_contract() -> SnapshotMachineContract {
         ],
         state_unit_names: vec!["portb".to_owned(), "shutdown".to_owned()],
         attachments: Vec::new(),
-        capture_wall_clock: std::time::SystemTime::now().into(),
-        tsc_frequency_hz: 1_000_000_000,
-        tsc_tolerance_ppm: 0,
-        cpu_contract: Vec::new(),
-        cpu_contract_sha256: Vec::new(),
         boot_layout_version: MICROVM_BOOT_LAYOUT_VERSION,
-        clock_policy: ADVANCE_BY_HOST_DOWNTIME.to_owned(),
         microvm_network: None,
         microvm_filesystem: None,
-        apic_frequency_hz: Some(1_000_000_000),
         microvm_sandbox_blocks: Vec::new(),
         microvm_filesystem_slot_version: 0,
         boot_online_vp_count: 0,
@@ -2184,26 +1932,19 @@ pub(super) fn test_machine_contract() -> SnapshotMachineContract {
         memory_capacity_bytes: 0,
         memory_block_size_bytes: 0,
         memory_expansion_ranges: Vec::new(),
-        time: None,
-        cpu_profile: None,
+        time: Some(super::time::tests::test_time_contract()),
+        cpu_profile: Some(super::time::tests::test_cpu_profile()),
     };
     contract.set_effective_command_line("console=hvc0".to_owned());
-    contract.set_cpu_compatibility_contract(vec![1, 2, 3]);
     contract
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::format::LEGACY_MANIFEST_VERSION;
-    use super::super::format::LEGACY_SNAPSHOT_FORMAT_MAGIC;
-    use super::super::format::PREVIOUS_MANIFEST_VERSION;
-    use super::super::format::PREVIOUS_SNAPSHOT_FORMAT_MAGIC;
-    use super::super::format::validate_manifest_version;
+    use super::super::format::validate_manifest_contents;
     use super::super::tests::test_manifest;
-    use super::super::validate_manifest;
     use super::*;
 
-    const TEST_FREQUENCY_HZ: u64 = 1_000_000_000;
     const TEST_SCRATCH_IDENTITY_BYTE: u8 = 0x22;
 
     fn virtio_state_unit_name(kind: &str, mmio_base: u64) -> String {
@@ -2375,10 +2116,8 @@ mod tests {
             ]
             .map(str::to_owned)
             .to_vec(),
-            std::time::SystemTime::now().into(),
-            1_000_000_000,
-            Some(1_000_000_000),
-            vec![1, 2, 3],
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
     }
@@ -2412,10 +2151,8 @@ mod tests {
             ]
             .map(str::to_owned)
             .to_vec(),
-            std::time::SystemTime::now().into(),
-            1_000_000_000,
-            Some(1_000_000_000),
-            vec![1, 2, 3],
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
     }
@@ -2506,10 +2243,8 @@ mod tests {
                     openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
                 ),
             ],
-            std::time::SystemTime::now().into(),
-            TEST_FREQUENCY_HZ,
-            Some(TEST_FREQUENCY_HZ),
-            vec![1, 2, 3],
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
     }
@@ -2564,10 +2299,8 @@ mod tests {
             ]
             .map(str::to_owned)
             .to_vec(),
-            std::time::SystemTime::now().into(),
-            1_000_000_000,
-            Some(1_000_000_000),
-            vec![1, 2, 3],
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
     }
@@ -2601,10 +2334,8 @@ mod tests {
             ]
             .map(str::to_owned)
             .to_vec(),
-            std::time::SystemTime::now().into(),
-            1_000_000_000,
-            Some(1_000_000_000),
-            vec![1, 2, 3],
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
     }
@@ -2961,100 +2692,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_microvm_machine_contract_rejects_cpu_contract() {
-        let mut manifest = test_manifest();
-        let contract = test_machine_contract();
-        manifest.machine_contract = Some(contract.clone());
-        let mut expected = contract;
-        expected.set_cpu_compatibility_contract(vec![9, 9, 9]);
-        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert!(err.to_string().contains("CPU compatibility"));
-    }
-
-    #[test]
-    fn validate_microvm_machine_contract_rejects_tsc_frequency() {
-        let mut manifest = test_manifest();
-        let contract = test_machine_contract();
-        manifest.machine_contract = Some(contract.clone());
-        let mut expected = contract;
-        expected.tsc_frequency_hz += 1;
-        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert!(err.to_string().contains("TSC frequency"));
-    }
-
-    #[test]
-    fn validate_microvm_machine_contract_rejects_apic_frequency() {
-        let mut manifest = test_manifest();
-        let contract = test_machine_contract();
-        manifest.machine_contract = Some(contract.clone());
-        let mut expected = contract;
-        expected.apic_frequency_hz = expected.apic_frequency_hz.map(|frequency| frequency + 1);
-        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert!(err.to_string().contains("APIC frequency"));
-    }
-
-    #[test]
-    fn validate_microvm_machine_contract_accepts_legacy_apic_frequency() {
-        let mut manifest = test_manifest();
-        let mut contract = test_machine_contract();
-        contract.apic_frequency_hz = None;
-        manifest.machine_contract = Some(contract.clone());
-
-        validate_microvm_machine_contract(&manifest, &contract).unwrap();
-    }
-
-    #[test]
-    fn platform_snapshot_checks_apic_frequency_parameter() {
-        for (parameter, frequency, valid) in [
-            ("", Some(1_000_000_000), true),
-            ("lapic_timer_hz=1000000000", Some(1_000_000_000), true),
-            ("lapic_timer_hz=200000000", Some(1_000_000_000), false),
-            ("lapic_timer_hz=1000000000", None, false),
-            (
-                "lapic_timer_hz=1000000000 lapic_timer_hz=1000000000",
-                Some(1_000_000_000),
-                false,
-            ),
-        ] {
-            let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
-            manifest.snapshot_tier = SNAPSHOT_TIER_PLATFORM.to_owned();
-            manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
-            manifest.consumed_config_sections = SNAPSHOT_CONFIG_INVARIANTS;
-            let contract = manifest.machine_contract.as_mut().unwrap();
-            for block in contract
-                .microvm_sandbox_blocks
-                .iter_mut()
-                .filter(|block| block.read_only)
-            {
-                block.identity_kind = "unbound".to_owned();
-                block.identity.clear();
-            }
-            let scratch = contract.microvm_sandbox_blocks.last_mut().unwrap();
-            scratch.identity_kind = "fresh".to_owned();
-            scratch.identity.clear();
-            scratch.artifact.clear();
-            contract.apic_frequency_hz = frequency;
-            contract.set_effective_command_line(format!(
-                "console=hvc0 nvx_snapshot_tier=platform tsc_early_khz=1000000 {parameter}"
-            ));
-            let result = validate_manifest_version(&manifest);
-            if valid {
-                result.unwrap();
-            } else {
-                assert!(
-                    result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("LAPIC frequency does not match")
-                );
-            }
-        }
-        assert!(platform_command_line_token_is_invariant(
-            "lapic_timer_hz=200000000"
-        ));
-    }
-
-    #[test]
     fn validate_microvm_machine_contract_rejects_unsupported_boot_layout() {
         let mut manifest = test_manifest();
         let expected = test_machine_contract();
@@ -3115,17 +2752,6 @@ mod tests {
 
         let error = validate_microvm_machine_contract(&manifest, &contract).unwrap_err();
         assert!(error.to_string().contains("not canonical"));
-    }
-
-    #[test]
-    fn validate_microvm_machine_contract_rejects_clock_policy() {
-        let mut manifest = test_manifest();
-        let contract = test_machine_contract();
-        manifest.machine_contract = Some(contract.clone());
-        let mut expected = contract;
-        expected.clock_policy = "freeze_during_downtime".to_owned();
-        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert!(err.to_string().contains("clock policy"));
     }
 
     #[test]
@@ -3330,20 +2956,15 @@ mod tests {
                 512 * MB,
                 Some(512 * MB + 1),
                 Vec::new(),
-                std::time::SystemTime::now().into(),
-                1_000_000_000,
-                Some(1_000_000_000),
-                vec![1],
+                crate::snapshot::time::tests::test_time_contract(),
+                crate::snapshot::time::tests::test_cpu_profile(),
             )
             .is_err()
         );
         assert!(canonical_microvm_memory_ranges(u64::MAX).is_err());
     }
 
-    fn canonical_worker_platform_command_line(
-        tsc_frequency_hz: u64,
-        processor_count: u32,
-    ) -> String {
+    fn canonical_worker_platform_command_line(processor_count: u32) -> String {
         let mut command_line = openvmm_defs::microvm::build_microvm_control_command_line(
             &[
                 "nvx_sandbox=1".to_owned(),
@@ -3354,10 +2975,7 @@ mod tests {
         .unwrap();
         openvmm_defs::microvm::append_microvm_processor_limit(&mut command_line, processor_count)
             .unwrap();
-        command_line.push_str(&format!(
-            " nvx_snapshot_tier=platform tsc_early_khz={}",
-            tsc_frequency_hz / 1000
-        ));
+        command_line.push_str(" nvx_snapshot_tier=platform");
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
@@ -3398,17 +3016,15 @@ mod tests {
         scratch.identity.clear();
         scratch.artifact.clear();
         let processor_count = u32::try_from(contract.topology.apic_ids.len()).unwrap();
-        contract.set_effective_command_line(canonical_worker_platform_command_line(
-            contract.tsc_frequency_hz,
-            processor_count,
-        ));
+        contract
+            .set_effective_command_line(canonical_worker_platform_command_line(processor_count));
     }
 
     #[test]
     fn abi_v2_snapshot_tier_contract_is_canonical() {
         let scratch = vec![0x5a; 512];
         let mut manifest = paired_scratch_manifest(&scratch);
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
 
         manifest.snapshot_tier = SNAPSHOT_TIER_INSTANCE_CHECKPOINT.to_owned();
         manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_RESUME.to_owned();
@@ -3420,19 +3036,19 @@ mod tests {
             .set_effective_command_line(
                 "console=hvc0 nvx_snapshot_tier=instance-checkpoint".to_owned(),
             );
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
 
         manifest.snapshot_tier = SNAPSHOT_TIER_WORKLOAD_START.to_owned();
         manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
-        assert!(validate_manifest_version(&manifest).is_err());
+        assert!(validate_manifest_contents(&manifest).is_err());
 
         manifest.snapshot_tier = SNAPSHOT_TIER_PLATFORM.to_owned();
         manifest.restore_policy = SNAPSHOT_RESTORE_POLICY_CLONE.to_owned();
         manifest.consumed_config_sections = SNAPSHOT_CONFIG_INVARIANTS;
-        assert!(validate_manifest_version(&manifest).is_err());
+        assert!(validate_manifest_contents(&manifest).is_err());
 
         make_platform_snapshot(&mut manifest);
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
     }
 
     #[test]
@@ -3447,14 +3063,14 @@ mod tests {
         ));
 
         assert!(
-            validate_manifest_version(&manifest)
+            validate_manifest_contents(&manifest)
                 .unwrap_err()
                 .to_string()
                 .contains("contains tenant or unsupported configuration")
         );
 
         make_platform_snapshot(&mut manifest);
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
 
         let contract = manifest.machine_contract.as_mut().unwrap();
         contract.set_effective_command_line(
@@ -3463,7 +3079,7 @@ mod tests {
                 .replace("nvx_config=0xd0010000,65536", "nvx_config=tenant-data"),
         );
         assert!(
-            validate_manifest_version(&manifest)
+            validate_manifest_contents(&manifest)
                 .unwrap_err()
                 .to_string()
                 .contains("contains tenant or unsupported configuration")
@@ -3483,37 +3099,11 @@ mod tests {
         );
 
         assert!(
-            validate_manifest_version(&manifest)
+            validate_manifest_contents(&manifest)
                 .unwrap_err()
                 .to_string()
                 .contains("processor capacity")
         );
-    }
-
-    #[test]
-    fn platform_snapshot_rejects_invalid_tsc_frequency_tokens() {
-        let scratch = vec![0x5a; 512];
-        for invalid in [
-            "",
-            "tsc_early_khz=999999",
-            "tsc_early_khz=1000000 tsc_early_khz=1000000",
-        ] {
-            let mut manifest = paired_scratch_manifest(&scratch);
-            make_platform_snapshot(&mut manifest);
-            let contract = manifest.machine_contract.as_mut().unwrap();
-            contract.set_effective_command_line(
-                contract
-                    .effective_command_line
-                    .replace("tsc_early_khz=1000000", invalid),
-            );
-
-            assert!(
-                validate_manifest_version(&manifest)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("TSC frequency does not match")
-            );
-        }
     }
 
     #[test]
@@ -3531,44 +3121,40 @@ mod tests {
             "earlycon=xe9 console=hvc1 reboot=t panic=-1 \
                   nvx_sandbox=1 nvx_config=0xd0010000,65536 nr_cpus=2 \
                  nvx_snapshot_tier=platform \
-                 tsc_early_khz=1000000 \
                  virtio_mmio.device=0x1000@0xd0002000:7 \
                  virtio_mmio.device=0x1000@0xd0003000:4 \
                  virtio_mmio.device=0x1000@0xd0006000:11 \
              virtio_mmio.device=0x1000@0xd0007000:3 \
              nvx_control_tty=hvc2"
         );
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
     }
 
     #[test]
-    fn platform_time_abi_snapshot_carries_no_clock_token() {
+    fn platform_snapshot_carries_no_clock_token() {
         let scratch = vec![0x5a; 512];
         let mut manifest = paired_scratch_manifest(&scratch);
         make_platform_snapshot(&mut manifest);
-        crate::snapshot::time::set_time_abi_records(
-            &mut manifest,
-            crate::snapshot::time::tests::test_time_contract(),
-            crate::snapshot::time::tests::test_cpu_profile(),
-        )
-        .unwrap();
-        let contract = manifest.machine_contract.as_mut().unwrap();
-        contract.set_effective_command_line(
-            contract
-                .effective_command_line
-                .replace(" tsc_early_khz=1000000", ""),
-        );
-        validate_manifest_version(&manifest).unwrap();
+        validate_manifest_contents(&manifest).unwrap();
+        let canonical = manifest
+            .machine_contract
+            .as_ref()
+            .unwrap()
+            .effective_command_line
+            .clone();
 
-        let contract = manifest.machine_contract.as_mut().unwrap();
-        contract.set_effective_command_line(format!(
-            "{} tsc_early_khz=2100000",
-            contract.effective_command_line
-        ));
-        let err = validate_manifest_version(&manifest)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
+        for token in ["tsc_early_khz=2100000", "lapic_timer_hz=200000000"] {
+            manifest
+                .machine_contract
+                .as_mut()
+                .unwrap()
+                .set_effective_command_line(format!("{canonical} {token}"));
+            let err = validate_manifest_contents(&manifest)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
+            assert!(!platform_command_line_token_is_invariant(token));
+        }
     }
 
     #[test]
@@ -3594,33 +3180,7 @@ mod tests {
                 .set_effective_command_line(
                     canonical.replace("nvx_control_tty=hvc2", invalid_control),
                 );
-            assert!(validate_manifest_version(&manifest).is_err());
-        }
-    }
-
-    #[test]
-    fn legacy_formats_reject_abi_v2_blocks() {
-        let scratch = vec![0x5a_u8; 1024];
-        for (version, magic) in [
-            (LEGACY_MANIFEST_VERSION, LEGACY_SNAPSHOT_FORMAT_MAGIC),
-            (PREVIOUS_MANIFEST_VERSION, PREVIOUS_SNAPSHOT_FORMAT_MAGIC),
-        ] {
-            let mut manifest = paired_scratch_manifest(&scratch);
-            manifest.version = version;
-            manifest.format_magic = magic.to_vec();
-            manifest.snapshot_tier.clear();
-            manifest.restore_policy.clear();
-            manifest.consumed_config_sections = 0;
-            if version == LEGACY_MANIFEST_VERSION {
-                manifest.state_sha256 = vec![0; SHA256_SIZE];
-                manifest.memory_sha256 = vec![0; SHA256_SIZE];
-            }
-            let error = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("cannot contain microVM sandbox blocks")
-            );
+            assert!(validate_manifest_contents(&manifest).is_err());
         }
     }
 

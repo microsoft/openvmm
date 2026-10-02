@@ -6,7 +6,6 @@
 //! place in one operation; failures roll back and clean up the staging
 //! directory.
 
-use super::MANIFEST_VERSION;
 use super::SnapshotManifest;
 use super::format::MANIFEST_FILE_NAME;
 use super::format::MAX_MANIFEST_SIZE_BYTES;
@@ -14,9 +13,8 @@ use super::format::MAX_SAVED_STATE_SIZE_BYTES;
 use super::format::MEMORY_FILE_NAME;
 use super::format::SCRATCH_FILE_NAME;
 use super::format::STATE_FILE_NAME;
-use super::format::TIME_ABI_MANIFEST_VERSION;
+use super::format::validate_manifest_contents;
 use super::format::validate_manifest_header;
-use super::format::validate_manifest_version;
 use super::fs::OpenedSnapshotDirectory;
 use super::fs::allocated_file_bytes;
 use super::fs::copy_exact;
@@ -219,7 +217,7 @@ fn stage_snapshot(
     memory_publication: MemoryPublication,
 ) -> Result<StagingDirectory, SnapshotWriteError> {
     validate_manifest_header(manifest)?;
-    validate_manifest_version(manifest)?;
+    validate_manifest_contents(manifest)?;
     if let Some(contract) = &manifest.machine_contract {
         microvm::validate_machine_contract_shape(
             contract,
@@ -227,15 +225,7 @@ fn stage_snapshot(
             manifest.vp_count,
         )?;
     }
-    if manifest.version != MANIFEST_VERSION && manifest.version != TIME_ABI_MANIFEST_VERSION {
-        return Err(anyhow::anyhow!(
-            "snapshot manifest version {} is not supported for writing (expected {} or {})",
-            manifest.version,
-            MANIFEST_VERSION,
-            TIME_ABI_MANIFEST_VERSION,
-        )
-        .into());
-    }
+
     if u64::try_from(saved_state_bytes.len()).unwrap_or(u64::MAX) > MAX_SAVED_STATE_SIZE_BYTES {
         return Err(anyhow::anyhow!(
             "saved state exceeds the maximum size of {MAX_SAVED_STATE_SIZE_BYTES} bytes"
@@ -307,10 +297,6 @@ fn stage_snapshot(
 
         let mut published_manifest = manifest.clone();
         published_manifest.state_size_bytes = saved_state_bytes.len() as u64;
-        // Current local snapshots use strict structure, length, generation,
-        // and machine-contract checks without RAM-sized in-band hashing.
-        published_manifest.state_sha256.clear();
-        published_manifest.memory_sha256.clear();
 
         let manifest_bytes = mesh::payload::encode(published_manifest);
         anyhow::ensure!(
