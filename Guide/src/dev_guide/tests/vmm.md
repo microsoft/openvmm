@@ -134,6 +134,30 @@ To run a **specific test** (or set of tests), use `--filter` with a
 cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
 ```
 
+### MSHV run-entry cancellation
+
+On Linux, run the MSHV cancellation regression tests without requiring
+`/dev/mshv`:
+
+```bash
+cargo nextest run --profile agent -p virt_mshv -E 'test(run_vp::tests)'
+```
+
+These tests check early and same-thread cancellation, interruption of a
+blocking syscall, and the boundary that preserves an already completed syscall.
+MSHV must retain a wake delivered before entering `MSHV_RUN_VP`; an interrupt
+signal alone can otherwise be consumed before the blocking ioctl begins.
+
+On an MSHV host, also exercise the Alpine boot and guest-agent handshake:
+
+```bash
+test='multiarch::openvmm_uefi_x64_alpine_3_23_x64_boot_small'
+cargo xflowey vmm-tests-run --release --filter "test(/^${test}$/)"
+```
+
+Keep the normal test watchdog enabled. A timeout or an unresponsive VP
+inspection must not be hidden by retries or a longer deadline.
+
 ### Targeting a Platform
 
 By default, `vmm-tests-run` builds for the current host. Use `--target` to
