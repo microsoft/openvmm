@@ -329,7 +329,7 @@ describes the source definitions.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
-    --restore-snapshot snapshot --restore-entropy
+    --restore-snapshot snapshot
   ```
 * `--restore-ready-path <PATH>`: Connect to an existing Unix domain socket on
   Linux or a `//./pipe/...` named pipe on Windows and write exactly

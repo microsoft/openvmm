@@ -661,7 +661,7 @@ mod tests {
     const HOSTS: [(&str, &str, HvFeatures); 6] = [
         (
             "intel.skylake-sp.v1",
-            "whp prometheus28",
+            "whp 4114",
             HvFeatures {
                 banks: [0x1001_f9ff_e7f7_859f, 0x0000_000f_1086_0063],
                 xsave: 0x3fff,
@@ -685,7 +685,7 @@ mod tests {
         ),
         (
             "intel.skylake-sp.v1",
-            "mshv prometheus30",
+            "mshv 4114",
             HvFeatures {
                 banks: [0x1005_f9ff_fff7_859f, 0x0000_008f_1086_0063],
                 xsave: 0x3fff,
@@ -709,8 +709,8 @@ mod tests {
         ),
     ];
 
-    /// The features prometheus28's WHP offers.
-    const PROMETHEUS28: HvFeatures = HOSTS[0].2;
+    /// The features WHP offers on the bare-metal Skylake-SP host.
+    const SKYLAKE_SP_WHP_HOST: HvFeatures = HOSTS[0].2;
 
     fn mask(word: HvFeatureWord, name: &str) -> u64 {
         HV_FEATURES
@@ -839,7 +839,8 @@ mod tests {
 
     #[test]
     fn invariant_tsc_follows_the_host() {
-        let skylake = profile_features(profile("intel.skylake-sp.v1"), PROMETHEUS28).unwrap();
+        let skylake =
+            profile_features(profile("intel.skylake-sp.v1"), SKYLAKE_SP_WHP_HOST).unwrap();
         assert!(has(&skylake, HvFeatureWord::Bank1, "tsc_invariant_support"));
         // Azure's WHP offers no invariant TSC. The profile still pins it, and
         // the time ABI's CPUID supplies it.
@@ -885,7 +886,7 @@ mod tests {
 
     #[test]
     fn a_missing_feature_is_unsupported() {
-        let mut available = PROMETHEUS28;
+        let mut available = SKYLAKE_SP_WHP_HOST;
         available.xsave &= !mask(HvFeatureWord::Xsave, "avx512_support");
         available.banks[0] &= !mask(HvFeatureWord::Bank0, "ibrs_support");
         let error = profile_features(profile("intel.skylake-sp.v1"), available).unwrap_err();
@@ -894,7 +895,8 @@ mod tests {
         assert!(error.message.contains("ibrs_support"), "{error}");
 
         // A newer generation's profile on an older host.
-        let error = profile_features(profile("intel.emeraldrapids.v1"), PROMETHEUS28).unwrap_err();
+        let error =
+            profile_features(profile("intel.emeraldrapids.v1"), SKYLAKE_SP_WHP_HOST).unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
     }
 
@@ -937,7 +939,7 @@ mod tests {
 
         // A missing feature clears its CPUID bit, and nothing else.
         let skylake = profile_entries(profile("intel.skylake-sp.v1"));
-        let mut available = PROMETHEUS28;
+        let mut available = SKYLAKE_SP_WHP_HOST;
         available.xsave &= !mask(HvFeatureWord::Xsave, "avx512_support");
         available.banks[0] &= !mask(HvFeatureWord::Bank0, "ibpb_support");
         let mut cpuid = skylake.clone();

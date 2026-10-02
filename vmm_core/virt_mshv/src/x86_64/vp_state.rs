@@ -136,7 +136,7 @@ impl MshvProcessor<'_> {
     /// VMM writes its IRR through the LAPIC state page, as a snapshot restore
     /// does, or the restore clock when it queues the vector of an expired
     /// one-shot timer. Such a VP stays halted until some other interrupt
-    /// arrives, and so do the timers it owns: on prometheus30, 2 s after a
+    /// arrives, and so do the timers it owns: on a bare-metal host, 2 s after a
     /// restore, VPs were still halted with the timer vector pending. Asserting
     /// a vector that is already pending through the interrupt path is
     /// idempotent, and wakes the VP when the vector is deliverable: the

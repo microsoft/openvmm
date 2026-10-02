@@ -120,12 +120,14 @@ pub(crate) struct MshvTimeAbi {
         with = "|x| x.tsc_invariant_control()"
     )]
     msrs: Arc<TimeAbiMsrs>,
-    /// The CPUID results registered with the hypervisor.
+    /// The time ABI CPUID. Its partition-wide results are registered where
+    /// VP 0's own view differs (see [`Self::register_cpuid`]), and its
+    /// extended topology leaves for each VP when it is created.
     #[inspect(skip)]
-    registered_cpuid: Vec<CpuidLeaf>,
-    /// The effective CPUID: VP 0's view of the registered leaves at reset,
-    /// and of the host's entries outside the CPU profile's tables, read once
-    /// before any VP runs. Later reads would fold in VP state (the
+    cpuid: Vec<CpuidLeaf>,
+    /// The effective CPUID: VP 0's view of the time ABI CPUID's leaves at
+    /// reset, and of the host's entries outside the CPU profile's tables,
+    /// read once before any VP runs. Later reads would fold in VP state (the
     /// hypervisor applies the VP's XCR0, XSS, and control registers), so the
     /// capture and the restore of one snapshot would disagree.
     #[inspect(skip)]
@@ -137,37 +139,215 @@ pub(crate) struct MshvTimeAbi {
     /// the supported CPU surface.
     #[inspect(skip)]
     host_features: HvFeatures,
-    /// The host's CPUID table, read once at creation for the supported CPU
-    /// surface and the unlisted candidates.
+    /// The CPU profile, whose unlisted candidates the host's CPUID gives.
     #[inspect(skip)]
-    host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
+    cpu_profile: String,
+    /// Where the host's CPUID table comes from. After its first use, this
+    /// holds only the drained channel, if any, which the partition frees when
+    /// it drops.
+    #[inspect(skip)]
+    host_cpuid_source: parking_lot::Mutex<Option<HostCpuidSource>>,
+    /// The host's CPUID table and the CPU profile's unlisted candidates in
+    /// it, from [`Self::host_cpuid_source`] at first use.
+    #[inspect(skip)]
+    host_cpuid: std::sync::OnceLock<HostCpuid>,
+    /// How long partition build took to start reading the host's CPUID, in
+    /// microseconds.
+    #[inspect(skip)]
+    host_cpuid_spawn_us: u64,
+}
+
+/// The host's CPUID table, for the supported CPU surface and the unlisted
+/// candidates.
+pub(super) enum HostCpuidSource {
+    /// Already read.
+    Ready(HostCpuid),
+    /// Being read on another thread, which sends the table with its unlisted
+    /// candidates and how long it took, in microseconds. Every CPUID
+    /// instruction in the root partition exits to the hypervisor, so this
+    /// keeps the read off the start path: its first use comes after guest
+    /// memory registration.
+    Pending(std::sync::mpsc::Receiver<(HostCpuid, u64)>),
+}
+
+impl HostCpuidSource {
+    /// Starts reading the host's CPUID table and finding `cpu_profile`'s
+    /// unlisted candidates in it on another thread, or does both here if no
+    /// thread can start.
+    pub(super) fn spawn(cpu_profile: &str) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let thread_profile = cpu_profile.to_owned();
+        // The thread is detached, so it releases its own stack when it exits
+        // instead of a join on the start path.
+        let read = move || {
+            let started = std::time::Instant::now();
+            let host = HostCpuid::read(&thread_profile);
+            let _ = sender.send((host, started.elapsed().as_micros() as u64));
+        };
+        match std::thread::Builder::new()
+            .name("mshv-host-cpuid".into())
+            .spawn(read)
+        {
+            Ok(_) => Self::Pending(receiver),
+            Err(error) => {
+                tracing::warn!(
+                    error = &error as &dyn std::error::Error,
+                    "cannot start a thread to read the host CPUID, reading it now"
+                );
+                Self::Ready(HostCpuid::read(cpu_profile))
+            }
+        }
+    }
+}
+
+/// The host's CPUID table and the CPU profile's unlisted candidates in it.
+pub(super) struct HostCpuid {
+    table: Vec<cpu_profile::cpuid::CpuidEntry>,
     /// The entries the host's CPUID enumerates outside the CPU profile's
     /// tables (`cpu_profile::unlisted_cpuid_candidates`). The effective CPUID
     /// reports VP 0's view there, which core requires to be zero
     /// (`E_CPU_UNLISTED`).
-    #[inspect(skip)]
     unlisted_candidates: Vec<(u32, Option<u32>)>,
+    /// How long the other thread took to read the table and find the
+    /// candidates, in microseconds, if it did.
+    read_us: Option<u64>,
+    /// How long the first use waited for them, in microseconds. The
+    /// effective CPUID's log line reports both, so the first use logs
+    /// nothing of its own: a separate event cost about 25 us on the start
+    /// path.
+    wait_us: u64,
+}
+
+impl HostCpuid {
+    /// Finds `cpu_profile`'s unlisted candidates in `table`. A profile that
+    /// isn't pinned has none.
+    fn new(cpu_profile: &str, table: Vec<cpu_profile::cpuid::CpuidEntry>) -> Self {
+        let unlisted_candidates = cpu_profile::pinned(cpu_profile)
+            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &table))
+            .unwrap_or_default();
+        Self {
+            table,
+            unlisted_candidates,
+            read_us: None,
+            wait_us: 0,
+        }
+    }
+
+    /// Reads the host's CPUID table on this thread.
+    fn read(cpu_profile: &str) -> Self {
+        Self::new(cpu_profile, super::profile_features::host_cpuid_table())
+    }
 }
 
 impl MshvTimeAbi {
     pub(super) fn new(
         config: &TimeAbiConfig,
-        registered_cpuid: &CpuidLeafSet,
+        cpuid: &CpuidLeafSet,
         host_features: HvFeatures,
-        host_cpuid: Vec<cpu_profile::cpuid::CpuidEntry>,
+        host_cpuid: HostCpuidSource,
+        host_cpuid_spawn_us: u64,
     ) -> Self {
-        let unlisted_candidates = cpu_profile::pinned(&config.cpu_profile)
-            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &host_cpuid))
-            .unwrap_or_default();
         Self {
             msrs: config.msrs.clone(),
-            registered_cpuid: registered_cpuid.leaves().to_vec(),
+            cpuid: cpuid.leaves().to_vec(),
             effective_cpuid: std::sync::OnceLock::new(),
             vp_set_sealed: AtomicBool::new(false),
             host_features,
-            host_cpuid,
-            unlisted_candidates,
+            cpu_profile: config.cpu_profile.clone(),
+            host_cpuid_source: parking_lot::Mutex::new(Some(host_cpuid)),
+            host_cpuid: std::sync::OnceLock::new(),
+            host_cpuid_spawn_us,
         }
+    }
+
+    /// Registers the partition-wide results of the time ABI CPUID that VP 0's
+    /// own view does not already present, once VP 0 exists and before any VP
+    /// runs or the effective CPUID is read.
+    ///
+    /// Under the CPU profile's processor features the hypervisor's own view
+    /// presents most of the profile, and every hypervisor-range leaf past the
+    /// identity reads zero. A result it already presents would change nothing
+    /// the guest reads but cost a hypercall (about 3.3 us on bare metal and
+    /// 5 us nested), so one bulk read of VP 0's view at reset decides. The
+    /// effective CPUID report reads every leaf back, and core checks it. If
+    /// the bulk read fails, every result is registered. The extended topology
+    /// leaves get per-VP results when each VP is created (see `create_vp`).
+    pub(super) fn register_cpuid(
+        &self,
+        vmfd: &VmFd,
+        bsp: &VcpuFd,
+        cpuid: &CpuidLeafSet,
+    ) -> Result<(), crate::Error> {
+        let started = std::time::Instant::now();
+        let leaves: Vec<&CpuidLeaf> = cpuid
+            .leaves()
+            .iter()
+            .filter(|leaf| !is_per_vp_leaf(leaf.function))
+            .collect();
+        let entries: Vec<(u32, u32)> = leaves
+            .iter()
+            .map(|leaf| (leaf.function, leaf.index.unwrap_or(0)))
+            .collect();
+        let native = vp_cpuid_many(bsp, VpIndex::BSP.index(), &entries)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    error = error as &dyn std::error::Error,
+                    "MSHV bulk CPUID read failed, registering every time ABI CPUID result"
+                );
+            })
+            .ok();
+        let read_us = started.elapsed().as_micros() as u64;
+        let mut registered = 0;
+        for (index, leaf) in leaves.iter().enumerate() {
+            if native
+                .as_ref()
+                .is_some_and(|native| presents(leaf, native[index]))
+            {
+                continue;
+            }
+            super::register_cpuid_result(vmfd, leaf)?;
+            registered += 1;
+        }
+        tracing::info!(
+            leaves = cpuid.leaves().len(),
+            per_vp_leaves = cpuid.leaves().len() - leaves.len(),
+            native_leaves = leaves.len() - registered,
+            registered_leaves = registered,
+            host_cpuid_spawn_us = self.host_cpuid_spawn_us,
+            read_us,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "registered MSHV CPUID results"
+        );
+        Ok(())
+    }
+
+    /// Returns the host's CPUID table and the unlisted candidates, waiting
+    /// for the read that partition creation started if it is still running.
+    fn host_cpuid(&self) -> &HostCpuid {
+        self.host_cpuid.get_or_init(|| {
+            let started = std::time::Instant::now();
+            let mut source = self.host_cpuid_source.lock();
+            let (mut host, read_us) = match source.take() {
+                Some(HostCpuidSource::Ready(host)) => (host, None),
+                Some(HostCpuidSource::Pending(receiver)) => {
+                    let received = receiver.recv();
+                    // Freeing the channel can hand its memory back to the
+                    // kernel, which took about 12 us on a bare-metal host,
+                    // so the channel lives until the partition drops.
+                    *source = Some(HostCpuidSource::Pending(receiver));
+                    match received {
+                        Ok((host, read_us)) => (host, Some(read_us)),
+                        // The reading thread panicked.
+                        Err(_) => (HostCpuid::read(&self.cpu_profile), None),
+                    }
+                }
+                None => (HostCpuid::read(&self.cpu_profile), None),
+            };
+            drop(source);
+            host.read_us = read_us;
+            host.wait_us = started.elapsed().as_micros() as u64;
+            host
+        })
     }
 
     /// Fails with `E_VP_LATE_CREATION` once the synchronized TSC set has run.
@@ -295,17 +475,19 @@ fn install_msr_intercepts(vmfd: &VmFd, msrs: &[u32]) -> Result<(), TimeAbiError>
     Ok(())
 }
 
-/// Returns the CPUID results to register for a time ABI partition: the time
-/// ABI CPUID verbatim.
+/// Returns the CPUID table of a time ABI partition: the time ABI CPUID
+/// verbatim.
 ///
 /// It is the CPU profile's complete effective CPUID (the profile's leaves,
 /// OpenVMM's topology leaves and APIC mode, and the identity and explicit zero
 /// leaves), so neither the worker's leaves nor the backend's own add a leaf or
-/// a bit. The hypervisor's own values show only where a result's mask is clear
-/// (each VP's APIC identity, the runtime XSAVE sizes) and where no result
-/// applies: the reserved entries, which its guest view reads as zero. Without
-/// synthetic processor features, the hypervisor itself reports every other
-/// hypervisor-range leaf as zero.
+/// a bit. The partition registers its results where VP 0's own view differs
+/// ([`MshvTimeAbi::register_cpuid`]): without synthetic processor features the
+/// hypervisor reports every hypervisor-range leaf past the identity as zero,
+/// and under the profile's processor features it presents most of the
+/// profile. The hypervisor's own values also show where a result's mask is
+/// clear (each VP's APIC identity, the runtime XSAVE sizes) and where no
+/// result applies: the reserved entries, which its guest view reads as zero.
 pub(super) fn partition_cpuid(config: &CpuidLeafSet) -> CpuidLeafSet {
     CpuidLeafSet::new(config.leaves().to_vec())
 }
@@ -326,16 +508,6 @@ pub(super) fn with_x2apic_id(leaf: &CpuidLeaf, apic_id: u32) -> CpuidLeaf {
     leaf.result[3] = apic_id;
     leaf.mask[3] = !0;
     leaf
-}
-
-/// Returns whether `leaf` is an explicit zero leaf past the identity, which
-/// the effective CPUID reports as registered instead of reading it back.
-/// Preflight reads such leaves back at its sentinels.
-fn is_zero_fill(leaf: &CpuidLeaf) -> bool {
-    leaf.function > IDENTITY_MAX_LEAF
-        && IDENTITY_CPUID_RANGE.contains(&leaf.function)
-        && leaf.result == [0; 4]
-        && leaf.mask == [!0; 4]
 }
 
 /// An intercepted access to an identity MSR.
@@ -621,7 +793,7 @@ const _: () = assert!(size_of::<VpCpuidValuesInput>() <= 4096);
 /// `VcpuFd::get_cpuid_values` reads one entry. `HvCallGetVpCpuidValues` is a
 /// rep hypercall, so one call reads up to [`CPUID_READS_PER_CALL`] entries
 /// instead of paying a hypercall per entry.
-fn vp_cpuid_many(
+pub(super) fn vp_cpuid_many(
     vp: &VcpuFd,
     vp_index: u32,
     entries: &[(u32, u32)],
@@ -703,19 +875,6 @@ impl MshvPartitionInner {
             .map_err(|error| TimeAbiError::new(code, format!("VP 0 is unavailable: {error}")))
     }
 
-    /// Checks that partition time can be frozen, leaving it as it was: a
-    /// frozen partition stays frozen until a VP runs.
-    fn probe_time_freeze(&self) -> Result<(), KernelError> {
-        let frozen = self.time_frozen.lock();
-        self.vmfd
-            .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)?;
-        if !*frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)?;
-        }
-        Ok(())
-    }
-
     /// Returns the effective CPUID, reading it from VP 0 the first time. The
     /// first read happens in preflight, before any VP runs, on both cold boot
     /// and restore, so it is VP 0's view at reset.
@@ -726,30 +885,24 @@ impl MshvPartitionInner {
         }
         let bsp = self.time_abi_bsp(TimeAbiCode::CpuSurface)?;
         let started = std::time::Instant::now();
-        // VP 0 reads, in the report's order: the maximum leaves, the
-        // registered results except the explicit zero leaves past the
-        // identity, which are reported as registered, and the entries outside
-        // the profile's tables where the host's CPUID has any. Guests read the
-        // hypervisor's own values there, at subleaf 0 for a subleaf-independent
-        // entry, and core requires each to read zero.
+        // VP 0 reads, in the report's order: the maximum leaves, the time ABI
+        // CPUID's leaves, and the entries outside the profile's tables where
+        // the host's CPUID has any. Guests read the hypervisor's own values
+        // wherever no result was registered (see `register_cpuid`) and at the
+        // unlisted entries (at subleaf 0 for a subleaf-independent entry),
+        // which core requires to read zero.
         let reads: Vec<(u32, Option<u32>)> = EFFECTIVE_CPUID_MAX_LEAVES
             .into_iter()
             .map(|function| (function, None))
-            .chain(
-                state
-                    .registered_cpuid
-                    .iter()
-                    .filter(|leaf| !is_zero_fill(leaf))
-                    .map(|leaf| (leaf.function, leaf.index)),
-            )
-            .chain(state.unlisted_candidates.iter().copied())
+            .chain(state.cpuid.iter().map(|leaf| (leaf.function, leaf.index)))
+            .chain(state.host_cpuid().unlisted_candidates.iter().copied())
             .collect();
         let entries: Vec<(u32, u32)> = reads
             .iter()
             .map(|&(function, index)| (function, index.unwrap_or(0)))
             .collect();
         let (values, bulk) = vp0_cpuid_entries(bsp, &entries, TimeAbiCode::CpuSurface)?;
-        let mut read = reads
+        let leaves: Vec<_> = reads
             .iter()
             .zip(values)
             .map(|(&(function, index), result)| {
@@ -758,24 +911,17 @@ impl MshvPartitionInner {
                     Some(index) => leaf.indexed(index),
                     None => leaf,
                 }
-            });
-        let mut leaves: Vec<_> = read
-            .by_ref()
-            .take(EFFECTIVE_CPUID_MAX_LEAVES.len())
+            })
             .collect();
-        for leaf in &state.registered_cpuid {
-            leaves.push(if is_zero_fill(leaf) {
-                *leaf
-            } else {
-                read.next().expect("one value per read")
-            });
-        }
-        leaves.extend(read);
+        let host = state.host_cpuid();
         tracing::info!(
             leaves = leaves.len(),
             reads = entries.len(),
             bulk,
-            unlisted_candidates = state.unlisted_candidates.len(),
+            unlisted_candidates = host.unlisted_candidates.len(),
+            host_cpuid_entries = host.table.len(),
+            host_cpuid_read_us = host.read_us,
+            host_cpuid_wait_us = host.wait_us,
             elapsed_us = started.elapsed().as_micros() as u64,
             "MSHV effective CPUID read"
         );
@@ -791,7 +937,7 @@ impl MshvPartitionInner {
     fn check_identity_cpuid(&self, bsp: &VcpuFd) -> Result<(), TimeAbiError> {
         let state = self.time_abi_state()?;
         let effective = CpuidLeafSet::new(self.time_abi_effective_cpuid()?.to_vec());
-        let identity = state.registered_cpuid.iter().filter(|leaf| {
+        let identity = state.cpuid.iter().filter(|leaf| {
             leaf.function <= IDENTITY_MAX_LEAF && IDENTITY_CPUID_RANGE.contains(&leaf.function)
         });
         for leaf in identity {
@@ -842,12 +988,19 @@ fn vp0_cpuid_entries(
     }
 }
 
+/// Returns whether VP 0's `actual` result agrees with `leaf` under its mask.
+fn presents(leaf: &CpuidLeaf, actual: [u32; 4]) -> bool {
+    let mut expected = actual;
+    leaf.apply(&mut expected);
+    actual == expected
+}
+
 /// Fails with `E_IDENTITY_ROUTING` unless VP 0's `actual` result agrees with
 /// `leaf` under its mask.
 fn check_leaf(leaf: &CpuidLeaf, actual: [u32; 4]) -> Result<(), TimeAbiError> {
-    let mut expected = actual;
-    leaf.apply(&mut expected);
-    if actual != expected {
+    if !presents(leaf, actual) {
+        let mut expected = actual;
+        leaf.apply(&mut expected);
         return Err(TimeAbiError::new(
             TimeAbiCode::IdentityRouting,
             format!(
@@ -913,7 +1066,11 @@ impl TimeAbiBackend for MshvPartition {
         let bsp = self.inner.time_abi_bsp(TimeAbiCode::IdentityRouting)?;
         self.inner.check_identity_cpuid(bsp)?;
 
-        self.inner.probe_time_freeze().map_err(|error| {
+        // Freezing partition time checks that it can be frozen. Time stays
+        // frozen, as after a reset, until the synchronized TSC set resumes it
+        // after its read-back or a VP first runs, so a restore freezes it
+        // only once.
+        self.inner.freeze_time().map_err(|error| {
             TimeAbiError::new(
                 TimeAbiCode::TscSyncUnsupported,
                 format!("cannot freeze partition time: {}", error_chain(&error)),
@@ -949,7 +1106,7 @@ impl TimeAbiBackend for MshvPartition {
                 )
             })?;
         let surface = super::profile_features::supported_cpu_surface(
-            state.host_cpuid.clone(),
+            state.host_cpuid().table.clone(),
             state.host_features,
             width as u8,
         );
@@ -1197,7 +1354,8 @@ mod tests {
                 intercept.intercept_type,
                 mshv_bindings::hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR_INDEX
             );
-            // SAFETY: every view of this C union is a plain integer.
+            // SAFETY: `msr_index_intercept` writes the union through
+            // `as_uint64`, so all eight bytes are initialized.
             let parameter = unsafe { intercept.intercept_parameter.as_uint64 };
             assert_eq!(parameter, u64::from(msr));
         }
@@ -1289,42 +1447,64 @@ mod tests {
         host.push(entry(0xb, Some(2), [0, 0, 2, 0]));
         host.push(entry(0x4000_0000, None, [0x4000_000b, 0, 0, 0]));
         host.sort_by_key(cpu_profile::cpuid::CpuidEntry::key);
-        let mut config = TimeAbiConfig {
+        let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
             cpu_profile: profile.id().to_owned(),
         };
-        let features = super::super::profile_features::legacy_features();
         let state = MshvTimeAbi::new(
             &config,
             &partition_cpuid(&config.cpuid),
-            features,
-            host.clone(),
+            super::super::profile_features::legacy_features(),
+            HostCpuidSource::Ready(HostCpuid::new(&config.cpu_profile, host.clone())),
+            0,
         );
         assert_eq!(
-            state.unlisted_candidates,
+            state.host_cpuid().unlisted_candidates,
             [(4, Some(5)), (0x17, None), (0x8000_0009, None)]
         );
         // A profile that isn't pinned has none.
-        config.cpu_profile = String::new();
-        let state = MshvTimeAbi::new(&config, &partition_cpuid(&config.cpuid), features, host);
-        assert!(state.unlisted_candidates.is_empty());
+        assert!(HostCpuid::new("", host).unlisted_candidates.is_empty());
     }
 
     #[test]
-    fn zero_fill_leaves_are_full_zero_leaves_past_the_identity() {
-        for function in [0x4000_0006, 0x4000_0081, 0x4000_00ff] {
-            assert!(is_zero_fill(&CpuidLeaf::new(function, [0; 4])));
-        }
-        // Identity leaves, nonzero or partial leaves, and zeroed time-bit
-        // leaves outside the range are read back from VP 0.
-        assert!(!is_zero_fill(&CpuidLeaf::new(0x4000_0004, [0; 4])));
-        assert!(!is_zero_fill(&CpuidLeaf::new(0x4000_0006, [1, 0, 0, 0])));
-        assert!(!is_zero_fill(&CpuidLeaf::new(0x4000_0100, [0; 4])));
-        assert!(!is_zero_fill(&CpuidLeaf::new(0x15, [0; 4])));
-        assert!(!is_zero_fill(
-            &CpuidLeaf::new(0x4000_0006, [0; 4]).masked([1, 0, 0, 0])
-        ));
+    fn the_host_cpuid_is_read_in_the_background() {
+        let config = TimeAbiConfig {
+            cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
+            msrs: Arc::new(TimeAbiMsrs::new()),
+            cpu_profile: "intel.skylake-sp.v1".to_owned(),
+        };
+        let state = MshvTimeAbi::new(
+            &config,
+            &partition_cpuid(&config.cpuid),
+            super::super::profile_features::legacy_features(),
+            HostCpuidSource::spawn(&config.cpu_profile),
+            0,
+        );
+        let here = HostCpuid::read(&config.cpu_profile);
+        // The reading thread may run on another CPU, whose per-CPU fields
+        // (the APIC IDs) differ, so compare the entries it enumerates. The
+        // candidates exclude the topology leaves, so they are the same.
+        let keys = |table: &[cpu_profile::cpuid::CpuidEntry]| {
+            table
+                .iter()
+                .map(cpu_profile::cpuid::CpuidEntry::key)
+                .collect::<Vec<_>>()
+        };
+        let host = state.host_cpuid();
+        assert!(host.read_us.is_some(), "read on another thread");
+        assert_eq!(keys(&host.table), keys(&here.table));
+        assert_eq!(host.unlisted_candidates, here.unlisted_candidates);
+    }
+
+    #[test]
+    fn a_result_is_presented_when_the_view_agrees_under_its_mask() {
+        let leaf = CpuidLeaf::new(6, [4, 0, 0, 0]).masked([!0, !0, 1, 0]);
+        assert!(presents(&leaf, [4, 0, 0, 0]));
+        // Bits outside the mask are the hypervisor's own.
+        assert!(presents(&leaf, [4, 0, 2, 0x55]));
+        assert!(!presents(&leaf, [0, 0, 0, 0]));
+        assert!(!presents(&leaf, [4, 0, 1, 0]));
     }
 
     #[test]
@@ -1431,7 +1611,8 @@ mod tests {
             &config,
             &partition_cpuid(&config.cpuid),
             super::super::profile_features::legacy_features(),
-            Vec::new(),
+            HostCpuidSource::Ready(HostCpuid::new("", Vec::new())),
+            0,
         );
         state.check_vp_creation(VpIndex::new(4)).unwrap();
         state.vp_set_sealed.store(true, Ordering::SeqCst);
@@ -1555,55 +1736,15 @@ mod hw {
     }
 
     /// Returns the effective CPUID of this host's profile for `topology`, and
-    /// the CPUID table that core programs for it (`TimeAbiConfig::cpuid`): the
-    /// effective CPUID with the per-VP APIC identity bits unmasked. This is
-    /// what core's `effective_cpuid` and `backend_cpuid` build.
+    /// the CPUID table that core programs for it (`TimeAbiConfig::cpuid`).
     fn host_profile_cpuid(
         topology: &vm_topology::processor::ProcessorTopology,
     ) -> (cpu_profile::EffectiveCpuid, CpuidLeafSet) {
         let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
-        let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
-            function: leaf.function,
-            index: leaf.index,
-            result: leaf.result,
-            mask: leaf.mask,
-        };
-        let mut topology_leaves = Vec::new();
-        virt::x86::topology::topology_cpuid(
-            topology,
-            &|leaf, subleaf| profile.lookup(leaf, subleaf),
-            &mut topology_leaves,
-        )
-        .unwrap();
-        virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
-        let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
-        vm.push(cpu_profile::x2apic_cpuid(!matches!(
-            topology.apic_mode(),
-            vm_topology::processor::x86::ApicMode::XApic
-        )));
-        let identity: Vec<_> = virt::time_abi::identity::identity_cpuid_leaves(topology.vp_count())
-            .iter()
-            .map(result)
-            .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
-            .collect();
-        let effective = profile.effective_cpuid(&vm, &identity).unwrap();
-        let table = CpuidLeafSet::new(
-            effective
-                .results()
-                .map(|result| {
-                    let per_vp = virt::x86::topology::per_vp_cpuid_bits(result.function);
-                    CpuidLeaf {
-                        function: result.function,
-                        index: result.index,
-                        result: result.result,
-                        mask: [0, 1, 2, 3].map(|i| result.mask[i] & !per_vp[i]),
-                    }
-                })
-                .collect(),
-        );
+        let effective = virt::time_abi::cpuid::effective_cpuid(profile, topology).unwrap();
+        let table = virt::time_abi::cpuid::backend_cpuid(&effective);
         (effective, table)
     }
-
     /// Converts a backend's CPU surface to the profile crate's form, as core
     /// does for the support check.
     fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
@@ -1760,6 +1901,10 @@ mod hw {
                     sync: TscSyncMethod::FrozenWrite,
                 }
             );
+            // Preflight leaves partition time frozen, as a reset does, until
+            // the synchronized TSC set or the first VP run resumes it.
+            assert!(*partition.inner.time_frozen.lock());
+            partition.inner.thaw_time().unwrap();
             let tsc_hz = backend.native_tsc_hz().unwrap();
             check_plausible_tsc_hz(tsc_hz).unwrap();
             assert_eq!(backend.lapic_hz().unwrap(), LAPIC_HZ_HYPERV);

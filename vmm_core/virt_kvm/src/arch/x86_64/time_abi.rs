@@ -415,11 +415,7 @@ impl KvmTimeAbi {
     ) -> Result<Self, TimeAbiError> {
         for &vcpu in vcpus {
             vm.vp(vcpu)
-                .enable_cap(
-                    "enforce_pv_feature_cpuid",
-                    kvm::KVM_CAP_ENFORCE_PV_FEATURE_CPUID,
-                    [1, 0, 0, 0],
-                )
+                .enable_enforce_pv_feature_cpuid()
                 .map_err(|err| {
                     routing_error(format!(
                         "cannot hide KVM's paravirtual MSRs on vCPU {vcpu}: {err:#}"
@@ -1264,7 +1260,7 @@ mod tests {
     fn cycle_conversion_rounds_up() {
         assert_eq!(cycles_to_ns_ceil(0, 2_000_000_000), 0);
         assert_eq!(cycles_to_ns_ceil(1, 2_000_000_000), 1);
-        // One millisecond at the prometheus32 rate, and a hair over a
+        // One millisecond at the bare-metal KVM host's rate, and a hair over a
         // microsecond.
         assert_eq!(cycles_to_ns_ceil(2_194_804, 2_194_804_000), 1_000_000);
         assert_eq!(cycles_to_ns_ceil(2_195, 2_194_804_000), 1_001);
