@@ -359,12 +359,17 @@ pub(super) fn check_profile_support(
                 ),
             )
         })?;
-    cpu_profile::verify_support(profile, &host_cpu_surface(&surface))?;
+    cpu_profile::verify_support(profile, &host_cpu_surface(&surface, hypervisor))?;
     Ok(())
 }
 
-/// Converts a backend's CPU surface to the profile crate's form.
-fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+/// Converts a backend's CPU surface to the profile crate's form. KVM's is a
+/// table; MSHV and WHP build theirs from the host's CPUID, which does not show
+/// what a guest reads outside the profile's tables.
+fn host_cpu_surface(
+    surface: &SupportedCpuSurface,
+    hypervisor: &str,
+) -> cpu_profile::HostCpuSurface {
     let mut cpuid = surface
         .cpuid
         .iter()
@@ -373,6 +378,10 @@ fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurfac
     cpu_profile::cpuid::normalize(&mut cpuid);
     cpu_profile::HostCpuSurface {
         cpuid,
+        presentation: match hypervisor {
+            "kvm" => cpu_profile::CpuidPresentation::Table,
+            _ => cpu_profile::CpuidPresentation::PassThroughHostView,
+        },
         physical_address_width: surface.physical_address_width,
         msrs: surface
             .msrs
