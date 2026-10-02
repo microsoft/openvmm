@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 aarch64defs.workspace = true
+cpu_profile.workspace = true
 hvdef.workspace = true
 pci_core.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }
