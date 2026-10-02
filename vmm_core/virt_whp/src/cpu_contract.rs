@@ -75,6 +75,12 @@ pub(crate) fn configure_versioned_contract(
 pub(crate) struct CpuidTopology {
     reserved_vps_per_socket: u32,
     smt_enabled: bool,
+    /// The extended topology subleaves past the core level (leaves 0Bh and
+    /// 1Fh, subleaf 2 and up) that a time ABI partition's effective CPUID
+    /// lists, such as the terminating subleaf, sorted. Other partitions list
+    /// none.
+    #[inspect(debug)]
+    listed_extended_topology: Vec<(u32, u32)>,
 }
 
 impl CpuidTopology {
@@ -82,14 +88,46 @@ impl CpuidTopology {
         Self {
             reserved_vps_per_socket: topology.reserved_vps_per_socket(),
             smt_enabled: topology.smt_enabled(),
+            listed_extended_topology: Vec::new(),
         }
+    }
+
+    /// Keeps the extended topology subleaves past the core level that
+    /// `cpuid`, a time ABI partition's effective CPUID, lists: each VP sees
+    /// them with its own x2APIC ID, instead of the zeros that end the
+    /// enumeration on other partitions.
+    pub(crate) fn with_listed_extended_topology(mut self, cpuid: &virt::CpuidLeafSet) -> Self {
+        let mut listed: Vec<(u32, u32)> = cpuid
+            .leaves()
+            .iter()
+            .filter(|leaf| is_extended_topology(leaf.function))
+            .filter_map(|leaf| Some((leaf.function, leaf.index.filter(|&index| index >= 2)?)))
+            .collect();
+        listed.sort_unstable();
+        listed.dedup();
+        self.listed_extended_topology = listed;
+        self
+    }
+
+    fn lists(&self, function: u32, index: u32) -> bool {
+        self.listed_extended_topology
+            .binary_search(&(function, index))
+            .is_ok()
     }
 }
 
+fn is_extended_topology(function: u32) -> bool {
+    matches!(
+        CpuidFunction(function),
+        CpuidFunction::ExtendedTopologyEnumeration | CpuidFunction::V2ExtendedTopologyEnumeration
+    )
+}
+
 /// Reports `apic_id` for the SMT and core levels of the extended topology
-/// leaves, and terminates the enumeration after them.
-fn fixup_extended_topology(index: u32, apic_id: u32, result: &mut [u32; 4]) {
-    if index >= 2 {
+/// leaves and for each further subleaf that is `listed`, and terminates the
+/// enumeration after the core level otherwise.
+fn fixup_extended_topology(index: u32, apic_id: u32, listed: bool, result: &mut [u32; 4]) {
+    if index >= 2 && !listed {
         *result = [0; 4];
     } else {
         result[3] = apic_id;
@@ -127,7 +165,7 @@ pub(crate) fn fixup_vp_topology_cpuid(
         }
         CpuidFunction::ExtendedTopologyEnumeration
         | CpuidFunction::V2ExtendedTopologyEnumeration => {
-            fixup_extended_topology(index, apic_id, default);
+            fixup_extended_topology(index, apic_id, topology.lists(function, index), default);
         }
         CpuidFunction::ProcessorTopologyDefinition => {
             default[0] = x86defs::cpuid::ProcessorTopologyDefinitionEax::from(default[0])
@@ -151,7 +189,9 @@ pub(crate) fn fixup_vp_topology_cpuid(
 
 #[cfg(test)]
 mod tests {
+    use super::CpuidTopology;
     use super::fixup_extended_topology;
+    use super::fixup_vp_topology_cpuid;
     use super::mask_gpa_pinning_enlightenment;
 
     #[test]
@@ -182,15 +222,59 @@ mod tests {
     #[test]
     fn extended_topology_uses_canonical_levels_and_terminates() {
         for index in [0, 1] {
-            let mut result = [1, 2, 3, 99];
-            fixup_extended_topology(index, 7, &mut result);
-            assert_eq!(result, [1, 2, 3, 7]);
+            for listed in [false, true] {
+                let mut result = [1, 2, 3, 99];
+                fixup_extended_topology(index, 7, listed, &mut result);
+                assert_eq!(result, [1, 2, 3, 7]);
+            }
         }
 
         for index in [2, 3, u32::MAX] {
             let mut result = [1, 2, 3, 99];
-            fixup_extended_topology(index, 7, &mut result);
+            fixup_extended_topology(index, 7, false, &mut result);
             assert_eq!(result, [0; 4]);
+        }
+    }
+
+    /// A time ABI partition's effective CPUID lists the subleaf that ends the
+    /// enumeration (core's `terminate_extended_topology`): each VP sees it
+    /// with its own x2APIC ID. Subleaves past it still read zero, and other
+    /// partitions keep ending the enumeration with zeros.
+    #[test]
+    fn listed_extended_topology_subleaves_keep_their_values() {
+        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+            .vps_per_socket(4)
+            .build(4)
+            .unwrap();
+        let terminator = |function| {
+            virt::CpuidLeaf::new(function, [0, 0, 2, 0])
+                .indexed(2)
+                .masked([!0, !0, !0, 0])
+        };
+        let cpuid = virt::CpuidLeafSet::new(vec![
+            virt::CpuidLeaf::new(0xb, [1, 1, 0x100, 0])
+                .indexed(0)
+                .masked([!0, !0, !0, 0]),
+            terminator(0xb),
+            terminator(0x1f),
+        ]);
+        let time_abi = CpuidTopology::new(&topology).with_listed_extended_topology(&cpuid);
+        assert_eq!(time_abi.listed_extended_topology, [(0xb, 2), (0x1f, 2)]);
+        let legacy = CpuidTopology::new(&topology);
+        for function in [0xb, 0x1f] {
+            for apic_id in [0, 3] {
+                let mut result = [0, 0, 2, 99];
+                fixup_vp_topology_cpuid(&time_abi, apic_id, function, 2, &mut result);
+                assert_eq!(result, [0, 0, 2, apic_id]);
+
+                let mut result = [5, 6, 7, 8];
+                fixup_vp_topology_cpuid(&time_abi, apic_id, function, 3, &mut result);
+                assert_eq!(result, [0; 4]);
+
+                let mut result = [0, 0, 2, 99];
+                fixup_vp_topology_cpuid(&legacy, apic_id, function, 2, &mut result);
+                assert_eq!(result, [0; 4]);
+            }
         }
     }
 }
