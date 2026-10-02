@@ -117,6 +117,9 @@ impl MshvPartitionInner {
                 "MSHV_CREATE_VCPU completed"
             );
             let bsp_vcpufd = result?;
+            if let Some(time_abi) = &self.time_abi {
+                time_abi.register_cpuid(&self.vmfd, &bsp_vcpufd, &self.config.cpuid)?;
+            }
             let caps = self.build_caps(&bsp_vcpufd)?;
             Ok(MshvFinalizedPartition { bsp_vcpufd, caps })
         })
