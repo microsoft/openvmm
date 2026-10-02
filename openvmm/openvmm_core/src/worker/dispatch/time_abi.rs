@@ -41,13 +41,10 @@ use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::TscSyncMethod;
 use virt::time_abi::surface::SupportedCpuSurface;
 use vm_topology::processor::ProcessorTopology;
-use vm_topology::processor::VpIndex;
 use vm_topology::processor::x86::ApicMode;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
-use x86defs::cpuid::CpuidFunction;
-use x86defs::cpuid::ExtendedTopologyEcx;
 
 /// The name of the time ABI state unit.
 pub(super) const TIME_ABI_UNIT: &str = "time-abi";
@@ -138,7 +135,7 @@ pub(super) fn effective_cpuid(
             ),
         )
     })?;
-    terminate_extended_topology(topology, &mut topology_leaves);
+    virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
     let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
     vm.push(cpu_profile::x2apic_cpuid(!matches!(
         topology.apic_mode(),
@@ -150,33 +147,6 @@ pub(super) fn effective_cpuid(
         .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
         .collect();
     Ok(profile.effective_cpuid(&vm, &identity)?)
-}
-
-/// Adds the subleaf that ends each extended topology leaf in `leaves` (0Bh,
-/// and 1Fh where the profile reaches it) after its levels: an invalid level
-/// with its own number in `ECX[7:0]` and the BSP's x2APIC ID in `EDX`, as
-/// Intel defines it. Linux reads it to end its topology enumeration, so the
-/// effective CPUID lists it instead of leaving it to each backend.
-fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Vec<CpuidLeaf>) {
-    let bsp_apic_id = topology.vp_arch(VpIndex::BSP).apic_id;
-    for function in [
-        CpuidFunction::ExtendedTopologyEnumeration,
-        CpuidFunction::V2ExtendedTopologyEnumeration,
-    ] {
-        let levels = leaves
-            .iter()
-            .filter(|leaf| leaf.function == function.0)
-            .count() as u32;
-        if levels == 0 {
-            continue;
-        }
-        let ecx = ExtendedTopologyEcx::new().with_level_number(levels as u8);
-        leaves.push(
-            CpuidLeaf::new(function.0, [0, 0, ecx.into(), bsp_apic_id])
-                .indexed(levels)
-                .masked([!0; 4]),
-        );
-    }
 }
 
 /// Returns the CPUID results a backend programs for `effective`: every
@@ -629,6 +599,7 @@ mod tests {
     use super::*;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
     use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::VpIndex;
     use vm_topology::processor::x86::X2ApicState;
 
     const TEST_PROFILE: &str = "intel.icelake-sp.v1";
@@ -829,33 +800,6 @@ mod tests {
                 assert_eq!(terminator.mask, [!0, !0, !0, 0]);
             }
         }
-    }
-
-    #[test]
-    fn every_extended_topology_leaf_gets_a_terminator() {
-        let topology = topology(4, X2ApicState::Supported);
-        let mut leaves = Vec::new();
-        for function in [0xb, 0x1f] {
-            for index in 0..2 {
-                leaves.push(
-                    CpuidLeaf::new(function, [1, 2, 3, 0])
-                        .indexed(index)
-                        .masked([!0; 4]),
-                );
-            }
-        }
-        terminate_extended_topology(&topology, &mut leaves);
-        let terminators: Vec<_> = leaves[4..]
-            .iter()
-            .map(|leaf| (leaf.function, leaf.index, leaf.result, leaf.mask))
-            .collect();
-        assert_eq!(
-            terminators,
-            [
-                (0xb, Some(2), [0, 0, 2, 0], [!0; 4]),
-                (0x1f, Some(2), [0, 0, 2, 0], [!0; 4]),
-            ]
-        );
     }
 
     #[test]

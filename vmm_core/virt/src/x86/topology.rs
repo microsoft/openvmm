@@ -9,6 +9,7 @@ use crate::CpuidLeaf;
 use std::cmp::min;
 use thiserror::Error;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::VpIndex;
 use x86defs::cpuid::CacheParametersEax;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::ExtendedAddressSpaceSizesEcx;
@@ -129,6 +130,37 @@ pub fn topology_cpuid<'a>(
 
     bsp_identity::apply(topology, &mut leaves[first_leaf..]);
     Ok(())
+}
+
+/// Adds the subleaf that ends each extended topology leaf in `leaves` (0Bh,
+/// and 1Fh where present) after its levels: an invalid level with its own
+/// number in `ECX[7:0]` and the BSP's x2APIC ID in `EDX`, as Intel defines
+/// it. Linux reads it to end its topology enumeration.
+///
+/// [`topology_cpuid`] does not add it, so partitions without the NVX time ABI
+/// keep their backend's own answer there. The time ABI's effective CPUID
+/// lists it; backend tests that mirror the effective CPUID call this function
+/// instead of copying it.
+pub fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Vec<CpuidLeaf>) {
+    let bsp_apic_id = topology.vp_arch(VpIndex::BSP).apic_id;
+    for function in [
+        CpuidFunction::ExtendedTopologyEnumeration,
+        CpuidFunction::V2ExtendedTopologyEnumeration,
+    ] {
+        let levels = leaves
+            .iter()
+            .filter(|leaf| leaf.function == function.0)
+            .count() as u32;
+        if levels == 0 {
+            continue;
+        }
+        let ecx = ExtendedTopologyEcx::new().with_level_number(levels as u8);
+        leaves.push(
+            CpuidLeaf::new(function.0, [0, 0, ecx.into(), bsp_apic_id])
+                .indexed(levels)
+                .masked([!0; 4]),
+        );
+    }
 }
 
 /// Adds subleaves for leaf 04h.
@@ -363,5 +395,41 @@ mod tests {
             [0; 4]
         );
         assert_eq!(per_vp_cpuid_bits(7), [0; 4]);
+    }
+
+    #[test]
+    fn every_extended_topology_leaf_gets_a_terminator() {
+        let topology = TopologyBuilder::new_x86()
+            .vps_per_socket(4)
+            .x2apic(X2ApicState::Supported)
+            .build(4)
+            .unwrap();
+        let mut leaves = Vec::new();
+        for function in [0xb, 0x1f] {
+            for index in 0..2 {
+                leaves.push(
+                    CpuidLeaf::new(function, [1, 2, 3, 0])
+                        .indexed(index)
+                        .masked([!0; 4]),
+                );
+            }
+        }
+        terminate_extended_topology(&topology, &mut leaves);
+        let terminators: Vec<_> = leaves[4..]
+            .iter()
+            .map(|leaf| (leaf.function, leaf.index, leaf.result, leaf.mask))
+            .collect();
+        assert_eq!(
+            terminators,
+            [
+                (0xb, Some(2), [0, 0, 2, 0], [!0; 4]),
+                (0x1f, Some(2), [0, 0, 2, 0], [!0; 4]),
+            ]
+        );
+
+        // Without extended topology leaves, nothing is added.
+        let mut leaves = vec![CpuidLeaf::new(1, [0; 4])];
+        terminate_extended_topology(&topology, &mut leaves);
+        assert_eq!(leaves.len(), 1);
     }
 }
