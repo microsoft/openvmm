@@ -23,6 +23,46 @@ pub(crate) struct MshvFinalizedPartition {
     pub(super) caps: virt::PartitionCapabilities,
 }
 
+/// The CPUID entries that the partition capabilities read
+/// (`X86PartitionCapabilities::from_cpuid`): the maximum and feature leaves,
+/// SGX, every architectural XSAVE component, the address sizes and SEV
+/// leaves, and the hypervisor leaves. Finalization reads them in one bulk
+/// call.
+const CAPS_CPUID_ENTRIES: [(u32, u32); 32] = [
+    (0x0, 0),
+    (0x1, 0),
+    (0x7, 0),
+    (0x12, 2),
+    (0xd, 0),
+    (0xd, 1),
+    (0xd, 2),
+    (0xd, 3),
+    (0xd, 4),
+    (0xd, 5),
+    (0xd, 6),
+    (0xd, 7),
+    (0xd, 8),
+    (0xd, 9),
+    (0xd, 10),
+    (0xd, 11),
+    (0xd, 12),
+    (0xd, 13),
+    (0xd, 14),
+    (0xd, 15),
+    (0xd, 16),
+    (0xd, 17),
+    (0xd, 18),
+    (0xd, 19),
+    (0x8000_0000, 0),
+    (0x8000_0001, 0),
+    (0x8000_0008, 0),
+    (0x8000_001f, 0),
+    (hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION, 0),
+    (hvdef::HV_CPUID_FUNCTION_HV_INTERFACE, 0),
+    (hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0),
+    (hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION, 0),
+];
+
 /// Partition creation settings that are needed after the partition is built.
 #[derive(Inspect)]
 pub(crate) struct CreationConfig {
@@ -126,8 +166,27 @@ impl MshvPartitionInner {
     }
 
     fn build_caps(&self, bsp: &VcpuFd) -> Result<virt::PartitionCapabilities, Error> {
+        // One bulk read serves the entries the capabilities read, instead of
+        // one hypercall each (about 15 of them, 9 us apiece on bare metal);
+        // any other entry falls back to a single read.
+        let prefetched =
+            super::time_abi::vp_cpuid_many(bsp, VpIndex::BSP.index(), &CAPS_CPUID_ENTRIES)
+                .inspect_err(|error| {
+                    tracing::debug!(
+                        error = error as &dyn std::error::Error,
+                        "MSHV bulk CPUID read failed, reading the capabilities one entry at a time"
+                    );
+                })
+                .unwrap_or_default();
         let mut cpuid_error = None;
         let mut cpuid = |function, index| {
+            if let Some(position) = CAPS_CPUID_ENTRIES
+                .iter()
+                .position(|&entry| entry == (function, index))
+                .filter(|&position| position < prefetched.len())
+            {
+                return prefetched[position];
+            }
             bsp.get_cpuid_values(function, index, 0, 0)
                 .unwrap_or_else(|error| {
                     cpuid_error.get_or_insert(error);
