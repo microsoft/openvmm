@@ -21,8 +21,20 @@
 //!   a pass-through backend (MSHV, WHP) must present zero there
 //!   ([`check_unlisted_cpuid`]), and KVM answers those entries from the
 //!   effective CPUID itself ([`CpuidPresentation`]).
-//! - **Restore:** [`restore_profile`] checks a snapshot's profile record,
-//!   and [`EffectiveCpuid::check_matches`] its effective CPUID.
+//! - **Restore:** [`pinned_for_restore`] checks a snapshot's recorded profile
+//!   digest against the pinned constant, core compares the recorded document
+//!   with [`pinned_record`]'s encoding, and [`check_generation`] checks the
+//!   destination host. Core compares the effective CPUID record with the
+//!   recomputed [`EffectiveCpuid`].
+//! - **Offline only:** the codecs and digests
+//!   ([`CpuProfile::encode`], [`CpuProfile::digest`],
+//!   [`CpuProfile::digest_string`], [`CpuProfile::decode`],
+//!   [`CpuProfile::from_pretty_json`], [`CpuProfile::to_pretty_json`],
+//!   [`EffectiveCpuid::encode`], [`EffectiveCpuid::digest`],
+//!   [`EffectiveCpuid::decode`], and [`EffectiveCpuid::decode_verified`])
+//!   and [`pinned_profiles`] parse, encode, or hash. They serve tools, tests,
+//!   and `--cpu-fingerprint`, never a cold boot or restore, whose profile
+//!   work uses only constants.
 //!
 //! Failures carry the stable codes of the time ABI specification
 //! ([`ProfileError`]).
@@ -62,10 +74,8 @@ pub use catalog::pinned;
 pub use catalog::pinned_for_restore;
 pub use catalog::pinned_profiles;
 pub use catalog::pinned_record;
-pub use catalog::restore_profile;
 pub use catalog::select;
 pub use catalog::select_auto;
-pub use catalog::verify_profile_record;
 pub use check::FingerprintCheck;
 pub use check::SUMMARY_PREFIX;
 pub use check::check_fingerprint;

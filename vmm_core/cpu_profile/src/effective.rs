@@ -148,9 +148,12 @@ impl EffectiveCpuid {
     /// Returns the canonical encoding: compact canonical JSON.
     ///
     /// It writes the document's fixed shape directly, keys in byte order and
-    /// register values as `0x` and eight hex digits, because restore encodes
-    /// the recomputed effective CPUID to compare it with the record. Tests
-    /// check it against the sorting encoder.
+    /// register values as `0x` and eight hex digits. Tests check it against
+    /// the sorting encoder.
+    ///
+    /// Offline only, for tools and tests: a snapshot records the effective
+    /// CPUID in core's packed binary form, built from [`Self::results`], and
+    /// a restore compares those bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(64 + self.entries.len() * ENCODED_ENTRY_BYTES);
         out.extend_from_slice(b"{\"cpuid\":[");
@@ -177,7 +180,7 @@ impl EffectiveCpuid {
         out
     }
 
-    /// Returns the SHA-256 of [`Self::encode`].
+    /// Returns the SHA-256 of [`Self::encode`]. Offline only.
     pub fn digest(&self) -> [u8; 32] {
         canonical::sha256(&self.encode())
     }
@@ -185,7 +188,7 @@ impl EffectiveCpuid {
     /// Decodes an effective CPUID from its canonical encoding.
     ///
     /// Bytes that are not exactly a canonical encoding fail with
-    /// `E_PROFILE_DIGEST`.
+    /// `E_PROFILE_DIGEST`. Offline only.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProfileError> {
         let invalid = |message: &str| {
             ProfileError::new(
@@ -227,7 +230,7 @@ impl EffectiveCpuid {
     }
 
     /// Decodes a recorded effective CPUID and verifies it against its
-    /// recorded SHA-256 (`E_PROFILE_DIGEST`).
+    /// recorded SHA-256 (`E_PROFILE_DIGEST`). Offline only.
     pub fn decode_verified(bytes: &[u8], sha256: &[u8]) -> Result<Self, ProfileError> {
         if canonical::sha256(bytes).as_slice() != sha256 {
             return Err(ProfileError::new(
