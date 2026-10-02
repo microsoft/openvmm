@@ -26,7 +26,7 @@ fn convert(
         path.display()
     );
 
-    Ok(converted.into())
+    Ok(converted.trim().into())
 }
 
 pub fn win_to_linux(
