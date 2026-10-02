@@ -2352,13 +2352,14 @@ async fn build_virtio_device(
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
         }
-        Kind::Vsock(vmservice::VirtioVsock { socket_path }) => {
+        Kind::Vsock(vmservice::VirtioVsock {
+            socket_path,
+            guest_cid,
+        }) => {
             let listener = UnixListener::bind(&socket_path)
                 .with_context(|| format!("failed to bind virtio-vsock socket: {socket_path}"))?;
             virtio_resources::vsock::VirtioVsockHandle {
-                // The guest CID does not matter for the UDS relay; it just needs
-                // to be a non-reserved value.
-                guest_cid: 0x3,
+                guest_cid: guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID),
                 base_path: socket_path,
                 listener,
             }
@@ -2372,6 +2373,8 @@ async fn build_virtio_device(
         Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
     })
 }
+
+const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
 
 fn build_virtio_fs(
     config: vmservice::VirtioFs,

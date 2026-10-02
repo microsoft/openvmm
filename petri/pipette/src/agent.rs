@@ -50,11 +50,17 @@ impl Agent {
                 let socket = (connect_client(&driver), connect_server(&driver))
                     .race()
                     .await;
-                Self::from_conn(driver, socket)
+                #[cfg(target_os = "linux")]
+                let local_vsock_cid = Some(
+                    vmsocket::local_vsock_cid().context("failed to query local AF_VSOCK CID")?,
+                );
+                #[cfg(windows)]
+                let local_vsock_cid = None;
+                Self::from_conn(driver, socket, local_vsock_cid)
             }
             Transport::Tcp => {
                 let socket = connect_server_tcp(&driver).await?;
-                Self::from_conn(driver, socket)
+                Self::from_conn(driver, socket, None)
             }
         }
     }
@@ -62,6 +68,7 @@ impl Agent {
     fn from_conn(
         driver: DefaultDriver,
         conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
+        local_vsock_cid: Option<u32>,
     ) -> anyhow::Result<Self> {
         eprintln!("Pipette handshaking with host");
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
@@ -75,6 +82,7 @@ impl Agent {
 
         bootstrap_send.send(PipetteBootstrap {
             requests: request_send,
+            local_vsock_cid,
             diag_file_recv,
             watch: watch_recv,
             log,
