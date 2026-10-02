@@ -1266,8 +1266,10 @@ impl InitializedVm {
         let (time_abi_partition, time_abi_config) = match &cfg.microvm.time_abi {
             Some(parameters) if cfg.machine_profile == MachineProfile::Microvm => {
                 let profile = time_abi::select_cpu_profile(&parameters.cpu_profile)?;
-                let effective_cpuid =
-                    Arc::new(time_abi::effective_cpuid(profile, &processor_topology)?);
+                let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(
+                    profile,
+                    &processor_topology,
+                )?);
                 let (msrs, config) = time_abi::partition_config(profile, &effective_cpuid);
                 (
                     Some(time_abi::PartitionTimeAbi {

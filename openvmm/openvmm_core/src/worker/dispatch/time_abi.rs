@@ -43,8 +43,6 @@ use virt::time_abi::TimeAbiMsrs;
 use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::TscSyncMethod;
 use virt::time_abi::surface::SupportedCpuSurface;
-use vm_topology::processor::ProcessorTopology;
-use vm_topology::processor::x86::ApicMode;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -91,7 +89,7 @@ pub(super) fn partition_config(
 ) -> (Arc<TimeAbiMsrs>, TimeAbiConfig) {
     let msrs = Arc::new(TimeAbiMsrs::new());
     let config = TimeAbiConfig {
-        cpuid: Arc::new(backend_cpuid(effective_cpuid)),
+        cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(effective_cpuid)),
         msrs: msrs.clone(),
         cpu_profile: profile.id().to_owned(),
     };
@@ -106,70 +104,6 @@ pub(super) fn partition_config(
 /// `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`).
 pub(super) fn select_cpu_profile(requested: &str) -> anyhow::Result<&'static CpuProfile> {
     Ok(cpu_profile::select(requested, &host_cpu()?)?)
-}
-
-/// Builds the effective CPUID of a partition with `profile` and `topology`:
-/// the profile completed with OpenVMM's topology leaves, each extended
-/// topology leaf's terminating subleaf, the APIC mode, and
-/// the time ABI's identity and explicit zero leaves. Fails with
-/// `E_CPU_SURFACE` if they do not complete the profile exactly.
-pub(super) fn effective_cpuid(
-    profile: &CpuProfile,
-    topology: &ProcessorTopology,
-) -> anyhow::Result<EffectiveCpuid> {
-    let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
-        function: leaf.function,
-        index: leaf.index,
-        result: leaf.result,
-        mask: leaf.mask,
-    };
-    let mut topology_leaves = Vec::new();
-    virt::x86::topology::topology_cpuid(
-        topology,
-        &|leaf, subleaf| profile.lookup(leaf, subleaf),
-        &mut topology_leaves,
-    )
-    .map_err(|err| {
-        TimeAbiError::new(
-            TimeAbiCode::CpuSurface,
-            format!(
-                "cannot build the topology CPUID of CPU profile {}: {err}",
-                profile.id()
-            ),
-        )
-    })?;
-    virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
-    let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
-    vm.push(cpu_profile::x2apic_cpuid(!matches!(
-        topology.apic_mode(),
-        ApicMode::XApic
-    )));
-    let identity: Vec<_> = virt::time_abi::identity::identity_cpuid_leaves(topology.vp_count())
-        .iter()
-        .map(result)
-        .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
-        .collect();
-    Ok(profile.effective_cpuid(&vm, &identity)?)
-}
-
-/// Returns the CPUID results a backend programs for `effective`: every
-/// result of the effective CPUID, with the per-VP APIC identity bits
-/// unmasked, so that the backend sets each VP's own.
-fn backend_cpuid(effective: &EffectiveCpuid) -> CpuidLeafSet {
-    CpuidLeafSet::new(
-        effective
-            .results()
-            .map(|result| {
-                let per_vp = virt::x86::topology::per_vp_cpuid_bits(result.function);
-                CpuidLeaf {
-                    function: result.function,
-                    index: result.index,
-                    result: result.result,
-                    mask: [0, 1, 2, 3].map(|register| result.mask[register] & !per_vp[register]),
-                }
-            })
-            .collect(),
-    )
 }
 
 /// Returns the vendor and signature of the host CPU (`E_CPU_GENERATION` if
@@ -678,7 +612,9 @@ impl StateUnit for TimeAbiUnit {
 mod tests {
     use super::*;
     use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
+    use virt::time_abi::cpuid::effective_cpuid;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+    use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
     use vm_topology::processor::x86::X2ApicState;

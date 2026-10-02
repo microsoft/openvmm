@@ -1732,55 +1732,15 @@ mod hw {
     }
 
     /// Returns the effective CPUID of this host's profile for `topology`, and
-    /// the CPUID table that core programs for it (`TimeAbiConfig::cpuid`): the
-    /// effective CPUID with the per-VP APIC identity bits unmasked. This is
-    /// what core's `effective_cpuid` and `backend_cpuid` build.
+    /// the CPUID table that core programs for it (`TimeAbiConfig::cpuid`).
     fn host_profile_cpuid(
         topology: &vm_topology::processor::ProcessorTopology,
     ) -> (cpu_profile::EffectiveCpuid, CpuidLeafSet) {
         let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
-        let result = |leaf: &CpuidLeaf| cpu_profile::CpuidResult {
-            function: leaf.function,
-            index: leaf.index,
-            result: leaf.result,
-            mask: leaf.mask,
-        };
-        let mut topology_leaves = Vec::new();
-        virt::x86::topology::topology_cpuid(
-            topology,
-            &|leaf, subleaf| profile.lookup(leaf, subleaf),
-            &mut topology_leaves,
-        )
-        .unwrap();
-        virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
-        let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
-        vm.push(cpu_profile::x2apic_cpuid(!matches!(
-            topology.apic_mode(),
-            vm_topology::processor::x86::ApicMode::XApic
-        )));
-        let identity: Vec<_> = virt::time_abi::identity::identity_cpuid_leaves(topology.vp_count())
-            .iter()
-            .map(result)
-            .chain(virt::time_abi::identity::identity_zero_cpuid_leaves().map(|leaf| result(&leaf)))
-            .collect();
-        let effective = profile.effective_cpuid(&vm, &identity).unwrap();
-        let table = CpuidLeafSet::new(
-            effective
-                .results()
-                .map(|result| {
-                    let per_vp = virt::x86::topology::per_vp_cpuid_bits(result.function);
-                    CpuidLeaf {
-                        function: result.function,
-                        index: result.index,
-                        result: result.result,
-                        mask: [0, 1, 2, 3].map(|i| result.mask[i] & !per_vp[i]),
-                    }
-                })
-                .collect(),
-        );
+        let effective = virt::time_abi::cpuid::effective_cpuid(profile, topology).unwrap();
+        let table = virt::time_abi::cpuid::backend_cpuid(&effective);
         (effective, table)
     }
-
     /// Converts a backend's CPU surface to the profile crate's form, as core
     /// does for the support check.
     fn host_cpu_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
