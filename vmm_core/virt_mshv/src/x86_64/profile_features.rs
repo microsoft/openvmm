@@ -115,9 +115,13 @@ fn host_cpuid(_leaf: u32, _subleaf: u32) -> [u32; 4] {
     [0; 4]
 }
 
-/// Returns the host's CPUID table, as the CPUID instruction enumerates it.
+/// Returns the host's CPUID table, as the CPUID instruction enumerates it,
+/// without the hypervisor range: that describes the host's hypervisor rather
+/// than the processor, so neither the supported CPU surface nor the unlisted
+/// candidates use it, and every CPUID in the root partition exits to the
+/// hypervisor.
 pub(crate) fn host_cpuid_table() -> Vec<CpuidEntry> {
-    cpu_profile::cpuid::enumerate(|leaf, subleaf| {
+    cpu_profile::cpuid::enumerate_basic_and_extended(|leaf, subleaf| {
         Ok::<_, std::convert::Infallible>(host_cpuid(leaf, subleaf))
     })
     .unwrap_or_else(|never| match never {})
