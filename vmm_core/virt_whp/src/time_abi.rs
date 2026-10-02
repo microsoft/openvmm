@@ -347,21 +347,53 @@ fn routing_error(message: impl Into<String>) -> TimeAbiError {
 }
 
 /// Returns the host's CPUID as the root partition sees it: every leaf and
-/// subleaf that [`cpu_profile::cpuid::enumerate`] walks. It describes the
-/// processor that WHP virtualizes, for [`supported_surface`].
-pub(crate) fn host_cpuid() -> Vec<cpu_profile::cpuid::CpuidEntry> {
-    // The CPUID instruction exists only on x86-64 hosts, the only hosts of
-    // x86-64 WHP partitions.
-    // xtask-fmt allow-target-arch cpu-intrinsic
-    #[cfg(target_arch = "x86_64")]
-    let query = |leaf, subleaf| {
-        let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
-        Ok::<_, std::convert::Infallible>([result.eax, result.ebx, result.ecx, result.edx])
-    };
-    // xtask-fmt allow-target-arch cpu-intrinsic
-    #[cfg(not(target_arch = "x86_64"))]
-    let query = |_, _| Ok::<_, std::convert::Infallible>([0; 4]);
-    cpu_profile::cpuid::enumerate(query).unwrap_or_else(|never| match never {})
+/// subleaf that [`cpu_profile::cpuid::enumerate`] walks, read once per
+/// process. It describes the processor that WHP virtualizes, for
+/// [`supported_surface`] and for the host entries outside the profile
+/// ([`unlisted_cpuid`]).
+pub(crate) fn host_cpuid() -> &'static [cpu_profile::cpuid::CpuidEntry] {
+    static HOST_CPUID: OnceLock<Vec<cpu_profile::cpuid::CpuidEntry>> = OnceLock::new();
+    HOST_CPUID.get_or_init(|| {
+        // The CPUID instruction exists only on x86-64 hosts, the only hosts
+        // of x86-64 WHP partitions.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        let query = |leaf, subleaf| {
+            let result = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+            Ok::<_, std::convert::Infallible>([result.eax, result.ebx, result.ecx, result.edx])
+        };
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(not(target_arch = "x86_64"))]
+        let query = |_, _| Ok::<_, std::convert::Infallible>([0; 4]);
+        cpu_profile::cpuid::enumerate(query).unwrap_or_else(|never| match never {})
+    })
+}
+
+/// Returns VP 0's view, from `vp0`, at every entry of `host` outside
+/// `profile`'s tables ([`cpu_profile::unlisted_cpuid_candidates`]), read at
+/// subleaf 0 for a subleaf-independent entry. The time ABI reserves these
+/// entries, but WHP serves its own value wherever the effective CPUID does
+/// not program one, so core requires each to read zero (`E_CPU_UNLISTED`):
+/// no reserved entry may expose a host feature.
+pub(crate) fn unlisted_cpuid<E>(
+    profile: &CpuProfile,
+    host: &[cpu_profile::cpuid::CpuidEntry],
+    mut vp0: impl FnMut(u32, u32) -> Result<[u32; 4], E>,
+) -> Result<Vec<CpuidLeaf>, E> {
+    cpu_profile::unlisted_cpuid_candidates(profile, host)
+        .into_iter()
+        .map(|(function, index)| {
+            let subleaf = index.unwrap_or(0);
+            let leaf = CpuidLeaf::new(
+                function,
+                normalize_cpuid(function, subleaf, vp0(function, subleaf)?),
+            );
+            Ok(match index {
+                Some(index) => leaf.indexed(index),
+                None => leaf,
+            })
+        })
+        .collect()
 }
 
 /// Returns the pinned CPU profile that `id` names. Core selects and verifies
@@ -855,7 +887,9 @@ impl WhpPartitionInner {
         })
     }
 
-    /// Returns the effective CPUID record, computing it on first use.
+    /// Returns the effective CPUID record, computing it on first use: VP 0's
+    /// view of the effective CPUID, and of the host entries outside the
+    /// profile ([`unlisted_cpuid`]).
     fn effective_record(
         &self,
         state: &WhpTimeAbi,
@@ -864,13 +898,14 @@ impl WhpPartitionInner {
         if let Some(record) = state.effective.get() {
             return Ok(record.clone());
         }
+        let started = std::time::Instant::now();
         let vp0 = VpCpuid {
             cpuid: &self.cpuid,
             exits: &state.cpuid_exits,
             topology: &self.cpuid_topology,
             apic_id: self.vps.first().map_or(0, |vp| vp.vp_info.apic_id),
         };
-        let record = effective_cpuid(&self.cpuid, |function, index| {
+        let mut read = |function, index| {
             vp0.result(function, index, || native.get(function, index))
                 .map_err(|err| {
                     TimeAbiError::new(
@@ -878,7 +913,18 @@ impl WhpPartitionInner {
                         format!("cannot read CPUID {function:#x}/{index:#x} of VP 0: {err}"),
                     )
                 })
-        })?;
+        };
+        let mut record = effective_cpuid(&self.cpuid, &mut read)?;
+        let unlisted =
+            unlisted_cpuid(pinned_profile(&state.cpu_profile)?, host_cpuid(), &mut read)?;
+        tracing::info!(
+            results = record.len(),
+            unlisted = unlisted.len(),
+            native_reads = native.results.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "time ABI: WHP effective CPUID record"
+        );
+        record.extend(unlisted);
         Ok(state.effective.get_or_init(|| record).clone())
     }
 
@@ -1017,7 +1063,7 @@ impl TimeAbiBackend for WhpPartitionInner {
             .physical_address_width()
             .map_err(|err| unsupported("the physical address width", err))?;
         let surface = supported_surface(
-            &host_cpuid(),
+            host_cpuid(),
             WhpFeatures {
                 banks: [banks.bank0.0, banks.bank1.0],
                 xsave: xsave.0,
@@ -1942,6 +1988,58 @@ mod tests {
         }
     }
 
+    /// The report holds VP 0's view at the host's entries outside the
+    /// profile, which core requires to read zero (`E_CPU_UNLISTED`): zeros
+    /// pass, and a WHP that showed its own values there fails.
+    #[test]
+    fn report_reads_vp0_at_host_entries_outside_the_profile() {
+        for profile_id in test_cpuid::PROFILES {
+            let profile = cpu_profile::pinned(profile_id).unwrap();
+            let past_max = profile.lookup(0, 0)[0] + 1;
+            let mut host: Vec<_> = profile
+                .cpuid()
+                .iter()
+                .map(|entry| {
+                    let (leaf, subleaf) = entry.key();
+                    cpu_profile::cpuid::CpuidEntry::new(leaf, subleaf, entry.values())
+                })
+                .collect();
+            let unlisted = [(0xf, Some(1)), (0x14, Some(1)), (past_max, None)];
+            host.extend(unlisted.iter().map(|&(leaf, subleaf)| {
+                cpu_profile::cpuid::CpuidEntry::new(leaf, subleaf, [1, 2, 3, 4])
+            }));
+            for noise in [false, true] {
+                let mut partition = Partition::new(profile_id, 2, X2ApicState::Supported);
+                partition.whp.noise = noise;
+                let report = unlisted_cpuid(profile, &host, |function, index| {
+                    Ok::<_, std::convert::Infallible>(partition.observe(0, function, index))
+                })
+                .unwrap();
+                let keys: Vec<_> = report
+                    .iter()
+                    .map(|leaf| (leaf.function, leaf.index))
+                    .collect();
+                assert_eq!(keys, unlisted, "{profile_id}");
+                let entries: Vec<_> = report
+                    .iter()
+                    .map(|leaf| {
+                        cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result)
+                    })
+                    .collect();
+                match cpu_profile::check_unlisted_cpuid(profile, &entries) {
+                    Ok(()) => assert!(!noise, "{profile_id}: noise passed"),
+                    Err(err) => {
+                        assert!(noise, "{profile_id}: {err}");
+                        assert!(matches!(
+                            err.code,
+                            cpu_profile::ProfileErrorCode::CpuUnlisted
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn partition_cpuid_keeps_own_results_only_for_exiting_leaves() {
         let partition = Partition::new(test_cpuid::PROFILES[0], VP_COUNT, X2ApicState::Supported);
@@ -2595,6 +2693,62 @@ mod whp_tests {
         }
         assert!(listed_failures.is_empty(), "{listed_failures:#?}");
         assert!(unlisted.is_empty(), "{unlisted:#?}");
+    }
+
+    /// Reads VP 0's view at every entry this host's CPUID enumerates outside
+    /// the profile's tables, as the backend's report does, and checks core's
+    /// verdict on them (`E_CPU_UNLISTED`): each must read zero.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn host_entries_outside_the_profile_read_zero() {
+        let Some(Partition {
+            partition,
+            time_abi,
+            topology,
+            ..
+        }) = partition(1)
+        else {
+            return;
+        };
+        let own = test_cpuid::own_cpuid(&topology, &|function, index| {
+            native(&partition, function, index).unwrap()
+        });
+        let cpuid = time_abi.partition_cpuid(own).unwrap();
+        let cpuid_topology = time_abi.cpuid_topology(&topology);
+        let vp0 = VpCpuid {
+            cpuid: &cpuid,
+            exits: &time_abi.cpuid_exits,
+            topology: &cpuid_topology,
+            apic_id: 0,
+        };
+        let profile = cpu_profile::pinned(&time_abi.cpu_profile).unwrap();
+        let host = host_cpuid();
+        let started = std::time::Instant::now();
+        let report = unlisted_cpuid(profile, host, |function, index| {
+            vp0.result(function, index, || native(&partition, function, index))
+        })
+        .unwrap();
+        let elapsed = started.elapsed();
+        let keys: Vec<String> = report
+            .iter()
+            .map(|leaf| match leaf.index {
+                Some(index) => format!("{:#x}.{index}", leaf.function),
+                None => format!("{:#x}", leaf.function),
+            })
+            .collect();
+        println!(
+            "{}: {} host entries, {} outside the profile, read in {} us: {}",
+            profile.id(),
+            host.len(),
+            report.len(),
+            elapsed.as_micros(),
+            keys.join(" ")
+        );
+        let entries: Vec<_> = report
+            .iter()
+            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::check_unlisted_cpuid(profile, &entries).unwrap();
     }
 
     /// The comparison of `tests::core_table_presents_what_the_profile_programming_did`
