@@ -132,10 +132,36 @@ pub fn has_bit(entries: &[CpuidEntry], leaf: u32, subleaf: u32, register: usize,
 /// only when it reports a plausible maximum leaf; otherwise only its first
 /// leaf is recorded. The result is sorted.
 pub fn enumerate<E>(
+    query: impl FnMut(u32, u32) -> Result<[u32; 4], E>,
+) -> Result<Vec<CpuidEntry>, E> {
+    enumerate_ranges(&[0, HYPERVISOR_LEAF_BASE, EXTENDED_LEAF_BASE], query)
+}
+
+/// Enumerates the basic and extended ranges of the CPUID table reported by
+/// `query(leaf, subleaf)` as [`enumerate`] does, without querying the
+/// hypervisor range `0x40000000..=0x4fffffff`.
+///
+/// A host's hypervisor leaves describe the hypervisor it runs on, not its
+/// processor. Nothing that checks a profile against the host reads them:
+/// profiles list no hypervisor leaves, and
+/// [`unlisted_cpuid_candidates`](crate::unlisted_cpuid_candidates) exempts
+/// the range. Every CPUID instruction in a Hyper-V root partition exits to the
+/// hypervisor, so a backend that enumerates its host's CPUID at partition
+/// creation saves the range's queries, about a fifth of the total on the
+/// fleet's Hyper-V hosts.
+pub fn enumerate_basic_and_extended<E>(
+    query: impl FnMut(u32, u32) -> Result<[u32; 4], E>,
+) -> Result<Vec<CpuidEntry>, E> {
+    enumerate_ranges(&[0, EXTENDED_LEAF_BASE], query)
+}
+
+/// Enumerates the ranges that start at `bases`, as [`enumerate`] describes.
+fn enumerate_ranges<E>(
+    bases: &[u32],
     mut query: impl FnMut(u32, u32) -> Result<[u32; 4], E>,
 ) -> Result<Vec<CpuidEntry>, E> {
     let mut entries = Vec::new();
-    for base in [0, HYPERVISOR_LEAF_BASE, EXTENDED_LEAF_BASE] {
+    for &base in bases {
         let max = query(base, 0)?[0];
         let last = if (base..base + MAX_LEAVES_PER_RANGE).contains(&max) {
             max
@@ -435,6 +461,40 @@ mod tests {
         assert_eq!(keys.last(), Some(&(0x8000_0001, None)));
         // Sorted.
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn basic_and_extended_enumeration_skips_only_the_hypervisor_range() {
+        // A root partition's plausible hypervisor range, 0x40000000 to
+        // 0x4000000c as on the fleet's Hyper-V hosts, and the fixture's
+        // implausible one.
+        let mut hyperv = table();
+        hyperv.insert(
+            (0x4000_0000, 0),
+            [0x4000_000c, 0x7263_694d, 0x666f_736f, 0x7648_2074],
+        );
+        for leaf in 0x4000_0001..=0x4000_000c {
+            hyperv.insert((leaf, 0), [leaf, 1, 2, 3]);
+        }
+        let hypervisor = HYPERVISOR_LEAF_BASE..EXTENDED_LEAF_BASE;
+        for host in [hyperv, table()] {
+            let all = enumerate(query(&host)).unwrap();
+            assert!(all.iter().any(|entry| hypervisor.contains(&entry.leaf.0)));
+
+            let mut queried = Vec::new();
+            let mut lookup = query(&host);
+            let entries = enumerate_basic_and_extended(|leaf, subleaf| {
+                queried.push(leaf);
+                lookup(leaf, subleaf)
+            })
+            .unwrap();
+            assert!(queried.iter().all(|leaf| !hypervisor.contains(leaf)));
+            let expected = all
+                .into_iter()
+                .filter(|entry| !hypervisor.contains(&entry.leaf.0))
+                .collect::<Vec<_>>();
+            assert_eq!(entries, expected);
+        }
     }
 
     #[test]

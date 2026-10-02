@@ -114,8 +114,11 @@ pub(crate) fn unlisted_cpuid_error(profile: &CpuProfile, violations: &[String]) 
 /// walks it. It reaches every entry the processor implements, including those
 /// past the profile's maxima and those that only the root partition sees, so
 /// these are the entries where a pass-through backend's guest may read the
-/// hypervisor's own guest view. A backend reads VP 0's view there, at subleaf
-/// 0 for a subleaf-independent key, for [`check_unlisted_cpuid`].
+/// hypervisor's own guest view. Because the identity range is exempt,
+/// [`cpuid::enumerate_basic_and_extended`](crate::cpuid::enumerate_basic_and_extended)
+/// gives the same candidates with fewer queries. A backend reads VP 0's view
+/// there, at subleaf 0 for a subleaf-independent key, for
+/// [`check_unlisted_cpuid`].
 pub fn unlisted_cpuid_candidates(
     profile: &CpuProfile,
     host: &[CpuidEntry],
