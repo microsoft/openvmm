@@ -496,13 +496,15 @@ guest state and protect the directory with host access controls.
   feature, limit, XSAVE layout, and MSR value of the profile, the line has
   `status=fail`, `code`, and `detail`, and OpenVMM exits with status 1 and the
   same code (`E_PROFILE_HOST_UNKNOWN` or `E_PROFILE_UNSUPPORTED`). On MSHV and
-  WHP, which present the hypervisor's own value at every CPUID entry that the
-  profile does not list, a probe partition that reads non-zero at such an
-  entry fails with `E_CPU_UNLISTED`; the identity range
-  `0x40000000` to `0x4fffffff` and the topology leaves `0xb` and `0x1f` are
-  exempt. KVM installs the profile as the guest's whole CPUID table, so every
-  other entry reads zero. The fingerprint is still written, so hosts of new
-  generations can be fingerprinted to derive their profiles.
+  WHP, which present the hypervisor's own guest view at every CPUID entry that
+  the profile does not list, a probe partition that reads non-zero at such an
+  entry fails with `E_CPU_UNLISTED`, so that no such entry carries host data;
+  the identity range `0x40000000` to `0x4fffffff` and the topology leaves
+  `0xb` and `0x1f` are exempt. KVM installs the profile as the guest's whole
+  CPUID table and answers every other entry from it (zero, or the
+  architecture's out-of-range and topology results), so the check does not
+  apply. The fingerprint is still written, so hosts of new generations can be
+  fingerprinted to derive their profiles.
 
   ```bash
   openvmm --hypervisor kvm --cpu-fingerprint host.json
