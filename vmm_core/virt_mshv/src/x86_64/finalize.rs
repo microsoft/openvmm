@@ -165,10 +165,10 @@ impl MshvPartitionInner {
         caps.xsaves_state_bv_broken = true;
         // Ordinary state access does not freeze the partition clock.
         caps.can_freeze_time = false;
-        if self.time_abi.is_some() && (caps.hv1 || caps.kvm_clock) {
+        if self.time_abi.is_some() && caps.hv1 {
             return Err(virt::time_abi::TimeAbiError::new(
                 virt::time_abi::TimeAbiCode::IdentityRouting,
-                "the time ABI partition capabilities include hv1 or the KVM clock",
+                "the time ABI partition capabilities include hv1",
             )
             .into());
         }
