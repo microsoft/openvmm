@@ -97,7 +97,7 @@ pub fn validate_gpf_event(pending_event: hvdef::HvX64PendingEvent) {
 
     assert_eq!(
         event.vector(),
-        x86defs::Exception::GENERAL_PROTECTION_FAULT.0.into()
+        u16::from(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
     );
 
     assert!(event.deliver_error_code());
