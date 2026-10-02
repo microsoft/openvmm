@@ -89,11 +89,19 @@ pub struct EffectiveCpuid {
     entries: Vec<CpuidLeafValue>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EffectiveCpuidDocument {
-    schema: String,
     cpuid: Vec<CpuidLeafValue>,
+    schema: String,
+}
+
+/// The document [`EffectiveCpuid::encode`] serializes, with its fields in the
+/// byte order of their keys, which is the canonical form.
+#[derive(Serialize)]
+struct EffectiveCpuidDocumentRef<'a> {
+    cpuid: &'a [CpuidLeafValue],
+    schema: &'a str,
 }
 
 impl EffectiveCpuid {
@@ -115,13 +123,10 @@ impl EffectiveCpuid {
 
     /// Returns the canonical encoding: compact canonical JSON.
     pub fn encode(&self) -> Vec<u8> {
-        let document = EffectiveCpuidDocument {
-            schema: EFFECTIVE_CPUID_SCHEMA.to_owned(),
-            cpuid: self.entries.clone(),
-        };
-        let value =
-            serde_json::to_value(document).expect("effective CPUID serialization is infallible");
-        canonical::to_compact(&value).into_bytes()
+        canonical::to_compact_ordered(&EffectiveCpuidDocumentRef {
+            cpuid: &self.entries,
+            schema: EFFECTIVE_CPUID_SCHEMA,
+        })
     }
 
     /// Returns the SHA-256 of [`Self::encode`].
@@ -565,6 +570,30 @@ mod tests {
                 .ends_with(": CPUID 0x40000000 exists only on the destination"),
             "{error}"
         );
+    }
+
+    /// `encode` serializes directly, which is canonical only while the
+    /// document and its entries declare their fields in key order.
+    #[test]
+    fn direct_serialization_matches_the_sorting_encoder() {
+        for profile in crate::pinned_profiles() {
+            for vp_count in [1, 8] {
+                let effective = profile
+                    .effective_cpuid(&vm_leaves(profile, vp_count), &identity())
+                    .unwrap();
+                let value = serde_json::to_value(EffectiveCpuidDocumentRef {
+                    cpuid: &effective.entries,
+                    schema: EFFECTIVE_CPUID_SCHEMA,
+                })
+                .unwrap();
+                assert_eq!(
+                    String::from_utf8(effective.encode()).unwrap(),
+                    canonical::to_compact(&value),
+                    "{} at {vp_count} VPs",
+                    profile.id()
+                );
+            }
+        }
     }
 
     /// The contract with core: OpenVMM's topology leaves and the time ABI's

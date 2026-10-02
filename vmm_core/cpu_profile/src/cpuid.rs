@@ -280,20 +280,23 @@ fn xsave_mask(low: u32, high: u32) -> u64 {
 }
 
 /// One XSAVE state component, from CPUID.(0xd,n) for component `n >= 2`.
+///
+/// The fields are declared in the byte order of their keys, so profiles can
+/// serialize it directly in canonical form.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct XsaveComponent {
+    /// The component is 64-byte aligned in the compacted format (`ECX[1]`).
+    pub align64: bool,
     /// The component number, which is its bit in XCR0 or IA32_XSS.
     pub index: u32,
-    /// The size of the component in bytes, from EAX.
-    pub size: u32,
     /// The offset of the component in the standard format, from EBX. It is
     /// zero for supervisor components, which only the compacted format holds.
     pub offset: u32,
+    /// The size of the component in bytes, from EAX.
+    pub size: u32,
     /// The component is a supervisor state, enabled in IA32_XSS (`ECX[0]`).
     pub supervisor: bool,
-    /// The component is 64-byte aligned in the compacted format (`ECX[1]`).
-    pub align64: bool,
     /// The component supports extended feature disable (`ECX[2]`).
     pub xfd: bool,
 }
