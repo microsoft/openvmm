@@ -186,7 +186,7 @@ mod tests {
     /// Features that the host partition offered on the fleet's MSHV hosts
     /// (CPU fingerprints): the bare-metal Skylake-SP host and the 8573C
     /// runners (Emerald Rapids, nested).
-    const PROMETHEUS30: HvFeatures = HvFeatures {
+    const SKYLAKE_SP_MSHV_HOST: HvFeatures = HvFeatures {
         banks: [0x1005_f9ff_fff7_859f, 0x0000_008f_1086_0063],
         xsave: 0x3fff,
     };
@@ -196,7 +196,7 @@ mod tests {
     };
 
     const HOSTS: [(&str, HvFeatures); 2] = [
-        ("intel.skylake-sp.v1", PROMETHEUS30),
+        ("intel.skylake-sp.v1", SKYLAKE_SP_MSHV_HOST),
         ("intel.emeraldrapids.v1", AZURE_8573C),
     ];
 
@@ -273,14 +273,18 @@ mod tests {
 
     #[test]
     fn bits_the_profile_does_not_decide_keep_the_legacy_policy() {
-        let features = time_abi_features(profile("intel.skylake-sp.v1"), PROMETHEUS30).unwrap();
+        let features =
+            time_abi_features(profile("intel.skylake-sp.v1"), SKYLAKE_SP_MSHV_HOST).unwrap();
         // The bare-metal host offers the deprecated HLE and RTM bits, which no CPUID
         // feature maps and OpenVMM never listed: they stay off.
         for mask in [
             Bank0::new().with_hle_support_deprecated(true).into_bits(),
             Bank0::new().with_rtm_support_deprecated(true).into_bits(),
         ] {
-            assert!(has(&PROMETHEUS30, HvFeatureWord::Bank0, mask), "{mask:#x}");
+            assert!(
+                has(&SKYLAKE_SP_MSHV_HOST, HvFeatureWord::Bank0, mask),
+                "{mask:#x}"
+            );
             assert!(!has(&features, HvFeatureWord::Bank0, mask), "{mask:#x}");
         }
         // Unrestricted guest support is listed and offered: it stays on.
@@ -294,20 +298,22 @@ mod tests {
     fn skylake_presents_no_arch_capabilities() {
         // The Skylake-SP profile pins every bank-derived bit clear, including
         // RDCL_NO, IBRS_ALL, and TSX_CTRL, which OpenVMM's lists enable.
-        let features = time_abi_features(profile("intel.skylake-sp.v1"), PROMETHEUS30).unwrap();
+        let features =
+            time_abi_features(profile("intel.skylake-sp.v1"), SKYLAKE_SP_MSHV_HOST).unwrap();
         assert_eq!(hv_banks::arch_capabilities_from_banks(features.banks), 0);
     }
 
     #[test]
     fn a_missing_feature_is_unsupported() {
-        let mut host = PROMETHEUS30;
+        let mut host = SKYLAKE_SP_MSHV_HOST;
         host.xsave &= !XsaveBank::new().with_avx512_support(true).into_bits();
         host.banks[0] &= !Bank0::new().with_ibrs_support(true).into_bits();
         let error = time_abi_features(profile("intel.skylake-sp.v1"), host).unwrap_err();
         assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
         assert!(error.message.contains("avx512_support"), "{error}");
         assert!(error.message.contains("ibrs_support"), "{error}");
-        let error = time_abi_features(profile("intel.emeraldrapids.v1"), PROMETHEUS30).unwrap_err();
+        let error =
+            time_abi_features(profile("intel.emeraldrapids.v1"), SKYLAKE_SP_MSHV_HOST).unwrap_err();
         assert_eq!(error.code, TimeAbiCode::ProfileUnsupported);
     }
 
