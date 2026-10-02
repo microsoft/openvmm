@@ -1610,7 +1610,9 @@ impl VmService {
             .map_err(anyhow::Error::from)
             .context("snapshot failed")?;
 
-        self.lifecycle = VmLifecycle::Paused;
+        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
+            self.lifecycle = VmLifecycle::Paused;
+        }
         self.snapshot_saved = true;
         Ok(vmservice::SaveVmResult { snapshot_id })
     }
@@ -2348,7 +2350,7 @@ fn build_vfio_device(
     if host_pci_address.contains('/') || host_pci_address.contains("..") {
         anyhow::bail!("PCI address must not contain path separators");
     }
-    let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(&host_pci_address);
+    let sysfs_path = Path::new("/sys/bus/pci/devices").join(&host_pci_address);
     if let Some(iommu_id) = iommufd_id {
         let iommufd = iommufds.get(&iommu_id)?;
         let vfio_dev_dir = sysfs_path.join("vfio-dev");
@@ -2362,7 +2364,7 @@ fn build_vfio_device(
             .next()
             .context("no vfio-dev entry found")?
             .context("failed to read vfio-dev entry")?;
-        let dev_path = std::path::Path::new("/dev/vfio/devices").join(entry.file_name());
+        let dev_path = Path::new("/dev/vfio/devices").join(entry.file_name());
         let cdev = File::options()
             .read(true)
             .write(true)
