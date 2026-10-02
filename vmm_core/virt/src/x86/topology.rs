@@ -10,6 +10,7 @@ use std::cmp::min;
 use thiserror::Error;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::VpIndex;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid::CacheParametersEax;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::ExtendedAddressSpaceSizesEcx;
@@ -70,7 +71,7 @@ pub fn per_vp_cpuid_bits(function: u32) -> [u32; 4] {
 /// This includes some bits of leaves 01h and 04h, plus all of leaves 0Bh and
 /// 1Fh
 pub fn topology_cpuid<'a>(
-    topology: &'a ProcessorTopology,
+    topology: &'a ProcessorTopology<X86Topology>,
     cpuid: CpuidFn<'a>,
     leaves: &mut Vec<CpuidLeaf>,
 ) -> Result<(), UnknownVendor> {
@@ -141,7 +142,10 @@ pub fn topology_cpuid<'a>(
 /// keep their backend's own answer there. The time ABI's effective CPUID
 /// lists it; backend tests that mirror the effective CPUID call this function
 /// instead of copying it.
-pub fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Vec<CpuidLeaf>) {
+pub fn terminate_extended_topology(
+    topology: &ProcessorTopology<X86Topology>,
+    leaves: &mut Vec<CpuidLeaf>,
+) {
     let bsp_apic_id = topology.vp_arch(VpIndex::BSP).apic_id;
     for function in [
         CpuidFunction::ExtendedTopologyEnumeration,
@@ -167,7 +171,7 @@ pub fn terminate_extended_topology(topology: &ProcessorTopology, leaves: &mut Ve
 ///
 /// Only valid for Intel processors.
 fn cache_parameters_cpuid(
-    topology: &ProcessorTopology,
+    topology: &ProcessorTopology<X86Topology>,
     cpuid: CpuidFn<'_>,
     leaves: &mut Vec<CpuidLeaf>,
 ) {
@@ -220,7 +224,7 @@ fn cache_parameters_cpuid(
 /// The x2APIC values in edx will be zero. The caller will need to ensure
 /// these are set correctly for each VP.
 fn extended_topology_cpuid(
-    topology: &ProcessorTopology,
+    topology: &ProcessorTopology<X86Topology>,
     function: CpuidFunction,
     leaves: &mut Vec<CpuidLeaf>,
 ) {
@@ -262,7 +266,7 @@ fn extended_topology_cpuid(
 ///
 /// This leaf contains core count and APIC ID size information.
 fn amd_extended_address_space_sizes_cpuid(
-    topology: &ProcessorTopology,
+    topology: &ProcessorTopology<X86Topology>,
     leaves: &mut Vec<CpuidLeaf>,
 ) {
     let nc = (topology.reserved_vps_per_socket() - 1) as u8;
@@ -286,7 +290,7 @@ fn amd_extended_address_space_sizes_cpuid(
 
 /// Adds leaf 8000001Eh (Processor Topology Definition) for AMD processors.
 fn amd_processor_topology_definition_cpuid(
-    topology: &ProcessorTopology,
+    topology: &ProcessorTopology<X86Topology>,
     leaves: &mut Vec<CpuidLeaf>,
 ) {
     // threads_per_compute_unit is (threads per core - 1).
