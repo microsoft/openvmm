@@ -20,6 +20,7 @@ use std::os::unix::prelude::*;
 use std::time::Duration;
 
 pub fn local_cid() -> io::Result<u32> {
+    // Linux UAPI defines IOCTL_VM_SOCKETS_GET_LOCAL_CID as _IO(7, 0xb9).
     const IOCTL_VM_SOCKETS_GET_LOCAL_CID: u32 = 0x7b9;
 
     let vsock = File::open("/dev/vsock")?;
