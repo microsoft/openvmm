@@ -14,15 +14,19 @@ use anyhow::Context as _;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
+use futures_concurrency::future::Join;
 use inspect::Inspect;
 use inspect::InspectMut;
+use openvmm_defs::time_abi::EffectiveCpuidEntry;
 use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_defs::time_abi::TimeCapture;
-use sha2::Digest as _;
+use openvmm_defs::time_abi::decode_effective_cpuid;
+use openvmm_defs::time_abi::encode_effective_cpuid;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use virt::CpuidLeaf;
@@ -106,7 +110,8 @@ pub(super) fn select_cpu_profile(requested: &str) -> anyhow::Result<&'static Cpu
 }
 
 /// Builds the effective CPUID of a partition with `profile` and `topology`:
-/// the profile completed with OpenVMM's topology leaves, the APIC mode, and
+/// the profile completed with OpenVMM's topology leaves, each extended
+/// topology leaf's terminating subleaf, the APIC mode, and
 /// the time ABI's identity and explicit zero leaves. Fails with
 /// `E_CPU_SURFACE` if they do not complete the profile exactly.
 pub(super) fn effective_cpuid(
@@ -134,6 +139,7 @@ pub(super) fn effective_cpuid(
             ),
         )
     })?;
+    virt::x86::topology::terminate_extended_topology(topology, &mut topology_leaves);
     let mut vm: Vec<_> = topology_leaves.iter().map(result).collect();
     vm.push(cpu_profile::x2apic_cpuid(!matches!(
         topology.apic_mode(),
@@ -259,38 +265,123 @@ pub(super) fn declare_rates(
 
 /// Compares the effective CPUID recomputed for this partition with the one
 /// the snapshot recorded: restore step 8 of the specification
-/// (`E_PROFILE_DIGEST` if the record does not verify, `E_CPU_SURFACE` if the
-/// two differ). A record that is this partition's own canonical encoding
-/// needs no decoding; any other is decoded to name its differences.
+/// (`E_CPU_SURFACE`). It compares the binary records, about a microsecond of
+/// work, and decodes the snapshot's only to name the differences.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
-    let encoded = effective_cpuid.encode();
-    if encoded == record.effective_cpuid
-        && sha2::Sha256::digest(&encoded).as_slice() == record.effective_cpuid_sha256.as_slice()
-    {
+    if encode_effective_cpuid(record_entries(effective_cpuid)) == record.effective_cpuid {
         return Ok(());
     }
-    let recorded =
-        EffectiveCpuid::decode_verified(&record.effective_cpuid, &record.effective_cpuid_sha256)?;
-    effective_cpuid.check_matches(&recorded)?;
-    Ok(())
+    let recorded = decode_effective_cpuid(&record.effective_cpuid).map_err(|err| {
+        TimeAbiError::new(
+            TimeAbiCode::ManifestTime,
+            format!("the snapshot's effective CPUID record is malformed: {err}"),
+        )
+    })?;
+    let differences = recorded_cpuid_differences(effective_cpuid, &recorded);
+    let count = differences.len();
+    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
+    Err(TimeAbiError::new(
+        TimeAbiCode::CpuSurface,
+        format!(
+            "the effective CPUID of CPU profile {} differs from the snapshot's in {count} entries: {}",
+            record.id,
+            shown.join("; ")
+        ),
+    )
+    .into())
+}
+
+/// Returns the entries of the snapshot record of `effective`, in its order.
+fn record_entries(effective: &EffectiveCpuid) -> impl Iterator<Item = EffectiveCpuidEntry> + '_ {
+    effective.results().map(|result| EffectiveCpuidEntry {
+        function: result.function,
+        index: result.index,
+        result: result.result,
+        mask: result.mask,
+    })
+}
+
+/// Lists the entries in which this partition's effective CPUID and a
+/// snapshot's `recorded` one differ.
+fn recorded_cpuid_differences(
+    effective: &EffectiveCpuid,
+    recorded: &[EffectiveCpuidEntry],
+) -> Vec<String> {
+    let key = |entry: &EffectiveCpuidEntry| (entry.function, entry.index);
+    let name = |(function, index): (u32, Option<u32>)| match index {
+        Some(index) => format!("CPUID {function:#x}.{index}"),
+        None => format!("CPUID {function:#x}"),
+    };
+    let ours: BTreeMap<_, _> = record_entries(effective)
+        .map(|entry| (key(&entry), entry))
+        .collect();
+    let theirs: BTreeMap<_, _> = recorded.iter().map(|entry| (key(entry), *entry)).collect();
+    let mut differences = Vec::new();
+    for (&entry_key, entry) in &ours {
+        match theirs.get(&entry_key) {
+            None => differences.push(format!("{} is not in the snapshot", name(entry_key))),
+            Some(theirs) if theirs != entry => differences.push(format!(
+                "{} is {:#x?} under mask {:#x?}, and {:#x?} under mask {:#x?} in the snapshot",
+                name(entry_key),
+                entry.result,
+                entry.mask,
+                theirs.result,
+                theirs.mask
+            )),
+            Some(_) => {}
+        }
+    }
+    for &entry_key in theirs
+        .keys()
+        .filter(|entry_key| !ours.contains_key(entry_key))
+    {
+        differences.push(format!("{} is only in the snapshot", name(entry_key)));
+    }
+    if differences.is_empty() {
+        differences.push("the snapshot lists the same entries in another order".to_owned());
+    }
+    differences
 }
 
 /// Checks that VP 0 observes the effective CPUID, on cold boot and restore
 /// before any VP runs (`E_CPU_SURFACE`): the backend's report, looked up as
 /// the guest's CPUID instruction finds it, equals every governed leaf under
 /// its masks, and a leaf without a subleaf is read at subleaf 0.
+///
+/// The report of a pass-through backend also holds VP 0's view at the host's
+/// entries outside the profile's tables
+/// (`cpu_profile::unlisted_cpuid_candidates`); each must read zero, so that
+/// no reserved entry exposes a host feature (`E_CPU_UNLISTED`). A table
+/// backend reports none, and its guests read zero there by construction.
 pub(super) fn check_presented_cpuid(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
     profile: &CpuProfile,
     effective_cpuid: &EffectiveCpuid,
 ) -> anyhow::Result<()> {
-    let presented = CpuidLeafSet::new(backend(partition, hypervisor)?.effective_cpuid()?);
+    let leaves = backend(partition, hypervisor)?.effective_cpuid()?;
+    check_presented(profile, effective_cpuid, leaves)
+}
+
+/// Checks a backend's report of VP 0's CPUID, as [`check_presented_cpuid`]
+/// describes.
+fn check_presented(
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    leaves: Vec<CpuidLeaf>,
+) -> anyhow::Result<()> {
+    let presented = CpuidLeafSet::new(leaves);
     let differences = cpuid_differences(&presented, effective_cpuid);
     if differences.is_empty() {
+        let entries: Vec<_> = presented
+            .leaves()
+            .iter()
+            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+            .collect();
+        cpu_profile::check_unlisted_cpuid(profile, &entries)?;
         return Ok(());
     }
     let count = differences.len();
@@ -410,8 +501,8 @@ pub(super) fn capture_records(
         .context("the time ABI rates are not declared")?;
     let anchor = backend.capture_anchor()?;
     let identity = virt::time_abi::host::host_identity()?;
-    let profile = state.profile.encode();
-    let effective_cpuid = state.effective_cpuid.encode();
+    let pinned = cpu_profile::pinned_record(state.profile.id())
+        .with_context(|| format!("CPU profile {} is not pinned", state.profile.id()))?;
     tracing::info!(
         tsc = anchor.tsc,
         utc_ns = anchor.sample.utc_ns,
@@ -434,11 +525,10 @@ pub(super) fn capture_records(
             capture_generation: state.generation,
         },
         cpu_profile: SnapshotCpuProfile {
-            id: state.profile.id().to_owned(),
-            sha256: sha2::Sha256::digest(&profile).to_vec(),
-            profile,
-            effective_cpuid_sha256: sha2::Sha256::digest(&effective_cpuid).to_vec(),
-            effective_cpuid,
+            id: pinned.id.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(&state.effective_cpuid)),
             capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
         },
     })
@@ -450,10 +540,11 @@ impl LoadedVm {
     /// restored VP runs.
     ///
     /// It performs the synchronized TSC set at the downtime selected at the
-    /// restore anchor, advances and sets every LAPIC, advances VM time and
-    /// the RTC, and seals the time fields of the restore packet. The LAPIC
-    /// advance rejects a periodic or TSC-deadline timer, so restore needs no
-    /// separate timer check, and the PIT checks itself when restored.
+    /// restore anchor, then concurrently advances and sets every LAPIC and
+    /// advances VM time and the RTC, and seals the time fields of the restore
+    /// packet. The LAPIC advance rejects a periodic or TSC-deadline timer, so
+    /// restore needs no separate timer check, and the PIT checks itself when
+    /// restored.
     pub(super) async fn time_abi_restore(&mut self, input: RestoreTimeInput) -> anyhow::Result<()> {
         let state = self
             .inner
@@ -504,22 +595,37 @@ impl LoadedVm {
             "time ABI synchronized TSC set"
         );
 
-        self.inner
-            .partition_unit
-            .advance_lapic_timers(downtime.nanos, apic_hz)
-            .await?;
-        let lapic_advanced = started.elapsed();
-        self.state_units
-            .advance_time(Duration::from_nanos(downtime.nanos))
-            .await
-            .context("failed to advance restored VM time")?;
+        // Steps 14 and 15 touch disjoint state, since no backend's LAPIC
+        // reads VM time under the time ABI, so they run concurrently. Both
+        // run to completion, so a failure never cancels a state unit
+        // operation midway.
+        let downtime_ns = downtime.nanos;
+        let partition_unit = &mut self.inner.partition_unit;
+        let state_units = &mut self.state_units;
+        let lapic_advance = async move {
+            let result = partition_unit
+                .advance_lapic_timers(downtime_ns, apic_hz)
+                .await;
+            (result, started.elapsed())
+        };
+        let vm_time_advance = async move {
+            let result = state_units
+                .advance_time(Duration::from_nanos(downtime_ns))
+                .await;
+            (result, started.elapsed())
+        };
+        let ((lapic_result, lapic_advanced), (vm_time_result, vm_time_advanced)) =
+            (lapic_advance, vm_time_advance).join().await;
+        lapic_result?;
+        vm_time_result.context("failed to advance restored VM time")?;
         let finished = started.elapsed();
         // Per-phase durations attribute the restore.time_abi_clock profile
-        // phase.
+        // phase. The LAPIC and VM time phases overlap; each is measured from
+        // the end of the TSC set.
         tracing::info!(
             tsc_set_us = tsc_set.as_micros() as u64,
             lapic_us = (lapic_advanced - tsc_set).as_micros() as u64,
-            vm_time_us = (finished - lapic_advanced).as_micros() as u64,
+            vm_time_us = (vm_time_advanced - tsc_set).as_micros() as u64,
             total_us = finished.as_micros() as u64,
             "time ABI restore clock"
         );
@@ -572,6 +678,7 @@ impl StateUnit for TimeAbiUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
@@ -700,6 +807,83 @@ mod tests {
         }
     }
 
+    /// A pass-through backend's report may hold VP 0's view at the host's
+    /// entries outside the profile: zero there passes, and anything else is
+    /// `E_CPU_UNLISTED`. A report of the table alone passes, for every pinned
+    /// profile and topology.
+    #[test]
+    fn presented_cpuid_rejects_non_zero_unlisted_entries() {
+        for profile in cpu_profile::pinned_profiles() {
+            for vp_count in [1, 2, 8, 64] {
+                for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
+                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
+                    let (_, config) = partition_config(profile, &effective);
+                    check_presented(profile, &effective, config.cpuid.leaves().to_vec())
+                        .unwrap_or_else(|err| {
+                            panic!("{} with {vp_count} VPs, {x2apic:?}: {err:#}", profile.id())
+                        });
+                }
+            }
+        }
+
+        let (_, config, effective) = test_config(2);
+        let profile = test_profile();
+        let table = config.cpuid.leaves().to_vec();
+
+        // Leaf 0x1D is above Ice Lake-SP's maximum basic leaf (0x1B).
+        let mut zero = table.clone();
+        zero.push(CpuidLeaf::new(0x1d, [0; 4]));
+        check_presented(profile, &effective, zero).unwrap();
+
+        let mut leaked = table.clone();
+        leaked.push(CpuidLeaf::new(0x1d, [1, 0, 0, 0]));
+        assert_eq!(
+            code(check_presented(profile, &effective, leaked.clone())),
+            "E_CPU_UNLISTED"
+        );
+
+        // A governed difference is reported first.
+        leaked.retain(|leaf| leaf.function != 0x8000_0002);
+        assert_eq!(
+            code(check_presented(profile, &effective, leaked)),
+            "E_CPU_SURFACE"
+        );
+    }
+
+    /// The effective CPUID ends leaf 0Bh with Intel's terminating subleaf,
+    /// which carries VP 0's x2APIC ID; the backend sets each VP's own. No
+    /// pinned profile reaches leaf 1Fh.
+    #[test]
+    fn effective_cpuid_terminates_the_extended_topology() {
+        for profile in cpu_profile::pinned_profiles() {
+            assert!(profile.lookup(0, 0)[0] < 0x1f, "{}", profile.id());
+            for vp_count in [1, 2, 8] {
+                let effective =
+                    effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
+                let subleaves = |function| {
+                    effective
+                        .results()
+                        .filter(|result| result.function == function)
+                        .map(|result| (result.index, result.result, result.mask))
+                        .collect::<Vec<_>>()
+                };
+                let leaf_b = subleaves(0xb);
+                assert_eq!(leaf_b.len(), 3, "{}: {leaf_b:x?}", profile.id());
+                assert_eq!(leaf_b[2], (Some(2), [0, 0, 2, 0], [!0; 4]));
+                assert!(subleaves(0x1f).is_empty());
+
+                let (_, config) = partition_config(profile, &effective);
+                let terminator = config
+                    .cpuid
+                    .leaves()
+                    .iter()
+                    .find(|leaf| leaf.function == 0xb && leaf.index == Some(2))
+                    .unwrap();
+                assert_eq!(terminator.mask, [!0, !0, !0, 0]);
+            }
+        }
+    }
+
     #[test]
     fn presented_cpuid_must_match_under_the_masks() {
         let (_, config, effective) = test_config(2);
@@ -737,39 +921,71 @@ mod tests {
     }
 
     #[test]
-    fn recorded_cpuid_verifies_and_must_match() {
+    fn recorded_cpuid_must_match() {
         let (_, _, effective) = test_config(2);
-        let profile = test_profile().encode();
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
         let record = SnapshotCpuProfile {
             id: TEST_PROFILE.to_owned(),
-            sha256: sha2::Sha256::digest(&profile).to_vec(),
-            profile,
-            effective_cpuid: effective.encode(),
-            effective_cpuid_sha256: effective.digest().to_vec(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(&effective)),
             capture_cpu_signature: 0,
         };
         check_recorded_cpuid(&effective, &record).unwrap();
 
+        // Another topology changes the topology leaves.
         let (_, _, other) = test_config(4);
-        assert_eq!(code(check_recorded_cpuid(&other, &record)), "E_CPU_SURFACE");
+        let message = format!("{:#}", check_recorded_cpuid(&other, &record).unwrap_err());
+        assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
+        assert!(message.contains("CPUID 0xb.1"), "{message}");
 
-        let mut tampered = record.clone();
-        tampered.effective_cpuid_sha256[0] ^= 1;
+        // One flipped bit is named.
+        let mut flipped = record.clone();
+        flipped.effective_cpuid[3 * 4] ^= 1;
+        let message = format!(
+            "{:#}",
+            check_recorded_cpuid(&effective, &flipped).unwrap_err()
+        );
+        assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
+        assert!(message.contains("CPUID 0x0 is"), "{message}");
+
+        // A missing entry, and the same entries in another order.
+        let mut truncated = record.clone();
+        truncated
+            .effective_cpuid
+            .truncate(record.effective_cpuid.len() - EFFECTIVE_CPUID_ENTRY_BYTES);
         assert_eq!(
-            code(check_recorded_cpuid(&effective, &tampered)),
-            "E_PROFILE_DIGEST"
+            code(check_recorded_cpuid(&effective, &truncated)),
+            "E_CPU_SURFACE"
+        );
+        let mut reordered = record.clone();
+        let (first, second) = reordered
+            .effective_cpuid
+            .split_at_mut(EFFECTIVE_CPUID_ENTRY_BYTES);
+        first.swap_with_slice(&mut second[..EFFECTIVE_CPUID_ENTRY_BYTES]);
+        assert_eq!(
+            code(check_recorded_cpuid(&effective, &reordered)),
+            "E_CPU_SURFACE"
         );
 
-        // A digest that verifies over bytes that are not the canonical
-        // encoding.
-        let mut noncanonical = record.clone();
-        noncanonical.effective_cpuid.insert(1, b' ');
-        noncanonical.effective_cpuid_sha256 =
-            sha2::Sha256::digest(&noncanonical.effective_cpuid).to_vec();
+        let mut malformed = record.clone();
+        malformed.effective_cpuid.pop();
         assert_eq!(
-            code(check_recorded_cpuid(&effective, &noncanonical)),
-            "E_PROFILE_DIGEST"
+            code(check_recorded_cpuid(&effective, &malformed)),
+            "E_MANIFEST_TIME"
         );
+    }
+
+    /// Capture copies the pinned profile's precomputed record, so restore
+    /// never encodes or hashes a profile.
+    #[test]
+    fn pinned_records_are_the_profiles() {
+        for profile in cpu_profile::pinned_profiles() {
+            let pinned = cpu_profile::pinned_record(profile.id()).unwrap();
+            assert_eq!(pinned.id, profile.id());
+            assert_eq!(pinned.encoding, profile.encode().as_slice());
+            assert_eq!(pinned.digest, profile.digest());
+        }
     }
 
     #[test]

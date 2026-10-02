@@ -115,77 +115,16 @@ fn host_cpuid(_leaf: u32, _subleaf: u32) -> [u32; 4] {
     [0; 4]
 }
 
-/// Returns the host's CPUID table, as the CPUID instruction enumerates it.
+/// Returns the host's CPUID table, as the CPUID instruction enumerates it,
+/// without the hypervisor range: that describes the host's hypervisor rather
+/// than the processor, so neither the supported CPU surface nor the unlisted
+/// candidates use it, and every CPUID in the root partition exits to the
+/// hypervisor.
 pub(crate) fn host_cpuid_table() -> Vec<CpuidEntry> {
-    cpu_profile::cpuid::enumerate(|leaf, subleaf| {
+    cpu_profile::cpuid::enumerate_basic_and_extended(|leaf, subleaf| {
         Ok::<_, std::convert::Infallible>(host_cpuid(leaf, subleaf))
     })
     .unwrap_or_else(|never| match never {})
-}
-
-/// The leaves past each maximum leaf that read zero even beyond the host's
-/// own maximum leaf.
-const ZERO_LEAVES_PAST_MAXIMUM: u32 = 4;
-
-/// Returns the zero results that make the leaves and subleaves `cpuid` does
-/// not list read zero, as a CPU profile's effective CPUID requires, where the
-/// hypervisor would otherwise serve its own value.
-///
-/// MSHV serves its own value for anything without a registered result, and
-/// refuses a whole-leaf result and a subleaf result for the same leaf. So this
-/// returns:
-///
-/// - a subleaf result for every subleaf that `host` enumerates of a leaf that
-///   `cpuid` lists by subleaf, unless `cpuid` lists that subleaf;
-/// - a whole-leaf result for every basic and extended leaf that `cpuid` does
-///   not list at all, up to the host's maximum leaves or
-///   [`ZERO_LEAVES_PAST_MAXIMUM`] past `cpuid`'s, whichever is higher.
-///
-/// The hypervisor range belongs to the time ABI's identity and explicit zero
-/// leaves, which `cpuid` lists.
-pub(crate) fn unlisted_zero_results(
-    cpuid: &virt::CpuidLeafSet,
-    host: &[CpuidEntry],
-) -> Vec<CpuidLeaf> {
-    let leaves = cpuid.leaves();
-    let listed = |function: u32| leaves.iter().any(|leaf| leaf.function == function);
-    let by_subleaf = |function: u32| {
-        leaves
-            .iter()
-            .filter(|leaf| leaf.function == function)
-            .all(|leaf| leaf.index.is_some())
-    };
-    let host_max = |base: u32| cpu_profile::cpuid::lookup(host, base, 0).map_or(base, |r| r[0]);
-    let table_max = |base: u32| cpuid.result(base, 0, &[base, 0, 0, 0])[0];
-
-    let mut zeros = Vec::new();
-    // Unlisted subleaves of the leaves the table lists by subleaf.
-    for entry in host {
-        let (function, subleaf) = entry.key();
-        if let Some(subleaf) = subleaf {
-            if listed(function)
-                && by_subleaf(function)
-                && !leaves
-                    .iter()
-                    .any(|leaf| leaf.function == function && leaf.index == Some(subleaf))
-            {
-                zeros.push(CpuidLeaf::new(function, [0; 4]).indexed(subleaf));
-            }
-        }
-    }
-    // Unlisted leaves, including those past the maximum leaves.
-    for base in [0, EXTENDED_LEAF_BASE] {
-        let last = host_max(base).max(table_max(base) + ZERO_LEAVES_PAST_MAXIMUM);
-        if !(base..base + 0x100).contains(&last) {
-            continue;
-        }
-        for function in base..=last {
-            if !listed(function) {
-                zeros.push(CpuidLeaf::new(function, [0; 4]));
-            }
-        }
-    }
-    zeros
 }
 
 /// Returns the CPU surface that MSHV supports on this host, given the host's
@@ -424,54 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn unlisted_leaves_and_subleaves_get_zero_results() {
-        let entry = |leaf, subleaf, eax| CpuidEntry::new(leaf, subleaf, [eax, 1, 2, 3]);
-        let host = vec![
-            entry(0, None, 0xa),
-            entry(1, None, 0),
-            entry(2, None, 0),
-            entry(4, Some(0), 0x121),
-            entry(4, Some(1), 0x122),
-            entry(4, Some(2), 0x143),
-            entry(4, Some(3), 0x163),
-            entry(7, Some(0), 2),
-            entry(7, Some(1), 0),
-            entry(7, Some(2), 0),
-            entry(0xa, None, 0),
-            entry(0xd, Some(0), 0),
-            entry(0xd, Some(1), 0),
-            entry(0xd, Some(2), 0),
-            entry(HYPERVISOR_LEAF_BASE, None, HYPERVISOR_LEAF_BASE + 0xb),
-            entry(EXTENDED_LEAF_BASE, None, EXTENDED_LEAF_BASE + 8),
-        ];
-        let table = virt::CpuidLeafSet::new(vec![
-            CpuidLeaf::new(0, [7, 0, 0, 0]),
-            CpuidLeaf::new(1, [0; 4]),
-            CpuidLeaf::new(4, [0x121, 0, 0, 0]).indexed(0),
-            CpuidLeaf::new(4, [0x122, 0, 0, 0]).indexed(1),
-            CpuidLeaf::new(7, [0; 4]).indexed(0),
-            // A leaf listed whole gets no subleaf results: MSHV refuses both.
-            CpuidLeaf::new(0xd, [0; 4]),
-            CpuidLeaf::new(HYPERVISOR_LEAF_BASE, [HYPERVISOR_LEAF_BASE + 5, 0, 0, 0]),
-            CpuidLeaf::new(EXTENDED_LEAF_BASE, [EXTENDED_LEAF_BASE + 1, 0, 0, 0]),
-            CpuidLeaf::new(EXTENDED_LEAF_BASE + 1, [0; 4]),
-        ]);
-        let zeros: Vec<_> = unlisted_zero_results(&table, &host)
-            .iter()
-            .map(|leaf| {
-                assert_eq!((leaf.result, leaf.mask), ([0; 4], [!0; 4]));
-                (leaf.function, leaf.index)
-            })
-            .collect();
-        let mut expected = vec![(4, Some(2)), (4, Some(3)), (7, Some(1)), (7, Some(2))];
-        // Basic leaves up to the host's maximum (0xa) or four past the table's
-        // (0xb), whichever is higher; extended up to the host's 0x80000008.
-        expected.extend([2, 3, 5, 6, 8, 9, 0xa, 0xb].map(|leaf| (leaf, None)));
-        expected.extend((2..=8).map(|leaf| (EXTENDED_LEAF_BASE + leaf, None)));
-        assert_eq!(zeros, expected);
-    }
-
-    #[test]
     fn the_surface_supports_each_host_profile() {
         // On a host whose CPUID already matches its profile, the surface of the
         // fingerprinted banks supports the profile.
@@ -683,7 +574,13 @@ mod hw {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    fn host_surface(surface: &SupportedCpuSurface) -> cpu_profile::HostCpuSurface {
+    /// Converts `surface` to the profile crate's form. `presentation` says
+    /// whose view its CPUID is: the root's for the cheap surface, a guest's
+    /// for a probe partition.
+    fn host_surface(
+        surface: &SupportedCpuSurface,
+        presentation: cpu_profile::CpuidPresentation,
+    ) -> cpu_profile::HostCpuSurface {
         let mut cpuid = surface
             .cpuid
             .iter()
@@ -692,7 +589,7 @@ mod hw {
         cpu_profile::cpuid::normalize(&mut cpuid);
         cpu_profile::HostCpuSurface {
             cpuid,
-            presentation: cpu_profile::CpuidPresentation::PassThroughHostView,
+            presentation,
             physical_address_width: surface.physical_address_width,
             msrs: surface
                 .msrs
@@ -709,7 +606,9 @@ mod hw {
     /// Compares the cheap surface (host CPUID and banks) with the surface of a
     /// probe partition that enables every offered feature, which is how the
     /// CPU fingerprint measures it: every pinned profile must get the same
-    /// support verdict from both.
+    /// support verdict from both. The host's own profile must also pass the
+    /// full check on the probe's guest view, which requires the entries
+    /// outside its tables to read zero, as `--cpu-fingerprint` checks them.
     #[test]
     #[ignore = "requires /dev/mshv"]
     fn the_cheap_surface_gives_the_probe_verdicts() {
@@ -767,8 +666,11 @@ mod hw {
 
         // Report the bits that differ, for the record. The probe's bits that the
         // cheap surface lacks would make it under-report.
-        let cheap_host = host_surface(&cheap);
-        let probe_host = host_surface(&probe_surface);
+        let cheap_host = host_surface(&cheap, cpu_profile::CpuidPresentation::PassThroughHostView);
+        let probe_host = host_surface(
+            &probe_surface,
+            cpu_profile::CpuidPresentation::PassThroughGuestView,
+        );
         let mut under = 0;
         for entry in &probe_host.cpuid {
             let (leaf, subleaf) = entry.key();
@@ -815,6 +717,11 @@ mod hw {
             "{}",
             own.id()
         );
+        // The probe partition is a guest's view, as `--cpu-fingerprint`
+        // records it, so the full check also requires every entry outside the
+        // profile's tables to read zero there (`E_CPU_UNLISTED`).
+        cpu_profile::verify_support(own, &probe_host)
+            .unwrap_or_else(|error| panic!("probe partition: {error}"));
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
