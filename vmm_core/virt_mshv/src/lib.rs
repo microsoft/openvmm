@@ -313,11 +313,12 @@ impl MshvPartitionInner {
     }
 
     fn scrub_partition(&self) -> Result<(), Error> {
-        const HVCALL_SCRUB_PARTITION: libc::c_ulong = 0x008d;
+        // _IO(MSHV_IOCTL, 0x0b), where MSHV_IOCTL is 0xb8.
+        const MSHV_SCRUB_PARTITION: libc::c_ulong = 0xb80b;
 
-        // SAFETY: `vmfd` is a valid MSHV partition fd. The private MSHV ABI
-        // exposes HvCallScrubPartition directly as an argument-less ioctl.
-        let ret = unsafe { libc::ioctl(self.vmfd.as_raw_fd(), HVCALL_SCRUB_PARTITION) };
+        // SAFETY: `vmfd` is a valid MSHV partition fd, and
+        // MSHV_SCRUB_PARTITION is an argument-less ioctl.
+        let ret = unsafe { libc::ioctl(self.vmfd.as_raw_fd(), MSHV_SCRUB_PARTITION) };
         if ret < 0 {
             return Err(ErrorInner::ScrubPartition(io::Error::last_os_error()).into());
         }
