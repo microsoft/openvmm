@@ -10412,9 +10412,20 @@ dependencies = [
  "user_driver",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client_core",
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "vmbus_client_core"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "thiserror 2.0.16",
+ "vmbus_core",
  "zerocopy",
 ]
 
