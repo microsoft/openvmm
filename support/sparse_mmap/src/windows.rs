@@ -269,7 +269,23 @@ enum MappingInfo {
         handle: OwnedHandle,
         file_offset: u64,
         protection: u32,
+        /// Whether the view may hold private copies of section pages, because
+        /// it was mapped or later protected with a `PAGE_*WRITECOPY`
+        /// protection. Such a view can only be unmapped whole.
+        copy_on_write: bool,
     },
+}
+
+impl MappingInfo {
+    fn is_copy_on_write(&self) -> bool {
+        matches!(
+            self,
+            Self::Section {
+                copy_on_write: true,
+                ..
+            }
+        )
+    }
 }
 
 impl Clone for MappingInfo {
@@ -280,13 +296,23 @@ impl Clone for MappingInfo {
                 handle,
                 file_offset,
                 protection,
+                copy_on_write,
             } => Self::Section {
                 handle: handle.try_clone().unwrap(),
                 file_offset: *file_offset,
                 protection: *protection,
+                copy_on_write: *copy_on_write,
             },
         }
     }
+}
+
+/// Returns whether writes through pages with `protection` create private
+/// copies of section pages.
+fn is_copy_on_write_protection(protection: u32) -> bool {
+    // Each base protection is a distinct bit that no modifier (such as
+    // `PAGE_GUARD`) shares, so the write-copy bits can be tested directly.
+    protection & (PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY) != 0
 }
 
 /// A reserved virtual address range that may be partially populated with memory
@@ -367,6 +393,41 @@ impl MappingList {
             self.0[index].offset
         };
         (previous_end, next_begin)
+    }
+
+    /// Returns the index range of the mappings that overlap `offset..end`.
+    fn overlapping(&self, offset: usize, end: usize) -> std::ops::Range<usize> {
+        let start = self.0.partition_point(|mapping| mapping.end <= offset);
+        let len = self.0[start..].partition_point(|mapping| mapping.offset < end);
+        start..start + len
+    }
+
+    /// Fails if unmapping `offset..end` would split a copy-on-write view.
+    ///
+    /// Windows cannot unmap part of a view, so splitting one means unmapping
+    /// it whole and re-mapping the rest from the section, which would discard
+    /// the private pages of a copy-on-write view.
+    fn check_copy_on_write_split(&self, offset: usize, end: usize) -> io::Result<()> {
+        let splits_copy_on_write = self.0[self.overlapping(offset, end)].iter().any(|mapping| {
+            mapping.info.is_copy_on_write() && (mapping.offset < offset || end < mapping.end)
+        });
+        if splits_copy_on_write {
+            return Err(Error::new(
+                io::ErrorKind::Unsupported,
+                "cannot unmap part of a copy-on-write view",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Marks the section views that overlap `offset..end` as copy-on-write.
+    fn mark_copy_on_write(&mut self, offset: usize, end: usize) {
+        let range = self.overlapping(offset, end);
+        for mapping in &mut self.0[range] {
+            if let MappingInfo::Section { copy_on_write, .. } = &mut mapping.info {
+                *copy_on_write = true;
+            }
+        }
     }
 }
 
@@ -524,11 +585,18 @@ impl SparseMapping {
     ///
     /// The range must be committed. This does not allocate physical pages; on
     /// Windows those are still materialized on first write.
+    ///
+    /// Once any part of a section view is given `PAGE_WRITECOPY` or
+    /// `PAGE_EXECUTE_WRITECOPY`, the view may hold private pages, so it can
+    /// only be unmapped whole (see [`unmap`](Self::unmap)).
     pub fn protect(&self, offset: usize, len: usize, protection: u32) -> Result<(), Error> {
-        let _ = self.validate_offset_len(offset, len)?;
+        let end = self.validate_offset_len(offset, len)?;
         if len == 0 {
             return Ok(());
         }
+        // Hold the lock across the change so that a concurrent unmap cannot
+        // split a view that is becoming copy-on-write.
+        let mut mappings = is_copy_on_write_protection(protection).then(|| self.mappings.lock());
         // SAFETY: `validate_offset_len` confirmed the range lies within the
         // reservation.
         unsafe {
@@ -537,8 +605,12 @@ impl SparseMapping {
                 self.address.wrapping_add(offset),
                 len,
                 protection,
-            )
+            )?;
         }
+        if let Some(mappings) = &mut mappings {
+            mappings.mark_copy_on_write(offset, end);
+        }
+        Ok(())
     }
 
     /// Prefetches a committed range into the working set, faulting the whole
@@ -609,6 +681,7 @@ impl SparseMapping {
     {
         let end = self.validate_offset_len(offset, len)?;
         let mut mappings = self.mappings.lock();
+        mappings.check_copy_on_write_split(offset, end)?;
 
         // Remove the old mappings first. Note that this means the mapping will
         // briefly be missing entirely; accessors need to handle this by
@@ -792,6 +865,7 @@ impl SparseMapping {
                 handle: section,
                 file_offset,
                 protection: protect,
+                copy_on_write: is_copy_on_write_protection(protect),
             })
         })
     }
@@ -799,6 +873,12 @@ impl SparseMapping {
     fn unmap_single(&self, mapping: &Mapping, offset: usize, end: usize) {
         assert!(offset >= mapping.offset);
         assert!(end <= mapping.end);
+        // Callers reject such splits up front: re-mapping the rest of the view
+        // below would discard its private pages.
+        assert!(
+            !mapping.info.is_copy_on_write() || (offset == mapping.offset && end == mapping.end),
+            "cannot split a copy-on-write view"
+        );
         unsafe {
             match &mapping.info {
                 MappingInfo::Anonymous => {
@@ -814,6 +894,7 @@ impl SparseMapping {
                     handle,
                     file_offset,
                     protection,
+                    copy_on_write: _,
                 } => {
                     // Windows does not support doing partial unmaps. So do our best
                     // to remap, panicking if anything goes wrong.
@@ -994,9 +1075,17 @@ impl SparseMapping {
     pub fn set_name(&self, _offset: usize, _len: usize, _name: &str) {}
 
     /// Unmaps a range of mappings.
+    ///
+    /// Windows cannot unmap part of a view, so this fails with
+    /// [`io::ErrorKind::Unsupported`] if the range covers only part of a
+    /// copy-on-write view: a view mapped, or later protected, with
+    /// `PAGE_WRITECOPY` or `PAGE_EXECUTE_WRITECOPY`. Splitting such a view
+    /// would discard its private pages. Other views are split by re-mapping
+    /// the parts outside the range.
     pub fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let end = self.validate_offset_len(offset, len)?;
         let mut mappings = self.mappings.lock();
+        mappings.check_copy_on_write_split(offset, end)?;
         self.unmap_internal(&mut mappings, offset, end);
         Ok(())
     }
