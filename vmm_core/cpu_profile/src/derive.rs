@@ -119,7 +119,8 @@ pub struct KnownGeneration {
 }
 
 impl KnownGeneration {
-    fn generation(&self) -> Generation {
+    /// Returns the generation as profiles record it.
+    pub(crate) fn generation(&self) -> Generation {
         Generation {
             name: self.name.to_owned(),
             cpus: self
