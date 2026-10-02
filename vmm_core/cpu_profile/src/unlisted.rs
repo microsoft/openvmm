@@ -34,14 +34,17 @@ const IDENTITY_RANGE: RangeInclusive<u32> = HYPERVISOR_LEAF_BASE..=0x4fff_ffff;
 /// subleaf of its leaf.
 fn is_unlisted(profile: &CpuProfile, leaf: u32, subleaf: Option<u32>) -> bool {
     let owned = IDENTITY_RANGE.contains(&leaf) || VM_OWNED_LEAVES.contains(&leaf);
+    // The table is sorted by leaf, and core checks every boot's report.
+    let table = profile.cpuid();
+    let start = table.partition_point(|entry| entry.leaf.0 < leaf);
     !owned
-        && !profile.cpuid().iter().any(|entry| {
-            entry.leaf.0 == leaf
-                && match (entry.subleaf, subleaf) {
-                    (Some(listed), Some(subleaf)) => listed.0 == subleaf,
-                    (None, _) | (_, None) => true,
-                }
-        })
+        && !table[start..]
+            .iter()
+            .take_while(|entry| entry.leaf.0 == leaf)
+            .any(|entry| match (entry.subleaf, subleaf) {
+                (Some(listed), Some(subleaf)) => listed.0 == subleaf,
+                (None, _) | (_, None) => true,
+            })
 }
 
 /// Returns every non-zero entry of `presented`, in order, that is outside
