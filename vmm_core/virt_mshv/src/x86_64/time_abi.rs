@@ -1881,7 +1881,11 @@ mod hw {
     /// read zero, which the zero results provide on MSHV, except past the
     /// extended topology leaves' terminators: those are reserved, and the
     /// sweep only reports them. One rep hypercall must read every probe as
-    /// the single reads do, and the test times both ways.
+    /// the single reads do, and the test times both ways. Farther out, where
+    /// no guest enumeration reaches (subleaves 64 to 255, leaves up to 0xff
+    /// and 0x800000ff, the hypervisor range up to 0x400001ff, and a few
+    /// distant leaves), every unlisted entry must read zero as well: no entry
+    /// outside the effective CPUID reads host data.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn unlisted_cpuid_entries_read_zero(driver: DefaultDriver) {
@@ -2022,6 +2026,60 @@ mod hw {
             single_us[5],
             bulk_us[5]
         );
+
+        // Farther out, every entry the effective CPUID does not list must read
+        // zero too: subleaves 64 to 255 of every indexed leaf, the leaves past
+        // the probes above up to 0xff and 0x800000ff, the rest of the
+        // hypervisor range up to 0x400001ff, and a few distant leaves.
+        let far: Vec<(u32, u32)> = indexed
+            .iter()
+            .flat_map(|&function| (64..256).map(move |index| (function, index)))
+            .chain((max_basic + 5..=0xff).map(|function| (function, 0)))
+            .chain((max_extended + 5..=0x8000_00ff).map(|function| (function, 0)))
+            .chain((0x4000_0000..=0x4000_01ff).map(|function| (function, 0)))
+            .chain(
+                [
+                    0x100,
+                    0x1000,
+                    0x2000_0000,
+                    0x3fff_ffff,
+                    0x8000_0100,
+                    0x8fff_ffff,
+                    0xc000_0000,
+                    0xc000_0001,
+                    0xffff_ffff,
+                ]
+                .map(|function| (function, 0)),
+            )
+            .filter(|&(function, index)| {
+                !effective.results().any(|result| {
+                    result.function == function && result.index.is_none_or(|i| i == index)
+                })
+            })
+            .collect();
+        let values = vp_cpuid_many(bsp, 0, &far).unwrap();
+        let (mut far_unlisted, mut far_reserved) = (Vec::new(), Vec::new());
+        for (&(function, index), actual) in far.iter().zip(&values) {
+            if *actual == [0; 4] {
+                continue;
+            }
+            let line = format!("{function:#x}.{index}: {actual:08x?}");
+            if is_per_vp_leaf(function) {
+                far_reserved.push(line);
+            } else {
+                far_unlisted.push(line);
+            }
+        }
+        println!(
+            "{} far probes: {} unlisted results are not zero, {} reserved topology entries are not zero",
+            far.len(),
+            far_unlisted.len(),
+            far_reserved.len()
+        );
+        for line in far_unlisted.iter().chain(&far_reserved) {
+            println!("  {line}");
+        }
+        assert!(far_unlisted.is_empty(), "{far_unlisted:#?}");
     }
 
     /// Every VP of a time ABI partition reads its own x2APIC ID in `EDX` of
