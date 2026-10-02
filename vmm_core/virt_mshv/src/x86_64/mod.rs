@@ -545,7 +545,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             }
         }
         let cpuid = match &self.config.time_abi {
-            Some(time_abi) => time_abi::partition_cpuid(cpuid, &time_abi.cpuid),
+            Some(time_abi) => time_abi::partition_cpuid(&time_abi.cpuid),
             None => virt::CpuidLeafSet::new(tsc::add_cpuid_leaves(&self.vmfd, cpuid)?),
         };
 
