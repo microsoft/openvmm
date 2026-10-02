@@ -4,6 +4,7 @@
 //! The effective guest CPUID of a VM: its profile's pinned values, the fields
 //! its topology and APIC mode define, and the hypervisor identity leaves.
 
+use crate::Hex32;
 use crate::canonical;
 use crate::error::ProfileError;
 use crate::error::ProfileErrorCode;
@@ -14,9 +15,7 @@ use crate::profile::describe_leaf;
 use crate::profile::find;
 use crate::profile::vm_owned_bits;
 use serde::Deserialize;
-use serde::Serialize;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 
 /// The schema of the effective-CPUID records this crate reads and writes.
 pub const EFFECTIVE_CPUID_SCHEMA: &str = "openvmm-effective-cpuid/v1";
@@ -96,12 +95,37 @@ struct EffectiveCpuidDocument {
     schema: String,
 }
 
-/// The document [`EffectiveCpuid::encode`] serializes, with its fields in the
-/// byte order of their keys, which is the canonical form.
-#[derive(Serialize)]
+/// The document that [`EffectiveCpuid::encode`] writes, as `serde` would
+/// serialize it, for the tests' comparison with the sorting encoder.
+#[cfg(test)]
+#[derive(serde::Serialize)]
 struct EffectiveCpuidDocumentRef<'a> {
     cpuid: &'a [CpuidLeafValue],
     schema: &'a str,
+}
+
+/// The size of one entry in the canonical encoding, with a null subleaf.
+const ENCODED_ENTRY_BYTES: usize = 167;
+
+/// Appends `"0x`, the eight hex digits of `value`, and `"`.
+fn push_hex32(out: &mut Vec<u8>, value: u32) {
+    let mut text = *b"\"0x00000000\"";
+    for (i, digit) in text[3..11].iter_mut().enumerate() {
+        *digit = b"0123456789abcdef"[((value >> (28 - 4 * i)) & 0xf) as usize];
+    }
+    out.extend_from_slice(&text);
+}
+
+/// Appends a JSON array of four register values.
+fn push_registers(out: &mut Vec<u8>, registers: &[Hex32; 4]) {
+    out.push(b'[');
+    for (i, register) in registers.iter().enumerate() {
+        if i != 0 {
+            out.push(b',');
+        }
+        push_hex32(out, register.0);
+    }
+    out.push(b']');
 }
 
 impl EffectiveCpuid {
@@ -122,11 +146,35 @@ impl EffectiveCpuid {
     }
 
     /// Returns the canonical encoding: compact canonical JSON.
+    ///
+    /// It writes the document's fixed shape directly, keys in byte order and
+    /// register values as `0x` and eight hex digits, because restore encodes
+    /// the recomputed effective CPUID to compare it with the record. Tests
+    /// check it against the sorting encoder.
     pub fn encode(&self) -> Vec<u8> {
-        canonical::to_compact_ordered(&EffectiveCpuidDocumentRef {
-            cpuid: &self.entries,
-            schema: EFFECTIVE_CPUID_SCHEMA,
-        })
+        let mut out = Vec::with_capacity(64 + self.entries.len() * ENCODED_ENTRY_BYTES);
+        out.extend_from_slice(b"{\"cpuid\":[");
+        for (i, entry) in self.entries.iter().enumerate() {
+            if i != 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"{\"leaf\":");
+            push_hex32(&mut out, entry.leaf.0);
+            out.extend_from_slice(b",\"mask\":");
+            push_registers(&mut out, &entry.mask);
+            out.extend_from_slice(b",\"subleaf\":");
+            match entry.subleaf {
+                Some(subleaf) => push_hex32(&mut out, subleaf.0),
+                None => out.extend_from_slice(b"null"),
+            }
+            out.extend_from_slice(b",\"value\":");
+            push_registers(&mut out, &entry.value);
+            out.push(b'}');
+        }
+        out.extend_from_slice(b"],\"schema\":\"");
+        out.extend_from_slice(EFFECTIVE_CPUID_SCHEMA.as_bytes());
+        out.extend_from_slice(b"\"}");
+        out
     }
 
     /// Returns the SHA-256 of [`Self::encode`].
@@ -287,32 +335,33 @@ impl CpuProfile {
                 ),
             )
         };
+        // The profile's table is sorted by key, so a sorted vector serves as
+        // the map, with less code to run on a VM's first start than a tree.
         let mut entries = self
             .cpuid()
             .iter()
             .map(|entry| (entry.key(), (entry.values(), entry.masks())))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
         let max_basic = self.lookup(0, 0)[0];
 
         for leaf in vm.iter().filter(|leaf| leaf.mask != [0; 4]) {
-            let what = describe_leaf(leaf.function, leaf.index);
+            let what = || describe_leaf(leaf.function, leaf.index);
             if VM_OWNED_LEAVES.contains(&leaf.function) {
                 if leaf.function > max_basic {
-                    return Err(error(format!("{what} is beyond the maximum basic leaf")));
+                    return Err(error(format!(
+                        "{} is beyond the maximum basic leaf",
+                        what()
+                    )));
                 }
                 if leaf.index.is_none() {
-                    return Err(error(format!("{what} has no subleaf")));
+                    return Err(error(format!("{} has no subleaf", what())));
                 }
-                merge(
-                    entries
-                        .entry((leaf.function, leaf.index))
-                        .or_insert(([0; 4], [0; 4])),
-                    leaf,
-                );
+                merge(slot(&mut entries, (leaf.function, leaf.index)), leaf);
                 continue;
             }
             let mut applied = false;
-            for (&(function, index), slot) in entries.range_mut((leaf.function, None)..) {
+            let start = entries.partition_point(|&((function, _), _)| function < leaf.function);
+            for &mut ((function, index), ref mut slot) in &mut entries[start..] {
                 if function != leaf.function {
                     break;
                 }
@@ -328,7 +377,8 @@ impl CpuProfile {
                 for (register, (bits, owned)) in leaf.mask.iter().zip(owned).enumerate() {
                     if bits & !owned != 0 {
                         return Err(error(format!(
-                            "{what} sets {} bits {:#x}, which the profile pins",
+                            "{} sets {} bits {:#x}, which the profile pins",
+                            what(),
                             REGISTERS[register],
                             bits & !owned
                         )));
@@ -339,39 +389,40 @@ impl CpuProfile {
             }
             if !applied {
                 return Err(error(format!(
-                    "{what} matches no profile leaf with VM fields"
+                    "{} matches no profile leaf with VM fields",
+                    what()
                 )));
             }
         }
 
         for leaf in identity {
-            let what = describe_leaf(leaf.function, leaf.index);
             if !HYPERVISOR_LEAVES.contains(&leaf.function) {
                 return Err(error(format!(
-                    "identity {what} is outside the hypervisor range"
+                    "identity {} is outside the hypervisor range",
+                    describe_leaf(leaf.function, leaf.index)
                 )));
             }
-            merge(
-                entries
-                    .entry((leaf.function, leaf.index))
-                    .or_insert(([0; 4], [0; 4])),
-                leaf,
-            );
+            merge(slot(&mut entries, (leaf.function, leaf.index)), leaf);
         }
 
         for &leaf in &VM_OWNED_LEAVES {
-            if leaf <= max_basic && !entries.contains_key(&(leaf, Some(0))) {
+            let key = (leaf, Some(0));
+            if leaf <= max_basic
+                && entries
+                    .binary_search_by(|(entry, _)| entry.cmp(&key))
+                    .is_err()
+            {
                 return Err(error(format!(
                     "the VM did not define {}",
                     describe_leaf(leaf, Some(0))
                 )));
             }
         }
-        for (&(function, index), (value, mask)) in &entries {
+        for &((function, index), (value, mask)) in &entries {
             if HYPERVISOR_LEAVES.contains(&function) {
                 continue;
             }
-            let owned = vm_owned_bits(function, *value);
+            let owned = vm_owned_bits(function, value);
             for (register, (owned, mask)) in owned.iter().zip(mask).enumerate() {
                 if owned & !mask != 0 {
                     return Err(error(format!(
@@ -393,6 +444,22 @@ impl CpuProfile {
                 .collect(),
         })
     }
+}
+
+/// Returns the slot of `key` in the sorted `entries`, inserting an empty one
+/// if there is none.
+fn slot(
+    entries: &mut Vec<((u32, Option<u32>), ([u32; 4], [u32; 4]))>,
+    key: (u32, Option<u32>),
+) -> &mut ([u32; 4], [u32; 4]) {
+    let index = match entries.binary_search_by(|(entry, _)| entry.cmp(&key)) {
+        Ok(index) => index,
+        Err(index) => {
+            entries.insert(index, (key, ([0; 4], [0; 4])));
+            index
+        }
+    };
+    &mut entries[index].1
 }
 
 fn merge(slot: &mut ([u32; 4], [u32; 4]), leaf: &CpuidResult) {
