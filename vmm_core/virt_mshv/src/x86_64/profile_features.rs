@@ -184,7 +184,7 @@ mod tests {
     const MSR_ARCH_CAPABILITIES: u32 = 0x10a;
 
     /// Features that the host partition offered on the fleet's MSHV hosts
-    /// (CPU fingerprints): prometheus30 (Skylake-SP, bare metal) and the 8573C
+    /// (CPU fingerprints): the bare-metal Skylake-SP host and the 8573C
     /// runners (Emerald Rapids, nested).
     const PROMETHEUS30: HvFeatures = HvFeatures {
         banks: [0x1005_f9ff_fff7_859f, 0x0000_008f_1086_0063],
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn bits_the_profile_does_not_decide_keep_the_legacy_policy() {
         let features = time_abi_features(profile("intel.skylake-sp.v1"), PROMETHEUS30).unwrap();
-        // prometheus30 offers the deprecated HLE and RTM bits, which no CPUID
+        // The bare-metal host offers the deprecated HLE and RTM bits, which no CPUID
         // feature maps and OpenVMM never listed: they stay off.
         for mask in [
             Bank0::new().with_hle_support_deprecated(true).into_bits(),
