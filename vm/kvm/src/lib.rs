@@ -795,13 +795,32 @@ impl MsrFilterRange {
             return Err(Error::InvalidMsrFilter("range applies to no access"));
         }
         if self.bitmap.len() != self.nmsrs.div_ceil(8) as usize
-            || self.bitmap.len() > KVM_MSR_FILTER_MAX_BITMAP_SIZE as usize
+            || self.kvm_bitmap_words() * 8 > KVM_MSR_FILTER_MAX_BITMAP_SIZE as usize
         {
             return Err(Error::InvalidMsrFilter(
                 "bitmap size does not match the range",
             ));
         }
         Ok(())
+    }
+
+    /// The number of 64-bit words of the bitmap that KVM copies,
+    /// `BITS_TO_LONGS(nmsrs)`.
+    fn kvm_bitmap_words(&self) -> usize {
+        self.nmsrs.div_ceil(64) as usize
+    }
+
+    /// Returns the bitmap as KVM reads it: [`Self::kvm_bitmap_words`] words
+    /// that hold the bytes of `bitmap` in order, little-endian, followed by
+    /// zero padding. Bit `i` stays the bit for MSR `base + i`.
+    fn kvm_bitmap(&self) -> Vec<u64> {
+        let mut words = vec![0; self.kvm_bitmap_words()];
+        for (word, bytes) in words.iter_mut().zip(self.bitmap.chunks(8)) {
+            let mut le = [0; 8];
+            le[..bytes.len()].copy_from_slice(bytes);
+            *word = u64::from_le_bytes(le);
+        }
+        words
     }
 }
 
@@ -1067,19 +1086,27 @@ impl Partition {
             },
             ..Default::default()
         };
-        for (slot, range) in filter.ranges.iter_mut().zip(ranges) {
-            range.validate()?;
+        // KVM copies each bitmap in whole `long`s, so it gets padded copies.
+        let bitmaps = ranges
+            .iter()
+            .map(|range| {
+                range.validate()?;
+                Ok(range.kvm_bitmap())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for ((slot, range), bitmap) in filter.ranges.iter_mut().zip(ranges).zip(&bitmaps) {
             *slot = kvm_msr_filter_range {
                 flags: if range.read { KVM_MSR_FILTER_READ } else { 0 }
                     | if range.write { KVM_MSR_FILTER_WRITE } else { 0 },
                 nmsrs: range.nmsrs,
                 base: range.base,
                 // KVM only reads the bitmap, and copies it during the ioctl.
-                bitmap: range.bitmap.as_ptr().cast_mut(),
+                bitmap: bitmap.as_ptr().cast::<u8>().cast_mut(),
             };
         }
-        // SAFETY: `filter` and the bitmaps it points to, which `ranges` owns,
-        // are valid for the duration of the ioctl.
+        // SAFETY: `filter` and `bitmaps` are valid for the duration of the
+        // ioctl. KVM copies `BITS_TO_LONGS(nmsrs) * sizeof(long)` bytes of
+        // each range's bitmap, which is the size of its padded copy.
         unsafe {
             ioctl::kvm_x86_set_msr_filter(self.vm.as_raw_fd(), &filter)
                 .map_err(Error::SetMsrFilter)?;
@@ -1586,20 +1613,24 @@ impl<'a> Processor<'a> {
         unsafe { ioctl::kvm_has_device_attr(self.get().vcpu.as_raw_fd(), &attr) }.is_ok()
     }
 
-    /// Enables the vCPU capability `cap` with `args` (`KVM_ENABLE_CAP` on the
-    /// vCPU). `name` identifies the capability in errors.
-    pub fn enable_cap(&self, name: &'static str, cap: u32, args: [u64; 4]) -> Result<()> {
-        // SAFETY: Calling IOCTL as documented, with no special requirements.
+    /// Makes KVM honor the guest's KVM paravirtual feature leaf (`0x40000001`),
+    /// so that the paravirtual features it doesn't advertise, such as KVM's
+    /// paravirtual MSRs, are unavailable to the guest
+    /// (`KVM_CAP_ENFORCE_PV_FEATURE_CPUID` on the vCPU).
+    #[cfg(target_arch = "x86_64")]
+    pub fn enable_enforce_pv_feature_cpuid(&self) -> Result<()> {
+        // SAFETY: Calling IOCTL as documented. The capability's only argument
+        // is a flag, which KVM does not dereference.
         unsafe {
             ioctl::kvm_enable_cap(
                 self.get().vcpu.as_raw_fd(),
                 &kvm_enable_cap {
-                    cap,
-                    args,
+                    cap: KVM_CAP_ENFORCE_PV_FEATURE_CPUID,
+                    args: [1, 0, 0, 0],
                     ..Default::default()
                 },
             )
-            .map_err(|err| Error::EnableCap(name, err))?;
+            .map_err(|err| Error::EnableCap("enforce_pv_feature_cpuid", err))?;
         }
         Ok(())
     }
@@ -2610,6 +2641,47 @@ mod tests {
         assert_eq!((single.base, single.nmsrs), (0x3b, 1));
         assert_eq!(single.bitmap, vec![0]);
         single.validate().unwrap();
+    }
+
+    #[test]
+    fn msr_filter_bitmap_is_padded_to_whole_words() {
+        let max = KVM_MSR_FILTER_MAX_BITMAP_SIZE * 8;
+        for (nmsrs, words) in [
+            (1, 1),
+            (8, 1),
+            (63, 1),
+            (64, 1),
+            (65, 2),
+            (256, 4),
+            (max, max as usize / 64),
+        ] {
+            let mut range = MsrFilterRange::deny(0x100..=0x100 + nmsrs - 1);
+            for (i, byte) in range.bitmap.iter_mut().enumerate() {
+                *byte = (i as u8).wrapping_mul(37) ^ 0xa5;
+            }
+            range.validate().unwrap();
+            let padded = range.kvm_bitmap();
+            // KVM copies BITS_TO_LONGS(nmsrs) * sizeof(long) bytes.
+            assert_eq!(padded.len(), words, "{nmsrs} MSRs");
+            let bytes: Vec<u8> = padded.iter().flat_map(|word| word.to_le_bytes()).collect();
+            assert_eq!(
+                bytes[..range.bitmap.len()],
+                range.bitmap[..],
+                "{nmsrs} MSRs"
+            );
+            assert!(
+                bytes[range.bitmap.len()..].iter().all(|&byte| byte == 0),
+                "{nmsrs} MSRs"
+            );
+            // KVM tests bit `i` of the `long` array for MSR `base + i`.
+            for i in 0..nmsrs as usize {
+                assert_eq!(
+                    u64::from((range.bitmap[i / 8] >> (i % 8)) & 1),
+                    (padded[i / 64] >> (i % 64)) & 1,
+                    "{nmsrs} MSRs, bit {i}"
+                );
+            }
+        }
     }
 
     #[test]

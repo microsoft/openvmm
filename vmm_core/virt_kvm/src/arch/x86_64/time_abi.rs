@@ -415,11 +415,7 @@ impl KvmTimeAbi {
     ) -> Result<Self, TimeAbiError> {
         for &vcpu in vcpus {
             vm.vp(vcpu)
-                .enable_cap(
-                    "enforce_pv_feature_cpuid",
-                    kvm::KVM_CAP_ENFORCE_PV_FEATURE_CPUID,
-                    [1, 0, 0, 0],
-                )
+                .enable_enforce_pv_feature_cpuid()
                 .map_err(|err| {
                     routing_error(format!(
                         "cannot hide KVM's paravirtual MSRs on vCPU {vcpu}: {err:#}"

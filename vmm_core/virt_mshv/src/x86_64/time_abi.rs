@@ -1354,7 +1354,8 @@ mod tests {
                 intercept.intercept_type,
                 mshv_bindings::hv_intercept_type_HV_INTERCEPT_TYPE_X64_MSR_INDEX
             );
-            // SAFETY: every view of this C union is a plain integer.
+            // SAFETY: `msr_index_intercept` writes the union through
+            // `as_uint64`, so all eight bytes are initialized.
             let parameter = unsafe { intercept.intercept_parameter.as_uint64 };
             assert_eq!(parameter, u64::from(msr));
         }
