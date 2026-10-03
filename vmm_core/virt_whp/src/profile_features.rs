@@ -734,6 +734,31 @@ mod whp_tests {
         }
     }
 
+    /// A zeroed 4 KiB page that a test maps into a partition, freed on drop.
+    /// Declare it before the partition, so that it outlives the partition's
+    /// mapping of it, also when the test panics.
+    struct TestPage {
+        ptr: *mut u8,
+        layout: std::alloc::Layout,
+    }
+
+    impl TestPage {
+        fn new() -> Self {
+            let layout = std::alloc::Layout::from_size_align(4096, 4096).unwrap();
+            // SAFETY: the layout has a nonzero size.
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            assert!(!ptr.is_null());
+            Self { ptr, layout }
+        }
+    }
+
+    impl Drop for TestPage {
+        fn drop(&mut self) {
+            // SAFETY: `ptr` was allocated with `layout`.
+            unsafe { std::alloc::dealloc(self.ptr, self.layout) };
+        }
+    }
+
     /// Runs `cpuid; hlt` in real mode at the reset vector and checks how
     /// `CpuidResultList2` reaches the guest: a leaf that also exits reports
     /// the programmed result as the exit's default result, which OpenVMM's
@@ -751,6 +776,12 @@ mod whp_tests {
             result2(EXIT_LEAF, None, None, exit_value, [!0; 4]),
             result2(PLAIN_LEAF, None, None, plain_value, [!0; 4]),
         ];
+        // At 0xffff0: cpuid; hlt; jmp back to the cpuid. Declared before the
+        // partition, so that it is freed after the partition is dropped.
+        let page = TestPage::new();
+        let code = [0x0f, 0xa2, 0xf4, 0xeb, 0xfb];
+        // SAFETY: the code fits in the page at offset 0xff0.
+        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), page.ptr.add(0xff0), code.len()) };
         let mut config = whp::PartitionConfig::new().unwrap();
         config
             .set_property(whp::PartitionProperty::ProcessorCount(1))
@@ -769,21 +800,14 @@ mod whp_tests {
         let partition = config.create().unwrap();
         partition.create_vp(0).create().unwrap();
 
-        // At 0xffff0: cpuid; hlt; jmp back to the cpuid.
-        let layout = std::alloc::Layout::from_size_align(4096, 4096).unwrap();
-        // SAFETY: the layout has a nonzero size.
-        let page = unsafe { std::alloc::alloc_zeroed(layout) };
-        assert!(!page.is_null());
-        let code = [0x0f, 0xa2, 0xf4, 0xeb, 0xfb];
-        // SAFETY: `page` is a fresh allocation of 4096 bytes.
-        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), page.add(0xff0), code.len()) };
         let rwx = whp::abi::WHV_MAP_GPA_RANGE_FLAGS(
             whp::abi::WHvMapGpaRangeFlagRead.0
                 | whp::abi::WHvMapGpaRangeFlagWrite.0
                 | whp::abi::WHvMapGpaRangeFlagExecute.0,
         );
-        // SAFETY: `page` stays allocated until after the partition is dropped.
-        unsafe { partition.map_range(None, page, 4096, 0xff000, rwx) }.unwrap();
+        // SAFETY: `page` is dropped after the partition, so its memory is not
+        // reused while the partition maps it.
+        unsafe { partition.map_range(None, page.ptr, 4096, 0xff000, rwx) }.unwrap();
 
         let vp = partition.vp(0);
         let registers = |vp: &whp::Processor<'_>| {
@@ -846,9 +870,6 @@ mod whp_tests {
         let plain = registers(&vp);
         println!("plain leaf {PLAIN_LEAF:#x}: guest result {plain:08x?}");
 
-        drop(partition);
-        // SAFETY: the partition that mapped the page is gone.
-        unsafe { std::alloc::dealloc(page, layout) };
         assert_eq!(default, exit_value, "the exit's default result");
         assert_eq!(plain, plain_value, "the guest's result");
     }
