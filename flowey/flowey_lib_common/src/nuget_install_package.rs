@@ -11,8 +11,8 @@
 //! `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` environment variable.
 //!
 //! The restored packages are cached (via [`crate::cache`], keyed on the
-//! requested `(id, version)` set and NuGet config contents) so that repeated
-//! restores can skip `dotnet restore` and, on Local, the auth dance.
+//! requested `(id, version)` set and effective NuGet config contents) so that
+//! repeated restores can skip `dotnet restore` and, on Local, the auth dance.
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -23,19 +23,24 @@ pub struct NugetPackage {
     pub version: String,
 }
 
-fn nuget_restore_cache_key(mut packages: Vec<NugetPackage>, config: &[u8]) -> String {
+fn nuget_restore_cache_key(packages: Vec<NugetPackage>, config: &str) -> anyhow::Result<String> {
+    let mut packages: Vec<_> = packages
+        .into_iter()
+        .map(|NugetPackage { id, version }| (id.to_lowercase(), version))
+        .collect();
     packages.sort();
     packages.dedup();
 
     let hasher = &mut rustc_hash::FxHasher::default();
-    for NugetPackage { id, version } in &packages {
+    for (id, version) in &packages {
         std::hash::Hash::hash(id, hasher);
         std::hash::Hash::hash(version, hasher);
     }
-    std::hash::Hash::hash(config, hasher);
+    let config = parse_nuget_config(config)?;
+    std::hash::Hash::hash(&config.filtered_config, hasher);
     let hash = std::hash::Hasher::finish(hasher);
 
-    format!("nuget-install-package-{hash:016x}")
+    Ok(format!("nuget-install-package-{hash:016x}"))
 }
 
 flowey_request! {
@@ -132,8 +137,8 @@ impl Node {
                 move |rt| {
                     let pkgs: Vec<NugetPackage> =
                         package_reads.into_iter().map(|p| rt.read(p)).collect();
-                    let config = fs_err::read(rt.read(nuget_config_file))?;
-                    Ok(nuget_restore_cache_key(pkgs, &config))
+                    let config = fs_err::read_to_string(rt.read(nuget_config_file))?;
+                    nuget_restore_cache_key(pkgs, &config)
                 }
             });
 
@@ -558,7 +563,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_key_includes_nuget_config() {
+    fn cache_key_includes_nuget_config() -> anyhow::Result<()> {
         let package = NugetPackage {
             id: "Example".into(),
             version: "1.0".into(),
@@ -566,12 +571,34 @@ mod tests {
         let packages = vec![package.clone()];
 
         assert_ne!(
-            nuget_restore_cache_key(packages.clone(), b"<source>A</source>"),
-            nuget_restore_cache_key(packages.clone(), b"<source>B</source>"),
+            nuget_restore_cache_key(packages.clone(), "<source>A</source>")?,
+            nuget_restore_cache_key(packages.clone(), "<source>B</source>")?,
         );
         assert_eq!(
-            nuget_restore_cache_key(packages, b"<source>A</source>"),
-            nuget_restore_cache_key(vec![package.clone(), package], b"<source>A</source>"),
+            nuget_restore_cache_key(packages.clone(), "<source>A</source>")?,
+            nuget_restore_cache_key(vec![package.clone(), package], "<source>A</source>")?,
         );
+        assert_eq!(
+            nuget_restore_cache_key(packages, "<source>A</source>")?,
+            nuget_restore_cache_key(
+                vec![NugetPackage {
+                    id: "example".into(),
+                    version: "1.0".into(),
+                }],
+                "<source>A</source>",
+            )?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cache_key_ignores_repository_path() -> anyhow::Result<()> {
+        let config = "<configuration>\n<config>\n<add key=\"repositoryPath\" value=\"old\" />\n</config>\n</configuration>";
+        let changed = config.replace("value=\"old\"", "value=\"new\"");
+        assert_eq!(
+            nuget_restore_cache_key(vec![], config)?,
+            nuget_restore_cache_key(vec![], &changed)?,
+        );
+        Ok(())
     }
 }
