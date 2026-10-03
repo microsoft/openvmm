@@ -17,6 +17,7 @@ use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
@@ -409,6 +410,12 @@ define_vmm_tests_built_artifacts!(
             openhcl_igvm::LATEST_CVM_X64
         ),
     ) => OpenhclIgvmOutput,
+    vmfirmwareigvm_cvm(
+        x64(
+            (VmfirmwareigvmDllOutput { dll }, dll),
+            vmfw_dll::LATEST_CVM_X64
+        ),
+    ) => VmfirmwareigvmDllOutput,
     openhcl_linux_direct(
         x64(
             (OpenhclIgvmOutput::X64TestLinuxDirect { igvm_bin }, igvm_bin),

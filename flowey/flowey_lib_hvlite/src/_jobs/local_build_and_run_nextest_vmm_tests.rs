@@ -115,6 +115,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
         ctx.import::<crate::build_test_igvm_agent_rpc_server::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::init_vmm_tests_content_dir::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
@@ -272,6 +273,27 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+
+        let vmfirmwareigvm_cvm_x64 = if build.vmfirmwareigvm_cvm_x64 {
+            let openhcl_cvm = openhcl_cvm_x64
+                .clone()
+                .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
+            Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
+                arch: CommonArch::X86_64,
+                igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(Box::new(
+                    openhcl_cvm,
+                )),
+                resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
+                dll_version: ReadVar::from_static(
+                    crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                ),
+                internal_dll_name:
+                    petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME.into(),
+                vmfirmwareigvm_dll: v,
+            }))
+        } else {
+            None
+        };
 
         let mut build_openvmm = |target| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {
@@ -697,6 +719,7 @@ impl SimpleFlowNode for Node {
             openhcl_standard_dev_x64,
             openhcl_standard_dev_aarch64,
             openhcl_cvm_x64,
+            vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
             tmks_x64,
             tmks_aarch64,

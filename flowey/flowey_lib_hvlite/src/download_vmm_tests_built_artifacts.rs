@@ -59,6 +59,7 @@ impl SimpleFlowNode for Node {
                     openhcl_standard_dev_x64,
                     openhcl_standard_dev_aarch64,
                     openhcl_cvm_x64,
+                    vmfirmwareigvm_cvm_x64,
                     openhcl_linux_direct_x64,
                     tmks_x64,
                     tmks_aarch64,
@@ -162,6 +163,7 @@ impl SimpleFlowNode for Node {
         download!(openhcl_standard_dev_x64, "x64-openhcl-igvm-devkern");
         download!(openhcl_standard_dev_aarch64, "aarch64-openhcl-igvm-devkern");
         download!(openhcl_cvm_x64, "x64-openhcl-igvm-cvm");
+        download!(vmfirmwareigvm_cvm_x64, "x64-vmfirmwareigvm-cvm");
         download!(
             openhcl_linux_direct_x64,
             "x64-openhcl-igvm-test-linux-direct"
