@@ -36,6 +36,10 @@ pub struct SnapshotManifest {
     /// Architecture string ("x86_64" or "aarch64").
     #[mesh(7)]
     pub architecture: String,
+    /// Unique snapshot identifier generated at save time. Empty for snapshots
+    /// created before snapshot IDs were introduced.
+    #[mesh(8)]
+    pub snapshot_id: Vec<u8>,
 }
 
 /// Write a snapshot to the given directory.
@@ -173,6 +177,32 @@ pub fn validate_manifest(
     Ok(())
 }
 
+/// Optional checks a caller can require a snapshot to pass on restore.
+/// Unset fields are not checked.
+#[derive(Default)]
+pub struct SnapshotExpectations {
+    /// The snapshot ID the manifest must contain.
+    pub snapshot_id: Option<Vec<u8>>,
+}
+
+/// Validate that a snapshot manifest matches the caller's expectations.
+pub fn validate_expectations(
+    manifest: &SnapshotManifest,
+    expectations: &SnapshotExpectations,
+) -> anyhow::Result<()> {
+    if let Some(expected) = expectations
+        .snapshot_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+    {
+        if manifest.snapshot_id != expected {
+            anyhow::bail!("snapshot ID doesn't match the expected snapshot ID");
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +220,7 @@ mod tests {
             vp_count: 2,
             page_size: 4096,
             architecture: "x86_64".to_string(),
+            snapshot_id: vec![0xab; 16],
         }
     }
 
@@ -212,6 +243,7 @@ mod tests {
         assert_eq!(read_manifest.memory_size_bytes, manifest.memory_size_bytes);
         assert_eq!(read_manifest.vp_count, manifest.vp_count);
         assert_eq!(read_manifest.architecture, manifest.architecture);
+        assert_eq!(read_manifest.snapshot_id, manifest.snapshot_id);
         assert_eq!(read_state, state);
 
         // memory.bin should exist in the snapshot directory.
@@ -301,6 +333,46 @@ mod tests {
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 65536).unwrap_err();
         assert!(
             err.to_string().contains("page size"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn expect_id(id: &[u8]) -> SnapshotExpectations {
+        SnapshotExpectations {
+            snapshot_id: Some(id.to_vec()),
+        }
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_matches() {
+        let manifest = test_manifest();
+        validate_expectations(&manifest, &expect_id(&[0xab; 16])).unwrap();
+    }
+
+    #[test]
+    fn validate_expectations_skipped_when_not_provided() {
+        let manifest = test_manifest();
+        validate_expectations(&manifest, &SnapshotExpectations::default()).unwrap();
+        validate_expectations(&manifest, &expect_id(&[])).unwrap();
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_mismatch() {
+        let manifest = test_manifest();
+        let err = validate_expectations(&manifest, &expect_id(&[0xcd; 16])).unwrap_err();
+        assert!(
+            err.to_string().contains("snapshot ID"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_expectations_snapshot_id_missing_from_manifest() {
+        let mut manifest = test_manifest();
+        manifest.snapshot_id = Vec::new();
+        let err = validate_expectations(&manifest, &expect_id(&[0xab; 16])).unwrap_err();
+        assert!(
+            err.to_string().contains("snapshot ID"),
             "unexpected error: {err}"
         );
     }
