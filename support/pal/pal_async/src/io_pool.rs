@@ -13,9 +13,10 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::task::Poll;
 
-/// An single-threaded task pool backed by IO backend `T`.
+/// A single-threaded task pool backed by IO backend `T`.
 #[derive(Debug)]
 pub struct IoPool<T> {
     driver: IoDriver<T>,
@@ -35,6 +36,70 @@ impl<T> Clone for IoDriver<T> {
             inner: self.inner.clone(),
             scheduler: self.scheduler.clone(),
         }
+    }
+}
+
+impl<T> IoDriver<T> {
+    /// Returns a weak reference to this driver.
+    ///
+    /// A [`WeakIoDriver`] does not keep the backing [`IoPool`] alive: [`IoPool::run`]
+    /// returns once the last strong `IoDriver` is dropped. Use this to publish a
+    /// reference to a pool's own driver (e.g. into thread-local storage on the
+    /// pool's thread) without preventing the pool from ever shutting down. A
+    /// strong self-reference held for the lifetime of `run` would instead keep the
+    /// pool's task queue open forever (the pool never sees its last driver drop),
+    /// leaking the thread and its IO backend.
+    pub fn downgrade(&self) -> WeakIoDriver<T> {
+        WeakIoDriver {
+            inner: Arc::downgrade(&self.inner),
+            scheduler: Arc::downgrade(&self.scheduler),
+        }
+    }
+}
+
+/// A weak reference to an [`IoDriver`], obtained via [`IoDriver::downgrade`].
+#[derive(Debug)]
+pub struct WeakIoDriver<T> {
+    inner: Weak<T>,
+    scheduler: Weak<Scheduler>,
+}
+
+impl<T> Clone for WeakIoDriver<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            scheduler: self.scheduler.clone(),
+        }
+    }
+}
+
+impl<T> WeakIoDriver<T> {
+    /// Attempts to upgrade to a strong [`IoDriver`].
+    ///
+    /// Returns `None` once the last strong `IoDriver` has been dropped. That is
+    /// when shutdown is *requested*, not when it is complete: [`IoPool::run`]
+    /// drops the pool's scheduler on entry, so the scheduler half of this
+    /// reference dies as soon as the last driver goes, while the pool is still
+    /// running. Use [`is_backend_alive`](Self::is_backend_alive) to observe the
+    /// pool actually finishing.
+    pub fn upgrade(&self) -> Option<IoDriver<T>> {
+        Some(IoDriver {
+            inner: self.inner.upgrade()?,
+            scheduler: self.scheduler.upgrade()?,
+        })
+    }
+
+    /// Returns `true` while the pool's IO backend is still alive.
+    ///
+    /// [`IoPool::run`] drops the pool's scheduler on entry but holds the IO
+    /// backend until it returns, so this stays `true` for the whole of `run`,
+    /// outliving [`upgrade`](Self::upgrade). It therefore reports whether the
+    /// backend and the file descriptors it owns have been released, rather than
+    /// whether shutdown has been requested. A strong [`IoDriver`] keeps the
+    /// backend alive too, so this only describes the pool once the last one has
+    /// been dropped.
+    pub fn is_backend_alive(&self) -> bool {
+        self.inner.strong_count() > 0
     }
 }
 
