@@ -843,12 +843,15 @@ async fn test_ttrpc_interface(
             UnixStream::connect(&com1_path).unwrap()
         };
 
-        // Get the console connection the same way.
+        // Get the console connection the same way. Iteration 1 has no virtio
+        // console because it does not support save/restore.
         let console = if let Some(listener) = console_listener {
             let (stream, _) = listener.accept().unwrap();
-            stream
+            Some(stream)
+        } else if i != 1 {
+            Some(UnixStream::connect(&console_path).unwrap())
         } else {
-            UnixStream::connect(&console_path).unwrap()
+            None
         };
 
         let _com1_task = driver.spawn(
@@ -860,14 +863,16 @@ async fn test_ttrpc_interface(
             ),
         );
 
-        let _console_task = driver.spawn(
-            "console",
-            petri::log_task(
-                params.log_source.log_file("virtio-console").unwrap(),
-                PolledSocket::new(&driver, console).unwrap(),
-                "virtio console",
-            ),
-        );
+        let _console_task = console.map(|console| {
+            driver.spawn(
+                "console",
+                petri::log_task(
+                    params.log_source.log_file("virtio-console").unwrap(),
+                    PolledSocket::new(&driver, console).unwrap(),
+                    "virtio console",
+                ),
+            )
+        });
 
         assert_eq!(
             client
