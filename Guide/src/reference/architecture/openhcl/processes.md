@@ -59,6 +59,10 @@ and is spawned by `openvmm_hcl`.
   workers.
 - **I/O Processing:** Handles high-speed I/O operations.
 
+The worker also manages VMGS hardware resealing after live migration. See
+[Attestation and VMGS protection](./attestation.md#resiliency) for the recovery
+flow and its security boundaries.
+
 ## Diagnostics Server (`diag_server`)
 
 The diagnostics server exposes development and monitoring operations for the
