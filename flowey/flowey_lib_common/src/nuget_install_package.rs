@@ -89,12 +89,17 @@ impl FlowNode for Node {
                     nuget_config_file,
                     install_dir,
                     pre_install_side_effects,
-                } => install.push(InstallRequest {
-                    packages,
-                    nuget_config_file,
-                    install_dir,
-                    pre_install_side_effects,
-                }),
+                } => {
+                    if packages.is_empty() {
+                        continue;
+                    }
+                    install.push(InstallRequest {
+                        packages,
+                        nuget_config_file,
+                        install_dir,
+                        pre_install_side_effects,
+                    });
+                }
             }
         }
 
@@ -561,6 +566,7 @@ fn is_azure_devops_feed(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn cache_key_includes_nuget_config() -> anyhow::Result<()> {
