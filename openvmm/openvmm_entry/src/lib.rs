@@ -310,6 +310,62 @@ fn smbios_config_from_cli(
     })
 }
 
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+fn root_complex_for_port(
+    port_name: &str,
+    root_ports: &[cli_args::PcieRootPortCli],
+    switches: &[PcieSwitchConfig],
+) -> Option<String> {
+    let mut current = port_name;
+    for _ in 0..=switches.len() {
+        if let Some(port) = root_ports.iter().find(|port| port.name == current) {
+            return Some(port.root_complex_name.clone());
+        }
+        let switch = switches
+            .iter()
+            .find(|switch| switch.ports.iter().any(|port| port.name == current))?;
+        current = &switch.parent_port;
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DirectSmmuCapabilities {
+    pasid: bool,
+    ats: bool,
+}
+
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+fn direct_smmu_capabilities(
+    smmu: Option<&cli_args::SmmuCli>,
+    direct: bool,
+) -> DirectSmmuCapabilities {
+    let capabilities = DirectSmmuCapabilities {
+        pasid: direct && smmu.is_some_and(|smmu| smmu.ssid_bits != 0),
+        ats: direct && smmu.is_some_and(|smmu| smmu.ats),
+    };
+    debug_assert!(!capabilities.ats || capabilities.pasid);
+    capabilities
+}
+
+#[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+fn validate_smmu_vfio_mode(smmu: &cli_args::SmmuCli, direct: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !smmu.ats || direct,
+        "SMMU ATS requires a VFIO device using a --direct-iommu context"
+    );
+    anyhow::ensure!(
+        smmu.ssid_bits == 0 || direct,
+        "nonzero SMMU ssid-bits requires VFIO devices to use a --direct-iommu context"
+    );
+    anyhow::ensure!(
+        !direct || smmu.accel,
+        "a VFIO device using --direct-iommu requires an accelerated SMMU"
+    );
+    Ok(())
+}
+
 async fn vm_config_from_command_line(
     spawner: impl Spawn,
     mesh: &VmmMesh,
@@ -841,16 +897,16 @@ async fn vm_config_from_command_line(
             ..PCIE_REMOTE_BASE_INSTANCE_ID
         };
 
-        pcie_devices.push(PcieDeviceConfig {
-            port_name: cli_cfg.port_name.clone(),
-            resource: pcie_remote_resources::PcieRemoteHandle {
+        pcie_devices.push(PcieDeviceConfig::new(
+            cli_cfg.port_name.clone(),
+            pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
                 socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }
             .into_resource(),
-        });
+        ));
     }
 
     #[cfg(windows)]
@@ -930,20 +986,17 @@ async fn vm_config_from_command_line(
     pcie_devices.extend(
         pcie_mana_nics
             .into_iter()
-            .map(|(pcie_port, handle)| PcieDeviceConfig {
-                port_name: pcie_port,
-                resource: handle.into_resource(),
-            }),
+            .map(|(pcie_port, handle)| PcieDeviceConfig::new(pcie_port, handle.into_resource())),
     );
 
     for cxl_test in &opt.cxl_test {
-        pcie_devices.push(PcieDeviceConfig {
-            port_name: cxl_test.pcie_port.clone(),
-            resource: CxlTestDeviceHandle {
+        pcie_devices.push(PcieDeviceConfig::new(
+            cxl_test.pcie_port.clone(),
+            CxlTestDeviceHandle {
                 hdm_size_bytes: cxl_test.hdm_size,
             }
             .into_resource(),
-        });
+        ));
     }
 
     #[cfg(guest_arch = "aarch64")]
@@ -1046,6 +1099,8 @@ async fn vm_config_from_command_line(
             iommu: smmu_names.remove(rc_cli.name.as_str()).map(|s| {
                 openvmm_defs::config::PcieIommuConfig::Smmu {
                     accel: s.accel,
+                    ats: s.ats,
+                    ssid_bits: s.ssid_bits,
                     oas: match s.oas {
                         cli_args::SmmuOasCli::Auto => openvmm_defs::config::SmmuOas::Auto,
                         cli_args::SmmuOasCli::Fixed(bits) => {
@@ -1084,14 +1139,29 @@ async fn vm_config_from_command_line(
     let pcie_generic_initiators = opt
         .pcie_generic_initiator
         .iter()
-        .map(|gi| openvmm_defs::config::PcieGenericInitiatorConfig {
-            port_name: gi.port_name.clone(),
-            node: gi.node,
+        .map(|gi| -> anyhow::Result<_> {
+            let memory_range = match (gi.memory_base, gi.memory_length) {
+                (None, None) => None,
+                (Some(base), Some(length)) => Some(
+                    (base..base
+                        .checked_add(length)
+                        .context("generic initiator memory range overflow")?)
+                        .try_into()
+                        .context("invalid generic initiator memory range")?,
+                ),
+                _ => unreachable!("CLI parser validates coherent-memory options"),
+            };
+            Ok(openvmm_defs::config::PcieGenericInitiatorConfig {
+                port_name: gi.port_name.clone(),
+                node: gi.node,
+                memory_range,
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     #[cfg(target_os = "linux")]
     let vfio_pcie_devices: Vec<PcieDeviceConfig> = {
         use std::collections::HashMap;
+        use std::collections::HashSet;
         use vm_resource::IntoResource;
 
         // Process --iommu flags: open /dev/iommu for each declared context.
@@ -1110,10 +1180,85 @@ async fn vm_config_from_command_line(
             iommu_map.insert(iommu_cli.id.clone(), file);
         }
 
+        let mut direct_iommus = HashSet::new();
+        for direct_iommu in &opt.direct_iommu {
+            anyhow::ensure!(
+                iommu_map.contains_key(&direct_iommu.iommu_id),
+                "--direct-iommu references iommu={}, but no --iommu id={} was specified",
+                direct_iommu.iommu_id,
+                direct_iommu.iommu_id
+            );
+            anyhow::ensure!(
+                direct_iommus.insert(direct_iommu.iommu_id.clone()),
+                "duplicate --direct-iommu iommu={}",
+                direct_iommu.iommu_id
+            );
+        }
+
+        #[cfg(not(guest_arch = "aarch64"))]
+        anyhow::ensure!(
+            direct_iommus.is_empty(),
+            "--direct-iommu is only supported for aarch64 guests"
+        );
+        #[cfg(guest_arch = "aarch64")]
+        {
+            let mut direct_iommu_root_complexes: HashMap<&str, String> = HashMap::new();
+            for vfio in &opt.vfio {
+                let Some(iommu_id) = vfio
+                    .iommu
+                    .as_deref()
+                    .filter(|iommu| direct_iommus.contains(*iommu))
+                else {
+                    continue;
+                };
+                let rc_name =
+                    root_complex_for_port(&vfio.port_name, &opt.pcie_root_port, &pcie_switches)
+                        .with_context(|| {
+                            format!(
+                                "direct VFIO device {} references unresolved port {}",
+                                vfio.pci_id, vfio.port_name
+                            )
+                        })?;
+                if let Some(existing) =
+                    direct_iommu_root_complexes.insert(iommu_id, rc_name.clone())
+                {
+                    anyhow::ensure!(
+                        existing == rc_name,
+                        "--direct-iommu context {iommu_id} cannot span root complexes {existing} and {rc_name}"
+                    );
+                }
+            }
+        }
+
         opt.vfio
             .iter()
             .map(|cli_cfg| {
                 let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
+                #[cfg(guest_arch = "aarch64")]
+                let rc_name =
+                    root_complex_for_port(&cli_cfg.port_name, &opt.pcie_root_port, &pcie_switches);
+                let direct = cli_cfg
+                    .iommu
+                    .as_ref()
+                    .is_some_and(|iommu| direct_iommus.contains(iommu));
+                #[cfg(guest_arch = "aarch64")]
+                let direct_capabilities = {
+                    let smmu = rc_name
+                        .as_deref()
+                        .and_then(|name| opt.smmu.iter().find(|smmu| smmu.rc_name == name));
+                    if let Some(smmu) = smmu {
+                        validate_smmu_vfio_mode(smmu, direct).with_context(|| {
+                            format!(
+                                "VFIO device {} on SMMU root complex {}",
+                                cli_cfg.pci_id,
+                                rc_name.as_deref().unwrap_or("<unknown>")
+                            )
+                        })?;
+                    }
+                    direct_smmu_capabilities(smmu, direct)
+                };
+                #[cfg(not(guest_arch = "aarch64"))]
+                let direct_capabilities = DirectSmmuCapabilities::default();
 
                 if let Some(iommu_id) = &cli_cfg.iommu {
                     // cdev + iommufd path
@@ -1152,17 +1297,19 @@ async fn vm_config_from_command_line(
                         .open(&dev_path)
                         .with_context(|| format!("failed to open {}", dev_path.display()))?;
 
-                    Ok(PcieDeviceConfig {
-                        port_name: cli_cfg.port_name.clone(),
-                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                    Ok(PcieDeviceConfig::new_vfio_cdev(
+                        cli_cfg.port_name.clone(),
+                        vfio_assigned_device_resources::VfioCdevDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             cdev,
                             iommufd,
                             iommu_id: iommu_id.clone(),
                             bar_addresses: cli_cfg.bar_addresses,
-                        }
-                        .into_resource(),
-                    })
+                            direct_iommu: direct,
+                            direct_pasid: direct_capabilities.pasid,
+                            direct_ats: direct_capabilities.ats,
+                        },
+                    ))
                 } else {
                     // Legacy group/container path
                     let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
@@ -1181,15 +1328,15 @@ async fn vm_config_from_command_line(
                         .open(format!("/dev/vfio/{group_id}"))
                         .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
 
-                    Ok(PcieDeviceConfig {
-                        port_name: cli_cfg.port_name.clone(),
-                        resource: vfio_assigned_device_resources::VfioDeviceHandle {
+                    Ok(PcieDeviceConfig::new(
+                        cli_cfg.port_name.clone(),
+                        vfio_assigned_device_resources::VfioDeviceHandle {
                             pci_id: cli_cfg.pci_id.clone(),
                             group,
                             bar_addresses: cli_cfg.bar_addresses,
                         }
                         .into_resource(),
-                    })
+                    ))
                 }
             })
             .collect::<anyhow::Result<Vec<_>>>()?
@@ -1866,10 +2013,10 @@ async fn vm_config_from_command_line(
             }
             VirtioBusCli::Mmio => virtio_devices.push((VirtioBus::Mmio, resource)),
             VirtioBusCli::Pci => virtio_devices.push((VirtioBus::Pci, resource)),
-            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig {
+            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            }),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            )),
             VirtioBusCli::Vpci => vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
@@ -1890,10 +2037,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &cli_cfg.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -1909,10 +2056,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
@@ -1927,10 +2074,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
@@ -1944,10 +2091,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -1959,10 +2106,10 @@ async fn vm_config_from_command_line(
         }
         .into_resource();
         if let Some(pcie_port) = &pmem_args.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -1972,10 +2119,10 @@ async fn vm_config_from_command_line(
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::rng::VirtioRngHandle.into_resource();
         if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(opt.virtio_rng_bus.clone(), resource, &mut pcie_devices);
         }
@@ -1985,10 +2132,10 @@ async fn vm_config_from_command_line(
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
         if let Some(pcie_port) = &opt.virtio_console_pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2038,10 +2185,10 @@ async fn vm_config_from_command_line(
             .into_resource(),
         };
         if let Some(pcie_port) = &vhost_cli.pcie_port {
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: pcie_port.clone(),
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            pcie_devices.push(PcieDeviceConfig::new(
+                pcie_port.clone(),
+                VirtioPciDeviceHandle(resource).into_resource(),
+            ));
         } else {
             add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
@@ -2222,9 +2369,9 @@ async fn vm_config_from_command_line(
     let mut pcie_port_names = HashSet::new();
     for device in &cfg.pcie_devices {
         anyhow::ensure!(
-            pcie_port_names.insert(&device.port_name),
+            pcie_port_names.insert(device.port_name()),
             "multiple devices use PCIe port '{}'",
-            device.port_name
+            device.port_name()
         );
     }
     resources.serial_driver = Some(serial_driver);
@@ -2267,7 +2414,7 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
     let only_virtio_pcie_devices = cfg
         .pcie_devices
         .iter()
-        .all(|device| device.resource.id() == "virtio");
+        .all(|device| device.resource_id() == "virtio");
     if !cfg.floppy_disks.is_empty()
         || !cfg.ide_disks.is_empty()
         || !cfg.virtio_devices.is_empty()
@@ -3388,7 +3535,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(config.pcie_devices.len(), 1);
-            assert_eq!(config.pcie_devices[0].port_name, "custom");
+            assert_eq!(config.pcie_devices[0].port_name(), "custom");
             mesh.shutdown().await;
         });
     }
@@ -3427,7 +3574,7 @@ mod tests {
             let port_names: Vec<_> = config
                 .pcie_devices
                 .iter()
-                .map(|device| device.port_name.as_str())
+                .map(PcieDeviceConfig::port_name)
                 .collect();
             assert_eq!(port_names, ["fs", "rng"]);
             mesh.shutdown().await;
@@ -3501,5 +3648,74 @@ mod tests {
             assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
             mesh.shutdown().await;
         });
+    }
+
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    #[test]
+    fn accelerated_smmu_supports_nested_and_direct_vfio() {
+        use std::str::FromStr as _;
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel").unwrap();
+        validate_smmu_vfio_mode(&smmu, false).unwrap();
+        validate_smmu_vfio_mode(&smmu, true).unwrap();
+
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0").unwrap();
+        assert!(validate_smmu_vfio_mode(&smmu, true).is_err());
+    }
+
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    #[test]
+    fn pasid_smmu_requires_direct_vfio() {
+        use std::str::FromStr as _;
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel,ssid-bits=14").unwrap();
+        assert!(validate_smmu_vfio_mode(&smmu, false).is_err());
+        validate_smmu_vfio_mode(&smmu, true).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    #[test]
+    fn ats_smmu_requires_direct_vfio() {
+        use std::str::FromStr as _;
+        let smmu = cli_args::SmmuCli::from_str("rc=rc0,accel,ats,ssid-bits=14").unwrap();
+        assert!(validate_smmu_vfio_mode(&smmu, false).is_err());
+        validate_smmu_vfio_mode(&smmu, true).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+    #[test]
+    fn direct_smmu_resource_capabilities_are_separate() {
+        use std::str::FromStr as _;
+
+        assert_eq!(
+            direct_smmu_capabilities(None, true),
+            DirectSmmuCapabilities::default()
+        );
+
+        let none = cli_args::SmmuCli::from_str("rc=rc0,accel").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&none), true),
+            DirectSmmuCapabilities::default()
+        );
+
+        let pasid = cli_args::SmmuCli::from_str("rc=rc0,accel,ssid-bits=14").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&pasid), true),
+            DirectSmmuCapabilities {
+                pasid: true,
+                ats: false,
+            }
+        );
+
+        let ats = cli_args::SmmuCli::from_str("rc=rc0,accel,ats,ssid-bits=14").unwrap();
+        assert_eq!(
+            direct_smmu_capabilities(Some(&ats), true),
+            DirectSmmuCapabilities {
+                pasid: true,
+                ats: true,
+            }
+        );
+        assert_eq!(
+            direct_smmu_capabilities(Some(&ats), false),
+            DirectSmmuCapabilities::default()
+        );
     }
 }

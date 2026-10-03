@@ -233,9 +233,9 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                             use openvmm_defs::config::PcieDeviceConfig;
                             use vm_resource::IntoResource;
 
-                            config.pcie_devices.push(PcieDeviceConfig {
-                                port_name: blk_port.into(),
-                                resource: virtio_resources::VirtioPciDeviceHandle(
+                            config.pcie_devices.push(PcieDeviceConfig::new(
+                                blk_port.into(),
+                                virtio_resources::VirtioPciDeviceHandle(
                                     virtio_resources::blk::VirtioBlkHandle {
                                         disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                         read_only: true,
@@ -244,7 +244,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                                     .into_resource(),
                                 )
                                 .into_resource(),
-                            });
+                            ));
                         })
                     }
                 });
@@ -504,9 +504,9 @@ mod tap {
     fn add_virtio_tap_nic(config: &mut openvmm_defs::config::Config, tap_fd: std::os::fd::OwnedFd) {
         let endpoint = net_backend_resources::tap::TapHandle { fd: tap_fd }.into_resource();
 
-        config.pcie_devices.push(PcieDeviceConfig {
-            port_name: "s0rc0rp1".into(),
-            resource: virtio_resources::VirtioPciDeviceHandle(
+        config.pcie_devices.push(PcieDeviceConfig::new(
+            "s0rc0rp1".into(),
+            virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
                     mac_address: TAP_MAC_ADDRESS,
@@ -515,7 +515,7 @@ mod tap {
                 .into_resource(),
             )
             .into_resource(),
-        });
+        ));
     }
 
     /// Configure the VM builder to add both a Consomme NIC and a TAP NIC,
@@ -542,9 +542,9 @@ mod tap {
                 use vm_resource::IntoResource;
 
                 // Attach erofs image as read-only virtio-blk device.
-                config.pcie_devices.push(PcieDeviceConfig {
-                    port_name: blk_port.into(),
-                    resource: virtio_resources::VirtioPciDeviceHandle(
+                config.pcie_devices.push(PcieDeviceConfig::new(
+                    blk_port.into(),
+                    virtio_resources::VirtioPciDeviceHandle(
                         virtio_resources::blk::VirtioBlkHandle {
                             disk: FileDiskHandle(erofs_file.into()).into_resource(),
                             read_only: true,
@@ -553,7 +553,7 @@ mod tap {
                         .into_resource(),
                     )
                     .into_resource(),
-                });
+                ));
 
                 // Add TAP NIC.
                 match nic {

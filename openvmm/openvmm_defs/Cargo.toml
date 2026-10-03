@@ -39,5 +39,8 @@ thiserror.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+vfio_assigned_device_resources.workspace = true
+
 [lints]
 workspace = true
