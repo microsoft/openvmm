@@ -24,6 +24,13 @@ operating systems, firmwares, and VMMs (including Hyper-V, which is useful
 for testing certain OpenHCL features that aren't supported when using
 OpenVMM as the host VMM).
 
+The Windows Server 2022 KVP test captures guest WMI provider-host wait chains
+and module-relative stacks in `kvp-wmi-snapshot.log` if `GetIpInfo` remains
+pending for 20 seconds. If the original request fails, it also attaches recent
+WMI-Activity and DistributedCOM events. The KVP request is neither retried nor
+cancelled; the diagnostics are used to identify where a stalled provider
+activation is blocked, not to make the test pass.
+
 ### "heavy" tests
 
 The global [nextest.toml](https://github.com/microsoft/openvmm/blob/main/.config/nextest.toml)

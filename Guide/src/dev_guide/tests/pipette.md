@@ -38,6 +38,13 @@ no usable VSocket path, including the current Windows `no-vmbus` image.
 Windows builds also accept `--service`. The generated test-image registry hive
 uses this mode so Pipette starts automatically as `LocalSystem`.
 
+On Windows x64, the KVP test can launch the already-injected `pipette.exe`
+separately with `--diagnose-wmi` if its IP-information request stalls. This
+one-shot mode prints WMI provider-host wait chains and thread stacks as module
+names and relative offsets. It does not export guest memory or suspend live
+threads indefinitely. The diagnostic process terminates itself if collection
+exceeds 30 seconds; it does not restart or cancel the KVP request.
+
 ## Linux PID 1 mode
 
 Some Linux direct-boot configurations use Pipette as `rdinit`. When its process

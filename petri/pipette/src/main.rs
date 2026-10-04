@@ -11,7 +11,8 @@
 //! The binary is normally cross-compiled and injected into a test guest by the
 //! VMM-test artifact pipeline rather than launched by a developer on the host.
 //! `--transport tcp|vsock` selects the connection transport, and Windows builds
-//! additionally accept `--service`.
+//! additionally accept `--service`. On Windows x64, `--diagnose-wmi` reports
+//! wait chains and module-relative thread stacks without creating a memory dump.
 
 // UNSAFETY: init.rs requires unsafe for libc calls (fork, mount, reboot, waitpid)
 // on Linux; shutdown.rs requires unsafe for the Windows shutdown API.
@@ -33,11 +34,17 @@ mod shutdown;
 mod trace;
 #[cfg(windows)]
 mod winsvc;
+// xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod wmi_snapshot;
 
 #[cfg(any(target_os = "linux", windows))]
 struct Args {
     #[cfg(windows)]
     service: bool,
+    // xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    diagnose_wmi: bool,
     transport: agent::Transport,
 }
 
@@ -47,12 +54,18 @@ fn parse_args() -> anyhow::Result<Args> {
 
     #[cfg(windows)]
     let mut service = false;
+    // xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    let mut diagnose_wmi = false;
     let mut transport = agent::Transport::Vsock;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             #[cfg(windows)]
             "--service" => service = true,
+            // xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+            #[cfg(all(windows, target_arch = "x86_64"))]
+            "--diagnose-wmi" => diagnose_wmi = true,
             "--transport" => {
                 let val = args
                     .next()
@@ -69,6 +82,9 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(Args {
         #[cfg(windows)]
         service,
+        // xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+        #[cfg(all(windows, target_arch = "x86_64"))]
+        diagnose_wmi,
         transport,
     })
 }
@@ -91,6 +107,18 @@ fn main() -> anyhow::Result<()> {
     }
 
     let args = parse_args()?;
+
+    // xtask-fmt allow-target-arch dependency AMD64 snapshot stack contexts.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    if args.diagnose_wmi {
+        anyhow::ensure!(!args.service, "--diagnose-wmi cannot run as a service");
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            eprintln!("WMI snapshot exceeded 30 seconds");
+            std::process::exit(1);
+        });
+        return wmi_snapshot::capture(std::io::stdout().lock());
+    }
 
     #[cfg(windows)]
     if args.service {

@@ -5,11 +5,79 @@ use anyhow::Context;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
+use petri::PetriLogSource;
 use petri::PetriVmBuilder;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri::pipette::PipetteClient;
+use petri::pipette::cmd;
 use std::time::Duration;
 use vmm_test_macros::openvmm_test;
+
+async fn capture_wmi_snapshot(agent: &PipetteClient, logs: &PetriLogSource) {
+    let shell = agent.windows_shell();
+    match cmd!(shell, "D:/pipette.exe")
+        .arg("--diagnose-wmi")
+        .ignore_status()
+        .output()
+        .await
+    {
+        Ok(output) => {
+            if let Err(error) =
+                logs.write_attachment("kvp-wmi-snapshot.log", output.stdout.as_slice())
+            {
+                tracing::warn!(%error, "could not attach guest WMI snapshot");
+            }
+            if !output.status.success() {
+                tracing::warn!(
+                    status = %output.status,
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "guest WMI snapshot failed"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not capture guest WMI snapshot"),
+    }
+}
+
+async fn capture_wmi_events(agent: &PipetteClient, logs: &PetriLogSource) {
+    let shell = agent.windows_shell();
+    for (channel, query, attachment) in [
+        (
+            "Microsoft-Windows-WMI-Activity/Operational",
+            "*[System[TimeCreated[timediff(@SystemTime)<=300000]]]",
+            "kvp-wmi-events.log",
+        ),
+        (
+            "System",
+            "*[System[Provider[@Name='Microsoft-Windows-DistributedCOM'] and TimeCreated[timediff(@SystemTime)<=300000]]]",
+            "kvp-dcom-events.log",
+        ),
+    ] {
+        match cmd!(shell, "wevtutil.exe")
+            .args(["qe", channel, "/rd:true", "/c:40", "/f:text"])
+            .arg(format!("/q:{query}"))
+            .ignore_status()
+            .output()
+            .await
+        {
+            Ok(output) => {
+                if let Err(error) = logs.write_attachment(attachment, output.stdout.as_slice()) {
+                    tracing::warn!(%error, channel, "could not attach guest event log");
+                }
+                if !output.status.success() {
+                    tracing::warn!(
+                        status = %output.status,
+                        stderr = %String::from_utf8_lossy(&output.stderr),
+                        channel,
+                        "could not query guest event log"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(%error, channel, "could not query guest event log"),
+        }
+    }
+}
 
 /// Test the KVP IC.
 ///
@@ -18,6 +86,7 @@ use vmm_test_macros::openvmm_test;
 #[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 async fn kvp_ic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     // Run with a NIC to perform IP address tests.
+    let logs = config.log_source().clone();
     let (mut vm, agent) = config.modify_backend(|c| c.with_nic()).run().await?;
     let kvp = vm.backend().wait_for_kvp().await?;
 
@@ -59,14 +128,32 @@ async fn kvp_ic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<(
     assert!(value.is_none());
 
     // Get IP information for the NIC.
-    let ip_info = kvp
-        .call_failable(
-            KvpRpc::GetIpInfo,
-            hyperv_ic_resources::kvp::GetIpInfoParams {
-                adapter_id: NIC_MAC_ADDRESS.to_string().replace('-', ":"),
-            },
-        )
-        .await?;
+    let ip_info_request = kvp.call_failable(
+        KvpRpc::GetIpInfo,
+        hyperv_ic_resources::kvp::GetIpInfoParams {
+            adapter_id: NIC_MAC_ADDRESS.to_string().replace('-', ":"),
+        },
+    );
+    let mut ip_info_request = std::pin::pin!(ip_info_request);
+    let ip_info = match mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(20))
+        .until_cancelled(&mut ip_info_request)
+        .await
+    {
+        Ok(result) => result,
+        Err(reason) => {
+            tracing::warn!(
+                ?reason,
+                "KVP GetIpInfo is still pending; capturing guest WMI state"
+            );
+            let (result, ()) = futures::join!(ip_info_request, capture_wmi_snapshot(&agent, &logs));
+            result
+        }
+    };
+    if ip_info.is_err() {
+        capture_wmi_events(&agent, &logs).await;
+    }
+    let ip_info = ip_info?;
 
     // Validate the IP information against the default consomme configuration.
     tracing::info!(?ip_info, "ip information");
