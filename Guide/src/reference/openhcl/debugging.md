@@ -15,9 +15,10 @@ or VM resource settings.
 
 The Linux/OpenHCL ARM64 heavy boot test enables scheduler switches/wakeups,
 native VTL entry/exit, and PL011 console events at kernel boot. All events use
-the `mono` clock. Petri freezes the trace after a 15-second collection window
-and streams it through the diagnostics connection into `startup_trace.log`,
-not through serial. Trace overruns cause an explicit collection error.
+the `mono` clock. Petri consumes `trace_pipe` continuously through the
+diagnostics connection into `startup_trace.log`, then freezes and drains the
+trace after a 15-second collection window. It does not use serial for
+collection. Trace overruns cause an explicit collection error.
 
 The console events identify:
 

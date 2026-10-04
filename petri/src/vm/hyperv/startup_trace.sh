@@ -20,10 +20,6 @@ for event in sched/sched_switch sched/sched_wakeup \
 done
 test "$(cat "$trace/tracing_on")" = 1
 
-# Recording began through kernel boot parameters, before lower-VTL startup.
-sleep 15
-echo 0 > "$trace/tracing_on"
-
 echo '=== KERNEL ==='
 uname -a
 cat /etc/kernel-build-info.json
@@ -31,15 +27,29 @@ echo '=== COMMAND LINE ==='
 cat /proc/cmdline
 echo '=== CLOCK ==='
 cat "$trace/trace_clock"
-echo '=== INTERRUPTS ==='
-cat /proc/interrupts
+
+# Consume while recording so boot-time events are not overwritten.
+echo '=== TRACE ==='
+cat "$trace/trace_pipe" &
+reader=$!
+trap 'kill "$reader"' EXIT
+sleep 15
+echo 0 > "$trace/tracing_on"
+if wait "$reader"; then
+    trap - EXIT
+else
+    status=$?
+    trap - EXIT
+    exit "$status"
+fi
+
 echo '=== TRACE STATISTICS ==='
 for stats in "$trace"/per_cpu/cpu*/stats; do
     echo "$stats"
     cat "$stats"
 done
-echo '=== TRACE ==='
-cat "$trace/trace"
+echo '=== INTERRUPTS ==='
+cat /proc/interrupts
 
 lost=$(awk '/^overrun:|^commit overrun:|^dropped events:/ { n += $NF } END { print n + 0 }' \
     "$trace"/per_cpu/cpu*/stats)
