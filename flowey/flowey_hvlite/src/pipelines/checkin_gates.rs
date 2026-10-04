@@ -163,6 +163,15 @@ impl IntoPipeline for CheckinGatesCli {
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
+            let diagnostic_job = matches!(
+                job.label(),
+                "xtask fmt (linux)"
+                    | "build artifacts (shared VMM tests) [windows]"
+                    | "build artifacts (shared VMM tests) [linux]"
+                    | "build artifacts (for VMM tests) [aarch64-windows]"
+                    | "build openhcl [aarch64-linux]"
+                    | "run vmm-tests [aarch64-windows]"
+            );
             let mut job = job
                 .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
@@ -179,6 +188,10 @@ impl IntoPipeline for CheckinGatesCli {
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
                 )]);
+
+            if matches!(config, PipelineConfig::Ci) && !diagnostic_job {
+                job = job.gh_dangerous_override_if("false");
+            }
 
             // For the release pipeline, only run if the "release-ci-required" label is present and PR is not draft
             if matches!(config, PipelineConfig::PrRelease) {

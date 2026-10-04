@@ -72,6 +72,7 @@ pub struct HyperVPetriBackend {}
 pub struct HyperVPetriRuntime {
     vm: HyperVVM,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
+    startup_trace_task: Option<Task<anyhow::Result<()>>>,
     temp_dir: TempDir,
     output_dir: PathBuf,
     driver: DefaultDriver,
@@ -198,6 +199,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             .then(|| temp_dir.path().join(IGVM_FILE_NAME));
 
         let mut openhcl_command_line = config.firmware.openhcl_config().map(|c| c.command_line());
+        let startup_trace = openhcl_command_line
+            .as_ref()
+            .is_some_and(|line| line.contains("trace_event=sched:sched_switch"));
 
         let guest_state_path = petri_disk_to_hyperv(config.vmgs.disk(), &temp_dir).await?;
 
@@ -495,10 +499,27 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         vm.start().await?;
 
+        let startup_trace_task = startup_trace.then(|| {
+            let client = diag_client::DiagClient::from_hyperv_id(driver.clone(), *vm.vmid());
+            let driver = driver.clone();
+            let log_source = log_source.clone();
+            driver.clone().spawn("startup-trace", async move {
+                let result = capture_startup_trace(driver, client, log_source).await;
+                if let Err(error) = &result {
+                    tracing::error!(
+                        error = error.as_ref() as &dyn std::error::Error,
+                        "startup trace failed"
+                    );
+                }
+                result
+            })
+        });
+
         Ok((
             HyperVPetriRuntime {
                 vm,
                 log_tasks,
+                startup_trace_task,
                 temp_dir,
                 output_dir: log_source.output_dir().to_owned(),
                 driver: driver.clone(),
@@ -517,6 +538,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     type VmFramebufferAccess = vm::HyperVFramebufferAccess;
 
     async fn teardown(mut self) -> anyhow::Result<()> {
+        if let Some(task) = self.startup_trace_task.take() {
+            task.cancel().await;
+        }
         futures::future::join_all(self.log_tasks.into_iter().map(|t| t.cancel())).await;
         self.vm.remove().await
     }
@@ -554,7 +578,8 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
         let driver = self.driver.clone();
         let output_dir = self.output_dir.clone();
-        self.vm
+        let client = self
+            .vm
             .wait_for_off_or_internal(async move |vm: &HyperVVM| {
                 tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
                 match client_core(vm).await {
@@ -575,7 +600,11 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                     }
                 }
             })
-            .await
+            .await?;
+        if let Some(trace) = self.startup_trace_task.take() {
+            trace.await.context("collecting startup trace")?;
+        }
+        Ok(client)
     }
 
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
@@ -697,6 +726,48 @@ fn acl_for_vm(path: &Path, id: Option<Guid>, write: bool) -> anyhow::Result<()> 
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("icacls failed: {stderr}");
     }
+    Ok(())
+}
+
+async fn capture_startup_trace(
+    driver: DefaultDriver,
+    client: diag_client::DiagClient,
+    log_source: crate::PetriLogSource,
+) -> anyhow::Result<()> {
+    use futures::io::AllowStdIo;
+
+    client.wait_for_server().await?;
+    let mut process = client
+        .exec("sh")
+        .args(["-c", include_str!("startup_trace.sh")])
+        .stdout(true)
+        .stderr(true)
+        .raw_socket_io(true)
+        .spawn()
+        .await?;
+    let mut stdout = PolledSocket::new(&driver, process.stdout.take().context("trace stdout")?)?;
+    let mut stderr = PolledSocket::new(&driver, process.stderr.take().context("trace stderr")?)?;
+    let mut output = AllowStdIo::new(log_source.create_attachment("startup_trace.log")?);
+    let mut errors = Vec::new();
+    let (_, _, status) = futures::try_join!(
+        async {
+            futures::io::copy(&mut stdout, &mut output)
+                .await
+                .context("reading startup trace output")
+        },
+        async {
+            futures::io::copy(&mut stderr, &mut errors)
+                .await
+                .context("reading startup trace errors")
+        },
+        process.wait(),
+    )?;
+    anyhow::ensure!(
+        status.success(),
+        "startup trace collection failed: {:?}: {}",
+        status,
+        String::from_utf8_lossy(&errors)
+    );
     Ok(())
 }
 

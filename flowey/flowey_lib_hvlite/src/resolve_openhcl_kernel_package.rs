@@ -33,6 +33,8 @@ flowey_config! {
         pub versions: BTreeMap<OpenhclKernelPackageKind, String>,
         /// Local paths keyed by architecture (kernel binary, modules directory).
         pub local_paths: BTreeMap<CommonArch, (ConfigVar<PathBuf>, ConfigVar<PathBuf>)>,
+        /// Build an instrumented ARM64 main kernel for startup diagnostics.
+        pub startup_trace_aarch64: Option<bool>,
     }
 }
 
@@ -75,6 +77,7 @@ impl FlowNodeWithConfig for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
     }
 
     fn emit(
@@ -84,6 +87,7 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let versions = config.versions;
         let local_paths = config.local_paths;
+        let startup_trace_aarch64 = config.startup_trace_aarch64.unwrap_or(false);
         let mut kernel_reqs: BTreeMap<
             (OpenhclKernelPackageKind, CommonArch),
             Vec<WriteVar<PathBuf>>,
@@ -291,6 +295,33 @@ impl FlowNodeWithConfig for Node {
                 CommonArch::Aarch64 => "Image",
             };
 
+            let trace_kernel = startup_trace_aarch64
+                && kind == OpenhclKernelPackageKind::Main
+                && arch == CommonArch::Aarch64;
+            let trace_repo =
+                trace_kernel.then(|| ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir));
+            let trace_deps = trace_kernel.then(|| {
+                ctx.reqv(
+                    |done| flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: [
+                            "gcc-13",
+                            "gcc-13-aarch64-linux-gnu",
+                            "make",
+                            "flex",
+                            "bison",
+                            "libelf-dev",
+                            "libssl-dev",
+                            "bc",
+                            "rsync",
+                            "kmod",
+                        ]
+                        .map(str::to_owned)
+                        .into(),
+                        done,
+                    },
+                )
+            });
+
             ctx.emit_rust_step("extract and resolve kernel package", |ctx| {
                 let extract_zip_deps = extract_zip_deps.clone().claim(ctx);
                 let kernel_vars = kernel_reqs_download.remove(&(kind, arch)).claim(ctx);
@@ -298,17 +329,27 @@ impl FlowNodeWithConfig for Node {
                 let pkg_vars = pkg_reqs_download.remove(&(kind, arch)).claim(ctx);
                 let metadata_vars = metadata_reqs_download.remove(&(kind, arch)).claim(ctx);
                 let kernel_package_tar_gz = kernel_package_tar_gz.claim(ctx);
+                let trace_repo = trace_repo.claim(ctx);
+                trace_deps.claim(ctx);
 
                 move |rt| {
                     let kernel_package_tar_gz = rt.read(kernel_package_tar_gz);
 
                     // Extract the downloaded package
-                    let extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
+                    let mut extract_dir = flowey_lib_common::_util::extract::extract_zip_if_new(
                         rt,
                         extract_zip_deps,
                         &kernel_package_tar_gz,
                         &file_name,
                     )?;
+
+                    if let Some(repo) = trace_repo {
+                        let repo = rt.read(repo);
+                        let script = repo.join("repo_support/build_startup_trace_kernel.sh");
+                        let work = std::env::current_dir()?.join("startup-trace-kernel");
+                        flowey::shell_cmd!(rt, "bash {script} {extract_dir} {work}").run()?;
+                        extract_dir = work.join("package");
+                    }
 
                     // The extracted directory contains: vmlinux/Image, modules/, kernel_build_metadata.json
                     let kernel_path = extract_dir.join(kernel_file_name);

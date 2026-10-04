@@ -200,6 +200,7 @@ impl FlowNode for Node {
             }
             ctx.config(crate::resolve_openhcl_kernel_package::Config {
                 versions,
+                startup_trace_aarch64: Some(true),
                 ..Default::default()
             });
         }

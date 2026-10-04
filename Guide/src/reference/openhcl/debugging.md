@@ -5,6 +5,33 @@ user-mode and kernel level. See [ohcldiag-dev](./diag/ohcldiag_dev.md) for the
 diagnostic client and [Tracing](./diag/tracing.md) for serial and event log
 tracing.
 
+## ARM64 startup trace diagnostic
+
+This diagnostic branch builds kernel revision
+`78489ebc95ec31f426a44062051cf27bd9d9c7d8` with event tracing enabled. The
+published 6.18.37.5 ARM64 kernel has `CONFIG_FTRACE` disabled. The instrumentation
+does not change VP entry policies, UART polling, guest images, test retries,
+or VM resource settings.
+
+The Linux/OpenHCL ARM64 heavy boot test enables scheduler switches/wakeups,
+native VTL entry/exit, and PL011 console events at kernel boot. All events use
+the `mono` clock. Petri freezes the trace after a 15-second collection window
+and streams it through the diagnostics connection into `startup_trace.log`,
+not through serial. Trace overruns cause an explicit collection error.
+
+The console events identify:
+
+- `record`: port, byte count, atomic/threaded path, and begin/end/aborted stage
+  (`0`, `1`, and `2`, respectively).
+- `wait`: FIFO/BUSY mask, polling iterations, and elapsed nanoseconds. An event
+  is emitted when polling repeats or the initial register read takes 50 us.
+- `slow_write`: data-register writes taking at least 50 us.
+
+The trace uses 2 MiB per CPU, so account for its memory and execution overhead
+when comparing traced and untraced boots. The rebuild uses GCC 13.3 rather
+than the release package's GCC 13.2; record the kernel provenance alongside
+results. A successful traced boot alone does not validate a proposed fix.
+
 ## On-demand memory dumps
 
 Use `ohcldiag-dev dump` to capture a live user-mode memory dump of the OpenHCL

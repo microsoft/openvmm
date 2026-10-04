@@ -1122,6 +1122,11 @@ pub struct PipelineJob<'a> {
 }
 
 impl PipelineJob<'_> {
+    /// Returns the human-readable job label.
+    pub fn label(&self) -> &str {
+        &self.pipeline.jobs[self.job_idx].label
+    }
+
     /// (ADO only) specify which agent pool this job will be run on.
     pub fn ado_set_pool(self, pool: AdoPool) -> Self {
         self.pipeline.jobs[self.job_idx].ado_pool = Some(pool);

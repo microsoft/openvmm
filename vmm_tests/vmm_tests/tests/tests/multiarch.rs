@@ -568,6 +568,19 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let config = if config.is_openhcl()
+        && config.arch() == MachineArch::Aarch64
+        && config.os_flavor() == OsFlavor::Linux
+    {
+        config.with_openhcl_command_line(
+            "trace_clock=mono trace_buf_size=2048K \
+             trace_event=sched:sched_switch,sched:sched_wakeup,\
+             hyperv:mshv_vtl_enter_vtl0,hyperv:mshv_vtl_exit_vtl0,\
+             uart_console:record,uart_console:wait,uart_console:slow_write",
+        )
+    } else {
+        config
+    };
     let (vm, agent) = config
         .with_processor_topology(ProcessorTopology::heavy())
         .run()

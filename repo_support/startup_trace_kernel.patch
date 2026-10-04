@@ -1,0 +1,207 @@
+diff --git a/arch/arm64/hyperv/hv_vtl.c b/arch/arm64/hyperv/hv_vtl.c
+index 72c21896f..7d53503c9 100644
+--- a/arch/arm64/hyperv/hv_vtl.c
++++ b/arch/arm64/hyperv/hv_vtl.c
+@@ -9,6 +9,9 @@
+ #include <asm/mshyperv.h>
+ #include <asm/cpu_ops.h>
+ 
++#define CREATE_TRACE_POINTS
++#include <asm/trace/hyperv.h>
++
+ void mshv_vtl_return_call(struct mshv_vtl_cpu_context *vtl0)
+ 
+ {
+diff --git a/drivers/tty/serial/amba-pl011.c b/drivers/tty/serial/amba-pl011.c
+index 7f17d288c..749c7c3eb 100644
+--- a/drivers/tty/serial/amba-pl011.c
++++ b/drivers/tty/serial/amba-pl011.c
+@@ -41,6 +41,10 @@
+ #include <linux/sizes.h>
+ #include <linux/io.h>
+ #include <linux/acpi.h>
++#include <linux/timekeeping.h>
++
++#define CREATE_TRACE_POINTS
++#include <trace/events/uart_console.h>
+ 
+ #define UART_NR			14
+ 
+@@ -2359,14 +2363,42 @@ static struct uart_amba_port *amba_ports[UART_NR];
+ 
+ #ifdef CONFIG_SERIAL_AMBA_PL011_CONSOLE
+ 
++static void pl011_console_wait(struct uart_amba_port *uap,
++			      unsigned int mask, unsigned int invert)
++{
++	bool enabled = trace_wait_enabled();
++	u64 start = enabled ? ktime_get_mono_fast_ns() : 0;
++	unsigned int polls = 0;
++
++	while ((pl011_read(uap, REG_FR) ^ invert) & mask) {
++		polls++;
++		cpu_relax();
++	}
++
++	if (enabled) {
++		u64 ns = ktime_get_mono_fast_ns() - start;
++
++		if (polls || ns >= 50000)
++			trace_wait(uap->port.line, mask, polls, ns);
++	}
++}
++
+ static void pl011_console_putchar(struct uart_port *port, unsigned char ch)
+ {
+ 	struct uart_amba_port *uap =
+ 	    container_of(port, struct uart_amba_port, port);
++	bool enabled = trace_slow_write_enabled();
++	u64 start;
+ 
+-	while (pl011_read(uap, REG_FR) & UART01x_FR_TXFF)
+-		cpu_relax();
++	pl011_console_wait(uap, UART01x_FR_TXFF, 0);
++	start = enabled ? ktime_get_mono_fast_ns() : 0;
+ 	pl011_write(ch, uap, REG_DR);
++	if (enabled) {
++		u64 ns = ktime_get_mono_fast_ns() - start;
++
++		if (ns >= 50000)
++			trace_slow_write(uap->port.line, ns);
++	}
+ 	uap->console_line_ended = (ch == '\n');
+ }
+ 
+@@ -2521,8 +2553,11 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+ 	struct uart_amba_port *uap = amba_ports[co->index];
+ 	unsigned int old_cr = 0;
+ 
+-	if (!nbcon_enter_unsafe(wctxt))
++	trace_record(co->index, 0, 1, wctxt->len);
++	if (!nbcon_enter_unsafe(wctxt)) {
++		trace_record(co->index, 2, 1, wctxt->len);
+ 		return;
++	}
+ 
+ 	clk_enable(uap->clk);
+ 
+@@ -2536,8 +2571,7 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+ 		uart_console_write(&uap->port, "\n", 1, pl011_console_putchar);
+ 	uart_console_write(&uap->port, wctxt->outbuf, wctxt->len, pl011_console_putchar);
+ 
+-	while ((pl011_read(uap, REG_FR) ^ uap->vendor->inv_fr) & uap->vendor->fr_busy)
+-		cpu_relax();
++	pl011_console_wait(uap, uap->vendor->fr_busy, uap->vendor->inv_fr);
+ 
+ 	if (!uap->vendor->always_enabled)
+ 		pl011_write(old_cr, uap, REG_CR);
+@@ -2545,6 +2579,7 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+ 	clk_disable(uap->clk);
+ 
+ 	nbcon_exit_unsafe(wctxt);
++	trace_record(co->index, 1, 1, wctxt->len);
+ }
+ 
+ static void
+@@ -2553,8 +2588,11 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+ 	struct uart_amba_port *uap = amba_ports[co->index];
+ 	unsigned int old_cr = 0;
+ 
+-	if (!nbcon_enter_unsafe(wctxt))
++	trace_record(co->index, 0, 0, wctxt->len);
++	if (!nbcon_enter_unsafe(wctxt)) {
++		trace_record(co->index, 2, 0, wctxt->len);
+ 		return;
++	}
+ 
+ 	clk_enable(uap->clk);
+ 
+@@ -2580,8 +2618,7 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+ 	while (!nbcon_enter_unsafe(wctxt))
+ 		nbcon_reacquire_nobuf(wctxt);
+ 
+-	while ((pl011_read(uap, REG_FR) ^ uap->vendor->inv_fr) & uap->vendor->fr_busy)
+-		cpu_relax();
++	pl011_console_wait(uap, uap->vendor->fr_busy, uap->vendor->inv_fr);
+ 
+ 	if (!uap->vendor->always_enabled)
+ 		pl011_write(old_cr, uap, REG_CR);
+@@ -2589,6 +2626,7 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+ 	clk_disable(uap->clk);
+ 
+ 	nbcon_exit_unsafe(wctxt);
++	trace_record(co->index, 1, 0, wctxt->len);
+ }
+ 
+ static void
+diff --git a/include/trace/events/uart_console.h b/include/trace/events/uart_console.h
+new file mode 100644
+index 000000000..a210d4530
+--- /dev/null
++++ b/include/trace/events/uart_console.h
+@@ -0,0 +1,65 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#undef TRACE_SYSTEM
++#define TRACE_SYSTEM uart_console
++
++#if !defined(_TRACE_UART_CONSOLE_H) || defined(TRACE_HEADER_MULTI_READ)
++#define _TRACE_UART_CONSOLE_H
++
++#include <linux/tracepoint.h>
++
++TRACE_EVENT(record,
++	TP_PROTO(unsigned int port, unsigned int stage, unsigned int atomic,
++		 unsigned int len),
++	TP_ARGS(port, stage, atomic, len),
++	TP_STRUCT__entry(
++		__field(unsigned int, port)
++		__field(unsigned int, stage)
++		__field(unsigned int, atomic)
++		__field(unsigned int, len)
++	),
++	TP_fast_assign(
++		__entry->port = port;
++		__entry->stage = stage;
++		__entry->atomic = atomic;
++		__entry->len = len;
++	),
++	TP_printk("port=%u stage=%u atomic=%u len=%u",
++		  __entry->port, __entry->stage, __entry->atomic, __entry->len)
++);
++
++TRACE_EVENT(wait,
++	TP_PROTO(unsigned int port, unsigned int mask, unsigned int polls, u64 ns),
++	TP_ARGS(port, mask, polls, ns),
++	TP_STRUCT__entry(
++		__field(unsigned int, port)
++		__field(unsigned int, mask)
++		__field(unsigned int, polls)
++		__field(u64, ns)
++	),
++	TP_fast_assign(
++		__entry->port = port;
++		__entry->mask = mask;
++		__entry->polls = polls;
++		__entry->ns = ns;
++	),
++	TP_printk("port=%u mask=0x%x polls=%u ns=%llu",
++		  __entry->port, __entry->mask, __entry->polls, __entry->ns)
++);
++
++TRACE_EVENT(slow_write,
++	TP_PROTO(unsigned int port, u64 ns),
++	TP_ARGS(port, ns),
++	TP_STRUCT__entry(
++		__field(unsigned int, port)
++		__field(u64, ns)
++	),
++	TP_fast_assign(
++		__entry->port = port;
++		__entry->ns = ns;
++	),
++	TP_printk("port=%u ns=%llu", __entry->port, __entry->ns)
++);
++
++#endif
++
++#include <trace/define_trace.h>
