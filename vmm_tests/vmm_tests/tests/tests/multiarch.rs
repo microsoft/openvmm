@@ -576,7 +576,9 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
             "trace_clock=mono trace_buf_size=2048K \
              trace_event=sched:sched_switch,sched:sched_wakeup,\
              hyperv:mshv_vtl_enter_vtl0,hyperv:mshv_vtl_exit_vtl0,\
-             uart_console:record,uart_console:wait,uart_console:slow_write",
+             hyperv:mshv_vtl_console_handoff,\
+             uart_console:record,uart_console:wait,uart_console:slow_write,\
+             uart_console:tx_batch",
         )
     } else {
         config

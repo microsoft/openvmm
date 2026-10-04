@@ -9,9 +9,10 @@ tracing.
 
 This diagnostic branch builds kernel revision
 `78489ebc95ec31f426a44062051cf27bd9d9c7d8` with event tracing enabled. The
-published 6.18.37.5 ARM64 kernel has `CONFIG_FTRACE` disabled. The instrumentation
-does not change VP entry policies, UART polling, guest images, test retries,
-or VM resource settings.
+published 6.18.37.5 ARM64 kernel has `CONFIG_FTRACE` disabled. The initial
+captures added instrumentation only. The branch now also validates the
+console-load fixes below, without changing default VP entry policies, guest
+images, test retries, or VM resource settings.
 
 The Linux/OpenHCL ARM64 heavy boot test enables scheduler switches/wakeups,
 native VTL entry/exit, and PL011 console events at kernel boot. All events use
@@ -27,6 +28,31 @@ The console events identify:
 - `wait`: FIFO/BUSY mask, polling iterations, and elapsed nanoseconds. An event
   is emitted when polling repeats or the initial register read takes 50 us.
 - `slow_write`: data-register writes taking at least 50 us.
+- `tx_batch`: FIFO capacity, actual status reads, and transmitted bytes for
+  each threaded record.
+- `mshv_vtl_console_handoff`: request, consumption, and directed-yield result
+  for a locally parked VP.
+
+### Console-load fixes under validation
+
+The kernel patch now includes two changes, without changing the default
+lower-VTL entry policy or test/VM settings:
+
+- A PL011 printer with more queued records can hand off to a locally parked
+  VP after releasing console ownership and all device/SRCU locks. The
+  handoff wakes the VP and requests one normally scheduled entry, after
+  which the existing reentry policy resumes. No handoff is requested for
+  an empty backlog or without a pending local VP.
+- Threaded writes reuse FIFO-space credits obtained only when the FIFO is
+  empty. Credits are reset per record; newline expansion and console
+  takeover points are preserved. Disabled FIFOs, DMA-configured ports,
+  and erratum variants retain per-byte status checks. Atomic/panic writes
+  retain their existing path.
+
+The production batching helper has executable byte-order, CRLF, backpressure,
+one-slot, and record-boundary tests. For an immediately drained 32-byte FIFO,
+512 transmitted bytes require 16 status reads instead of 512. Runtime
+`tx_batch` counters also include the final BUSY check.
 
 The trace uses 2 MiB per CPU, so account for its memory and execution overhead
 when comparing traced and untraced boots. The rebuild uses GCC 13.3 rather

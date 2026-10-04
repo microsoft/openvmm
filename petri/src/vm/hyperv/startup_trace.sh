@@ -15,7 +15,9 @@ case "$(cat "$trace/trace_clock")" in
 esac
 for event in sched/sched_switch sched/sched_wakeup \
     hyperv/mshv_vtl_enter_vtl0 hyperv/mshv_vtl_exit_vtl0 \
-    uart_console/record uart_console/wait uart_console/slow_write; do
+    hyperv/mshv_vtl_console_handoff \
+    uart_console/record uart_console/wait uart_console/slow_write \
+    uart_console/tx_batch; do
     test "$(cat "$trace/events/$event/enable")" = 1
 done
 test "$(cat "$trace/tracing_on")" = 1

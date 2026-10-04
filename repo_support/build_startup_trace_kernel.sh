@@ -21,6 +21,12 @@ if [ ! -f "$source_dir/Makefile" ]; then
     git -C "$source_dir" apply "$script_dir/startup_trace_kernel.patch"
 fi
 
+gcc-13 -std=c11 -O2 -Wall -Wextra -Werror \
+    -I "$source_dir/drivers/tty/serial" \
+    "$script_dir/test_pl011_console_batch.c" \
+    -o "$workspace/test_pl011_console_batch"
+"$workspace/test_pl011_console_batch"
+
 cp "$package/kernel_config" "$build_dir/.config"
 "$source_dir/scripts/config" --file "$build_dir/.config" \
     --enable FTRACE --enable TRACING --enable EVENT_TRACING \
@@ -58,6 +64,8 @@ with open(path, encoding="utf-8") as source:
     metadata = json.load(source)
 assert metadata["git_revision"] == "78489ebc95ec31f426a44062051cf27bd9d9c7d8"
 metadata["startup_trace_diagnostic"] = True
+metadata["console_load_handoff"] = True
+metadata["pl011_fifo_batching"] = True
 with open(path, "w", encoding="utf-8") as output:
     json.dump(metadata, output, indent=2)
     output.write("\n")

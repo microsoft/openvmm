@@ -12,27 +12,213 @@ index 72c21896f..7d53503c9 100644
  void mshv_vtl_return_call(struct mshv_vtl_cpu_context *vtl0)
  
  {
+diff --git a/arch/arm64/include/asm/trace/hyperv.h b/arch/arm64/include/asm/trace/hyperv.h
+index 2d4dbc83a..f652bb081 100644
+--- a/arch/arm64/include/asm/trace/hyperv.h
++++ b/arch/arm64/include/asm/trace/hyperv.h
+@@ -9,6 +9,24 @@
+ #if IS_ENABLED(CONFIG_HYPERV)
+ 
+ #if IS_ENABLED(CONFIG_MSHV_VTL)
++TRACE_EVENT(mshv_vtl_console_handoff,
++	    TP_PROTO(unsigned int cpu, unsigned int pid, unsigned int stage, int result),
++	    TP_ARGS(cpu, pid, stage, result),
++	    TP_STRUCT__entry(
++		    __field(unsigned int, cpu)
++		    __field(unsigned int, pid)
++		    __field(unsigned int, stage)
++		    __field(int, result)
++		    ),
++	    TP_fast_assign(__entry->cpu = cpu;
++			   __entry->pid = pid;
++			   __entry->stage = stage;
++			   __entry->result = result;
++		    ),
++	    TP_printk("target_cpu=%u pid=%u stage=%u result=%d",
++		      __entry->cpu, __entry->pid, __entry->stage, __entry->result)
++	   );
++
+ TRACE_EVENT(mshv_vtl_exit_vtl0,
+ 	    TP_PROTO(u32 vtl_entry_reason, void *ctx),
+ 	    TP_ARGS(vtl_entry_reason, ctx),
+diff --git a/drivers/hv/mshv_vtl_main.c b/drivers/hv/mshv_vtl_main.c
+index 8f2a6a5f9..f27fb1d4e 100644
+--- a/drivers/hv/mshv_vtl_main.c
++++ b/drivers/hv/mshv_vtl_main.c
+@@ -25,6 +25,7 @@
+ #include <linux/vmalloc.h>
+ #include <asm/boot.h>
+ #include <linux/tick.h>
++#include <linux/mshv_vtl_console.h>
+ #include <asm/pgalloc.h>
+ #include <asm/mshyperv.h>
+ #include <asm/trace/hyperv.h>
+@@ -218,6 +219,9 @@ static DEFINE_PER_CPU(struct mshv_vtl_poll_file, mshv_vtl_poll_file);
+ static DEFINE_PER_CPU(unsigned long long, num_vtl0_transitions);
+ static DEFINE_PER_CPU(struct mshv_vtl_per_cpu, mshv_vtl_per_cpu);
+ static DEFINE_PER_CPU(struct task_struct *, mshv_vtl_thread);
++#ifdef CONFIG_ARM64
++static DEFINE_PER_CPU(bool, mshv_vtl_console_handoff_requested);
++#endif
+ 
+ static const union hv_input_vtl input_vtl_zero;
+ static const union hv_input_vtl input_vtl_normal = {
+@@ -2023,6 +2027,40 @@ static void mshv_tdx_halt_timer_post(enum TDX_HALT_TIMER armed) {}
+ 
+ static bool in_idle_is_enabled;
+ 
++#ifdef CONFIG_ARM64
++bool mshv_vtl_console_handoff(void)
++{
++	struct task_struct *thread = NULL;
++	unsigned long flags;
++	unsigned int cpu;
++	int ret;
++
++	preempt_disable();
++	local_irq_save(flags);
++	cpu = smp_processor_id();
++	thread = this_cpu_read(mshv_vtl_thread);
++	if (thread && thread != current) {
++		get_task_struct(thread);
++		this_cpu_write(mshv_vtl_console_handoff_requested, true);
++		trace_mshv_vtl_console_handoff(cpu, task_pid_nr(thread), 0, 0);
++		wake_up_process(thread);
++	} else {
++		thread = NULL;
++	}
++	local_irq_restore(flags);
++	preempt_enable();
++
++	if (!thread)
++		return false;
++
++	ret = yield_to(thread, true);
++	trace_mshv_vtl_console_handoff(cpu, task_pid_nr(thread), 2, ret);
++	put_task_struct(thread);
++	return ret > 0;
++}
++EXPORT_SYMBOL_GPL(mshv_vtl_console_handoff);
++#endif
++
+ static void mshv_vtl_switch_to_vtl0_irqoff(void)
+ {
+ 	struct hv_vp_assist_page *hvp;
+@@ -2128,6 +2166,9 @@ static void mshv_vtl_idle(void)
+ 		/* We are not the vtl thread, it means we need to wake it up */
+ 		if (current != p) {
+ 			this_cpu_write(mshv_vtl_thread, NULL);
++#ifdef CONFIG_ARM64
++			this_cpu_write(mshv_vtl_console_handoff_requested, false);
++#endif
+ 			wake_up_process(p);
+ 		}
+ 		raw_local_irq_enable();
+@@ -2723,6 +2764,9 @@ static int mshv_vtl_ioctl_return_to_lower_vtl(void)
+ 			mshv_vtl_switch_to_vtl0_irqoff();
+ 			local_irq_restore(irq_flags);
+ 		} else if (enter == 2 && smp_load_acquire(&in_idle_is_enabled)) {
++#ifdef CONFIG_ARM64
++			this_cpu_write(mshv_vtl_console_handoff_requested, false);
++#endif
+ 			set_current_state(TASK_INTERRUPTIBLE);
+ 			this_cpu_write(mshv_vtl_thread, current);
+ 			local_irq_restore(irq_flags);
+@@ -2731,6 +2775,14 @@ static int mshv_vtl_ioctl_return_to_lower_vtl(void)
+ 
+ 			if (this_cpu_read(mshv_vtl_thread)) {
+ 				this_cpu_write(mshv_vtl_thread, NULL);
++#ifdef CONFIG_ARM64
++				if (this_cpu_xchg(mshv_vtl_console_handoff_requested, false)) {
++					/* One scheduled entry, then the normal reentry policy. */
++					enter = 0;
++					trace_mshv_vtl_console_handoff(smp_processor_id(),
++								     task_pid_nr(current), 1, 0);
++				}
++#endif
+ 				continue;
+ 			}
+ 		} else { /* play idle */
+diff --git a/drivers/tty/serial/amba-pl011-console.h b/drivers/tty/serial/amba-pl011-console.h
+new file mode 100644
+index 000000000..388c1a381
+--- /dev/null
++++ b/drivers/tty/serial/amba-pl011-console.h
+@@ -0,0 +1,50 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _AMBA_PL011_CONSOLE_H
++#define _AMBA_PL011_CONSOLE_H
++
++struct pl011_console_tx {
++	unsigned int room;
++	unsigned int capacity;
++	unsigned int status_reads;
++	unsigned int data_writes;
++};
++
++struct pl011_console_tx_ops {
++	unsigned int (*get_room)(void *context, struct pl011_console_tx *tx);
++	void (*write)(void *context, unsigned char ch);
++};
++
++static inline unsigned int
++pl011_console_tx_credit(unsigned int empty, unsigned int full,
++			unsigned int capacity)
++{
++	if (full)
++		return 0;
++	if (empty && capacity)
++		return capacity;
++	return 1;
++}
++
++static inline void
++pl011_console_tx_byte(struct pl011_console_tx *tx,
++		      const struct pl011_console_tx_ops *ops,
++		      void *context, unsigned char ch)
++{
++	if (!tx->room)
++		tx->room = ops->get_room(context, tx);
++	ops->write(context, ch);
++	tx->room--;
++	tx->data_writes++;
++}
++
++static inline void
++pl011_console_tx_char(struct pl011_console_tx *tx,
++		      const struct pl011_console_tx_ops *ops,
++		      void *context, unsigned char ch)
++{
++	if (ch == '\n')
++		pl011_console_tx_byte(tx, ops, context, '\r');
++	pl011_console_tx_byte(tx, ops, context, ch);
++}
++
++#endif
 diff --git a/drivers/tty/serial/amba-pl011.c b/drivers/tty/serial/amba-pl011.c
-index 7f17d288c..749c7c3eb 100644
+index 7f17d288c..e52b3d28f 100644
 --- a/drivers/tty/serial/amba-pl011.c
 +++ b/drivers/tty/serial/amba-pl011.c
-@@ -41,6 +41,10 @@
+@@ -41,6 +41,13 @@
  #include <linux/sizes.h>
  #include <linux/io.h>
  #include <linux/acpi.h>
 +#include <linux/timekeeping.h>
++#include <linux/mshv_vtl_console.h>
++
++#include "amba-pl011-console.h"
 +
 +#define CREATE_TRACE_POINTS
 +#include <trace/events/uart_console.h>
  
  #define UART_NR			14
  
-@@ -2359,14 +2363,42 @@ static struct uart_amba_port *amba_ports[UART_NR];
+@@ -2359,14 +2366,92 @@ static struct uart_amba_port *amba_ports[UART_NR];
  
  #ifdef CONFIG_SERIAL_AMBA_PL011_CONSOLE
  
-+static void pl011_console_wait(struct uart_amba_port *uap,
-+			      unsigned int mask, unsigned int invert)
++static unsigned int pl011_console_wait(struct uart_amba_port *uap,
++				      unsigned int mask, unsigned int invert)
 +{
 +	bool enabled = trace_wait_enabled();
 +	u64 start = enabled ? ktime_get_mono_fast_ns() : 0;
@@ -49,7 +235,57 @@ index 7f17d288c..749c7c3eb 100644
 +		if (polls || ns >= 50000)
 +			trace_wait(uap->port.line, mask, polls, ns);
 +	}
++	return polls + 1;
 +}
++
++static unsigned int
++pl011_console_get_room(void *context, struct pl011_console_tx *tx)
++{
++	struct uart_amba_port *uap = context;
++	bool enabled = trace_wait_enabled();
++	u64 start = enabled ? ktime_get_mono_fast_ns() : 0;
++	unsigned int polls = 0, flags, room;
++
++	for (;;) {
++		flags = pl011_read(uap, REG_FR);
++		tx->status_reads++;
++		room = pl011_console_tx_credit(flags & UART011_FR_TXFE,
++					       flags & UART01x_FR_TXFF, tx->capacity);
++		if (room)
++			break;
++		polls++;
++		cpu_relax();
++	}
++
++	if (enabled) {
++		u64 ns = ktime_get_mono_fast_ns() - start;
++
++		if (polls || ns >= 50000)
++			trace_wait(uap->port.line, UART01x_FR_TXFF, polls, ns);
++	}
++	return room;
++}
++
++static void pl011_console_write_byte(void *context, unsigned char ch)
++{
++	struct uart_amba_port *uap = context;
++	bool enabled = trace_slow_write_enabled();
++	u64 start = enabled ? ktime_get_mono_fast_ns() : 0;
++
++	pl011_write(ch, uap, REG_DR);
++	if (enabled) {
++		u64 ns = ktime_get_mono_fast_ns() - start;
++
++		if (ns >= 50000)
++			trace_slow_write(uap->port.line, ns);
++	}
++	uap->console_line_ended = (ch == '\n');
++}
++
++static const struct pl011_console_tx_ops pl011_console_tx_ops = {
++	.get_room = pl011_console_get_room,
++	.write = pl011_console_write_byte,
++};
 +
  static void pl011_console_putchar(struct uart_port *port, unsigned char ch)
  {
@@ -72,7 +308,7 @@ index 7f17d288c..749c7c3eb 100644
  	uap->console_line_ended = (ch == '\n');
  }
  
-@@ -2521,8 +2553,11 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+@@ -2521,8 +2606,11 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
  	struct uart_amba_port *uap = amba_ports[co->index];
  	unsigned int old_cr = 0;
  
@@ -85,7 +321,7 @@ index 7f17d288c..749c7c3eb 100644
  
  	clk_enable(uap->clk);
  
-@@ -2536,8 +2571,7 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+@@ -2536,8 +2624,7 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
  		uart_console_write(&uap->port, "\n", 1, pl011_console_putchar);
  	uart_console_write(&uap->port, wctxt->outbuf, wctxt->len, pl011_console_putchar);
  
@@ -95,7 +331,7 @@ index 7f17d288c..749c7c3eb 100644
  
  	if (!uap->vendor->always_enabled)
  		pl011_write(old_cr, uap, REG_CR);
-@@ -2545,6 +2579,7 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
+@@ -2545,19 +2632,36 @@ pl011_console_write_atomic(struct console *co, struct nbcon_write_context *wctxt
  	clk_disable(uap->clk);
  
  	nbcon_exit_unsafe(wctxt);
@@ -103,8 +339,10 @@ index 7f17d288c..749c7c3eb 100644
  }
  
  static void
-@@ -2553,8 +2588,11 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt)
+ {
  	struct uart_amba_port *uap = amba_ports[co->index];
++	struct pl011_console_tx tx = { };
  	unsigned int old_cr = 0;
  
 -	if (!nbcon_enter_unsafe(wctxt))
@@ -116,30 +354,119 @@ index 7f17d288c..749c7c3eb 100644
  
  	clk_enable(uap->clk);
  
-@@ -2580,8 +2618,7 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
++	/* SBSA FIFOs are fixed; configurable PL011 FIFOs may be disabled. */
++	tx.capacity = uap->fifosize;
++	if (!uap->vendor->fixed_options &&
++	    !(pl011_read(uap, REG_LCRH_TX) & UART01x_LCRH_FEN))
++		tx.capacity = 1;
++	if (uap->vendor->inv_fr)
++		tx.capacity = 1;
++#ifdef CONFIG_DMA_ENGINE
++	if (uap->dmatx.chan)
++		tx.capacity = 1;
++#endif
++
+ 	if (!uap->vendor->always_enabled) {
+ 		old_cr = pl011_read(uap, REG_CR);
+ 		pl011_write((old_cr & ~UART011_CR_CTSEN) | (UART01x_CR_UARTEN | UART011_CR_TXE),
+@@ -2571,7 +2675,8 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+ 		for (i = 0; i < len; i++) {
+ 			if (!nbcon_enter_unsafe(wctxt))
+ 				break;
+-			uart_console_write(&uap->port, wctxt->outbuf + i, 1, pl011_console_putchar);
++			pl011_console_tx_char(&tx, &pl011_console_tx_ops, uap,
++					      wctxt->outbuf[i]);
+ 			if (!nbcon_exit_unsafe(wctxt))
+ 				break;
+ 		}
+@@ -2580,8 +2685,8 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
  	while (!nbcon_enter_unsafe(wctxt))
  		nbcon_reacquire_nobuf(wctxt);
  
 -	while ((pl011_read(uap, REG_FR) ^ uap->vendor->inv_fr) & uap->vendor->fr_busy)
 -		cpu_relax();
-+	pl011_console_wait(uap, uap->vendor->fr_busy, uap->vendor->inv_fr);
++	tx.status_reads += pl011_console_wait(uap, uap->vendor->fr_busy,
++					      uap->vendor->inv_fr);
  
  	if (!uap->vendor->always_enabled)
  		pl011_write(old_cr, uap, REG_CR);
-@@ -2589,6 +2626,7 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
+@@ -2589,7 +2694,16 @@ pl011_console_write_thread(struct console *co, struct nbcon_write_context *wctxt
  	clk_disable(uap->clk);
  
  	nbcon_exit_unsafe(wctxt);
++	trace_tx_batch(co->index, tx.capacity, tx.status_reads, tx.data_writes);
 +	trace_record(co->index, 1, 0, wctxt->len);
++}
++
++#if defined(CONFIG_ARM64) && IS_REACHABLE(CONFIG_MSHV_VTL)
++static bool pl011_console_yield_thread(struct console *co)
++{
++	return mshv_vtl_console_handoff();
  }
++#endif
  
  static void
+ pl011_console_device_lock(struct console *co, unsigned long *flags)
+@@ -2611,6 +2725,9 @@ static struct console amba_console = {
+ 	.match		= pl011_console_match,
+ 	.write_atomic	= pl011_console_write_atomic,
+ 	.write_thread	= pl011_console_write_thread,
++#if defined(CONFIG_ARM64) && IS_REACHABLE(CONFIG_MSHV_VTL)
++	.yield_thread	= pl011_console_yield_thread,
++#endif
+ 	.device_lock	= pl011_console_device_lock,
+ 	.device_unlock	= pl011_console_device_unlock,
+ 	.flags		= CON_PRINTBUFFER | CON_ANYTIME | CON_NBCON,
+diff --git a/include/linux/console.h b/include/linux/console.h
+index 031a58dc2..7c4fa6028 100644
+--- a/include/linux/console.h
++++ b/include/linux/console.h
+@@ -414,6 +414,16 @@ struct console {
+ 	 */
+ 	void (*write_thread)(struct console *con, struct nbcon_write_context *wctxt);
+ 
++	/**
++	 * @yield_thread:
++	 *
++	 * Optional handoff for a printer with remaining work. Called without
++	 * console ownership, device locks, or a console SRCU read lock.
++	 * Return true if another task was given a scheduling opportunity.
++	 * The printer kthread keeps the console alive until this returns.
++	 */
++	bool (*yield_thread)(struct console *con);
++
+ 	/**
+ 	 * @device_lock:
+ 	 *
+diff --git a/include/linux/mshv_vtl_console.h b/include/linux/mshv_vtl_console.h
+new file mode 100644
+index 000000000..035a3b762
+--- /dev/null
++++ b/include/linux/mshv_vtl_console.h
+@@ -0,0 +1,17 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MSHV_VTL_CONSOLE_H
++#define _LINUX_MSHV_VTL_CONSOLE_H
++
++#include <linux/kconfig.h>
++#include <linux/types.h>
++
++#if defined(CONFIG_ARM64) && IS_REACHABLE(CONFIG_MSHV_VTL)
++bool mshv_vtl_console_handoff(void);
++#else
++static inline bool mshv_vtl_console_handoff(void)
++{
++	return false;
++}
++#endif
++
++#endif
 diff --git a/include/trace/events/uart_console.h b/include/trace/events/uart_console.h
 new file mode 100644
-index 000000000..a210d4530
+index 000000000..9959ae332
 --- /dev/null
 +++ b/include/trace/events/uart_console.h
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,85 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#undef TRACE_SYSTEM
 +#define TRACE_SYSTEM uart_console
@@ -148,6 +475,26 @@ index 000000000..a210d4530
 +#define _TRACE_UART_CONSOLE_H
 +
 +#include <linux/tracepoint.h>
++
++TRACE_EVENT(tx_batch,
++	TP_PROTO(unsigned int port, unsigned int capacity,
++		 unsigned int reads, unsigned int writes),
++	TP_ARGS(port, capacity, reads, writes),
++	TP_STRUCT__entry(
++		__field(unsigned int, port)
++		__field(unsigned int, capacity)
++		__field(unsigned int, reads)
++		__field(unsigned int, writes)
++	),
++	TP_fast_assign(
++		__entry->port = port;
++		__entry->capacity = capacity;
++		__entry->reads = reads;
++		__entry->writes = writes;
++	),
++	TP_printk("port=%u capacity=%u reads=%u writes=%u",
++		  __entry->port, __entry->capacity, __entry->reads, __entry->writes)
++);
 +
 +TRACE_EVENT(record,
 +	TP_PROTO(unsigned int port, unsigned int stage, unsigned int atomic,
@@ -205,3 +552,19 @@ index 000000000..a210d4530
 +#endif
 +
 +#include <trace/define_trace.h>
+diff --git a/kernel/printk/nbcon.c b/kernel/printk/nbcon.c
+index 730d14f6c..e09eafa51 100644
+--- a/kernel/printk/nbcon.c
++++ b/kernel/printk/nbcon.c
+@@ -1230,7 +1230,10 @@ static int nbcon_kthread_func(void *__console)
+ 
+ 		console_srcu_read_unlock(cookie);
+ 
+-		cond_resched();
++		if (!(backlog && con->yield_thread && !kthread_should_stop() &&
++		      nbcon_kthread_should_wakeup(con, ctxt) &&
++		      con->yield_thread(con)))
++			cond_resched();
+ 
+ 	} while (backlog);
+ 
