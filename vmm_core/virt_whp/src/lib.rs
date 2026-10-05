@@ -32,6 +32,7 @@ cfg_select! {
         mod emu;
         mod fingerprint;
         pub use fingerprint::cpu_fingerprint;
+        pub use fingerprint::profile_unlisted_cpuid;
         use x86defs::cpuid::Vendor;
         type InitialVpContext = hvdef::hypercall::InitialVpContextX64;
     }
