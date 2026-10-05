@@ -684,6 +684,14 @@ impl Options {
             cfg!(guest_arch = "x86_64"),
             "microVM requires an x86-64 guest"
         );
+        let ramfs_overlay =
+            openvmm_defs::microvm::ramfs_overlay_requested(&self.cmdline.join(" "))?;
+        if ramfs_overlay {
+            anyhow::ensure!(
+                self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none(),
+                "microVM RAM-backed overlay does not support snapshot or restore"
+            );
+        }
         anyhow::ensure!(
             openvmm_defs::microvm::microvm_processor_count_supported(self.processors),
             "microVM does not support {} vCPUs",
@@ -1006,7 +1014,16 @@ impl Options {
                 );
             }
         }
-        if !self.microvm.microvm_sandbox_block.is_empty() && self.restore_snapshot.is_none() {
+        if ramfs_overlay {
+            anyhow::ensure!(
+                self.microvm.microvm_sandbox_block.len() == 1
+                    && self.microvm.microvm_sandbox_block[0].role
+                        == MicrovmSandboxBlockRole::Distro
+                    && self.microvm.microvm_sandbox_block[0].disk.read_only,
+                "microVM RAM-backed overlay requires exactly one read-only distro block"
+            );
+        } else if !self.microvm.microvm_sandbox_block.is_empty() && self.restore_snapshot.is_none()
+        {
             anyhow::ensure!(
                 self.microvm
                     .microvm_sandbox_block
@@ -1444,6 +1461,87 @@ mod tests {
                 "scratch:mem:1M,ro",
             ],
             vec!["openvmm", "--machine", "microvm", "--virtio-blk", "mem:1M"],
+        ] {
+            let options = Options::try_parse_from(args).unwrap();
+            assert!(options.validate_microvm_options().is_err());
+        }
+    }
+
+    #[test]
+    fn test_microvm_ramfs_overlay_requires_one_distro_and_no_snapshot() {
+        let valid = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--cmdline",
+            "quiet nvx_overlay_upper=ramfs",
+            "--microvm-sandbox-block",
+            "distro:mem:1M,ro",
+        ])
+        .unwrap();
+        valid.validate_microvm_options().unwrap();
+
+        for args in [
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--cmdline",
+                "nvx_overlay_upper=ramfs",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--cmdline",
+                "nvx_overlay_upper=ramfs nvx_overlay_upper=ramfs",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--cmdline",
+                "nvx_overlay_upper=ramfs nvx_overlay_upper",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--cmdline",
+                "nvx_overlay_upper",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--cmdline",
+                "nvx_overlay_upper=ramfs",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--snapshot-destination",
+                "snapshot",
+                "--snapshot-tier",
+                "workload-start",
+            ],
         ] {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());

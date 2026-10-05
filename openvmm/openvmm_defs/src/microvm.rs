@@ -819,7 +819,25 @@ fn validate_microvm_virtio_reservations() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_microvm_sandbox_blocks(blocks: &[MicrovmSandboxBlockConfig]) -> anyhow::Result<()> {
+/// Returns whether the guest explicitly requests a RAM-backed overlay upper.
+/// The opt-in permits a read-only distro block without a writable scratch block.
+pub fn ramfs_overlay_requested(cmdline: &str) -> anyhow::Result<bool> {
+    // A bare key has no value, so it fails like any value other than ramfs.
+    let mut values = cmdline.split_ascii_whitespace().filter_map(|token| {
+        let (name, value) = token.split_once('=').unwrap_or((token, ""));
+        (name == "nvx_overlay_upper").then_some(value)
+    });
+    match (values.next(), values.next()) {
+        (None, None) => Ok(false),
+        (Some("ramfs"), None) => Ok(true),
+        _ => anyhow::bail!("microVM nvx_overlay_upper must appear once and equal ramfs"),
+    }
+}
+
+fn validate_microvm_sandbox_blocks(
+    blocks: &[MicrovmSandboxBlockConfig],
+    ramfs_overlay: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         blocks.len() <= MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES.len(),
         "microVM permits at most three read-only layers and one writable scratch device"
@@ -842,7 +860,14 @@ fn validate_microvm_sandbox_blocks(blocks: &[MicrovmSandboxBlockConfig]) -> anyh
             );
         }
     }
-    if !blocks.is_empty() {
+    if ramfs_overlay {
+        anyhow::ensure!(
+            blocks.len() == 1
+                && blocks[0].role == MicrovmSandboxBlockRole::Distro
+                && blocks[0].read_only,
+            "microVM RAM-backed overlay requires exactly one read-only distro block"
+        );
+    } else if !blocks.is_empty() {
         anyhow::ensure!(
             blocks
                 .last()
@@ -881,7 +906,7 @@ pub fn append_microvm_virtio_discovery(
     has_control_console: bool,
     blocks: &[MicrovmSandboxBlockConfig],
 ) -> anyhow::Result<()> {
-    validate_microvm_sandbox_blocks(blocks)?;
+    validate_microvm_sandbox_blocks(blocks, ramfs_overlay_requested(cmdline)?)?;
     anyhow::ensure!(
         !cmdline.split_ascii_whitespace().any(|token| {
             if has_control_console {
@@ -1040,7 +1065,10 @@ fn validate_microvm_command_line(
         has_network == config.microvm.network.is_some(),
         "microVM virtio-net device and static network identity must be configured together"
     );
-    validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
+    validate_microvm_sandbox_blocks(
+        &config.microvm.sandbox_blocks,
+        ramfs_overlay_requested(cmdline)?,
+    )?;
     anyhow::ensure!(
         block_count == config.microvm.sandbox_blocks.len(),
         "microVM sandbox block roles do not match the virtio-blk device inventory"
@@ -1666,7 +1694,6 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         !has_control_console || has_console,
         "microVM control console requires the boot console"
     );
-    validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
     anyhow::ensure!(
         block_count == config.microvm.sandbox_blocks.len(),
         "microVM sandbox block roles do not match the virtio-blk device inventory"
@@ -1881,7 +1908,7 @@ mod tests {
                 read_only: false,
             },
         ];
-        validate_microvm_sandbox_blocks(&blocks).unwrap();
+        validate_microvm_sandbox_blocks(&blocks, false).unwrap();
 
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
         append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &blocks)
@@ -2273,69 +2300,128 @@ mod tests {
     #[test]
     fn microvm_sandbox_block_validation_rejects_invalid_layouts() {
         assert!(
-            validate_microvm_sandbox_blocks(&[MicrovmSandboxBlockConfig {
-                role: MicrovmSandboxBlockRole::Scratch,
-                read_only: true,
-            }])
+            validate_microvm_sandbox_blocks(
+                &[MicrovmSandboxBlockConfig {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    read_only: true,
+                }],
+                false
+            )
             .is_err()
         );
         assert!(
-            validate_microvm_sandbox_blocks(&[
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Runtime,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Distro,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    read_only: false,
-                },
-            ])
+            validate_microvm_sandbox_blocks(
+                &[
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Runtime,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Distro,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Scratch,
+                        read_only: false,
+                    },
+                ],
+                false
+            )
             .is_err()
         );
         assert!(
-            validate_microvm_sandbox_blocks(&[
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Distro,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Distro,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    read_only: false,
-                },
-            ])
+            validate_microvm_sandbox_blocks(
+                &[
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Distro,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Distro,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Scratch,
+                        read_only: false,
+                    },
+                ],
+                false
+            )
             .is_err()
         );
         assert!(
-            validate_microvm_sandbox_blocks(&[
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Distro,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Runtime,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Custom,
-                    read_only: true,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    read_only: false,
-                },
-                MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    read_only: false,
-                },
-            ])
+            validate_microvm_sandbox_blocks(
+                &[
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Distro,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Runtime,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Custom,
+                        read_only: true,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Scratch,
+                        read_only: false,
+                    },
+                    MicrovmSandboxBlockConfig {
+                        role: MicrovmSandboxBlockRole::Scratch,
+                        read_only: false,
+                    },
+                ],
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ramfs_overlay_allows_only_a_read_only_distro_without_scratch() {
+        let distro = MicrovmSandboxBlockConfig {
+            role: MicrovmSandboxBlockRole::Distro,
+            read_only: true,
+        };
+        let scratch = MicrovmSandboxBlockConfig {
+            role: MicrovmSandboxBlockRole::Scratch,
+            read_only: false,
+        };
+        assert!(!ramfs_overlay_requested("quiet").unwrap());
+        assert!(ramfs_overlay_requested("quiet nvx_overlay_upper=ramfs").unwrap());
+        assert!(ramfs_overlay_requested("nvx_overlay_upper=disk").is_err());
+        assert!(ramfs_overlay_requested("nvx_overlay_upper=").is_err());
+        assert!(ramfs_overlay_requested("quiet nvx_overlay_upper").is_err());
+        assert!(
+            ramfs_overlay_requested("nvx_overlay_upper=ramfs nvx_overlay_upper=ramfs").is_err()
+        );
+        assert!(ramfs_overlay_requested("nvx_overlay_upper=ramfs nvx_overlay_upper").is_err());
+        assert!(ramfs_overlay_requested("nvx_overlay_upper nvx_overlay_upper=ramfs").is_err());
+        assert!(validate_microvm_sandbox_blocks(&[distro], false).is_err());
+        validate_microvm_sandbox_blocks(&[distro], true).unwrap();
+        assert!(validate_microvm_sandbox_blocks(&[], true).is_err());
+        assert!(validate_microvm_sandbox_blocks(&[scratch], true).is_err());
+        assert!(validate_microvm_sandbox_blocks(&[distro, scratch], true).is_err());
+
+        let mut cmdline = format!("{MICROVM_BASE_COMMAND_LINE} nvx_overlay_upper=ramfs");
+        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &[distro])
+            .unwrap();
+        assert!(cmdline.contains("virtio_mmio.device=0x1000@0xd0003000:4"));
+        assert!(!cmdline.contains("virtio_mmio.device=0x1000@0xd0006000:11"));
+
+        let mut cmdline = format!("{MICROVM_BASE_COMMAND_LINE} nvx_overlay_upper");
+        assert!(
+            append_microvm_virtio_discovery(
+                &mut cmdline,
+                None,
+                false,
+                &[],
+                false,
+                false,
+                &[distro, scratch]
+            )
             .is_err()
         );
     }
