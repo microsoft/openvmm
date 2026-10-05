@@ -323,7 +323,7 @@ For microVM virtio-fs, the manifest always records the fixed, guest-discoverable
 slot. A dormant slot has no host attachment or filesystem policy and carries
 explicit dormant device-private state. An active slot also records the stable
 attachment ID, exact canonical host path, pinned root identity, guest mount
-target, access mode, no-DAX queue policy, and `live-revalidate` restore mode.
+target, access mode, ownership mode, no-DAX queue policy, and `live-revalidate` restore mode.
 Its device-private payload records FUSE negotiation, namespace IDs and aliases,
 lookup counts, reopenable handles, bounded directory-entry snapshots and
 cookies, and queue progress. Native file descriptors and Windows handles are
@@ -331,7 +331,7 @@ never serialized.
 
 Restoring an active slot requires a fresh
 `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment with the same canonical
-host path, target, and mode. OpenVMM independently validates the root and every
+host path, target, and mode, and the same `--mount-owner` mode. OpenVMM independently validates the root and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
 restore without an attachment or bind a new one. For a new attachment, the
 resumed guest explicitly mounts tag `microvm`; the cold-boot mount hook does not
