@@ -6,8 +6,17 @@
 
 use crate::Error;
 use crate::WhpResultExt;
+use crate::profile_features::WhpFeatures;
+use crate::profile_features::profile_features;
+use crate::time_abi::host_cpuid;
+use crate::time_abi::processor_features;
+use crate::time_abi::unlisted_cpuid;
+use cpu_profile::CpuProfile;
 use cpu_profile::cpuid::CpuidEntry;
 use cpu_profile::fingerprint::BackendFingerprint;
+use whp::abi::WHV_PROCESSOR_FEATURES;
+use whp::abi::WHV_PROCESSOR_FEATURES1;
+use whp::abi::WHV_PROCESSOR_XSAVE_FEATURES;
 use whp::abi::WHV_X64_MSR_EXIT_BITMAP;
 
 const METHOD: &str = "WHvGetVirtualProcessorCpuidOutput on a probe partition with every processor \
@@ -59,15 +68,15 @@ pub fn cpu_fingerprint() -> Result<BackendFingerprint, Error> {
         .zip(whp::capabilities::processor_xsave_features().ok());
     let mut rejected_features = None;
     let mut partition = None;
-    if let Some(features) = available {
-        match probe_partition(Some(features)) {
+    if let Some((processor, xsave)) = available {
+        match probe_partition(ProbeFeatures::Available(processor, xsave)) {
             Ok(probe) => partition = Some(probe),
             Err(error) => rejected_features = Some(error),
         }
     }
     let partition = match partition {
         Some(partition) => partition,
-        None => probe_partition(None)?,
+        None => probe_partition(ProbeFeatures::Default)?,
     };
     let cpuid = probe_cpuid(&partition)?;
 
@@ -149,15 +158,69 @@ pub fn cpu_fingerprint() -> Result<BackendFingerprint, Error> {
     Ok(fingerprint)
 }
 
-/// Creates a probe partition with one virtual processor and the
-/// in-hypervisor x2APIC. `features` are the processor and XSAVE features to
-/// enable, or `None` for WHP's default processor features.
-fn probe_partition(
-    features: Option<(
-        whp::ProcessorFeatures,
-        whp::abi::WHV_PROCESSOR_XSAVE_FEATURES,
-    )>,
-) -> Result<whp::Partition, Error> {
+/// Returns what VP 0 of a transient probe partition configured from
+/// `profile` reads at every entry of the host's CPUID outside the profile's
+/// tables ([`cpu_profile::unlisted_cpuid_candidates`]), each read at
+/// subleaf 0 if subleaf-independent, for the `--cpu-fingerprint` check that
+/// those entries read zero (`E_CPU_UNLISTED`).
+///
+/// It measures what a time ABI cold boot checks on VP 0 of its partition.
+/// The probe partition's processor feature banks and XSAVE features derive
+/// from the profile as `WhpTimeAbi::configure` derives them, without the
+/// features that the time ABI hides, so that, unlike [`cpu_fingerprint`]'s
+/// probe partition with every available feature, it does not present the
+/// XSAVE components of features that no profile enables, such as CET's. It
+/// programs no CPUID results, which cover only the profile's own entries.
+/// The partition has no memory, never runs, and is deleted before this
+/// returns.
+///
+/// Fails with `E_PROFILE_UNSUPPORTED` if WHP cannot present the profile's
+/// features.
+pub fn profile_unlisted_cpuid(profile: &CpuProfile) -> Result<Vec<CpuidEntry>, Error> {
+    let available =
+        whp::capabilities::processor_features().for_op("query the processor features")?;
+    let available_xsave =
+        whp::capabilities::processor_xsave_features().for_op("query the XSAVE features")?;
+    let derived = profile_features(
+        profile,
+        WhpFeatures {
+            banks: [available.bank0.0, available.bank1.0],
+            xsave: available_xsave.0,
+        },
+    )?;
+    let mut features = available;
+    features.bank0 = WHV_PROCESSOR_FEATURES(derived.banks[0]);
+    features.bank1 = WHV_PROCESSOR_FEATURES1(derived.banks[1]);
+    let partition = probe_partition(ProbeFeatures::Profile(
+        processor_features(features),
+        WHV_PROCESSOR_XSAVE_FEATURES(derived.xsave),
+    ))?;
+    let vp = partition.vp(0);
+    let leaves = unlisted_cpuid(profile, host_cpuid(), |leaf, subleaf| {
+        vp.get_cpuid_output(leaf, subleaf)
+            .map(|output| [output.Eax, output.Ebx, output.Ecx, output.Edx])
+    })
+    .for_op("query the probe virtual processor CPUID")?;
+    Ok(leaves
+        .into_iter()
+        .map(|leaf| CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+        .collect())
+}
+
+/// The processor and XSAVE features of a probe partition.
+enum ProbeFeatures {
+    /// WHP's default processor features.
+    Default,
+    /// Every processor and XSAVE feature that WHP reports as available.
+    Available(whp::ProcessorFeatures, WHV_PROCESSOR_XSAVE_FEATURES),
+    /// The features of a CPU profile's time ABI partition, set through the
+    /// feature banks as a time ABI partition sets them.
+    Profile(whp::ProcessorFeatures, WHV_PROCESSOR_XSAVE_FEATURES),
+}
+
+/// Creates a probe partition with one virtual processor, the in-hypervisor
+/// x2APIC, and `features`.
+fn probe_partition(features: ProbeFeatures) -> Result<whp::Partition, Error> {
     let mut config =
         whp::PartitionConfig::new().for_op("create the fingerprint probe partition")?;
     config
@@ -168,10 +231,23 @@ fn probe_partition(
             whp::abi::WHvX64LocalApicEmulationModeX2Apic,
         ))
         .for_op("set the probe partition APIC emulation mode")?;
-    if let Some((processor, xsave)) = features {
+    let (processor, xsave) = match features {
+        ProbeFeatures::Default => (None, None),
+        ProbeFeatures::Available(processor, xsave) => (
+            Some(whp::PartitionProperty::ProcessorFeatures(processor)),
+            Some(xsave),
+        ),
+        ProbeFeatures::Profile(processor, xsave) => (
+            Some(whp::PartitionProperty::ProcessorFeaturesBanks(processor)),
+            Some(xsave),
+        ),
+    };
+    if let Some(processor) = processor {
         config
-            .set_property(whp::PartitionProperty::ProcessorFeatures(processor))
+            .set_property(processor)
             .for_op("set the probe partition processor features")?;
+    }
+    if let Some(xsave) = xsave {
         config
             .set_property(whp::PartitionProperty::ProcessorXsaveFeatures(xsave))
             .for_op("set the probe partition XSAVE features")?;
@@ -320,6 +396,8 @@ fn probe_tsc_scaling(host_frequency_hz: u64, fingerprint: &mut BackendFingerprin
 #[cfg(test)]
 mod tests {
     use super::cpu_fingerprint;
+    use super::profile_unlisted_cpuid;
+    use crate::time_abi::host_cpuid;
     use cpu_profile::cpuid;
     use test_with_tracing::test;
 
@@ -339,6 +417,41 @@ mod tests {
             !fingerprint
                 .unavailable
                 .contains_key("whp.probe.ProcessorFeatures")
+        );
+    }
+
+    /// The fingerprint check reads the entries outside the host's profile on
+    /// a partition configured from the profile, as a cold boot does: they
+    /// read zero there, even where the probe partition with every available
+    /// feature presents host data, such as the CET XSAVE components of a
+    /// CET-capable host.
+    #[test]
+    #[ignore = "requires WHP"]
+    fn a_partition_of_the_host_profile_reads_zero_outside_it() {
+        let profile = match cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()) {
+            Ok(profile) => profile,
+            Err(err) => {
+                println!("skipped: no profile for this host: {err}");
+                return;
+            }
+        };
+        let presented = profile_unlisted_cpuid(profile).unwrap();
+        let candidates = cpu_profile::unlisted_cpuid_candidates(profile, host_cpuid());
+        assert_eq!(
+            presented
+                .iter()
+                .map(cpuid::CpuidEntry::key)
+                .collect::<Vec<_>>(),
+            candidates
+        );
+        cpu_profile::check_unlisted_cpuid(profile, &presented).unwrap();
+        let fingerprint = cpu_fingerprint().unwrap();
+        let all_features = cpu_profile::unlisted_cpuid_violations(profile, &fingerprint.cpuid);
+        println!(
+            "{}: {} host entries outside the profile read zero on its partition; the probe \
+             partition with every feature presents {all_features:?}",
+            profile.id(),
+            candidates.len()
         );
     }
 }
