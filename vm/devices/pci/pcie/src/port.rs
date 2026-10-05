@@ -849,6 +849,24 @@ impl PcieDownstreamPort {
         bail!("port name does not match")
     }
 
+    /// Disconnect a device previously attached with [`Self::add_pcie_device`].
+    pub fn remove_pcie_device(&mut self, device_name: &str) -> anyhow::Result<()> {
+        let Some((connected_name, _)) = &self.link else {
+            bail!("port '{}' is empty", self.name);
+        };
+        if connected_name.as_ref() != device_name {
+            bail!(
+                "device '{}' is not connected to port '{}'",
+                device_name,
+                self.name
+            );
+        }
+
+        self.link = None;
+        self.cfg_space.set_presence_detect_state(false);
+        Ok(())
+    }
+
     /// Hot-add a device to this port at runtime.
     ///
     /// Unlike `add_pcie_device`, this method verifies the port is hotplug-capable
@@ -916,6 +934,7 @@ impl PcieDownstreamPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestPciDevice;
     use crate::test_helpers::TestPcieMmioRegistration;
     use chipset_device::io::IoResult;
     use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
@@ -966,27 +985,6 @@ mod tests {
                 }],
             }),
         )
-    }
-
-    // Mock device for testing
-    struct MockDevice;
-
-    impl GenericPciBusDevice for MockDevice {
-        fn pci_cfg_read(
-            &mut self,
-            _offset: u16,
-            _value: ByteEnabledDwordRead<'_>,
-        ) -> Option<IoResult> {
-            None
-        }
-
-        fn pci_cfg_write(
-            &mut self,
-            _offset: u16,
-            _value: ByteEnabledDwordWrite,
-        ) -> Option<IoResult> {
-            None
-        }
     }
 
     #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -1053,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_pcie_device_sets_presence_detect_state() {
+    fn test_add_remove_pcie_device_updates_presence_detect_state() {
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
 
         // Create a port with hotplug support
@@ -1090,7 +1088,7 @@ mod tests {
         );
 
         // Add a device to the port
-        let mock_device = Box::new(MockDevice);
+        let mock_device = Box::new(TestPciDevice);
         let result = port.add_pcie_device("test-port", "mock-device", mock_device);
         assert!(result.is_ok(), "Adding device should succeed");
 
@@ -1101,6 +1099,26 @@ mod tests {
             present_presence_detect, 1,
             "Presence detect state should be 1 after adding device"
         );
+
+        let error = port
+            .remove_pcie_device("other-device")
+            .expect_err("removing a different device should fail");
+        assert_eq!(
+            error.to_string(),
+            "device 'other-device' is not connected to port 'test-port'"
+        );
+        assert!(port.link.is_some());
+        assert_eq!((port.cfg_space.read_u32(0x58) >> 22) & 0x1, 1);
+
+        port.remove_pcie_device("mock-device")
+            .expect("removing the connected device should succeed");
+        assert!(port.link.is_none());
+        assert_eq!((port.cfg_space.read_u32(0x58) >> 22) & 0x1, 0);
+
+        let error = port
+            .remove_pcie_device("mock-device")
+            .expect_err("removing from an empty port should fail");
+        assert_eq!(error.to_string(), "port 'test-port' is empty");
     }
 
     #[test]
@@ -1133,7 +1151,7 @@ mod tests {
         );
 
         // Add a device to the port (should not panic even without hotplug support)
-        let mock_device = Box::new(MockDevice);
+        let mock_device = Box::new(TestPciDevice);
         let result = port.add_pcie_device("test-port", "mock-device", mock_device);
         assert!(
             result.is_ok(),

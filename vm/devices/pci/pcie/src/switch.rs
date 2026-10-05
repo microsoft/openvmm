@@ -373,6 +373,19 @@ impl GenericPcieSwitch {
             .context("failed to add PCIe device to downstream port")?;
         Ok(())
     }
+
+    /// Disconnect a device from the downstream port identified by its devfn.
+    pub fn remove_pcie_device(&mut self, port_devfn: u8, device_name: &str) -> anyhow::Result<()> {
+        let (_, _, downstream_port) = self
+            .downstream_ports
+            .iter_mut()
+            .find(|(devfn, _, _)| *devfn == port_devfn)
+            .ok_or_else(|| anyhow::anyhow!("port devfn {} not found", port_devfn))?;
+        downstream_port
+            .port
+            .remove_pcie_device(device_name)
+            .context("failed to remove PCIe device from downstream port")
+    }
 }
 
 impl ChangeDeviceState for GenericPcieSwitch {
@@ -704,6 +717,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestPciDevice;
     use pci_core::msi::MsiConnection;
     use pci_core::test_helpers::TestCfgAccess;
 
@@ -734,6 +748,42 @@ mod tests {
     /// Builds a switch from a definition, unwrapping the (test-only) result.
     fn build(definition: GenericPcieSwitchDefinition) -> GenericPcieSwitch {
         GenericPcieSwitch::new(definition).unwrap()
+    }
+
+    #[test]
+    fn test_remove_pcie_device_from_downstream_port() {
+        let mut switch = build(switch_def(
+            "test-switch",
+            1,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
+
+        switch
+            .add_pcie_device(0, "test-device", Box::new(TestPciDevice))
+            .expect("adding the device should succeed");
+        switch
+            .remove_pcie_device(0, "test-device")
+            .expect("removing the connected device should succeed");
+
+        assert!(switch.downstream_ports[0].2.port.link.is_none());
+    }
+
+    #[test]
+    fn test_remove_pcie_device_rejects_invalid_downstream_port() {
+        let mut switch = build(switch_def(
+            "test-switch",
+            1,
+            false,
+            PciePortSettings::default(),
+            MsiTarget::disconnected(),
+        ));
+
+        let error = switch
+            .remove_pcie_device(1, "test-device")
+            .expect_err("an unknown devfn should fail");
+        assert_eq!(error.to_string(), "port devfn 1 not found");
     }
 
     fn tlp_prefixing_settings(max_prefixes: MaxEndEndTlpPrefixes) -> PciePortSettings {
@@ -1002,9 +1052,6 @@ mod tests {
 
     #[test]
     fn test_switch_routing_functionality() {
-        use crate::test_helpers::TestPcieEndpoint;
-        use chipset_device::io::IoResult;
-
         let mut switch = build(switch_def(
             "test-switch",
             2,
@@ -1015,9 +1062,7 @@ mod tests {
 
         // Verify that Switch implements routing functionality by testing add_pcie_device method
         // This tests that the switch can accept device connections (routing capability)
-        let test_device =
-            TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
-        let add_result = switch.add_pcie_device(0, "test-device", Box::new(test_device));
+        let add_result = switch.add_pcie_device(0, "test-device", Box::new(TestPciDevice));
         // Should succeed for port 0 (first downstream port)
         assert!(add_result.is_ok());
 

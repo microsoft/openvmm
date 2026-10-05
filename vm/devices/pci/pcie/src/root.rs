@@ -370,6 +370,19 @@ impl GenericPcieRootComplex {
         root_port.connect_device(name, dev)
     }
 
+    /// Disconnect a device from the root port identified by its devfn.
+    pub fn remove_pcie_device(&mut self, port_devfn: u8, device_name: &str) -> anyhow::Result<()> {
+        let root_port = match self.devices.iter_mut().find(|(d, _)| *d == port_devfn) {
+            Some((_, BusDevice::RootPort { port, .. })) => port,
+            Some((_, BusDevice::Rciep { .. })) => {
+                anyhow::bail!("devfn {port_devfn} is not a root port")
+            }
+            None => anyhow::bail!("devfn {port_devfn} is not a root port"),
+        };
+
+        root_port.port.remove_pcie_device(device_name)
+    }
+
     /// Enumerate the downstream ports of the root complex.
     pub fn downstream_ports(&self) -> Vec<DownstreamPortInfo> {
         self.devices
@@ -1155,6 +1168,95 @@ mod tests {
             .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn test_remove_pcie_device_from_root_port() {
+        let mut rc = instantiate_root_complex(0, 255, 1);
+        rc.add_pcie_device(0, "test-device", Box::new(TestPciDevice))
+            .expect("adding the device should succeed");
+        rc.remove_pcie_device(0, "test-device")
+            .expect("removing the connected device should succeed");
+
+        let BusDevice::RootPort { port, .. } = &rc.devices[0].1 else {
+            panic!("expected a root port");
+        };
+        assert!(port.port.link.is_none());
+    }
+
+    #[test]
+    fn test_remove_pcie_device_rejects_invalid_root_port() {
+        let mut rc = instantiate_root_complex(0, 255, 1);
+        let error = rc
+            .remove_pcie_device(1, "test-device")
+            .expect_err("an unknown devfn should fail");
+        assert_eq!(error.to_string(), "devfn 1 is not a root port");
+    }
+
+    #[test]
+    fn test_remove_pcie_device_waits_for_in_flight_config_access() {
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1a;
+        const ENDPOINT_ECAM: u64 = 256 * 4096;
+
+        let mut rc = instantiate_root_complex(0, 255, 1);
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[1]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[1]).unwrap();
+
+        let (endpoint, access_started_rx, release_access_tx) = BlockingEndpoint::new();
+        rc.add_pcie_device(0, "test-device", Box::new(endpoint))
+            .unwrap();
+
+        let rc = Arc::new(Mutex::new(rc));
+        let access_rc = rc.clone();
+        let access_thread = std::thread::spawn(move || {
+            let mut value = 0;
+            access_rc
+                .lock()
+                .mmio_read(ENDPOINT_ECAM, value.as_mut_bytes())
+                .unwrap();
+            assert_eq!(value, 0x1234_5678);
+        });
+
+        access_started_rx
+            .recv()
+            .expect("config access should reach the endpoint");
+        assert!(
+            rc.try_lock().is_none(),
+            "an in-flight config access must hold the root-complex lock"
+        );
+
+        let remove_rc = rc.clone();
+        let (remove_started_tx, remove_started_rx) = std::sync::mpsc::channel();
+        let (remove_done_tx, remove_done_rx) = std::sync::mpsc::channel();
+        let remove_thread = std::thread::spawn(move || {
+            remove_started_tx.send(()).unwrap();
+            remove_rc
+                .lock()
+                .remove_pcie_device(0, "test-device")
+                .unwrap();
+            remove_done_tx.send(()).unwrap();
+        });
+
+        remove_started_rx.recv().unwrap();
+        let remove_before_release =
+            remove_done_rx.recv_timeout(std::time::Duration::from_millis(100));
+
+        release_access_tx.send(()).unwrap();
+        access_thread.join().unwrap();
+        remove_thread.join().unwrap();
+
+        assert!(
+            matches!(
+                remove_before_release,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "removal must wait for an in-flight config access"
+        );
+        assert!(
+            remove_done_rx.try_recv().is_ok(),
+            "removal should complete after the config access releases the lock"
+        );
     }
 
     fn instantiate_root_complex_with_chbcr(
@@ -2113,10 +2215,9 @@ mod tests {
         // root port returns an error with the port's name.
         let mut rc = instantiate_root_complex(0, 0, 1);
 
-        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
         // Root port 0 sits at devfn 0; adding an RCiEP there should fail.
         let err = rc
-            .add_rciep(0, "rciep-collision", Box::new(rciep))
+            .add_rciep(0, "rciep-collision", Box::new(TestPciDevice))
             .expect_err("should fail: devfn occupied by root port");
         assert_eq!(err.as_ref(), "test-port-0");
     }
@@ -2130,11 +2231,10 @@ mod tests {
             .build()
             .unwrap();
 
-        let rciep1 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
-        let rciep2 = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
-        rc.add_rciep(0, "rciep-first", Box::new(rciep1)).unwrap();
+        rc.add_rciep(0, "rciep-first", Box::new(TestPciDevice))
+            .unwrap();
         let err = rc
-            .add_rciep(0, "rciep-second", Box::new(rciep2))
+            .add_rciep(0, "rciep-second", Box::new(TestPciDevice))
             .expect_err("should fail: devfn already has an RCiEP");
         assert_eq!(err.as_ref(), "rciep-first");
     }
@@ -2149,9 +2249,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let rciep = TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
         let err = rc
-            .add_rciep(0, "rciep-reserved", Box::new(rciep))
+            .add_rciep(0, "rciep-reserved", Box::new(TestPciDevice))
             .expect_err("should fail: device 0 is reserved");
         assert_eq!(err.as_ref(), "reserved device number 0x0");
     }
