@@ -72,6 +72,58 @@ WSL-style links, which Windows path resolution never follows, so Windows tools
 see guest-created links as inaccessible files. Host software that later reads
 the exported directory must treat guest-created links as untrusted.
 
+### Host identity of guest operations
+
+`--mount-owner` selects the host identity that performs the guest's
+operations:
+
+- `vmm` (the default): every operation runs as the OpenVMM process, which
+  therefore owns every file and directory that the guest creates. The guest
+  enforces permissions against the ownership and mode bits that HostFs
+  reports.
+- `caller`: each operation runs as the UID and GID that the guest kernel
+  reports for its caller, so a workload's files are owned by its own numeric
+  identity on the host, and the host also enforces permissions for that
+  identity. Guest UID 0 and GID 0 are squashed to the owner and group of the
+  export root, so the guest can create neither root-owned nor setuid-root
+  host files. OpenVMM therefore refuses an export root owned by UID 0 or
+  GID 0.
+
+```bash
+openvmm --machine microvm \
+  --mount /mnt/share,path/to/share,rw \
+  --mount-owner caller \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
+
+In `caller` mode, the request queue worker switches only its own thread's
+credentials for one request at a time: it sets the filesystem UID and GID
+with `setfsuid` and `setfsgid`, drops every supplementary group other than
+that GID, and clears the effective capabilities, then restores all of them
+before it handles anything else. Session negotiation, `FORGET`, and handle
+release do not access host files and run unchanged. Assuming an identity
+other than OpenVMM's own, or dropping OpenVMM's other supplementary groups,
+needs `CAP_SETUID` and `CAP_SETGID`, for example as ambient capabilities of
+an unprivileged OpenVMM process. Without them, only a caller whose UID and
+GID match OpenVMM's filesystem UID and GID can run, and only if OpenVMM has
+no other supplementary groups. A request that cannot run as its caller,
+because a credential switch fails or the capabilities are missing, fails
+with `EPERM`; HostFs never falls back to OpenVMM's identity, groups, or
+capabilities. `caller` mode requires a Linux host. Windows has no
+per-request POSIX identity to switch to, so OpenVMM rejects
+`--mount-owner caller` there.
+
+```admonish warning
+The guest kernel reports each caller's identity, and guest root may assume
+any identity inside the guest. Guest root and a compromised guest kernel can
+therefore act as any nonzero host UID and GID inside the export, including
+leaving setuid files owned by it. Export only trees that every such identity
+may modify, and keep the export on a host filesystem mounted `nosuid` when
+host users might execute guest-created files. Grant OpenVMM only
+`CAP_SETUID` and `CAP_SETGID`: these capabilities let it assume any host
+identity.
+```
+
 `SectionFs`, aggregate roots, alternate tags, PCI transport, DAX, and extra
 queues are not part of the microVM profile.
 
@@ -88,12 +140,21 @@ lookups and newly opened directories still observe the live host tree.
 
 Restoring a snapshot captured with an active attachment requires a fresh
 `--mount` argument and the exact same denied-path set, canonical host path,
-guest target, and mode. Identity validation remains independent: before any vCPU starts,
+guest target, mode, and `--mount-owner` mode. Identity validation remains independent: before any vCPU starts,
 OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
 without being followed, and an alias whose ancestor has become a link fails
 restore.
+
+`--mount-owner caller` applies only to guest requests. Capture and restore
+still revalidate saved names and reopen saved handles as the OpenVMM process.
+Unless OpenVMM may bypass file permissions, as root may, capture therefore
+fails while the guest holds a name inside a directory that OpenVMM cannot
+search. Restore fails when OpenVMM cannot reopen a saved handle with its saved
+access, such as a handle open for writing on a file that a guest caller owns.
+OpenVMM releases that predate `--mount-owner` reject the device state of a
+`caller` attachment rather than restore it as `vmm`.
 
 A snapshot captured without `--mount` records the fixed slot as dormant. It
 may restore without an attachment, or bind a new `--mount` attachment. Because
@@ -163,6 +224,8 @@ false success.
 
 - Device implementation:
   `vm/devices/virtio/virtiofs/`
+- Per-thread filesystem credentials:
+  `vm/devices/support/fs/lxutil/src/unix/credentials.rs`
 - FUSE session implementation:
   `vm/devices/support/fs/fuse/`
 - Resource contract:

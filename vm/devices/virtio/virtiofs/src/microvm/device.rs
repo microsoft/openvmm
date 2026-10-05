@@ -6,6 +6,7 @@
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MICROVM_MOUNT_TAG;
 use super::profile::MICROVM_REQUEST_QUEUES;
+use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
 use super::saved_state::SavedState;
 use super::state::save_dormant_microvm_state;
@@ -55,6 +56,7 @@ impl VirtioFsDevice {
         );
         device.microvm_attachment_id = Some(attachment_id);
         device.microvm_profile = Some(profile);
+        device.caller_identity = fs.caller_identity();
         device.stateful_fs = Some(fs);
         Ok(device)
     }
@@ -83,12 +85,14 @@ impl VirtioFsDevice {
 
     /// Creates the fixed no-DAX microVM HostFs device directly from the
     /// `Microvm` resource fields and its process-local host root.
+    #[expect(clippy::too_many_arguments)]
     pub fn new_microvm_hostfs(
         driver_source: &VmTaskDriverSource,
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
         denied_paths: Vec<String>,
+        owner_mode: MicroVmOwnerMode,
         root_path: impl AsRef<Path>,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> anyhow::Result<Self> {
@@ -97,7 +101,8 @@ impl VirtioFsDevice {
             root_identity,
             read_only,
             denied_paths,
-        )?;
+        )?
+        .with_owner_mode(owner_mode)?;
         let fs = VirtioFs::new_microvm(root_path, profile.clone())?;
         Self::new_microvm(driver_source, profile, fs, notify_corruption)
     }
@@ -292,6 +297,7 @@ mod tests {
             root_identity,
             true,
             Vec::new(),
+            MicroVmOwnerMode::Vmm,
             temporary_directory.path(),
             None,
         )
@@ -340,6 +346,7 @@ mod tests {
             microvm_root_identity(root.path()).unwrap(),
             false,
             Vec::new(),
+            MicroVmOwnerMode::Vmm,
             root.path(),
             None,
         )
@@ -357,6 +364,7 @@ mod tests {
             microvm_root_identity(root.path()).unwrap(),
             false,
             Vec::new(),
+            MicroVmOwnerMode::Vmm,
             root.path(),
             None,
         )
@@ -428,6 +436,7 @@ mod tests {
             microvm_root_identity(root.path()).unwrap(),
             false,
             Vec::new(),
+            MicroVmOwnerMode::Vmm,
             root.path(),
             None,
         )
