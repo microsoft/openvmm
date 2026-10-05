@@ -5,12 +5,16 @@
 //! CPU part of host qualification.
 
 use crate::catalog;
+use crate::cpuid::CpuidEntry;
 use crate::error::ProfileError;
 use crate::fingerprint::CpuFingerprint;
 use crate::profile::CpuProfile;
 use crate::signature::HostCpuSignature;
+use crate::surface::CpuidPresentation;
 use crate::surface::HostCpuSurface;
+use crate::surface::support_violations;
 use crate::surface::verify_support;
+use crate::surface::verify_support_with_unlisted;
 
 /// The prefix of the summary line of a fingerprint check.
 pub const SUMMARY_PREFIX: &str = "NVX-CPU-PROFILE:";
@@ -71,6 +75,24 @@ impl FingerprintCheck {
 /// a probe partition's view, that it presents zero at every CPUID entry
 /// outside the profile's tables (`E_CPU_UNLISTED`).
 pub fn check_fingerprint(fingerprint: &CpuFingerprint) -> FingerprintCheck {
+    check_fingerprint_with(fingerprint, |_| Ok(None))
+}
+
+/// Checks a host fingerprint as [`check_fingerprint`] does, but for MSHV and
+/// WHP takes the CPUID entries outside the selected profile's tables from
+/// `configured`, as a cold boot checks them: `configured` returns what VP 0
+/// of a partition configured from the profile reads at the host's
+/// [`unlisted_cpuid_candidates`](crate::unlisted_cpuid_candidates), or
+/// `None` to check the fingerprint's own probe partition instead.
+///
+/// The fingerprint's probe partition enables every feature the backend
+/// offers, so it can present entries that a partition of the profile does
+/// not, such as the XSAVE components of CET. `configured` runs only when the
+/// backend supports the profile otherwise; its failure fails the check.
+pub fn check_fingerprint_with(
+    fingerprint: &CpuFingerprint,
+    configured: impl FnOnce(&CpuProfile) -> Result<Option<Vec<CpuidEntry>>, ProfileError>,
+) -> FingerprintCheck {
     let cpu = &fingerprint.host.cpu;
     let mut vendor = [0; 12];
     if cpu.vendor.len() == vendor.len() {
@@ -81,16 +103,33 @@ pub fn check_fingerprint(fingerprint: &CpuFingerprint) -> FingerprintCheck {
         Ok(profile) => FingerprintCheck {
             host,
             profile: Some(profile),
-            result: verify_support(
-                profile,
-                &HostCpuSurface::from_fingerprint(&fingerprint.backend),
-            ),
+            result: check_support(profile, fingerprint, configured),
         },
         Err(error) => FingerprintCheck {
             host,
             profile: None,
             result: Err(error),
         },
+    }
+}
+
+/// Checks that the backend of `fingerprint` supports `profile`, reading the
+/// entries outside the profile's tables from `configured` if it returns
+/// them.
+fn check_support(
+    profile: &CpuProfile,
+    fingerprint: &CpuFingerprint,
+    configured: impl FnOnce(&CpuProfile) -> Result<Option<Vec<CpuidEntry>>, ProfileError>,
+) -> Result<(), ProfileError> {
+    let surface = HostCpuSurface::from_fingerprint(&fingerprint.backend);
+    if surface.presentation != CpuidPresentation::PassThroughGuestView
+        || !support_violations(profile, &surface).is_empty()
+    {
+        return verify_support(profile, &surface);
+    }
+    match configured(profile)? {
+        Some(presented) => verify_support_with_unlisted(profile, &surface, &presented),
+        None => verify_support(profile, &surface),
     }
 }
 
@@ -209,5 +248,138 @@ mod tests {
         // apply.
         let fingerprint = fingerprint_with(profile, "kvm", entries);
         check_fingerprint(&fingerprint).result.unwrap();
+    }
+
+    /// A WHP host whose probe partition, with every available feature,
+    /// presents CET's XSAVE components, which the profile does not enable,
+    /// as the root partition of a 12th generation Intel Core host reports
+    /// them.
+    fn cet_host() -> CpuFingerprint {
+        let profile = profile("intel.alderlake.v1");
+        let mut entries = profile_entries(profile);
+        entries.push(CpuidEntry::new(0xd, Some(11), [0x10, 0, 1, 0]));
+        entries.push(CpuidEntry::new(0xd, Some(12), [0x18, 0, 1, 0]));
+        entries.sort_by_key(CpuidEntry::key);
+        fingerprint_with(profile, "whp", entries)
+    }
+
+    #[test]
+    fn checks_unlisted_entries_on_a_partition_configured_from_the_profile() {
+        let fingerprint = cet_host();
+        // The probe partition's own view fails, though a cold boot passes.
+        let check = check_fingerprint(&fingerprint);
+        let error = check.result.unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuUnlisted);
+        assert!(
+            error.message.ends_with(
+                "CPUID 0xd.11 is outside the profile and reads EAX 0x10, EBX 0x0, ECX 0x1, \
+                 EDX 0x0; CPUID 0xd.12 is outside the profile and reads EAX 0x18, EBX 0x0, \
+                 ECX 0x1, EDX 0x0"
+            ),
+            "{error}"
+        );
+
+        // A partition configured from the profile reads zero there.
+        let zeros = [
+            (0xd, Some(11)),
+            (0xd, Some(12)),
+            (0x14, Some(1)),
+            (0x20, None),
+        ]
+        .map(|(leaf, subleaf)| CpuidEntry::new(leaf, subleaf, [0; 4]));
+        let mut asked = None;
+        let check = check_fingerprint_with(&fingerprint, |profile| {
+            asked = Some(profile.id().to_owned());
+            Ok(Some(zeros.to_vec()))
+        });
+        check.result.as_ref().unwrap();
+        assert_eq!(asked.as_deref(), Some("intel.alderlake.v1"));
+        assert!(
+            check
+                .summary_line(&fingerprint)
+                .starts_with("NVX-CPU-PROFILE: status=pass backend=whp generation=alderlake "),
+            "{}",
+            check.summary_line(&fingerprint)
+        );
+
+        // A non-zero entry of the configured partition fails.
+        let mut presented = zeros.to_vec();
+        presented[2] = CpuidEntry::new(0x14, Some(1), [0x0249_0002, 0x003f_003f, 0, 0]);
+        let error = check_fingerprint_with(&fingerprint, |_| Ok(Some(presented)))
+            .result
+            .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuUnlisted);
+        assert!(
+            error.message.ends_with(
+                "CPUID 0x14.1 is outside the profile and reads EAX 0x2490002, EBX 0x3f003f, \
+                 ECX 0x0, EDX 0x0"
+            ),
+            "{error}"
+        );
+
+        // Without a configured partition, the probe's own view counts.
+        assert_eq!(
+            check_fingerprint_with(&fingerprint, |_| Ok(None))
+                .result
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::CpuUnlisted
+        );
+        // A backend that cannot configure the partition fails the check.
+        let error = check_fingerprint_with(&fingerprint, |_| {
+            Err(ProfileError::new(
+                ProfileErrorCode::ProfileUnsupported,
+                "WHP rejects the features",
+            ))
+        })
+        .result
+        .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+    }
+
+    #[test]
+    fn configures_a_partition_only_when_it_decides_the_check() {
+        let unused = |_: &CpuProfile| -> Result<Option<Vec<CpuidEntry>>, ProfileError> {
+            panic!("the check configured a partition")
+        };
+        // KVM presents no host data outside the profile.
+        let profile = profile("intel.alderlake.v1");
+        check_fingerprint_with(&fingerprint(profile, "kvm"), unused)
+            .result
+            .unwrap();
+        // An unsupported profile fails first, naming every violation.
+        let mut entries = profile_entries(profile);
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.key() == (7, Some(0)))
+            .unwrap();
+        let [eax, ebx, ecx, edx] = entry.registers();
+        *entry = CpuidEntry::new(7, Some(0), [eax, ebx & !(1 << 5), ecx, edx]);
+        entries.push(CpuidEntry::new(0xd, Some(11), [0x10, 0, 1, 0]));
+        entries.sort_by_key(CpuidEntry::key);
+        let error = check_fingerprint_with(&fingerprint_with(profile, "whp", entries), unused)
+            .result
+            .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert!(
+            error
+                .message
+                .contains("CPUID 0x7.0 EBX bit 5 is not supported")
+        );
+        assert!(
+            error
+                .message
+                .contains("CPUID 0xd.11 is outside the profile")
+        );
+        // An unknown host has no profile to configure.
+        let mut unknown = cet_host();
+        unknown.host.cpu.signature = Hex32(0x0008_06c1);
+        assert_eq!(
+            check_fingerprint_with(&unknown, unused)
+                .result
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::ProfileHostUnknown
+        );
     }
 }
