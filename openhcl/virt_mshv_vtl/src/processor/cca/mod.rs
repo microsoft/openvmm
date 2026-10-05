@@ -418,24 +418,6 @@ fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>,
 }
 
 /// Adds an interrupt to an unbounded software active/pending list.
-fn queue_virtual_interrupt(candidates: &mut Vec<u64>, interrupt: PendingInterrupt) {
-    if let Some(lr) = candidates
-        .iter_mut()
-        .find(|lr| lr_is_valid(**lr) && **lr & ICH_LR_VINTID_MASK == u64::from(interrupt.intid))
-    {
-        *lr |= ICH_LR_PENDING;
-        return;
-    }
-
-    candidates.push(
-        u64::from(interrupt.intid)
-            | (u64::from(interrupt.priority) << ICH_LR_PRIORITY_SHIFT)
-            | if interrupt.group1 { ICH_LR_GROUP1 } else { 0 }
-            | ICH_LR_PENDING,
-    );
-}
-
-/// Adds an interrupt to an unbounded software active/pending list.
 fn queue_virtual_interrupts(candidates: &mut Vec<u64>, mut interrupts: HashMap<u64, PendingInterrupt>) {
     for lr in candidates.iter_mut() {
         if !lr_is_valid(*lr) {
@@ -1492,24 +1474,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn queueing_an_active_interrupt_marks_it_pending() {
-        const INTID: u32 = 7;
-        let mut candidates = vec![ICH_LR_ACTIVE | u64::from(INTID)];
-        let interrupt = |intid| PendingInterrupt {
-            intid,
-            priority: 0x80,
-            group1: true,
-        };
-
-        queue_virtual_interrupt(&mut candidates, interrupt(INTID));
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(
-            candidates[0] & ICH_LR_STATE_MASK,
-            ICH_LR_ACTIVE | ICH_LR_PENDING
-        );
-    }
 
     #[test]
     fn trapped_dir_deactivates_resident_and_overflow_interrupts() {

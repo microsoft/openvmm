@@ -139,24 +139,6 @@ impl GicV3Model {
         self.distributor.write_sysreg(&mut gicr, reg, value, wake)
     }
 
-    pub fn next_pending_interrupt(
-        &self,
-        vp: VpIndex,
-        running_priority: u8,
-    ) -> Option<PendingInterrupt> {
-        self.distributor
-            .next_pending_interrupt(vp, running_priority)
-    }
-
-    pub fn next_pending_private_interrupt(
-        &self,
-        vp: VpIndex,
-        running_priority: u8,
-    ) -> Option<PendingInterrupt> {
-        self.distributor
-            .next_private_interrupt(vp, running_priority)
-    }
-
     pub fn next_pending_private_interrupts(
         &self,
         vp: VpIndex,
@@ -164,24 +146,6 @@ impl GicV3Model {
     ) -> Option<HashMap<u64, PendingInterrupt>> {
         self.distributor
             .next_private_interrupts(vp, running_priority)
-    }
-
-    pub fn next_pending_spi_interrupt(
-        &self,
-        vp: VpIndex,
-        running_priority: u8,
-    ) -> Option<PendingInterrupt> {
-        self.distributor
-            .next_pending_spi_interrupt(vp, running_priority)
-    }
-
-    pub fn reserve_pending_spi_interrupt(
-        &self,
-        vp: VpIndex,
-        running_priority: u8,
-    ) -> Option<PendingInterrupt> {
-        self.distributor
-            .reserve_pending_spi_interrupt(vp, running_priority)
     }
 
     pub fn reserve_pending_spi_interrupts(
@@ -437,59 +401,6 @@ mod gicd {
             }
         }
 
-        pub fn next_pending_interrupt(
-            &self,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            let private = self.next_private_interrupt(vp, running_priority);
-            let spi = self.next_spi_interrupt(vp, running_priority);
-
-            match (private, spi) {
-                (Some(a), Some(b)) if interrupt_precedes(a, b) => Some(a),
-                (Some(_), Some(b)) => Some(b),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            }
-        }
-
-        pub fn next_pending_private_interrupt(
-            &self,
-            vp: VpIndex,
-            pending: u32,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            if !self.state.lock().enable_grp1_non_secure && !self.state.lock().enable_grp1_secure {
-                return None;
-            }
-
-            self.gicr
-                .get(vp.index() as usize)?
-                .select_private_interrupt(pending, running_priority)
-        }
-
-        pub fn next_pending_spi_interrupt(
-            &self,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            self.next_spi_interrupt(vp, running_priority)
-        }
-
-        pub fn reserve_pending_spi_interrupt(
-            &self,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            let mut state = self.state.lock();
-            let interrupt = self.next_spi_interrupt_locked(&state, vp, running_priority)?;
-            // Reserve while still holding the selection lock so another VP
-            // cannot select the same IRM-routed SPI.
-            Self::set_pending_locked(&mut state, interrupt.intid, false);
-            Self::set_in_flight_locked(&mut state, vp, interrupt.intid);
-            Some(interrupt)
-        }
 
         pub fn reserve_pending_spi_interrupts(
             &self,
@@ -505,20 +416,6 @@ mod gicd {
                 Self::set_in_flight_locked(&mut state, vp, intid as u32);
             }
             Some(interrupts)
-        }
-
-        pub fn next_private_interrupt(
-            &self,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            if !self.state.lock().enable_grp1_non_secure && !self.state.lock().enable_grp1_secure {
-                return None;
-            }
-
-            self.gicr
-                .get(vp.index() as usize)?
-                .next_private_interrupt(running_priority)
         }
 
         pub fn next_private_interrupts(
@@ -544,91 +441,6 @@ mod gicd {
                 let mut state = self.state.lock();
                 Self::set_pending_locked(&mut state, intid, false);
             }
-        }
-
-        fn next_spi_interrupt(
-            &self,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            let state = self.state.lock();
-            self.next_spi_interrupt_locked(&state, vp, running_priority)
-        }
-
-        fn next_spi_interrupt_locked(
-            &self,
-            state: &DistributorState,
-            vp: VpIndex,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            if !state.enable_grp0 && !state.enable_grp1_non_secure && !state.enable_grp1_secure {
-                return None;
-            }
-
-            let mut best = None;
-            let mut ready_words = state.pending_word_summary & !1;
-            while ready_words != 0 {
-                let word = ready_words.trailing_zeros() as usize;
-                ready_words &= ready_words - 1;
-
-                let mut group = 0;
-                if state.enable_grp0 {
-                    group |= !state.group_modifier[word] & !state.group_status[word];
-                }
-                if state.enable_grp1_non_secure {
-                    // modified bit: 0b1, status bit: 0b1, Reserved, treated as Non-secure Group 1
-                    group |= state.group_status[word];
-                }
-                if state.enable_grp1_secure {
-                    group |= state.group_modifier[word] & !state.group_status[word];
-                }
-
-                let mut candidates = (state.pending[word] | state.asserted[word])
-                    & state.enable[word]
-                    & group;
-
-                while candidates != 0 {
-                    let bit = candidates.trailing_zeros();
-                    candidates &= candidates - 1;
-
-                    let intid = word as u32 * 32 + bit;
-                    let mask = 1 << bit;
-                    let pending = state.pending[word] & mask != 0;
-                    let level_asserted =
-                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
-                    let group1 = (state.group_status[word] & mask) | (state.group_modifier[word] & mask) != 0;
-                    if !pending && !level_asserted {
-                        continue;
-                    }
-                    let owned_by_vp = state.in_flight[intid as usize] == Some(vp.index());
-                    if !pending && owned_by_vp {
-                        continue;
-                    }
-                    if intid > self.max_spi_intid
-                        || (state.in_flight[intid as usize].is_some() && !owned_by_vp)
-                        || (state.active[word] & mask != 0 && !owned_by_vp)
-                        || !self.spi_targets_vp(&state, intid, vp)
-                    {
-                        continue;
-                    }
-
-                    let priority = Self::priority(&state.priority, intid);
-                    if priority >= running_priority {
-                        continue;
-                    }
-
-                    let interrupt = PendingInterrupt {
-                        intid,
-                        priority,
-                        group1,
-                    };
-                    if best.is_none_or(|current| interrupt_precedes(interrupt, current)) {
-                        best = Some(interrupt);
-                    }
-                }
-            }
-
-            best
         }
 
         fn next_spi_interrupts_locked(
@@ -1285,10 +1097,6 @@ mod gicd {
         }
     }
 
-    fn interrupt_precedes(a: PendingInterrupt, b: PendingInterrupt) -> bool {
-        a.priority < b.priority || (a.priority == b.priority && a.intid < b.intid)
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1346,18 +1154,18 @@ mod gicd {
             assert!(distributor.write32(unimplemented_enable, u32::MAX));
             assert_eq!(distributor.read32(unimplemented_enable), Some(0));
 
-            // Group 0 is deliverable when enabled, and Aff3 selects the
-            // second redistributor rather than the Aff3 == 0 redistributor.
+            // Aff3 selects the second redistributor rather than the
+            // Aff3 == 0 redistributor for a deliverable Group 1 SPI.
             {
                 let mut state = distributor.state.lock();
-                state.enable_grp0 = true;
+                state.enable_grp1_non_secure = true;
                 state.enable[TEST_SPI as usize / 32] |= 1 << (TEST_SPI & 31);
+                state.group_status[TEST_SPI as usize / 32] |= 1 << (TEST_SPI & 31);
                 state.route[TEST_SPI as usize] = 1 << 32;
             }
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [VpIndex::new(1)]);
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(VpIndex::new(1), u8::MAX)
+                reserve_pending_spi(&distributor, VpIndex::new(1))
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1376,6 +1184,15 @@ mod gicd {
             write_gicr_sgi(distributor, register, value);
         }
 
+        fn reserve_pending_spi(
+            distributor: &Distributor,
+            vp: VpIndex,
+        ) -> Option<PendingInterrupt> {
+            distributor
+                .reserve_pending_spi_interrupts(vp, u8::MAX)?
+                .remove(&u64::from(TEST_SPI))
+        }
+
         #[test]
         fn level_spi_is_redelivered_until_deasserted() {
             let distributor = test_distributor();
@@ -1385,8 +1202,7 @@ mod gicd {
             // makes the SPI eligible for injection.
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp]);
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1395,8 +1211,7 @@ mod gicd {
             // while that delivery remains in flight.
             distributor.mark_spi_injected(vp, TEST_SPI);
             assert!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .is_none()
             );
 
@@ -1404,8 +1219,7 @@ mod gicd {
             // in-flight state and continues to suppress duplicate injection.
             distributor.retain_in_flight_spis(vp, |intid| intid == TEST_SPI);
             assert!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .is_none()
             );
 
@@ -1413,8 +1227,7 @@ mod gicd {
             // is still asserted, so the level-sensitive SPI is eligible again.
             distributor.retain_in_flight_spis(vp, |_| false);
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1425,8 +1238,7 @@ mod gicd {
             assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
             distributor.retain_in_flight_spis(vp, |_| false);
             assert!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .is_none()
             );
         }
@@ -1439,8 +1251,7 @@ mod gicd {
             assert_eq!(distributor.set_pending(TEST_SPI, true), Some(0));
             assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1472,8 +1283,7 @@ mod gicd {
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp]);
             assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1481,8 +1291,7 @@ mod gicd {
             distributor.mark_spi_injected(vp, TEST_SPI);
             distributor.retain_in_flight_spis(vp, |_| false);
             assert!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .is_none()
             );
         }
@@ -1497,23 +1306,20 @@ mod gicd {
 
             assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp0, vp1]);
             assert_eq!(
-                distributor
-                    .reserve_pending_spi_interrupt(vp0, u8::MAX)
+                reserve_pending_spi(&distributor, vp0)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
             assert_eq!(distributor.state.lock().in_flight_by_vp[0], [TEST_SPI]);
             assert!(
-                distributor
-                    .reserve_pending_spi_interrupt(vp1, u8::MAX)
+                reserve_pending_spi(&distributor, vp1)
                     .is_none()
             );
 
             distributor.cancel_spi_reservation(vp0, TEST_SPI);
             assert!(distributor.state.lock().in_flight_by_vp[0].is_empty());
             assert_eq!(
-                distributor
-                    .reserve_pending_spi_interrupt(vp1, u8::MAX)
+                reserve_pending_spi(&distributor, vp1)
                     .map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
@@ -1526,8 +1332,7 @@ mod gicd {
 
             assert_eq!(distributor.set_pending(TEST_SPI, true), Some(0));
             assert!(
-                distributor
-                    .reserve_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .is_some()
             );
             distributor.fold_list_registers(
@@ -1547,8 +1352,7 @@ mod gicd {
             assert!(state.in_flight_by_vp[0].is_empty());
             drop(state);
             assert_eq!(
-                distributor
-                    .next_pending_spi_interrupt(vp, u8::MAX)
+                reserve_pending_spi(&distributor, vp)
                     .map(|irq| irq.intid),
                 Some(TEST_SPI)
             );
@@ -1573,16 +1377,12 @@ mod gicd {
                     active: true,
                 }],
             );
-            assert!(distributor.next_private_interrupt(vp, u8::MAX).is_none());
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
 
             assert!(gicr.raise(TEST_PPI));
             distributor.fold_list_registers(vp, &[]);
-            assert_eq!(
-                distributor
-                    .next_private_interrupt(vp, u8::MAX)
-                    .map(|irq| irq.intid),
-                Some(TEST_PPI)
-            );
+            let interrupts = distributor.next_private_interrupts(vp, u8::MAX).unwrap();
+            assert_eq!(interrupts.get(&u64::from(TEST_PPI)).map(|irq| irq.intid), Some(TEST_PPI));
         }
 
         #[test]
@@ -1593,56 +1393,35 @@ mod gicd {
             let distributor = test_distributor();
             let vp = VpIndex::new(0);
             let both_pending = (1 << TEST_SGI) | (1 << TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            assert!(gicr.raise(TEST_SGI));
+            assert!(gicr.raise(TEST_PPI));
 
-            // A requested private interrupt is not deliverable until its
+            // Pending private interrupts are not deliverable until their
             // redistributor enable and Group 1 bits are both set.
-            assert!(
-                distributor
-                    .next_pending_private_interrupt(vp, both_pending, u8::MAX)
-                    .is_none()
-            );
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
             write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, both_pending);
-            assert!(
-                distributor
-                    .next_pending_private_interrupt(vp, both_pending, u8::MAX)
-                    .is_none()
-            );
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
             write_gicr_sgi(&distributor, GicrSgiRegister::ISENABLER0.0, both_pending);
 
             set_private_priority(&distributor, TEST_SGI, 0x40);
             set_private_priority(&distributor, TEST_PPI, 0x80);
 
-            // A priority equal to the PMR threshold is masked. Raising the
-            // threshold admits the SGI and preserves its programmed priority.
-            assert!(
-                distributor
-                    .next_pending_private_interrupt(vp, both_pending, 0x40)
-                    .is_none()
-            );
-            let interrupt = distributor
-                .next_pending_private_interrupt(vp, both_pending, 0x41)
-                .unwrap();
+            assert!(distributor.next_private_interrupts(vp, 0x40).is_none());
+            let interrupts = distributor.next_private_interrupts(vp, 0x41).unwrap();
+            let interrupt = interrupts.get(&u64::from(TEST_SGI)).unwrap();
             assert_eq!((interrupt.intid, interrupt.priority), (TEST_SGI, 0x40));
+            assert_eq!(interrupts.len(), 1);
 
-            // With only the PPI requested, its independently programmed
-            // priority is subject to the same PMR threshold.
-            let ppi_pending = 1 << TEST_PPI;
-            assert!(
-                distributor
-                    .next_pending_private_interrupt(vp, ppi_pending, 0x80)
-                    .is_none()
-            );
-            let interrupt = distributor
-                .next_pending_private_interrupt(vp, ppi_pending, 0x81)
-                .unwrap();
+            distributor.clear_pending(vp.index() as usize, TEST_SGI);
+            assert!(distributor.next_private_interrupts(vp, 0x80).is_none());
+            let interrupts = distributor.next_private_interrupts(vp, 0x81).unwrap();
+            let interrupt = interrupts.get(&u64::from(TEST_PPI)).unwrap();
             assert_eq!((interrupt.intid, interrupt.priority), (TEST_PPI, 0x80));
+            assert_eq!(interrupts.len(), 1);
 
             distributor.state.lock().enable_grp1_non_secure = false;
-            assert!(
-                distributor
-                    .next_pending_private_interrupt(vp, both_pending, u8::MAX)
-                    .is_none()
-            );
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
         }
     }
 }
@@ -1703,76 +1482,12 @@ mod gicr {
     }
 
     impl SharedState {
-        pub(crate) fn next_private_interrupt(
-            &self,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            let pending = self.pending.load(Ordering::Relaxed);
-            self.select_private_interrupt(pending, running_priority)
-        }
-
         pub(crate) fn next_private_interrupts(
             &self,
             running_priority: u8,
         ) -> Option<HashMap<u64, PendingInterrupt>> {
             let pending = self.pending.load(Ordering::Relaxed);
             self.select_private_interrupts(pending, running_priority)
-        }
-
-        pub(crate) fn select_private_interrupt(
-            &self,
-            pending: u32,
-            running_priority: u8,
-        ) -> Option<PendingInterrupt> {
-            let state = self.mutable.lock();
-            let in_flight = self.in_flight.load(Ordering::Relaxed);
-            let mut group = 0;
-            if self.distributor_state.lock().enable_grp0 {
-                group |= !state.group_modifier & !state.group_status;
-            }
-            if self.distributor_state.lock().enable_grp1_non_secure {
-                // modified bit: 0b1, status bit: 0b1, Reserved, treated as Non-secure Group 1
-                group |= state.group_status;
-            }
-            if self.distributor_state.lock().enable_grp1_secure {
-                group |= state.group_modifier & !state.group_status;
-            }
-
-            let deliverable = pending & state.enable & group & (!state.active | in_flight);
-            let repend = pending & state.enable & group & state.active & in_flight;
-
-            let mut best: Option<PendingInterrupt> = None;
-            for intid in 0..32 {
-                let group1 = (state.group_modifier | state.group_status) & (1 << intid) != 0;
-                if deliverable & (1 << intid) == 0 {
-                    continue;
-                }
-
-                /*
-                intid 0..3   -> priority[0]
-                intid 4..7   -> priority[1]
-                intid 8..11  -> priority[2]
-                */
-                let word = state.priority[(intid / 4) as usize];
-                let priority = ((word >> ((intid % 4) * 8)) & 0xff) as u8;
-                if priority >= running_priority {
-                    continue;
-                }
-
-                let interrupt = PendingInterrupt {
-                    intid,
-                    priority,
-                    group1,
-                };
-                if best.is_none_or(|current| {
-                    priority < current.priority
-                        || (priority == current.priority && intid < current.intid)
-                }) {
-                    best = Some(interrupt);
-                }
-            }
-
-            best
         }
 
         pub(crate) fn select_private_interrupts(
