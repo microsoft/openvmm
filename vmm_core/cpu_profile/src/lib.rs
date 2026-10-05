@@ -14,7 +14,13 @@
 //! leaves; OpenVMM builds it in `virt::time_abi::cpuid::effective_cpuid`.
 //!
 //! - **Selection:** [`select`] maps `--cpu-profile <id|auto>` and the host
-//!   CPU ([`HostCpuSignature`]) to a pinned profile.
+//!   CPU ([`HostCpuSignature`]) to a pinned profile. `--cpu-profile host`
+//!   ([`HOST`]) is the opt-in exception, for development hosts that no
+//!   pinned profile serves: the VM worker derives a host profile from the
+//!   backend's fingerprint of this host ([`derive_host_profile`]). Either
+//!   way, the partition holds its profile in a [`PartitionProfile`], which
+//!   core hands to the backend, so each VM of a process can have its own
+//!   host profile.
 //! - **Verification:** each backend reports the CPU surface it supports
 //!   ([`HostCpuSurface`]), and [`verify_support`] checks that it covers the
 //!   profile. No CPUID entry outside the profile's tables carries host data:
@@ -25,7 +31,10 @@
 //!   digest against the pinned constant, core compares the recorded document
 //!   with [`pinned_record`]'s encoding, and [`check_generation`] checks the
 //!   destination host. Core compares the effective CPUID record with the
-//!   recomputed [`EffectiveCpuid`].
+//!   recomputed [`EffectiveCpuid`]. A snapshot of a host profile carries the
+//!   only copy of its document, which [`host_profile_for_restore`] decodes
+//!   and checks against the recorded digest, and from which the restoring
+//!   VM worker's [`PartitionProfile`] takes it.
 //! - **Offline only:** the codecs and digests
 //!   ([`CpuProfile::encode`], [`CpuProfile::digest`],
 //!   [`CpuProfile::digest_string`], [`CpuProfile::decode`],
@@ -33,8 +42,10 @@
 //!   [`EffectiveCpuid::encode`], [`EffectiveCpuid::digest`],
 //!   [`EffectiveCpuid::decode`], and [`EffectiveCpuid::decode_verified`])
 //!   and [`pinned_profiles`] parse, encode, or hash. They serve tools, tests,
-//!   and `--cpu-fingerprint`, never a cold boot or restore, whose profile
-//!   work uses only constants.
+//!   and `--cpu-fingerprint`, never a cold boot or restore of a pinned
+//!   profile, whose profile work uses only constants. Only a host profile,
+//!   which has no constants, encodes and hashes at cold boot and decodes at
+//!   restore.
 //!
 //! Failures carry the stable codes of the time ABI specification
 //! ([`ProfileError`]).
@@ -68,8 +79,12 @@ mod test_support;
 mod unlisted;
 
 pub use catalog::AUTO;
+pub use catalog::HOST;
+pub use catalog::PartitionProfile;
 pub use catalog::check_generation;
 pub use catalog::generation_of;
+pub use catalog::host_profile_for_restore;
+pub use catalog::is_host_profile_id;
 pub use catalog::pinned;
 pub use catalog::pinned_for_restore;
 pub use catalog::pinned_profiles;
@@ -79,6 +94,7 @@ pub use catalog::select_auto;
 pub use check::FingerprintCheck;
 pub use check::SUMMARY_PREFIX;
 pub use check::check_fingerprint;
+pub use derive::derive_host_profile;
 pub use effective::CpuidResult;
 pub use effective::EFFECTIVE_CPUID_SCHEMA;
 pub use effective::EffectiveCpuid;

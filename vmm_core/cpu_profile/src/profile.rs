@@ -416,11 +416,7 @@ impl CpuProfile {
             vendor => return Err(format!("unsupported vendor {vendor:?}")),
         };
         let name = &self.generation.name;
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
+        if !is_id_component(name) {
             return Err(format!("invalid generation name {name:?}"));
         }
         let revision = self
@@ -430,10 +426,7 @@ impl CpuProfile {
             .and_then(|rest| rest.strip_prefix(name.as_str()))
             .and_then(|rest| rest.strip_prefix(".v"))
             .ok_or_else(|| format!("ID {:?} is not {vendor_short}.{name}.v<revision>", self.id))?;
-        if revision.is_empty()
-            || revision.starts_with('0')
-            || !revision.bytes().all(|byte| byte.is_ascii_digit())
-        {
+        if !is_revision(revision) {
             return Err(format!("ID {:?} has an invalid revision", self.id));
         }
         if self.generation.cpus.is_empty() {
@@ -620,6 +613,24 @@ impl CpuProfile {
         }
         Ok(())
     }
+}
+
+/// Returns whether `component` is a valid vendor or generation component of a
+/// profile ID: one or more lowercase ASCII letters, digits, and hyphens.
+pub(crate) fn is_id_component(component: &str) -> bool {
+    !component.is_empty()
+        && component
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// Returns whether `revision` is a valid profile revision, the decimal number
+/// after the `.v` that ends a profile ID: one or more digits without a leading
+/// zero.
+pub(crate) fn is_revision(revision: &str) -> bool {
+    !revision.is_empty()
+        && !revision.starts_with('0')
+        && revision.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Returns the entry of `entries` that CPUID `leaf` and `subleaf` read, if any.

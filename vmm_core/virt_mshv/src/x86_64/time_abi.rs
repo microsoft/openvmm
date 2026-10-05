@@ -42,6 +42,8 @@ use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
 use crate::VcpuFdExt;
+use cpu_profile::CpuProfile;
+use cpu_profile::PartitionProfile;
 use cpu_profile::hv_banks::HvFeatures;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMessage;
@@ -141,7 +143,7 @@ pub(crate) struct MshvTimeAbi {
     host_features: HvFeatures,
     /// The CPU profile, whose unlisted candidates the host's CPUID gives.
     #[inspect(skip)]
-    cpu_profile: String,
+    cpu_profile: PartitionProfile,
     /// Where the host's CPUID table comes from. After its first use, this
     /// holds only the drained channel, if any, which the partition frees when
     /// it drops.
@@ -174,9 +176,9 @@ impl HostCpuidSource {
     /// Starts reading the host's CPUID table and finding `cpu_profile`'s
     /// unlisted candidates in it on another thread, or does both here if no
     /// thread can start.
-    pub(super) fn spawn(cpu_profile: &str) -> Self {
+    pub(super) fn spawn(cpu_profile: &PartitionProfile) -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let thread_profile = cpu_profile.to_owned();
+        let thread_profile = cpu_profile.clone();
         // The thread is detached, so it releases its own stack when it exits
         // instead of a join on the start path.
         let read = move || {
@@ -219,12 +221,9 @@ pub(super) struct HostCpuid {
 }
 
 impl HostCpuid {
-    /// Finds `cpu_profile`'s unlisted candidates in `table`. A profile that
-    /// isn't pinned has none.
-    fn new(cpu_profile: &str, table: Vec<cpu_profile::cpuid::CpuidEntry>) -> Self {
-        let unlisted_candidates = cpu_profile::pinned(cpu_profile)
-            .map(|profile| cpu_profile::unlisted_cpuid_candidates(profile, &table))
-            .unwrap_or_default();
+    /// Finds `cpu_profile`'s unlisted candidates in `table`.
+    fn new(cpu_profile: &CpuProfile, table: Vec<cpu_profile::cpuid::CpuidEntry>) -> Self {
+        let unlisted_candidates = cpu_profile::unlisted_cpuid_candidates(cpu_profile, &table);
         Self {
             table,
             unlisted_candidates,
@@ -234,7 +233,7 @@ impl HostCpuid {
     }
 
     /// Reads the host's CPUID table on this thread.
-    fn read(cpu_profile: &str) -> Self {
+    fn read(cpu_profile: &CpuProfile) -> Self {
         Self::new(cpu_profile, super::profile_features::host_cpuid_table())
     }
 }
@@ -405,20 +404,17 @@ pub(super) fn processor_features1(
 }
 
 /// Returns the processor features of a time ABI partition with CPU profile
-/// `id` on a host whose partition offers `host`: the profile's, within what
-/// the host offers, under the time ABI's policy (see
+/// `profile` on a host whose partition offers `host`: the profile's, within
+/// what the host offers, under the time ABI's policy (see
 /// [`time_abi_features`](super::profile_features::time_abi_features)). Fails
-/// with `E_PROFILE_UNKNOWN` or `E_PROFILE_UNSUPPORTED`.
-pub(super) fn partition_features(id: &str, host: HvFeatures) -> Result<HvFeatures, TimeAbiError> {
-    let profile = cpu_profile::pinned(id).ok_or_else(|| {
-        TimeAbiError::new(
-            TimeAbiCode::ProfileUnknown,
-            format!("CPU profile {id} is not pinned"),
-        )
-    })?;
+/// with `E_PROFILE_UNSUPPORTED`.
+pub(super) fn partition_features(
+    profile: &CpuProfile,
+    host: HvFeatures,
+) -> Result<HvFeatures, TimeAbiError> {
     let features = super::profile_features::time_abi_features(profile, host)?;
     tracing::info!(
-        cpu_profile = id,
+        cpu_profile = profile.id(),
         bank0 = features.banks[0],
         bank1 = features.banks[1],
         xsave = features.xsave,
@@ -1450,21 +1446,19 @@ mod tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
-            cpu_profile: profile.id().to_owned(),
+            cpu_profile: PartitionProfile::pinned(profile.id()).unwrap(),
         };
         let state = MshvTimeAbi::new(
             &config,
             &partition_cpuid(&config.cpuid),
             super::super::profile_features::legacy_features(),
-            HostCpuidSource::Ready(HostCpuid::new(&config.cpu_profile, host.clone())),
+            HostCpuidSource::Ready(HostCpuid::new(&config.cpu_profile, host)),
             0,
         );
         assert_eq!(
             state.host_cpuid().unlisted_candidates,
             [(4, Some(5)), (0x17, None), (0x8000_0009, None)]
         );
-        // A profile that isn't pinned has none.
-        assert!(HostCpuid::new("", host).unlisted_candidates.is_empty());
     }
 
     #[test]
@@ -1472,7 +1466,7 @@ mod tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
-            cpu_profile: "intel.skylake-sp.v1".to_owned(),
+            cpu_profile: PartitionProfile::pinned("intel.skylake-sp.v1").unwrap(),
         };
         let state = MshvTimeAbi::new(
             &config,
@@ -1543,17 +1537,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unpinned_cpu_profile_is_unknown() {
-        let error = partition_features(
-            "intel.skylake-sp.v0",
-            super::super::profile_features::legacy_features(),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, TimeAbiCode::ProfileUnknown);
-        assert!(error.message.contains("intel.skylake-sp.v0"), "{error}");
-    }
-
-    #[test]
     fn time_abi_rejects_isolation_and_the_hyperv_interface() {
         validate_partition(virt::IsolationType::None, false).unwrap();
         for (isolation, hv) in [
@@ -1602,13 +1585,13 @@ mod tests {
         let config = TimeAbiConfig {
             cpuid: Arc::new(time_abi_cpuid(VP_COUNT, true)),
             msrs: Arc::new(TimeAbiMsrs::new()),
-            cpu_profile: String::new(),
+            cpu_profile: PartitionProfile::pinned("intel.skylake-sp.v1").unwrap(),
         };
         let state = MshvTimeAbi::new(
             &config,
             &partition_cpuid(&config.cpuid),
             super::super::profile_features::legacy_features(),
-            HostCpuidSource::Ready(HostCpuid::new("", Vec::new())),
+            HostCpuidSource::Ready(HostCpuid::new(&config.cpu_profile, Vec::new())),
             0,
         );
         state.check_vp_creation(VpIndex::new(4)).unwrap();
@@ -1724,12 +1707,10 @@ mod hw {
 
     const VP_CAPACITY: u32 = 4;
 
-    /// Returns the ID of the pinned CPU profile of this host's generation.
-    fn host_profile_id() -> String {
-        cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current())
-            .unwrap()
-            .id()
-            .to_owned()
+    /// Returns the pinned CPU profile of this host's generation.
+    fn host_profile() -> PartitionProfile {
+        let selected = cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()).unwrap();
+        PartitionProfile::pinned(selected.id()).unwrap()
     }
 
     /// Returns the effective CPUID of this host's profile for `topology`, and
@@ -1737,8 +1718,7 @@ mod hw {
     fn host_profile_cpuid(
         topology: &vm_topology::processor::ProcessorTopology,
     ) -> (cpu_profile::EffectiveCpuid, CpuidLeafSet) {
-        let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
-        let effective = virt::time_abi::cpuid::effective_cpuid(profile, topology).unwrap();
+        let effective = virt::time_abi::cpuid::effective_cpuid(&host_profile(), topology).unwrap();
         let table = virt::time_abi::cpuid::backend_cpuid(&effective);
         (effective, table)
     }
@@ -1855,7 +1835,7 @@ mod hw {
                     time_abi: Some(TimeAbiConfig {
                         cpuid: Arc::new(host_profile_cpuid(&processor_topology).1),
                         msrs: Arc::new(TimeAbiMsrs::new()),
-                        cpu_profile: host_profile_id(),
+                        cpu_profile: host_profile(),
                     }),
                 })
                 .unwrap()
@@ -1913,7 +1893,8 @@ mod hw {
                 .unwrap()
                 .expect("MSHV reports its CPU surface");
             let surface_us = started.elapsed().as_micros();
-            let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
+            let selected = host_profile();
+            let profile = &*selected;
             cpu_profile::verify_support(profile, &host_cpu_surface(&surface)).unwrap();
 
             let started = std::time::Instant::now();
@@ -2119,7 +2100,7 @@ mod hw {
                 time_abi: Some(TimeAbiConfig {
                     cpuid: Arc::new(table),
                     msrs: Arc::new(TimeAbiMsrs::new()),
-                    cpu_profile: host_profile_id(),
+                    cpu_profile: host_profile(),
                 }),
             })
             .unwrap()
@@ -2183,7 +2164,7 @@ mod hw {
         }
         println!(
             "{}: {count} probes of {} indexed leaves (max basic {max_basic:#x}, max extended {max_extended:#x}); {} listed results differ, {} unlisted results are not zero, {} reserved topology entries are not zero",
-            host_profile_id(),
+            host_profile().id(),
             indexed.len(),
             listed_failures.len(),
             unlisted.len(),
@@ -2209,9 +2190,9 @@ mod hw {
             .results()
             .map(|result| (result.function, result.index.unwrap_or(0)))
             .collect();
-        let profile = cpu_profile::pinned(&host_profile_id()).unwrap();
+        let profile = host_profile();
         let candidates = cpu_profile::unlisted_cpuid_candidates(
-            profile,
+            &profile,
             &super::super::profile_features::host_cpuid_table(),
         );
         let with_candidates: Vec<(u32, u32)> = report
@@ -2302,7 +2283,7 @@ mod hw {
             .iter()
             .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
             .collect();
-        let error = cpu_profile::check_unlisted_cpuid(profile, &entries).unwrap_err();
+        let error = cpu_profile::check_unlisted_cpuid(&profile, &entries).unwrap_err();
         assert_eq!(
             error.code,
             cpu_profile::ProfileErrorCode::CpuUnlisted,
@@ -2349,7 +2330,7 @@ mod hw {
                 time_abi: Some(TimeAbiConfig {
                     cpuid: Arc::new(table),
                     msrs: Arc::new(TimeAbiMsrs::new()),
-                    cpu_profile: host_profile_id(),
+                    cpu_profile: host_profile(),
                 }),
             })
             .unwrap()
@@ -2423,7 +2404,7 @@ mod hw {
     fn refused_msr_intercept_fails_identity_routing() {
         let mshv = mshv_ioctls::Mshv::new().unwrap();
         let features = partition_features(
-            &host_profile_id(),
+            &host_profile(),
             super::super::profile_features::host_features(&mshv).unwrap(),
         )
         .unwrap();
