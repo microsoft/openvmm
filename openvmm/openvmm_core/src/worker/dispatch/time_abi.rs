@@ -158,7 +158,17 @@ fn select_on_host(
         cpu_profile::check_generation(&profile, host)?;
         return Ok(profile);
     }
-    cpu_profile::select(requested, host)
+    cpu_profile::select(requested, host).map_err(|mut err| {
+        if requested == cpu_profile::AUTO
+            && err.code == ProfileErrorCode::ProfileHostUnknown
+            && cpu_profile::supports_host_profiles(host)
+        {
+            err.message.push_str(
+                "; --cpu-profile host boots on a profile derived from this host, for development",
+            );
+        }
+        err
+    })
 }
 
 /// Derives the host profile of this host and the `hypervisor` backend: the
@@ -708,6 +718,11 @@ mod tests {
     /// The signature of the test profile's CPU, an Ice Lake-SP Xeon.
     const TEST_SIGNATURE: u32 = 0x0006_06a6;
 
+    /// The end of the `E_PROFILE_HOST_UNKNOWN` message of `auto` on a host
+    /// that host profiles serve.
+    const HOST_PROFILE_HINT: &str =
+        "; --cpu-profile host boots on a profile derived from this host, for development";
+
     fn test_profile() -> &'static CpuProfile {
         cpu_profile::pinned(TEST_PROFILE).unwrap()
     }
@@ -1029,11 +1044,23 @@ mod tests {
         }
 
         // `auto` selects the pinned profile of the host's generation, if any,
-        // and a pinned ID selects its profile only in its generation.
+        // and otherwise names the opt-in host profile where one can serve the
+        // host; a pinned ID selects its profile only in its generation.
         let host = host_cpu().unwrap();
         match select_cpu_profile("auto", "kvm", None) {
             Ok(profile) => assert!(cpu_profile::check_generation(&profile, &host).is_ok()),
-            Err(err) => assert_eq!(code::<()>(Err(err)), "E_PROFILE_HOST_UNKNOWN"),
+            Err(err) => {
+                let message = format!("{err:#}");
+                assert!(
+                    message.starts_with("[E_PROFILE_HOST_UNKNOWN] "),
+                    "{message}"
+                );
+                assert_eq!(
+                    message.ends_with(HOST_PROFILE_HINT),
+                    cpu_profile::supports_host_profiles(&host),
+                    "{message}"
+                );
+            }
         }
         for profile in cpu_profile::pinned_profiles() {
             let selected = select_cpu_profile(profile.id(), "kvm", None);
@@ -1043,6 +1070,28 @@ mod tests {
                 assert_eq!(code(selected), "E_CPU_GENERATION");
             }
         }
+    }
+
+    /// `auto` names `--cpu-profile host` only where a host profile can boot:
+    /// on Intel CPUs that no pinned profile serves.
+    #[test]
+    fn auto_names_host_profiles_only_where_they_serve() {
+        let tiger_lake = HostCpuSignature::new(*b"GenuineIntel", 0x0008_06c1);
+        let zen3 = HostCpuSignature::new(*b"AuthenticAMD", 0x00a2_0f12);
+        for (host, hint) in [(tiger_lake, true), (zen3, false)] {
+            let error = select_on_host(cpu_profile::AUTO, &host, None).unwrap_err();
+            assert_eq!(error.code, ProfileErrorCode::ProfileHostUnknown, "{error}");
+            assert_eq!(error.message.ends_with(HOST_PROFILE_HINT), hint, "{error}");
+            assert_eq!(
+                error.message.contains("--cpu-profile host"),
+                hint,
+                "{error}"
+            );
+        }
+        // An explicit profile on another generation gets no hint.
+        let error = select_on_host(TEST_PROFILE, &tiger_lake, None).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuGeneration, "{error}");
+        assert!(!error.message.contains("--cpu-profile host"), "{error}");
     }
 
     #[test]

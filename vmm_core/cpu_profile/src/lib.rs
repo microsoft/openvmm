@@ -16,11 +16,11 @@
 //! - **Selection:** [`select`] maps `--cpu-profile <id|auto>` and the host
 //!   CPU ([`HostCpuSignature`]) to a pinned profile. `--cpu-profile host`
 //!   ([`HOST`]) is the opt-in exception, for development hosts that no
-//!   pinned profile serves: the VM worker derives a host profile from the
-//!   backend's fingerprint of this host ([`derive_host_profile`]). Either
-//!   way, the partition holds its profile in a [`PartitionProfile`], which
-//!   core hands to the backend, so each VM of a process can have its own
-//!   host profile.
+//!   pinned profile serves ([`supports_host_profiles`]): the VM worker
+//!   derives a host profile from the backend's fingerprint of this host
+//!   ([`derive_host_profile`]). Either way, the partition holds its profile
+//!   in a [`PartitionProfile`], which core hands to the backend, so each VM
+//!   of a process can have its own host profile.
 //! - **Verification:** each backend reports the CPU surface it supports
 //!   ([`HostCpuSurface`]), and [`verify_support`] checks that it covers the
 //!   profile. No CPUID entry outside the profile's tables carries host data:
@@ -96,6 +96,7 @@ pub use check::SUMMARY_PREFIX;
 pub use check::check_fingerprint;
 pub use check::check_fingerprint_with;
 pub use derive::derive_host_profile;
+pub use derive::supports_host_profiles;
 pub use effective::CpuidResult;
 pub use effective::EFFECTIVE_CPUID_SCHEMA;
 pub use effective::EffectiveCpuid;
