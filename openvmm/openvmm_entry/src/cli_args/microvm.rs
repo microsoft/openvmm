@@ -75,6 +75,25 @@ pub enum MicrovmLifecycleCli {
     Managed,
 }
 
+/// Host identity that performs the guest's operations on the microVM share.
+#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MicrovmMountOwnerCli {
+    /// Run every operation as OpenVMM, which owns the files the guest creates.
+    Vmm,
+    /// Run each operation as its guest caller's UID and GID, with root
+    /// squashed to the owner of the export root (Linux only).
+    Caller,
+}
+
+impl From<MicrovmMountOwnerCli> for openvmm_defs::microvm::MicrovmFilesystemOwner {
+    fn from(owner: MicrovmMountOwnerCli) -> Self {
+        match owner {
+            MicrovmMountOwnerCli::Vmm => Self::Vmm,
+            MicrovmMountOwnerCli::Caller => Self::Caller,
+        }
+    }
+}
+
 /// Protocol for a localhost-to-guest port forward.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MicrovmLoopbackForwardProtocol {
@@ -335,6 +354,24 @@ pub struct MicrovmCli {
         requires = "microvm_mount"
     )]
     pub microvm_mount_deny: Vec<PathBuf>,
+
+    /// Select the host identity of the guest's `--mount` operations
+    ///
+    /// `vmm` (the default) performs every operation as OpenVMM. `caller`
+    /// performs each operation as the guest caller's UID and GID, without
+    /// supplementary groups or capabilities, and squashes guest UID 0 and
+    /// GID 0 to the owner of the export root, which must not be root.
+    /// `caller` requires a Linux host. It also requires CAP_SETUID and
+    /// CAP_SETGID unless every caller has OpenVMM's own UID and GID and
+    /// OpenVMM has no other supplementary groups; an operation that cannot
+    /// run as its caller fails with EPERM.
+    #[clap(
+        long = "mount-owner",
+        value_enum,
+        value_name = "OWNER",
+        requires = "microvm_mount"
+    )]
+    pub microvm_mount_owner: Option<MicrovmMountOwnerCli>,
 
     /// dedicated microVM control console backed by a local serial endpoint
     ///
@@ -733,6 +770,11 @@ impl Options {
         anyhow::ensure!(
             self.microvm.microvm_mount_deny.len() <= 128,
             "microVM filesystem permits at most 128 denied paths"
+        );
+        anyhow::ensure!(
+            cfg!(target_os = "linux")
+                || self.microvm.microvm_mount_owner != Some(MicrovmMountOwnerCli::Caller),
+            "--mount-owner caller requires a Linux host"
         );
         for (index, block) in self.microvm.microvm_sandbox_block.iter().enumerate() {
             anyhow::ensure!(
