@@ -440,6 +440,7 @@ pub fn write_uefi_config(
                     build_madt = false;
                     cfg.add_raw(config::BlobStructureType::Madt, table)
                 }
+                b"CEDT" => cfg.add_raw(config::BlobStructureType::AcpiTable, table),
                 b"HMAT" => cfg.add_raw(config::BlobStructureType::Hmat, table),
                 b"IORT" => cfg.add_raw(config::BlobStructureType::Iort, table),
                 b"MCFG" => cfg.add_raw(config::BlobStructureType::Mcfg, table),
