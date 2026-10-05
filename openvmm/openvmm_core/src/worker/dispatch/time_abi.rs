@@ -13,6 +13,10 @@ use anyhow::Context as _;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
+use cpu_profile::HostCpuSignature;
+use cpu_profile::PartitionProfile;
+use cpu_profile::ProfileError;
+use cpu_profile::ProfileErrorCode;
 use futures_concurrency::future::Join;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -60,7 +64,7 @@ pub(super) struct TimeAbiState {
     /// The identity MSR handler, holding the declared rates.
     pub msrs: Arc<TimeAbiMsrs>,
     /// The CPU profile.
-    pub profile: &'static CpuProfile,
+    pub profile: PartitionProfile,
     /// The effective CPUID of the partition.
     pub effective_cpuid: Arc<EffectiveCpuid>,
     /// The preflight report.
@@ -76,7 +80,7 @@ pub(super) struct PartitionTimeAbi {
     /// The identity MSR handler.
     pub msrs: Arc<TimeAbiMsrs>,
     /// The CPU profile.
-    pub profile: &'static CpuProfile,
+    pub profile: PartitionProfile,
     /// The effective CPUID of the partition.
     pub effective_cpuid: Arc<EffectiveCpuid>,
 }
@@ -84,36 +88,117 @@ pub(super) struct PartitionTimeAbi {
 /// Returns the identity MSR handler and the time ABI configuration of a new
 /// partition with the CPU profile `profile` and its effective CPUID.
 pub(super) fn partition_config(
-    profile: &CpuProfile,
+    profile: &PartitionProfile,
     effective_cpuid: &EffectiveCpuid,
 ) -> (Arc<TimeAbiMsrs>, TimeAbiConfig) {
     let msrs = Arc::new(TimeAbiMsrs::new());
     let config = TimeAbiConfig {
         cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(effective_cpuid)),
         msrs: msrs.clone(),
-        cpu_profile: profile.id().to_owned(),
+        cpu_profile: profile.clone(),
     };
     (msrs, config)
 }
 
 /// Selects the CPU profile of a new partition before it is created.
 ///
-/// `requested` is `--cpu-profile` on cold boot (`auto` or an ID), or the
-/// profile a snapshot recorded on restore. It selects a pinned profile whose
-/// generation contains the host CPU (`E_PROFILE_HOST_UNKNOWN`,
-/// `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`).
-pub(super) fn select_cpu_profile(requested: &str) -> anyhow::Result<&'static CpuProfile> {
-    Ok(cpu_profile::select(requested, &host_cpu()?)?)
+/// `requested` is `--cpu-profile` on cold boot (`auto`, `host`, or an ID),
+/// or the profile a snapshot recorded on restore. An ID or `auto` selects a
+/// pinned profile whose generation contains the host CPU
+/// (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN`, `E_CPU_GENERATION`).
+/// `host` derives a host profile from the `hypervisor` backend's fingerprint
+/// of this host. A host profile's ID selects the profile of `restored`, the
+/// record of the snapshot being restored, which carries the profile's only
+/// copy ([`restored_host_profile`]).
+pub(super) fn select_cpu_profile(
+    requested: &str,
+    hypervisor: &str,
+    restored: Option<&SnapshotCpuProfile>,
+) -> anyhow::Result<PartitionProfile> {
+    let host = host_cpu()?;
+    if requested == cpu_profile::HOST {
+        let profile = PartitionProfile::host(host_profile(hypervisor)?)?;
+        cpu_profile::check_generation(&profile, &host)?;
+        tracing::warn!(
+            cpu_profile = profile.id(),
+            profile_digest = %profile.digest_string(),
+            hypervisor,
+            "using a host CPU profile: it is not pinned, and its snapshots restore only on a host \
+             of the same CPU model and stepping that supports it"
+        );
+        return Ok(profile);
+    }
+    Ok(select_on_host(requested, &host, restored)?)
+}
+
+/// Selects the CPU profile `requested` on the host CPU `host`, as
+/// [`select_cpu_profile`] does for any request but `host`.
+fn select_on_host(
+    requested: &str,
+    host: &HostCpuSignature,
+    restored: Option<&SnapshotCpuProfile>,
+) -> Result<PartitionProfile, ProfileError> {
+    if cpu_profile::is_host_profile_id(requested) {
+        let record = restored
+            .filter(|record| record.id == requested)
+            .ok_or_else(|| {
+                ProfileError::new(
+                    ProfileErrorCode::ProfileUnknown,
+                    format!(
+                        "CPU profile {requested:?} is a host profile, which only a snapshot of it \
+                         carries"
+                    ),
+                )
+            })?;
+        let profile = PartitionProfile::host(cpu_profile::host_profile_for_restore(
+            &record.id,
+            &record.sha256,
+            &record.profile,
+        )?)?;
+        cpu_profile::check_generation(&profile, host)?;
+        return Ok(profile);
+    }
+    cpu_profile::select(requested, host)
+}
+
+/// Derives the host profile of this host and the `hypervisor` backend: the
+/// backend's CPU fingerprint, as `--cpu-fingerprint` takes it, under the
+/// profiles' derivation policy.
+fn host_profile(hypervisor: &str) -> anyhow::Result<CpuProfile> {
+    let probe = hypervisor_resources::probe_by_name(hypervisor)
+        .with_context(|| format!("the {hypervisor} backend cannot be fingerprinted"))?;
+    let backend = probe
+        .cpu_fingerprint(&[])
+        .with_context(|| format!("failed to fingerprint the {hypervisor} backend"))?;
+    let host = cpu_profile::host::HostIdentity::collect().context("failed to identify the host")?;
+    let fingerprint = cpu_profile::fingerprint::CpuFingerprint::new(
+        cpu_profile::fingerprint::ToolIdentity {
+            name: "openvmm".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        host,
+        backend,
+    );
+    Ok(cpu_profile::derive_host_profile(&fingerprint)?)
+}
+
+/// Returns the CPU profile record of a snapshot that the worker restores, if
+/// its profile is a host profile: the snapshot carries the profile's only
+/// copy, from which [`select_cpu_profile`] takes the partition's profile. The
+/// controller's restore preflight has checked the record; the selection
+/// decodes it again, because the VM worker can run in another process.
+pub(super) fn restored_host_profile(record: &SnapshotCpuProfile) -> Option<SnapshotCpuProfile> {
+    cpu_profile::is_host_profile_id(&record.id).then(|| record.clone())
 }
 
 /// Returns the vendor and signature of the host CPU (`E_CPU_GENERATION` if
 /// the host is not x86-64).
-fn host_cpu() -> Result<cpu_profile::HostCpuSignature, TimeAbiError> {
+fn host_cpu() -> Result<HostCpuSignature, TimeAbiError> {
     // The host CPU is identified with the host's CPUID instruction.
     // xtask-fmt allow-target-arch cpu-intrinsic
     #[cfg(target_arch = "x86_64")]
     {
-        Ok(cpu_profile::HostCpuSignature::current())
+        Ok(HostCpuSignature::current())
     }
     // xtask-fmt allow-target-arch cpu-intrinsic
     #[cfg(not(target_arch = "x86_64"))]
@@ -434,8 +519,7 @@ pub(super) fn capture_records(
         .context("the time ABI rates are not declared")?;
     let anchor = backend.capture_anchor()?;
     let identity = virt::time_abi::host::host_identity()?;
-    let pinned = cpu_profile::pinned_record(state.profile.id())
-        .with_context(|| format!("CPU profile {} is not pinned", state.profile.id()))?;
+    let record = state.profile.record();
     tracing::info!(
         tsc = anchor.tsc,
         utc_ns = anchor.sample.utc_ns,
@@ -458,9 +542,9 @@ pub(super) fn capture_records(
             capture_generation: state.generation,
         },
         cpu_profile: SnapshotCpuProfile {
-            id: pinned.id.to_owned(),
-            sha256: pinned.digest.to_vec(),
-            profile: pinned.encoding.to_vec(),
+            id: record.id.to_owned(),
+            sha256: record.digest.to_vec(),
+            profile: record.encoding.to_vec(),
             effective_cpuid: encode_effective_cpuid(record_entries(&state.effective_cpuid)),
             capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
         },
@@ -621,8 +705,16 @@ mod tests {
 
     const TEST_PROFILE: &str = "intel.icelake-sp.v1";
 
+    /// The signature of the test profile's CPU, an Ice Lake-SP Xeon.
+    const TEST_SIGNATURE: u32 = 0x0006_06a6;
+
     fn test_profile() -> &'static CpuProfile {
         cpu_profile::pinned(TEST_PROFILE).unwrap()
+    }
+
+    /// Returns the partition profile of the pinned `profile`.
+    fn partition_profile(profile: &CpuProfile) -> PartitionProfile {
+        PartitionProfile::pinned(profile.id()).unwrap()
     }
 
     fn topology(vp_count: u32, x2apic: X2ApicState) -> ProcessorTopology {
@@ -639,7 +731,7 @@ mod tests {
         let profile = test_profile();
         let effective =
             effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
-        let (msrs, config) = partition_config(profile, &effective);
+        let (msrs, config) = partition_config(&partition_profile(profile), &effective);
         (msrs, config, effective)
     }
 
@@ -717,8 +809,8 @@ mod tests {
             for vp_count in [1, 2, 8] {
                 for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
                     let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
-                    let (_, config) = partition_config(profile, &effective);
-                    assert_eq!(config.cpu_profile, profile.id());
+                    let (_, config) = partition_config(&partition_profile(profile), &effective);
+                    assert_eq!(config.cpu_profile.id(), profile.id());
 
                     let mut cpuid = |leaf, subleaf| config.cpuid.result(leaf, subleaf, &[0; 4]);
                     virt::time_abi::identity::check_identity(&mut cpuid, vp_count).unwrap();
@@ -752,7 +844,7 @@ mod tests {
             for vp_count in [1, 2, 8, 64] {
                 for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
                     let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
-                    let (_, config) = partition_config(profile, &effective);
+                    let (_, config) = partition_config(&partition_profile(profile), &effective);
                     check_presented(profile, &effective, config.cpuid.leaves().to_vec())
                         .unwrap_or_else(|err| {
                             panic!("{} with {vp_count} VPs, {x2apic:?}: {err:#}", profile.id())
@@ -807,7 +899,7 @@ mod tests {
                 assert_eq!(leaf_b[2], (Some(2), [0, 0, 2, 0], [!0; 4]));
                 assert!(subleaves(0x1f).is_empty());
 
-                let (_, config) = partition_config(profile, &effective);
+                let (_, config) = partition_config(&partition_profile(profile), &effective);
                 let terminator = config
                     .cpuid
                     .leaves()
@@ -925,24 +1017,152 @@ mod tests {
 
     #[test]
     fn cpu_profile_selection() {
-        for requested in ["interim.host.kvm.v1", "intel.cascadelake.v1"] {
-            assert_eq!(code(select_cpu_profile(requested)), "E_PROFILE_UNKNOWN");
+        for requested in [
+            "interim.host.kvm.v1",
+            "intel.cascadelake.v1",
+            "intel.host.v1",
+        ] {
+            assert_eq!(
+                code(select_cpu_profile(requested, "kvm", None)),
+                "E_PROFILE_UNKNOWN"
+            );
         }
 
         // `auto` selects the pinned profile of the host's generation, if any,
         // and a pinned ID selects its profile only in its generation.
         let host = host_cpu().unwrap();
-        match select_cpu_profile("auto") {
-            Ok(profile) => assert!(cpu_profile::check_generation(profile, &host).is_ok()),
+        match select_cpu_profile("auto", "kvm", None) {
+            Ok(profile) => assert!(cpu_profile::check_generation(&profile, &host).is_ok()),
             Err(err) => assert_eq!(code::<()>(Err(err)), "E_PROFILE_HOST_UNKNOWN"),
         }
         for profile in cpu_profile::pinned_profiles() {
-            let selected = select_cpu_profile(profile.id());
+            let selected = select_cpu_profile(profile.id(), "kvm", None);
             if cpu_profile::check_generation(profile, &host).is_ok() {
                 assert_eq!(selected.unwrap().id(), profile.id());
             } else {
                 assert_eq!(code(selected), "E_CPU_GENERATION");
             }
         }
+    }
+
+    #[test]
+    fn a_host_profile_needs_a_backend_fingerprint() {
+        let error = select_cpu_profile(cpu_profile::HOST, "nosuch", None).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "the nosuch backend cannot be fingerprinted"
+        );
+    }
+
+    /// Returns the host profile that `--cpu-profile host` derives on a
+    /// `backend` host of the test profile's CPU whose surface is the test
+    /// profile's, and a snapshot's record of it.
+    fn test_host_profile(backend: &str) -> (CpuProfile, SnapshotCpuProfile) {
+        let cpuid = test_profile()
+            .cpuid()
+            .iter()
+            .map(|entry| {
+                let (leaf, subleaf) = entry.key();
+                cpu_profile::cpuid::CpuidEntry::new(leaf, subleaf, entry.values())
+            })
+            .collect();
+        let host = cpu_profile::host::HostIdentity {
+            cpu: cpu_profile::host::HostCpu {
+                vendor: "GenuineIntel".to_owned(),
+                signature: cpu_profile::Hex32(TEST_SIGNATURE),
+                family: 6,
+                model: 106,
+                stepping: 6,
+                brand: String::new(),
+                microcode: Vec::new(),
+                invariant_tsc: true,
+                tsc_deadline: true,
+                tsc_adjust: true,
+            },
+            os: cpu_profile::host::HostOs {
+                kind: "windows".to_owned(),
+                release: None,
+                version: None,
+                cpu_flags: Vec::new(),
+                clocksource: None,
+                available_clocksources: Vec::new(),
+            },
+            hypervisor: None,
+        };
+        let fingerprint = cpu_profile::fingerprint::CpuFingerprint::new(
+            cpu_profile::fingerprint::ToolIdentity {
+                name: "test".to_owned(),
+                version: "0".to_owned(),
+            },
+            host,
+            cpu_profile::fingerprint::BackendFingerprint::new(backend, "test", cpuid),
+        );
+        let profile = cpu_profile::derive_host_profile(&fingerprint).unwrap();
+        let record = SnapshotCpuProfile {
+            id: profile.id().to_owned(),
+            sha256: profile.digest().to_vec(),
+            profile: profile.encode(),
+            effective_cpuid: Vec::new(),
+            capture_cpu_signature: TEST_SIGNATURE,
+        };
+        (profile, record)
+    }
+
+    #[test]
+    fn restore_takes_a_host_profile_from_the_snapshot() {
+        let (profile, record) = test_host_profile("whp");
+        let host = HostCpuSignature::new(*b"GenuineIntel", TEST_SIGNATURE);
+        assert_eq!(restored_host_profile(&record), Some(record.clone()));
+        let selected = select_on_host(profile.id(), &host, Some(&record)).unwrap();
+        assert!(selected.is_host());
+        assert_eq!(*selected, profile);
+        assert_eq!(selected.record().encoding, record.profile.as_slice());
+        assert_eq!(
+            selected.record().digest.as_slice(),
+            record.sha256.as_slice()
+        );
+
+        // Each VM takes its own snapshot's host profile, even one of the same
+        // ID, here derived from another backend's fingerprint.
+        let (other, other_record) = test_host_profile("kvm");
+        assert_eq!(other.id(), profile.id());
+        let reselected = select_on_host(other.id(), &host, Some(&other_record)).unwrap();
+        assert_eq!(*reselected, other);
+        assert_ne!(reselected.record().digest, selected.record().digest);
+
+        let error_code = |result: Result<PartitionProfile, ProfileError>| result.unwrap_err().code;
+        // Only the snapshot of a host profile carries it.
+        assert_eq!(
+            error_code(select_on_host(profile.id(), &host, None)),
+            ProfileErrorCode::ProfileUnknown
+        );
+        let mut renamed = record.clone();
+        renamed.id = "intel.host.v2".to_owned();
+        assert_eq!(
+            error_code(select_on_host(profile.id(), &host, Some(&renamed))),
+            ProfileErrorCode::ProfileUnknown
+        );
+        // A host profile serves only its own CPU model and stepping.
+        let elsewhere = HostCpuSignature::new(*b"GenuineIntel", TEST_SIGNATURE + 1);
+        assert_eq!(
+            error_code(select_on_host(profile.id(), &elsewhere, Some(&record))),
+            ProfileErrorCode::CpuGeneration
+        );
+        // A pinned profile's document under the host profile's ID.
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        let mut swapped = record.clone();
+        swapped.profile = pinned.encoding.to_vec();
+        swapped.sha256 = pinned.digest.to_vec();
+        assert_eq!(
+            error_code(select_on_host(profile.id(), &host, Some(&swapped))),
+            ProfileErrorCode::ProfileDigest
+        );
+        // A pinned profile's snapshot needs no record: its ID selects it.
+        let mut pinned_snapshot = swapped;
+        pinned_snapshot.id = TEST_PROFILE.to_owned();
+        assert_eq!(restored_host_profile(&pinned_snapshot), None);
+        let selected = select_on_host(TEST_PROFILE, &host, None).unwrap();
+        assert!(!selected.is_host());
+        assert_eq!(selected.record(), pinned);
     }
 }

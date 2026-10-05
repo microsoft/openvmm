@@ -224,18 +224,6 @@ pub(crate) fn profile_arch_capabilities(
     enumerated.then_some((value & mask) | (supported & !mask))
 }
 
-/// Returns the pinned CPU profile that `id` names. Core selects or restores
-/// it before the partition exists, so an unknown ID is an internal error
-/// (`E_PROFILE_UNKNOWN`).
-pub(crate) fn pinned_profile(id: &str) -> Result<&'static CpuProfile, TimeAbiError> {
-    cpu_profile::pinned(id).ok_or_else(|| {
-        TimeAbiError::new(
-            TimeAbiCode::ProfileUnknown,
-            format!("CPU profile {id:?} is not pinned in this OpenVMM"),
-        )
-    })
-}
-
 /// Converts the KVM CPUID entries programmed for a VP to CPUID leaves.
 pub(crate) fn cpuid_leaves(entries: &[kvm::kvm_cpuid_entry2]) -> Vec<CpuidLeaf> {
     entries
@@ -864,13 +852,13 @@ mod tests {
         let enumerated = CpuidLeafSet::new(vec![CpuidLeaf::new(7, [0, 0, 0, 1 << 29]).indexed(0)]);
         // The Skylake profile pins its whole mask clear, ITS_NO included;
         // outside it, KVM's own value stays.
-        let skylake = pinned_profile("intel.skylake-sp.v1").unwrap();
+        let skylake = cpu_profile::pinned("intel.skylake-sp.v1").unwrap();
         assert_eq!(
             profile_arch_capabilities(skylake, supported, &enumerated),
             Some(1 << 6)
         );
         // The Ice Lake profile pins RDCL_NO, MDS_NO, TAA_NO, and RFDS_NO set.
-        let icelake = pinned_profile("intel.icelake-sp.v1").unwrap();
+        let icelake = cpu_profile::pinned("intel.icelake-sp.v1").unwrap();
         assert_eq!(
             profile_arch_capabilities(icelake, supported, &enumerated),
             Some(0x0800_0121 | (1 << 6))
@@ -881,21 +869,6 @@ mod tests {
             profile_arch_capabilities(skylake, supported, &CpuidLeafSet::new(Vec::new())),
             None
         );
-    }
-
-    #[test]
-    fn only_pinned_profiles_resolve() {
-        assert_eq!(
-            pinned_profile("intel.skylake-sp.v1").unwrap().id(),
-            "intel.skylake-sp.v1"
-        );
-        for id in ["interim.host.kvm.v1", "intel.skylake-sp.kvm.v1", ""] {
-            let error = pinned_profile(id).unwrap_err();
-            assert!(
-                matches!(error.code, TimeAbiCode::ProfileUnknown),
-                "{id}: {error:?}"
-            );
-        }
     }
 
     fn kvm_like_base() -> Vec<CpuidLeaf> {
@@ -1409,7 +1382,7 @@ mod kvm_tests {
                 ..Default::default()
             }])
             .unwrap();
-        let profile = pinned_profile("intel.skylake-sp.v1").unwrap();
+        let profile = cpu_profile::pinned("intel.skylake-sp.v1").unwrap();
         let value = profile_arch_capabilities(profile, supported, &enumerated).unwrap();
         let time_abi = KvmTimeAbi::new(
             &vm,

@@ -58,6 +58,7 @@ use crate::profile_features::WhpFeatures;
 use crate::profile_features::profile_features;
 use crate::profile_features::supported_surface;
 use cpu_profile::CpuProfile;
+use cpu_profile::PartitionProfile;
 use inspect::Inspect;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -177,7 +178,8 @@ pub(crate) struct WhpTimeAbi {
     #[inspect(hex)]
     features_xsave: u64,
     /// The CPU profile the features derive from.
-    cpu_profile: String,
+    #[inspect(with = "|x| x.id()")]
+    cpu_profile: PartitionProfile,
     /// How many `CpuidResultList2` entries present the effective CPUID.
     cpuid_results: usize,
     /// The effective CPUID record, computed once: it depends only on the
@@ -192,7 +194,7 @@ impl WhpTimeAbi {
     /// The partition must have passed [`validate_partition`].
     ///
     /// The processor feature banks and the XSAVE features derive from the
-    /// pinned CPU profile `config.cpu_profile` ([`profile_features`]), and
+    /// CPU profile `config.cpu_profile` ([`profile_features`]), and
     /// `config.cpuid`, the complete effective CPUID, becomes the CPUID results
     /// ([`cpuid_results`]) and the exits ([`cpuid_exits`]).
     pub(crate) fn configure(
@@ -200,7 +202,7 @@ impl WhpTimeAbi {
         whp_config: &mut whp::PartitionConfig,
         extended_exits: &mut WHV_EXTENDED_VM_EXITS,
     ) -> Result<Self, TimeAbiError> {
-        let profile = pinned_profile(&config.cpu_profile)?;
+        let profile = &config.cpu_profile;
 
         let available_exits = whp::capabilities::extended_vm_exits()
             .map_err(|err| routing_error(format!("cannot query the extended VM exits: {err}")))?;
@@ -312,7 +314,7 @@ impl WhpTimeAbi {
             features_bank0: features.bank0.0,
             features_bank1: features.bank1.0,
             features_xsave: xsave,
-            cpu_profile: profile.id().to_owned(),
+            cpu_profile: profile.clone(),
             cpuid_results: cpuid_results.len(),
             effective: OnceLock::new(),
         })
@@ -397,18 +399,6 @@ pub(crate) fn unlisted_cpuid<E>(
             })
         })
         .collect()
-}
-
-/// Returns the pinned CPU profile that `id` names. Core selects and verifies
-/// the profile before the partition exists, so an unknown ID is an internal
-/// error (`E_PROFILE_UNKNOWN`).
-fn pinned_profile(id: &str) -> Result<&'static CpuProfile, TimeAbiError> {
-    cpu_profile::pinned(id).ok_or_else(|| {
-        TimeAbiError::new(
-            TimeAbiCode::ProfileUnknown,
-            format!("CPU profile {id:?} is not pinned in this OpenVMM"),
-        )
-    })
 }
 
 /// Fails unless the partition can carry the time ABI: no isolation, no
@@ -918,8 +908,7 @@ impl WhpPartitionInner {
                 })
         };
         let mut record = effective_cpuid(&self.cpuid, &mut read)?;
-        let unlisted =
-            unlisted_cpuid(pinned_profile(&state.cpu_profile)?, host_cpuid(), &mut read)?;
+        let unlisted = unlisted_cpuid(&state.cpu_profile, host_cpuid(), &mut read)?;
         tracing::info!(
             results = record.len(),
             unlisted = unlisted.len(),
@@ -1429,19 +1418,6 @@ mod tests {
     use vm_topology::processor::x86::X2ApicState;
 
     const VP_COUNT: u32 = 8;
-
-    #[test]
-    fn cpu_profile_ids_resolve_to_pinned_profiles() {
-        let skylake = pinned_profile("intel.skylake-sp.v1").unwrap();
-        assert_eq!(skylake.id(), "intel.skylake-sp.v1");
-        for id in ["interim.host.whp.v1", "intel.skylake-sp.whp.v1", ""] {
-            assert_eq!(
-                pinned_profile(id).unwrap_err().code,
-                TimeAbiCode::ProfileUnknown,
-                "{id:?}"
-            );
-        }
-    }
 
     /// WHP's own results on an Intel host without synthetic features: no
     /// hypervisor leaves, and every time bit wrong.
@@ -2336,18 +2312,18 @@ mod whp_tests {
     /// on a host outside the pinned generations, where the tests skip.
     fn partition(vp_count: u32) -> Option<Partition> {
         let profile = match cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()) {
-            Ok(profile) => profile,
+            Ok(profile) => PartitionProfile::pinned(profile.id()).unwrap(),
             Err(err) => {
                 println!("skipped: no profile for this host: {err}");
                 return None;
             }
         };
         let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
-        let effective = virt::time_abi::cpuid::effective_cpuid(profile, &topology).unwrap();
+        let effective = virt::time_abi::cpuid::effective_cpuid(&profile, &topology).unwrap();
         let config = TimeAbiConfig {
             cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(&effective)),
             msrs: Arc::new(TimeAbiMsrs::new()),
-            cpu_profile: profile.id().to_owned(),
+            cpu_profile: profile,
         };
         let mut whp_config = whp::PartitionConfig::new().unwrap();
         whp_config
@@ -2531,7 +2507,7 @@ mod whp_tests {
         }
         println!(
             "{}: exits {:#x?} results {} bank0 {:#x} bank1 {:#x} xsave {:#x}",
-            time_abi.cpu_profile,
+            time_abi.cpu_profile.id(),
             time_abi.cpuid_exits,
             time_abi.cpuid_results,
             time_abi.features_bank0,
@@ -2613,7 +2589,7 @@ mod whp_tests {
         }
         println!(
             "{}: {count} probes of {} indexed leaves (max basic {max_basic:#x}, max extended {max_extended:#x}); {} unlisted results are not zero:",
-            time_abi.cpu_profile,
+            time_abi.cpu_profile.id(),
             indexed.len(),
             unlisted.len()
         );
@@ -2650,7 +2626,7 @@ mod whp_tests {
             topology: &cpuid_topology,
             apic_id: 0,
         };
-        let profile = cpu_profile::pinned(&time_abi.cpu_profile).unwrap();
+        let profile = &*time_abi.cpu_profile;
         let host = host_cpuid();
         let started = std::time::Instant::now();
         let report = unlisted_cpuid(profile, host, |function, index| {
@@ -2693,7 +2669,7 @@ mod whp_tests {
         let Some(new) = partition(VP_COUNT) else {
             return;
         };
-        let profile = cpu_profile::pinned(&new.time_abi.cpu_profile).unwrap();
+        let profile = &*new.time_abi.cpu_profile;
         let programming = test_cpuid::profile_programming(profile, VP_COUNT);
         let mut whp_config = whp::PartitionConfig::new().unwrap();
         whp_config

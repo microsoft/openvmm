@@ -20,7 +20,8 @@
 //!    the XSAVE leaf is rebuilt from them; every host must agree on the
 //!    layout. A feature whose XSAVE state is not enabled is cleared.
 //! 4. The brand string is generic per generation,
-//!    `Intel(R) Xeon(R) Processor (<display name>)` without a frequency
+//!    `Intel(R) Xeon(R) Processor (<display name>)` or
+//!    `Intel(R) Core(TM) Processor (<display name>)` without a frequency
 //!    ([`KnownGeneration::brand`]), so every host of a generation presents
 //!    it whatever its SKU, and the hosts' brands are not compared.
 //! 5. `IA32_ARCH_CAPABILITIES` is pinned in [`ARCH_CAPABILITIES_PINNED_MASK`]
@@ -28,12 +29,19 @@
 //!    the bits their processor feature banks derive. `ITS_NO` is pinned
 //!    clear because the Hyper-V backends cannot present it.
 //! 6. The bits OpenVMM sets per VM are zero and unmasked.
+//!
+//! [`derive_host_profile`] applies the same policy to one fingerprint of the
+//! host that OpenVMM runs on, for `--cpu-profile host`: a development profile
+//! that serves only that host's CPU model and stepping, and that no catalog
+//! pins.
 
 use crate::Hex32;
 use crate::Hex64;
 use crate::cpuid;
 use crate::cpuid::EXTENDED_LEAF_BASE;
 use crate::cpuid::XsaveComponent;
+use crate::error::ProfileError;
+use crate::error::ProfileErrorCode;
 use crate::fingerprint::CpuFingerprint;
 use crate::fingerprint::IA32_ARCH_CAPABILITIES;
 use crate::hv_banks;
@@ -48,6 +56,7 @@ use crate::profile::VM_OWNED_LEAVES;
 use crate::profile::describe_leaf;
 use crate::profile::pinned_mask;
 use crate::signature::HostCpuSignature;
+use crate::signature::decode_signature;
 use crate::surface::RegisterClass;
 use crate::surface::field_value;
 use crate::surface::register_class;
@@ -137,7 +146,7 @@ impl KnownGeneration {
 }
 
 /// The generations profiles exist for.
-pub const KNOWN_GENERATIONS: [KnownGeneration; 3] = [
+pub const KNOWN_GENERATIONS: [KnownGeneration; 4] = [
     KnownGeneration {
         vendor: "GenuineIntel",
         vendor_short: "intel",
@@ -162,6 +171,15 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 3] = [
         cpus: &[(6, 207, [0, 15])],
         description: "Intel Xeon Scalable, fifth generation (Emerald Rapids)",
         brand: "Intel(R) Xeon(R) Processor (Emerald Rapids)",
+    },
+    KnownGeneration {
+        vendor: "GenuineIntel",
+        vendor_short: "intel",
+        name: "alderlake",
+        // Alder Lake-S (151) and Alder Lake-P and -H (154).
+        cpus: &[(6, 151, [0, 15]), (6, 154, [0, 15])],
+        description: "Intel Core, twelfth generation (Alder Lake)",
+        brand: "Intel(R) Core(TM) Processor (Alder Lake)",
     },
 ];
 
@@ -212,6 +230,27 @@ pub enum DeriveError {
 /// A CPUID table: the four registers of each leaf and subleaf.
 type Table = BTreeMap<(u32, Option<u32>), [u32; 4]>;
 
+/// The generation name of every host profile ([`derive_host_profile`]). No
+/// known generation uses it.
+pub const HOST_GENERATION: &str = "host";
+
+/// The brand string of every host profile.
+const HOST_BRAND: &str = "Intel(R) Processor (host profile)";
+
+/// What a derivation derives a profile for: a known generation, or one host.
+struct Target<'a> {
+    /// The CPUID vendor string.
+    vendor: &'a str,
+    /// The vendor as profile IDs spell it.
+    vendor_short: &'a str,
+    /// The generation that the profile records.
+    generation: Generation,
+    /// The profile's description.
+    description: String,
+    /// The profile's brand string.
+    brand: &'a str,
+}
+
 /// Derives revision `revision` of the profile of `generation` from the
 /// `fingerprints` of its hosts, on any backends.
 pub fn derive_profile(
@@ -219,24 +258,112 @@ pub fn derive_profile(
     revision: u32,
     fingerprints: &[CpuFingerprint],
 ) -> Result<CpuProfile, DeriveError> {
+    derive(
+        &Target {
+            vendor: generation.vendor,
+            vendor_short: generation.vendor_short,
+            generation: generation.generation(),
+            description: format!(
+                "{}, on every backend; NVX time ABI v1",
+                generation.description
+            ),
+            brand: generation.brand,
+        },
+        revision,
+        fingerprints,
+    )
+}
+
+/// Derives the host profile of the host and backend that `fingerprint`
+/// describes, for `--cpu-profile host`: the profile that the derivation
+/// policy gives for this one fingerprint, with the ID
+/// `<vendor>.host.v1`, the generation [`HOST_GENERATION`] limited to the
+/// host's family, model, and stepping, and a generic brand string.
+///
+/// Unlike a pinned profile, a host profile is neither reviewed nor
+/// immutable: a microcode, firmware, or hypervisor update can change it.
+///
+/// Fails with `E_PROFILE_HOST_UNKNOWN` for a CPU of another vendor than
+/// Intel, whose profiles do not exist yet, and with `E_PROFILE_UNSUPPORTED`
+/// when the backend lacks a feature that the time ABI requires.
+pub fn derive_host_profile(fingerprint: &CpuFingerprint) -> Result<CpuProfile, ProfileError> {
+    let host = host_signature(fingerprint);
+    let cpu = &fingerprint.host.cpu;
+    let vendor_short = match cpu.vendor.as_str() {
+        "GenuineIntel" => "intel",
+        _ => {
+            return Err(ProfileError::new(
+                ProfileErrorCode::ProfileHostUnknown,
+                format!("host CPU profiles support only Intel CPUs, and the host CPU is {host}"),
+            ));
+        }
+    };
+    let (family, model, stepping) = decode_signature(cpu.vendor.as_bytes(), cpu.signature.0);
+    derive(
+        &Target {
+            vendor: &cpu.vendor,
+            vendor_short,
+            generation: Generation {
+                name: HOST_GENERATION.to_owned(),
+                cpus: vec![GenerationCpu {
+                    family,
+                    model,
+                    steppings: [stepping, stepping],
+                }],
+            },
+            description: format!(
+                "Host profile of {host}, derived from one {} CPU fingerprint for development; \
+                 not pinned; NVX time ABI v1",
+                fingerprint.backend.name
+            ),
+            brand: HOST_BRAND,
+        },
+        1,
+        std::slice::from_ref(fingerprint),
+    )
+    .map_err(|error| {
+        let code = match error {
+            DeriveError::TimeFeature(_) => ProfileErrorCode::ProfileUnsupported,
+            _ => ProfileErrorCode::ProfileHostUnknown,
+        };
+        ProfileError::new(
+            code,
+            format!("cannot derive a host CPU profile for {host}: {error}"),
+        )
+    })
+}
+
+/// Returns the vendor and signature of the host that `fingerprint`
+/// describes.
+fn host_signature(fingerprint: &CpuFingerprint) -> HostCpuSignature {
+    let cpu = &fingerprint.host.cpu;
+    let mut vendor = [0; 12];
+    let host_vendor = cpu.vendor.as_bytes();
+    if host_vendor.len() == vendor.len() {
+        vendor.copy_from_slice(host_vendor);
+    }
+    HostCpuSignature::new(vendor, cpu.signature.0)
+}
+
+/// Derives revision `revision` of the profile of `target` from
+/// `fingerprints`; see the module documentation.
+fn derive(
+    target: &Target<'_>,
+    revision: u32,
+    fingerprints: &[CpuFingerprint],
+) -> Result<CpuProfile, DeriveError> {
     if fingerprints.is_empty() {
         return Err(DeriveError::NoFingerprints);
     }
-    let profile_generation = generation.generation();
+    let profile_generation = &target.generation;
     for fingerprint in fingerprints {
-        let cpu = &fingerprint.host.cpu;
-        let mut vendor = [0; 12];
-        let host_vendor = cpu.vendor.as_bytes();
-        if host_vendor.len() == vendor.len() {
-            vendor.copy_from_slice(host_vendor);
-        }
-        let host = HostCpuSignature::new(vendor, cpu.signature.0);
-        if !profile_generation.contains(generation.vendor, &host) {
+        let host = host_signature(fingerprint);
+        if !profile_generation.contains(target.vendor, &host) {
             return Err(DeriveError::WrongGeneration {
                 backend: fingerprint.backend.name.clone(),
                 digest: fingerprint.digest.clone(),
                 host: host.to_string(),
-                generation: generation.name.to_owned(),
+                generation: profile_generation.name.clone(),
             });
         }
     }
@@ -263,7 +390,7 @@ pub fn derive_profile(
     let mut leaves = apply_policy(&combined)?;
 
     // The brand string: generic per generation.
-    for (leaf, value) in (EXTENDED_LEAF_BASE + 2..).zip(brand_leaves(generation.brand)) {
+    for (leaf, value) in (EXTENDED_LEAF_BASE + 2..).zip(brand_leaves(target.brand)) {
         if let Some(entry) = leaves.get_mut(&(leaf, None)) {
             *entry = value;
         }
@@ -384,14 +511,11 @@ pub fn derive_profile(
     CpuProfile::from_parts(
         format!(
             "{}.{}.v{revision}",
-            generation.vendor_short, generation.name
+            target.vendor_short, profile_generation.name
         ),
-        format!(
-            "{}, on every backend; NVX time ABI v1",
-            generation.description
-        ),
-        generation.vendor.to_owned(),
-        profile_generation,
+        target.description.clone(),
+        target.vendor.to_owned(),
+        profile_generation.clone(),
         leaves,
         xcr0,
         xss,
@@ -923,5 +1047,88 @@ mod tests {
             derive_profile(generation("icelake-sp"), 1, &[no_rdtscp]),
             Err(DeriveError::TimeFeature("RDTSCP"))
         ));
+    }
+
+    #[test]
+    fn a_host_profile_applies_the_policy_to_one_host() {
+        let pinned = profile("intel.alderlake.v1");
+        let host = derive_host_profile(&fingerprint(pinned, "whp")).unwrap();
+        assert_eq!(host.id(), "intel.host.v1");
+        assert_eq!(host.vendor(), "GenuineIntel");
+        assert_eq!(
+            host.generation(),
+            &Generation {
+                name: HOST_GENERATION.to_owned(),
+                cpus: vec![GenerationCpu {
+                    family: 6,
+                    model: 154,
+                    steppings: [3, 3],
+                }],
+            }
+        );
+        assert!(
+            host.description()
+                .starts_with("Host profile of GenuineIntel family 6 model 154 stepping 3"),
+            "{}",
+            host.description()
+        );
+        assert!(host.description().contains("one whp CPU fingerprint"));
+        assert_eq!(brand(&host), "Intel(R) Processor (host profile)");
+        // Everything else is what the catalog's derivation gives for the
+        // same fingerprint.
+        let brand_leaves = 0x8000_0002..=0x8000_0004;
+        let without_brand = |profile: &CpuProfile| {
+            profile
+                .cpuid()
+                .iter()
+                .filter(|entry| !brand_leaves.contains(&entry.leaf.0))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(without_brand(&host), without_brand(pinned));
+        assert_eq!(host.xcr0(), pinned.xcr0());
+        assert_eq!(host.xss(), pinned.xss());
+        assert_eq!(host.xsave_components(), pinned.xsave_components());
+        assert_eq!(host.msrs(), pinned.msrs());
+        assert_eq!(
+            host.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        // The derivation is deterministic, and the profile is canonical.
+        let again = derive_host_profile(&fingerprint(pinned, "whp")).unwrap();
+        assert_eq!(again.digest(), host.digest());
+        assert_eq!(CpuProfile::decode(&host.encode()).unwrap(), host);
+    }
+
+    #[test]
+    fn host_profiles_fail_with_the_time_abi_codes() {
+        let pinned = profile("intel.alderlake.v1");
+        let mut amd = fingerprint(pinned, "kvm");
+        amd.host.cpu.vendor = "AuthenticAMD".to_owned();
+        let error = derive_host_profile(&amd).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileHostUnknown);
+        assert!(error.message.contains("only Intel CPUs"), "{error}");
+
+        let no_rdtscp = edited(pinned, "whp", |entries| {
+            set(entries, 0x8000_0001, None, 3, |edx| edx & !(1 << 27));
+        });
+        let error = derive_host_profile(&no_rdtscp).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert!(
+            error.message.starts_with(
+                "cannot derive a host CPU profile for GenuineIntel family 6 model 154 stepping 3"
+            ),
+            "{error}"
+        );
+        assert!(
+            error
+                .message
+                .ends_with("RDTSCP, which the time ABI requires")
+        );
+    }
+
+    #[test]
+    fn no_known_generation_is_the_host_generation() {
+        assert!(known_generation(HOST_GENERATION).is_none());
     }
 }

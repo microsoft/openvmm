@@ -51,6 +51,10 @@ pub(super) struct MicrovmManifest {
     pub(super) restore_memory_ranges: Vec<MemoryRange>,
     /// The NVX time ABI parameters, when the time ABI is selected.
     pub(super) time_abi: Option<openvmm_defs::time_abi::TimeAbiParameters>,
+    /// The CPU profile record of the snapshot that the worker restores, set
+    /// by the worker when the profile is a host profile: the snapshot carries
+    /// the profile's only copy, from which the partition takes its profile.
+    pub(super) restored_host_profile: Option<openvmm_defs::time_abi::SnapshotCpuProfile>,
     /// The hypervisor backend ID (`kvm`, `mshv`, or `whp`), set by the
     /// worker.
     pub(super) hypervisor_id: String,
@@ -74,6 +78,7 @@ impl From<MicrovmConfig> for MicrovmManifest {
             snapshot_memory_ranges,
             restore_memory_ranges,
             time_abi,
+            restored_host_profile: None,
             hypervisor_id: String::new(),
         }
     }

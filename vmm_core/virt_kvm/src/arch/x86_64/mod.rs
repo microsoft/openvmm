@@ -601,7 +601,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     .map(|vp_info| vp_info.apic_id)
                     .collect();
                 let surface = self.cpu_surface.take().unwrap_or_default();
-                let profile = time_abi::pinned_profile(&config.cpu_profile)?;
+                let profile = &config.cpu_profile;
                 let supported = surface
                     .msrs
                     .iter()

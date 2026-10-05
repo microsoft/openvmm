@@ -178,9 +178,11 @@ pub struct TimeAbiRestorePreflight {
 /// The snapshot's profile must be pinned in this OpenVMM with the same
 /// digest, and the embedded document must be the pinned profile's canonical
 /// encoding (`E_PROFILE_UNKNOWN`, `E_PROFILE_DIGEST`). Both are compared with
-/// the build's precomputed record, without encoding or hashing. `host` must
-/// be in the profile's generation. The worker recomputes the effective CPUID
-/// and compares it with the record.
+/// the build's precomputed record, without encoding or hashing. A host
+/// profile (`--cpu-profile host`) has no pinned record, so its embedded
+/// document is decoded and checked against the recorded digest instead
+/// (`E_PROFILE_DIGEST`). `host` must be in the profile's generation. The
+/// worker recomputes the effective CPUID and compares it with the record.
 pub fn preflight_time_abi_restore(
     contract: &SnapshotMachineContract,
     hypervisor: &str,
@@ -203,7 +205,11 @@ pub fn preflight_time_abi_restore(
             ),
         ));
     }
-    if requested_cpu_profile != cpu_profile::AUTO && requested_cpu_profile != record.id {
+    let host_profile = cpu_profile::is_host_profile_id(&record.id);
+    if requested_cpu_profile != cpu_profile::AUTO
+        && requested_cpu_profile != record.id
+        && !(host_profile && requested_cpu_profile == cpu_profile::HOST)
+    {
         return Err(TimeAbiError::new(
             TimeAbiCode::ProfileUnknown,
             format!(
@@ -218,23 +224,29 @@ pub fn preflight_time_abi_restore(
             "the host CPU cannot be identified",
         )
     })?;
-    let profile = cpu_profile::pinned_for_restore(&record.id, &record.sha256)?;
-    let pinned = cpu_profile::pinned_record(&record.id).ok_or_else(|| {
-        TimeAbiError::new(
-            TimeAbiCode::ProfileUnknown,
-            format!("CPU profile {} is not pinned", record.id),
-        )
-    })?;
-    if record.profile != pinned.encoding {
-        return Err(TimeAbiError::new(
-            TimeAbiCode::ProfileDigest,
-            format!(
-                "the snapshot's embedded CPU profile is not the canonical encoding of the pinned profile {}",
-                record.id
-            ),
-        ));
+    if host_profile {
+        let profile =
+            cpu_profile::host_profile_for_restore(&record.id, &record.sha256, &record.profile)?;
+        cpu_profile::check_generation(&profile, &host)?;
+    } else {
+        let profile = cpu_profile::pinned_for_restore(&record.id, &record.sha256)?;
+        let pinned = cpu_profile::pinned_record(&record.id).ok_or_else(|| {
+            TimeAbiError::new(
+                TimeAbiCode::ProfileUnknown,
+                format!("CPU profile {} is not pinned", record.id),
+            )
+        })?;
+        if record.profile != pinned.encoding {
+            return Err(TimeAbiError::new(
+                TimeAbiCode::ProfileDigest,
+                format!(
+                    "the snapshot's embedded CPU profile is not the canonical encoding of the pinned profile {}",
+                    record.id
+                ),
+            ));
+        }
+        cpu_profile::check_generation(profile, &host)?;
     }
-    cpu_profile::check_generation(profile, &host)?;
     let capture = capture_record(time)?;
     let downtime = select_downtime(&capture, destination, now, hooks)?;
     Ok(TimeAbiRestorePreflight {
@@ -708,6 +720,117 @@ pub(super) mod tests {
         assert_eq!(
             fail(&contract, "whp", "auto", host, &now, &excessive),
             TimeAbiCode::DowntimeExcessive
+        );
+        // `--cpu-profile host` names no pinned profile.
+        assert_eq!(
+            fail(&contract, "whp", cpu_profile::HOST, host, &now, &hooks),
+            TimeAbiCode::ProfileUnknown
+        );
+    }
+
+    /// Returns the host profile that `--cpu-profile host` derives on a WHP
+    /// host of the test profile's generation whose surface is the test
+    /// profile's.
+    fn test_host_profile() -> cpu_profile::CpuProfile {
+        let pinned = cpu_profile::pinned(TEST_PROFILE).unwrap();
+        let cpuid = pinned
+            .cpuid()
+            .iter()
+            .map(|entry| {
+                let (leaf, subleaf) = entry.key();
+                cpu_profile::cpuid::CpuidEntry::new(leaf, subleaf, entry.values())
+            })
+            .collect();
+        let host = cpu_profile::host::HostIdentity {
+            cpu: cpu_profile::host::HostCpu {
+                vendor: "GenuineIntel".to_owned(),
+                signature: cpu_profile::Hex32(TEST_SIGNATURE),
+                family: 6,
+                model: 106,
+                stepping: 6,
+                brand: String::new(),
+                microcode: Vec::new(),
+                invariant_tsc: true,
+                tsc_deadline: true,
+                tsc_adjust: true,
+            },
+            os: cpu_profile::host::HostOs {
+                kind: "windows".to_owned(),
+                release: None,
+                version: None,
+                cpu_flags: Vec::new(),
+                clocksource: None,
+                available_clocksources: Vec::new(),
+            },
+            hypervisor: None,
+        };
+        let fingerprint = cpu_profile::fingerprint::CpuFingerprint::new(
+            cpu_profile::fingerprint::ToolIdentity {
+                name: "test".to_owned(),
+                version: "0".to_owned(),
+            },
+            host,
+            cpu_profile::fingerprint::BackendFingerprint::new("whp", "test", cpuid),
+        );
+        cpu_profile::derive_host_profile(&fingerprint).unwrap()
+    }
+
+    #[test]
+    fn restore_preflight_checks_a_recorded_host_profile() {
+        let (mut contract, destination, now) = test_restore();
+        let hooks = TimeAbiTestHooks::default();
+        let profile = test_host_profile();
+        assert_eq!(profile.id(), "intel.host.v1");
+        *contract.cpu_profile.as_mut().unwrap() = SnapshotCpuProfile {
+            id: profile.id().to_owned(),
+            sha256: profile.digest().to_vec(),
+            profile: profile.encode(),
+            effective_cpuid: effective_cpuid_record(&test_effective_cpuid(&profile, 2)),
+            capture_cpu_signature: TEST_SIGNATURE,
+        };
+        let result = |contract: &SnapshotMachineContract, requested: &str, signature: u32| {
+            preflight(
+                contract,
+                "whp",
+                requested,
+                Some(signature),
+                &destination,
+                &now,
+                &hooks,
+            )
+        };
+        for requested in ["auto", cpu_profile::HOST, profile.id()] {
+            let restored = result(&contract, requested, TEST_SIGNATURE).unwrap();
+            assert_eq!(restored.cpu_profile, profile.id());
+            assert_eq!(restored.generation, 4);
+        }
+        let code = |result: Result<TimeAbiRestorePreflight, TimeAbiError>| result.unwrap_err().code;
+        // A pinned profile is not the snapshot's.
+        assert_eq!(
+            code(result(&contract, TEST_PROFILE, TEST_SIGNATURE)),
+            TimeAbiCode::ProfileUnknown
+        );
+        // A host profile serves only its own CPU model and stepping.
+        assert_eq!(
+            code(result(&contract, "auto", TEST_SIGNATURE + 1)),
+            TimeAbiCode::CpuGeneration
+        );
+        // The digest must match the embedded document.
+        let mut corrupted = contract.clone();
+        corrupted.cpu_profile.as_mut().unwrap().sha256[0] ^= 1;
+        assert_eq!(
+            code(result(&corrupted, "auto", TEST_SIGNATURE)),
+            TimeAbiCode::ProfileDigest
+        );
+        // A pinned profile's document under the host profile's ID.
+        let mut swapped = contract.clone();
+        let record = swapped.cpu_profile.as_mut().unwrap();
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        record.profile = pinned.encoding.to_vec();
+        record.sha256 = pinned.digest.to_vec();
+        assert_eq!(
+            code(result(&swapped, "auto", TEST_SIGNATURE)),
+            TimeAbiCode::ProfileDigest
         );
     }
 

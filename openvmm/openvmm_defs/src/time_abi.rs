@@ -94,7 +94,10 @@ impl SnapshotTimeContract {
 /// checks it by comparison, so neither encodes a document nor computes a
 /// digest: `sha256` and `profile` are the pinned profile's precomputed digest
 /// and canonical encoding, and `effective_cpuid` is
-/// [`encode_effective_cpuid`] of the partition's effective CPUID.
+/// [`encode_effective_cpuid`] of the partition's effective CPUID. A host
+/// profile (`--cpu-profile host`) has no constants: capture records the
+/// digest and encoding computed when the VM worker selected it, and restore
+/// decodes the document and checks it against the digest.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
 pub struct SnapshotCpuProfile {
@@ -230,8 +233,8 @@ pub struct RestoreTimeInput {
 /// Time ABI parameters of every microVM worker.
 #[derive(Debug, MeshPayload)]
 pub struct TimeAbiParameters {
-    /// The CPU profile: a pinned profile ID or `auto`. On restore it must
-    /// match the snapshot's profile.
+    /// The CPU profile: a pinned profile ID, `auto`, or `host`. On restore it
+    /// is the snapshot's profile ID.
     pub cpu_profile: String,
     /// The generation counter of this VM process.
     pub generation: u32,

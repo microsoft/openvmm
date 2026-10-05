@@ -1,0 +1,781 @@
+{
+  "cpuid": [
+    {
+      "leaf": "0x00000000",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x0000001c",
+        "0x756e6547",
+        "0x6c65746e",
+        "0x49656e69"
+      ]
+    },
+    {
+      "leaf": "0x00000001",
+      "mask": [
+        "0xffffffff",
+        "0x0000ffff",
+        "0xf7dfffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x000906a3",
+        "0x00000800",
+        "0xf6da3203",
+        "0x0f8bfbff"
+      ]
+    },
+    {
+      "leaf": "0x00000002",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00feff01",
+        "0x000000f0",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000003",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000121",
+        "0x02c0003f",
+        "0x0000003f",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x00000122",
+        "0x01c0003f",
+        "0x0000003f",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000143",
+        "0x0240003f",
+        "0x000007ff",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0x00003fff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000003",
+      "value": [
+        "0x00000163",
+        "0x02c0003f",
+        "0x00007fff",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000004",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000004",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000005",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000006",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000004",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffef",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000002",
+        "0x219c27a9",
+        "0x18400724",
+        "0xac004410"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x00000810",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000001"
+      ]
+    },
+    {
+      "leaf": "0x00000008",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000009",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000a",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000c",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0x00000000",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000007",
+        "0x00000000",
+        "0x00000340",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0x00000000",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000001",
+      "value": [
+        "0x0000000f",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000d",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000002",
+      "value": [
+        "0x00000100",
+        "0x00000240",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000e",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000000f",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000010",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000011",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000012",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000013",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000014",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000015",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000016",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000017",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000018",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": "0x00000000",
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x00000019",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000001a",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000001b",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x0000001c",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000000",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x80000008",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000001",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000121",
+        "0x2c100800"
+      ]
+    },
+    {
+      "leaf": "0x80000002",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x65746e49",
+        "0x2952286c",
+        "0x726f4320",
+        "0x4d542865"
+      ]
+    },
+    {
+      "leaf": "0x80000003",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x72502029",
+        "0x7365636f",
+        "0x20726f73",
+        "0x646c4128"
+      ]
+    },
+    {
+      "leaf": "0x80000004",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x4c207265",
+        "0x29656b61",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000005",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000006",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x05007040",
+        "0x00000000"
+      ]
+    },
+    {
+      "leaf": "0x80000007",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x00000000",
+        "0x00000000",
+        "0x00000000",
+        "0x00000100"
+      ]
+    },
+    {
+      "leaf": "0x80000008",
+      "mask": [
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff",
+        "0xffffffff"
+      ],
+      "subleaf": null,
+      "value": [
+        "0x0000302e",
+        "0x00000000",
+        "0x00000000",
+        "0x00000000"
+      ]
+    }
+  ],
+  "description": "Intel Core, twelfth generation (Alder Lake), on every backend; NVX time ABI v1",
+  "generation": {
+    "cpus": [
+      {
+        "family": 6,
+        "model": 151,
+        "steppings": [
+          0,
+          15
+        ]
+      },
+      {
+        "family": 6,
+        "model": 154,
+        "steppings": [
+          0,
+          15
+        ]
+      }
+    ],
+    "name": "alderlake"
+  },
+  "id": "intel.alderlake.v1",
+  "msrs": [
+    {
+      "index": "0x0000010a",
+      "mask": "0x400000000c12e1bb",
+      "value": "0x000000000002e123"
+    }
+  ],
+  "physical_address_width": 46,
+  "provenance": {
+    "method": "derived by cpu_profile::derive under openvmm-cpu-profile-policy/v1: per-register consensus within each backend, then across backends, of the hosts' supported CPU surfaces",
+    "sources": [
+      {
+        "backend": "whp",
+        "hosts": 1,
+        "surface_digests": [
+          "sha256:8e0184d897cb2641df7306afe86a1d4af5f4740d775719f4be49bcd1e0f15b53"
+        ]
+      }
+    ]
+  },
+  "schema": "openvmm-cpu-profile/v1",
+  "vendor": "GenuineIntel",
+  "xcr0": "0x0000000000000007",
+  "xsave_components": [
+    {
+      "align64": false,
+      "index": 2,
+      "offset": 576,
+      "size": 256,
+      "supervisor": false,
+      "xfd": false
+    }
+  ],
+  "xss": "0x0000000000000000"
+}

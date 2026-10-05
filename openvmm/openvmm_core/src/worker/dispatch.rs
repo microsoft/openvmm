@@ -353,6 +353,14 @@ impl Worker for VmWorker {
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
             .context("failed to resolve hypervisor backend")?;
 
+        // A snapshot of a host CPU profile carries the profile's only copy,
+        // from which the partition takes its profile.
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(input) = &restore_params.state.time_abi {
+            manifest.microvm.restored_host_profile =
+                time_abi::restored_host_profile(&input.cpu_profile);
+        }
+
         let shared_memory = parameters
             .shared_memory
             .map(|fd| restore_params.shared_memory_backing(fd));
@@ -1265,12 +1273,16 @@ impl InitializedVm {
         #[cfg(guest_arch = "x86_64")]
         let (time_abi_partition, time_abi_config) = match &cfg.microvm.time_abi {
             Some(parameters) if cfg.machine_profile == MachineProfile::Microvm => {
-                let profile = time_abi::select_cpu_profile(&parameters.cpu_profile)?;
+                let profile = time_abi::select_cpu_profile(
+                    &parameters.cpu_profile,
+                    &cfg.microvm.hypervisor_id,
+                    cfg.microvm.restored_host_profile.as_ref(),
+                )?;
                 let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(
-                    profile,
+                    &profile,
                     &processor_topology,
                 )?);
-                let (msrs, config) = time_abi::partition_config(profile, &effective_cpuid);
+                let (msrs, config) = time_abi::partition_config(&profile, &effective_cpuid);
                 (
                     Some(time_abi::PartitionTimeAbi {
                         msrs,
@@ -1972,11 +1984,11 @@ impl InitializedVm {
                 time_abi::check_presented_cpuid(
                     partition.as_ref(),
                     hypervisor,
-                    profile,
+                    &profile,
                     &effective_cpuid,
                 )?;
                 let presented_done = std::time::Instant::now();
-                time_abi::check_profile_support(partition.as_ref(), hypervisor, profile)?;
+                time_abi::check_profile_support(partition.as_ref(), hypervisor, &profile)?;
                 let support_done = std::time::Instant::now();
                 tracing::info!(
                     cpu_profile = profile.id(),
