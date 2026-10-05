@@ -72,6 +72,19 @@ pub enum MicroVmAccessMode {
     ReadWrite,
 }
 
+/// Host identity that performs the guest's filesystem operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MicroVmOwnerMode {
+    /// Run every operation as the VMM process, which then owns the files that
+    /// the guest creates.
+    Vmm,
+    /// Run each operation as the UID and GID of its guest caller, without
+    /// supplementary groups or capabilities. Guest UID 0 and GID 0 are replaced
+    /// by the owner of the export root, which therefore must not be UID 0 or
+    /// GID 0. Requires a Linux host.
+    Caller,
+}
+
 /// Errors in the fixed microVM virtio-fs attachment contract.
 #[derive(Debug, thiserror::Error)]
 pub enum MicroVmProfileError {
@@ -87,6 +100,10 @@ pub enum MicroVmProfileError {
     /// The denied-path list was not canonical.
     #[error("microVM virtio-fs denied paths are invalid")]
     InvalidDeniedPaths,
+    /// Caller ownership needs per-thread filesystem credentials, which only
+    /// Linux provides.
+    #[error("microVM virtio-fs caller ownership requires a Linux host")]
+    UnsupportedOwnerMode,
 }
 
 /// Immutable profile settings for the microVM virtio-fs device.
@@ -100,12 +117,14 @@ pub struct MicroVmVirtioFsProfile {
     root_identity: Vec<u8>,
     access_mode: MicroVmAccessMode,
     denied_paths: Vec<PathBuf>,
+    owner_mode: MicroVmOwnerMode,
 }
 
 impl MicroVmVirtioFsProfile {
     /// Builds the constrained microVM profile from the resource attachment
     /// fields. `stable_id`, `root_identity`, and `read_only` correspond
-    /// exactly to `VirtioFsProfile::Microvm`.
+    /// exactly to `VirtioFsProfile::Microvm`. The guest's operations run as
+    /// the VMM until [`Self::with_owner_mode`] selects otherwise.
     pub fn from_attachment(
         stable_id: String,
         root_identity: Vec<u8>,
@@ -128,7 +147,21 @@ impl MicroVmVirtioFsProfile {
                 MicroVmAccessMode::ReadWrite
             },
             denied_paths,
+            owner_mode: MicroVmOwnerMode::Vmm,
         })
+    }
+
+    /// Selects the host identity that performs the guest's filesystem
+    /// operations.
+    pub fn with_owner_mode(
+        mut self,
+        owner_mode: MicroVmOwnerMode,
+    ) -> Result<Self, MicroVmProfileError> {
+        if owner_mode == MicroVmOwnerMode::Caller && !cfg!(target_os = "linux") {
+            return Err(MicroVmProfileError::UnsupportedOwnerMode);
+        }
+        self.owner_mode = owner_mode;
+        Ok(self)
     }
 
     /// Returns the stable attachment ID used to match a restore attachment.
@@ -218,6 +251,11 @@ impl MicroVmVirtioFsProfile {
     /// Returns whether host mutations must be rejected.
     pub const fn is_readonly(&self) -> bool {
         matches!(self.access_mode, MicroVmAccessMode::ReadOnly)
+    }
+
+    /// Returns the host identity that performs the guest's operations.
+    pub const fn owner_mode(&self) -> MicroVmOwnerMode {
+        self.owner_mode
     }
 
     /// Returns canonical host-relative paths hidden from the guest.
@@ -376,9 +414,36 @@ mod tests {
         assert_eq!(profile.fuse_negotiation().protocol_major(), 7);
         assert_eq!(profile.fuse_negotiation().minimum_minor(), 31);
         assert_eq!(profile.fuse_negotiation().maximum_write(), 1024 * 1024);
+        assert_eq!(profile.owner_mode(), MicroVmOwnerMode::Vmm);
         profile
             .validate_root_path(temporary_directory.path())
             .unwrap();
+    }
+
+    #[test]
+    fn profile_selects_caller_ownership_only_on_linux() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let profile = MicroVmVirtioFsProfile::from_attachment(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(temporary_directory.path()).unwrap(),
+            false,
+            Vec::new(),
+        )
+        .unwrap();
+        let vmm = profile.clone().with_owner_mode(MicroVmOwnerMode::Vmm);
+        assert_eq!(vmm.unwrap(), profile);
+
+        let caller = profile.clone().with_owner_mode(MicroVmOwnerMode::Caller);
+        if cfg!(target_os = "linux") {
+            let caller = caller.unwrap();
+            assert_eq!(caller.owner_mode(), MicroVmOwnerMode::Caller);
+            assert_ne!(caller, profile);
+        } else {
+            assert!(matches!(
+                caller,
+                Err(MicroVmProfileError::UnsupportedOwnerMode)
+            ));
+        }
     }
 
     #[test]

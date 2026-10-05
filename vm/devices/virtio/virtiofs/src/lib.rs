@@ -73,6 +73,8 @@ struct VirtioFsInner {
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
     mode: VirtioFsMode,
     microvm_profile: Option<MicroVmVirtioFsProfile>,
+    /// Set when the microVM profile performs requests as their callers.
+    caller_identity: Option<microvm::owner::CallerIdentity>,
     negotiation: RwLock<FuseNegotiation>,
 }
 
@@ -671,6 +673,7 @@ impl VirtioFs {
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: None,
+                caller_identity: None,
                 negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         })
@@ -690,6 +693,7 @@ impl VirtioFs {
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
                 microvm_profile: None,
+                caller_identity: None,
                 negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         }
