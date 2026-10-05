@@ -4,7 +4,10 @@
 //! microVM filesystem construction, policy hooks, and attachment restore.
 
 use super::MAX_FUSE_REQUEST_BYTES;
+use super::owner::CallerIdentity;
+use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
+use super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
 use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
@@ -171,6 +174,13 @@ impl VirtioFs {
         ));
         let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
         profile.validate_opened_root(root_path, &root_stat)?;
+        let caller_identity = match profile.owner_mode() {
+            MicroVmOwnerMode::Vmm => None,
+            MicroVmOwnerMode::Caller => Some(CallerIdentity::for_export_root_owner(
+                root_stat.uid,
+                root_stat.gid,
+            )?),
+        };
         if inodes.insert(root_inode)?.1 != FUSE_ROOT_ID {
             anyhow::bail!("microVM virtio-fs root received an invalid node ID");
         }
@@ -180,6 +190,7 @@ impl VirtioFs {
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: Some(profile),
+                caller_identity,
                 negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         })
@@ -187,6 +198,12 @@ impl VirtioFs {
 
     pub(crate) fn microvm_profile(&self) -> Option<&MicroVmVirtioFsProfile> {
         self.inner.microvm_profile.as_ref()
+    }
+
+    /// Returns the mapping of guest callers to host identities, if requests
+    /// run as their callers.
+    pub(crate) fn caller_identity(&self) -> Option<CallerIdentity> {
+        self.inner.caller_identity
     }
 
     pub(crate) fn is_microvm(&self) -> bool {
@@ -389,8 +406,13 @@ impl VirtioFs {
             *self.inner.negotiation.read() == negotiation,
             "FUSE session and filesystem negotiation state disagree"
         );
+        let caller_identity = profile.owner_mode() == MicroVmOwnerMode::Caller;
         Ok(SavedState {
-            schema_version: SCHEMA_VERSION,
+            schema_version: if caller_identity {
+                CALLER_IDENTITY_SCHEMA_VERSION
+            } else {
+                SCHEMA_VERSION
+            },
             attachment_id: profile.attachment_id().to_owned(),
             access_mode: match profile.access_mode() {
                 super::profile::MicroVmAccessMode::ReadOnly => 1,
@@ -410,6 +432,7 @@ impl VirtioFs {
             attachment_root_identity: profile.root_identity().to_vec(),
             maximum_request_size: MAX_FUSE_REQUEST_BYTES as u32,
             dormant: false,
+            caller_identity,
         })
     }
 
