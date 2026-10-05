@@ -423,10 +423,11 @@ pub struct TimeAbiConfig {
     /// The identity MSR handler, shared with the worker's `time-abi` state
     /// unit.
     pub msrs: std::sync::Arc<TimeAbiMsrs>,
-    /// The ID of the partition's CPU profile, selected or restored before the
-    /// partition is created: `cpu_profile::pinned` returns the profile, from
-    /// which a backend derives its processor features.
-    pub cpu_profile: String,
+    /// The partition's CPU profile, selected or restored before the partition
+    /// is created: a pinned profile or a host profile, from which a backend
+    /// derives its processor features. Only the partitions that use a host
+    /// profile hold it.
+    pub cpu_profile: cpu_profile::PartitionProfile,
 }
 
 #[cfg(test)]
