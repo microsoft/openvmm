@@ -19,6 +19,8 @@ mod fingerprint;
 mod hypercalls;
 mod memory;
 #[cfg(guest_arch = "x86_64")]
+mod native_cpuid;
+#[cfg(guest_arch = "x86_64")]
 mod profile_features;
 mod regs;
 mod synic;
@@ -174,6 +176,11 @@ struct VtlPartition {
     lapic: LocalApicKind,
 
     hypervisor_enlightened: bool,
+
+    /// Set when WHP answers CPUID leaves 0 and 1 without exits.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(with = "Option::is_some")]
+    native_cpuid_leaves: Option<native_cpuid::NativeCpuidLeaves>,
 
     /// The NVX time ABI state this partition was configured with, until the
     /// partition build moves it to [`WhpPartitionInner`].
@@ -788,6 +795,17 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 }
             }
 
+            // WHP answers CPUID leaf 1, with this VP's initial APIC ID, without
+            // an exit.
+            #[cfg(guest_arch = "x86_64")]
+            if let Some(native_cpuid_leaves) = &vtlp.native_cpuid_leaves {
+                native_cpuid_leaves.verify_apic_id(
+                    vp.vp.whp(vtl),
+                    vp_info.base.vp_index.index(),
+                    vp_info.apic_id,
+                )?;
+            }
+
             #[cfg(guest_arch = "aarch64")]
             {
                 let _ = vtlp;
@@ -881,6 +899,27 @@ pub enum Error {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     TimeAbi(#[from] virt::time_abi::TimeAbiError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("CPUID leaf {0:#x} has a programmed result but does not exit")]
+    NativeCpuidUnrouted(u32),
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "WHP answers CPUID leaf {function:#x} with {native:08x?} without an exit, but the partition's result is {expected:08x?}"
+    )]
+    NativeCpuidMismatch {
+        function: u32,
+        native: [u32; 4],
+        expected: [u32; 4],
+    },
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "WHP reports initial APIC ID {native:#x} in CPUID leaf 1 of VP {vp_index}, but its APIC ID is {apic_id:#x}"
+    )]
+    NativeCpuidApicId {
+        vp_index: u32,
+        native: u32,
+        apic_id: u32,
+    },
 }
 
 trait WhpResultExt<T> {
@@ -1174,7 +1213,7 @@ impl WhpPartitionInner {
         // FUTURE: register cpuid results with the hypervisor, and register
         // appropriate per-VP results where necessary (or tell the hypervisor
         // the AMD topology information so that it can provide per-VP results
-        // accurately).
+        // accurately). `native_cpuid` does so for leaves 0 and 1.
         #[cfg(guest_arch = "x86_64")]
         let cpuid = {
             use vm_topology::processor::x86::ApicMode;
@@ -1183,15 +1222,9 @@ impl WhpPartitionInner {
             // Report x2apic support. When the APIC is in the hypervisor, the
             // hypervisor will do this automatically, but it doesn't hurt to do this
             // again.
-            let mask = [0, 0, 1 << 21, 0];
-            let (value, use_apic_msrs) = match proto_config.processor_topology.apic_mode() {
-                ApicMode::XApic => ([0; 4], true),
-                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => (mask, false),
-            };
-            cpuid.push(
-                virt::CpuidLeaf::new(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, value)
-                    .masked(mask),
-            );
+            let apic_mode = proto_config.processor_topology.apic_mode();
+            let use_apic_msrs = matches!(apic_mode, ApicMode::XApic);
+            cpuid.push(native_cpuid::x2apic_leaf(apic_mode));
 
             // Add in the synthetic hv leaves if necessary.
             if proto_config.hv_config.is_some() {
@@ -1261,6 +1294,11 @@ impl WhpPartitionInner {
                 }
             }
         };
+
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(native_cpuid_leaves) = &vtl0.native_cpuid_leaves {
+            native_cpuid_leaves.verify(&cpuid, |eax, ecx| vtl0.cpuid(eax, ecx))?;
+        }
 
         let mut vtl0_alias_map_offset = None;
         let vtl2_emulation = if let Some(vtl2_config) = proto_config
@@ -1536,6 +1574,8 @@ impl VtlPartition {
         }
 
         let mut hypervisor_enlightened = false;
+        #[cfg(guest_arch = "x86_64")]
+        let mut native_cpuid_leaves = None;
 
         let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
 
@@ -1789,6 +1829,23 @@ impl VtlPartition {
                         synth_features,
                     ))
                     .for_op("set synthetic processor features")?;
+
+                // Keep CPUID leaves 0 and 1, which guest interrupt handlers
+                // can run, in the hypervisor (see `native_cpuid`). Other VTL
+                // and isolation configurations route more leaves through the
+                // exit handler.
+                #[cfg(guest_arch = "x86_64")]
+                if vtl == Vtl::Vtl0
+                    && hv_config.vtl2.is_none()
+                    && !nested_virt
+                    && !config.isolation.is_isolated()
+                    && time_abi.is_none()
+                {
+                    native_cpuid_leaves = native_cpuid::NativeCpuidLeaves::configure(
+                        config.processor_topology,
+                        &mut whp_config,
+                    );
+                }
             } else {
                 with_overlays = hv_config.vtl2.is_none();
             }
@@ -1881,6 +1938,8 @@ impl VtlPartition {
             mapper,
             lapic,
             hypervisor_enlightened,
+            #[cfg(guest_arch = "x86_64")]
+            native_cpuid_leaves,
             #[cfg(guest_arch = "x86_64")]
             time_abi,
         })
