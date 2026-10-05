@@ -34,9 +34,12 @@ impl SimpleFlowNode for Node {
 
         let built_dll = ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
             arch,
-            igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::File(ReadVar::from_static(
-                igvm_payload,
-            )),
+            openhcl_igvm: ReadVar::from_static(
+                crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput::LocalOnlyCustom {
+                    igvm_bin: igvm_payload,
+                    endorsements: None,
+                },
+            ),
             resource_id: 1,
             // fixed version to signal that this is a custom dll
             dll_version: ReadVar::from_static((1, 0, 1337, 0)),

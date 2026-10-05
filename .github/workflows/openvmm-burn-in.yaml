@@ -178,6 +178,11 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 3
+      shell: bash
+    - name: download artifacts from github actions run
+      run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 8
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 4
       shell: bash
@@ -210,11 +215,6 @@ jobs:
       run: |-
         flowey.exe e 0 flowey_lib_common::download_gh_artifact 3
         flowey.exe e 0 flowey_core::pipeline::artifact::resolve 10
-      shell: bash
-    - name: download artifacts from github actions run
-      run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 9
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 2
       shell: bash
     - name: download artifacts from github actions run
       run: |-
@@ -253,8 +253,8 @@ jobs:
       shell: bash
     - name: download artifacts from github actions run
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_gh_artifact 7
-        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 0 flowey_lib_common::download_gh_artifact 9
+        flowey.exe e 0 flowey_core::pipeline::artifact::resolve 2
       shell: bash
     - name: unpack openvmm-test-initrd archives
       run: flowey.exe e 0 flowey_lib_hvlite::resolve_openvmm_test_initrd 0

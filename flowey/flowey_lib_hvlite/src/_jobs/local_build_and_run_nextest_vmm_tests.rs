@@ -21,6 +21,7 @@ use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
+use petri_artifacts_core::ArtifactId;
 use petri_artifacts_vmm_test::ErasedVmmTestImage;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -274,26 +275,28 @@ impl SimpleFlowNode for Node {
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
 
-        let vmfirmwareigvm_cvm_x64 = if build.vmfirmwareigvm_cvm_x64 {
-            let openhcl_cvm = openhcl_cvm_x64
-                .clone()
-                .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
-            Some(ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
+        let mut build_vmfirmwareigvm = |openhcl_igvm| {
+            ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
                 arch: CommonArch::X86_64,
-                igvm_bin: crate::build_vmfirmwareigvm_dll::IgvmInput::Openhcl(Box::new(
-                    openhcl_cvm,
-                )),
+                openhcl_igvm,
                 resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
                 dll_version: ReadVar::from_static(
                     crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
                 ),
                 internal_dll_name:
-                    petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64_FILE_NAME.into(),
+                    petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::FILENAME.into(),
                 vmfirmwareigvm_dll: v,
-            }))
-        } else {
-            None
+            })
         };
+        let vmfirmwareigvm_cvm_x64 = build
+            .vmfirmwareigvm_cvm_x64
+            .then(|| {
+                let openhcl_cvm = openhcl_cvm_x64
+                    .clone()
+                    .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
+                anyhow::Ok(build_vmfirmwareigvm(openhcl_cvm))
+            })
+            .transpose()?;
 
         let mut build_openvmm = |target| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {

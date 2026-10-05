@@ -934,6 +934,7 @@ pub mod vmm_tests_artifact_builders {
             vmgstool_dev_windows_x64 => VmgstoolOutput,
             tpm_guest_tests_windows_x64 => TpmGuestTestsOutput,
             test_igvm_agent_rpc_server_windows_x64 => TestIgvmAgentRpcServerOutput,
+            vmfirmwareigvm_cvm_x64 => VmfirmwareigvmDllOutput,
             // linux build machine
             openhcl_standard_x64 => OpenhclIgvmOutput,
             openhcl_cvm_x64 => OpenhclIgvmOutput,

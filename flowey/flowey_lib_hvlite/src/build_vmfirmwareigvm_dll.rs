@@ -13,12 +13,6 @@ pub const UNUSED_DLL_VERSION: (u16, u16, u16, u16) = (0, 0, 0, 0);
 pub const SNP_RESOURCE_ID: u32 = 13515;
 
 #[derive(Serialize, Deserialize)]
-pub enum IgvmInput {
-    File(ReadVar<PathBuf>),
-    Openhcl(Box<ReadVar<OpenhclIgvmOutput>>),
-}
-
-#[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllOutput {
     #[serde(rename = "vmfirmwareigvm.dll")]
     pub dll: PathBuf,
@@ -29,7 +23,7 @@ impl Artifact for VmfirmwareigvmDllOutput {}
 flowey_request! {
     pub struct Request {
         pub arch: CommonArch,
-        pub igvm_bin: IgvmInput,
+        pub openhcl_igvm: ReadVar<OpenhclIgvmOutput>,
         /// ID to store the IGVM under within the `VMFW` resource type.
         pub resource_id: u32,
         /// (major, minor, patch, revision)
@@ -51,19 +45,14 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             arch,
-            igvm_bin,
+            openhcl_igvm,
             resource_id,
             internal_dll_name,
             dll_version,
             vmfirmwareigvm_dll,
         } = request;
 
-        let igvm_bin = match igvm_bin {
-            IgvmInput::File(igvm_bin) => igvm_bin,
-            IgvmInput::Openhcl(openhcl_igvm) => {
-                openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf())
-            }
-        };
+        let igvm_bin = openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf());
 
         let extra_env = ctx.emit_rust_stepv("determine vmfirmwareigvm_dll env vars", |ctx| {
             let igvm_bin = igvm_bin.claim(ctx);

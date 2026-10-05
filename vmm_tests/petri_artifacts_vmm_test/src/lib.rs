@@ -1028,9 +1028,6 @@ pub mod artifacts {
     pub mod vmfw_dll {
         use petri_artifacts_core::declare_artifacts;
 
-        /// Filename used for [`enum@LATEST_CVM_X64`] in the VMM test content directory
-        pub const LATEST_CVM_X64_FILE_NAME: &str = "vmfirmwareigvm-cvm-x64.dll";
-
         declare_artifacts! {
             /// An x64 CVM OpenHCL resource DLL
             LATEST_CVM_X64("vmfirmwareigvm-cvm-x64.dll", X64),
