@@ -131,15 +131,15 @@ mod tests {
     #[test]
     fn fails_unknown_hosts_and_unsupported_profiles() {
         let profile = profile("intel.icelake-sp.v1");
-        let mut alder_lake = fingerprint(profile, "whp");
-        alder_lake.host.cpu.signature = Hex32(0x0009_06a3);
-        alder_lake.host.cpu.invariant_tsc = false;
-        let check = check_fingerprint(&alder_lake);
+        let mut tiger_lake = fingerprint(profile, "whp");
+        tiger_lake.host.cpu.signature = Hex32(0x0008_06c1);
+        tiger_lake.host.cpu.invariant_tsc = false;
+        let check = check_fingerprint(&tiger_lake);
         assert_eq!(
             check.result.as_ref().unwrap_err().code,
             ProfileErrorCode::ProfileHostUnknown
         );
-        let line = check.summary_line(&alder_lake);
+        let line = check.summary_line(&tiger_lake);
         assert!(
             line.starts_with("NVX-CPU-PROFILE: status=fail backend=whp generation=none profile=none surface_digest="),
             "{line}"

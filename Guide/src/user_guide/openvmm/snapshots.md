@@ -257,13 +257,24 @@ one-shot mode at a fixed rate: 1 GHz on KVM and 200 MHz on MSHV and WHP.
 TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed.
 
 The guest CPU is a pinned CPU profile: one per CPU generation, the same on
-every backend. `--cpu-profile <ID>` selects one; the default, `auto`, selects
-the profile of the host's generation, and a host without one fails
-(`E_PROFILE_HOST_UNKNOWN`). Every boot checks that the backend supports the
-profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its effective CPUID
-(`E_CPU_SURFACE`). A snapshot records the profile and the effective CPUID.
-Restore requires the same profile, pinned in this OpenVMM with the same
-digest, a host of the profile's generation, and an identical effective CPUID.
+every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
+generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
+(Xeon Scalable, third generation: 6/106), `intel.emeraldrapids.v1` (Xeon
+Scalable, fifth generation: 6/207), and `intel.alderlake.v1` (Core, twelfth
+generation: 6/151 and 6/154). `--cpu-profile <ID>` selects one; the default,
+`auto`, selects the profile of the host's generation, and a host without one
+fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel development host without one,
+`--cpu-profile host` boots on a host profile instead: OpenVMM fingerprints the
+backend on this host, as `--cpu-fingerprint` does, and applies the pinned
+profiles' derivation policy to it. A host profile, `intel.host.v1`, serves only
+the host's CPU model and stepping, is not pinned, and can change with the
+host's microcode, firmware, or hypervisor. Every boot checks that the backend
+supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
+effective CPUID (`E_CPU_SURFACE`). A snapshot records the profile and the
+effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
+the same digest, or, for a host profile, the snapshot's own copy of it, which
+must match the recorded digest; a host of the profile's generation; and an
+identical effective CPUID.
 OpenVMM computes the effective CPUID, including its own leaves and the bits
 it owns, such as the cache topology, so an OpenVMM build that computes it
 differently rejects earlier snapshots with `E_CPU_SURFACE`.
@@ -434,5 +445,7 @@ immediately with a clear error if any active device does not support it.
   supported.
 - MicroVM restore requires the backend, CPU generation, and CPU profile of
   the capture, and an OpenVMM build that computes the same effective CPUID.
+  A host profile's snapshot restores only on a host of the capture host's CPU
+  model and stepping.
   Snapshots from manifest versions before 6, or from a build that computes a
   different effective CPUID, must be recaptured.

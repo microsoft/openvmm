@@ -380,10 +380,13 @@ describes the source definitions.
   instantiate the full VP capacity.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
-* `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, or `auto`
-  (the default) for the profile of the host's CPU generation. A host without a
-  profile, or a profile of another generation, fails before the partition is
-  created. A restore uses the snapshot's profile and rejects any other. See
+* `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
+  (the default) for the profile of the host's CPU generation, or `host` to
+  derive a development profile from this host's backend fingerprint for a
+  host that no pinned profile serves. `auto` never selects a host profile. A
+  host without a profile, or a profile of another generation, fails before the
+  partition is created. A restore uses the snapshot's profile and rejects any
+  other; `host` also names a host profile that the snapshot recorded. See
   [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
 * `--x-time-abi-verify`: Build the microVM partition and run the time ABI
   checks (CPU profile support, effective CPUID, rates) without starting the
