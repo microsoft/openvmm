@@ -5,19 +5,33 @@
 //! profile checks of cold boot and restore.
 
 use crate::canonical;
+use crate::derive::HOST_GENERATION;
 use crate::derive::KnownGeneration;
 use crate::error::ProfileError;
 use crate::error::ProfileErrorCode;
 use crate::pinned::PinnedRecord;
 use crate::pinned_data::PINNED;
 use crate::profile::CpuProfile;
+use crate::profile::is_id_component;
+use crate::profile::is_revision;
 use crate::signature::HostCpuSignature;
 use crate::signature::decode_signature;
+use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 /// The `--cpu-profile` value that selects the profile of the host's
 /// generation.
 pub const AUTO: &str = "auto";
+
+/// The `--cpu-profile` value that selects a host profile: a profile that the
+/// VM worker derives from the backend's fingerprint of this host
+/// ([`derive_host_profile`](crate::derive::derive_host_profile)) and that
+/// only its partition holds ([`PartitionProfile::host`]). It is opt-in, for
+/// development hosts that no pinned profile serves: [`AUTO`] never selects
+/// it.
+pub const HOST: &str = "host";
 
 /// Each pinned profile, built from its static data on first use, so that a
 /// cold boot or a restore builds only its own.
@@ -54,8 +68,158 @@ pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
 /// Returns the precomputed record of the pinned profile `id`: its canonical
 /// encoding and digest, constants that a snapshot's CPU profile record
 /// copies at capture and that the restore preflight compares byte for byte.
-pub fn pinned_record(id: &str) -> Option<PinnedRecord> {
+pub fn pinned_record(id: &str) -> Option<PinnedRecord<'static>> {
     position(id).map(|index| PINNED[index].record())
+}
+
+/// A host profile with its record, computed once, when the VM worker selects
+/// the profile.
+struct HostProfile {
+    profile: CpuProfile,
+    encoding: Vec<u8>,
+    digest: [u8; 32],
+}
+
+/// The CPU profile of a partition: a pinned profile, or a host profile.
+///
+/// A host profile has no constants in this OpenVMM. The VM worker derives it
+/// for `--cpu-profile host`
+/// ([`derive_host_profile`](crate::derive::derive_host_profile)) or decodes
+/// it from the snapshot that it restores ([`host_profile_for_restore`]), and
+/// only the partitions that use it hold it, so each VM of a process can have
+/// its own. Core hands the partition's profile to the backend in its time ABI
+/// configuration, and capture copies its [`record`](Self::record). Clones
+/// share the profile.
+#[derive(Clone)]
+pub struct PartitionProfile(Source);
+
+#[derive(Clone)]
+enum Source {
+    /// The pinned profile at this index in [`PINNED`].
+    Pinned(usize),
+    /// A host profile.
+    Host(Arc<HostProfile>),
+}
+
+impl PartitionProfile {
+    /// Returns the partition profile of the pinned profile `id`, if this
+    /// OpenVMM pins it.
+    pub fn pinned(id: &str) -> Option<Self> {
+        position(id).map(|index| Self(Source::Pinned(index)))
+    }
+
+    /// Returns the partition profile of `profile`, a host profile, and
+    /// computes its record.
+    ///
+    /// Fails with `E_PROFILE_UNKNOWN` for a profile that is not a host
+    /// profile.
+    pub fn host(profile: CpuProfile) -> Result<Self, ProfileError> {
+        if profile.generation().name != HOST_GENERATION || !is_host_profile_id(profile.id()) {
+            return Err(ProfileError::new(
+                ProfileErrorCode::ProfileUnknown,
+                format!("CPU profile {} is not a host profile", profile.id()),
+            ));
+        }
+        let encoding = profile.encode();
+        let digest = canonical::sha256(&encoding);
+        Ok(Self(Source::Host(Arc::new(HostProfile {
+            profile,
+            encoding,
+            digest,
+        }))))
+    }
+
+    /// Returns whether the profile is a host profile.
+    pub fn is_host(&self) -> bool {
+        matches!(self.0, Source::Host(_))
+    }
+
+    /// Returns the profile's record, which capture copies into a snapshot:
+    /// the pinned profile's precomputed constants, or the host profile's
+    /// encoding and digest, computed when it was selected.
+    pub fn record(&self) -> PinnedRecord<'_> {
+        match &self.0 {
+            Source::Pinned(index) => PINNED[*index].record(),
+            Source::Host(host) => PinnedRecord {
+                id: host.profile.id(),
+                encoding: &host.encoding,
+                digest: host.digest,
+            },
+        }
+    }
+}
+
+impl Deref for PartitionProfile {
+    type Target = CpuProfile;
+
+    fn deref(&self) -> &CpuProfile {
+        match &self.0 {
+            Source::Pinned(index) => load(*index),
+            Source::Host(host) => &host.profile,
+        }
+    }
+}
+
+impl fmt::Debug for PartitionProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PartitionProfile")
+            .field("id", &self.id())
+            .field("host", &self.is_host())
+            .finish()
+    }
+}
+
+/// Returns whether `id` names a host profile, `<vendor>.host.v<revision>`,
+/// with the syntax of every profile ID: the vendor is lowercase ASCII
+/// letters, digits, and hyphens, and the revision a decimal number without a
+/// leading zero. No pinned profile has such an ID.
+pub fn is_host_profile_id(id: &str) -> bool {
+    let mut components = id.split('.');
+    matches!(
+        (components.next(), components.next(), components.next(), components.next()),
+        (Some(vendor), Some(HOST_GENERATION), Some(revision), None)
+            if is_id_component(vendor) && revision.strip_prefix('v').is_some_and(is_revision)
+    )
+}
+
+/// Returns the host profile that a snapshot recorded by ID, SHA-256, and
+/// canonical document, for a restore, after checking that the document is
+/// the canonical encoding of a valid host profile with that ID and digest
+/// (`E_PROFILE_DIGEST`). An ID that does not name a host profile fails with
+/// `E_PROFILE_UNKNOWN`.
+///
+/// Unlike [`pinned_for_restore`], this decodes and hashes the document: no
+/// constant exists to compare it with. The restore preflight then checks
+/// the destination host with [`check_generation`], and the VM worker
+/// selects the profile for the partition ([`PartitionProfile::host`]).
+pub fn host_profile_for_restore(
+    id: &str,
+    sha256: &[u8],
+    document: &[u8],
+) -> Result<CpuProfile, ProfileError> {
+    if !is_host_profile_id(id) {
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileUnknown,
+            format!("CPU profile {id:?} is not a host profile"),
+        ));
+    }
+    if canonical::sha256(document).as_slice() != sha256 {
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileDigest,
+            format!("the snapshot's host CPU profile {id} does not match its recorded digest"),
+        ));
+    }
+    let profile = CpuProfile::decode(document)?;
+    if profile.id() != id || profile.generation().name != HOST_GENERATION {
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileDigest,
+            format!(
+                "the snapshot records CPU profile {id}, but its embedded document is {}",
+                profile.id()
+            ),
+        ));
+    }
+    Ok(profile)
 }
 
 /// Returns the name of the generation of the host CPU, if a pinned profile
@@ -137,17 +301,21 @@ fn select_auto_in<'a>(
         })
 }
 
-/// Selects the profile for `--cpu-profile spec`, [`AUTO`] or a pinned ID,
-/// and checks that the host CPU is in its generation.
+/// Selects the pinned profile for `--cpu-profile spec`, [`AUTO`] or a pinned
+/// ID, and checks that the host CPU is in its generation. A host profile has
+/// no ID to select it by: the VM worker derives it for [`HOST`], or takes a
+/// restored snapshot's ([`PartitionProfile::host`]).
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN` for an ID that is
 /// not pinned, or `E_CPU_GENERATION`.
-pub fn select(spec: &str, host: &HostCpuSignature) -> Result<&'static CpuProfile, ProfileError> {
-    if spec == AUTO {
-        return select_auto(host);
-    }
-    let profile = pinned(spec).ok_or_else(|| unknown(spec))?;
-    check_generation(profile, host)?;
+pub fn select(spec: &str, host: &HostCpuSignature) -> Result<PartitionProfile, ProfileError> {
+    let id = if spec == AUTO {
+        select_auto(host)?.id()
+    } else {
+        spec
+    };
+    let profile = PartitionProfile::pinned(id).ok_or_else(|| unknown(spec))?;
+    check_generation(&profile, host)?;
     Ok(profile)
 }
 
@@ -220,6 +388,7 @@ fn revision(id: &str) -> u32 {
 mod tests {
     use super::*;
     use crate::derive;
+    use crate::test_support::fingerprint;
     use crate::test_support::profile;
     use test_with_tracing::test;
 
@@ -228,19 +397,21 @@ mod tests {
     const ICELAKE: u32 = 0x0006_06a6;
     const EMERALDRAPIDS: u32 = 0x000c_06f2;
     const ALDER_LAKE: u32 = 0x0009_06a3;
+    const ALDER_LAKE_S: u32 = 0x0009_0672;
+    const TIGER_LAKE: u32 = 0x0008_06c1;
 
     fn intel(signature: u32) -> HostCpuSignature {
         HostCpuSignature::new(*b"GenuineIntel", signature)
     }
 
-    fn code<T: std::fmt::Debug>(result: Result<T, ProfileError>) -> ProfileErrorCode {
+    fn code<T: fmt::Debug>(result: Result<T, ProfileError>) -> ProfileErrorCode {
         result.unwrap_err().code
     }
 
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 3] = [
+    const FILES: [(&str, &str, &str); 4] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -255,6 +426,11 @@ mod tests {
             "intel.emeraldrapids.v1",
             include_str!("../profiles/intel.emeraldrapids.v1.json"),
             "sha256:73c084783f26df29871c72200ea34470e4afec6187bf96de6ac051dbaed6727d",
+        ),
+        (
+            "intel.alderlake.v1",
+            include_str!("../profiles/intel.alderlake.v1.json"),
+            "sha256:2dfb6ccfd5a195b1614e6d963615c3372f40806b8f19b0d8425142f8c18a0c2e",
         ),
     ];
 
@@ -339,6 +515,8 @@ mod tests {
             (SKYLAKE, "intel.skylake-sp.v1", "skylake-sp"),
             (ICELAKE, "intel.icelake-sp.v1", "icelake-sp"),
             (EMERALDRAPIDS, "intel.emeraldrapids.v1", "emeraldrapids"),
+            (ALDER_LAKE, "intel.alderlake.v1", "alderlake"),
+            (ALDER_LAKE_S, "intel.alderlake.v1", "alderlake"),
         ] {
             assert_eq!(select_auto(&intel(signature)).unwrap().id(), id);
             assert_eq!(select(AUTO, &intel(signature)).unwrap().id(), id);
@@ -346,7 +524,7 @@ mod tests {
         }
         for host in [
             intel(CASCADE_LAKE),
-            intel(ALDER_LAKE),
+            intel(TIGER_LAKE),
             HostCpuSignature::new(*b"AuthenticAMD", 0x00a1_0f11),
         ] {
             assert_eq!(
@@ -411,7 +589,16 @@ mod tests {
         for (index, pinned) in PINNED.iter().enumerate() {
             let profile = load(index);
             for vendor in [*b"GenuineIntel", *b"AuthenticAMD"] {
-                for (family, model) in [(6u32, 85u32), (6, 106), (6, 143), (6, 207), (25, 17)] {
+                for (family, model) in [
+                    (6u32, 85u32),
+                    (6, 106),
+                    (6, 140),
+                    (6, 143),
+                    (6, 151),
+                    (6, 154),
+                    (6, 207),
+                    (25, 17),
+                ] {
                     for stepping in 0..16 {
                         // Encode the display family and model as CPUID.1:EAX does.
                         let extended_family = family.saturating_sub(15);
@@ -503,5 +690,174 @@ mod tests {
             code(check_generation(profile, &intel(EMERALDRAPIDS))),
             ProfileErrorCode::CpuGeneration
         );
+    }
+
+    /// The host profile of this crate's test fixture: Alder Lake's pinned
+    /// surface, fingerprinted on WHP.
+    fn host_profile() -> CpuProfile {
+        derive::derive_host_profile(&fingerprint(profile("intel.alderlake.v1"), "whp")).unwrap()
+    }
+
+    #[test]
+    fn host_profile_ids_have_the_host_generation() {
+        for (id, host) in [
+            ("intel.host.v1", true),
+            ("intel.host.v12", true),
+            ("amd.host.v1", true),
+            ("intel.icelake-sp.v1", false),
+            ("interim.host.kvm.v1", false),
+            ("intel.host", false),
+            (".host.v1", false),
+            ("Intel.host.v1", false),
+            ("intel.host.v", false),
+            ("intel.host.v0", false),
+            ("intel.host.v01", false),
+            ("intel.host.vfoo", false),
+            ("intel.host.1", false),
+            ("host", false),
+            (HOST, false),
+            (AUTO, false),
+        ] {
+            assert_eq!(is_host_profile_id(id), host, "{id}");
+        }
+        assert!(is_host_profile_id(host_profile().id()));
+        assert!(pinned_profiles().iter().all(|profile| {
+            !is_host_profile_id(profile.id()) && profile.generation().name != HOST_GENERATION
+        }));
+    }
+
+    #[test]
+    fn partition_profiles_carry_their_records() {
+        let pinned = PartitionProfile::pinned("intel.icelake-sp.v1").unwrap();
+        assert!(!pinned.is_host());
+        assert!(std::ptr::eq(
+            &*pinned,
+            super::pinned("intel.icelake-sp.v1").unwrap()
+        ));
+        assert_eq!(
+            pinned.record(),
+            pinned_record("intel.icelake-sp.v1").unwrap()
+        );
+        assert!(PartitionProfile::pinned("intel.host.v1").is_none());
+
+        let host = host_profile();
+        let selected = PartitionProfile::host(host.clone()).unwrap();
+        assert!(selected.is_host());
+        assert_eq!(*selected, host);
+        let record = selected.record();
+        assert_eq!(record.id, host.id());
+        assert_eq!(record.encoding, host.encode().as_slice());
+        assert_eq!(record.digest, host.digest());
+        // Clones share the profile.
+        assert!(std::ptr::eq(&*selected.clone(), &*selected));
+
+        // A pinned profile is not a host profile.
+        assert_eq!(
+            code(PartitionProfile::host(
+                profile("intel.alderlake.v1").clone()
+            )),
+            ProfileErrorCode::ProfileUnknown
+        );
+    }
+
+    /// Every VM of a process holds its own host profile: two host profiles
+    /// with the same ID, here derived from the fingerprints of two backends,
+    /// coexist, as a later VM's restore of another host's snapshot needs.
+    #[test]
+    fn host_profiles_of_the_same_id_coexist() {
+        let whp = PartitionProfile::host(host_profile()).unwrap();
+        let kvm = PartitionProfile::host(
+            derive::derive_host_profile(&fingerprint(profile("intel.alderlake.v1"), "kvm"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(whp.id(), kvm.id());
+        assert_ne!(whp.record().digest, kvm.record().digest);
+        assert_eq!(whp.record().digest, host_profile().digest());
+    }
+
+    #[test]
+    fn selection_takes_pinned_profiles_only() {
+        // A host profile has no ID to select it by, and `host` is not an ID.
+        let host = host_profile();
+        for spec in [host.id(), HOST] {
+            assert_eq!(
+                code(select(spec, &intel(ALDER_LAKE))),
+                ProfileErrorCode::ProfileUnknown,
+                "{spec}"
+            );
+        }
+        let selected = select(AUTO, &intel(ALDER_LAKE)).unwrap();
+        assert!(!selected.is_host());
+        assert_eq!(selected.id(), "intel.alderlake.v1");
+        assert_eq!(
+            selected.record(),
+            pinned_record("intel.alderlake.v1").unwrap()
+        );
+    }
+
+    #[test]
+    fn restore_decodes_and_checks_a_host_profile() {
+        let host = host_profile();
+        let encoding = host.encode();
+        let digest = host.digest();
+        assert_eq!(
+            host_profile_for_restore(host.id(), &digest, &encoding).unwrap(),
+            host
+        );
+
+        // A corrupted document or digest.
+        let mut corrupted = encoding.clone();
+        let last = corrupted.len() - 3;
+        corrupted[last] ^= 1;
+        assert_eq!(
+            code(host_profile_for_restore(host.id(), &digest, &corrupted)),
+            ProfileErrorCode::ProfileDigest
+        );
+        assert_eq!(
+            code(host_profile_for_restore(
+                host.id(),
+                &digest[..31],
+                &encoding
+            )),
+            ProfileErrorCode::ProfileDigest
+        );
+        // A document that is not canonical, with its own digest.
+        let pretty = host.to_pretty_json().into_bytes();
+        assert_eq!(
+            code(host_profile_for_restore(
+                host.id(),
+                &canonical::sha256(&pretty),
+                &pretty
+            )),
+            ProfileErrorCode::ProfileDigest
+        );
+        // A pinned profile's document under a host profile's ID.
+        let pinned = pinned_record("intel.icelake-sp.v1").unwrap();
+        assert_eq!(
+            code(host_profile_for_restore(
+                host.id(),
+                &pinned.digest,
+                pinned.encoding
+            )),
+            ProfileErrorCode::ProfileDigest
+        );
+        // A pinned profile's ID is not a host profile's.
+        assert_eq!(
+            code(host_profile_for_restore(
+                pinned.id,
+                &pinned.digest,
+                pinned.encoding
+            )),
+            ProfileErrorCode::ProfileUnknown
+        );
+        // Nor is an ID with a malformed revision, whatever the document.
+        for id in ["intel.host.v", "intel.host.v0", "intel.host.vfoo"] {
+            assert_eq!(
+                code(host_profile_for_restore(id, &digest, &encoding)),
+                ProfileErrorCode::ProfileUnknown,
+                "{id}"
+            );
+        }
     }
 }

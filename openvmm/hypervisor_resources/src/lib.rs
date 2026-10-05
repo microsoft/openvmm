@@ -138,6 +138,28 @@ pub trait HypervisorProbe: Send + Sync + 'static {
             self.name()
         )
     }
+
+    /// Returns what VP 0 of a transient probe partition configured from
+    /// `profile`, as a time ABI cold boot configures its partition, reads at
+    /// every entry of the host's CPUID outside the profile's tables
+    /// (`cpu_profile::unlisted_cpuid_candidates`), for the
+    /// `--cpu-fingerprint` check that those entries read zero
+    /// (`E_CPU_UNLISTED`). `params` are as for
+    /// [`cpu_fingerprint`](Self::cpu_fingerprint), and like it, this needs no
+    /// guest and leaves no state behind.
+    ///
+    /// `None` means that the backend has no such probe, so the check reads
+    /// the fingerprint's own probe partition instead, which enables every
+    /// feature the backend offers. The default implementation returns
+    /// `None`.
+    fn profile_unlisted_cpuid(
+        &self,
+        params: &[(&str, &str)],
+        profile: &cpu_profile::CpuProfile,
+    ) -> anyhow::Result<Option<Vec<cpu_profile::cpuid::CpuidEntry>>> {
+        let _ = (params, profile);
+        Ok(None)
+    }
 }
 
 /// Private module for linkme infrastructure.
