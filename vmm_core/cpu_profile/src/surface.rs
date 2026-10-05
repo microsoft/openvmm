@@ -178,18 +178,52 @@ pub(crate) fn register_class(leaf: u32, subleaf: u32, register: usize) -> Regist
 /// whose only violations are such entries fails with
 /// `E_CPU_UNLISTED`.
 pub fn verify_support(profile: &CpuProfile, surface: &HostCpuSurface) -> Result<(), ProfileError> {
-    let violations = support_violations(profile, surface);
     let unlisted = match surface.presentation {
         CpuidPresentation::PassThroughGuestView => {
             unlisted_cpuid_violations(profile, &surface.cpuid)
         }
         CpuidPresentation::Table | CpuidPresentation::PassThroughHostView => Vec::new(),
     };
+    support_result(profile, support_violations(profile, surface), &unlisted)
+}
+
+/// Checks, as [`verify_support`] does, that the backend described by
+/// `surface` supports `profile`, but checks the entries outside the
+/// profile's tables in `presented` instead of `surface`: what VP 0 of a
+/// partition configured from `profile`, as a cold boot configures it, reads
+/// at the host's
+/// [`unlisted_cpuid_candidates`](crate::unlisted_cpuid_candidates).
+///
+/// `--cpu-fingerprint` uses it for a pass-through backend whose fingerprint
+/// records a probe partition with every available feature: such a partition
+/// also presents the XSAVE components of features that no profile enables,
+/// such as CET's user and supervisor states, which a partition configured
+/// from the profile does not.
+pub fn verify_support_with_unlisted(
+    profile: &CpuProfile,
+    surface: &HostCpuSurface,
+    presented: &[CpuidEntry],
+) -> Result<(), ProfileError> {
+    support_result(
+        profile,
+        support_violations(profile, surface),
+        &unlisted_cpuid_violations(profile, presented),
+    )
+}
+
+/// Returns the outcome of a support check with `violations` and the
+/// `unlisted` entries: `E_PROFILE_UNSUPPORTED` naming both, or
+/// `E_CPU_UNLISTED` when only entries outside the profile fail.
+fn support_result(
+    profile: &CpuProfile,
+    violations: Vec<String>,
+    unlisted: &[String],
+) -> Result<(), ProfileError> {
     if violations.is_empty() {
         if unlisted.is_empty() {
             return Ok(());
         }
-        return Err(unlisted_cpuid_error(profile, &unlisted));
+        return Err(unlisted_cpuid_error(profile, unlisted));
     }
     Err(ProfileError::new(
         ProfileErrorCode::ProfileUnsupported,
@@ -198,7 +232,7 @@ pub fn verify_support(profile: &CpuProfile, surface: &HostCpuSurface) -> Result<
             profile.id(),
             violations
                 .iter()
-                .chain(&unlisted)
+                .chain(unlisted)
                 .map(String::as_str)
                 .collect::<Vec<_>>()
                 .join("; ")

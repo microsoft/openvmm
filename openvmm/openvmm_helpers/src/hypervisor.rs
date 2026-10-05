@@ -4,6 +4,8 @@
 //! Hypervisor resource construction and auto-detection for OpenVMM entry
 //! points.
 
+use cpu_profile::CpuProfile;
+use cpu_profile::cpuid::CpuidEntry;
 use cpu_profile::fingerprint::BackendFingerprint;
 use hypervisor_resources::HypervisorKind;
 use vm_resource::Resource;
@@ -64,21 +66,56 @@ pub fn hypervisor_resource(spec: &str) -> anyhow::Result<Resource<HypervisorKind
 /// `spec` selects the backend as for [`hypervisor_resource`]. Without it, the
 /// first available backend is used, as for [`choose_hypervisor`].
 pub fn cpu_fingerprint(spec: Option<&str>) -> anyhow::Result<BackendFingerprint> {
+    fingerprint_backend(spec)?.cpu_fingerprint()
+}
+
+/// A hypervisor backend selected for a host CPU fingerprint and its checks.
+pub struct FingerprintBackend<'a> {
+    probe: &'static dyn hypervisor_resources::HypervisorProbe,
+    params: Vec<(&'a str, &'a str)>,
+}
+
+/// Selects the hypervisor backend for a host CPU fingerprint.
+///
+/// `spec` selects the backend as for [`hypervisor_resource`]. Without it, the
+/// first available backend is used, as for [`choose_hypervisor`].
+pub fn fingerprint_backend(spec: Option<&str>) -> anyhow::Result<FingerprintBackend<'_>> {
     match spec {
         Some(spec) => {
             let (name, params) = parse_hypervisor_spec(spec)?;
             let probe = hypervisor_resources::probe_by_name(name)
                 .ok_or_else(|| anyhow::anyhow!("unknown hypervisor: {name}"))?;
-            probe.cpu_fingerprint(&params)
+            Ok(FingerprintBackend { probe, params })
         }
         None => {
             for probe in hypervisor_resources::probes() {
                 if probe.try_new_resource()?.is_some() {
-                    return probe.cpu_fingerprint(&[]);
+                    return Ok(FingerprintBackend {
+                        probe,
+                        params: Vec::new(),
+                    });
                 }
             }
             anyhow::bail!("no hypervisor available");
         }
+    }
+}
+
+impl FingerprintBackend<'_> {
+    /// Returns the guest CPU surface that the backend supports on this host.
+    pub fn cpu_fingerprint(&self) -> anyhow::Result<BackendFingerprint> {
+        self.probe.cpu_fingerprint(&self.params)
+    }
+
+    /// Returns what VP 0 of a probe partition configured from `profile`
+    /// reads at the host's CPUID entries outside the profile's tables, or
+    /// `None` if the backend has no such probe; see
+    /// [`HypervisorProbe::profile_unlisted_cpuid`](hypervisor_resources::HypervisorProbe::profile_unlisted_cpuid).
+    pub fn profile_unlisted_cpuid(
+        &self,
+        profile: &CpuProfile,
+    ) -> anyhow::Result<Option<Vec<CpuidEntry>>> {
+        self.probe.profile_unlisted_cpuid(&self.params, profile)
     }
 }
 
