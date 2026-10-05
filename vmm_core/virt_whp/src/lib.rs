@@ -89,6 +89,8 @@ use x86defs::cpuid::Vendor;
 pub use aarch64::WHP_PMU_GSIV;
 #[cfg(guest_arch = "x86_64")]
 pub use fingerprint::cpu_fingerprint;
+#[cfg(guest_arch = "x86_64")]
+pub use fingerprint::profile_unlisted_cpuid;
 
 #[derive(Debug)]
 pub struct Whp {
