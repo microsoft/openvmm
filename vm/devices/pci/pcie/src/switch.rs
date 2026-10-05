@@ -375,7 +375,7 @@ impl GenericPcieSwitch {
     }
 
     /// Disconnect a device from the downstream port identified by its devfn.
-    pub fn remove_pcie_device(&mut self, port_devfn: u8, device_name: &str) -> anyhow::Result<()> {
+    pub fn remove_pcie_device(&mut self, port_devfn: u8) -> anyhow::Result<()> {
         let (_, _, downstream_port) = self
             .downstream_ports
             .iter_mut()
@@ -383,7 +383,7 @@ impl GenericPcieSwitch {
             .ok_or_else(|| anyhow::anyhow!("port devfn {} not found", port_devfn))?;
         downstream_port
             .port
-            .remove_pcie_device(device_name)
+            .remove_pcie_device()
             .context("failed to remove PCIe device from downstream port")
     }
 }
@@ -764,7 +764,7 @@ mod tests {
             .add_pcie_device(0, "test-device", Box::new(TestPciDevice))
             .expect("adding the device should succeed");
         switch
-            .remove_pcie_device(0, "test-device")
+            .remove_pcie_device(0)
             .expect("removing the connected device should succeed");
 
         assert!(switch.downstream_ports[0].2.port.link.is_none());
@@ -781,7 +781,7 @@ mod tests {
         ));
 
         let error = switch
-            .remove_pcie_device(1, "test-device")
+            .remove_pcie_device(1)
             .expect_err("an unknown devfn should fail");
         assert_eq!(error.to_string(), "port devfn 1 not found");
     }

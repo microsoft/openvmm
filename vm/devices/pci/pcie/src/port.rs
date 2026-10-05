@@ -849,17 +849,10 @@ impl PcieDownstreamPort {
         bail!("port name does not match")
     }
 
-    /// Disconnect a device previously attached with [`Self::add_pcie_device`].
-    pub fn remove_pcie_device(&mut self, device_name: &str) -> anyhow::Result<()> {
-        let Some((connected_name, _)) = &self.link else {
+    /// Disconnect the device previously attached with [`Self::add_pcie_device`].
+    pub fn remove_pcie_device(&mut self) -> anyhow::Result<()> {
+        if self.link.is_none() {
             bail!("port '{}' is empty", self.name);
-        };
-        if connected_name.as_ref() != device_name {
-            bail!(
-                "device '{}' is not connected to port '{}'",
-                device_name,
-                self.name
-            );
         }
 
         self.link = None;
@@ -1100,23 +1093,13 @@ mod tests {
             "Presence detect state should be 1 after adding device"
         );
 
-        let error = port
-            .remove_pcie_device("other-device")
-            .expect_err("removing a different device should fail");
-        assert_eq!(
-            error.to_string(),
-            "device 'other-device' is not connected to port 'test-port'"
-        );
-        assert!(port.link.is_some());
-        assert_eq!((port.cfg_space.read_u32(0x58) >> 22) & 0x1, 1);
-
-        port.remove_pcie_device("mock-device")
+        port.remove_pcie_device()
             .expect("removing the connected device should succeed");
         assert!(port.link.is_none());
         assert_eq!((port.cfg_space.read_u32(0x58) >> 22) & 0x1, 0);
 
         let error = port
-            .remove_pcie_device("mock-device")
+            .remove_pcie_device()
             .expect_err("removing from an empty port should fail");
         assert_eq!(error.to_string(), "port 'test-port' is empty");
     }

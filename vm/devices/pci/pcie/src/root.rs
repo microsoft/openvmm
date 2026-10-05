@@ -371,7 +371,7 @@ impl GenericPcieRootComplex {
     }
 
     /// Disconnect a device from the root port identified by its devfn.
-    pub fn remove_pcie_device(&mut self, port_devfn: u8, device_name: &str) -> anyhow::Result<()> {
+    pub fn remove_pcie_device(&mut self, port_devfn: u8) -> anyhow::Result<()> {
         let root_port = match self.devices.iter_mut().find(|(d, _)| *d == port_devfn) {
             Some((_, BusDevice::RootPort { port, .. })) => port,
             Some((_, BusDevice::Rciep { .. })) => {
@@ -380,7 +380,7 @@ impl GenericPcieRootComplex {
             None => anyhow::bail!("devfn {port_devfn} is not a root port"),
         };
 
-        root_port.port.remove_pcie_device(device_name)
+        root_port.port.remove_pcie_device()
     }
 
     /// Enumerate the downstream ports of the root complex.
@@ -1175,7 +1175,7 @@ mod tests {
         let mut rc = instantiate_root_complex(0, 255, 1);
         rc.add_pcie_device(0, "test-device", Box::new(TestPciDevice))
             .expect("adding the device should succeed");
-        rc.remove_pcie_device(0, "test-device")
+        rc.remove_pcie_device(0)
             .expect("removing the connected device should succeed");
 
         let BusDevice::RootPort { port, .. } = &rc.devices[0].1 else {
@@ -1188,7 +1188,7 @@ mod tests {
     fn test_remove_pcie_device_rejects_invalid_root_port() {
         let mut rc = instantiate_root_complex(0, 255, 1);
         let error = rc
-            .remove_pcie_device(1, "test-device")
+            .remove_pcie_device(1)
             .expect_err("an unknown devfn should fail");
         assert_eq!(error.to_string(), "devfn 1 is not a root port");
     }
@@ -1231,10 +1231,7 @@ mod tests {
         let (remove_done_tx, remove_done_rx) = std::sync::mpsc::channel();
         let remove_thread = std::thread::spawn(move || {
             remove_started_tx.send(()).unwrap();
-            remove_rc
-                .lock()
-                .remove_pcie_device(0, "test-device")
-                .unwrap();
+            remove_rc.lock().remove_pcie_device(0).unwrap();
             remove_done_tx.send(()).unwrap();
         });
 
