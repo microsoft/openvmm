@@ -10,6 +10,9 @@ pub(crate) mod fs;
 mod fs_tests;
 pub(crate) mod inode;
 mod limits;
+pub(crate) mod owner;
+#[cfg(test)]
+mod owner_tests;
 pub mod profile;
 pub(crate) mod resolver;
 pub(crate) mod saved_state;

@@ -4,6 +4,7 @@
 //! microVM resource-profile resolution.
 
 use super::profile::MICROVM_MOUNT_TAG;
+use super::profile::MicroVmOwnerMode;
 use crate::virtio::VirtioFsDevice;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
@@ -33,6 +34,7 @@ pub(crate) fn resolve(
             root_identity,
             read_only,
             denied_paths,
+            caller_identity,
         } => {
             anyhow::ensure!(
                 resource.tag == MICROVM_MOUNT_TAG,
@@ -56,6 +58,11 @@ pub(crate) fn resolve(
                 root_identity.clone(),
                 *read_only,
                 denied_paths.clone(),
+                if *caller_identity {
+                    MicroVmOwnerMode::Caller
+                } else {
+                    MicroVmOwnerMode::Vmm
+                },
                 root_path,
                 None,
             )?
@@ -101,6 +108,7 @@ mod tests {
                     root_identity,
                     read_only: true,
                     denied_paths: Vec::new(),
+                    caller_identity: false,
                 },
             },
             VirtioResolveInput {

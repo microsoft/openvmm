@@ -12,6 +12,10 @@ use vmcore::save_restore::SavedStateRoot;
 
 pub(crate) const PREVIOUS_SCHEMA_VERSION: u32 = 4;
 pub(crate) const SCHEMA_VERSION: u32 = 5;
+/// The schema version of an attachment that performs requests as their guest
+/// callers. Readers that predate caller ownership ignore `caller_identity`
+/// and would restore the attachment as the VMM, so they must reject its state.
+pub(crate) const CALLER_IDENTITY_SCHEMA_VERSION: u32 = 6;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -61,6 +65,11 @@ pub(crate) struct SavedState {
     pub maximum_request_size: u32,
     #[mesh(17)]
     pub dormant: bool,
+    /// Whether requests run as their guest callers, which version
+    /// [`CALLER_IDENTITY_SCHEMA_VERSION`] states require. States that predate
+    /// this field ran every request as the VMM.
+    #[mesh(18)]
+    pub caller_identity: bool,
 }
 
 #[derive(Protobuf)]
