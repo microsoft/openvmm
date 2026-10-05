@@ -209,10 +209,20 @@ describes the source definitions.
   same device, hard-link aliases, symlinks, junctions, and bind-mount aliases
   cannot re-expose it.
 
+  `--mount-owner <vmm|caller>` selects the host identity of the guest's
+  operations. `vmm`, the default, runs them all as OpenVMM. `caller` runs
+  each one as its guest caller's UID and GID, without supplementary groups or
+  capabilities, and squashes guest UID 0 and GID 0 to the owner of the export
+  root, which must not be root. `caller` requires a Linux host. It also
+  requires `CAP_SETUID` and `CAP_SETGID` unless every caller has OpenVMM's
+  own UID and GID and OpenVMM has no other supplementary groups; an
+  operation that cannot run as its caller fails with `EPERM`.
+  See [virtio-fs](../../devices/virtio/virtio-fs.md#host-identity-of-guest-operations).
+
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
   directory contents or native handles. An active snapshot requires
   `--mount` again with the exact canonical host path, guest target, access
-  mode, and denied-path set; the live root and every saved object identity are
+  mode, denied-path set, and `--mount-owner` mode; the live root and every saved object identity are
   also revalidated before vCPUs start. A snapshot captured without `--mount` may remain dormant
   or bind a new attachment. The resumed guest must then explicitly run
   `mount -t virtiofs microvm <GUEST_TARGET>` because its cold-boot mount hook

@@ -82,6 +82,8 @@ struct VirtioFsInner {
     directory_snapshot_budget: RwLock<Arc<DirectorySnapshotBudget>>,
     mode: VirtioFsMode,
     microvm_profile: Option<MicroVmVirtioFsProfile>,
+    /// Set when the microVM profile performs requests as their callers.
+    caller_identity: Option<microvm::owner::CallerIdentity>,
     negotiation: RwLock<FuseNegotiation>,
 }
 
@@ -701,6 +703,7 @@ impl VirtioFs {
                 directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Direct,
                 microvm_profile: None,
+                caller_identity: None,
                 negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         })
@@ -721,6 +724,7 @@ impl VirtioFs {
                 directory_snapshot_budget: Default::default(),
                 mode: VirtioFsMode::Aggregate(AggregateState::new()),
                 microvm_profile: None,
+                caller_identity: None,
                 negotiation: RwLock::new(FuseNegotiation::default()),
             }),
         }

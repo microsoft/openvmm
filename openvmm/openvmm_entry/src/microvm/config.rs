@@ -107,6 +107,10 @@ impl<'a> MicrovmConfigBuilder<'a> {
             effective_microvm_filesystem(
                 opt.microvm.microvm_mount.as_ref(),
                 &opt.microvm.microvm_mount_deny,
+                opt.microvm.microvm_mount_owner.map_or(
+                    openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm,
+                    Into::into,
+                ),
                 restore_machine_contract,
             )?
         } else {
@@ -554,6 +558,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                         denied_paths: filesystem.config.denied_paths.clone(),
+                        caller_identity: filesystem.config.owner.is_caller(),
                     },
                 )
             } else {
