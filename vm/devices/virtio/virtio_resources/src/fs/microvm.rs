@@ -17,6 +17,10 @@ pub enum VirtioFsProfile {
         root_identity: Vec<u8>,
         read_only: bool,
         denied_paths: Vec<String>,
+        /// Perform each guest request as the host UID and GID of its caller,
+        /// with root squashed to the owner of the export root, instead of as
+        /// the VMM. Linux only.
+        caller_identity: bool,
     },
     MicrovmDormant {
         stable_id: String,
