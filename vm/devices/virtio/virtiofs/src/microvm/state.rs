@@ -9,7 +9,9 @@ use super::profile::MICROVM_FUSE_MAX_WRITE;
 use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MICROVM_REQUEST_QUEUES;
 use super::profile::MicroVmAccessMode;
+use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
+use super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
 use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
@@ -215,6 +217,7 @@ pub(crate) fn save_dormant_microvm_state(
         attachment_root_identity: Vec::new(),
         maximum_request_size: MAX_FUSE_REQUEST_BYTES as u32,
         dormant: true,
+        caller_identity: false,
     })
 }
 
@@ -243,7 +246,8 @@ pub(crate) fn validate_dormant_microvm_state(
             && state.next_handle_id == 0
             && state.inodes.is_empty()
             && state.handles.is_empty()
-            && state.attachment_root_identity.is_empty(),
+            && state.attachment_root_identity.is_empty()
+            && !state.caller_identity,
         "dormant virtio-fs state contains active filesystem policy or objects"
     );
     let session_state = session_state_from_saved(&state.negotiation)?;
@@ -261,10 +265,14 @@ pub(crate) fn validate_microvm_state(
     anyhow::ensure!(
         matches!(
             state.schema_version,
-            PREVIOUS_SCHEMA_VERSION | SCHEMA_VERSION
+            PREVIOUS_SCHEMA_VERSION | SCHEMA_VERSION | CALLER_IDENTITY_SCHEMA_VERSION
         ) && !state.dormant,
         "unsupported virtio-fs state schema version {}",
         state.schema_version
+    );
+    anyhow::ensure!(
+        state.caller_identity == (state.schema_version == CALLER_IDENTITY_SCHEMA_VERSION),
+        "saved ownership mode does not match the virtio-fs state schema version"
     );
     anyhow::ensure!(
         state.attachment_id == profile.attachment_id(),
@@ -277,6 +285,10 @@ pub(crate) fn validate_microvm_state(
     anyhow::ensure!(
         state.access_mode == saved_access_mode(profile.access_mode()),
         "saved access mode does not match the restore profile"
+    );
+    anyhow::ensure!(
+        state.caller_identity == (profile.owner_mode() == MicroVmOwnerMode::Caller),
+        "saved ownership mode does not match the restore profile"
     );
     anyhow::ensure!(
         state.request_queues == profile.request_queues()
