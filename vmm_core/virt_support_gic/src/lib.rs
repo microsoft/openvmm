@@ -2073,8 +2073,9 @@ mod gicr {
             match address {
                 r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
                     let n = (r.0 & 0x1f) / 4;
-                    self.mutable.lock().priority[n as usize] &= !(0xff << (j*8));
-                    self.mutable.lock().priority[n as usize] |= u32::from(data) << (j*8);
+                    let mut state = self.mutable.lock();
+                    let priority = &mut state.priority[n as usize];
+                    *priority = (*priority & !(0xff << (j * 8))) | (u32::from(data) << (j * 8));
                     true
                 }
                 _ => false,
