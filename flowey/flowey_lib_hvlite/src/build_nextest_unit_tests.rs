@@ -12,7 +12,6 @@ use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams;
@@ -191,10 +190,7 @@ impl FlowNode for Node {
                 features,
                 no_default_features: false,
                 target: target.clone(),
-                profile: match profile {
-                    CommonProfile::Release => CargoBuildProfile::Release,
-                    CommonProfile::Debug => CargoBuildProfile::Debug,
-                },
+                profile: profile.into(),
                 extra_env: injected_env,
             };
 

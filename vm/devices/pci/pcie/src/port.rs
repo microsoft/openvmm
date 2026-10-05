@@ -11,14 +11,14 @@ use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
-use cxl_spec::CxlComponentRegisters;
-use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
-use cxl_spec::CxlPortDvsecExtendedCapability;
-use cxl_spec::CxlRegisterLocatorDvsecExtendedCapability;
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
-use cxl_spec::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
-use cxl_spec::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
-use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl::CxlComponentRegisters;
+use cxl::CxlFlexBusPortDvsecExtendedCapability;
+use cxl::CxlPortDvsecExtendedCapability;
+use cxl::CxlRegisterLocatorDvsecExtendedCapability;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
 use pci_core::bus_range::AssignedBusRange;
@@ -918,7 +918,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::TestPcieMmioRegistration;
     use chipset_device::io::IoResult;
-    use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+    use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
     use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::hwid::HardwareIds;
@@ -1529,7 +1529,7 @@ mod tests {
 
     #[test]
     fn test_invalid_cxl_component_register_locator_disables_cxl_exposure() {
-        use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+        use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
 
         let hardware_ids = HardwareIds {

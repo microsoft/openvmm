@@ -95,7 +95,7 @@ impl SimpleFlowNode for Node {
                 // otherwise just make it absolute.
                 let wsl_convert_path = |path: &Path| -> anyhow::Result<String> {
                     if windows_via_wsl2 {
-                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
+                        flowey_lib_common::_util::wslpath::linux_to_win(rt, path)
                     } else {
                         std::path::absolute(path)
                             .with_context(|| format!("invalid path {}", path.display()))

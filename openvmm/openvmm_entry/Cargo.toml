@@ -16,6 +16,7 @@ ttrpc = []
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
 crypto.workspace = true
+cxl.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true

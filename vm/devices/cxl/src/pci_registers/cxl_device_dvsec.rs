@@ -5,6 +5,7 @@
 
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use inspect::Inspect;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
@@ -12,37 +13,81 @@ use pci_core::spec::caps::dvsec::DvsecHeader1;
 use pci_core::spec::caps::dvsec::DvsecHeader2;
 use std::sync::Arc;
 
-use super::spec::CXL_DVSEC_VENDOR_ID;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_CONTROL_WRITABLE_MASK;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_CONTROL2_WRITABLE_MASK;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_ID;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_LENGTH;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_REVISION;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS_RW1C_MASK;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS2_RW1C_MASK;
-use super::spec::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS2_VOLATILE_HDM_PRESERVATION_ERROR_RW1C_MASK;
-use super::spec::cxl_device_dvsec::CxlCacheWriteBackAndInvalidateHandler;
-use super::spec::cxl_device_dvsec::CxlDeviceDevsecExtendedCapability;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecCacheSizeUnit;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecCapability;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecCapability2;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecCapability3;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecControl;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecControl2;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecDesiredInterleave;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecLock;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecMediaType;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecMemoryActiveTimeout;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecMemoryClass;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecRangeBaseLow;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecRangeSizeLow;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecRegisterOffset;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecResetTimeout;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecStatus;
-use super::spec::cxl_device_dvsec::CxlDeviceDvsecStatus2;
-use super::spec::cxl_device_dvsec::CxlResetHandler;
+use cxl_spec::pci_registers::CXL_DVSEC_VENDOR_ID;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_CONTROL_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_CONTROL2_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_ID;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_LENGTH;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_RANGE_BASE_LOW_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_REVISION;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS_RW1C_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS2_RW1C_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CXL_DEVICE_DVSEC_STATUS2_VOLATILE_HDM_PRESERVATION_ERROR_RW1C_MASK;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecCacheSizeUnit;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecCapability;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecCapability2;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecCapability3;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecControl;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecControl2;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecDesiredInterleave;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecLock;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMediaType;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMemoryActiveTimeout;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMemoryClass;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecRangeBaseLow;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecRangeSizeLow;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecRegisterOffset;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecResetTimeout;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecStatus;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecStatus2;
 use thiserror::Error;
+
+/// Callback interface for handling CXL reset requests.
+pub trait CxlResetHandler: Send + Sync + Inspect {
+    /// Called when a new CXL reset request is initiated.
+    fn initiate_cxl_reset(&self);
+}
+
+/// Callback interface for handling cache writeback+invalidate requests.
+pub trait CxlCacheWriteBackAndInvalidateHandler: Send + Sync + Inspect {
+    /// Called when cache writeback+invalidate is initiated.
+    fn initiate_cache_write_back_and_invalidate(&self);
+}
+
+/// CXL PCIe Designated Vendor-Specific Extended Capability (DVSEC).
+#[derive(Clone, Inspect)]
+pub struct CxlDeviceDevsecExtendedCapability {
+    pub(crate) control: CxlDeviceDvsecControl,
+    pub(crate) status: CxlDeviceDvsecStatus,
+    pub(crate) control2: CxlDeviceDvsecControl2,
+    pub(crate) status2: CxlDeviceDvsecStatus2,
+    pub(crate) lock: CxlDeviceDvsecLock,
+    pub(crate) capability: CxlDeviceDvsecCapability,
+    pub(crate) capability2: CxlDeviceDvsecCapability2,
+    pub(crate) capability3: CxlDeviceDvsecCapability3,
+    pub(crate) range1_size_high: u32,
+    pub(crate) range1_size_low: u32,
+    pub(crate) range1_base_high: u32,
+    pub(crate) range1_base_low: CxlDeviceDvsecRangeBaseLow,
+    pub(crate) range2_size_high: u32,
+    pub(crate) range2_size_low: u32,
+    pub(crate) range2_base_high: u32,
+    pub(crate) range2_base_low: CxlDeviceDvsecRangeBaseLow,
+    pub(crate) cxl_reset_handler: Option<Arc<dyn CxlResetHandler>>,
+    pub(crate) cxl_cache_write_back_and_invalidate_handler:
+        Option<Arc<dyn CxlCacheWriteBackAndInvalidateHandler>>,
+    pub(crate) reset_baseline_capability: CxlDeviceDvsecCapability,
+    pub(crate) reset_baseline_capability2: CxlDeviceDvsecCapability2,
+    pub(crate) reset_baseline_capability3: CxlDeviceDvsecCapability3,
+    pub(crate) reset_baseline_range1_size_high: u32,
+    pub(crate) reset_baseline_range1_size_low: u32,
+    pub(crate) reset_baseline_range1_base_high: u32,
+    pub(crate) reset_baseline_range1_base_low: CxlDeviceDvsecRangeBaseLow,
+    pub(crate) reset_baseline_range2_size_high: u32,
+    pub(crate) reset_baseline_range2_size_low: u32,
+    pub(crate) reset_baseline_range2_base_high: u32,
+    pub(crate) reset_baseline_range2_base_low: CxlDeviceDvsecRangeBaseLow,
+}
 
 const CXL_RANGE_GRANULARITY: u64 = 256 * 1024 * 1024;
 

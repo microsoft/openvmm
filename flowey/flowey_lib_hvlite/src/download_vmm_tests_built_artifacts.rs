@@ -78,8 +78,8 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let run = ctx.reqv(|v| gh_workflow_id::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm".into(),
+            repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+            repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
             commit_or_branch: gh_workflow_id::GitCommitOrBranch::Branch(ReadVar::from_static(
                 "main".into(),
             )),
@@ -197,8 +197,8 @@ fn download_artifact<T: Artifact>(
     output: WriteVar<T>,
 ) {
     let downloaded_artifact = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
-        repo_owner: "microsoft".into(),
-        repo_name: "openvmm".into(),
+        repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+        repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
         file_name,
         path: v,
         run_id,

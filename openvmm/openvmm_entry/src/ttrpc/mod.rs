@@ -886,16 +886,25 @@ impl VmService {
         let isolation = match req_config.isolation_config.take() {
             // Unset isolation config defaults to no isolation
             None => None,
-            Some(config) => match config.isolation_type() {
-                // Setting isolation config with an unspecified type returns an error
-                vmservice::isolation_config::Type::Unspecified => {
-                    bail!(
-                        "unspecified or invalid isolation type {}",
-                        config.isolation_type
-                    )
+            Some(config) => match config
+                .isolation_type
+                .context("missing or unsupported isolation type")?
+            {
+                vmservice::isolation_config::IsolationType::None(_) => None,
+                vmservice::isolation_config::IsolationType::Snp(config) => {
+                    let host_data: Option<[u8; 32]> = if config.host_data.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            config
+                                .host_data
+                                .as_slice()
+                                .try_into()
+                                .context("SNP host data must be exactly 32 bytes")?,
+                        )
+                    };
+                    Some(IsolationType::Snp { host_data })
                 }
-                vmservice::isolation_config::Type::None => None,
-                vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
             },
         };
 
@@ -935,7 +944,7 @@ impl VmService {
                 if smbios_requested {
                     bail!("VM-service IGVM boot does not support SMBIOS overrides");
                 }
-                if isolation != Some(IsolationType::Snp) {
+                if !matches!(isolation, Some(IsolationType::Snp { .. })) {
                     bail!("VM-service IGVM boot currently supports only SNP isolation");
                 }
                 let base_chipset_type = match boot.personality() {
@@ -2309,10 +2318,19 @@ async fn build_virtio_device(
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
     Ok(match kind.context("missing virtio device kind")? {
-        Kind::Blk(vmservice::VirtioBlk { backend, read_only }) => {
+        Kind::Blk(vmservice::VirtioBlk {
+            backend,
+            read_only,
+            serial,
+        }) => {
             let disk =
                 build_disk_backend(backend.context("missing blk backend")?, read_only).await?;
-            virtio_resources::blk::VirtioBlkHandle { disk, read_only }.into_resource()
+            virtio_resources::blk::VirtioBlkHandle {
+                disk,
+                read_only,
+                serial,
+            }
+            .into_resource()
         }
         Kind::Net(vmservice::VirtioNet {
             max_queues,

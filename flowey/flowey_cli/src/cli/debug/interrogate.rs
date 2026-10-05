@@ -204,15 +204,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
     }
 
     fn arch(&mut self) -> FlowArch {
-        // xtask-fmt allow-target-arch oneoff-flowey
-        if cfg!(target_arch = "x86_64") {
-            FlowArch::X86_64
-        // xtask-fmt allow-target-arch oneoff-flowey
-        } else if cfg!(target_arch = "aarch64") {
-            FlowArch::Aarch64
-        } else {
-            unreachable!("flowey only runs on X86_64 or Aarch64 at the moment")
-        }
+        FlowArch::host(PipelineBackendHint::Local)
     }
 
     fn on_request(&mut self, node_handle: NodeHandle, req: anyhow::Result<Box<[u8]>>) {

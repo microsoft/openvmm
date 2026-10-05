@@ -107,8 +107,8 @@ For an image generated from `snp-linux-direct-multi-vp.json`:
 
 ```bash
 openvmm --hypervisor mshv --isolation snp \
-  --igvm path/to/snp-linux-direct-multi-vp.bin \
-  --igvm-personality linux-direct --hv --no-vmbus \
+  --igvm firmware=path/to/snp-linux-direct-multi-vp.bin,personality=linux-direct \
+  --hv --no-vmbus \
   --memory 160MB --processors 2 --vps-per-socket 2 --smt auto \
   --com1 console
 ```

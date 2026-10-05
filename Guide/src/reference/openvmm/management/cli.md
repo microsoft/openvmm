@@ -94,7 +94,8 @@ describes the source definitions.
 
   SNP support is currently limited to Linux direct boot and is intended for
   bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
-  selected with `--igvm-personality linux-direct`. MSHV SNP can expose Hyper-V
+  selected with `--igvm firmware=<FILE>,personality=linux-direct`.
+  MSHV SNP can expose Hyper-V
   enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
@@ -107,8 +108,8 @@ describes the source definitions.
 
   ```bash
   openvmm --hypervisor mshv --isolation snp \
-    --igvm path/to/snp-linux-direct.bin \
-    --igvm-personality linux-direct --com1 console \
+    --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
+    --com1 console \
     --hv --no-vmbus -m 160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
@@ -138,20 +139,28 @@ describes the source definitions.
   * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
   * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
 
-  With `--igvm --vtl2`, `--uefi` configures the UEFI firmware that OpenHCL
-  loads into VTL0. All options except `firmware` and
+  With IGVM `personality=openhcl`, `--uefi` configures the UEFI firmware
+  that OpenHCL loads into VTL0. All options except `firmware` and
   `force_firmware_version` are supported in this mode. Those options apply
   only when OpenVMM loads an external firmware image and are rejected with
   `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
 
   The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--igvm <FILE>`: Boot from an IGVM file.
-* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
-  device shape for an IGVM boot without VTL2. This option is required with
-  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
-  boots. The personality does not select the isolation platform. Use
-  `--isolation` separately when required by the IGVM.
+* `--igvm <OPTIONS>`: Boot from an IGVM file. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the IGVM file.
+  * `personality=<openhcl|uefi|linux-direct>`: Select the chipset and device
+    shape for the IGVM boot.
+
+  Both options are required; neither has a default. For example:
+
+  ```bash
+  openvmm --hv --vtl2 \
+    --igvm firmware=path/to/openhcl.igvm,personality=openhcl
+  ```
+
+  The personality does not select the isolation platform. Use `--isolation`
+  separately when required by the IGVM.
 
   The `uefi` personality uses the Gen2 device shape, but firmware is loaded
   from the IGVM. It does not select the normal external-UEFI load path. The
@@ -160,8 +169,10 @@ describes the source definitions.
   fails explicitly on backend and isolation combinations that cannot provide
   them.
 
-  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
-  existing HCL-host device shape and VBS-compatible IGVM behavior.
+  The `openhcl` personality hosts the OpenHCL paravisor in VTL2 and requires
+  explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
+  add a host UEFI device. You can pass `--uefi` settings for the firmware
+  loaded by OpenHCL.
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.
@@ -483,9 +494,12 @@ PCIe root port. The syntax varies slightly between device types:
 **Disks** (comma-separated option): `--nvme-pci` + `--disk`, `--virtio-blk`
 
 ```sh
---virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0,serial=DATA-DISK
 --nvme-pci id=nvme0,pcie_port=rp0 --disk file:/path/to/disk.raw,on=nvme0
 ```
+
+The optional `serial` value accepts 1-20 printable ASCII bytes except commas
+and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 

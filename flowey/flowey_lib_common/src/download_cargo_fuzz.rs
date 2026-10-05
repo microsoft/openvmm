@@ -3,7 +3,6 @@
 
 //! Download (and optionally, install) a copy of `cargo-fuzz`.
 
-use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
 flowey_config! {
@@ -63,7 +62,11 @@ impl FlowNodeWithConfig for Node {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
-        let cache_key = ReadVar::from_static(format!("cargo-fuzz-{version}"));
+        let cache_key = ReadVar::from_static(format!(
+            "cargo-fuzz-{version}-{}-{}",
+            ctx.arch(),
+            ctx.platform()
+        ));
         let hitvar = ctx.reqv(|v| {
             crate::cache::Request {
                 label: "cargo-fuzz".into(),
@@ -90,60 +93,22 @@ impl FlowNodeWithConfig for Node {
 
             move |rt| {
                 let cache_dir = rt.read(cache_dir);
+                let hitvar = rt.read(hitvar);
+                let cargo_install_persistent_dir = rt.read(cargo_install_persistent_dir);
+                let rust_toolchain = rt.read(rust_toolchain);
+                let cargo_home = rt.read(cargo_home);
 
-                let cached_bin_path = cache_dir.join(&cargo_fuzz_bin);
-                let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
-                    assert!(cached_bin_path.exists());
-                    Some(cached_bin_path.clone())
-                } else {
-                    None
-                };
-
-                let path_to_cargo_fuzz = if let Some(cached) = cached {
-                    cached
-                } else {
-                    let root = rt.read(cargo_install_persistent_dir).unwrap_or("./".into());
-
-                    let rust_toolchain = rt.read(rust_toolchain);
-                    let run = |offline| {
-                        let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
-
-                        flowey::shell_cmd!(
-                            rt,
-                            "cargo {rust_toolchain...}
-                                install
-                                --locked
-                                {offline...}
-                                --root {root}
-                                --target-dir {root}
-                                --version {version}
-                                cargo-fuzz
-                            "
-                        )
-                        .run()
-                    };
-
-                    // Try --offline to avoid an unnecessary git fetch on rerun.
-                    if run(Some("--offline")).is_err() {
-                        // Try again without --offline.
-                        run(None)?;
-                    }
-
-                    let out_bin = root.absolute()?.join("bin").join(&cargo_fuzz_bin);
-
-                    // move the compiled bin into the cache dir
-                    fs_err::rename(out_bin, &cached_bin_path)?;
-                    cached_bin_path.absolute()?
-                };
-
-                // is installing with cargo, make sure the bin we built /
-                // downloaded is accessible via cargo fuzz
-                fs_err::copy(
-                    &path_to_cargo_fuzz,
-                    rt.read(cargo_home).join("bin").join(&cargo_fuzz_bin),
-                )?;
-
-                Ok(())
+                crate::_util::cargo_install::install_cached_cargo_binary(
+                    rt,
+                    cache_dir,
+                    hitvar,
+                    cargo_install_persistent_dir,
+                    rust_toolchain,
+                    cargo_home,
+                    "cargo-fuzz",
+                    &version,
+                    &cargo_fuzz_bin,
+                )
             }
         });
 

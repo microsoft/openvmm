@@ -1,7 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! CXL specification constants.
+//! CXL specification constants and register definitions.
+
+#![no_std]
+#![forbid(unsafe_code)]
+
+pub mod component_registers;
+pub mod pci_registers;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
@@ -288,6 +294,8 @@ pub const CEDT_STRUCTURE_TYPE_CFMWS: u8 = 1;
 
 #[cfg(test)]
 mod tests {
+    use test_with_tracing::test;
+
     use super::CEDT_STRUCTURE_TYPE_CFMWS;
     use super::CEDT_STRUCTURE_TYPE_CHBS;
     use super::CXL_CACHEMEM_CAPABILITY_ARRAY_MAX_ENTRIES;

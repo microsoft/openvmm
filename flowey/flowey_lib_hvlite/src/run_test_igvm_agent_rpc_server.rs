@@ -10,8 +10,7 @@
 //! This node starts the server from the test content directory (where
 //! init_vmm_tests_env copies the binary) and redirects output to a log file.
 //!
-//! **Note:** This node only supports Windows. Callers should check the platform
-//! before requesting this node.
+//! This node supports Windows and running Windows binaries through WSL2.
 //!
 //! See also: stop_test_igvm_agent_rpc_server for cleanup after tests complete.
 
@@ -47,15 +46,6 @@ impl SimpleFlowNode for Node {
             previous_done,
         } = request;
 
-        // This node only supports Windows - fail at flow-graph construction time
-        // if someone mistakenly tries to use it on another platform.
-        if !matches!(ctx.platform(), FlowPlatform::Windows) {
-            anyhow::bail!(
-                "run_test_igvm_agent_rpc_server only supports Windows. \
-                Callers should check the platform before requesting this node."
-            );
-        }
-
         ctx.emit_rust_step("starting test_igvm_agent_rpc_server", |ctx| {
             let test_igvm_agent_rpc_server = test_igvm_agent_rpc_server.claim(ctx);
             let env = env.claim(ctx);
@@ -68,14 +58,17 @@ impl SimpleFlowNode for Node {
     }
 }
 
-#[cfg(windows)]
 fn start_rpc_server(
     rt: &mut RustRuntimeServices<'_>,
     test_igvm_agent_rpc_server: ReadVar<TestIgvmAgentRpcServerOutput, VarClaimed>,
     env: ReadVar<BTreeMap<String, String>, VarClaimed>,
 ) -> anyhow::Result<()> {
-    use std::os::windows::process::CommandExt;
     use std::path::Path;
+
+    let windows_via_wsl2 = flowey_lib_common::_util::running_in_wsl(rt);
+    if !matches!(rt.platform(), FlowPlatform::Windows) && !windows_via_wsl2 {
+        anyhow::bail!("run_test_igvm_agent_rpc_server only supports Windows or WSL2");
+    }
 
     let env = rt.read(env);
 
@@ -85,8 +78,13 @@ fn start_rpc_server(
 
     let TestIgvmAgentRpcServerOutput { exe, .. } = rt.read(test_igvm_agent_rpc_server);
 
-    // Create log file for server output
-    let log_file_path = Path::new(test_output_path).join("test_igvm_agent_rpc_server.log");
+    // init_vmm_tests_env supplies Windows paths when targeting Windows from WSL2.
+    let test_output_path = if windows_via_wsl2 {
+        flowey_lib_common::_util::wslpath::win_to_linux(rt, test_output_path)?
+    } else {
+        Path::new(test_output_path).to_path_buf()
+    };
+    let log_file_path = test_output_path.join("test_igvm_agent_rpc_server.log");
     let log_file = std::fs::File::create(&log_file_path)?;
     let log_file_stderr = log_file.try_clone()?;
 
@@ -96,22 +94,27 @@ fn start_rpc_server(
         log_file_path.display()
     );
 
-    // Spawn the RPC server as a background process.
-    // Use CREATE_NEW_PROCESS_GROUP so it doesn't receive console signals.
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-
-    let mut child = std::process::Command::new(&exe)
+    let mut command = std::process::Command::new(&exe);
+    command
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
-        .stderr(log_file_stderr)
-        .creation_flags(CREATE_NEW_PROCESS_GROUP)
-        .spawn()
-        .with_context(|| {
-            format!(
-                "failed to spawn test_igvm_agent_rpc_server: {}",
-                exe.display()
-            )
-        })?;
+        .stderr(log_file_stderr);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Use CREATE_NEW_PROCESS_GROUP so it doesn't receive console signals.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "failed to spawn test_igvm_agent_rpc_server: {}",
+            exe.display()
+        )
+    })?;
 
     // Give the server a moment to start up and bind to the RPC endpoint.
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -140,15 +143,4 @@ fn start_rpc_server(
     drop(child);
 
     Ok(())
-}
-
-#[cfg(not(windows))]
-fn start_rpc_server(
-    _rt: &mut RustRuntimeServices<'_>,
-    _test_igvm_agent_rpc_server: ReadVar<TestIgvmAgentRpcServerOutput, VarClaimed>,
-    _env: ReadVar<BTreeMap<String, String>, VarClaimed>,
-) -> anyhow::Result<()> {
-    // This should never be called - the node rejects non-Windows at construction time.
-    // But we need this for compilation on non-Windows hosts.
-    anyhow::bail!("run_test_igvm_agent_rpc_server is only supported on Windows")
 }

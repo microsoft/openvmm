@@ -216,18 +216,18 @@ impl FlowNodeWithConfig for Node {
         // archive), so dedupe download + extract on `(arch, kver)`.
         let needed_archives: BTreeSet<(CommonArch, LinuxTestKernelVersion)> =
             deps.keys().map(|(_, arch, kver)| (*arch, *kver)).collect();
+        let version = version.context("missing openvmm-test-linux version")?;
 
         let mut archives = BTreeMap::new();
         for (arch, kver) in needed_archives {
-            let version = version.clone().expect("local requests handled above");
             let arch_str = match arch {
                 CommonArch::X86_64 => "x86_64",
                 CommonArch::Aarch64 => "aarch64",
             };
             let kver_str = kver.artifact_tag();
             let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                 needs_auth: false,
                 tag: version.clone(),
                 file_name: format!("openvmm-test-linux-{kver_str}.{arch_str}.{version}.tar.gz"),
@@ -242,7 +242,7 @@ impl FlowNodeWithConfig for Node {
             let persistent_dir = persistent_dir.claim(ctx);
             let archives = archives.claim(ctx);
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
+            let version = version.clone();
             move |rt| {
                 let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
@@ -259,7 +259,14 @@ impl FlowNodeWithConfig for Node {
                 }
 
                 for ((file, arch, kver), vars) in deps {
-                    let path = extract_dirs[&(arch, kver)].join(file.filename(arch));
+                    let path = extract_dirs
+                        .get(&(arch, kver))
+                        .with_context(|| {
+                            format!(
+                                "missing extracted openvmm-test-linux archive for {arch:?} {kver:?}"
+                            )
+                        })?
+                        .join(file.filename(arch));
                     rt.write_all(vars, &path)
                 }
 

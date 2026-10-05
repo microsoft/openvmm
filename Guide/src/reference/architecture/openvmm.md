@@ -9,5 +9,7 @@ VMM.
   allocated and shared.
 - [NUMA Topology](./openvmm/numa.md) covers guest NUMA configuration and host
   memory placement.
+- [Timekeeping](./timekeeping.md) explains clocks, timers, and their
+  behavior across VM lifecycle changes.
 - [mesh](./openvmm/mesh.md) describes OpenVMM's inter-process communication
   framework.

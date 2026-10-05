@@ -1215,21 +1215,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxl_spec"
+name = "cxl"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bitfield-struct 0.11.0",
  "chipset_device",
+ "cxl_spec",
  "inspect",
  "mesh",
- "open_enum",
  "pci_core",
  "pci_resources",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "cxl_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2362,6 +2371,7 @@ dependencies = [
  "sysinfo",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "which 8.0.0",
  "xshell",
@@ -5667,13 +5677,18 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "hcl",
  "hvdef",
  "inspect",
+ "memory_range",
  "parking_lot",
+ "sev_guest_device",
  "tdisp",
  "tdisp_proto",
+ "tracelimit",
  "tracing",
  "virt",
+ "x86defs",
 ]
 
 [[package]]
@@ -5996,6 +6011,7 @@ dependencies = [
  "console_relay",
  "crossterm",
  "crypto",
+ "cxl",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -6181,7 +6197,7 @@ dependencies = [
  "chipset",
  "chipset_legacy",
  "chipset_resources",
- "cxl_spec",
+ "cxl",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -6552,6 +6568,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cxl",
  "cxl_spec",
  "inspect",
  "memory_range",
@@ -10845,6 +10862,7 @@ dependencies = [
  "power_resources",
  "slab",
  "state_unit",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",

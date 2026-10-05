@@ -1327,6 +1327,9 @@ mod x86 {
                     | x86defs::X86X_AMD_MSR_HW_CFG
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
+                    // Discarded for the same reason the reads return zero; see
+                    // the read path.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(())
@@ -1417,6 +1420,18 @@ mod x86 {
                     | x86defs::X86X_AMD_MSR_IGNNE
                     | x86defs::X86X_AMD_MSR_NB_CFG
                     | x86defs::X86X_AMD_MSR_OSVW_ID_LENGTH..=x86defs::X86X_AMD_MSR_OSVW_ID_STATUS
+                    // The implementation-specific unit configuration registers,
+                    // LS_CFG through EX_CFG. These hold chicken bits that a
+                    // guest cannot act on, so like the AMD configuration MSRs
+                    // above they read as zero rather than faulting.
+                    //
+                    // Windows accesses EX_CFG (0xc001102c) while initializing
+                    // the processor on family 17h. Returning MsrError::Unknown
+                    // injects a #GP on a kernel system thread, which bugchecks
+                    // the guest with SYSTEM_THREAD_EXCEPTION_NOT_HANDLED before
+                    // it finishes booting. KVM ignores the same MSR for the
+                    // same reason; see MSR_F15H_EX_CFG in msr-index.h.
+                    | x86defs::X86X_AMD_MSR_LS_CFG..=x86defs::X86X_AMD_MSR_EX_CFG
                         if self.vp.partition.caps.vendor.is_amd_compatible() =>
                     {
                         Ok(0)

@@ -147,14 +147,14 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local paths handled above");
+        let version = version.context("missing mu_msvm version")?;
         let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for ((arch, flavor), out_vars) in reqs {
             let file_name = flavor.file_name(arch)?;
 
             let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
                 repo_name: "mu_msvm".into(),
                 needs_auth: false,
                 tag: format!("v{version}"),

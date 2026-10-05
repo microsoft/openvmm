@@ -875,7 +875,7 @@ impl SimpleFlowNode for Node {
                     match target_triple.operating_system {
                         target_lexicon::OperatingSystem::Windows => {
                             let dst = if flowey_lib_common::_util::running_in_wsl(rt) {
-                                flowey_lib_common::_util::wslpath::linux_to_win(rt, dst)
+                                flowey_lib_common::_util::wslpath::linux_to_win(rt, dst)?
                                     .to_string_lossy()
                                     .replace("\\", "\\\\")
                             } else {

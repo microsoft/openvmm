@@ -167,6 +167,7 @@ impl crate::harness::WarmPerfTest for VirtioFsTest {
                             virtio_resources::blk::VirtioBlkHandle {
                                 disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                 read_only: true,
+                                serial: None,
                             }
                             .into_resource(),
                         )

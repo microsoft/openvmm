@@ -10,6 +10,8 @@
 
 pub mod client;
 pub mod noop;
+#[cfg(target_os = "linux")]
+mod sevtio;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -41,6 +43,11 @@ pub use tdisp_proto::TdispMmioRangeAction;
 pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
 
+#[cfg(target_os = "linux")]
+pub use sevtio::TdispSevTioResourceValidator;
+
+#[cfg(target_os = "linux")]
+use anyhow::Context;
 use hvdef::Vtl;
 use std::future::Future;
 use std::pin::Pin;
@@ -220,8 +227,11 @@ pub fn new_resource_validator(
         return Ok(Arc::new(noop::TdispNoopResourceValidator::new()));
     }
 
-    // TODO: Add platform-specific resource validators based on the isolation type.
-    // This will follow in subsequent PRs.
+    #[cfg(target_os = "linux")]
+    if matches!(isolation, IsolationType::Snp) {
+        let vtom = vtom.context("an SNP partition requires a VTOM to validate resources")?;
+        return Ok(Arc::new(TdispSevTioResourceValidator::new(vtom)?));
+    }
 
     Ok(Arc::new(noop::TdispNoopResourceValidator::new()))
 }

@@ -624,7 +624,10 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
-    Snp,
+    Snp {
+        /// Optional host-provided data included in SNP launch finish.
+        host_data: Option<[u8; 32]>,
+    },
     Cca,
 }
 
@@ -632,7 +635,7 @@ impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp,
+            IsolationType::Snp { .. } => Self::Snp,
             IsolationType::Cca => Self::Cca,
         }
     }

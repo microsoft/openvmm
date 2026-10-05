@@ -55,6 +55,7 @@ use hvdef::hypercall::HvInterceptType;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
+use hvdef::hypercall::ModifyHostVisibilityWithImmutability;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -875,7 +876,7 @@ impl MshvHvcall {
     /// allowed.
     ///
     /// Returns on error, the hypervisor error and the number of pages
-    /// processed.
+    /// processed. It is the caller's responsibility to roll this back on failure.
     ///
     /// VBS FUTURE TODO: For defense in depth it could be useful to prevent usermode from
     /// changing visibility of a VTL2 kernel page in the kernel.
@@ -914,6 +915,62 @@ impl MshvHvcall {
                 Err(HvError::Timeout) => {}
                 Err(e) => return Err((e, result.elements_processed())),
             }
+            gpns = &gpns[result.elements_processed()..];
+        }
+        Ok(())
+    }
+
+    /// Modifies the host visibility and immutability of the given pages using
+    /// the private-hypervisor `ModifySparsePageVisibilityWithImmutability`
+    /// variant. Intended for SEV-TIO end-to-end bring-up against a
+    /// privately-built Hyper-V hypervisor.
+    ///
+    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
+    /// allowed.
+    ///
+    /// Returns on error, the hypervisor error and the total number of pages
+    /// processed across the whole call. It is the caller's responsibility to
+    /// roll this back on failure.
+    pub fn modify_gpa_visibility_and_immutability(
+        &self,
+        host_visibility: HostVisibilityType,
+        immutability: bool,
+        mut gpns: &[u64],
+    ) -> Result<(), (HvError, usize)> {
+        const GPNS_PER_CALL: usize = (HV_PAGE_SIZE as usize
+            - size_of::<hvdef::hypercall::ModifySparsePageVisibilityWithImmutability>())
+            / size_of::<u64>();
+
+        let mut processed_total = 0;
+
+        while !gpns.is_empty() {
+            let n = gpns.len().min(GPNS_PER_CALL);
+            // SAFETY: The input header and rep slice are the correct types for this hypercall.
+            //         The hypercall output is validated right after the hypercall is issued.
+            let result = unsafe {
+                self.hvcall_rep(
+                    HypercallCode::HvCallModifySparseGpaPageHostVisibility,
+                    &hvdef::hypercall::ModifySparsePageVisibilityWithImmutability {
+                        partition_id: HV_PARTITION_ID_SELF,
+                        host_visibility: ModifyHostVisibilityWithImmutability::new()
+                            .with_host_visibility(host_visibility)
+                            .with_immutability(immutability),
+                        reserved: 0,
+                    },
+                    HvcallRepInput::Elements(&gpns[..n]),
+                    None::<&mut [u8]>,
+                )
+                .unwrap()
+            };
+
+            match result.result() {
+                Ok(()) => {
+                    assert_eq!({ result.elements_processed() }, n);
+                }
+                Err(HvError::Timeout) => {}
+                Err(e) => return Err((e, processed_total + result.elements_processed())),
+            }
+            processed_total += result.elements_processed();
             gpns = &gpns[result.elements_processed()..];
         }
         Ok(())

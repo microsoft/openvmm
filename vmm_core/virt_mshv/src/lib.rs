@@ -255,11 +255,6 @@ enum MshvIsolationState {
 
 impl MshvIsolationState {
     #[cfg(guest_arch = "x86_64")]
-    fn is_isolated(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         match self {
             Self::None => virt::InitialVpStateSource::Registers,
@@ -325,8 +320,6 @@ struct MshvPartitionInner {
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
     #[inspect(skip)]
     isolation: MshvIsolationState,
-    /// Set to `true` when partition time is frozen (e.g. during reset).
-    /// The first VP to enter `run_vp` after a freeze will thaw time.
     time_frozen: Mutex<bool>,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
     /// assertions via a v2m frame.
@@ -373,35 +366,33 @@ impl GetReferenceTime for MshvPartitionInner {
     }
 }
 
+impl virt::PartitionTimeControl for MshvPartition {
+    fn freeze_time(&self) {
+        let mut frozen = self.inner.time_frozen.lock();
+        if !*frozen {
+            self.inner
+                .vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+                .expect("failed to freeze partition time");
+            *frozen = true;
+        }
+    }
+
+    fn thaw_time(&self) {
+        let mut frozen = self.inner.time_frozen.lock();
+        if *frozen {
+            self.inner
+                .vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
+                .expect("failed to thaw partition time");
+            *frozen = false;
+        }
+    }
+}
+
 impl MshvPartitionInner {
     fn vp(&self, vp_index: VpIndex) -> &MshvVpInner {
         &self.vps[vp_index.index() as usize]
-    }
-
-    /// Freezes partition time. Time will remain frozen until [`thaw_time`] is
-    /// called (typically on the first VP run after reset).
-    fn freeze_time(&self) -> Result<(), Error> {
-        let mut frozen = self.time_frozen.lock();
-        if !*frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
-                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
-            *frozen = true;
-        }
-        Ok(())
-    }
-
-    /// Thaws partition time if it is currently frozen. This is a no-op if
-    /// time is already running.
-    fn thaw_time(&self) -> Result<(), Error> {
-        let mut frozen = self.time_frozen.lock();
-        if *frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
-                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
-            *frozen = false;
-        }
-        Ok(())
     }
 
     fn post_message(&self, vp_index: VpIndex, sint: u8, message: &HvMessage) {
@@ -625,10 +616,6 @@ impl virt::Processor for MshvProcessor<'_> {
         let _cleaner = MshvVpInnerCleaner { vpinner };
 
         assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
-
-        self.partition
-            .thaw_time()
-            .expect("failed to thaw partition time");
 
         // Ensure any messages present from a state restore are flushed on
         // the first loop iteration.

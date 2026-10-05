@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! CXL component-register capability definitions.
+//! CXL component register capability definitions.
 
 /// CXL HDM Decoder capability definitions.
 #[expect(missing_docs)] // keep grouped spec modules concise

@@ -31,7 +31,7 @@ use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
-use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -1142,6 +1142,10 @@ impl InitializedVm {
             .with_isolation
             .map(Into::into)
             .unwrap_or(virt::IsolationType::None);
+        let snp_host_data = match cfg.hypervisor.with_isolation {
+            Some(openvmm_defs::config::IsolationType::Snp { host_data }) => host_data,
+            _ => None,
+        };
         // Pre-parse the IGVM file early so the backend can consume opaque
         // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
@@ -1154,11 +1158,16 @@ impl InitializedVm {
         } else {
             None
         };
-        let proto_partition_isolation = resolve_proto_partition_isolation(
+        let mut proto_partition_isolation = resolve_proto_partition_isolation(
             partition_isolation,
             &cfg.load_mode,
             igvm_file.as_ref(),
         )?;
+        if let virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(config)) =
+            &mut proto_partition_isolation
+        {
+            config.host_data = snp_host_data;
+        }
 
         let hv_config = if cfg.hypervisor.with_hv {
             cfg_if::cfg_if! {
@@ -1361,7 +1370,10 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+        if matches!(
+            cfg.hypervisor.with_isolation,
+            Some(openvmm_defs::config::IsolationType::Snp { .. })
+        ) {
             if !matches!(
                 cfg.load_mode,
                 LoadMode::Linux { .. } | LoadMode::Igvm { .. }
@@ -3370,7 +3382,7 @@ impl LoadedVmInner {
                         openvmm_defs::config::LinuxIsolationConfig::Snp {
                             restricted_injection,
                         },
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
                         super::vm_loaders::linux::SnpKernelConfig {
                             c_bit: self
@@ -3383,7 +3395,7 @@ impl LoadedVmInner {
                     ),
                     (
                         openvmm_defs::config::LinuxIsolationConfig::None,
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
                     (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
                         anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
