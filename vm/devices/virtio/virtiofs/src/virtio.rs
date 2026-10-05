@@ -3,6 +3,7 @@
 
 use crate::VirtioFs;
 use crate::microvm::MAX_FUSE_REQUEST_BYTES;
+use crate::microvm::owner::CallerIdentity;
 use crate::profile::MicroVmVirtioFsProfile;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
@@ -86,6 +87,9 @@ pub struct VirtioFsDevice {
     pub(crate) microvm_profile: Option<MicroVmVirtioFsProfile>,
     #[inspect(skip)]
     pub(crate) stateful_fs: Option<VirtioFs>,
+    /// Set when requests run as their guest callers.
+    #[inspect(skip)]
+    pub(crate) caller_identity: Option<CallerIdentity>,
     #[inspect(skip)]
     pub(crate) admission: Arc<RequestAdmission>,
     #[inspect(skip)]
@@ -229,6 +233,7 @@ impl VirtioFsDevice {
             microvm_attachment_id: None,
             microvm_profile: None,
             stateful_fs: None,
+            caller_identity: None,
             admission: Arc::new(RequestAdmission::new()),
             save_error: None,
         }
@@ -290,6 +295,7 @@ impl VirtioDevice for VirtioFsDevice {
             shared_memory_size: self.shmem_size,
             notify_corruption: self.notify_corruption.clone(),
             admission: Arc::clone(&self.admission),
+            caller_identity: self.caller_identity,
         });
 
         let queue_event = PolledWait::new(&self.driver, resources.event)
@@ -323,6 +329,7 @@ impl VirtioDevice for VirtioFsDevice {
                     shared_memory_size: 0,
                     notify_corruption: self.notify_corruption.clone(),
                     admission: Arc::clone(&self.admission),
+                    caller_identity: self.caller_identity,
                 })
             });
         }
@@ -388,6 +395,7 @@ pub(crate) struct VirtioFsWorker {
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
     admission: Arc<RequestAdmission>,
+    caller_identity: Option<CallerIdentity>,
 }
 
 pub(crate) struct VirtioFsQueue {
@@ -479,7 +487,9 @@ fn process_virtiofs_request(
             region: shared_memory_region.as_ref(),
             size: worker.shared_memory_size,
         });
-    worker.fs.dispatch(
+    crate::microvm::owner::dispatch(
+        worker.caller_identity.as_ref(),
+        &worker.fs,
         request,
         &mut sender,
         mapper.as_ref().map(|x| x as &dyn fuse::Mapper),

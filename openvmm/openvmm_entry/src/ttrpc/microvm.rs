@@ -880,6 +880,7 @@ impl CreateVm {
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                         denied_paths: Vec::new(),
+                        caller_identity: filesystem.config.owner.is_caller(),
                     },
                 }
                 .into_resource(),
@@ -1033,6 +1034,7 @@ impl CreateVm {
                 root_identity: attachment.identity.clone(),
                 read_only: filesystem_config.access.is_read_only(),
                 denied_paths: Vec::new(),
+                caller_identity: filesystem_config.owner.is_caller(),
             },
         }
         .into_resource();

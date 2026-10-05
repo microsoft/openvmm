@@ -246,6 +246,10 @@ pub struct SnapshotMicrovmFilesystem {
     /// Canonical host-relative paths hidden by the virtio-fs server.
     #[mesh(12)]
     pub denied_paths: Vec<String>,
+    /// Host identity of guest operations: empty for the VMM, which is also
+    /// what snapshots that predate this field used, or `caller`.
+    #[mesh(13)]
+    pub owner_mode: String,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -296,7 +300,27 @@ impl SnapshotMicrovmFilesystem {
             attribute_cache_timeout_ns: 0,
             canonical_host_path: canonical_host_path.to_owned(),
             denied_paths: config.denied_paths.clone(),
+            owner_mode: match config.owner {
+                openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm => String::new(),
+                openvmm_defs::microvm::MicrovmFilesystemOwner::Caller => {
+                    openvmm_defs::microvm::MicrovmFilesystemOwner::Caller
+                        .as_str()
+                        .to_owned()
+                }
+            },
         }
+    }
+}
+
+/// Parses the host identity of guest operations recorded in a snapshot
+/// filesystem policy.
+pub fn snapshot_microvm_filesystem_owner(
+    owner_mode: &str,
+) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemOwner> {
+    match owner_mode {
+        "" => Ok(openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm),
+        "caller" => Ok(openvmm_defs::microvm::MicrovmFilesystemOwner::Caller),
+        mode => anyhow::bail!("snapshot filesystem owner mode '{mode}' is unsupported"),
     }
 }
 
@@ -1446,7 +1470,8 @@ pub(super) fn validate_machine_contract_shape(
             access,
         )
         .and_then(|config| config.with_denied_paths(filesystem.denied_paths.clone()))
-        .context("snapshot filesystem policy is invalid")?;
+        .context("snapshot filesystem policy is invalid")?
+        .with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?);
         anyhow::ensure!(
             *filesystem == SnapshotMicrovmFilesystem::new(&parsed, &filesystem.canonical_host_path),
             "snapshot filesystem policy is not canonical"
@@ -2254,12 +2279,23 @@ mod tests {
     }
 
     fn generated_filesystem_contract(source_hypervisor: &str) -> SnapshotMachineContract {
+        generated_filesystem_contract_with_owner(
+            source_hypervisor,
+            openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm,
+        )
+    }
+
+    fn generated_filesystem_contract_with_owner(
+        source_hypervisor: &str,
+        owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
+    ) -> SnapshotMachineContract {
         let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
             "/mnt/share".to_owned(),
             openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
         )
         .and_then(|config| config.with_denied_paths(vec!["secrets".to_owned()]))
-        .unwrap();
+        .unwrap()
+        .with_owner(owner);
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6 {}",
             filesystem.command_line_fragment()
@@ -2536,6 +2572,42 @@ mod tests {
         let mut contract = generated_dormant_filesystem_contract();
         contract.devices.pop();
         assert!(validate_machine_contract_shape(&contract, 1024, 1).is_err());
+    }
+
+    #[test]
+    fn microvm_filesystem_owner_mode_is_canonical() {
+        use openvmm_defs::microvm::MicrovmFilesystemOwner;
+        assert_eq!(
+            snapshot_microvm_filesystem_owner("").unwrap(),
+            MicrovmFilesystemOwner::Vmm
+        );
+        assert_eq!(
+            snapshot_microvm_filesystem_owner("caller").unwrap(),
+            MicrovmFilesystemOwner::Caller
+        );
+        for mode in ["vmm", "root", "Caller"] {
+            assert!(snapshot_microvm_filesystem_owner(mode).is_err());
+        }
+        // VMM ownership keeps the encoding of snapshots that predate the field.
+        for (owner, mode) in [
+            (MicrovmFilesystemOwner::Vmm, ""),
+            (MicrovmFilesystemOwner::Caller, "caller"),
+        ] {
+            let contract = generated_filesystem_contract_with_owner("kvm", owner);
+            assert_eq!(
+                contract.microvm_filesystem.as_ref().unwrap().owner_mode,
+                mode
+            );
+            validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+        }
+        let mut contract = generated_filesystem_contract("kvm");
+        contract.microvm_filesystem.as_mut().unwrap().owner_mode = "vmm".to_owned();
+        let error = validate_machine_contract_shape(&contract, 1024, 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("owner mode 'vmm' is unsupported")
+        );
     }
 
     #[test]
