@@ -25,6 +25,10 @@ use windows as sys;
 
 pub use path::PathBufExt;
 pub use path::PathExt;
+#[cfg(unix)]
+pub use unix::credentials::FsIdentity;
+#[cfg(unix)]
+pub use unix::credentials::with_fs_identity;
 
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
 /// it has Unix semantics.
