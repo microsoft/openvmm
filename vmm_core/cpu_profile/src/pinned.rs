@@ -94,7 +94,7 @@ impl PinnedProfile {
     }
 
     /// Returns the profile's record.
-    pub(crate) fn record(&self) -> PinnedRecord {
+    pub(crate) fn record(&self) -> PinnedRecord<'static> {
         PinnedRecord {
             id: self.id,
             encoding: self.encoding.as_bytes(),
@@ -103,16 +103,19 @@ impl PinnedProfile {
     }
 }
 
-/// The CPU profile record of a pinned profile, precomputed at build time: the
-/// canonical encoding that a snapshot embeds, and its SHA-256, the profile
-/// digest. Capture can record them, and restore can compare a recorded
-/// profile with them, without encoding or hashing.
+/// The CPU profile record that a snapshot copies: the profile ID, the
+/// canonical encoding that the snapshot embeds, and its SHA-256, the profile
+/// digest. A pinned profile's record is precomputed at build time
+/// ([`pinned_record`](crate::pinned_record)), so capture can record it, and
+/// restore can compare a recorded profile with it, without encoding or
+/// hashing. A host profile's is computed once, when the VM worker selects the
+/// profile ([`PartitionProfile::record`](crate::PartitionProfile::record)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PinnedRecord {
+pub struct PinnedRecord<'a> {
     /// The profile ID.
-    pub id: &'static str,
+    pub id: &'a str,
     /// The canonical encoding, [`CpuProfile::encode`] of the profile.
-    pub encoding: &'static [u8],
+    pub encoding: &'a [u8],
     /// The profile digest, the SHA-256 of `encoding`.
     pub digest: [u8; 32],
 }

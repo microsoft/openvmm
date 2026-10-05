@@ -4,6 +4,8 @@
 //! Writes and checks the host CPU fingerprint for `--cpu-fingerprint`.
 
 use anyhow::Context;
+use cpu_profile::ProfileError;
+use cpu_profile::ProfileErrorCode;
 use cpu_profile::fingerprint::CpuFingerprint;
 use cpu_profile::fingerprint::ToolIdentity;
 use cpu_profile::host::HostIdentity;
@@ -17,9 +19,14 @@ use std::path::Path;
 /// The check prints one `NVX-CPU-PROFILE:` line to stderr and fails with its
 /// code (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNSUPPORTED`, or, for MSHV and
 /// WHP, `E_CPU_UNLISTED`) after the fingerprint is written, so hosts
-/// of new generations can still be fingerprinted.
+/// of new generations can still be fingerprinted. A backend that can
+/// configure a probe partition from the profile, as WHP can, is checked for
+/// `E_CPU_UNLISTED` on that partition, as a cold boot checks its own.
 pub(crate) fn write(path: &Path, hypervisor: Option<&str>) -> anyhow::Result<()> {
-    let backend = openvmm_helpers::hypervisor::cpu_fingerprint(hypervisor)
+    let backend = openvmm_helpers::hypervisor::fingerprint_backend(hypervisor)
+        .context("failed to fingerprint the hypervisor backend")?;
+    let backend_fingerprint = backend
+        .cpu_fingerprint()
         .context("failed to fingerprint the hypervisor backend")?;
     let host = HostIdentity::collect().context("failed to identify the host")?;
     let fingerprint = CpuFingerprint::new(
@@ -28,7 +35,7 @@ pub(crate) fn write(path: &Path, hypervisor: Option<&str>) -> anyhow::Result<()>
             version: openvmm_build_info::get().version().to_owned(),
         },
         host,
-        backend,
+        backend_fingerprint,
     );
     let json = fingerprint.to_json();
     if path == Path::new("-") {
@@ -47,7 +54,17 @@ pub(crate) fn write(path: &Path, hypervisor: Option<&str>) -> anyhow::Result<()>
         "wrote CPU fingerprint"
     );
 
-    let check = cpu_profile::check_fingerprint(&fingerprint);
+    let check = cpu_profile::check_fingerprint_with(&fingerprint, |profile| {
+        backend.profile_unlisted_cpuid(profile).map_err(|err| {
+            ProfileError::new(
+                ProfileErrorCode::ProfileUnsupported,
+                format!(
+                    "cannot configure a probe partition from CPU profile {}: {err:#}",
+                    profile.id()
+                ),
+            )
+        })
+    });
     eprintln!("{}", check.summary_line(&fingerprint));
     Ok(check.result?)
 }
