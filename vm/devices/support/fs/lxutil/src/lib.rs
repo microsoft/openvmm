@@ -28,6 +28,10 @@ use windows as sys;
 
 pub use path::PathBufExt;
 pub use path::PathExt;
+#[cfg(unix)]
+pub use unix::credentials::FsIdentity;
+#[cfg(unix)]
+pub use unix::credentials::with_fs_identity;
 
 /// An error initializing a host filesystem volume.
 #[derive(Debug, thiserror::Error)]
