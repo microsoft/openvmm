@@ -74,7 +74,16 @@ describes the source definitions.
   `microvm` uses one socket and one die,
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
   Guest-requested snapshot capture and new-process restore are available for
-  blockless and fixed-block machines on Linux/KVM, Linux/MSHV, and Windows/WHP.
+  blockless and fixed-block machines on Linux/KVM, Linux/MSHV, and Windows/WHP,
+  except for the RAM-backed overlay layout.
+
+  A non-empty `--microvm-sandbox-block` topology must end with the writable
+  `scratch` block unless the command line carries exactly one
+  `nvx_overlay_upper=ramfs` token. That RAM-backed overlay layout, for a guest
+  that keeps its overlay upper in RAM, requires exactly one read-only `distro`
+  block and no other block, and it rejects `--snapshot-destination` and
+  `--restore-snapshot`. Any other `nvx_overlay_upper` token, including a bare
+  or repeated one, is rejected.
 
   ```admonish warning title="microVM migration"
   The canonical `microvm` spelling now selects the contract formerly exposed
