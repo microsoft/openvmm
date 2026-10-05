@@ -274,6 +274,23 @@ pub fn derive_profile(
     )
 }
 
+/// Returns whether host profiles serve the CPU `host`, so that
+/// `--cpu-profile host` can boot on it: [`derive_host_profile`] derives them
+/// for Intel CPUs only.
+pub fn supports_host_profiles(host: &HostCpuSignature) -> bool {
+    host_profile_vendor(&host.vendor()).is_some()
+}
+
+/// Returns how host profile IDs spell `vendor`, if host profiles support it.
+/// The derivation policy and the VM-owned topology fields cover only Intel's
+/// CPUID leaves, so only Intel CPUs have host profiles.
+fn host_profile_vendor(vendor: &[u8]) -> Option<&'static str> {
+    match vendor {
+        b"GenuineIntel" => Some("intel"),
+        _ => None,
+    }
+}
+
 /// Derives the host profile of the host and backend that `fingerprint`
 /// describes, for `--cpu-profile host`: the profile that the derivation
 /// policy gives for this one fingerprint, with the ID
@@ -284,19 +301,16 @@ pub fn derive_profile(
 /// immutable: a microcode, firmware, or hypervisor update can change it.
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN` for a CPU of another vendor than
-/// Intel, whose profiles do not exist yet, and with `E_PROFILE_UNSUPPORTED`
-/// when the backend lacks a feature that the time ABI requires.
+/// Intel ([`supports_host_profiles`]), and with `E_PROFILE_UNSUPPORTED` when
+/// the backend lacks a feature that the time ABI requires.
 pub fn derive_host_profile(fingerprint: &CpuFingerprint) -> Result<CpuProfile, ProfileError> {
     let host = host_signature(fingerprint);
     let cpu = &fingerprint.host.cpu;
-    let vendor_short = match cpu.vendor.as_str() {
-        "GenuineIntel" => "intel",
-        _ => {
-            return Err(ProfileError::new(
-                ProfileErrorCode::ProfileHostUnknown,
-                format!("host CPU profiles support only Intel CPUs, and the host CPU is {host}"),
-            ));
-        }
+    let Some(vendor_short) = host_profile_vendor(cpu.vendor.as_bytes()) else {
+        return Err(ProfileError::new(
+            ProfileErrorCode::ProfileHostUnknown,
+            format!("host CPU profiles support only Intel CPUs, and the host CPU is {host}"),
+        ));
     };
     let (family, model, stepping) = decode_signature(cpu.vendor.as_bytes(), cpu.signature.0);
     derive(
@@ -1130,5 +1144,25 @@ mod tests {
     #[test]
     fn no_known_generation_is_the_host_generation() {
         assert!(known_generation(HOST_GENERATION).is_none());
+    }
+
+    /// Host profiles serve the CPUs that [`derive_host_profile`] accepts.
+    #[test]
+    fn host_profiles_serve_intel_cpus_only() {
+        for (vendor, served) in [
+            (*b"GenuineIntel", true),
+            (*b"AuthenticAMD", false),
+            (*b"HygonGenuine", false),
+        ] {
+            let host = HostCpuSignature::new(vendor, 0x0008_06c1);
+            assert_eq!(supports_host_profiles(&host), served, "{host}");
+            let mut host_fingerprint = fingerprint(profile("intel.alderlake.v1"), "whp");
+            host_fingerprint.host.cpu.vendor = host.vendor_str();
+            assert_eq!(
+                derive_host_profile(&host_fingerprint).is_ok(),
+                served,
+                "{host}"
+            );
+        }
     }
 }
