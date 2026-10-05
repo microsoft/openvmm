@@ -51,7 +51,8 @@ locations:
 
 Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. Lower-layer
 roles require the normal disk `,ro` option and a non-empty topology must end
-with `scratch`; ordinary `--virtio-blk` is intentionally rejected.
+with `scratch`, except for the RAM-backed overlay layout described below;
+ordinary `--virtio-blk` is intentionally rejected.
 For example:
 
 ```shell
@@ -68,6 +69,20 @@ normal snapshot request pairs the writable scratch as `scratch.img`; restore
 accepts the read-only layer arguments again and creates a private scratch copy
 from that artifact. A pre-mount request may select fresh-scratch policy instead,
 in which case restore requires a new writable scratch file of matching size.
+
+A guest that keeps its overlay upper in RAM can boot from one read-only image
+without scratch. Pass exactly one `nvx_overlay_upper=ramfs` token on the kernel
+command line and exactly one read-only `distro` block:
+
+```shell
+openvmm --machine microvm --kernel vmlinux --initrd initramfs.cpio.gz \
+  --cmdline "nvx_overlay_upper=ramfs" \
+  --microvm-sandbox-block distro:file:distro.erofs,ro
+```
+
+OpenVMM rejects any other `nvx_overlay_upper` token, including a bare or
+repeated one, and any other block in this layout. The layout supports neither
+`--snapshot-destination` nor `--restore-snapshot`.
 
 ### microVM deterministic SMP
 
