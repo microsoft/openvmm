@@ -58,6 +58,8 @@ enum CcaUnsupportedExit {
     ExceptionClass { exception_class: u8, esr_el2: u64 },
     #[error("CCA data abort with invalid instruction syndrome in ESR_EL2 {0:#x}")]
     InvalidDataAbortIss(u64),
+    #[error("CCA data abort with invalid FAR_EL2 in ESR_EL2 {0:#x}")]
+    InvalidDataAbortFar(u64),
     #[error(
         "CCA instruction abort: ESR_EL2 {esr_el2:#x}, ELR_EL2 {elr_el2:#x}, FAR_EL2 {far_el2:#x},
         FIPA {fipa:#x}, FIPA RIPAS state {fipa_state:#x}, IFSC {ifsc:#x}, reason {reason:?}, FNV {far_not_valid}"
@@ -588,10 +590,6 @@ impl BackingPrivate for CcaBacked {
                 PlaneExitReason::Sync => {
                     match cca_exit.esr_el2_class() {
                         ExceptionClass::DataAbort => {
-                            // get the address that caused the data abort
-                            let far = cca_exit.far_el2();
-                            let hpfar = cca_exit.hpfar_el2();
-                            let address = (hpfar.fipa() << 12) | (far & 0xfff);
                             let iss = IssDataAbort::from(esr_el2.iss());
                             if !iss.isv() {
                                 tracing::warn!(
@@ -604,6 +602,21 @@ impl BackingPrivate for CcaBacked {
                                 ));
                             }
 
+                            if iss.fnv() {
+                                tracing::warn!(
+                                    esr_el2 = cca_exit.0.esr_el2,
+                                    "CCA data abort has an invalid FAR_EL2"
+                                );
+                                return Err(dev.fatal_error(
+                                    CcaUnsupportedExit::InvalidDataAbortFar(cca_exit.0.esr_el2)
+                                        .into(),
+                                ));
+                            }
+
+                            // Construct the IPA from the valid FAR page offset.
+                            let far = cca_exit.far_el2();
+                            let hpfar = cca_exit.hpfar_el2();
+                            let address = (hpfar.fipa() << 12) | (far & 0xfff);
                             let len = 1usize << iss.sas();
                             let srt = iss.srt();
 
