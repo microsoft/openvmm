@@ -56,4 +56,15 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
         Ok(virt_whp::cpu_fingerprint()?)
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn profile_unlisted_cpuid(
+        &self,
+        params: &[(&str, &str)],
+        profile: &cpu_profile::CpuProfile,
+    ) -> anyhow::Result<Option<Vec<cpu_profile::cpuid::CpuidEntry>>> {
+        crate::reject_fingerprint_params("whp", params)?;
+        anyhow::ensure!(virt_whp::is_available()?, "WHP is not available");
+        Ok(Some(virt_whp::profile_unlisted_cpuid(profile)?))
+    }
 }
