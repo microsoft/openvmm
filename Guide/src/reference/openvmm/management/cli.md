@@ -371,10 +371,13 @@ describes the source definitions.
   instantiate the full VP capacity.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
-* `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, or `auto`
-  (the default) for the profile of the host's CPU generation. A host without a
-  profile, or a profile of another generation, fails before the partition is
-  created. A restore uses the snapshot's profile and rejects any other. See
+* `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
+  (the default) for the profile of the host's CPU generation, or `host` to
+  derive a development profile from this host's backend fingerprint for a
+  host that no pinned profile serves. `auto` never selects a host profile. A
+  host without a profile, or a profile of another generation, fails before the
+  partition is created. A restore uses the snapshot's profile and rejects any
+  other; `host` also names a host profile that the snapshot recorded. See
   [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
 * `--x-time-abi-verify`: Build the microVM partition and run the time ABI
   checks (CPU profile support, effective CPUID, rates) without starting the
@@ -502,14 +505,17 @@ guest state and protect the directory with host access controls.
   `status=fail`, `code`, and `detail`, and OpenVMM exits with status 1 and the
   same code (`E_PROFILE_HOST_UNKNOWN` or `E_PROFILE_UNSUPPORTED`). On MSHV and
   WHP, which present the hypervisor's own guest view at every CPUID entry that
-  the profile does not list, a probe partition that reads non-zero at such an
-  entry fails with `E_CPU_UNLISTED`, so that no such entry carries host data;
-  the identity range `0x40000000` to `0x4fffffff` and the topology leaves
-  `0xb` and `0x1f` are exempt. KVM installs the profile as the guest's whole
-  CPUID table and answers every other entry from it (zero, or the
-  architecture's out-of-range and topology results), so the check does not
-  apply. The fingerprint is still written, so hosts of new generations can be
-  fingerprinted to derive their profiles.
+  the profile does not list, a partition that reads non-zero at such an entry
+  fails with `E_CPU_UNLISTED`, so that no such entry carries host data; the
+  identity range `0x40000000` to `0x4fffffff` and the topology leaves `0xb`
+  and `0x1f` are exempt. WHP reads VP 0 of a second probe partition
+  configured from the profile, as a cold boot configures its partition, at
+  the host's CPUID entries outside the profile; MSHV reads the fingerprint's
+  probe partition, which enables every feature the backend offers. KVM
+  installs the profile as the guest's whole CPUID table and answers every
+  other entry from it (zero, or the architecture's out-of-range and topology
+  results), so the check does not apply. The fingerprint is still written, so
+  hosts of new generations can be fingerprinted to derive their profiles.
 
   ```bash
   openvmm --hypervisor kvm --cpu-fingerprint host.json
