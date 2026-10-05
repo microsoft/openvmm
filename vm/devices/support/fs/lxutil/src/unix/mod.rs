@@ -8,6 +8,7 @@
 mod confine;
 #[cfg(test)]
 mod confine_tests;
+pub(crate) mod credentials;
 pub(crate) mod path;
 mod util;
 
