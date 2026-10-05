@@ -561,7 +561,7 @@ mod gicd {
             vp: VpIndex,
             running_priority: u8,
         ) -> Option<PendingInterrupt> {
-            if !state.enable_grp1_non_secure && !state.enable_grp1_secure {
+            if !state.enable_grp0 && !state.enable_grp1_non_secure && !state.enable_grp1_secure {
                 return None;
             }
 
@@ -1067,6 +1067,9 @@ mod gicd {
                     GicdTyper::new()
                         .with_it_lines_number(it_lines_number)
                         .with_id_bits(id_bits)
+                        // IROUTER matching includes Aff3, so advertise that
+                        // Aff3 routing is implemented.
+                        .with_a3v(true)
                         .into()
                 }
                 GicdRegister::IIDR => 0,
@@ -1289,6 +1292,7 @@ mod gicd {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use aarch64defs::gic::GicdTyper;
         use aarch64defs::gic::GicrSgiRegister;
 
         const TEST_SPI: u32 = 32;
@@ -1313,6 +1317,50 @@ mod gicd {
             drop(state);
 
             distributor
+        }
+
+        #[test]
+        fn typer_matches_the_implemented_interrupts_and_routing_model() {
+            const INTERRUPT_COUNT: u32 = 256;
+            let mut distributor = Distributor::new(
+                0,
+                MemoryRange::new(
+                    aarch64defs::GIC_DISTRIBUTOR_SIZE
+                        ..aarch64defs::GIC_DISTRIBUTOR_SIZE
+                            + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                ),
+                INTERRUPT_COUNT,
+            );
+            distributor.add_redistributor(0, false);
+            distributor.add_redistributor(1 << 32, true);
+
+            let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
+            assert_eq!(typer.it_lines_number(), 7);
+            assert_eq!(typer.id_bits(), 8);
+            assert!(typer.a3v());
+
+            // Registers describing INTIDs 256 and above are RAZ/WI because
+            // this distributor implements only INTIDs 0 through 255.
+            let unimplemented_enable = GicdRegister(GicdRegister::ISENABLER0.0 + 8 * 4);
+            assert_eq!(distributor.read32(unimplemented_enable), Some(0));
+            assert!(distributor.write32(unimplemented_enable, u32::MAX));
+            assert_eq!(distributor.read32(unimplemented_enable), Some(0));
+
+            // Group 0 is deliverable when enabled, and Aff3 selects the
+            // second redistributor rather than the Aff3 == 0 redistributor.
+            {
+                let mut state = distributor.state.lock();
+                state.enable_grp0 = true;
+                state.enable[TEST_SPI as usize / 32] |= 1 << (TEST_SPI & 31);
+                state.route[TEST_SPI as usize] = 1 << 32;
+            }
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [VpIndex::new(1)]);
+            assert_eq!(
+                distributor
+                    .next_pending_spi_interrupt(VpIndex::new(1), u8::MAX)
+                    .map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
         }
 
         fn write_gicr_sgi(distributor: &Distributor, register: u16, value: u32) {
