@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Helper for creating and managing a TPM engine with in-memory NV state.
+//! Helper for creating and managing a TPM 1.38 engine with in-memory NV state.
 
 use ms_tpm_20_ref::DynResult;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
@@ -90,7 +90,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TestPlatformCallbacks {
     }
 }
 
-/// Create a new TPM engine with blank state and return the helper and NV state blob.
+/// Create a new TPM 1.38 engine with blank state and return its NV state blob.
 pub fn create_tpm_engine_helper() -> (TpmEngineHelper, Arc<Mutex<Vec<u8>>>) {
     let (callbacks, nv_blob_accessor) = TestPlatformCallbacks::new();
 

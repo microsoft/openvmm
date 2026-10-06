@@ -6,21 +6,13 @@ name = "vtpm_util"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-experimental = ["dep:ctrlc"]
-
-[[bin]]
-name = "vtpm_util_experimental"
-path = "src/bin/vtpm_util_experimental.rs"
-required-features = ["experimental"]
-
 [dependencies]
 base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
-ctrlc = { workspace = true, optional = true }
 getrandom.workspace = true
 hex.workspace = true
 ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
+# TPM import blobs require an RSA private prime, which `crypto` does not expose.
 openssl = { workspace = true, features = ["vendored"] }
 parking_lot.workspace = true
 sha2.workspace = true
@@ -31,7 +23,6 @@ tracing-subscriber.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

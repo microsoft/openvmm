@@ -5,6 +5,12 @@
 
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
+
+#[derive(Clone, Debug, ValueEnum)]
+enum KeyAlgorithm {
+    Rsa,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,10 +46,10 @@ enum Command {
         #[arg(value_name = "path-to-srk-pub")]
         srk_pub_path: String,
     },
-    /// Creates a random RSA or ECC key in TPM2 import blob format.
+    /// Creates a random RSA key in TPM2 import blob format.
     CreateRandomKeyInTpm2ImportBlobFormat {
         #[arg(value_name = "algorithm")]
-        algorithm: String,
+        algorithm: KeyAlgorithm,
         #[arg(value_name = "public-key")]
         public_key_file: String,
         #[arg(value_name = "output-file")]
@@ -75,10 +81,11 @@ fn main() {
             algorithm,
             public_key_file,
             private_key_tpm2b_file,
-        } => vtpm_util::create_random_key_in_tpm2_import_blob_format(
-            &algorithm,
-            &public_key_file,
-            &private_key_tpm2b_file,
-        ),
+        } => match algorithm {
+            KeyAlgorithm::Rsa => vtpm_util::create_random_rsa_key_in_tpm2_import_blob_format(
+                &public_key_file,
+                &private_key_tpm2b_file,
+            ),
+        },
     }
 }
