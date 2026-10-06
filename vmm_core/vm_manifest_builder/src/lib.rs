@@ -1069,4 +1069,37 @@ mod tests {
             [true, false]
         );
     }
+
+    #[test]
+    fn null_backend_adds_serial_ports_to_optional_serial_chipset() {
+        let without_serial = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .build()
+        .unwrap();
+        assert!(
+            without_serial
+                .chipset_devices
+                .iter()
+                .all(|device| device.name != "serial-com1")
+        );
+
+        let null_backend = serial_core::resources::NullSerialBackendHandle.into_resource();
+        assert_eq!(null_backend.id(), "null");
+
+        let with_null = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .with_serial([Some(null_backend), None, None, None])
+        .build()
+        .unwrap();
+        assert!(
+            with_null
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "serial-com1")
+        );
+    }
 }

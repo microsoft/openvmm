@@ -286,8 +286,8 @@ Serial devices can be configured to appear as different devices inside the guest
 
 The `BACKEND` argument is the same for all serial devices:
 
-  * `none`: No serial backend is configured. If no COM ports have backends,
-      legacy UART devices are omitted.
+  * `none`: No serial backend is configured. Depending on the chipset, the
+      serial device is either omitted or present with a disconnected backend.
   * `null`: A connected serial backend accepts and discards all output and
       never provides input.
   * `console`: Serial input is read and output is written to the console.
