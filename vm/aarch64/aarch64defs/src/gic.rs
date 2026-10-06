@@ -7,6 +7,72 @@ use bitfield_struct::bitfield;
 use core::ops::Range;
 use open_enum::open_enum;
 
+#[bitfield(u64)]
+pub struct IchHcrEl2 {
+    pub en: bool,
+    pub uie: bool,
+    pub lrenpie: bool,
+    pub npie: bool,
+    #[bits(10)]
+    _reserved_4_13: u16,
+    pub tdir: bool,
+    #[bits(12)]
+    _reserved_15_26: u16,
+    #[bits(5)]
+    pub eoi_count: u8,
+    _reserved_32_63: u32,
+}
+
+#[bitfield(u64)]
+pub struct IchVmcrEl2 {
+    #[bits(9)]
+    _reserved_0_8: u16,
+    pub veoim: bool,
+    #[bits(54)]
+    _reserved_10_63: u64,
+}
+
+#[bitfield(u64)]
+pub struct IchVtrEl2 {
+    #[bits(5)]
+    pub list_regs: u8,
+    #[bits(59)]
+    _reserved_5_63: u64,
+}
+
+open_enum! {
+    pub enum IchLrState: u8 {
+        INVALID = 0b00,
+        PENDING = 0b01,
+        ACTIVE = 0b10,
+        PENDING_AND_ACTIVE = 0b11,
+    }
+}
+
+impl IchLrState {
+    const fn into_bits(self) -> u64 {
+        self.0 as u64
+    }
+
+    const fn from_bits(bits: u64) -> Self {
+        Self(bits as u8)
+    }
+}
+
+#[bitfield(u64)]
+pub struct IchLrEl2 {
+    pub vintid: u32,
+    #[bits(16)]
+    _reserved_32_47: u16,
+    pub priority: u8,
+    #[bits(4)]
+    _reserved_56_59: u8,
+    pub group1: bool,
+    pub hw: bool,
+    #[bits(2)]
+    pub state: IchLrState,
+}
+
 open_enum! {
     /// Registers in an ARM GIC v2m MSI frame (ARM IHI 0048B).
     pub enum GicV2mRegister: u16 {
