@@ -264,7 +264,7 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, _stderr_task) =
+    let (mut child, client, stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
     let query_props = || {
@@ -926,11 +926,15 @@ async fn test_ttrpc_interface(
                 );
 
                 if i == 0 {
-                    client
-                        .call()
-                        .start(vmservice::Vm::TeardownVm, ())
-                        .await
-                        .unwrap();
+                    if let Err(error) = client.call().start(vmservice::Vm::TeardownVm, ()).await {
+                        return Err(openvmm_rpc_failure(
+                            "TeardownVm",
+                            error,
+                            &mut child,
+                            stderr_task,
+                        )
+                        .await);
+                    }
 
                     let props = query_props().await.unwrap();
                     assert_eq!(
@@ -993,6 +997,13 @@ async fn test_ttrpc_interface(
 
     let exit_status = child.wait().await?;
 
+    // Wait until the stderr pump reaches EOF before evaluating the exit
+    // status. Otherwise a process abort can lose its final panic diagnostics
+    // when the test returns and drops the task.
+    stderr_task
+        .await
+        .context("failed to drain openvmm stderr after process exit")?;
+
     // Surface the OpenVMM exit status so that abnormal exits (e.g. an abort
     // from a panic — the workspace uses `panic = 'abort'`) are visible in
     // test logs alongside any pidfile/cleanup assertion below.
@@ -1010,6 +1021,45 @@ async fn test_ttrpc_interface(
     );
 
     Ok(())
+}
+
+/// Reports an RPC failure together with the OpenVMM process exit status.
+///
+/// A closed ttrpc channel can be the first observable sign that OpenVMM
+/// aborted. Wait briefly for the process and drain stderr before constructing
+/// the test error so the failure keeps the diagnostics that explain it.
+async fn openvmm_rpc_failure(
+    operation: &str,
+    rpc_error: mesh_rpc::service::Status,
+    child: &mut OpenvmmChild,
+    stderr_task: Task<anyhow::Result<()>>,
+) -> anyhow::Error {
+    let wait_result = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(child.wait())
+        .await;
+
+    match wait_result {
+        Ok(Ok(exit_status)) => {
+            let stderr_result = stderr_task.await;
+            match stderr_result {
+                Ok(()) => anyhow::anyhow!(
+                    "{operation} RPC failed: {rpc_error:?}; openvmm exited with {exit_status}"
+                ),
+                Err(stderr_error) => anyhow::anyhow!(
+                    "{operation} RPC failed: {rpc_error:?}; openvmm exited with {exit_status}; \
+                     failed to drain openvmm stderr: {stderr_error:#}"
+                ),
+            }
+        }
+        Ok(Err(wait_error)) => anyhow::anyhow!(
+            "{operation} RPC failed: {rpc_error:?}; failed to wait for openvmm: {wait_error}"
+        ),
+        Err(timeout_error) => anyhow::anyhow!(
+            "{operation} RPC failed: {rpc_error:?}; timed out waiting for openvmm to exit: \
+             {timeout_error}"
+        ),
+    }
 }
 
 petri::test!(test_ttrpc_uefi_boot, |resolver| {
