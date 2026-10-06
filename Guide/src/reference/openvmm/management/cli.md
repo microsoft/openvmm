@@ -286,7 +286,10 @@ Serial devices can be configured to appear as different devices inside the guest
 
 The `BACKEND` argument is the same for all serial devices:
 
-  * `none`: Serial output is dropped.
+  * `none`: No serial backend is configured. If no COM ports have backends,
+      legacy UART devices are omitted.
+  * `null`: A connected serial backend accepts and discards all output and
+      never provides input.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
   * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set

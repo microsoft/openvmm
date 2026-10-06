@@ -103,6 +103,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
+use serial_core::resources::NullSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -379,6 +380,7 @@ async fn vm_config_from_command_line(
                 Some(config)
             }
             SerialConfigCli::None => None,
+            SerialConfigCli::Null => Some(NullSerialBackendHandle.into_resource()),
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
             }
