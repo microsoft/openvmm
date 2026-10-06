@@ -254,7 +254,11 @@ identity MSRs that return the declared TSC rate (`0x40000022`) and LAPIC rate
 command line must not set `tsc_early_khz=` or `lapic_timer_hz=`
 (`E_CMDLINE_CLOCK_TOKEN`). The TSC is invariant, and the LAPIC timer runs in
 one-shot mode at a fixed rate: 1 GHz on KVM and 200 MHz on MSHV and WHP.
-TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed.
+TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed. Under an
+AMD CPU profile, AMD's configuration MSRs read fixed values on every backend:
+HWCR (`0xc0010015`) only `TscFreqSel`, so Linux takes the TSC to count at the
+P0 frequency, and DE_CFG (`0xc0011029`) only `LFENCE` serialization. Writing
+the value read back changes nothing; any other write raises #GP.
 
 The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
