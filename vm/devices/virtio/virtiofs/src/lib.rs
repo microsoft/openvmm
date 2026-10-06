@@ -51,6 +51,9 @@ const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
 const MAX_GUEST_BUFFER_SIZE: usize = 1024 * 1024;
 
+/// Linux's `RENAME_EXCHANGE` flag for `renameat2`, which swaps two names.
+const RENAME_EXCHANGE: u32 = 2;
+
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 struct FuseNegotiation {
     initialized: bool,
@@ -277,6 +280,7 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &path)?;
         self.preflight_create_inode(&inode, name, &path)?;
         self.preflight_file_insert()?;
         let (new_inode, attr, file) =
@@ -311,6 +315,7 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &path)?;
         self.preflight_new_inode_path(&path)?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
         let (_, node_id) = self.insert_inode(new_inode)?;
@@ -334,6 +339,7 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &path)?;
         self.preflight_new_inode_path(&path)?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
@@ -360,6 +366,7 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         microvm::fs::validate_symlink_target(self, target)?;
         let path = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &path)?;
         self.preflight_new_inode_path(&path)?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
@@ -380,6 +387,13 @@ impl Fuse for VirtioFs {
         let target_inode = self.get_inode(target)?;
         self.check_writable(&inode)?;
         let alias = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &alias)?;
+        // A new link to an object that the guest may not modify would make it
+        // writable through the link, so refuse it as if the object were on
+        // another filesystem.
+        if target_inode.readonly() {
+            return Err(lx::Error::EXDEV);
+        }
         self.preflight_alias_add(&target_inode, &alias)?;
         let attr = inode.link(name, &target_inode)?;
         target_inode.add_alias(alias);
@@ -483,13 +497,21 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::EXDEV);
         }
         self.check_writable(&inode)?;
+        self.check_writable(&new_inode)?;
         let old_path = inode.child_path(name)?;
         let new_path = new_inode.child_path(new_name)?;
-        self.preflight_rename_aliases(inode.volume_id(), &old_path, &new_path)?;
+        self.check_writable_entry(&inode, &old_path)?;
+        self.check_writable_entry(&new_inode, &new_path)?;
+        let exchange = flags & RENAME_EXCHANGE != 0;
+        self.preflight_rename_aliases(inode.volume_id(), &old_path, &new_path, exchange)?;
         inode.rename(name, &new_inode, new_name, flags)?;
         let mut inodes = self.inner.inodes.write();
-        inodes.remove_alias_prefix(inode.volume_id(), &new_path);
-        inodes.rename_alias_prefix(inode.volume_id(), &old_path, &new_path);
+        if exchange {
+            inodes.exchange_alias_prefixes(inode.volume_id(), &old_path, &new_path);
+        } else {
+            inodes.remove_alias_prefix(inode.volume_id(), &new_path);
+            inodes.rename_alias_prefix(inode.volume_id(), &old_path, &new_path);
+        }
         Ok(())
     }
 
@@ -595,6 +617,18 @@ impl VirtioFs {
             Err(lx::Error::EROFS)
         } else {
             Ok(())
+        }
+    }
+
+    /// Check that the guest may create, remove, or replace the entry at `path`
+    /// in the directory `parent`, which [`Self::check_writable`] accepted, and
+    /// return EROFS if not. A writable directory can hold an entry that the
+    /// volume's access policy protects, such as a traverse-only directory.
+    fn check_writable_entry(&self, parent: &VirtioFsInode, path: &Path) -> lx::Result<()> {
+        if parent.volume.path_writable(path) {
+            Ok(())
+        } else {
+            Err(lx::Error::EROFS)
         }
     }
 
@@ -705,6 +739,7 @@ impl VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let path = inode.child_path(name)?;
+        self.check_writable_entry(&inode, &path)?;
         inode.unlink(name, flags)?;
         self.inner
             .inodes
@@ -923,6 +958,17 @@ impl InodeMap {
         for inode in self.inodes_by_node_id.values.values() {
             if inode.volume_id() == volume_id {
                 inode.rename_alias_prefix(old, new);
+            }
+        }
+        self.rebuild_dedup_keys();
+    }
+
+    /// Swaps the aliases at or below two exchanged paths and refreshes
+    /// path-keyed deduplication.
+    pub fn exchange_alias_prefixes(&mut self, volume_id: u32, first: &Path, second: &Path) {
+        for inode in self.inodes_by_node_id.values.values() {
+            if inode.volume_id() == volume_id {
+                inode.exchange_alias_prefixes(first, second);
             }
         }
         self.rebuild_dedup_keys();

@@ -893,7 +893,10 @@ impl CreateVm {
                         stable_id: "fs:microvm0".to_owned(),
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
-                        denied_paths: Vec::new(),
+                        // The snapshot's access policy holds after a restore.
+                        denied_paths: filesystem.config.denied_paths.clone(),
+                        allowed_paths: filesystem.config.allowed_paths.clone(),
+                        writable_paths: filesystem.config.writable_paths.clone(),
                         caller_identity: filesystem.config.owner.is_caller(),
                     },
                 }
@@ -1050,6 +1053,8 @@ impl CreateVm {
                 root_identity: attachment.identity.clone(),
                 read_only: filesystem_config.access.is_read_only(),
                 denied_paths: Vec::new(),
+                allowed_paths: Vec::new(),
+                writable_paths: Vec::new(),
                 caller_identity: filesystem_config.owner.is_caller(),
             },
         }
