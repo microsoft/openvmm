@@ -90,6 +90,7 @@ pub fn backend_cpuid(effective: &EffectiveCpuid) -> CpuidLeafSet {
 mod tests {
     use super::*;
     use crate::time_abi::identity;
+    use cpu_profile::CpuVendor;
     use test_with_tracing::test;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X2ApicState;
@@ -135,17 +136,22 @@ mod tests {
 
     /// Every vCPU of a time ABI partition has its own L1 and L2 caches, and
     /// all of them share the L3 cache, as in one socket of the profile's
-    /// generation.
+    /// generation: in leaf 4 on Intel, and on AMD in leaf 8000001Dh, which
+    /// has leaf 4's layout without the core count.
     #[test]
     fn pinned_profiles_share_the_l3_cache_across_the_socket() {
         for profile in cpu_profile::pinned_profiles() {
+            let (leaf, has_core_count) = match profile.cpu_vendor() {
+                CpuVendor::Intel => (4, true),
+                CpuVendor::Amd => (0x8000_001d, false),
+            };
             for vp_count in [1, 2, 8] {
                 let topology = topology(vp_count, X2ApicState::Supported);
                 let socket = topology.reserved_vps_per_socket();
                 let effective = effective_cpuid(profile, &topology).unwrap();
                 let mut levels = Vec::new();
                 for subleaf in 0..16 {
-                    let eax = CacheParametersEax::from(effective.lookup(4, subleaf)[0]);
+                    let eax = CacheParametersEax::from(effective.lookup(leaf, subleaf)[0]);
                     if eax.cache_type() == 0 {
                         break;
                     }
@@ -162,7 +168,7 @@ mod tests {
                     );
                     assert_eq!(
                         eax.cores_per_socket_minus_one(),
-                        socket - 1,
+                        if has_core_count { socket - 1 } else { 0 },
                         "{}, {vp_count} VPs, subleaf {subleaf}",
                         profile.id()
                     );
