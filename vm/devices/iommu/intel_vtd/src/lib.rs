@@ -21,8 +21,14 @@ use chipset_device::mmio::MmioIntercept;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use parking_lot::RwLock;
+use parking_lot::RwLockWriteGuard;
 use pci_core::msi::SignalMsi;
 use spec::invalidation::DescriptorType;
+use spec::invalidation::DescriptorWidth;
+use spec::invalidation::InvalidationDescriptor256;
+use spec::invalidation::InvalidationError;
+use spec::invalidation::InvalidationWaitDw0Dw1;
+use spec::invalidation::InvalidationWaitDw2Dw3;
 use spec::irte::Irte;
 use spec::irte::IrteLo;
 use spec::irte::SourceValidationType;
@@ -47,6 +53,7 @@ use spec::registers::IrtaReg;
 use spec::registers::MmioRegister as Reg;
 use spec::registers::NumDomains;
 use spec::registers::RtaddrReg;
+use spec::registers::TranslationTableMode;
 use spec::registers::VersionReg;
 use spec::root_context::AddressWidth;
 use spec::root_context::ContextEntry;
@@ -54,7 +61,8 @@ use spec::root_context::RootEntry;
 use spec::root_context::TranslationType;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// MMIO region size (4KB).
 pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
@@ -225,6 +233,48 @@ impl VtdState {
             iva: 0,
             iotlb: IotlbReg::new(),
         }
+    }
+}
+
+/// Validated queue geometry. Offsets are bytes, not descriptor indices.
+struct InvalidationQueue {
+    base: u64,
+    size: u64,
+    width: DescriptorWidth,
+    head: u64,
+    pending: u64,
+}
+
+impl InvalidationQueue {
+    fn new(state: &VtdState, ecap: EcapReg) -> Result<Self, InvalidationError> {
+        let iqa = state.iqa;
+        let width = DescriptorWidth::checked(
+            iqa.dw(),
+            TranslationTableMode(state.latched_rtaddr.ttm()),
+            ecap,
+        )?;
+        let base = iqa.queue_base_address();
+        let size = iqa.queue_size_bytes();
+        // Check the last byte, allowing a queue ending exactly at u64::MAX.
+        if iqa.into_bits() & 0x7f8 != 0 || base.checked_add(size - 1).is_none() {
+            return Err(InvalidationError::QueueAddress);
+        }
+        let head = state.iqh.into_bits();
+        let tail = state.iqt.into_bits();
+        let stride = width.bytes() as u64;
+        if head >= size || !head.is_multiple_of(stride) {
+            return Err(InvalidationError::QueueHead(head));
+        }
+        if tail >= size || !tail.is_multiple_of(stride) {
+            return Err(InvalidationError::QueueTail(tail));
+        }
+        Ok(Self {
+            base,
+            size,
+            width,
+            head,
+            pending: (tail + size - head) % size / stride,
+        })
     }
 }
 
@@ -1218,13 +1268,12 @@ impl IntelVtdDevice {
     /// Write a 32-bit value at a DWORD-aligned MMIO offset.
     ///
     /// Acquires the write lock, performs the register write, and releases it.
-    /// 64-bit MMIO writes call this twice (once per DWORD) — this is safe
-    /// because every 64-bit VT-d register either has its trigger bit in one
-    /// specific DWORD, or is a config register latched by a separate GCMD
-    /// write. No register requires atomic writes across both DWORDs.
-    fn write_register_dword(&self, offset: u16, value: u32) {
+    /// 64-bit MMIO writes other than IQT call this twice. Command registers
+    /// trigger on one DWORD and configuration registers are separately latched.
+    /// IQT is handled atomically so an invalid upper half cannot be overlooked.
+    fn write_register_dword(&mut self, offset: u16, value: u32) {
         let mut state = self.shared.state.write();
-        let mut retranslate_interrupts = false;
+        let mut process_queue = false;
         tracing::trace!(offset, value, "vtd mmio_write_dword");
 
         /// Merge a DWORD write into the lo or hi half of a 64-bit value.
@@ -1249,7 +1298,10 @@ impl IntelVtdDevice {
             | Reg::FRCD_DW1
             | Reg::FRCD_DW2 => {}
 
-            Reg::GCMD => self.process_gcmd(&mut state, value),
+            Reg::GCMD => {
+                self.process_gcmd(&mut state, value);
+                process_queue = true;
+            }
 
             Reg::RTADDR => {
                 state.rtaddr = RtaddrReg::from(write_lo(state.rtaddr.into_bits(), value));
@@ -1283,6 +1335,7 @@ impl IntelVtdDevice {
                     fsts.set_ite(false);
                 }
                 state.fsts = fsts;
+                process_queue = write_val.iqe() || write_val.ite();
             }
 
             Reg::FECTL => {
@@ -1300,14 +1353,12 @@ impl IntelVtdDevice {
             Reg::FEUADDR => state.feuaddr = value,
 
             Reg::IQT => {
-                // Trigger queue processing on lo DWORD write.
-                let full = write_lo(state.iqt.into_bits(), value);
-                let iqt = IqtReg::from(full);
-                state.iqt = IqtReg::new().with_qt(iqt.qt());
-                retranslate_interrupts = self.process_invalidation_queue(&mut state);
+                state.iqt = IqtReg::from(write_lo(state.iqt.into_bits(), value));
+                process_queue = true;
             }
             Reg::IQT_HI => {
                 state.iqt = IqtReg::from(write_hi(state.iqt.into_bits(), value));
+                process_queue = true;
             }
 
             Reg::IQA => {
@@ -1330,6 +1381,7 @@ impl IntelVtdDevice {
                 let mut ics = state.ics;
                 if write_val.iwc() {
                     ics.set_iwc(false);
+                    state.iectl.set_ip(false);
                 }
                 state.ics = ics;
             }
@@ -1386,8 +1438,8 @@ impl IntelVtdDevice {
         }
 
         drop(state);
-        if retranslate_interrupts {
-            self.shared.retranslate_interrupts.invalidate(None);
+        if process_queue {
+            self.process_invalidation_queue();
         }
     }
 
@@ -1446,6 +1498,7 @@ impl IntelVtdDevice {
                     );
                 } else {
                     gsts.set_qies(false);
+                    state.iqh = IqhReg::new();
                 }
             }
         }
@@ -1527,106 +1580,121 @@ impl IntelVtdDevice {
 
     /// Process the invalidation queue.
     ///
-    /// Consumes descriptors from head to tail. Called when the guest writes
-    /// IQT.
-    fn process_invalidation_queue(&self, state: &mut VtdState) -> bool {
-        let gsts = state.gsts;
-        if !gsts.qies() {
-            return false;
+    /// Queue execution is serialized by exclusive access to the device. The
+    /// state lock is also a DMA drain point: translators hold it across the
+    /// translation and the entire memory operation.
+    fn process_invalidation_queue(&mut self) {
+        self.process_invalidation_queue_with_capabilities(
+            CapReg::from(CAP_VALUE),
+            EcapReg::from(ECAP_VALUE),
+        );
+    }
+
+    // Keep policy inputs private so tests can exercise a future advertised
+    // profile without adding a device configuration knob or changing ECAP.
+    fn process_invalidation_queue_with_capabilities(&mut self, cap: CapReg, ecap: EcapReg) {
+        let mut state = self.shared.state.write();
+        if !state.gsts.qies() || state.fsts.iqe() || state.fsts.ite() {
+            return;
         }
-
-        // Check for IQE — don't process if error is outstanding.
-        let fsts = state.fsts;
-        if fsts.iqe() {
-            return false;
-        }
-
-        let iqa = state.iqa;
-
-        // Validate DW=0 (128-bit descriptors only).
-        if iqa.dw() {
-            tracelimit::warn_ratelimited!("vtd: IQA.DW=1 (256-bit descriptors) not supported");
-            let mut fsts = state.fsts;
-            fsts.set_iqe(true);
-            state.fsts = fsts;
-            return false;
-        }
-
-        let queue_base = iqa.queue_base_address();
-        let queue_size = iqa.queue_size_bytes();
-        let head = state.iqh.head_offset();
-        let tail = state.iqt.tail_offset();
-
-        let mut current_head = head;
-        let mut retranslate_interrupts = false;
-
-        while current_head != tail {
-            let entry_addr = queue_base + current_head;
-
-            // Read 16-byte descriptor from guest memory.
-            let descriptor: [u8; 16] = match self.shared.guest_memory.read_plain(entry_addr) {
-                Ok(d) => d,
-                Err(e) => {
-                    tracelimit::warn_ratelimited!(
-                        error = &e as &dyn std::error::Error,
-                        addr = entry_addr,
-                        "vtd: failed to read invalidation queue descriptor"
-                    );
-                    let mut fsts = state.fsts;
-                    fsts.set_iqe(true);
-                    state.fsts = fsts;
-                    break;
-                }
-            };
-
-            let desc = spec::invalidation::InvalidationDescriptor::read_from_bytes(&descriptor)
-                .expect("descriptor is 16 bytes");
-
-            match desc.descriptor_type() {
-                DescriptorType::CONTEXT_CACHE_INVALIDATE => {} // no-op
-                DescriptorType::IOTLB_INVALIDATE => {}         // no-op
-                DescriptorType::DEVICE_TLB_INVALIDATE => {
-                    tracelimit::warn_ratelimited!(
-                        "vtd: unsupported DEVICE_TLB_INVALIDATE descriptor"
-                    );
+        let mut queue = match InvalidationQueue::new(&state, ecap) {
+            Ok(queue) => queue,
+            Err(err) => {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "vtd: invalid queue"
+                );
+                self.invalidation_queue_error(&mut state);
+                return;
+            }
+        };
+        let mode = TranslationTableMode(state.latched_rtaddr.ttm());
+        // Both offsets have been checked against the size and stride. Bound
+        // the work explicitly rather than chasing an unchecked guest tail.
+        for _ in 0..queue.pending {
+            let entry_addr = queue.base + queue.head;
+            let mut desc = InvalidationDescriptor256::new_zeroed();
+            if let Err(err) = self
+                .shared
+                .guest_memory
+                .read_at(entry_addr, &mut desc.as_mut_bytes()[..queue.width.bytes()])
+            {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    addr = entry_addr,
+                    "vtd: failed to read invalidation queue descriptor"
+                );
+                self.invalidation_queue_error(&mut state);
+                break;
+            }
+            if let Err(err) = desc.validate(queue.width, mode, cap, ecap) {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    addr = entry_addr,
+                    "vtd: invalid invalidation descriptor"
+                );
+                self.invalidation_queue_error(&mut state);
+                break;
+            }
+            match desc.lower.descriptor_type() {
+                DescriptorType::CONTEXT_CACHE_INVALIDATE
+                | DescriptorType::IOTLB_INVALIDATE
+                | DescriptorType::PASID_CACHE_INVALIDATE
+                | DescriptorType::PASID_IOTLB_INVALIDATE => {
+                    // No translation caches. Acquiring the exclusive state
+                    // lock drains all earlier DMA reads and writes.
                 }
                 DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE => {
-                    let desc = spec::invalidation::parse_interrupt_cache_invalidate(&desc);
+                    let desc = spec::invalidation::parse_interrupt_cache_invalidate(&desc.lower);
                     tracing::trace!(
                         granularity = desc.granularity(),
                         im = desc.im(),
                         iidx = desc.iidx(),
                         "vtd: interrupt entry cache invalidate"
                     );
-                    retranslate_interrupts = true;
+                    // Callbacks may read translation state or record faults.
+                    // Finish them before advancing to a wait, without holding
+                    // the state lock they may reacquire. &mut self prevents a
+                    // second MMIO writer/queue executor from overtaking us.
+                    RwLockWriteGuard::unlocked(&mut state, || {
+                        self.shared.retranslate_interrupts.invalidate(None);
+                    });
                 }
                 DescriptorType::INVALIDATION_WAIT => {
-                    self.process_invalidation_wait(state, &descriptor);
+                    let (lo, hi) = spec::invalidation::parse_invalidation_wait(&desc.lower);
+                    if !self.process_invalidation_wait(&mut state, lo, hi) {
+                        break;
+                    }
                 }
                 dt => {
                     tracelimit::warn_ratelimited!(?dt, "vtd: unknown invalidation descriptor type");
-                    let mut fsts = state.fsts;
-                    fsts.set_iqe(true);
-                    state.fsts = fsts;
+                    self.invalidation_queue_error(&mut state);
                     break;
                 }
             }
 
             // Advance head with wrap-around.
-            current_head = (current_head + 16) % queue_size;
+            queue.head = (queue.head + queue.width.bytes() as u64) % queue.size;
+            state.iqh = IqhReg::from(queue.head);
         }
+    }
 
-        // Update head register.
-        state.iqh = IqhReg::new().with_qh((current_head >> 4) as u32);
-        retranslate_interrupts
+    fn invalidation_queue_error(&self, state: &mut VtdState) {
+        state.fsts.set_iqe(true);
+        if state.fectl.im() {
+            state.fectl.set_ip(true);
+        } else {
+            self.shared.deliver_fault_interrupt(state);
+        }
     }
 
     /// Process an INVALIDATION_WAIT descriptor (type 0x05).
-    fn process_invalidation_wait(&self, state: &mut VtdState, descriptor: &[u8; 16]) {
-        let desc = spec::invalidation::InvalidationDescriptor::read_from_bytes(descriptor)
-            .expect("descriptor is 16 bytes");
-        let (lo, hi) = spec::invalidation::parse_invalidation_wait(&desc);
-
+    fn process_invalidation_wait(
+        &self,
+        state: &mut VtdState,
+        lo: InvalidationWaitDw0Dw1,
+        hi: InvalidationWaitDw2Dw3,
+    ) -> bool {
         if lo.sw() {
             let status_address = hi.status_address();
 
@@ -1640,10 +1708,13 @@ impl IntelVtdDevice {
                     addr = status_address,
                     "vtd: failed to write invalidation wait status"
                 );
+                // Do not manufacture a completion when its status write failed.
+                self.invalidation_queue_error(state);
+                return false;
             }
         }
 
-        if lo.iflag() {
+        if lo.iflag() && !state.ics.iwc() {
             // Set IWC in ICS.
             let mut ics = state.ics;
             ics.set_iwc(true);
@@ -1658,6 +1729,9 @@ impl IntelVtdDevice {
                 state.iectl = state.iectl.with_ip(true);
             }
         }
+        // Sequential execution is stronger than FN=0 requires, and satisfies
+        // FN=1 without letting later descriptors pass this completion.
+        true
     }
 }
 
@@ -1714,8 +1788,14 @@ impl MmioIntercept for IntelVtdDevice {
         match data.len() {
             8 => {
                 let val = u64::from_le_bytes(data.try_into().unwrap());
-                self.write_register_dword(offset as u16, val as u32);
-                self.write_register_dword((offset + 4) as u16, (val >> 32) as u32);
+                if offset == u64::from(Reg::IQT.0) {
+                    // Validate the complete tail before fetching anything.
+                    self.shared.state.write().iqt = IqtReg::from(val);
+                    self.process_invalidation_queue();
+                } else {
+                    self.write_register_dword(offset as u16, val as u32);
+                    self.write_register_dword((offset + 4) as u16, (val >> 32) as u32);
+                }
             }
             4 => {
                 let val = u32::from_le_bytes(data.try_into().unwrap());
@@ -1798,6 +1878,8 @@ impl InspectMut for IntelVtdDevice {
 
 #[cfg(test)]
 mod tests {
+    mod queued_invalidation;
+
     use super::*;
     use guestmem::GuestMemory;
     use std::sync::atomic::AtomicU32;
