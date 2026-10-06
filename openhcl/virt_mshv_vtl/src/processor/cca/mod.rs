@@ -23,6 +23,12 @@ use aarch64defs::IssDataAbort;
 use aarch64defs::IssInstructionAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::SystemReg;
+use aarch64defs::CntvCtlEl0;
+use aarch64defs::gic::IchHcrEl2;
+use aarch64defs::gic::IchLrEl2;
+use aarch64defs::gic::IchLrState;
+use aarch64defs::gic::IchVmcrEl2;
+use aarch64defs::gic::IchVtrEl2;
 use aarch64defs::rsi::cca_rsi_plane_exit;
 use hcl::GuestVtl;
 use hcl::ioctl::cca::Cca;
@@ -85,38 +91,6 @@ enum CcaUnsupportedExit {
 }
 
 const AARCH64_ZERO_REGISTER_INDEX: u8 = 31;
-const CNTV_CTL_ENABLE: u64 = 1 << 0;
-const CNTV_CTL_IMASK: u64 = 1 << 1;
-const CNTV_CTL_ISTATUS: u64 = 1 << 2;
-
-// ICH_HCR_EL2.En enables the virtual CPU interface. Without it, LRs cannot
-// deliver virtual interrupts.
-const ICH_HCR_EN: u64 = 1 << 0;
-const ICH_HCR_UIE: u64 = 1 << 1;
-const ICH_HCR_LRENPIE: u64 = 1 << 2;
-const ICH_HCR_NPIE: u64 = 1 << 3;
-const ICH_HCR_TDIR: u64 = 1 << 14;
-const ICH_HCR_EOI_COUNT_MASK: u64 = 0x1f << 27;
-const ICH_HCR_EOI_COUNT_SHIFT: u32 = 27;
-
-const ICH_VMCR_VEOIM: u64 = 1 << 9;
-
-const ICH_VTR_LIST_REGS_MASK: u64 = 0x1f;
-
-const ICH_LR_VINTID_MASK: u64 = u32::MAX as u64;
-const ICH_LR_PRIORITY_SHIFT: u32 = 48;
-const ICH_LR_GROUP1: u64 = 1 << 60;
-// ICH_LR_EL2.State is encoded in bits [63:62]:
-//
-// 00 = invalid
-// 01 = pending
-// 10 = active
-// 11 = pending and active
-const ICH_LR_PENDING: u64 = 1 << 62;
-const ICH_LR_ACTIVE: u64 = 1 << 63;
-const ICH_LR_STATE_MASK: u64 = 3 << 62;
-const ICH_LR_PRIORITY_MASK: u64 = 0xff << ICH_LR_PRIORITY_SHIFT;
-
 // For use with Hyper-V synthetic interrupt controller allocated by paravisor.
 enum UhDirectOverlay {
     #[expect(unused)]
@@ -274,8 +248,8 @@ impl<'a> CcaExit<'a> {
     /// Returns whether the virtual timer interrupt is enabled, unmasked, and
     /// asserted in the returned CCA plane state.
     fn virtual_timer_asserted(&self) -> bool {
-        self.0.cntv_ctl_el0 & (CNTV_CTL_ENABLE | CNTV_CTL_IMASK | CNTV_CTL_ISTATUS)
-            == CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS
+        let control = CntvCtlEl0::from(self.0.cntv_ctl_el0);
+        control.enable() && !control.imask() && control.istatus()
     }
 
     fn local_interrupt_exit(&self) -> CcaLocalInterruptExit {
@@ -305,7 +279,7 @@ impl<'a> CcaExit<'a> {
 /// architecture limits the usable count to 16. Reject configurations that
 /// exceed the RSI ABI rather than silently dropping the excess LRs.
 fn gic_num_lrs(gicv3_vtr: u64) -> Result<usize, Error> {
-    let reported = ((gicv3_vtr & ICH_VTR_LIST_REGS_MASK) + 1) as usize;
+    let reported = usize::from(IchVtrEl2::from(gicv3_vtr).list_regs()) + 1;
     let maximum = aarch64defs::rsi::RSI_PLANE_GIC_NUM_LRS;
 
     if reported > maximum {
@@ -316,16 +290,19 @@ fn gic_num_lrs(gicv3_vtr: u64) -> Result<usize, Error> {
 }
 
 fn lr_is_valid(lr: u64) -> bool {
-    lr & ICH_LR_STATE_MASK != 0
+    IchLrEl2::from(lr).state() != IchLrState::INVALID
 }
 
 fn lr_is_pending(lr: u64) -> bool {
-    // NPIE concerns the pure-pending state (01), not active-and-pending (11).
-    lr & ICH_LR_STATE_MASK == ICH_LR_PENDING
+    // NPIE concerns the pure-pending state, not active-and-pending.
+    IchLrEl2::from(lr).state() == IchLrState::PENDING
 }
 
 fn lr_is_active(lr: u64) -> bool {
-    lr & ICH_LR_ACTIVE != 0
+    matches!(
+        IchLrEl2::from(lr).state(),
+        IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE
+    )
 }
 
 /// Recomputes maintenance-interrupt controls after packing the LRs.
@@ -336,25 +313,17 @@ fn configure_gic_maintenance(
     active_outside_lrs: bool,
     any_outside_lrs: bool,
 ) {
-    *gicv3_hcr &=
-        !(ICH_HCR_UIE | ICH_HCR_LRENPIE | ICH_HCR_NPIE | ICH_HCR_TDIR | ICH_HCR_EOI_COUNT_MASK);
-
-    if pending_outside_lrs {
-        *gicv3_hcr |= ICH_HCR_NPIE;
-    }
-    if active_outside_lrs {
-        // EOIcount provides ordered deactivation for EOImode == 0. Trap DIR as
-        // well because EOImode can change without a notification and DIR names
-        // the interrupt explicitly when EOImode == 1.
-        *gicv3_hcr |= ICH_HCR_LRENPIE | ICH_HCR_TDIR;
-    }
-    if any_outside_lrs {
-        *gicv3_hcr |= ICH_HCR_UIE;
-    }
+    let hcr = IchHcrEl2::from(*gicv3_hcr)
+        .with_uie(any_outside_lrs)
+        .with_lrenpie(active_outside_lrs)
+        .with_npie(pending_outside_lrs)
+        .with_tdir(active_outside_lrs)
+        .with_eoi_count(0);
+    *gicv3_hcr = hcr.into();
 }
 
 fn gic_eoi_count(gicv3_hcr: u64) -> usize {
-    ((gicv3_hcr & ICH_HCR_EOI_COUNT_MASK) >> ICH_HCR_EOI_COUNT_SHIFT) as usize
+    usize::from(IchHcrEl2::from(gicv3_hcr).eoi_count())
 }
 
 /// Applies ordered EOImode-0 deactivations to active entries outside the LRs.
@@ -394,20 +363,28 @@ fn consume_eoi_count(lr_overflow: &mut Vec<u64>, mut eoi_count: usize) {
 /// pure-pending entries first, followed by active entries.
 fn sort_gic_candidates(candidates: &mut [u64]) {
     candidates.sort_by_key(|lr| {
+        let lr = IchLrEl2::from(*lr);
         (
-            !lr_is_pending(*lr),
-            ((*lr & ICH_LR_PRIORITY_MASK) >> ICH_LR_PRIORITY_SHIFT) as u8,
-            (*lr & ICH_LR_VINTID_MASK) as u32,
+            lr.state() != IchLrState::PENDING,
+            lr.priority(),
+            lr.vintid(),
         )
     });
 }
 
 fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>, intid: u32) {
     let deactivate = |lr: &mut u64| {
-        if lr_is_active(*lr) && (*lr & ICH_LR_VINTID_MASK) as u32 == intid {
-            *lr &= !ICH_LR_ACTIVE;
-            if !lr_is_valid(*lr) {
+        let value = IchLrEl2::from(*lr);
+        if lr_is_active(*lr) && value.vintid() == intid {
+            let state = match value.state() {
+                IchLrState::ACTIVE => IchLrState::INVALID,
+                IchLrState::PENDING_AND_ACTIVE => IchLrState::PENDING,
+                state => state,
+            };
+            if state == IchLrState::INVALID {
                 *lr = 0;
+            } else {
+                *lr = value.with_state(state).into();
             }
         }
     };
@@ -424,41 +401,55 @@ fn queue_virtual_interrupts(candidates: &mut Vec<u64>, mut interrupts: HashMap<u
             continue;
         }
 
-        let intid = *lr & ICH_LR_VINTID_MASK;
-
-        if interrupts.remove(&intid).is_some() {
-            *lr |= ICH_LR_PENDING;
+        let value = IchLrEl2::from(*lr);
+        if interrupts.remove(&u64::from(value.vintid())).is_some() {
+            let state = match value.state() {
+                IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE => {
+                    IchLrState::PENDING_AND_ACTIVE
+                }
+                _ => IchLrState::PENDING,
+            };
+            *lr = value.with_state(state).into();
         }
     }
 
     for interrupt in interrupts.values() {
         candidates.push(
-            u64::from(interrupt.intid)
-                | (u64::from(interrupt.priority) << ICH_LR_PRIORITY_SHIFT)
-                | if interrupt.group1 { ICH_LR_GROUP1 } else { 0 }
-                | ICH_LR_PENDING,
+            IchLrEl2::new()
+                .with_vintid(interrupt.intid)
+                .with_priority(interrupt.priority)
+                .with_group1(interrupt.group1)
+                .with_state(IchLrState::PENDING)
+                .into(),
         );
     }
 }
 
 pub fn modify_using_pending_latch(lrs: &mut [u64], gic: &GicV3Model, vp: VpIndex) {
-
-    match gic.get_latches(vp) {
-        Some((clearing_latch, pending_latch)) => {
-            for lr in lrs.iter_mut() {
-                let vintid = (*lr & ICH_LR_VINTID_MASK) as u32;
-                if vintid < 32 && (clearing_latch & (1 << vintid)) != 0 {
-                    *lr &= !ICH_LR_PENDING;
-                }
-
-                //do I need this since I can collect an array of potential interrupts in the private pending array that could be made active+pending, like I did for the shared interrupts (I guess the OR doesn't rlly make a difference)
-                if vintid < 32 && *lr & ICH_LR_ACTIVE != 0 && (pending_latch & (1 << vintid)) != 0 {
-                    *lr |= ICH_LR_PENDING;
-                }
-            }
-        }
-        None => return,
+    let Some((clearing_latch, pending_latch)) = gic.get_latches(vp) else {
+        return;
     };
+
+    for lr in lrs {
+        let mut value = IchLrEl2::from(*lr);
+        let vintid = value.vintid();
+        if vintid >= 32 {
+            continue;
+        }
+
+        if clearing_latch & (1 << vintid) != 0 {
+            let state = match value.state() {
+                IchLrState::PENDING => IchLrState::INVALID,
+                IchLrState::PENDING_AND_ACTIVE => IchLrState::ACTIVE,
+                state => state,
+            };
+            value = value.with_state(state);
+        }
+        if pending_latch & (1 << vintid) != 0 && lr_is_active(value.into()) {
+            value = value.with_state(IchLrState::PENDING_AND_ACTIVE);
+        }
+        *lr = value.into();
+    }
 }
 
 fn extend_mmio_read(data: [u8; size_of::<u64>()], len: usize, sign_extend: bool, sf: bool) -> u64 {
@@ -814,7 +805,9 @@ impl UhProcessor<'_, CcaBacked> {
         // registers, while only SGI generation needs software handling. With
         // the virtual CPU interface enabled, SGI writes trap independently and
         // the virtual interface owns PMR, CTLR, RPR, and ICV accesses.
-        self.runner.cca_rsi_plane_entry().gicv3_hcr |= ICH_HCR_EN;
+        let hcr = IchHcrEl2::from(self.runner.cca_rsi_plane_entry().gicv3_hcr)
+            .with_en(true);
+        self.runner.cca_rsi_plane_entry().gicv3_hcr = hcr.into();
     }
 
     /// Records interrupt sources reported by a CCA local IRQ exit.
@@ -880,7 +873,7 @@ impl UhProcessor<'_, CcaBacked> {
                 // TDIR is set whenever active interrupts live outside LRs.
                 // DIR only performs deactivation in EOImode == 1; in mode 0,
                 // EOIR deactivation is represented by HCR.EOIcount instead.
-                if self.backing.vtls[vtl].gic_vmcr & ICH_VMCR_VEOIM != 0 {
+                if IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
                     deactivate_virtual_interrupt(
                         &mut self.runner.cca_rsi_plane_entry().gicv3_lrs[..self.shared.gic_num_lrs],
                         &mut self.backing.vtls[vtl].gic_lr_overflow,
@@ -938,7 +931,7 @@ impl UhProcessor<'_, CcaBacked> {
         // that tail. EOImode 1 deactivations are handled by trapped DIR writes.
         let gicv3_hcr = self.runner.cca_rsi_plane_entry().gicv3_hcr;
         let mut overflow = std::mem::take(&mut self.backing.vtls[vtl].gic_lr_overflow);
-        if self.backing.vtls[vtl].gic_vmcr & ICH_VMCR_VEOIM == 0 {
+        if !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
             consume_eoi_count(&mut overflow, gic_eoi_count(gicv3_hcr));
         }
 
@@ -954,10 +947,19 @@ impl UhProcessor<'_, CcaBacked> {
 
         let returned = logical_lrs
             .iter()
-            .map(|lr| ListRegisterInterrupt {
-                intid: (lr & ICH_LR_VINTID_MASK) as u32,
-                pending: lr & ICH_LR_PENDING != 0,
-                active: lr & ICH_LR_ACTIVE != 0,
+            .map(|lr| {
+                let lr = IchLrEl2::from(*lr);
+                ListRegisterInterrupt {
+                    intid: lr.vintid(),
+                    pending: matches!(
+                        lr.state(),
+                        IchLrState::PENDING | IchLrState::PENDING_AND_ACTIVE
+                    ),
+                    active: matches!(
+                        lr.state(),
+                        IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE
+                    ),
+                }
             })
             .collect::<Vec<_>>();
         self.shared.cvm.gic.fold_list_registers(vp, &returned);
@@ -968,7 +970,11 @@ impl UhProcessor<'_, CcaBacked> {
         let mut candidates = logical_lrs
             .into_iter()
             .filter(|lr| lr_is_active(*lr))
-            .map(|lr| lr & !ICH_LR_PENDING)
+            .map(|lr| {
+                IchLrEl2::from(lr)
+                    .with_state(IchLrState::ACTIVE)
+                    .into()
+            })
             .collect::<Vec<_>>();
 
         if let Some(interrupts) = self
@@ -1391,13 +1397,22 @@ impl TlbFlushLockAccess for CcaTlbLockFlushAccess<'_> {
 mod tests {
     use super::*;
 
+    fn lr(vintid: u32, priority: u8, state: IchLrState) -> u64 {
+        IchLrEl2::new()
+            .with_vintid(vintid)
+            .with_priority(priority)
+            .with_state(state)
+            .into()
+    }
+
     #[test]
     fn lr_count_comes_from_vtr_and_is_validated_against_rsi_capacity() {
-        assert!(matches!(gic_num_lrs(0), Ok(1)));
-        assert!(matches!(gic_num_lrs(3), Ok(4)));
-        assert!(matches!(gic_num_lrs(15), Ok(16)));
+        let vtr = |list_regs| u64::from(IchVtrEl2::new().with_list_regs(list_regs));
+        assert!(matches!(gic_num_lrs(vtr(0)), Ok(1)));
+        assert!(matches!(gic_num_lrs(vtr(3)), Ok(4)));
+        assert!(matches!(gic_num_lrs(vtr(15)), Ok(16)));
         assert!(matches!(
-            gic_num_lrs(31),
+            gic_num_lrs(vtr(31)),
             Err(Error::UnsupportedCcaGicListRegisterCount {
                 reported: 32,
                 maximum: 16
@@ -1407,83 +1422,98 @@ mod tests {
 
     #[test]
     fn only_pure_pending_lrs_count_for_npie() {
-        assert!(lr_is_pending(ICH_LR_PENDING));
-        assert!(!lr_is_pending(ICH_LR_ACTIVE));
-        assert!(!lr_is_pending(ICH_LR_ACTIVE | ICH_LR_PENDING));
+        assert!(lr_is_pending(lr(0, 0, IchLrState::PENDING)));
+        assert!(!lr_is_pending(lr(0, 0, IchLrState::ACTIVE)));
+        assert!(!lr_is_pending(lr(
+            0,
+            0,
+            IchLrState::PENDING_AND_ACTIVE
+        )));
     }
 
     #[test]
     fn overflow_recomputes_maintenance_controls() {
-        let mut hcr = ICH_HCR_EN | ICH_HCR_LRENPIE | ICH_HCR_EOI_COUNT_MASK;
+        let mut hcr: u64 = IchHcrEl2::new()
+            .with_en(true)
+            .with_lrenpie(true)
+            .with_eoi_count(0x1f)
+            .into();
 
         configure_gic_maintenance(&mut hcr, true, false, true);
 
-        assert_eq!(
-            hcr & (ICH_HCR_UIE | ICH_HCR_NPIE),
-            ICH_HCR_UIE | ICH_HCR_NPIE
-        );
-        assert_eq!(
-            hcr & (ICH_HCR_LRENPIE | ICH_HCR_TDIR | ICH_HCR_EOI_COUNT_MASK),
-            0
-        );
-        assert_ne!(hcr & ICH_HCR_EN, 0);
+        let fields = IchHcrEl2::from(hcr);
+        assert!(fields.uie());
+        assert!(fields.npie());
+        assert!(!fields.lrenpie());
+        assert!(!fields.tdir());
+        assert_eq!(fields.eoi_count(), 0);
+        assert!(fields.en());
 
         let mut active_only_hcr = 0;
         configure_gic_maintenance(&mut active_only_hcr, false, true, true);
-        assert_ne!(active_only_hcr & ICH_HCR_UIE, 0);
-        assert_eq!(active_only_hcr & ICH_HCR_NPIE, 0);
-        assert_eq!(
-            active_only_hcr & (ICH_HCR_LRENPIE | ICH_HCR_TDIR),
-            ICH_HCR_LRENPIE | ICH_HCR_TDIR
-        );
+        let fields = IchHcrEl2::from(active_only_hcr);
+        assert!(fields.uie());
+        assert!(!fields.npie());
+        assert!(fields.lrenpie());
+        assert!(fields.tdir());
 
         configure_gic_maintenance(&mut hcr, false, false, false);
-        assert_eq!(
-            hcr & (ICH_HCR_UIE | ICH_HCR_NPIE | ICH_HCR_LRENPIE | ICH_HCR_TDIR),
-            0
-        );
-        assert_ne!(hcr & ICH_HCR_EN, 0);
+        let fields = IchHcrEl2::from(hcr);
+        assert!(!fields.uie());
+        assert!(!fields.npie());
+        assert!(!fields.lrenpie());
+        assert!(!fields.tdir());
+        assert!(fields.en());
     }
 
     #[test]
     fn pure_pending_candidates_sort_before_active_candidates() {
         let mut lrs = [
-            ICH_LR_ACTIVE | (0x20 << ICH_LR_PRIORITY_SHIFT) | 1,
-            ICH_LR_PENDING | (0x80 << ICH_LR_PRIORITY_SHIFT) | 2,
-            ICH_LR_PENDING | (0x40 << ICH_LR_PRIORITY_SHIFT) | 3,
+            lr(1, 0x20, IchLrState::ACTIVE),
+            lr(2, 0x80, IchLrState::PENDING),
+            lr(3, 0x40, IchLrState::PENDING),
         ];
 
         sort_gic_candidates(&mut lrs);
 
-        assert_eq!(lrs.map(|lr| lr & ICH_LR_VINTID_MASK), [3, 2, 1]);
+        assert_eq!(lrs.map(|lr| IchLrEl2::from(lr).vintid()), [3, 2, 1]);
     }
 
     #[test]
     fn eoi_count_deactivates_ordered_active_overflow() {
-        let mut overflow = vec![ICH_LR_PENDING | 1, ICH_LR_ACTIVE | 2, ICH_LR_ACTIVE | 3];
+        let mut overflow = vec![
+            lr(1, 0, IchLrState::PENDING),
+            lr(2, 0, IchLrState::ACTIVE),
+            lr(3, 0, IchLrState::ACTIVE),
+        ];
 
         consume_eoi_count(&mut overflow, 1);
 
         assert_eq!(
             overflow
                 .iter()
-                .map(|lr| lr & ICH_LR_VINTID_MASK)
+                .map(|lr| IchLrEl2::from(*lr).vintid())
                 .collect::<Vec<_>>(),
             [1, 3]
         );
     }
 
-
     #[test]
     fn trapped_dir_deactivates_resident_and_overflow_interrupts() {
-        let mut lrs = [ICH_LR_ACTIVE | 1, ICH_LR_ACTIVE | ICH_LR_PENDING | 2];
-        let mut overflow = vec![ICH_LR_ACTIVE | 3];
+        let mut lrs = [
+            lr(1, 0, IchLrState::ACTIVE),
+            lr(2, 0, IchLrState::PENDING_AND_ACTIVE),
+        ];
+        let mut overflow = vec![lr(3, 0, IchLrState::ACTIVE)];
 
         deactivate_virtual_interrupt(&mut lrs, &mut overflow, 1);
         deactivate_virtual_interrupt(&mut lrs, &mut overflow, 3);
 
         assert_eq!(lrs[0], 0);
-        assert_eq!(lrs[1] & ICH_LR_STATE_MASK, ICH_LR_ACTIVE | ICH_LR_PENDING);
+        assert_eq!(
+            IchLrEl2::from(lrs[1]).state(),
+            IchLrState::PENDING_AND_ACTIVE
+        );
         assert!(overflow.is_empty());
     }
 }
