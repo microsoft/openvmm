@@ -1028,7 +1028,7 @@ impl MshvPartitionInner {
 /// falling back to one read per entry, with a warning, if the bulk call
 /// fails. Returns the values and whether the bulk call served them; a read
 /// that fails fails with `code`.
-fn vp0_cpuid_entries(
+pub(super) fn vp0_cpuid_entries(
     bsp: &VcpuFd,
     entries: &[(u32, u32)],
     code: TimeAbiCode,
