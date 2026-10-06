@@ -3,11 +3,10 @@
 
 //! microVM virtio-fs device construction and dormant-slot save/restore.
 
-use super::profile::MICROVM_ATTACHMENT_ID;
-use super::profile::MICROVM_MOUNT_TAG;
 use super::profile::MICROVM_REQUEST_QUEUES;
 use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
+use super::profile::microvm_mount_tag;
 use super::saved_state::SavedState;
 use super::state::save_dormant_microvm_state;
 use super::state::validate_dormant_microvm_state;
@@ -48,7 +47,7 @@ impl VirtioFsDevice {
         let attachment_id = profile.attachment_id().to_owned();
         let mut device = Self::with_num_request_queues(
             driver_source,
-            MICROVM_MOUNT_TAG,
+            profile.mount_tag(),
             fs.clone(),
             0,
             notify_corruption,
@@ -61,19 +60,19 @@ impl VirtioFsDevice {
         Ok(device)
     }
 
-    /// Creates the fixed no-DAX microVM virtio-fs device without a host attachment.
+    /// Creates the fixed no-DAX microVM virtio-fs device of the slot
+    /// identified by `stable_id`, without a host attachment.
     pub fn new_microvm_dormant(
         driver_source: &VmTaskDriverSource,
         stable_id: String,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            stable_id == MICROVM_ATTACHMENT_ID,
-            "microVM virtio-fs attachment ID must be '{MICROVM_ATTACHMENT_ID}'"
-        );
+        let mount_tag = microvm_mount_tag(&stable_id).ok_or_else(|| {
+            anyhow::anyhow!("microVM virtio-fs attachment ID '{stable_id}' is not a fixed slot")
+        })?;
         let mut device = Self::with_num_request_queues(
             driver_source,
-            MICROVM_MOUNT_TAG,
+            mount_tag,
             DormantMicrovmFs,
             0,
             notify_corruption,
@@ -273,6 +272,8 @@ pub(crate) fn device_state_validator(device: &VirtioFsDevice) -> DeviceStateVali
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::MICROVM_ATTACHMENT_ID;
+    use crate::profile::MICROVM_SLOTS;
     use crate::profile::microvm_root_identity;
     use chipset_device::io::IoResult;
     use chipset_device::mmio::MmioIntercept;
@@ -309,7 +310,38 @@ mod tests {
         assert!(!device.traits().device_features.ring_packed());
         assert!(device.supports_save_restore());
         assert!(device.supports_accelerated_doorbells());
-        assert_eq!(&device.config.tag[..7], b"microvm");
+        assert_eq!(&device.config.tag[..8], b"microvm\0");
+    }
+
+    #[async_test]
+    async fn microvm_slots_expose_their_own_tags(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        for (stable_id, tag) in MICROVM_SLOTS {
+            let temporary_directory = tempfile::tempdir().unwrap();
+            let active = VirtioFsDevice::new_microvm_hostfs(
+                &driver_source,
+                stable_id.to_owned(),
+                microvm_root_identity(temporary_directory.path()).unwrap(),
+                false,
+                Vec::new(),
+                MicroVmOwnerMode::Vmm,
+                temporary_directory.path(),
+                None,
+            )
+            .unwrap();
+            let dormant =
+                VirtioFsDevice::new_microvm_dormant(&driver_source, stable_id.to_owned(), None)
+                    .unwrap();
+            for device in [active, dormant] {
+                assert_eq!(&device.config.tag[..tag.len()], tag.as_bytes());
+                assert_eq!(device.config.tag[tag.len()], 0);
+                assert_eq!(device.microvm_attachment_id.as_deref(), Some(stable_id));
+            }
+        }
+        assert!(
+            VirtioFsDevice::new_microvm_dormant(&driver_source, "fs:microvm2".to_owned(), None)
+                .is_err()
+        );
     }
 
     #[async_test]
