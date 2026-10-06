@@ -46,10 +46,15 @@ pub enum GicV3ModelError {
     DistributorRangeOverflow,
 }
 
+/// Software model of a GICv3 distributor and its per-VP redistributors.
 pub struct GicV3Model {
+    /// Shared distributor state and interrupt-routing logic.
     distributor: Distributor,
+    /// Redistributor register interfaces indexed by VP index.
     redistributors: Vec<Mutex<Redistributor>>,
+    /// Distributor MMIO address range.
     distributor_range: MemoryRange,
+    /// Contiguous MMIO address range containing all redistributor frames.
     redistributor_range: MemoryRange,
 }
 
