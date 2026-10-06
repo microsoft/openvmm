@@ -41,12 +41,14 @@ pub const MICROVM_COMMAND_LINE_MAX_SIZE: usize = 64 * 1024;
 pub const MICROVM_VIRTIO_BLK_MMIO_BASE: u64 = 0xd000_3000;
 /// Reserved microVM virtio-net MMIO base.
 pub const MICROVM_VIRTIO_NET_MMIO_BASE: u64 = 0xd000_0000;
-/// Reserved microVM virtio-fs MMIO base.
+/// Reserved MMIO base of the first microVM virtio-fs slot.
 pub const MICROVM_VIRTIO_FS_MMIO_BASE: u64 = 0xd000_1000;
 /// Reserved microVM virtio-console MMIO base.
 pub const MICROVM_VIRTIO_CONSOLE_MMIO_BASE: u64 = 0xd000_2000;
 /// Fixed microVM control virtio-console MMIO base.
 pub const MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE: u64 = 0xd000_7000;
+/// Fixed MMIO base of the second microVM virtio-fs slot.
+pub const MICROVM_VIRTIO_FS1_MMIO_BASE: u64 = 0xd000_8000;
 /// Fixed microVM virtio transport window length.
 pub const MICROVM_VIRTIO_MMIO_LEN: u64 = 0x1000;
 /// Fixed distro virtio-blk interrupt.
@@ -63,8 +65,13 @@ pub const MICROVM_VIRTIO_SCRATCH_BLK_IRQ: u32 = 11;
 pub const MICROVM_VIRTIO_CONSOLE_IRQ: u32 = 7;
 /// Fixed microVM control virtio-console interrupt.
 pub const MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ: u32 = 3;
-/// Fixed microVM virtio-fs interrupt.
+/// Fixed interrupt of the first microVM virtio-fs slot.
 pub const MICROVM_VIRTIO_FS_IRQ: u32 = 6;
+/// Fixed interrupt of the second microVM virtio-fs slot.
+///
+/// The MP table routes only ISA interrupts, and no other device of any
+/// backend uses IRQ 13.
+pub const MICROVM_VIRTIO_FS1_IRQ: u32 = 13;
 /// Fixed microVM virtio-net interrupt on KVM.
 pub const MICROVM_VIRTIO_NET_KVM_IRQ: u32 = 10;
 /// Fixed microVM virtio-net interrupt on WHP.
@@ -81,7 +88,7 @@ pub const MICROVM_VIRTIO_CONTROL_CONSOLE_ID: &str = "virtio-control-console";
 /// Host-owned kernel command-line token identifying the control tty.
 pub const MICROVM_CONTROL_TTY_COMMAND_LINE: &str = "nvx_control_tty=hvc2";
 /// MicroVM virtio MMIO reservations in stable device order.
-pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
+pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 9] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
     MICROVM_VIRTIO_FS_MMIO_BASE,
     MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
@@ -90,6 +97,48 @@ pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
     0xd000_5000,
     0xd000_6000,
     MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
+    MICROVM_VIRTIO_FS1_MMIO_BASE,
+];
+
+/// A fixed microVM virtio-fs slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MicrovmFilesystemSlot {
+    /// Stable identity of the slot's device and host attachment.
+    pub stable_id: &'static str,
+    /// Guest-visible virtio-fs mount tag.
+    pub tag: &'static str,
+    /// Base of the slot's virtio-mmio transport window.
+    pub mmio_base: u64,
+    /// The slot's edge-triggered interrupt.
+    pub irq: u32,
+}
+
+impl MicrovmFilesystemSlot {
+    /// Returns the `virtio_mmio.device=` token that discovers this slot.
+    pub fn discovery_token(&self) -> String {
+        format!(
+            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{:#x}:{}",
+            self.mmio_base, self.irq
+        )
+    }
+}
+
+/// The fixed microVM virtio-fs slots. Filesystems occupy them in attachment
+/// order. A cold boot always exposes the first slot, dormant when nothing is
+/// attached to it; a later slot exists only with a filesystem attached.
+pub const MICROVM_FILESYSTEM_SLOTS: [MicrovmFilesystemSlot; 2] = [
+    MicrovmFilesystemSlot {
+        stable_id: "fs:microvm0",
+        tag: "microvm",
+        mmio_base: MICROVM_VIRTIO_FS_MMIO_BASE,
+        irq: MICROVM_VIRTIO_FS_IRQ,
+    },
+    MicrovmFilesystemSlot {
+        stable_id: "fs:microvm1",
+        tag: "microvm1",
+        mmio_base: MICROVM_VIRTIO_FS1_MMIO_BASE,
+        irq: MICROVM_VIRTIO_FS1_IRQ,
+    },
 ];
 /// Fixed sandbox virtio-blk MMIO slots in layer order.
 pub const MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES: [u64; 4] = [
@@ -104,7 +153,7 @@ pub const MICROVM_SHARED_STATUS_PAGE_GPA: u64 = 0x3_0000;
 pub const MICROVM_SHARED_STATUS_PAGE_SIZE: u64 = 0x1000;
 /// Shared-status offset for virtio-net.
 pub const MICROVM_VIRTIO_NET_STATUS_OFFSET: u64 = 0x00;
-/// Shared-status offset for virtio-fs.
+/// Shared-status offset for the first virtio-fs slot.
 pub const MICROVM_VIRTIO_FS_STATUS_OFFSET: u64 = 0x04;
 /// Shared-status offset for virtio-console.
 pub const MICROVM_VIRTIO_CONSOLE_STATUS_OFFSET: u64 = 0x08;
@@ -118,6 +167,8 @@ pub const MICROVM_VIRTIO_CUSTOM_BLK_STATUS_OFFSET: u64 = 0x14;
 pub const MICROVM_VIRTIO_SCRATCH_BLK_STATUS_OFFSET: u64 = 0x18;
 /// Shared-status offset for the dedicated control virtio-console.
 pub const MICROVM_VIRTIO_CONTROL_CONSOLE_STATUS_OFFSET: u64 = 0x1c;
+/// Shared-status offset for the second virtio-fs slot.
+pub const MICROVM_VIRTIO_FS1_STATUS_OFFSET: u64 = 0x20;
 
 /// Returns the shared interrupt-status word for a fixed virtio-mmio slot.
 pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
@@ -130,6 +181,7 @@ pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
         0xd000_5000 => MICROVM_VIRTIO_CUSTOM_BLK_STATUS_OFFSET,
         0xd000_6000 => MICROVM_VIRTIO_SCRATCH_BLK_STATUS_OFFSET,
         MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONTROL_CONSOLE_STATUS_OFFSET,
+        MICROVM_VIRTIO_FS1_MMIO_BASE => MICROVM_VIRTIO_FS1_STATUS_OFFSET,
         _ => return None,
     };
     Some(MICROVM_SHARED_STATUS_PAGE_GPA + offset)
@@ -406,14 +458,51 @@ impl MicrovmFilesystemConfig {
         Ok(self)
     }
 
-    /// Returns the pinned guest bootstrap command-line tokens.
-    pub fn command_line_fragment(&self) -> String {
+    /// Returns the pinned guest bootstrap command-line tokens of this
+    /// filesystem when it is attached to `slot`.
+    pub fn command_line_fragment(&self, slot: &MicrovmFilesystemSlot) -> String {
         format!(
-            "virtfs_dir={} virtfs_tag=microvm virtfs_mode={}",
+            "virtfs_dir={} virtfs_tag={} virtfs_mode={}",
             self.guest_mount_target,
+            slot.tag,
             self.access.as_str()
         )
     }
+}
+
+/// Returns whether one guest mount target equals or contains the other.
+fn microvm_guest_targets_overlap(left: &str, right: &str) -> bool {
+    let contains = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+    };
+    contains(left, right) || contains(right, left)
+}
+
+/// Validates the filesystems attached to the fixed microVM virtio-fs slots,
+/// in slot order: there are no more than the slots, and no guest mount target
+/// equals or contains another, so no mount hides or shadows another.
+pub fn validate_microvm_filesystems(
+    filesystems: &[MicrovmFilesystemConfig],
+) -> Result<(), InvalidMicrovmFilesystemConfig> {
+    if filesystems.len() > MICROVM_FILESYSTEM_SLOTS.len() {
+        return Err(InvalidMicrovmFilesystemConfig::TooManyFilesystems);
+    }
+    for (index, filesystem) in filesystems.iter().enumerate() {
+        for other in &filesystems[..index] {
+            if microvm_guest_targets_overlap(
+                &other.guest_mount_target,
+                &filesystem.guest_mount_target,
+            ) {
+                return Err(InvalidMicrovmFilesystemConfig::OverlappingGuestTargets(
+                    other.guest_mount_target.clone(),
+                    filesystem.guest_mount_target.clone(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Error returned for an invalid microVM filesystem specification.
@@ -441,6 +530,12 @@ pub enum InvalidMicrovmFilesystemConfig {
     /// One denied path contained another denied path.
     #[error("microVM filesystem denied paths overlap")]
     OverlappingDeniedPaths,
+    /// More filesystems were attached than the microVM has virtio-fs slots.
+    #[error("microVM permits at most {} filesystems", MICROVM_FILESYSTEM_SLOTS.len())]
+    TooManyFilesystems,
+    /// One guest mount target equals or contains another.
+    #[error("microVM filesystem guest mount targets '{0}' and '{1}' overlap")]
+    OverlappingGuestTargets(String, String),
 }
 
 impl MicrovmNetworkConfig {
@@ -623,12 +718,30 @@ fn validate_microvm_sandbox_blocks(blocks: &[MicrovmSandboxBlockConfig]) -> anyh
     Ok(())
 }
 
+/// Returns the number of virtio-fs slots present when the first slot is
+/// reserved as `first_slot` and `attached` filesystems occupy the slots.
+pub fn microvm_filesystem_slot_count(first_slot: bool, attached: usize) -> anyhow::Result<usize> {
+    anyhow::ensure!(
+        attached == 0 || first_slot,
+        "microVM filesystem policy requires the fixed virtio-fs slot"
+    );
+    anyhow::ensure!(
+        attached <= MICROVM_FILESYSTEM_SLOTS.len(),
+        InvalidMicrovmFilesystemConfig::TooManyFilesystems
+    );
+    Ok(if first_slot { attached.max(1) } else { 0 })
+}
+
 /// Appends sandbox virtio devices in fixed-address order.
+///
+/// `filesystem_slot` reserves the first virtio-fs slot, and `filesystems`
+/// occupy the virtio-fs slots in order. A virtio-fs slot after the first is
+/// discovered only with a filesystem attached.
 pub fn append_microvm_virtio_discovery(
     cmdline: &mut String,
     network: Option<(&MicrovmNetworkConfig, u32, bool)>,
     filesystem_slot: bool,
-    filesystem: Option<&MicrovmFilesystemConfig>,
+    filesystems: &[MicrovmFilesystemConfig],
     has_console: bool,
     has_control_console: bool,
     blocks: &[MicrovmSandboxBlockConfig],
@@ -644,10 +757,8 @@ pub fn append_microvm_virtio_discovery(
         }),
         "microVM command line already contains virtio-mmio discovery"
     );
-    anyhow::ensure!(
-        filesystem.is_none() || filesystem_slot,
-        "microVM filesystem policy requires the fixed virtio-fs slot"
-    );
+    let filesystem_slots = microvm_filesystem_slot_count(filesystem_slot, filesystems.len())?;
+    validate_microvm_filesystems(filesystems)?;
 
     use std::fmt::Write as _;
     if let Some((_, irq, _)) = network {
@@ -660,10 +771,11 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{irq}"
         )?;
     }
-    if filesystem_slot {
+    if filesystem_slots > 0 {
         write!(
             cmdline,
-            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_FS_MMIO_BASE:#x}:{MICROVM_VIRTIO_FS_IRQ}"
+            " {}",
+            MICROVM_FILESYSTEM_SLOTS[0].discovery_token()
         )?;
     }
     if has_console {
@@ -690,6 +802,13 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
         )?;
     }
+    for slot in MICROVM_FILESYSTEM_SLOTS
+        .iter()
+        .take(filesystem_slots)
+        .skip(1)
+    {
+        write!(cmdline, " {}", slot.discovery_token())?;
+    }
     if let Some((network, _, gateway_dns)) = network {
         write!(
             cmdline,
@@ -697,14 +816,45 @@ pub fn append_microvm_virtio_discovery(
             network.command_line_fragment_with_dns(gateway_dns)
         )?;
     }
-    if let Some(filesystem) = filesystem {
-        write!(cmdline, " {}", filesystem.command_line_fragment())?;
+    for (filesystem, slot) in filesystems.iter().zip(&MICROVM_FILESYSTEM_SLOTS) {
+        write!(cmdline, " {}", filesystem.command_line_fragment(slot))?;
     }
     anyhow::ensure!(
         cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
         "microVM kernel command line exceeds the 64-KiB ABI limit after device discovery"
     );
     Ok(())
+}
+
+/// Validates the virtio-fs device inventory against the attached filesystems,
+/// which occupy the first slots, and returns the number of virtio-fs devices.
+/// Only the first slot may be present without a filesystem.
+fn validate_microvm_filesystem_devices(config: &Config) -> anyhow::Result<usize> {
+    let filesystem_count = config
+        .virtio_devices
+        .iter()
+        .filter(|(_, device)| device.id() == "virtiofs")
+        .count();
+    let filesystems = &config.microvm.filesystems;
+    anyhow::ensure!(
+        filesystem_count <= MICROVM_FILESYSTEM_SLOTS.len(),
+        "microVM permits at most {} virtio-fs devices",
+        MICROVM_FILESYSTEM_SLOTS.len()
+    );
+    anyhow::ensure!(
+        filesystems.len() <= filesystem_count,
+        "microVM filesystem policy requires a virtio-fs device"
+    );
+    anyhow::ensure!(
+        filesystem_count <= filesystems.len().max(1),
+        "microVM exposes a virtio-fs slot after the first only with a filesystem attached"
+    );
+    validate_microvm_filesystems(filesystems)?;
+    anyhow::ensure!(
+        !config.microvm.filesystem_bootstrap || !filesystems.is_empty(),
+        "microVM filesystem bootstrap requires an active filesystem policy"
+    );
+    Ok(filesystem_count)
 }
 
 fn validate_microvm_command_line(
@@ -750,21 +900,10 @@ fn validate_microvm_command_line(
         .virtio_devices
         .iter()
         .any(|(_, device)| device.id() == "virtio-net");
-    let has_filesystem = config
-        .virtio_devices
-        .iter()
-        .any(|(_, device)| device.id() == "virtiofs");
+    let filesystem_count = validate_microvm_filesystem_devices(config)?;
     anyhow::ensure!(
         has_network == config.microvm.network.is_some(),
         "microVM virtio-net device and static network identity must be configured together"
-    );
-    anyhow::ensure!(
-        config.microvm.filesystem.is_none() || has_filesystem,
-        "microVM filesystem policy requires a virtio-fs device"
-    );
-    anyhow::ensure!(
-        !config.microvm.filesystem_bootstrap || config.microvm.filesystem.is_some(),
-        "microVM filesystem bootstrap requires an active filesystem policy"
     );
     validate_microvm_sandbox_blocks(&config.microvm.sandbox_blocks)?;
     anyhow::ensure!(
@@ -812,7 +951,11 @@ fn validate_microvm_command_line(
             "virtio_mmio.device=" => config.virtio_devices.len(),
             "virtnet_ip=" | "virtnet_mask=" | "virtnet_gw=" => usize::from(has_network),
             "virtfs_dir=" | "virtfs_tag=" | "virtfs_mode=" => {
-                usize::from(config.microvm.filesystem_bootstrap)
+                if config.microvm.filesystem_bootstrap {
+                    config.microvm.filesystems.len()
+                } else {
+                    0
+                }
             }
             _ => 1,
         };
@@ -848,10 +991,8 @@ fn validate_microvm_command_line(
             "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{irq}"
         ));
     }
-    if has_filesystem {
-        expected_discovery.push(format!(
-            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_FS_MMIO_BASE:#x}:{MICROVM_VIRTIO_FS_IRQ}"
-        ));
+    if filesystem_count > 0 {
+        expected_discovery.push(MICROVM_FILESYSTEM_SLOTS[0].discovery_token());
     }
     if has_console {
         expected_discovery.push(format!(
@@ -871,6 +1012,13 @@ fn validate_microvm_command_line(
         ));
         expected_discovery.push(MICROVM_CONTROL_TTY_COMMAND_LINE.to_owned());
     }
+    expected_discovery.extend(
+        MICROVM_FILESYSTEM_SLOTS
+            .iter()
+            .take(filesystem_count)
+            .skip(1)
+            .map(MicrovmFilesystemSlot::discovery_token),
+    );
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
             network
@@ -880,17 +1028,19 @@ fn validate_microvm_command_line(
         );
     }
     if config.microvm.filesystem_bootstrap {
-        let filesystem = config
+        for (filesystem, slot) in config
             .microvm
-            .filesystem
-            .as_ref()
-            .expect("filesystem bootstrap policy was validated above");
-        expected_discovery.extend(
-            filesystem
-                .command_line_fragment()
-                .split_ascii_whitespace()
-                .map(str::to_owned),
-        );
+            .filesystems
+            .iter()
+            .zip(&MICROVM_FILESYSTEM_SLOTS)
+        {
+            expected_discovery.extend(
+                filesystem
+                    .command_line_fragment(slot)
+                    .split_ascii_whitespace()
+                    .map(str::to_owned),
+            );
+        }
     }
     if !expected_discovery.is_empty() {
         anyhow::ensure!(
@@ -1084,11 +1234,13 @@ pub enum MachineProfile {
 pub struct MicrovmConfig {
     /// Static identity for the optional microVM virtio-net device.
     pub network: Option<MicrovmNetworkConfig>,
-    /// Guest-visible policy for the optional microVM virtio-fs device.
-    pub filesystem: Option<MicrovmFilesystemConfig>,
+    /// Guest-visible policies of the attached microVM filesystems, in
+    /// virtio-fs slot order.
+    pub filesystems: Vec<MicrovmFilesystemConfig>,
     /// Stable sandbox block-device roles in virtio-blk device order.
     pub sandbox_blocks: Vec<MicrovmSandboxBlockConfig>,
-    /// Whether the effective command line bootstraps the active microVM filesystem.
+    /// Whether the effective command line bootstraps every attached microVM
+    /// filesystem.
     pub filesystem_bootstrap: bool,
     /// Immutable RAM capacity reserved by the microVM layout.
     pub memory_capacity: Option<u64>,
@@ -1184,7 +1336,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
             "static microVM network identity requires the microVM profile"
         );
         anyhow::ensure!(
-            config.microvm.filesystem.is_none(),
+            config.microvm.filesystems.is_empty(),
             "microVM filesystem policy requires the microVM profile"
         );
         anyhow::ensure!(
@@ -1342,11 +1494,10 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     );
 
     anyhow::ensure!(
-        config.virtio_devices.len() <= 8,
+        config.virtio_devices.len() <= MICROVM_VIRTIO_MMIO_BASES.len(),
         "microVM has too many virtio devices"
     );
     let mut has_network = false;
-    let mut has_filesystem = false;
     let mut has_console = false;
     let mut has_control_console = false;
     let mut block_count = 0;
@@ -1360,10 +1511,8 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
                 !std::mem::replace(&mut has_network, true),
                 "microVM permits only one virtio-net device"
             ),
-            "virtiofs" => anyhow::ensure!(
-                !std::mem::replace(&mut has_filesystem, true),
-                "microVM permits only one virtio-fs device"
-            ),
+            // Counted against the fixed slots below.
+            "virtiofs" => {}
             "virtio-console" => anyhow::ensure!(
                 !std::mem::replace(&mut has_console, true),
                 "microVM permits only one virtio-console device"
@@ -1391,14 +1540,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
         has_network == config.microvm.network.is_some(),
         "microVM virtio-net device and static network identity must be configured together"
     );
-    anyhow::ensure!(
-        config.microvm.filesystem.is_none() || has_filesystem,
-        "microVM filesystem policy requires a virtio-fs device"
-    );
-    anyhow::ensure!(
-        !config.microvm.filesystem_bootstrap || config.microvm.filesystem.is_some(),
-        "microVM filesystem bootstrap requires an active filesystem policy"
-    );
+    validate_microvm_filesystem_devices(config)?;
     anyhow::ensure!(
         config.layout.chipset_low_mmio_size == 1024 * 1024 * 1024
             && config.layout.chipset_high_mmio_size == 0
@@ -1535,7 +1677,7 @@ mod tests {
         validate_microvm_control_console_command_line(&tokens, false).unwrap();
 
         let mut cmdline = cmdline;
-        append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, false, &[]).unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, false, &[]).unwrap();
 
         assert!(build_microvm_control_command_line(&user_args, true).is_err());
     }
@@ -1556,7 +1698,7 @@ mod tests {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
         cmdline.push_str(" virtio-mmio.device=0x1000@0xc0000000:1");
         assert!(
-            append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, true, &[])
+            append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, true, &[])
                 .is_err()
         );
     }
@@ -1607,7 +1749,7 @@ mod tests {
         validate_microvm_sandbox_blocks(&blocks).unwrap();
 
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(&mut cmdline, None, false, None, false, false, &blocks)
+        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &blocks)
             .unwrap();
         assert_eq!(
             cmdline,
@@ -1624,7 +1766,7 @@ mod tests {
     #[test]
     fn microvm_control_console_slot_is_stable() {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(&mut cmdline, None, false, None, true, true, &[]).unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, true, &[]).unwrap();
         assert_eq!(
             cmdline,
             format!(
@@ -1654,6 +1796,7 @@ mod tests {
             (MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[2], 0x3_0014),
             (MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[3], 0x3_0018),
             (MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE, 0x3_001c),
+            (MICROVM_VIRTIO_FS1_MMIO_BASE, 0x3_0020),
         ];
         for (mmio_base, expected_gpa) in slots {
             assert_eq!(microvm_virtio_status_gpa(mmio_base), Some(expected_gpa));
@@ -1662,7 +1805,195 @@ mod tests {
                 expected_gpa < MICROVM_SHARED_STATUS_PAGE_GPA + MICROVM_SHARED_STATUS_PAGE_SIZE
             );
         }
-        assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
+        assert_eq!(microvm_virtio_status_gpa(0xd000_9000), None);
+    }
+
+    #[test]
+    fn microvm_filesystem_slots_are_stable() {
+        assert_eq!(
+            MICROVM_FILESYSTEM_SLOTS.map(|slot| (
+                slot.stable_id,
+                slot.tag,
+                slot.mmio_base,
+                slot.irq
+            )),
+            [
+                ("fs:microvm0", "microvm", 0xd000_1000, 6),
+                ("fs:microvm1", "microvm1", 0xd000_8000, 13),
+            ]
+        );
+        assert_eq!(
+            MICROVM_FILESYSTEM_SLOTS[1].discovery_token(),
+            "virtio_mmio.device=0x1000@0xd0008000:13"
+        );
+        validate_microvm_virtio_reservations().unwrap();
+        // Every slot has its own reserved window and an ISA interrupt that no
+        // other fixed device of any backend uses.
+        let other_irqs = [
+            0,
+            8,
+            MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
+            MICROVM_VIRTIO_BLK_IRQ,
+            MICROVM_VIRTIO_NET_WHP_IRQ,
+            MICROVM_VIRTIO_CONSOLE_IRQ,
+            MICROVM_VIRTIO_CUSTOM_BLK_IRQ,
+            MICROVM_VIRTIO_NET_KVM_IRQ,
+            MICROVM_VIRTIO_SCRATCH_BLK_IRQ,
+            MICROVM_VIRTIO_RUNTIME_BLK_IRQ,
+        ];
+        for (index, slot) in MICROVM_FILESYSTEM_SLOTS.iter().enumerate() {
+            assert!(MICROVM_VIRTIO_MMIO_BASES.contains(&slot.mmio_base));
+            assert!(microvm_virtio_status_gpa(slot.mmio_base).is_some());
+            assert!(slot.irq < 16 && !other_irqs.contains(&slot.irq));
+            for other in &MICROVM_FILESYSTEM_SLOTS[..index] {
+                assert_ne!(other.stable_id, slot.stable_id);
+                assert_ne!(other.tag, slot.tag);
+                assert_ne!(other.irq, slot.irq);
+            }
+        }
+    }
+
+    fn filesystem(target: &str, access: MicrovmFilesystemAccess) -> MicrovmFilesystemConfig {
+        MicrovmFilesystemConfig::new(target.to_owned(), access).unwrap()
+    }
+
+    #[test]
+    fn microvm_filesystem_slot_count_follows_attachments() {
+        assert_eq!(microvm_filesystem_slot_count(false, 0).unwrap(), 0);
+        assert_eq!(microvm_filesystem_slot_count(true, 0).unwrap(), 1);
+        assert_eq!(microvm_filesystem_slot_count(true, 1).unwrap(), 1);
+        assert_eq!(microvm_filesystem_slot_count(true, 2).unwrap(), 2);
+        assert!(microvm_filesystem_slot_count(false, 1).is_err());
+        assert!(microvm_filesystem_slot_count(true, 3).is_err());
+    }
+
+    #[test]
+    fn microvm_filesystems_reject_overlapping_guest_targets() {
+        use MicrovmFilesystemAccess::ReadOnly;
+        use MicrovmFilesystemAccess::ReadWrite;
+
+        validate_microvm_filesystems(&[]).unwrap();
+        validate_microvm_filesystems(&[
+            filesystem("/workspace", ReadWrite),
+            filesystem("/opt/hostedtoolcache", ReadOnly),
+        ])
+        .unwrap();
+        // A shared prefix that is not a path component does not overlap.
+        validate_microvm_filesystems(&[
+            filesystem("/work", ReadWrite),
+            filesystem("/workspace", ReadOnly),
+        ])
+        .unwrap();
+        for (first, second) in [
+            ("/workspace", "/workspace"),
+            ("/workspace", "/workspace/cache"),
+            ("/opt/hostedtoolcache/node", "/opt"),
+        ] {
+            assert_eq!(
+                validate_microvm_filesystems(&[
+                    filesystem(first, ReadWrite),
+                    filesystem(second, ReadOnly),
+                ]),
+                Err(InvalidMicrovmFilesystemConfig::OverlappingGuestTargets(
+                    first.to_owned(),
+                    second.to_owned()
+                ))
+            );
+        }
+        assert_eq!(
+            validate_microvm_filesystems(&[
+                filesystem("/a", ReadOnly),
+                filesystem("/b", ReadOnly),
+                filesystem("/c", ReadOnly),
+            ]),
+            Err(InvalidMicrovmFilesystemConfig::TooManyFilesystems)
+        );
+    }
+
+    #[test]
+    fn microvm_discovery_places_later_filesystem_slots_after_the_control_console() {
+        let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let filesystems = [
+            filesystem("/workspace", MicrovmFilesystemAccess::ReadWrite),
+            filesystem("/opt/hostedtoolcache", MicrovmFilesystemAccess::ReadOnly),
+        ];
+        let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
+        append_microvm_virtio_discovery(
+            &mut cmdline,
+            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, false)),
+            true,
+            &filesystems,
+            true,
+            true,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            cmdline,
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0000000:10 \
+                 virtio_mmio.device=0x1000@0xd0001000:6 \
+                 virtio_mmio.device=0x1000@0xd0002000:7 \
+                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 {MICROVM_CONTROL_TTY_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0008000:13 \
+                 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 \
+                 virtfs_dir=/workspace virtfs_tag=microvm virtfs_mode=rw \
+                 virtfs_dir=/opt/hostedtoolcache virtfs_tag=microvm1 virtfs_mode=ro"
+            )
+        );
+
+        // One filesystem keeps the single-slot command line.
+        let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+        append_microvm_virtio_discovery(
+            &mut cmdline,
+            None,
+            true,
+            &filesystems[..1],
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            cmdline,
+            format!(
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:6 \
+                 virtfs_dir=/workspace virtfs_tag=microvm virtfs_mode=rw"
+            )
+        );
+
+        let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+        assert!(
+            append_microvm_virtio_discovery(
+                &mut cmdline,
+                None,
+                false,
+                &filesystems,
+                false,
+                false,
+                &[]
+            )
+            .is_err()
+        );
+        let overlapping = [
+            filesystem("/workspace", MicrovmFilesystemAccess::ReadWrite),
+            filesystem("/workspace/cache", MicrovmFilesystemAccess::ReadOnly),
+        ];
+        let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+        assert!(
+            append_microvm_virtio_discovery(
+                &mut cmdline,
+                None,
+                true,
+                &overlapping,
+                false,
+                false,
+                &[]
+            )
+            .is_err()
+        );
     }
 
     #[test]
