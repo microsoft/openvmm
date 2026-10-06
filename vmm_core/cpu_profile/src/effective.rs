@@ -352,6 +352,7 @@ impl CpuProfile {
             .map(|entry| (entry.key(), (entry.values(), entry.masks())))
             .collect::<Vec<_>>();
         let max_basic = self.lookup(0, 0)[0];
+        let vendor = self.cpu_vendor();
 
         for leaf in vm.iter().filter(|leaf| leaf.mask != [0; 4]) {
             let what = || describe_leaf(leaf.function, leaf.index);
@@ -377,10 +378,11 @@ impl CpuProfile {
                 if leaf.index.is_some() && index.is_some() && index != leaf.index {
                     continue;
                 }
-                let owned = vm_owned_bits(function, slot.0);
+                let owned = vm_owned_bits(vendor, function, slot.0);
                 if leaf.index.is_none() && owned == [0; 4] {
                     // A result for every subleaf skips subleaves without VM
-                    // fields, such as the null cache type that ends leaf 4.
+                    // fields, such as the null cache type that ends a cache
+                    // leaf.
                     continue;
                 }
                 for (register, (bits, owned)) in leaf.mask.iter().zip(owned).enumerate() {
@@ -431,7 +433,7 @@ impl CpuProfile {
             if HYPERVISOR_LEAVES.contains(&function) {
                 continue;
             }
-            let owned = vm_owned_bits(function, value);
+            let owned = vm_owned_bits(vendor, function, value);
             for (register, (owned, mask)) in owned.iter().zip(mask).enumerate() {
                 if owned & !mask != 0 {
                     return Err(error(format!(
@@ -483,19 +485,48 @@ fn merge(slot: &mut ([u32; 4], [u32; 4]), leaf: &CpuidResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::host_fingerprint;
+    use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
+    use crate::vendor::CpuVendor;
     use test_with_tracing::test;
 
     const ICELAKE: &str = "intel.icelake-sp.v1";
 
     /// Returns hand-built VM leaves for `profile`: the fields OpenVMM's
-    /// topology code sets for one socket of `vp_count` VPs, and an xAPIC.
+    /// topology code sets for one socket of `vp_count` VPs without SMT, of
+    /// the profile's vendor, and an xAPIC.
     fn vm_leaves(profile: &CpuProfile, vp_count: u32) -> Vec<CpuidResult> {
         let mut leaves = vec![
             CpuidResult::new(1, [0, vp_count << 16, 0, 0]).masked([0, 0xffff_0000, 0, 0]),
-            CpuidResult::new(4, [(vp_count - 1) << 26, 0, 0, 0]).masked([0xffff_c000, 0, 0, 0]),
             x2apic_cpuid(false),
         ];
+        match profile.cpu_vendor() {
+            CpuVendor::Intel => leaves.push(
+                CpuidResult::new(4, [(vp_count - 1) << 26, 0, 0, 0]).masked([0xffff_c000, 0, 0, 0]),
+            ),
+            CpuVendor::Amd => {
+                let apic_id_size = vp_count.next_power_of_two().trailing_zeros();
+                leaves.push(
+                    CpuidResult::new(0x8000_0008, [0, 0, (vp_count - 1) | apic_id_size << 12, 0])
+                        .masked([0, 0, 0xf0ff, 0]),
+                );
+                // The L3 cache is the socket's; the others are each VP's.
+                for subleaf in 0.. {
+                    let eax = profile.lookup(0x8000_001d, subleaf)[0];
+                    if eax & 0x1f == 0 {
+                        break;
+                    }
+                    let sharing = if (eax >> 5) & 7 == 3 { vp_count - 1 } else { 0 };
+                    leaves.push(
+                        CpuidResult::new(0x8000_001d, [sharing << 14, 0, 0, 0])
+                            .indexed(subleaf)
+                            .masked([0x03ff_c000, 0, 0, 0]),
+                    );
+                }
+                leaves.push(CpuidResult::new(0x8000_001e, [0; 4]).masked([!0, 0xffff, 0x7ff, 0]));
+            }
+        }
         let max_basic = profile.lookup(0, 0)[0];
         for leaf in VM_OWNED_LEAVES
             .into_iter()
@@ -505,6 +536,11 @@ mod tests {
             leaves.push(CpuidResult::new(leaf, [0, vp_count, 0x201, 0]).indexed(1));
         }
         leaves
+    }
+
+    /// Returns the host profile of the AMD EPYC 7763 test host on WHP.
+    fn amd_host_profile() -> CpuProfile {
+        crate::derive_host_profile(&host_fingerprint("whp", milan_whp_entries())).unwrap()
     }
 
     fn identity() -> Vec<CpuidResult> {
@@ -551,6 +587,69 @@ mod tests {
                 (0xd, Some(0), [!0, 0, !0, !0]),
                 (0xd, Some(1), [!0, 0, !0, !0]),
             ]
+        );
+    }
+
+    /// An AMD profile leaves AMD's topology fields to the VM: the core count
+    /// in `0x80000008`, each cache's sharing in `0x8000001D`, and the
+    /// processor topology in `0x8000001E`.
+    #[test]
+    fn completes_an_amd_profile_with_amd_topology_fields() {
+        let profile = amd_host_profile();
+        let effective = profile
+            .effective_cpuid(&vm_leaves(&profile, 4), &identity())
+            .unwrap();
+        assert_eq!(effective.lookup(0x8000_0008, 0)[2], 3 | 2 << 12);
+        // Each VP has its own L1 and L2 caches, and the socket shares the
+        // L3; the null cache type that ends the leaf has no VM fields.
+        for (subleaf, sharing) in [(0, 0), (1, 0), (2, 0), (3, 3)] {
+            let eax = effective.lookup(0x8000_001d, subleaf)[0];
+            assert_eq!((eax >> 14) & 0xfff, sharing, "subleaf {subleaf}");
+            assert_eq!(
+                eax & !0x03ff_c000,
+                profile.lookup(0x8000_001d, subleaf)[0],
+                "subleaf {subleaf}"
+            );
+        }
+        assert_eq!(effective.lookup(0x8000_001d, 4), [0; 4]);
+        assert_eq!(effective.lookup(0x8000_001e, 0), [0; 4]);
+        // Only the runtime state is left undefined, as on Intel.
+        let undefined = effective
+            .results()
+            .filter(|result| result.mask != [!0; 4])
+            .map(|result| (result.function, result.index, result.mask))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            undefined,
+            [
+                (1, None, [!0, !0, !(1 << 27), !0]),
+                (7, Some(0), [!0, !0, !(1 << 4), !0]),
+                (0xd, Some(0), [!0, 0, !0, !0]),
+                (0xd, Some(1), [!0, 0, !0, !0]),
+            ]
+        );
+
+        // Without the processor topology, the VM leaves bits undefined.
+        let leaves = vm_leaves(&profile, 4)
+            .into_iter()
+            .filter(|leaf| leaf.function != 0x8000_001e)
+            .collect::<Vec<_>>();
+        assert!(
+            error_message(profile.effective_cpuid(&leaves, &[]))
+                .contains("the VM did not define CPUID 0x8000001e EAX bits 0xffffffff")
+        );
+    }
+
+    /// Intel profiles pin AMD's topology fields, so OpenVMM cannot set them
+    /// there.
+    #[test]
+    fn intel_profiles_pin_amd_topology_fields() {
+        let profile = profile(ICELAKE);
+        let mut leaves = vm_leaves(profile, 2);
+        leaves.push(CpuidResult::new(0x8000_0008, [0, 0, 1, 0]).masked([0, 0, 0xf0ff, 0]));
+        assert!(
+            error_message(profile.effective_cpuid(&leaves, &[]))
+                .contains("CPUID 0x80000008 matches no profile leaf with VM fields")
         );
     }
 

@@ -253,6 +253,7 @@ mod whp_tests {
     //! `cargo test -p virt_whp -- --ignored`.
 
     use super::*;
+    use cpu_profile::CpuVendor;
     use cpu_profile::HostCpuSignature;
     use cpu_profile::hv_banks::CpuidBit;
     use cpu_profile::hv_banks::HV_FEATURES;
@@ -364,12 +365,20 @@ mod whp_tests {
         bits
     }
 
-    /// Whether another feature maps the same CPUID bit (as IBRS and IBPB
-    /// do): WHP may derive the bit from either.
-    fn shared(feature: &HvFeature) -> bool {
-        HV_FEATURES
-            .iter()
-            .any(|other| !std::ptr::eq(other, feature) && other.cpuid == feature.cpuid)
+    /// The vendor of this host's CPU, whose CPUID bits the features control.
+    fn host_vendor() -> CpuVendor {
+        CpuVendor::from_cpuid_vendor(&HostCpuSignature::current().vendor())
+            .unwrap_or(CpuVendor::Intel)
+    }
+
+    /// Whether another feature maps the same CPUID bit on `vendor`'s CPUs
+    /// (as IBRS and IBPB do on Intel's): WHP may derive the bit from either.
+    fn shared(feature: &HvFeature, vendor: CpuVendor) -> bool {
+        feature.cpuid_for(vendor).is_some_and(|bit| {
+            HV_FEATURES
+                .iter()
+                .any(|other| !std::ptr::eq(other, feature) && other.cpuid_for(vendor) == Some(bit))
+        })
     }
 
     fn list(bits: &[CpuidBit]) -> String {
@@ -383,15 +392,16 @@ mod whp_tests {
     }
 
     /// Clears each feature bit WHP offers, one at a time, and checks that the
-    /// CPUID bit the table maps to it disappears. Prints what every bit
-    /// controls on this host.
+    /// CPUID bit the table maps to it on this host's vendor disappears.
+    /// Prints what every bit controls on this host.
     #[test]
     #[ignore = "requires WHP"]
     fn features_control_the_mapped_cpuid_bits() {
+        let vendor = host_vendor();
         let available = available();
         let base = feature_cpuid(&probe_partition(available).unwrap());
         println!(
-            "available: bank0 {:#x} bank1 {:#x} xsave {:#x}",
+            "{vendor}: available: bank0 {:#x} bank1 {:#x} xsave {:#x}",
             available.banks[0], available.banks[1], available.xsave
         );
         let mut failures = Vec::new();
@@ -414,19 +424,20 @@ mod whp_tests {
                 };
                 let removed = removed(&base, &probe);
                 let mut verdict = "";
-                if let Some(feature) = feature {
+                if let Some((feature, cpuid)) =
+                    feature.and_then(|feature| Some((feature, feature.cpuid_for(vendor)?)))
+                {
                     let index = FEATURE_LEAVES
                         .iter()
-                        .position(|&key| key == (feature.cpuid.leaf, feature.cpuid.subleaf))
+                        .position(|&key| key == (cpuid.leaf, cpuid.subleaf))
                         .unwrap();
-                    let offered =
-                        base[index][feature.cpuid.register] & (1 << feature.cpuid.bit) != 0;
-                    if offered && !shared(feature) && !removed.contains(&feature.cpuid) {
+                    let offered = base[index][cpuid.register] & (1 << cpuid.bit) != 0;
+                    if offered && !shared(feature, vendor) && !removed.contains(&cpuid) {
                         verdict = " MISMATCH";
                         failures.push(format!(
                             "{} bit {bit} {name}: expected {} removed {}",
                             bank.name(),
-                            feature.cpuid,
+                            cpuid,
                             list(&removed)
                         ));
                     }
@@ -485,9 +496,10 @@ mod whp_tests {
                 let mapped: Vec<_> = bits
                     .iter()
                     .filter(|&&bit| {
-                        HV_FEATURES
-                            .iter()
-                            .any(|feature| feature.cpuid == bit && !feature.is_time_policy())
+                        HV_FEATURES.iter().any(|feature| {
+                            feature.cpuid_for(profile.cpu_vendor()) == Some(bit)
+                                && !feature.is_time_policy()
+                        })
                     })
                     .copied()
                     .collect();
