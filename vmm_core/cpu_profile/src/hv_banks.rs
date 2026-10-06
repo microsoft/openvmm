@@ -8,14 +8,18 @@
 //! processor feature bank bit, or XSAVE feature bit, is set, and some of
 //! those bits also decide which MSRs the guest may use (for example
 //! `IA32_SPEC_CTRL`). [`HV_FEATURES`] maps each such bit to the CPUID feature
-//! bit it controls. [`profile_features`] starts from the features the
+//! bit it controls on the CPUs of the profile's vendor: Intel and AMD
+//! enumerate the speculation controls, PSFD, and nested virtualization in
+//! different leaves. [`profile_features`] starts from the features the
 //! hypervisor offers and clears every bit whose CPUID feature the profile
 //! clears. The partition then behaves as the profile's CPUID describes.
 //!
 //! Neither backend lets the VMM intercept `IA32_ARCH_CAPABILITIES`: the
 //! hypervisor answers it, deriving the immunity and capability bits from the
 //! banks ([`ARCH_CAPABILITIES_BANK_BITS`]). A profile therefore pins those
-//! bits through the banks too ([`restrict_banks_to_profile`]).
+//! bits through the banks too ([`restrict_banks_to_profile`]). AMD CPUs
+//! enumerate their immunities in CPUID instead (`0x80000008` and
+//! `0x80000021`), whose bank bits [`HV_FEATURES`] maps.
 //!
 //! The layout is the hypervisor's `HV_PARTITION_PROCESSOR_FEATURES` and
 //! `HV_PARTITION_PROCESSOR_XSAVE_FEATURES`, which MSHV uses directly and WHP's
@@ -48,6 +52,7 @@ use crate::fingerprint::IA32_ARCH_CAPABILITIES;
 use crate::profile::CpuProfile;
 use crate::surface::SupportedMsr;
 use crate::surface::TIME_POLICY_BITS;
+use crate::vendor::CpuVendor;
 use hvdef::HvX64PartitionProcessorFeatures as Bank0;
 use hvdef::HvX64PartitionProcessorFeatures1 as Bank1;
 use hvdef::HvX64PartitionProcessorXsaveFeatures as XsaveBank;
@@ -64,6 +69,8 @@ const X1: u32 = 0x8000_0001;
 const X7: u32 = 0x8000_0007;
 /// The extended feature identifiers leaf.
 const X8: u32 = 0x8000_0008;
+/// AMD's extended feature leaf 2.
+const X21: u32 = 0x8000_0021;
 
 /// The `IA32_ARCH_CAPABILITIES` bits that Hyper-V derives from the processor
 /// feature banks, as (MSR bit, bank, bank bit).
@@ -240,6 +247,22 @@ impl fmt::Display for CpuidBit {
     }
 }
 
+/// Where AMD CPUs enumerate the CPUID feature bit of an [`HvFeature`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmdCpuid {
+    /// Where Intel CPUs do.
+    Same,
+    /// Elsewhere: the speculation controls in `0x80000008` EBX, and SVM in
+    /// `0x80000001` ECX.
+    At(CpuidBit),
+    /// Nowhere that the feature controls. `intel_prefetch_support` is
+    /// Intel's `PREFETCHW`, whose bit, `0x80000001` ECX bit 8, AMD CPUs
+    /// enumerate as 3DNowPrefetch, and the hypervisor presents it to AMD
+    /// guests whatever the feature: a WHP host with an AMD EPYC 7763 that
+    /// does not offer the feature presents it.
+    Uncontrolled,
+}
+
 /// A processor feature bit and the CPUID feature bit it controls.
 #[derive(Debug)]
 pub struct HvFeature {
@@ -248,8 +271,11 @@ pub struct HvFeature {
     pub word: HvFeatureWord,
     /// The bit, as a mask of [`Self::word`].
     pub mask: u64,
-    /// The CPUID feature bit that a partition presents only with this bit.
+    /// The CPUID feature bit that a partition presents only with this bit
+    /// on Intel CPUs, and on AMD CPUs as [`Self::amd`] says.
     pub cpuid: CpuidBit,
+    /// Where AMD CPUs enumerate the feature.
+    pub amd: AmdCpuid,
 }
 
 impl HvFeature {
@@ -259,11 +285,33 @@ impl HvFeature {
         self.setter.trim_start_matches("with_")
     }
 
+    /// Returns the CPUID feature bit that the feature controls on `vendor`'s
+    /// CPUs, or `None` if it controls none there.
+    pub fn cpuid_for(&self, vendor: CpuVendor) -> Option<CpuidBit> {
+        match (vendor, self.amd) {
+            (CpuVendor::Intel, _) | (CpuVendor::Amd, AmdCpuid::Same) => Some(self.cpuid),
+            (CpuVendor::Amd, AmdCpuid::At(bit)) => Some(bit),
+            (CpuVendor::Amd, AmdCpuid::Uncontrolled) => None,
+        }
+    }
+
     /// Returns whether the CPUID bit is one of the time policy bits, which
     /// the time ABI's CPUID supplies whatever the features.
     pub fn is_time_policy(&self) -> bool {
-        let bit = self.cpuid;
-        TIME_POLICY_BITS.contains(&(bit.leaf, bit.subleaf, bit.register, 1 << bit.bit))
+        [CpuVendor::Intel, CpuVendor::Amd]
+            .into_iter()
+            .filter_map(|vendor| self.cpuid_for(vendor))
+            .any(|bit| {
+                TIME_POLICY_BITS.contains(&(bit.leaf, bit.subleaf, bit.register, 1 << bit.bit))
+            })
+    }
+
+    /// Returns how `profile` pins the CPUID bit that the feature controls on
+    /// the CPUs of the profile's vendor: [`Pinned::Unpinned`] where it
+    /// controls none.
+    pub fn pinned_by(&self, profile: &CpuProfile) -> Pinned {
+        self.cpuid_for(profile.cpu_vendor())
+            .map_or(Pinned::Unpinned, |bit| pinned(profile, bit))
     }
 }
 
@@ -274,35 +322,84 @@ macro_rules! feature {
             word: HvFeatureWord::$word,
             mask: $ty::new().$with(true).into_bits(),
             cpuid: CpuidBit::new($leaf, $subleaf, $register, $bit),
+            amd: AmdCpuid::Same,
+        }
+    };
+    (
+        $word:ident,
+        $ty:ident,
+        $with:ident,
+        $leaf:expr,
+        $subleaf:expr,
+        $register:expr,
+        $bit:expr;
+        amd uncontrolled
+    ) => {
+        HvFeature {
+            setter: stringify!($with),
+            word: HvFeatureWord::$word,
+            mask: $ty::new().$with(true).into_bits(),
+            cpuid: CpuidBit::new($leaf, $subleaf, $register, $bit),
+            amd: AmdCpuid::Uncontrolled,
+        }
+    };
+    (
+        $word:ident,
+        $ty:ident,
+        $with:ident,
+        $leaf:expr,
+        $subleaf:expr,
+        $register:expr,
+        $bit:expr;
+        amd $amd_leaf:expr,
+        $amd_subleaf:expr,
+        $amd_register:expr,
+        $amd_bit:expr
+    ) => {
+        HvFeature {
+            setter: stringify!($with),
+            word: HvFeatureWord::$word,
+            mask: $ty::new().$with(true).into_bits(),
+            cpuid: CpuidBit::new($leaf, $subleaf, $register, $bit),
+            amd: AmdCpuid::At(CpuidBit::new(
+                $amd_leaf,
+                $amd_subleaf,
+                $amd_register,
+                $amd_bit,
+            )),
         }
     };
 }
 
 macro_rules! bank0 {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Bank0, Bank0, $with, $($cpuid),+)
+    ($with:ident, $($cpuid:tt)+) => {
+        feature!(Bank0, Bank0, $with, $($cpuid)+)
     };
 }
 
 macro_rules! bank1 {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Bank1, Bank1, $with, $($cpuid),+)
+    ($with:ident, $($cpuid:tt)+) => {
+        feature!(Bank1, Bank1, $with, $($cpuid)+)
     };
 }
 
 macro_rules! xsave {
-    ($with:ident, $($cpuid:expr),+) => {
-        feature!(Xsave, XsaveBank, $with, $($cpuid),+)
+    ($with:ident, $($cpuid:tt)+) => {
+        feature!(Xsave, XsaveBank, $with, $($cpuid)+)
     };
 }
 
 /// The processor feature bits with a CPUID feature, as leaf, subleaf,
-/// register, and bit. The leaves follow the Intel SDM and the AMD APM. The
-/// bits that the banks derive into `IA32_ARCH_CAPABILITIES` are
-/// [`ARCH_CAPABILITIES_BANK_BITS`].
+/// register, and bit. The leaves follow the Intel SDM and the AMD APM: where
+/// the vendors enumerate a feature in different places, `amd` gives AMD's
+/// (the speculation controls, PSFD, and SVM), and the features of AMD CPUs
+/// alone (VIRT_SSBD, the always-on STIBP hint, `IBPB_RET`, `BTC_NO`, and the
+/// SRSO and TSA bits of `0x80000021`) map to AMD's bits, which Intel
+/// profiles pin clear. The bits that the banks derive into
+/// `IA32_ARCH_CAPABILITIES` are [`ARCH_CAPABILITIES_BANK_BITS`].
 ///
 /// WHP's hardware test `features_control_the_mapped_cpuid_bits` checks the
-/// table against what WHP presents on a host.
+/// table against what WHP presents on a host, of either vendor.
 pub const HV_FEATURES: &[HvFeature] = &[
     // Bank 0.
     bank0!(with_sse3_support, 1, 0, ECX, 0),
@@ -336,7 +433,7 @@ pub const HV_FEATURES: &[HvFeature] = &[
     bank0!(with_dep_x87_fpu_save_support, 7, 0, EBX, 13),
     bank0!(with_rd_seed_support, 7, 0, EBX, 18),
     bank0!(with_adx_support, 7, 0, EBX, 19),
-    bank0!(with_intel_prefetch_support, X1, 0, ECX, 8),
+    bank0!(with_intel_prefetch_support, X1, 0, ECX, 8; amd uncontrolled),
     bank0!(with_smap_support, 7, 0, EBX, 20),
     bank0!(with_hle_support, 7, 0, EBX, 4),
     bank0!(with_rtm_support, 7, 0, EBX, 11),
@@ -346,13 +443,16 @@ pub const HV_FEATURES: &[HvFeature] = &[
     bank0!(with_sha_support, 7, 0, EBX, 29),
     bank0!(with_x87_pointers_saved_support, X8, 0, EBX, 2),
     bank0!(with_invpcid_support, 7, 0, EBX, 10),
-    bank0!(with_ibrs_support, 7, 0, EDX, 26),
-    bank0!(with_stibp_support, 7, 0, EDX, 27),
-    // CPUID enumerates IBPB with IBRS; WHP derives the bit from IBRS.
-    bank0!(with_ibpb_support, 7, 0, EDX, 26),
-    bank0!(with_mdd_support, 7, 0, EDX, 31),
+    bank0!(with_ibrs_support, 7, 0, EDX, 26; amd X8, 0, EBX, 14),
+    bank0!(with_stibp_support, 7, 0, EDX, 27; amd X8, 0, EBX, 15),
+    // CPUID enumerates IBPB with IBRS on Intel; WHP derives the bit from
+    // IBRS.
+    bank0!(with_ibpb_support, 7, 0, EDX, 26; amd X8, 0, EBX, 12),
+    bank0!(with_mdd_support, 7, 0, EDX, 31; amd X8, 0, EBX, 24),
     bank0!(with_fast_short_rep_mov_support, 7, 0, EDX, 4),
     bank0!(with_l1d_cache_flush_support, 7, 0, EDX, 28),
+    // AMD's VIRT_SSBD: SSBD through VIRT_SPEC_CTRL.
+    bank0!(with_virt_spec_ctrl_support, X8, 0, EBX, 25),
     bank0!(with_rd_pid_support, 7, 0, ECX, 22),
     bank0!(with_umip_support, 7, 0, ECX, 2),
     bank0!(with_mb_clear_support, 7, 0, EDX, 10),
@@ -363,9 +463,9 @@ pub const HV_FEATURES: &[HvFeature] = &[
     bank1!(with_rdpru_support, X8, 0, EBX, 4),
     // Also sets the linear address width, 0x80000008 EAX[15:8].
     bank1!(with_la57_support, 7, 0, ECX, 16),
-    // MSHV does not expose VMX through this bit alone.
-    bank1!(with_nested_virt_support, 1, 0, ECX, 5),
-    bank1!(with_psfd_support, 7, 2, EDX, 0),
+    // MSHV does not expose VMX through this bit alone, nor WHP SVM.
+    bank1!(with_nested_virt_support, 1, 0, ECX, 5; amd X1, 0, ECX, 2),
+    bank1!(with_psfd_support, 7, 2, EDX, 0; amd X8, 0, EBX, 28),
     bank1!(with_cet_ss_support, 7, 0, ECX, 7),
     bank1!(with_cet_ibt_support, 7, 0, EDX, 20),
     bank1!(with_enqcmd_support, 7, 0, ECX, 29),
@@ -380,12 +480,26 @@ pub const HV_FEATURES: &[HvFeature] = &[
     bank1!(with_fs_rep_stosb, 7, 1, EAX, 11),
     bank1!(with_fs_rep_cmpsb, 7, 1, EAX, 12),
     bank1!(with_tsx_ld_trk_support, 7, 0, EDX, 16),
+    // AMD's immunity to branch type confusion, IBPB_RET, and always-on STIBP
+    // preference.
+    bank1!(with_btc_no_support, X8, 0, EBX, 29),
+    bank1!(with_ibpb_rsb_flush_support, X8, 0, EBX, 30),
+    bank1!(with_stibp_always_on_support, X8, 0, EBX, 17),
     bank1!(with_cmpccxadd_support, 7, 1, EAX, 7),
     bank1!(with_bhi_dis_support, 7, 2, EDX, 4),
     bank1!(with_prefetch_i_support, 7, 1, EDX, 14),
     bank1!(with_sha512_support, 7, 1, EAX, 0),
     bank1!(with_sm3_support, 7, 1, EAX, 1),
     bank1!(with_sm4_support, 7, 1, EAX, 2),
+    // AMD's SBPB, IBPB_BRTYPE, SRSO_NO, SRSO_USER_KERNEL_NO, VERW_CLEAR, and
+    // TSA immunities.
+    bank1!(with_sbpb_support, X21, 0, EAX, 27),
+    bank1!(with_ibpb_br_type_support, X21, 0, EAX, 28),
+    bank1!(with_srso_no_support, X21, 0, EAX, 29),
+    bank1!(with_srso_user_kernel_no_support, X21, 0, EAX, 30),
+    bank1!(with_vrew_clear_support, X21, 0, EAX, 5),
+    bank1!(with_tsa_l1_no_support, X21, 0, ECX, 2),
+    bank1!(with_tsa_sq_no_support, X21, 0, ECX, 1),
     bank1!(with_lass_support, 7, 1, EAX, 6),
     // XSAVE features.
     xsave!(with_xsave_support, 1, 0, ECX, 26),
@@ -502,7 +616,7 @@ pub fn profile_features(
     let mut missing = Vec::new();
     for feature in HV_FEATURES {
         let word = features.word_mut(feature.word);
-        match pinned(profile, feature.cpuid) {
+        match feature.pinned_by(profile) {
             Pinned::Clear => *word &= !feature.mask,
             Pinned::Set if *word & feature.mask == 0 && !feature.is_time_policy() => {
                 missing.push(feature.name().to_owned());
@@ -536,11 +650,14 @@ pub fn profile_features(
 
 /// Clears from `cpuid` every CPUID bit that [`HV_FEATURES`] maps to a feature
 /// `available` lacks, so a host's CPUID and its features describe what a
-/// partition can present, without a probe partition.
+/// partition can present, without a probe partition. The bits are those of
+/// the vendor that `cpuid` reports ([`HvFeature::cpuid_for`]), Intel's for a
+/// vendor that profiles do not serve; a feature that controls no bit on that
+/// vendor's CPUs clears none.
 ///
 /// A CPUID bit that several features control (IBRS and IBPB both control
-/// `SPEC_CTRL`) is cleared when any of them is missing. Bits the table does
-/// not map are left alone.
+/// `SPEC_CTRL` on Intel) is cleared when any of them is missing. Bits the
+/// table does not map are left alone.
 ///
 /// The function only clears, so the host's own view bounds the result.
 /// MSHV's root CPUID hides `TSC_ADJUST` (`7.0:EBX[1]`), which a partition with
@@ -558,11 +675,18 @@ pub fn profile_features(
 /// The surface's guest physical address width must come from the hypervisor,
 /// not from this CPUID (see [`HostCpuSurface`](crate::HostCpuSurface)).
 pub fn restrict_cpuid_to_features(cpuid: &mut [CpuidEntry], available: HvFeatures) {
+    let vendor = crate::cpuid::lookup(cpuid, 0, 0)
+        .and_then(|[_, ebx, ecx, edx]| {
+            CpuVendor::from_cpuid_vendor(&crate::signature::vendor_bytes(ebx, edx, ecx))
+        })
+        .unwrap_or(CpuVendor::Intel);
     for feature in HV_FEATURES {
         if available.word(feature.word) & feature.mask != 0 {
             continue;
         }
-        let bit = feature.cpuid;
+        let Some(bit) = feature.cpuid_for(vendor) else {
+            continue;
+        };
         for entry in cpuid.iter_mut().filter(|entry| {
             entry.leaf.0 == bit.leaf && entry.subleaf.map_or(0, |subleaf| subleaf.0) == bit.subleaf
         }) {
@@ -785,11 +909,12 @@ mod tests {
                     word.name()
                 );
             }
-            // Every mapped bit follows the profile's CPUID.
+            // Every mapped bit follows the profile's CPUID, on its vendor's
+            // bits.
             for feature in HV_FEATURES {
                 let offered = available.word(feature.word) & feature.mask != 0;
                 let kept = features.word(feature.word) & feature.mask != 0;
-                match pinned(profile, feature.cpuid) {
+                match feature.pinned_by(profile) {
                     Pinned::Clear => assert!(!kept, "{host}: {}", feature.name()),
                     Pinned::Set | Pinned::Unpinned => {
                         assert_eq!(kept, offered, "{host}: {}", feature.name())
@@ -966,5 +1091,193 @@ mod tests {
                 assert_eq!(entry, before);
             }
         }
+    }
+
+    /// The processor features that WHP offered on the AMD EPYC 7763 (Milan)
+    /// Azure host that `test_support::MILAN_WHP_CPUID` comes from: no
+    /// speculation controls, but PSFD, `BTC_NO`, and nested virtualization.
+    const MILAN_WHP_HOST: HvFeatures = HvFeatures {
+        banks: [0x0602_0fcb_67f7_9fbf, 0x0000_0000_2000_01ed],
+        xsave: 0x50_381f,
+    };
+
+    /// The CPUID of an AMD host whose banks offer the speculation controls,
+    /// the immunities, and nested virtualization, as KVM's can on bare
+    /// metal, with SVM masked by the profile's policy.
+    fn amd_entries_with_speculation_controls() -> Vec<CpuidEntry> {
+        let mut entries = crate::test_support::milan_whp_entries();
+        for entry in &mut entries {
+            let mut registers = entry.registers();
+            match entry.key() {
+                // SVM.
+                (X1, None) => registers[ECX] |= 1 << 2,
+                // IBPB, IBRS, STIBP, SSBD, VIRT_SSBD, PSFD, and BTC_NO.
+                (X8, None) => {
+                    registers[EBX] |=
+                        1 << 12 | 1 << 14 | 1 << 15 | 1 << 24 | 1 << 25 | 1 << 28 | 1 << 29
+                }
+                // SBPB, IBPB_BRTYPE, SRSO_NO, and the TSA immunities.
+                (X21, None) => {
+                    registers[EAX] |= 1 << 27 | 1 << 28 | 1 << 29;
+                    registers[ECX] |= 1 << 1 | 1 << 2;
+                }
+                _ => continue,
+            }
+            *entry = CpuidEntry::new(entry.leaf.0, entry.subleaf.map(|s| s.0), registers);
+        }
+        entries
+    }
+
+    /// Returns the host profile of an AMD host whose CPUID is `entries`.
+    fn amd_profile(entries: Vec<CpuidEntry>) -> CpuProfile {
+        crate::derive_host_profile(&crate::test_support::host_fingerprint("whp", entries)).unwrap()
+    }
+
+    #[test]
+    fn an_amd_profile_derives_on_its_host() {
+        let profile = amd_profile(crate::test_support::milan_whp_entries());
+        let features = profile_features(&profile, MILAN_WHP_HOST).unwrap();
+        // CLZERO, which the profile sets in 0x80000008 EBX, stays.
+        assert!(has(&features, HvFeatureWord::Bank1, "cl_zero_support"));
+        // SVM, RDPRU, and APERF/MPERF, which the profile clears, go, and so
+        // do PSFD, which this host offers without a SPEC_CTRL control, and
+        // BTC_NO: the policy clears both.
+        for name in [
+            "nested_virt_support",
+            "rdpru_support",
+            "a_count_m_count_support",
+            "psfd_support",
+            "btc_no_support",
+        ] {
+            assert!(!has(&features, HvFeatureWord::Bank1, name), "{name}");
+        }
+        for word in HvFeatureWord::ALL {
+            assert_eq!(features.word(word) & !MILAN_WHP_HOST.word(word), 0);
+        }
+    }
+
+    #[test]
+    fn an_amd_profile_takes_the_speculation_controls_from_amd_bits() {
+        let profile = amd_profile(amd_entries_with_speculation_controls());
+        let bank0 = [
+            "ibrs_support",
+            "stibp_support",
+            "ibpb_support",
+            "mdd_support",
+            "virt_spec_ctrl_support",
+        ];
+        // PSFD stays beside the SPEC_CTRL controls, from AMD's bit: Intel's,
+        // 7.2 EDX[0], is not the profile's.
+        let bank1 = [
+            "psfd_support",
+            "sbpb_support",
+            "ibpb_br_type_support",
+            "srso_no_support",
+            "tsa_l1_no_support",
+            "tsa_sq_no_support",
+        ];
+        let mut available = MILAN_WHP_HOST;
+        for name in bank0 {
+            available.banks[0] |= mask(HvFeatureWord::Bank0, name);
+        }
+        for name in bank1 {
+            available.banks[1] |= mask(HvFeatureWord::Bank1, name);
+        }
+        // Offered features the profile does not set go, BTC_NO, which the
+        // policy clears, included.
+        available.banks[1] |= mask(HvFeatureWord::Bank1, "srso_user_kernel_no_support")
+            | mask(HvFeatureWord::Bank1, "stibp_always_on_support")
+            | mask(HvFeatureWord::Bank1, "btc_no_support");
+        let features = profile_features(&profile, available).unwrap();
+        for name in bank0 {
+            assert!(has(&features, HvFeatureWord::Bank0, name), "{name}");
+        }
+        for name in bank1 {
+            assert!(has(&features, HvFeatureWord::Bank1, name), "{name}");
+        }
+        for name in [
+            "srso_user_kernel_no_support",
+            "stibp_always_on_support",
+            "btc_no_support",
+            "nested_virt_support",
+        ] {
+            assert!(!has(&features, HvFeatureWord::Bank1, name), "{name}");
+        }
+
+        // A host that lacks one fails the profile.
+        let mut lacking = available;
+        lacking.banks[0] &= !mask(HvFeatureWord::Bank0, "ibrs_support");
+        lacking.banks[1] &= !mask(HvFeatureWord::Bank1, "srso_no_support");
+        let error = profile_features(&profile, lacking).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert!(
+            error
+                .message
+                .ends_with("they lack ibrs_support, srso_no_support"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn restricts_an_amd_hosts_cpuid_to_amd_bits() {
+        let original = amd_entries_with_speculation_controls();
+        let mut cpuid = original.clone();
+        let mut available = MILAN_WHP_HOST;
+        available.banks[0] |= mask(HvFeatureWord::Bank0, "stibp_support");
+        restrict_cpuid_to_features(&mut cpuid, available);
+        let x8 = |cpuid: &[CpuidEntry]| crate::cpuid::lookup(cpuid, X8, 0).unwrap()[EBX];
+        // IBPB, IBRS, SSBD, and VIRT_SSBD go, STIBP stays, and PSFD and
+        // BTC_NO, which the host offers, stay.
+        assert_eq!(
+            x8(&cpuid),
+            x8(&original) & !(1 << 12 | 1 << 14 | 1 << 24 | 1 << 25)
+        );
+        // Intel's speculation bits are not AMD's.
+        assert_eq!(
+            crate::cpuid::lookup(&cpuid, 7, 0),
+            crate::cpuid::lookup(&original, 7, 0)
+        );
+    }
+
+    /// Intel's `PREFETCHW` feature controls `0x80000001` ECX bit 8 on Intel
+    /// CPUs only. WHP presents that bit, 3DNowPrefetch, to AMD guests
+    /// whatever the feature, which the Milan host does not even offer: an
+    /// AMD host's CPUID keeps it, and an AMD profile, which clears it, leaves
+    /// the feature as offered.
+    #[test]
+    fn intel_prefetch_controls_no_amd_bit() {
+        let feature = HV_FEATURES
+            .iter()
+            .find(|feature| feature.name() == "intel_prefetch_support")
+            .unwrap();
+        assert_eq!(
+            feature.cpuid_for(CpuVendor::Intel),
+            Some(CpuidBit::new(X1, 0, ECX, 8))
+        );
+        assert_eq!(feature.cpuid_for(CpuVendor::Amd), None);
+
+        let mut cpuid = crate::test_support::milan_whp_entries();
+        assert!(!has(
+            &MILAN_WHP_HOST,
+            HvFeatureWord::Bank0,
+            "intel_prefetch_support"
+        ));
+        restrict_cpuid_to_features(&mut cpuid, MILAN_WHP_HOST);
+        assert_ne!(
+            crate::cpuid::lookup(&cpuid, X1, 0).unwrap()[ECX] & 1 << 8,
+            0
+        );
+
+        let profile = amd_profile(crate::test_support::milan_whp_entries());
+        assert_eq!(profile.lookup(X1, 0)[ECX] & 1 << 8, 0);
+        assert!(matches!(feature.pinned_by(&profile), Pinned::Unpinned));
+        let mut available = MILAN_WHP_HOST;
+        available.banks[0] |= mask(HvFeatureWord::Bank0, "intel_prefetch_support");
+        let features = profile_features(&profile, available).unwrap();
+        assert!(has(
+            &features,
+            HvFeatureWord::Bank0,
+            "intel_prefetch_support"
+        ));
     }
 }
