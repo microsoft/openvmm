@@ -341,8 +341,8 @@ pub(crate) fn prepare_restore(
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor, effective command line, network, filesystem, boot and control
-/// console attachments, and sandbox blocks.
+/// hypervisor, effective command line, network, filesystems in virtio-fs slot
+/// order, boot and control console attachments, and sandbox blocks.
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
@@ -351,7 +351,7 @@ pub(crate) type ExpectedRestoreContract<'a> = (
         &'a EgressPolicy,
         &'a SnapshotAttachment,
     )>,
-    Option<(
+    Vec<(
         &'a MicrovmFilesystemConfig,
         &'a Path,
         &'a SnapshotAttachment,
@@ -424,7 +424,7 @@ pub(crate) fn validate_restore_contract(
         expected_hypervisor,
         effective_command_line,
         network,
-        filesystem,
+        filesystems,
         console_attachment,
         control_console_attachment,
         sandbox_blocks,
@@ -441,18 +441,23 @@ pub(crate) fn validate_restore_contract(
     };
     let network = network.map(|(config, policy, attachment)| (config, policy, attachment.clone()));
     let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
-    let filesystem = saved_contract
-        .microvm_filesystem
-        .as_ref()
-        .and(filesystem)
-        .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()));
+    // A dormant-slot snapshot captured no filesystem, so a filesystem that the
+    // restore attaches to the slot is not part of the snapshot's contract.
+    let filesystems = if saved_contract.microvm_filesystem.is_some() {
+        filesystems
+            .into_iter()
+            .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
         network,
         filesystem_slot,
-        filesystem,
+        filesystems,
         console_attachment.cloned(),
         control_console_attachment.cloned(),
         sandbox_blocks,

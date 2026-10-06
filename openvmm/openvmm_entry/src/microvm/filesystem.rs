@@ -8,9 +8,10 @@ use anyhow::Context;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub(super) const MICROVM_FILESYSTEM_STABLE_ID: &str = "fs:microvm0";
+pub(super) const MICROVM_FILESYSTEM_STABLE_ID: &str =
+    openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0].stable_id;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct EffectiveMicrovmFilesystem {
     pub(super) config: openvmm_defs::microvm::MicrovmFilesystemConfig,
     pub(super) root_path: String,
@@ -238,8 +239,11 @@ fn canonical_microvm_filesystem_denied_paths(
     Ok(encoded)
 }
 
+/// Returns the canonical host root of `host_path` and its live attachment
+/// identity in the virtio-fs slot `slot`.
 pub(crate) fn microvm_filesystem_attachment(
     host_path: &Path,
+    slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
 ) -> anyhow::Result<(
     String,
     openvmm_helpers::snapshot::microvm::SnapshotAttachment,
@@ -252,7 +256,7 @@ pub(crate) fn microvm_filesystem_attachment(
     Ok((
         root_path,
         openvmm_helpers::snapshot::microvm::SnapshotAttachment {
-            stable_id: MICROVM_FILESYSTEM_STABLE_ID.to_owned(),
+            stable_id: slot.stable_id.to_owned(),
             kind: "virtio-fs".to_owned(),
             required: true,
             reconnect_policy: "live-revalidate".to_owned(),
@@ -264,12 +268,17 @@ pub(crate) fn microvm_filesystem_attachment(
     ))
 }
 
-fn microvm_filesystem_from_mount(
+/// Builds the filesystem of `requested` in its canonical host root, with the
+/// denied paths that `--mount-deny` attributed to it.
+fn microvm_filesystem_from_root(
     requested: &cli_args::microvm::MicrovmMountCli,
+    (root_path, attachment): (
+        String,
+        openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    ),
     denied_paths: &[PathBuf],
     owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
 ) -> anyhow::Result<EffectiveMicrovmFilesystem> {
-    let (root_path, attachment) = microvm_filesystem_attachment(&requested.host_path)?;
     if owner.is_caller() {
         validate_caller_owned_root(Path::new(&root_path))?;
     }
@@ -286,6 +295,95 @@ fn microvm_filesystem_from_mount(
         root_path,
         attachment,
     })
+}
+
+/// Rejects host roots that overlap, so that no share can reach the files of
+/// another share, or the paths that another share denies, under a different
+/// access policy. Equal root identities catch one directory reached through
+/// two canonical paths, such as a bind mount.
+fn validate_microvm_filesystem_roots(
+    roots: &[(
+        String,
+        openvmm_helpers::snapshot::microvm::SnapshotAttachment,
+    )],
+) -> anyhow::Result<()> {
+    for (index, (root, attachment)) in roots.iter().enumerate() {
+        for (other, other_attachment) in &roots[..index] {
+            anyhow::ensure!(
+                !Path::new(root).starts_with(other)
+                    && !Path::new(other).starts_with(root)
+                    && attachment.identity != other_attachment.identity,
+                "microVM filesystem host directories must not overlap: {other} and {root}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Builds the filesystems of the `--mount` options, which occupy the fixed
+/// virtio-fs slots in order. Each `--mount-deny` applies to the export root
+/// that contains it; a relative path is relative to the only export root.
+fn microvm_filesystems_from_mounts(
+    requested: &[cli_args::microvm::MicrovmMountCli],
+    denied_paths: &[PathBuf],
+    owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
+) -> anyhow::Result<Vec<EffectiveMicrovmFilesystem>> {
+    let slots = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS;
+    anyhow::ensure!(
+        requested.len() <= slots.len(),
+        openvmm_defs::microvm::InvalidMicrovmFilesystemConfig::TooManyFilesystems
+    );
+    let roots = requested
+        .iter()
+        .zip(slots)
+        .map(|(mount, slot)| microvm_filesystem_attachment(&mount.host_path, slot))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    validate_microvm_filesystem_roots(&roots)?;
+
+    let mut attributed = vec![Vec::new(); roots.len()];
+    match roots.len() {
+        0 => anyhow::ensure!(denied_paths.is_empty(), "--mount-deny requires --mount"),
+        1 => attributed[0].extend_from_slice(denied_paths),
+        _ => {
+            for denied in denied_paths {
+                anyhow::ensure!(
+                    denied.is_absolute(),
+                    "with several --mount options, --mount-deny requires an absolute host path: {}",
+                    denied.display()
+                );
+                let canonical = fs_err::canonicalize(denied).with_context(|| {
+                    format!(
+                        "failed to canonicalize microVM denied path {}",
+                        denied.display()
+                    )
+                })?;
+                let index = roots
+                    .iter()
+                    .position(|(root, _)| canonical.starts_with(root))
+                    .with_context(|| {
+                        format!(
+                            "microVM denied path resolves outside the filesystem export roots: {}",
+                            denied.display()
+                        )
+                    })?;
+                attributed[index].push(denied.clone());
+            }
+        }
+    }
+
+    let filesystems = requested
+        .iter()
+        .zip(roots)
+        .zip(&attributed)
+        .map(|((mount, root), denied)| microvm_filesystem_from_root(mount, root, denied, owner))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    openvmm_defs::microvm::validate_microvm_filesystems(
+        &filesystems
+            .iter()
+            .map(|filesystem| filesystem.config.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    Ok(filesystems)
 }
 
 /// Rejects an export root that caller ownership cannot squash guest root to.
@@ -405,16 +503,18 @@ pub(crate) fn microvm_filesystem_slot_from_snapshot(
     }
 }
 
-pub(super) fn effective_microvm_filesystem(
-    requested: Option<&cli_args::microvm::MicrovmMountCli>,
+/// Returns the effective filesystems of the `--mount` options, in virtio-fs
+/// slot order. A restore must supply exactly the snapshot's filesystems, in
+/// the same order, unless the snapshot's first slot is dormant, in which case
+/// one `--mount` may bind a new filesystem to it.
+pub(super) fn effective_microvm_filesystems(
+    requested: &[cli_args::microvm::MicrovmMountCli],
     denied_paths: &[PathBuf],
     owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
     restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
-) -> anyhow::Result<Option<EffectiveMicrovmFilesystem>> {
+) -> anyhow::Result<Vec<EffectiveMicrovmFilesystem>> {
     let Some(restore) = restore else {
-        return requested
-            .map(|requested| microvm_filesystem_from_mount(requested, denied_paths, owner))
-            .transpose();
+        return microvm_filesystems_from_mounts(requested, denied_paths, owner);
     };
 
     let has_device = microvm_filesystem_slot_from_snapshot(restore)?;
@@ -429,48 +529,69 @@ pub(super) fn effective_microvm_filesystem(
                 || has_device == restore.microvm_filesystem.is_some()),
         "snapshot microVM filesystem slot, policy, and attachment inventories disagree"
     );
-    let Some(saved) = restore.microvm_filesystem.as_ref() else {
-        let Some(requested) = requested else {
-            return Ok(None);
-        };
+    let saved = restore.microvm_filesystems().collect::<Vec<_>>();
+    if saved.is_empty() {
+        if requested.is_empty() {
+            return Ok(Vec::new());
+        }
         anyhow::ensure!(
             restore.microvm_filesystem_slot_version
                 == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
             "snapshot does not support restore-time microVM filesystem attachment"
         );
-        return microvm_filesystem_from_mount(requested, denied_paths, owner).map(Some);
-    };
-    let requested = requested
-        .context("snapshot restore requires a fresh --mount attachment for fs:microvm0")?;
-    let config = microvm_filesystem_from_snapshot(saved)?;
+        // Only the dormant first slot exists in the snapshot's machine.
+        anyhow::ensure!(
+            requested.len() == 1,
+            "a dormant-slot snapshot can attach only one --mount on restore"
+        );
+        return microvm_filesystems_from_mounts(requested, denied_paths, owner);
+    }
     anyhow::ensure!(
-        requested.guest_target == config.guest_mount_target && requested.access == config.access,
-        "restore-time mount target or access mode does not match the snapshot contract"
+        !requested.is_empty(),
+        "snapshot restore requires a fresh --mount attachment for fs:microvm0"
     );
     anyhow::ensure!(
-        owner == config.owner,
-        "restore-time --mount-owner {} does not match the snapshot contract ({})",
-        owner.as_str(),
-        config.owner.as_str()
+        requested.len() == saved.len(),
+        "snapshot restore requires {} --mount attachments in snapshot order, but {} were supplied",
+        saved.len(),
+        requested.len()
     );
-    let effective = microvm_filesystem_from_mount(requested, denied_paths, owner)?;
-    anyhow::ensure!(
-        !saved.canonical_host_path.is_empty(),
-        "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
-    );
-    anyhow::ensure!(
-        effective.root_path == saved.canonical_host_path,
-        "restore-time filesystem canonical host path does not match the snapshot contract"
-    );
-    anyhow::ensure!(
-        Some(&effective.attachment) == saved_attachment,
-        "restore-time filesystem root identity does not match the snapshot attachment"
-    );
-    anyhow::ensure!(
-        effective.config == config,
-        "restore-time filesystem denied paths do not match the snapshot contract"
-    );
-    Ok(Some(effective))
+    let mut configs = Vec::with_capacity(saved.len());
+    for (requested, saved) in requested.iter().zip(&saved) {
+        let config = microvm_filesystem_from_snapshot(saved)?;
+        anyhow::ensure!(
+            requested.guest_target == config.guest_mount_target
+                && requested.access == config.access,
+            "restore-time mount target or access mode does not match the snapshot contract"
+        );
+        anyhow::ensure!(
+            owner == config.owner,
+            "restore-time --mount-owner {} does not match the snapshot contract ({})",
+            owner.as_str(),
+            config.owner.as_str()
+        );
+        configs.push(config);
+    }
+    let effective = microvm_filesystems_from_mounts(requested, denied_paths, owner)?;
+    for ((effective, saved), config) in effective.iter().zip(&saved).zip(&configs) {
+        anyhow::ensure!(
+            !saved.canonical_host_path.is_empty(),
+            "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+        );
+        anyhow::ensure!(
+            effective.root_path == saved.canonical_host_path,
+            "restore-time filesystem canonical host path does not match the snapshot contract"
+        );
+        anyhow::ensure!(
+            restore.attachments.contains(&effective.attachment),
+            "restore-time filesystem root identity does not match the snapshot attachment"
+        );
+        anyhow::ensure!(
+            effective.config == *config,
+            "restore-time filesystem denied paths do not match the snapshot contract"
+        );
+    }
+    Ok(effective)
 }
 
 #[cfg(test)]
@@ -484,6 +605,19 @@ mod tests {
 
     const VMM: openvmm_defs::microvm::MicrovmFilesystemOwner =
         openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm;
+
+    /// Resolves at most one `--mount`, like the single-share tests expect.
+    fn effective_microvm_filesystem(
+        requested: &[cli_args::microvm::MicrovmMountCli],
+        denied_paths: &[PathBuf],
+        owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
+        restore: Option<&openvmm_helpers::snapshot::microvm::SnapshotMachineContract>,
+    ) -> anyhow::Result<Option<EffectiveMicrovmFilesystem>> {
+        let mut filesystems =
+            effective_microvm_filesystems(requested, denied_paths, owner, restore)?;
+        assert!(filesystems.len() <= 1);
+        Ok(filesystems.pop())
+    }
 
     fn filesystem_contract(
         root: &Path,
@@ -501,91 +635,78 @@ mod tests {
         )
         .unwrap()
         .with_owner(owner);
-        let (root_path, attachment) = microvm_filesystem_attachment(root).unwrap();
-        let mut command_line = build_microvm_command_line(&[], false).unwrap();
-        openvmm_defs::microvm::append_microvm_virtio_discovery(
-            &mut command_line,
-            None,
-            true,
-            Some(&filesystem),
-            false,
-            false,
-            &[],
-        )
-        .unwrap();
-        openvmm_helpers::snapshot::microvm::microvm_machine_contract(
-            if cfg!(windows) { "whp" } else { "kvm" },
-            openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
-            command_line,
-            None,
-            true,
-            Some((&filesystem, Path::new(&root_path), attachment)),
-            None,
-            None,
-            Vec::new(),
-            1,
-            1024,
-            None,
-            [
-                "partition",
-                "vmtime",
-                "pic",
-                "ioapic",
-                "pit",
-                "rtc",
-                "microvm-portb",
-                "microvm-shutdown",
-                "microvm-snapshot-request",
-                "virtiofs-3489665024",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            crate::microvm::restore::tests::test_time_contract(),
-            crate::microvm::restore::tests::test_cpu_profile(),
-        )
-        .unwrap()
+        filesystems_contract(&[(filesystem, root)])
     }
 
     fn dormant_filesystem_contract() -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract
     {
+        filesystems_contract(&[])
+    }
+
+    /// Builds the contract of a cold-booted machine with `shares` attached to
+    /// the virtio-fs slots in order, or with a dormant first slot.
+    fn filesystems_contract(
+        shares: &[(openvmm_defs::microvm::MicrovmFilesystemConfig, &Path)],
+    ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
+        let filesystems = shares
+            .iter()
+            .map(|(filesystem, _)| filesystem.clone())
+            .collect::<Vec<_>>();
+        let roots = shares
+            .iter()
+            .zip(&openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS)
+            .map(|((_, root), slot)| microvm_filesystem_attachment(root, slot).unwrap())
+            .collect::<Vec<_>>();
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
             true,
-            None,
+            &filesystems,
             false,
             false,
             &[],
         )
         .unwrap();
+        let mut state_unit_names = [
+            "partition",
+            "vmtime",
+            "pic",
+            "ioapic",
+            "pit",
+            "rtc",
+            "microvm-portb",
+            "microvm-shutdown",
+            "microvm-snapshot-request",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        state_unit_names.extend(
+            openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
+                .iter()
+                .take(shares.len().max(1))
+                .map(|slot| format!("virtiofs-{}", slot.mmio_base)),
+        );
         openvmm_helpers::snapshot::microvm::microvm_machine_contract(
             if cfg!(windows) { "whp" } else { "kvm" },
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             None,
             true,
-            None,
+            filesystems
+                .iter()
+                .zip(&roots)
+                .map(|(filesystem, (root_path, attachment))| {
+                    (filesystem, Path::new(root_path), attachment.clone())
+                })
+                .collect(),
             None,
             None,
             Vec::new(),
             1,
             1024,
             None,
-            [
-                "partition",
-                "vmtime",
-                "pic",
-                "ioapic",
-                "pit",
-                "rtc",
-                "microvm-portb",
-                "microvm-shutdown",
-                "microvm-snapshot-request",
-                "virtiofs-3489665024",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
+            state_unit_names,
             crate::microvm::restore::tests::test_time_contract(),
             crate::microvm::restore::tests::test_cpu_profile(),
         )
@@ -622,7 +743,7 @@ mod tests {
         .unwrap();
         options.validate_microvm_options().unwrap();
         let filesystem = effective_microvm_filesystem(
-            options.microvm.microvm_mount.as_ref(),
+            options.microvm.microvm_mount.as_slice(),
             &options.microvm.microvm_mount_deny,
             VMM,
             None,
@@ -648,7 +769,7 @@ mod tests {
         let contract = filesystem_contract(root.path());
         let options = restore_mount_options(root.path(), "ro");
         let restored = effective_microvm_filesystem(
-            options.microvm.microvm_mount.as_ref(),
+            options.microvm.microvm_mount.as_slice(),
             &[],
             VMM,
             Some(&contract),
@@ -662,7 +783,7 @@ mod tests {
         let replacement_options = restore_mount_options(replacement.path(), "ro");
         assert!(
             effective_microvm_filesystem(
-                replacement_options.microvm.microvm_mount.as_ref(),
+                replacement_options.microvm.microvm_mount.as_slice(),
                 &[],
                 VMM,
                 Some(&contract)
@@ -683,7 +804,7 @@ mod tests {
         let options = restore_mount_options(&moved, "ro");
         assert!(
             effective_microvm_filesystem(
-                options.microvm.microvm_mount.as_ref(),
+                options.microvm.microvm_mount.as_slice(),
                 &[],
                 VMM,
                 Some(&contract)
@@ -696,12 +817,12 @@ mod tests {
     fn filesystem_restore_rejects_missing_or_changed_policy() {
         let root = tempfile::tempdir().unwrap();
         let contract = filesystem_contract(root.path());
-        assert!(effective_microvm_filesystem(None, &[], VMM, Some(&contract)).is_err());
+        assert!(effective_microvm_filesystem(&[], &[], VMM, Some(&contract)).is_err());
 
         let changed_mode = restore_mount_options(root.path(), "rw");
         assert!(
             effective_microvm_filesystem(
-                changed_mode.microvm.microvm_mount.as_ref(),
+                changed_mode.microvm.microvm_mount.as_slice(),
                 &[],
                 VMM,
                 Some(&contract),
@@ -714,7 +835,7 @@ mod tests {
     fn filesystem_restore_without_mount_preserves_dormant_slot() {
         let contract = dormant_filesystem_contract();
         assert!(
-            effective_microvm_filesystem(None, &[], VMM, Some(&contract))
+            effective_microvm_filesystem(&[], &[], VMM, Some(&contract))
                 .unwrap()
                 .is_none()
         );
@@ -726,7 +847,7 @@ mod tests {
         let contract = dormant_filesystem_contract();
         let options = restore_mount_options(root.path(), "rw");
         let filesystem = effective_microvm_filesystem(
-            options.microvm.microvm_mount.as_ref(),
+            options.microvm.microvm_mount.as_slice(),
             &[],
             VMM,
             Some(&contract),
@@ -750,7 +871,7 @@ mod tests {
         let contract = network_contract();
         let options = restore_mount_options(root.path(), "ro");
         let error = match effective_microvm_filesystem(
-            options.microvm.microvm_mount.as_ref(),
+            options.microvm.microvm_mount.as_slice(),
             &[],
             VMM,
             Some(&contract),
@@ -817,7 +938,7 @@ mod tests {
         if metadata.uid() == 0 && metadata.gid() == 0 {
             let options = restore_mount_options(root_owned, "ro");
             let error = match effective_microvm_filesystem(
-                options.microvm.microvm_mount.as_ref(),
+                options.microvm.microvm_mount.as_slice(),
                 &[],
                 caller,
                 None,
@@ -837,7 +958,7 @@ mod tests {
         if metadata.uid() != 0 && metadata.gid() != 0 {
             let options = restore_mount_options(root.path(), "rw");
             let filesystem = effective_microvm_filesystem(
-                options.microvm.microvm_mount.as_ref(),
+                options.microvm.microvm_mount.as_slice(),
                 &[],
                 caller,
                 None,
@@ -859,7 +980,7 @@ mod tests {
             return;
         }
         let options = restore_mount_options(root.path(), "ro");
-        let requested = options.microvm.microvm_mount.as_ref();
+        let requested = options.microvm.microvm_mount.as_slice();
 
         let contract = filesystem_contract_with_owner(root.path(), caller);
         assert_eq!(
@@ -927,5 +1048,245 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    fn mount_options(mounts: &[String], extra: &[&str]) -> Options {
+        let mut args = vec!["openvmm", "--machine", "microvm"];
+        for mount in mounts {
+            args.extend(["--mount", mount.as_str()]);
+        }
+        args.extend(extra);
+        Options::try_parse_from(args).unwrap()
+    }
+
+    fn workspace_and_toolcache(
+        workspace: &Path,
+        toolcache: &Path,
+        toolcache_mode: &str,
+    ) -> Vec<String> {
+        vec![
+            format!("/workspace,{},rw", workspace.display()),
+            format!(
+                "/opt/hostedtoolcache,{},{toolcache_mode}",
+                toolcache.display()
+            ),
+        ]
+    }
+
+    #[test]
+    fn mounts_occupy_the_fixed_slots_in_order() {
+        let workspace = tempfile::tempdir().unwrap();
+        let toolcache = tempfile::tempdir().unwrap();
+        let options = mount_options(
+            &workspace_and_toolcache(workspace.path(), toolcache.path(), "ro"),
+            &[],
+        );
+        options.validate_microvm_options().unwrap();
+        let filesystems =
+            effective_microvm_filesystems(&options.microvm.microvm_mount, &[], VMM, None).unwrap();
+        let summary = filesystems
+            .iter()
+            .map(|filesystem| {
+                (
+                    filesystem.attachment.stable_id.as_str(),
+                    filesystem.config.guest_mount_target.as_str(),
+                    filesystem.config.access,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [
+                (
+                    "fs:microvm0",
+                    "/workspace",
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
+                ),
+                (
+                    "fs:microvm1",
+                    "/opt/hostedtoolcache",
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly
+                ),
+            ]
+        );
+        for (filesystem, root) in filesystems.iter().zip([&workspace, &toolcache]) {
+            assert_eq!(
+                filesystem.root_path,
+                fs_err::canonicalize(root.path()).unwrap().to_str().unwrap()
+            );
+        }
+        assert_ne!(
+            filesystems[0].attachment.identity,
+            filesystems[1].attachment.identity
+        );
+    }
+
+    #[test]
+    fn mount_deny_applies_to_the_share_that_contains_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let toolcache = tempfile::tempdir().unwrap();
+        let workspace_secrets = workspace.path().join("secrets");
+        let toolcache_secrets = toolcache.path().join("credentials");
+        fs_err::create_dir(&workspace_secrets).unwrap();
+        fs_err::create_dir(&toolcache_secrets).unwrap();
+        let mounts = workspace_and_toolcache(workspace.path(), toolcache.path(), "ro");
+        let filesystems = effective_microvm_filesystems(
+            &mount_options(&mounts, &[]).microvm.microvm_mount,
+            &[toolcache_secrets.clone(), workspace_secrets.clone()],
+            VMM,
+            None,
+        )
+        .unwrap();
+        assert_eq!(filesystems[0].config.denied_paths, ["secrets"]);
+        assert_eq!(filesystems[1].config.denied_paths, ["credentials"]);
+
+        // With several shares, a relative path names no export root.
+        let error = effective_microvm_filesystems(
+            &mount_options(&mounts, &[]).microvm.microvm_mount,
+            &[PathBuf::from("secrets")],
+            VMM,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("absolute host path"),
+            "{error:#}"
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        let error = effective_microvm_filesystems(
+            &mount_options(&mounts, &[]).microvm.microvm_mount,
+            &[outside.path().to_owned()],
+            VMM,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("outside the filesystem export roots")
+        );
+    }
+
+    #[test]
+    fn mounts_reject_overlapping_host_directories_and_guest_targets() {
+        let parent = tempfile::tempdir().unwrap();
+        let nested = parent.path().join("nested");
+        fs_err::create_dir(&nested).unwrap();
+        for (first, second) in [
+            (parent.path(), nested.as_path()),
+            (nested.as_path(), parent.path()),
+            (parent.path(), parent.path()),
+        ] {
+            let options = mount_options(&workspace_and_toolcache(first, second, "ro"), &[]);
+            let error =
+                match effective_microvm_filesystems(&options.microvm.microvm_mount, &[], VMM, None)
+                {
+                    Err(error) => error,
+                    Ok(_) => panic!("overlapping host directories were accepted"),
+                };
+            assert!(error.to_string().contains("must not overlap"), "{error:#}");
+        }
+
+        let other = tempfile::tempdir().unwrap();
+        let options = mount_options(
+            &[
+                format!("/workspace,{},rw", parent.path().display()),
+                format!("/workspace/cache,{},ro", other.path().display()),
+            ],
+            &[],
+        );
+        assert!(options.validate_microvm_options().is_err());
+        assert!(
+            effective_microvm_filesystems(&options.microvm.microvm_mount, &[], VMM, None).is_err()
+        );
+    }
+
+    fn two_share_contract(
+        workspace: &Path,
+        toolcache: &Path,
+    ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
+        filesystems_contract(&[
+            (
+                openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                    "/workspace".to_owned(),
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+                )
+                .unwrap(),
+                workspace,
+            ),
+            (
+                openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                    "/opt/hostedtoolcache".to_owned(),
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+                )
+                .unwrap(),
+                toolcache,
+            ),
+        ])
+    }
+
+    #[test]
+    fn filesystem_restore_requires_every_share_in_snapshot_order() {
+        let workspace = tempfile::tempdir().unwrap();
+        let toolcache = tempfile::tempdir().unwrap();
+        let contract = two_share_contract(workspace.path(), toolcache.path());
+        assert_eq!(contract.microvm_additional_filesystems.len(), 1);
+        let restore = |mounts: &[String]| {
+            let options = mount_options(mounts, &["--restore-snapshot", "snapshot"]);
+            effective_microvm_filesystems(&options.microvm.microvm_mount, &[], VMM, Some(&contract))
+        };
+
+        let mounts = workspace_and_toolcache(workspace.path(), toolcache.path(), "ro");
+        let restored = restore(&mounts).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(
+            restored
+                .iter()
+                .map(|filesystem| filesystem.attachment.clone())
+                .collect::<Vec<_>>(),
+            contract.attachments
+        );
+
+        let error = restore(&[]).unwrap_err();
+        assert!(error.to_string().contains("requires a fresh --mount"));
+        let error = restore(&mounts[..1]).unwrap_err();
+        assert!(
+            error.to_string().contains("2 --mount attachments"),
+            "{error:#}"
+        );
+        let swapped = [mounts[1].clone(), mounts[0].clone()];
+        assert!(restore(&swapped).is_err());
+        let writable = workspace_and_toolcache(workspace.path(), toolcache.path(), "rw");
+        assert!(restore(&writable).is_err());
+
+        let replacement = tempfile::tempdir().unwrap();
+        let replaced = workspace_and_toolcache(workspace.path(), replacement.path(), "ro");
+        let error = restore(&replaced).unwrap_err();
+        assert!(
+            error.to_string().contains("canonical host path"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn dormant_snapshot_attaches_only_one_mount_on_restore() {
+        let contract = dormant_filesystem_contract();
+        let workspace = tempfile::tempdir().unwrap();
+        let toolcache = tempfile::tempdir().unwrap();
+        let options = mount_options(
+            &workspace_and_toolcache(workspace.path(), toolcache.path(), "ro"),
+            &["--restore-snapshot", "snapshot"],
+        );
+        let error = match effective_microvm_filesystems(
+            &options.microvm.microvm_mount,
+            &[],
+            VMM,
+            Some(&contract),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("a dormant-slot snapshot attached two shares"),
+        };
+        assert!(error.to_string().contains("only one --mount"));
     }
 }

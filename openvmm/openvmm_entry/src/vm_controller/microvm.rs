@@ -39,10 +39,11 @@ pub(crate) struct MicrovmController {
     pub(crate) resources: MicrovmResources,
     /// Static identity of the microVM virtio-net device.
     pub(crate) network: Option<openvmm_defs::microvm::MicrovmNetworkConfig>,
-    /// Whether the microVM virtio-fs slot is present.
+    /// Whether the first microVM virtio-fs slot is present.
     pub(crate) filesystem_slot: bool,
-    /// Guest-visible policy of the active microVM filesystem.
-    pub(crate) filesystem: Option<openvmm_defs::microvm::MicrovmFilesystemConfig>,
+    /// Guest-visible policies of the active microVM filesystems, in virtio-fs
+    /// slot order.
+    pub(crate) filesystems: Vec<openvmm_defs::microvm::MicrovmFilesystemConfig>,
     /// Automatic RAM backing created for snapshot capture.
     pub(crate) snapshot_memory_file: Option<tempfile::NamedTempFile>,
     /// Private copy of a paired scratch image, kept alive for the VM lifetime.
@@ -277,13 +278,16 @@ impl VmController {
                 .zip(self.microvm.resources.egress_policy.as_ref())
                 .zip(self.microvm.resources.network_attachment.clone())
                 .map(|((network, policy), attachment)| (network, policy, attachment));
-            let filesystem = self
+            let filesystems = self
                 .microvm
-                .filesystem
-                .as_ref()
-                .zip(self.microvm.resources.filesystem_root_path.as_deref())
-                .zip(self.microvm.resources.filesystem_attachment.clone())
-                .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment));
+                .filesystems
+                .iter()
+                .zip(&self.microvm.resources.filesystem_root_paths)
+                .zip(&self.microvm.resources.filesystem_attachments)
+                .map(|((filesystem, root_path), attachment)| {
+                    (filesystem, root_path.as_path(), attachment.clone())
+                })
+                .collect();
             let mut blocks = crate::storage_builder::microvm::snapshot_block_contract(
                 &self.microvm.resources.sandbox_block_sources,
                 scratch_policy,
@@ -302,7 +306,7 @@ impl VmController {
                 command_line,
                 network,
                 self.microvm.filesystem_slot,
-                filesystem,
+                filesystems,
                 self.microvm.resources.console_attachment.clone(),
                 self.microvm.resources.control_console_attachment.clone(),
                 blocks,

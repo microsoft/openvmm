@@ -182,7 +182,9 @@ same canonical root path, tag, guest target, and access mode, and the live root
 must retain its saved identity. A snapshot captured with the slot dormant may
 omit the attachment or supply a new one; after `ResumeVM`, the guest explicitly
 mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 6, one
-request queue, and no DAX window.
+request queue, and no DAX window. The management API binds only the first
+microVM virtio-fs slot: the command line's second `--mount` slot is not
+exposed, and restoring a snapshot that captured two shares fails.
 
 The fork retains `VirtioFs.guest_mount_target` at protobuf field 3 and
 `read_write` at field 4 for existing microVM clients. Standard-machine

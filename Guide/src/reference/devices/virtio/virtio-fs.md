@@ -22,9 +22,10 @@ rules. It does not support snapshot and restore.
 
 ## microVM
 
-The microVM profile reserves one fixed virtio-fs slot. Without `--mount`, the
-slot is guest-discoverable but dormant and has no HostFs backend or filesystem
-policy. Configure an active attachment with:
+The microVM profile defines two fixed virtio-fs slots. A cold boot always
+exposes the first slot; without `--mount`, it is guest-discoverable but
+dormant and has no HostFs backend or filesystem policy. Configure an active
+attachment with:
 
 ```bash
 openvmm --machine microvm \
@@ -39,11 +40,11 @@ guest-visible configuration:
 
 | Property | Value |
 |---|---|
-| Stable ID | `fs:microvm0` |
-| Tag | `microvm` |
-| Transport | virtio-mmio at `0xd0001000` |
-| Interrupt | IRQ 6 |
-| Queues | One high-priority and one request queue |
+| Stable IDs | `fs:microvm0`, `fs:microvm1` |
+| Tags | `microvm`, `microvm1` |
+| Transport | virtio-mmio at `0xd0001000`, `0xd0008000` |
+| Interrupts | IRQ 6, IRQ 13 |
+| Queues | One high-priority and one request queue per slot |
 | Features | Indirect descriptors, event index, version 1, access-platform |
 | DAX window | None |
 | Cache policy | Zero entry and attribute lifetimes |
@@ -51,13 +52,42 @@ guest-visible configuration:
 | Maximum write | 1 MiB payload plus protocol headers |
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
 
+### Several shares
+
+Repeat `--mount` to attach a second host directory with its own guest target,
+tag, and access mode. Attachments fill the slots in command-line order, so
+the first uses `fs:microvm0` and tag `microvm`, and the second uses
+`fs:microvm1` and tag `microvm1`:
+
+```bash
+openvmm --machine microvm \
+  --mount /workspace,path/to/workspace,rw \
+  --mount /opt/hostedtoolcache,path/to/toolcache,ro \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
+
+The second slot exists only while a directory is attached to it, so machines
+with one or no share keep their device inventory and command line. Each slot
+is a separate HostFs server, and it enforces its own access mode and denied
+paths, so a guest cannot write to a read-only share through any mount of
+either tag. OpenVMM rejects more than two attachments, guest targets that
+equal or contain one another, and host directories that equal, contain, or
+are contained in one another (compared after canonicalization and by root
+object identity), because one share could otherwise reach files that the
+other share denies or exposes with a different access mode. With several
+attachments, each `--mount-deny` must be an absolute host path, and it
+applies to the share whose directory contains it. `--mount-owner` applies to
+every share.
+
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
-`virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line.
-The fixed transport is always discoverable. Active attachment policy and the
-canonical absolute host path become snapshot-authoritative.
+`virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line,
+one triplet per share in slot order. The first slot is always discoverable,
+and the second slot's `virtio_mmio.device=` token follows the control
+console's. Active attachment policies and their canonical absolute host paths
+become snapshot-authoritative.
 Repeat `--mount-deny` to hide existing host files or directories. OpenVMM
-canonicalizes each entry relative to the export and rejects paths outside the
-root, the root itself, overlapping entries, symlink/reparse components, and
+canonicalizes each entry relative to its export and rejects paths outside the
+roots, a root itself, overlapping entries, symlink/reparse components, and
 nested-mount crossings before opening the device.
 
 A read-write attachment lets the guest create symbolic links, so ordinary
@@ -139,8 +169,9 @@ later host additions do not appear midway through that enumeration. New
 lookups and newly opened directories still observe the live host tree.
 
 Restoring a snapshot captured with an active attachment requires a fresh
-`--mount` argument and the exact same denied-path set, canonical host path,
-guest target, mode, and `--mount-owner` mode. Identity validation remains independent: before any vCPU starts,
+`--mount` argument for every captured share, in the same order, with the exact
+same denied-path set, canonical host path, guest target, mode, and
+`--mount-owner` mode. Identity validation remains independent: before any vCPU starts,
 OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
@@ -156,10 +187,11 @@ access, such as a handle open for writing on a file that a guest caller owns.
 OpenVMM releases that predate `--mount-owner` reject the device state of a
 `caller` attachment rather than restore it as `vmm`.
 
-A snapshot captured without `--mount` records the fixed slot as dormant. It
-may restore without an attachment, or bind a new `--mount` attachment. Because
-execution resumes after the cold-boot mount hook, the guest must mount the
-newly attached backend explicitly:
+A snapshot captured without `--mount` records the first slot as dormant. It
+may restore without an attachment, or bind one new `--mount` attachment to
+that slot; the second slot did not exist at capture, so it cannot be added on
+restore. Because execution resumes after the cold-boot mount hook, the guest
+must mount the newly attached backend explicitly:
 
 ```bash
 mkdir -p /mnt/share
@@ -206,7 +238,8 @@ enumeration omits their names, and denied root object identities reject
 hard-link, junction, and bind-mount aliases. A guest-created link cannot reach
 a denied path because the guest resolves it and every resulting host lookup
 applies the same policy. Mounting the same virtio-fs tag at another guest path
-does not change the policy.
+does not change the policy, and each share's policy applies only to requests
+for its own tag.
 
 ```admonish warning
 On Windows, the check for host-created NT symbolic links and junctions in
