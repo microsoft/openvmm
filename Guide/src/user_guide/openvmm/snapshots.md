@@ -264,8 +264,9 @@ The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
 generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
 (Xeon Scalable, third generation: 6/106), `intel.emeraldrapids.v1` (Xeon
-Scalable, fifth generation: 6/207), and `intel.alderlake.v1` (Core, twelfth
-generation: 6/151 and 6/154). `--cpu-profile <ID>` selects one; the default,
+Scalable, fifth generation: 6/207), `intel.alderlake.v1` (Core, twelfth
+generation: 6/151 and 6/154), and `amd.milan.v1` (AMD EPYC, third generation:
+25/1). `--cpu-profile <ID>` selects one; the default,
 `auto`, selects the profile of the host's generation, and a host without one
 fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel or AMD development host without
 one, `--cpu-profile host` boots on a host profile instead: OpenVMM
