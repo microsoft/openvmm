@@ -1280,11 +1280,13 @@ pub(crate) mod test_cpuid {
     use vm_topology::processor::x86::X2ApicState;
 
     /// Pinned CPU profiles of each vendor.
-    pub const PROFILES: [&str; 4] = [
+    pub const PROFILES: [&str; 6] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
         "amd.milan.v1",
+        "amd.genoa.v1",
+        "amd.turin.v1",
     ];
 
     /// Returns the topology of a VM with `vp_count` VPs in one socket.
@@ -1305,6 +1307,18 @@ pub(crate) mod test_cpuid {
             && effective
                 .results()
                 .any(|result| result.function == function && result.index == Some(index))
+    }
+
+    /// Returns the number of `profile`'s entries with a nonzero value, each
+    /// of which VP 0 of a partition of `profile` presents nonzero. The
+    /// profile's explicit zero entries, whose number grows with its maximum
+    /// leaves, present zero.
+    pub fn nonzero_entries(profile: &CpuProfile) -> usize {
+        profile
+            .cpuid()
+            .iter()
+            .filter(|entry| entry.values() != [0; 4])
+            .count()
     }
 
     /// Returns `value`, a result of `function` that VP 0 of a partition of
@@ -1917,10 +1931,10 @@ mod tests {
                     .iter()
                     .filter(|&&(function, index)| new.observe(0, function, index) != [0; 4])
                     .count();
-                let entries = cpu_profile::pinned(profile).unwrap().cpuid().len();
+                let nonzero = test_cpuid::nonzero_entries(pinned);
                 assert!(
-                    populated >= entries / 2,
-                    "{profile}: {populated} populated results of {entries} profile entries"
+                    populated >= nonzero,
+                    "{profile}: {populated} populated results of {nonzero} nonzero profile entries"
                 );
             }
         }
@@ -2888,7 +2902,7 @@ mod whp_tests {
             programming.results.len()
         );
         assert!(differences.is_empty(), "{differences:#?}");
-        assert!(populated >= profile.cpuid().len() / 2);
+        assert!(populated >= test_cpuid::nonzero_entries(profile));
     }
 
     #[test]

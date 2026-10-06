@@ -203,7 +203,243 @@ pub(crate) const MILAN_WHP_CPUID: [(u32, Option<u32>, [u32; 4]); 57] = [
 
 /// Returns [`MILAN_WHP_CPUID`] as fingerprint entries.
 pub(crate) fn milan_whp_entries() -> Vec<CpuidEntry> {
-    MILAN_WHP_CPUID
+    entries(&MILAN_WHP_CPUID)
+}
+
+/// The CPUID of an AMD EPYC 9V74 (Genoa: family 0x19, model 0x11,
+/// stepping 1) as KVM reports it (`KVM_GET_SUPPORTED_CPUID`) in an Azure VM
+/// with nested virtualization, a GitHub-hosted Actions runner, which
+/// `--cpu-fingerprint` recorded: each leaf, subleaf, and the registers.
+/// That KVM offers only the x87, SSE, and AVX XSAVE states, PSFD without a
+/// `SPEC_CTRL` control, and, as KVM does on every AMD host, Intel's
+/// `IA32_ARCH_CAPABILITIES` enumeration.
+pub(crate) const GENOA_KVM_CPUID: [(u32, Option<u32>, [u32; 4]); 71] = [
+    (0x0, None, [0x1c, 0x6874_7541, 0x444d_4163, 0x6974_6e65]),
+    (
+        0x1,
+        None,
+        [0x00a1_0f11, 0x0010_0800, 0xf7fa_3203, 0x078b_fbff],
+    ),
+    (0x2, None, [0; 4]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0x4, 0, 0, 0]),
+    (0x7, Some(0), [0, 0x219c_07ab, 0x0040_0604, 0x2000_0010]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0x7, 0x340, 0x340, 0]),
+    (0xd, Some(1), [0xf, 0x340, 0, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xe, None, [0; 4]),
+    (0xf, Some(0), [0; 4]),
+    (0x10, Some(0), [0; 4]),
+    (0x11, None, [0; 4]),
+    (0x12, Some(0), [0; 4]),
+    (0x13, None, [0; 4]),
+    (0x14, Some(0), [0; 4]),
+    (0x15, None, [0; 4]),
+    (0x16, None, [0; 4]),
+    (0x17, Some(0), [0; 4]),
+    (0x18, Some(0), [0; 4]),
+    (0x19, None, [0; 4]),
+    (0x1a, None, [0; 4]),
+    (0x1b, None, [0; 4]),
+    (0x1c, None, [0; 4]),
+    (
+        0x4000_0000,
+        None,
+        [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
+    ),
+    (0x4000_0001, None, [0x0100_7efb, 0, 0, 0]),
+    (
+        0x8000_0000,
+        None,
+        [0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+    ),
+    (
+        0x8000_0001,
+        None,
+        [0x00a1_0f11, 0x4000_0000, 0x0040_03f7, 0x2fd3_fbff],
+    ),
+    (0x8000_0002, None, [0; 4]),
+    (0x8000_0003, None, [0; 4]),
+    (0x8000_0004, None, [0; 4]),
+    (
+        0x8000_0005,
+        None,
+        [0xff48_ff40, 0xff48_ff40, 0x2008_0140, 0x2008_0140],
+    ),
+    (
+        0x8000_0006,
+        None,
+        [0x5c00_2200, 0x6c00_4200, 0x0400_6140, 0x0a00_9140],
+    ),
+    (0x8000_0007, None, [0, 0, 0, 0x100]),
+    (0x8000_0008, None, [0x0030_3030, 0x1000_0005, 0x400f, 0]),
+    (0x8000_0009, None, [0; 4]),
+    (0x8000_000a, None, [0x1, 0x8, 0, 0x1000_9479]),
+    (0x8000_000b, None, [0; 4]),
+    (0x8000_000c, None, [0; 4]),
+    (0x8000_000d, None, [0; 4]),
+    (0x8000_000e, None, [0; 4]),
+    (0x8000_000f, None, [0; 4]),
+    (0x8000_0010, None, [0; 4]),
+    (0x8000_0011, None, [0; 4]),
+    (0x8000_0012, None, [0; 4]),
+    (0x8000_0013, None, [0; 4]),
+    (0x8000_0014, None, [0; 4]),
+    (0x8000_0015, None, [0; 4]),
+    (0x8000_0016, None, [0; 4]),
+    (0x8000_0017, None, [0; 4]),
+    (0x8000_0018, None, [0; 4]),
+    (0x8000_0019, None, [0; 4]),
+    (0x8000_001a, None, [0x2, 0, 0, 0]),
+    (0x8000_001b, None, [0; 4]),
+    (0x8000_001c, None, [0; 4]),
+    (0x8000_001d, Some(0), [0x4121, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(1), [0x4122, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(2), [0x4143, 0x01c0_003f, 0x7ff, 0x2]),
+    (
+        0x8000_001d,
+        Some(3),
+        [0x0003_c163, 0x03c0_003f, 0x7fff, 0x1],
+    ),
+    (0x8000_001d, Some(4), [0; 4]),
+    (0x8000_001e, None, [0; 4]),
+    (0x8000_001f, None, [0; 4]),
+    (0x8000_0020, None, [0; 4]),
+    (0x8000_0021, None, [0x204, 0, 0x6, 0]),
+];
+
+/// Returns [`GENOA_KVM_CPUID`] as fingerprint entries.
+pub(crate) fn genoa_kvm_entries() -> Vec<CpuidEntry> {
+    entries(&GENOA_KVM_CPUID)
+}
+
+/// The CPUID of an AMD EPYC 9V45 (Turin: family 0x1a, model 2, stepping 1)
+/// as KVM reports it in an Azure VM with nested virtualization, a
+/// GitHub-hosted Actions runner, which `--cpu-fingerprint` recorded. That
+/// KVM offers the AVX-512 XSAVE states too, and, as on the Genoa runner,
+/// PSFD without a `SPEC_CTRL` control and Intel's
+/// `IA32_ARCH_CAPABILITIES` enumeration.
+pub(crate) const TURIN_KVM_CPUID: [(u32, Option<u32>, [u32; 4]); 75] = [
+    (0x0, None, [0x1c, 0x6874_7541, 0x444d_4163, 0x6974_6e65]),
+    (
+        0x1,
+        None,
+        [0x00b0_0f21, 0x0010_0800, 0xf7fa_3203, 0x078b_fbff],
+    ),
+    (0x2, None, [0; 4]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0x4, 0, 0, 0]),
+    (0x7, Some(0), [0x1, 0xf1bf_07ab, 0x0040_5f46, 0x2000_0110]),
+    (0x7, Some(1), [0x30, 0, 0, 0]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0xe7, 0x980, 0x980, 0]),
+    (0xd, Some(1), [0xf, 0x980, 0, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(5), [0x40, 0x340, 0, 0]),
+    (0xd, Some(6), [0x200, 0x380, 0, 0]),
+    (0xd, Some(7), [0x400, 0x580, 0, 0]),
+    (0xe, None, [0; 4]),
+    (0xf, Some(0), [0; 4]),
+    (0x10, Some(0), [0; 4]),
+    (0x11, None, [0; 4]),
+    (0x12, Some(0), [0; 4]),
+    (0x13, None, [0; 4]),
+    (0x14, Some(0), [0; 4]),
+    (0x15, None, [0; 4]),
+    (0x16, None, [0; 4]),
+    (0x17, Some(0), [0; 4]),
+    (0x18, Some(0), [0; 4]),
+    (0x19, None, [0; 4]),
+    (0x1a, None, [0; 4]),
+    (0x1b, None, [0; 4]),
+    (0x1c, None, [0; 4]),
+    (
+        0x4000_0000,
+        None,
+        [0x4000_0001, 0x4b4d_564b, 0x564b_4d56, 0x4d],
+    ),
+    (0x4000_0001, None, [0x0100_7efb, 0, 0, 0]),
+    (
+        0x8000_0000,
+        None,
+        [0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+    ),
+    (
+        0x8000_0001,
+        None,
+        [0x00b0_0f21, 0x4000_0000, 0x0040_03f7, 0x2fd3_fbff],
+    ),
+    (0x8000_0002, None, [0; 4]),
+    (0x8000_0003, None, [0; 4]),
+    (0x8000_0004, None, [0; 4]),
+    (
+        0x8000_0005,
+        None,
+        [0xff60_ff40, 0xff60_ff40, 0x300c_0140, 0x2008_0140],
+    ),
+    (
+        0x8000_0006,
+        None,
+        [0x4080_2040, 0x6080_4040, 0x0400_8140, 0x0c00_9140],
+    ),
+    (0x8000_0007, None, [0, 0, 0, 0x100]),
+    (0x8000_0008, None, [0x0030_3030, 0x5002_0005, 0x400f, 0]),
+    (0x8000_0009, None, [0; 4]),
+    (0x8000_000a, None, [0x1, 0x8, 0, 0x1000_9479]),
+    (0x8000_000b, None, [0; 4]),
+    (0x8000_000c, None, [0; 4]),
+    (0x8000_000d, None, [0; 4]),
+    (0x8000_000e, None, [0; 4]),
+    (0x8000_000f, None, [0; 4]),
+    (0x8000_0010, None, [0; 4]),
+    (0x8000_0011, None, [0; 4]),
+    (0x8000_0012, None, [0; 4]),
+    (0x8000_0013, None, [0; 4]),
+    (0x8000_0014, None, [0; 4]),
+    (0x8000_0015, None, [0; 4]),
+    (0x8000_0016, None, [0; 4]),
+    (0x8000_0017, None, [0; 4]),
+    (0x8000_0018, None, [0; 4]),
+    (0x8000_0019, None, [0; 4]),
+    (0x8000_001a, None, [0x2, 0, 0, 0]),
+    (0x8000_001b, None, [0; 4]),
+    (0x8000_001c, None, [0; 4]),
+    (0x8000_001d, Some(0), [0x4121, 0x02c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(1), [0x4122, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(2), [0x4143, 0x03c0_003f, 0x3ff, 0x2]),
+    (
+        0x8000_001d,
+        Some(3),
+        [0x0003_c163, 0x03c0_003f, 0x7fff, 0x1],
+    ),
+    (0x8000_001d, Some(4), [0; 4]),
+    (0x8000_001e, None, [0; 4]),
+    (0x8000_001f, None, [0; 4]),
+    (0x8000_0020, None, [0; 4]),
+    (0x8000_0021, None, [0x204, 0, 0x6, 0]),
+];
+
+/// Returns [`TURIN_KVM_CPUID`] as fingerprint entries.
+pub(crate) fn turin_kvm_entries() -> Vec<CpuidEntry> {
+    entries(&TURIN_KVM_CPUID)
+}
+
+/// Returns a recorded CPUID `table` as fingerprint entries.
+fn entries(table: &[(u32, Option<u32>, [u32; 4])]) -> Vec<CpuidEntry> {
+    table
         .iter()
         .map(|&(leaf, subleaf, registers)| CpuidEntry::new(leaf, subleaf, registers))
         .collect()

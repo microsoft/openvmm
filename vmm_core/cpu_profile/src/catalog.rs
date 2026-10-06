@@ -402,6 +402,10 @@ mod tests {
     const MILAN: u32 = 0x00a0_0f11;
     const MILAN_X: u32 = 0x00a0_0f12;
     const GENOA: u32 = 0x00a1_0f11;
+    const GENOA_STEPPING_2: u32 = 0x00a1_0f12;
+    const RAPHAEL: u32 = 0x00a6_0f12;
+    const TURIN: u32 = 0x00b0_0f21;
+    const TURIN_DENSE: u32 = 0x00b1_0f10;
 
     fn intel(signature: u32) -> HostCpuSignature {
         HostCpuSignature::new(*b"GenuineIntel", signature)
@@ -418,7 +422,7 @@ mod tests {
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 5] = [
+    const FILES: [(&str, &str, &str); 7] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -443,6 +447,16 @@ mod tests {
             "amd.milan.v1",
             include_str!("../profiles/amd.milan.v1.json"),
             "sha256:463ee0368dc01bf56a3ab1157d62b21b51d11b3dcccb46c804864748ef696543",
+        ),
+        (
+            "amd.genoa.v1",
+            include_str!("../profiles/amd.genoa.v1.json"),
+            "sha256:894ac647399039242eb0f0e6582e91691234446ebc9362576d7c5613f34b966b",
+        ),
+        (
+            "amd.turin.v1",
+            include_str!("../profiles/amd.turin.v1.json"),
+            "sha256:0d9d044922eae3f27442178249f0b60feb0db07efe446e6641a1fcbfbb3a04ff",
         ),
     ];
 
@@ -536,6 +550,9 @@ mod tests {
             (intel(ALDER_LAKE_S), "intel.alderlake.v1", "alderlake"),
             (amd(MILAN), "amd.milan.v1", "milan"),
             (amd(MILAN_X), "amd.milan.v1", "milan"),
+            (amd(GENOA), "amd.genoa.v1", "genoa"),
+            (amd(GENOA_STEPPING_2), "amd.genoa.v1", "genoa"),
+            (amd(TURIN), "amd.turin.v1", "turin"),
         ] {
             assert_eq!(select_auto(&host).unwrap().id(), id);
             assert_eq!(select(AUTO, &host).unwrap().id(), id);
@@ -544,7 +561,8 @@ mod tests {
         for host in [
             intel(CASCADE_LAKE),
             intel(TIGER_LAKE),
-            amd(GENOA),
+            amd(RAPHAEL),
+            amd(TURIN_DENSE),
             // The vendor decides too: no Intel CPU has Milan's signature.
             intel(MILAN),
             HostCpuSignature::new(*b"HygonGenuine", MILAN),
@@ -621,6 +639,9 @@ mod tests {
                     (6, 207),
                     (25, 1),
                     (25, 17),
+                    (25, 97),
+                    (26, 2),
+                    (26, 17),
                 ] {
                     for stepping in 0..16 {
                         // Encode the display family and model as CPUID.1:EAX does.
@@ -672,6 +693,20 @@ mod tests {
         );
         assert_eq!(
             code(select("amd.milan.v1", &host)),
+            ProfileErrorCode::CpuGeneration
+        );
+
+        // Another generation of the same vendor.
+        assert_eq!(
+            select("amd.turin.v1", &amd(TURIN)).unwrap().id(),
+            "amd.turin.v1"
+        );
+        assert_eq!(
+            code(select("amd.genoa.v1", &amd(TURIN))),
+            ProfileErrorCode::CpuGeneration
+        );
+        assert_eq!(
+            code(select("amd.milan.v1", &amd(GENOA))),
             ProfileErrorCode::CpuGeneration
         );
     }
