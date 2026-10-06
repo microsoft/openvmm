@@ -9,11 +9,28 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Stable device-private attachment identifier for the microVM share.
+/// Stable device-private attachment identifier of the first microVM share.
 pub const MICROVM_ATTACHMENT_ID: &str = "fs:microvm0";
 
-/// The only mount tag accepted by the microVM ABI.
+/// The mount tag of the first microVM share.
 pub const MICROVM_MOUNT_TAG: &str = "microvm";
+
+/// The attachment identifiers and mount tags of the fixed microVM virtio-fs
+/// slots, in slot order. These are the only identities that the microVM ABI
+/// accepts.
+pub const MICROVM_SLOTS: [(&str, &str); 2] = [
+    (MICROVM_ATTACHMENT_ID, MICROVM_MOUNT_TAG),
+    ("fs:microvm1", "microvm1"),
+];
+
+/// Returns the mount tag of the fixed microVM slot identified by
+/// `attachment_id`, or `None` when no slot has that identifier.
+pub fn microvm_mount_tag(attachment_id: &str) -> Option<&'static str> {
+    MICROVM_SLOTS
+        .iter()
+        .find(|(id, _)| *id == attachment_id)
+        .map(|(_, tag)| *tag)
+}
 
 /// The number of FUSE request queues in the microVM ABI.
 pub const MICROVM_REQUEST_QUEUES: u32 = 1;
@@ -88,8 +105,8 @@ pub enum MicroVmOwnerMode {
 /// Errors in the fixed microVM virtio-fs attachment contract.
 #[derive(Debug, thiserror::Error)]
 pub enum MicroVmProfileError {
-    /// The resource did not identify the only microVM filesystem attachment.
-    #[error("microVM virtio-fs stable ID must be {MICROVM_ATTACHMENT_ID}")]
+    /// The resource did not identify a fixed microVM filesystem slot.
+    #[error("microVM virtio-fs stable ID is not a fixed slot")]
     InvalidStableId,
     /// The identity did not use the documented bounded attachment format.
     #[error("microVM virtio-fs root identity is empty or exceeds {MAX_ROOT_IDENTITY_SIZE} bytes")]
@@ -114,6 +131,7 @@ pub enum MicroVmProfileError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MicroVmVirtioFsProfile {
     stable_id: String,
+    mount_tag: &'static str,
     root_identity: Vec<u8>,
     access_mode: MicroVmAccessMode,
     denied_paths: Vec<PathBuf>,
@@ -123,23 +141,24 @@ pub struct MicroVmVirtioFsProfile {
 impl MicroVmVirtioFsProfile {
     /// Builds the constrained microVM profile from the resource attachment
     /// fields. `stable_id`, `root_identity`, and `read_only` correspond
-    /// exactly to `VirtioFsProfile::Microvm`. The guest's operations run as
-    /// the VMM until [`Self::with_owner_mode`] selects otherwise.
+    /// exactly to `VirtioFsProfile::Microvm`; `stable_id` selects the fixed
+    /// slot and therefore the mount tag. The guest's operations run as the
+    /// VMM until [`Self::with_owner_mode`] selects otherwise.
     pub fn from_attachment(
         stable_id: String,
         root_identity: Vec<u8>,
         read_only: bool,
         denied_paths: Vec<String>,
     ) -> Result<Self, MicroVmProfileError> {
-        if stable_id != MICROVM_ATTACHMENT_ID {
-            return Err(MicroVmProfileError::InvalidStableId);
-        }
+        let mount_tag =
+            microvm_mount_tag(&stable_id).ok_or(MicroVmProfileError::InvalidStableId)?;
         if root_identity.is_empty() || root_identity.len() > MAX_ROOT_IDENTITY_SIZE {
             return Err(MicroVmProfileError::InvalidRootIdentity);
         }
         let denied_paths = Self::parse_denied_paths(denied_paths)?;
         Ok(Self {
             stable_id,
+            mount_tag,
             root_identity,
             access_mode: if read_only {
                 MicroVmAccessMode::ReadOnly
@@ -233,9 +252,9 @@ impl MicroVmVirtioFsProfile {
         self.validate_root_path(root_path)
     }
 
-    /// Returns the fixed FUSE mount tag.
+    /// Returns the fixed FUSE mount tag of the profile's slot.
     pub const fn mount_tag(&self) -> &'static str {
-        MICROVM_MOUNT_TAG
+        self.mount_tag
     }
 
     /// Returns the fixed request queue count.
@@ -418,6 +437,37 @@ mod tests {
         profile
             .validate_root_path(temporary_directory.path())
             .unwrap();
+    }
+
+    #[test]
+    fn profile_selects_the_mount_tag_of_its_slot() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let root_identity = microvm_root_identity(temporary_directory.path()).unwrap();
+        for (stable_id, tag) in MICROVM_SLOTS {
+            let profile = MicroVmVirtioFsProfile::from_attachment(
+                stable_id.to_owned(),
+                root_identity.clone(),
+                false,
+                Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(profile.attachment_id(), stable_id);
+            assert_eq!(profile.mount_tag(), tag);
+            assert_eq!(microvm_mount_tag(stable_id), Some(tag));
+        }
+        assert_eq!(MICROVM_SLOTS[1], ("fs:microvm1", "microvm1"));
+        for stable_id in ["fs:microvm2", "microvm1", ""] {
+            assert_eq!(microvm_mount_tag(stable_id), None);
+            assert!(matches!(
+                MicroVmVirtioFsProfile::from_attachment(
+                    stable_id.to_owned(),
+                    root_identity.clone(),
+                    false,
+                    Vec::new(),
+                ),
+                Err(MicroVmProfileError::InvalidStableId)
+            ));
+        }
     }
 
     #[test]
