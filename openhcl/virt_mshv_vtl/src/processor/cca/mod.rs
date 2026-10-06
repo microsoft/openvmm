@@ -16,6 +16,7 @@ use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::processor::InterceptMessageState;
+use aarch64defs::CntvCtlEl0;
 use aarch64defs::EsrEl2;
 use aarch64defs::HpfarEl2;
 use aarch64defs::InstructionAbortReason;
@@ -23,7 +24,6 @@ use aarch64defs::IssDataAbort;
 use aarch64defs::IssInstructionAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::SystemReg;
-use aarch64defs::CntvCtlEl0;
 use aarch64defs::gic::IchHcrEl2;
 use aarch64defs::gic::IchLrEl2;
 use aarch64defs::gic::IchLrState;
@@ -40,6 +40,7 @@ use hv1_structs::VtlArray;
 use hvdef::HvRegisterCrInterceptControl;
 use inspect::Inspect;
 use inspect::InspectMut;
+use std::collections::HashMap;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::vp;
@@ -48,9 +49,7 @@ use virt::io::CpuIo;
 use virt_support_aarch64emu::translate::TranslationRegisters;
 use virt_support_gic::ListRegisterInterrupt;
 use virt_support_gic::PendingInterrupt;
-use virt_support_gic::GicV3Model;
 use zerocopy::FromZeros;
-use std::collections::HashMap;
 
 #[derive(Debug, Error)]
 #[error("failed to run")]
@@ -120,12 +119,14 @@ struct CcaVtl {
     cpsr: u64,
     /// Virtual interrupts that did not fit in the implemented LRs.
     ///
-    /// These are the tail of the KVM-style active/pending list. They remain
+    /// These are the tail of the logical active/pending list. They remain
     /// durable here until EOIcount or a trapped ICC_DIR_EL1 deactivates them.
     #[inspect(iter_by_index)]
     gic_lr_overflow: Vec<u64>,
     /// Most recently returned ICH_VMCR_EL2 value for this plane.
     gic_vmcr: u64,
+    /// Whether the current LR cache has been folded into the software GIC.
+    gic_lrs_reconciled: bool,
 }
 
 impl CcaVtl {
@@ -136,6 +137,7 @@ impl CcaVtl {
             cpsr: 0,
             gic_lr_overflow: Vec::new(),
             gic_vmcr: 0,
+            gic_lrs_reconciled: false,
         }
     }
 }
@@ -342,12 +344,18 @@ fn gic_eoi_count(gicv3_hcr: u64) -> usize {
 /// overflow after: [P40, A12]
 /// ```
 fn consume_eoi_count(lr_overflow: &mut Vec<u64>, mut eoi_count: usize) {
-    lr_overflow.retain(|lr| {
-        if eoi_count != 0 && lr_is_active(*lr) {
-            eoi_count -= 1;
-            false
-        } else {
+    lr_overflow.retain_mut(|lr| {
+        if eoi_count == 0 || !lr_is_active(*lr) {
+            return true;
+        }
+
+        eoi_count -= 1;
+        let value = IchLrEl2::from(*lr);
+        if value.state() == IchLrState::PENDING_AND_ACTIVE {
+            *lr = value.with_state(IchLrState::PENDING).into();
             true
+        } else {
+            false
         }
     });
 
@@ -395,21 +403,27 @@ fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>,
 }
 
 /// Adds an interrupt to an unbounded software active/pending list.
-fn queue_virtual_interrupts(candidates: &mut Vec<u64>, mut interrupts: HashMap<u64, PendingInterrupt>) {
+fn queue_virtual_interrupts(
+    candidates: &mut Vec<u64>,
+    mut interrupts: HashMap<u64, PendingInterrupt>,
+) {
     for lr in candidates.iter_mut() {
         if !lr_is_valid(*lr) {
             continue;
         }
 
         let value = IchLrEl2::from(*lr);
-        if interrupts.remove(&u64::from(value.vintid())).is_some() {
+        if let Some(interrupt) = interrupts.remove(&u64::from(value.vintid())) {
             let state = match value.state() {
                 IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE => {
                     IchLrState::PENDING_AND_ACTIVE
                 }
                 _ => IchLrState::PENDING,
             };
-            *lr = value.with_state(state).into();
+            *lr = value
+                .with_eoi(interrupt.level_triggered)
+                .with_state(state)
+                .into();
         }
     }
 
@@ -419,36 +433,10 @@ fn queue_virtual_interrupts(candidates: &mut Vec<u64>, mut interrupts: HashMap<u
                 .with_vintid(interrupt.intid)
                 .with_priority(interrupt.priority)
                 .with_group1(interrupt.group1)
+                .with_eoi(interrupt.level_triggered)
                 .with_state(IchLrState::PENDING)
                 .into(),
         );
-    }
-}
-
-pub fn modify_using_pending_latch(lrs: &mut [u64], gic: &GicV3Model, vp: VpIndex) {
-    let Some((clearing_latch, pending_latch)) = gic.get_latches(vp) else {
-        return;
-    };
-
-    for lr in lrs {
-        let mut value = IchLrEl2::from(*lr);
-        let vintid = value.vintid();
-        if vintid >= 32 {
-            continue;
-        }
-
-        if clearing_latch & (1 << vintid) != 0 {
-            let state = match value.state() {
-                IchLrState::PENDING => IchLrState::INVALID,
-                IchLrState::PENDING_AND_ACTIVE => IchLrState::ACTIVE,
-                state => state,
-            };
-            value = value.with_state(state);
-        }
-        if pending_latch & (1 << vintid) != 0 && lr_is_active(value.into()) {
-            value = value.with_state(IchLrState::PENDING_AND_ACTIVE);
-        }
-        *lr = value.into();
     }
 }
 
@@ -557,6 +545,11 @@ impl BackingPrivate for CcaBacked {
             // TODO: CCA: NEXT: document how we integrate with the wider emulation
             // system.
             let cca_exit = CcaExit(this.runner.cca_rsi_plane_exit());
+            this.shared.cvm.gic.set_ppi_irq(
+                this.vp_index(),
+                this.shared.virt_timer_ppi,
+                cca_exit.virtual_timer_asserted(),
+            );
             let exit_reason = cca_exit.exit_reason();
             let esr_el2 = cca_exit.esr_el2();
             match exit_reason {
@@ -609,6 +602,10 @@ impl BackingPrivate for CcaBacked {
                                     );
                                 }
                             } else {
+                                // Reconcile the returned LR cache before a GIC
+                                // MMIO read observes pending or active state.
+                                this.reconcile_gic_lrs(vtl);
+
                                 // Handle MMIO read
                                 let mut value = [0u8; size_of::<u64>()];
                                 dev.read_mmio(this.vp_index(), address, &mut value[..len])
@@ -805,17 +802,14 @@ impl UhProcessor<'_, CcaBacked> {
         // registers, while only SGI generation needs software handling. With
         // the virtual CPU interface enabled, SGI writes trap independently and
         // the virtual interface owns PMR, CTLR, RPR, and ICV accesses.
-        let hcr = IchHcrEl2::from(self.runner.cca_rsi_plane_entry().gicv3_hcr)
-            .with_en(true);
+        let hcr = IchHcrEl2::from(self.runner.cca_rsi_plane_entry().gicv3_hcr).with_en(true);
         self.runner.cca_rsi_plane_entry().gicv3_hcr = hcr.into();
     }
 
-    /// Records interrupt sources reported by a CCA local IRQ exit.
+    /// Handles interrupt-controller events reported by a CCA local IRQ exit.
     ///
-    /// Trapped ICC SGI writes are emulated through the software GIC. Otherwise,
-    /// an asserted virtual timer is recorded as a pending PPI for this VP.
-    /// Unsupported system-register traps are returned to the caller as an
-    /// error; unrecognized local interrupt sources are ignored after tracing.
+    /// Trapped ICC SGI writes are emulated through the software GIC. Unsupported
+    /// system-register traps return an error; other sources are traced here.
     fn request_asserted_local_interrupts(
         &mut self,
         vtl: GuestVtl,
@@ -830,16 +824,7 @@ impl UhProcessor<'_, CcaBacked> {
 
         if let Some((iss, value, esr_el2)) = irq_exit.system_register_trap {
             self.handle_system_register_trap(vtl, iss, value, esr_el2)?;
-        } else if self.shared.cvm.gic.pend_ppi(irq_exit.virtual_timer_asserted, self.shared.virt_timer_ppi, self.vp_index()) {
-            let intid = self.shared.virt_timer_ppi;
-
-            if !self.shared.cvm.gic.raise_ppi(self.vp_index(), intid) {
-                tracing::trace!(
-                    intid,
-                    "virtual timer PPI was already pending or VP was invalid"
-                );
-            }
-        } else if irq_exit.gic_maintenance_status == 0 {
+        } else if !irq_exit.virtual_timer_asserted && irq_exit.gic_maintenance_status == 0 {
             tracing::trace!("CCA IRQ exit had an unrecognized local interrupt source");
         }
 
@@ -918,32 +903,27 @@ impl UhProcessor<'_, CcaBacked> {
         Ok(())
     }
 
-    /// Folds the returned LR cache and repacks it for LR overflow.
-    ///
-    /// Pure-pending interrupts are placed before active entries. Active entries
-    /// that no longer fit remain in a software tail and are deactivated through
-    /// EOIcount (EOImode 0) or trapped DIR writes (EOImode 1).
-    fn poll_gic(&mut self, vtl: GuestVtl) {
-        let gic_num_lrs = self.shared.gic_num_lrs;
-
-        // Merge the returned hardware cache with the software-only tail before
-        // folding. In EOImode 0, EOIcount identifies ordered deactivations from
-        // that tail. EOImode 1 deactivations are handled by trapped DIR writes.
-        let gicv3_hcr = self.runner.cca_rsi_plane_entry().gicv3_hcr;
-        let mut overflow = std::mem::take(&mut self.backing.vtls[vtl].gic_lr_overflow);
-        if !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
-            consume_eoi_count(&mut overflow, gic_eoi_count(gicv3_hcr));
+    /// Folds the returned LR cache into the durable software GIC state.
+    fn reconcile_gic_lrs(&mut self, vtl: GuestVtl) {
+        if self.backing.vtls[vtl].gic_lrs_reconciled {
+            return;
         }
 
-        let mut logical_lrs: Vec<u64> = self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs]
+        let gic_num_lrs = self.shared.gic_num_lrs;
+        let gicv3_hcr = self.runner.cca_rsi_plane_entry().gicv3_hcr;
+        if !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
+            consume_eoi_count(
+                &mut self.backing.vtls[vtl].gic_lr_overflow,
+                gic_eoi_count(gicv3_hcr),
+            );
+        }
+
+        let mut logical_lrs = self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs]
             .iter()
             .copied()
             .filter(|lr| lr_is_valid(*lr))
-            .collect();
-        logical_lrs.extend(overflow);
-
-        let vp = self.vp_index();
-        modify_using_pending_latch(&mut logical_lrs, &self.shared.cvm.gic, vp);
+            .collect::<Vec<_>>();
+        logical_lrs.extend(self.backing.vtls[vtl].gic_lr_overflow.iter().copied());
 
         let returned = logical_lrs
             .iter()
@@ -962,7 +942,31 @@ impl UhProcessor<'_, CcaBacked> {
                 }
             })
             .collect::<Vec<_>>();
-        self.shared.cvm.gic.fold_list_registers(vp, &returned);
+        self.shared
+            .cvm
+            .gic
+            .fold_list_registers(self.vp_index(), &returned);
+        self.backing.vtls[vtl].gic_lrs_reconciled = true;
+    }
+
+    /// Repacks the reconciled LR cache and its software overflow tail.
+    ///
+    /// Pure-pending interrupts are placed before active entries. Active entries
+    /// that no longer fit remain in a software tail and are deactivated through
+    /// EOIcount (EOImode 0) or trapped DIR writes (EOImode 1).
+    fn poll_gic(&mut self, vtl: GuestVtl) {
+        self.reconcile_gic_lrs(vtl);
+
+        let gic_num_lrs = self.shared.gic_num_lrs;
+        let overflow = std::mem::take(&mut self.backing.vtls[vtl].gic_lr_overflow);
+        let mut logical_lrs = self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs]
+            .iter()
+            .copied()
+            .filter(|lr| lr_is_valid(*lr))
+            .collect::<Vec<_>>();
+        logical_lrs.extend(overflow);
+
+        let vp = self.vp_index();
 
         // Returned pending state is now durable in the software GIC. Seed the
         // next active/pending list with active entries only; pending state will
@@ -970,37 +974,28 @@ impl UhProcessor<'_, CcaBacked> {
         let mut candidates = logical_lrs
             .into_iter()
             .filter(|lr| lr_is_active(*lr))
-            .map(|lr| {
-                IchLrEl2::from(lr)
-                    .with_state(IchLrState::ACTIVE)
-                    .into()
-            })
+            .map(|lr| IchLrEl2::from(lr).with_state(IchLrState::ACTIVE).into())
             .collect::<Vec<_>>();
 
         if let Some(interrupts) = self
             .shared
             .cvm
             .gic
-            .next_pending_private_interrupts(vp, u8::MAX) {
+            .next_pending_private_interrupts(vp, u8::MAX)
+        {
+            for (&intid, interrupt) in &interrupts {
+                self.shared.cvm.gic.mark_private_injected(vp, intid as u32);
+                tracing::debug!(
+                    intid = interrupt.intid,
+                    priority = interrupt.priority,
+                    group1 = interrupt.group1,
+                    ?vtl,
+                    "injected CCA GIC interrupt"
+                );
+            }
 
-                for (&intid, interrupt) in &interrupts {
-                    self.shared
-                        .cvm
-                        .gic
-                        .mark_private_injected(vp, intid as u32);
-                    tracing::debug!(
-                        intid = interrupt.intid,
-                        priority = interrupt.priority,
-                        group1 = interrupt.group1,
-                        ?vtl,
-                        "injected CCA GIC interrupt"
-                    );
-                }
-
-                queue_virtual_interrupts(&mut candidates, interrupts);
-
+            queue_virtual_interrupts(&mut candidates, interrupts);
         }
-
 
         // Device SPIs belong to VTL0.
         if vtl == GuestVtl::Vtl0 {
@@ -1043,6 +1038,7 @@ impl UhProcessor<'_, CcaBacked> {
             any_outside_lrs,
         );
         self.backing.vtls[vtl].gic_lr_overflow = overflow;
+        self.backing.vtls[vtl].gic_lrs_reconciled = false;
     }
 
     // Copy the exit context to the entry context.
@@ -1072,6 +1068,7 @@ impl UhProcessor<'_, CcaBacked> {
             plane_run.exit.gicv3_vmcr
         };
         self.backing.vtls[vtl].gic_vmcr = gic_vmcr;
+        self.backing.vtls[vtl].gic_lrs_reconciled = false;
     }
 
     // TODO: CCA: lots of stuff might be needed based on the TDX implementation, something akin to:
@@ -1404,6 +1401,27 @@ mod tests {
             .with_state(state)
             .into()
     }
+    #[test]
+    fn virtual_timer_assertion_requires_enabled_unmasked_status() {
+        let mut exit = cca_rsi_plane_exit::new_zeroed();
+        let cases = [
+            (CntvCtlEl0::new(), false),
+            (CntvCtlEl0::new().with_enable(true).with_istatus(true), true),
+            (
+                CntvCtlEl0::new()
+                    .with_enable(true)
+                    .with_imask(true)
+                    .with_istatus(true),
+                false,
+            ),
+            (CntvCtlEl0::new().with_enable(true), false),
+        ];
+
+        for (control, asserted) in cases {
+            exit.cntv_ctl_el0 = control.into();
+            assert_eq!(CcaExit(&exit).virtual_timer_asserted(), asserted);
+        }
+    }
 
     #[test]
     fn lr_count_comes_from_vtr_and_is_validated_against_rsi_capacity() {
@@ -1421,14 +1439,45 @@ mod tests {
     }
 
     #[test]
+    fn level_interrupts_request_eoi_maintenance() {
+        let level = PendingInterrupt {
+            intid: 27,
+            priority: 0x20,
+            group1: true,
+            level_triggered: true,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(level.intid), level)]));
+
+        let pending_lr = IchLrEl2::from(lrs[0]);
+        assert!(pending_lr.eoi());
+        assert_eq!(pending_lr.state(), IchLrState::PENDING);
+
+        let mut lrs = vec![lr(level.intid, level.priority, IchLrState::ACTIVE)];
+
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(level.intid), level)]));
+
+        let active_lr = IchLrEl2::from(lrs[0]);
+        assert!(active_lr.eoi());
+        assert_eq!(active_lr.state(), IchLrState::PENDING_AND_ACTIVE);
+
+        let edge = PendingInterrupt {
+            intid: 5,
+            priority: 0x40,
+            group1: true,
+            level_triggered: false,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(edge.intid), edge)]));
+
+        assert!(!IchLrEl2::from(lrs[0]).eoi());
+    }
+
+    #[test]
     fn only_pure_pending_lrs_count_for_npie() {
         assert!(lr_is_pending(lr(0, 0, IchLrState::PENDING)));
         assert!(!lr_is_pending(lr(0, 0, IchLrState::ACTIVE)));
-        assert!(!lr_is_pending(lr(
-            0,
-            0,
-            IchLrState::PENDING_AND_ACTIVE
-        )));
+        assert!(!lr_is_pending(lr(0, 0, IchLrState::PENDING_AND_ACTIVE)));
     }
 
     #[test]
@@ -1495,6 +1544,33 @@ mod tests {
                 .map(|lr| IchLrEl2::from(*lr).vintid())
                 .collect::<Vec<_>>(),
             [1, 3]
+        );
+    }
+
+    #[test]
+    fn eoi_count_preserves_repending_overflow_interrupt() {
+        let mut overflow = vec![
+            lr(40, 0x10, IchLrState::PENDING),
+            lr(10, 0x20, IchLrState::PENDING_AND_ACTIVE),
+            lr(11, 0x30, IchLrState::ACTIVE),
+            lr(12, 0x40, IchLrState::PENDING_AND_ACTIVE),
+        ];
+
+        consume_eoi_count(&mut overflow, 2);
+
+        assert_eq!(
+            overflow
+                .iter()
+                .map(|lr| {
+                    let lr = IchLrEl2::from(*lr);
+                    (lr.vintid(), lr.priority(), lr.state())
+                })
+                .collect::<Vec<_>>(),
+            [
+                (40, 0x10, IchLrState::PENDING),
+                (10, 0x20, IchLrState::PENDING),
+                (12, 0x40, IchLrState::PENDING_AND_ACTIVE),
+            ]
         );
     }
 
