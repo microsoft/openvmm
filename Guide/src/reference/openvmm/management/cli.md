@@ -184,10 +184,12 @@ describes the source definitions.
   one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 6, with tag `microvm`.
   Repeat it once to attach a second device at MMIO `0xd0008000`, IRQ 13, with
   tag `microvm1`; each share has its own guest target, access mode, and
-  denied paths. The default mode is read-only; `rw` must be explicit. The guest target must
-  be an absolute, non-root Linux path without dot, parent, empty, whitespace,
-  backslash, or `=` components. Guest targets and host directories of
-  different shares must not equal or contain one another.
+  denied paths. The default mode is read-only; `rw` must be explicit. The
+  guest target must be an absolute, non-root Linux path without dot, parent,
+  empty, whitespace, backslash, or `=` components. Guest targets and host
+  directories of different shares must not equal or contain one another; on
+  Linux, a bind mount or nested mount that reaches the files of another share
+  counts as containing it.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
@@ -232,12 +234,13 @@ describes the source definitions.
 
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
   directory contents or native handles. An active snapshot requires
-  `--mount` again for every captured share, in capture order, with the exact canonical host path, guest target, access
-  mode, denied-path set, and `--mount-owner` mode; the live roots and every saved object identity are
-  also revalidated before vCPUs start. A snapshot captured without `--mount` may remain dormant
-  or bind one new attachment to the first slot. The resumed guest must then explicitly run
-  `mount -t virtiofs microvm <GUEST_TARGET>` because its cold-boot mount hook
-  has already completed.
+  `--mount` again for every captured share, in capture order, with the exact
+  canonical host path, guest target, access mode, denied-path set, and
+  `--mount-owner` mode; the live roots and every saved object identity are
+  also revalidated before vCPUs start. A snapshot captured without `--mount`
+  may remain dormant or bind one new attachment to the first slot. The resumed
+  guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
+  because its cold-boot mount hook has already completed.
   See [virtio-fs](../../devices/virtio/virtio-fs.md).
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
@@ -325,11 +328,11 @@ describes the source definitions.
   pending while no peer is connected.
 
   When the snapshot contains active virtio-fs attachments, restore requires
-  a fresh `--mount` for each, in capture order. Each argument must reproduce the manifest's exact
-  canonical host path, guest target, and `ro`/`rw` mode while also supplying a
-  live root with the same saved identity. A snapshot advertising the dormant
-  slot may instead accept one new attachment; snapshots without that capability
-  reject additive attachment.
+  a fresh `--mount` for each, in capture order. Each argument must reproduce
+  the manifest's exact canonical host path, guest target, and `ro`/`rw` mode
+  while also supplying a live root with the same saved identity. A snapshot
+  advertising the dormant slot may instead accept one new attachment;
+  snapshots without that capability reject additive attachment.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress
