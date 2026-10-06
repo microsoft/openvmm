@@ -399,6 +399,20 @@ impl RtaddrReg {
     }
 }
 
+open_enum! {
+    /// Translation table mode in RTADDR.TTM (§11.4.5).
+    #[derive(Inspect)]
+    #[inspect(debug)]
+    pub enum TranslationTableMode: u8 {
+        /// Legacy root/context tables.
+        LEGACY = 0b00,
+        /// Scalable root/context and PASID tables.
+        SCALABLE = 0b01,
+        /// Abort DMA (not supported by the emulator).
+        ABORT_DMA = 0b11,
+    }
+}
+
 /// Context Command Register (MMIO offset 0x028, 64-bit, RW). §10.4.7.
 ///
 /// Register-based context-cache invalidation (used before QI is enabled).
@@ -554,7 +568,7 @@ impl IqtReg {
     }
 }
 
-/// Invalidation Queue Address Register (MMIO offset 0x090, 64-bit, RW). §10.4.19.
+/// Invalidation Queue Address Register (MMIO offset 0x090, 64-bit, RW). §11.4.9.3.
 ///
 /// Holds the base address and size of the invalidation queue. Only writable
 /// when QIE=0.
@@ -562,13 +576,14 @@ impl IqtReg {
 #[derive(Inspect)]
 #[rustfmt::skip]
 pub struct IqaReg {
-    /// Queue size: number of 4KB pages = 2^QS. 0=256 entries, 7=32768 entries.
+    /// Queue size in 4KB pages = 2^QS, independent of descriptor width.
     #[bits(3)]
     pub qs: u8,
-    /// Descriptor width — 0=128-bit, 1=256-bit (not supported in legacy mode).
-    pub dw: bool,
     #[bits(8)]
     _reserved: u64,
+    /// Descriptor width (bit 11): 0=128-bit, 1=256-bit.
+    /// 256-bit descriptors require scalable-mode or abort-DMA capability.
+    pub dw: bool,
     /// Queue base address, bits [63:12]. 4KB-aligned.
     #[bits(52)]
     pub iqa: u64,
@@ -580,9 +595,9 @@ impl IqaReg {
         self.iqa() << 12
     }
 
-    /// Get the queue size in bytes: 2^(QS+8) * 16 bytes.
+    /// Get the queue size in bytes: 4096 * 2^QS, for either descriptor width.
     pub fn queue_size_bytes(&self) -> u64 {
-        (1u64 << (self.qs() as u64 + 8)) * 16
+        4096u64 << self.qs()
     }
 }
 
@@ -681,7 +696,7 @@ pub struct IotlbReg {
     pub ivt: bool,
 }
 
-/// Fault Recording Register — high 64 bits (CAP.FRO*16 + 8). §10.4.14.
+/// Fault Recording Register — high 64 bits (CAP.FRO*16 + 8). §11.4.7.6.
 ///
 /// Contains fault metadata: source ID, fault reason, type, and the fault bit.
 #[bitfield(u64)]
@@ -691,12 +706,15 @@ pub struct FrcdHi {
     /// Source ID (BDF) of the faulting device.
     #[bits(16)]
     pub sid: u16,
-    #[bits(32)]
+    // Includes T2=0 (no Page Request/AtomicOp reporting) and unsupported
+    // explicit-PASID fields PRIV, EXE, PP.
+    #[bits(16)]
     _reserved1: u64,
-    /// Fault Reason code. See `FaultReason` enum.
+    /// Fault Reason code, full-register bits 103:96. See [`FaultReason`].
     #[bits(8)]
     pub fr: u8,
-    #[bits(4)]
+    /// PASID value is reserved-zero without explicit PASID support.
+    #[bits(20)]
     _reserved2: u64,
     /// Address Type (2 bits).
     #[bits(2)]
@@ -707,9 +725,9 @@ pub struct FrcdHi {
     pub f: bool,
 }
 
-/// Fault Recording Register — low 64 bits (CAP.FRO*16). §10.4.14.
+/// Fault Recording Register — low 64 bits (CAP.FRO*16). §11.4.7.6.
 ///
-/// Contains the faulting address (bits 63:12) and reserved/PASID fields.
+/// Contains the faulting address (bits 63:12) and reserved low bits.
 #[bitfield(u64)]
 #[derive(Inspect)]
 #[rustfmt::skip]
@@ -768,6 +786,62 @@ open_enum! {
         /// Output address in interrupt address range.
         OUTPUT_ADDR_IN_INTR_RANGE   = 0x0E,
 
+        // Scalable translation faults (Table 26, §7.1.3). These definitions
+        // do not enable scalable translation or change legacy fault mappings.
+
+        /// RTA.1: invalid translation table mode.
+        INVALID_ROOT_TABLE_MODE     = 0x30,
+        /// SRT.1: scalable root-entry access error.
+        SCALABLE_ROOT_ACCESS_ERROR  = 0x38,
+        /// SRT.2: selected scalable root half not present.
+        SCALABLE_ROOT_NOT_PRESENT   = 0x39,
+        /// SRT.3: reserved field in a present root half.
+        SCALABLE_ROOT_RESERVED_BIT  = 0x3A,
+        /// SCT.1: scalable context-entry access error.
+        SCALABLE_CONTEXT_ACCESS_ERROR = 0x40,
+        /// SCT.2: scalable context not present.
+        SCALABLE_CONTEXT_NOT_PRESENT = 0x41,
+        /// SCT.3: reserved field in a present context.
+        SCALABLE_CONTEXT_RESERVED_BIT = 0x42,
+        /// SCT.4: invalid context programming, including RID_PASID > PDTS limit.
+        SCALABLE_INVALID_CONTEXT    = 0x43,
+        /// SPD.1: PASID-directory access error.
+        PASID_DIRECTORY_ACCESS_ERROR = 0x50,
+        /// SPD.2: PASID-directory entry not present.
+        PASID_DIRECTORY_NOT_PRESENT = 0x51,
+        /// SPD.3: reserved field in a present PASID-directory entry.
+        PASID_DIRECTORY_RESERVED_BIT = 0x52,
+        /// SPT.1: PASID-table access error.
+        PASID_TABLE_ACCESS_ERROR    = 0x58,
+        /// SPT.2: PASID-table entry not present.
+        PASID_TABLE_NOT_PRESENT     = 0x59,
+        /// SPT.3: reserved field in a present PASID-table entry.
+        PASID_TABLE_RESERVED_BIT    = 0x5A,
+        /// SPT.4: invalid PASID-table programming, including AW and PGTT.
+        PASID_TABLE_INVALID_ENTRY  = 0x5B,
+        /// SSS.1: access error through a preceding second-stage paging entry.
+        SCALABLE_SL_PTE_ACCESS_ERROR = 0x78,
+        /// SSS.2: R=W=0 in an entry or in accumulated second-stage permissions.
+        SCALABLE_SL_PTE_NOT_PRESENT = 0x79,
+        /// SSS.3: reserved field in a present second-stage paging entry.
+        SCALABLE_SL_PTE_RESERVED_BIT = 0x7A,
+        /// SSS.4: access error through the PASID entry's SSPTPTR.
+        SCALABLE_SL_ROOT_ACCESS_ERROR = 0x7B,
+        /// SSS.5: an A/D update is needed but page walks do not snoop caches.
+        SL_AD_UPDATE_NON_SNOOP      = 0x7C,
+        /// SSS.6: hardware failed to atomically update a second-stage A/D bit.
+        SL_AD_UPDATE_FAILED         = 0x7D,
+        /// SGN.4: host input address exceeds HAW.
+        SCALABLE_ADDRESS_BEYOND_HAW = 0x83,
+        /// SGN.5: second-stage input address exceeds min(MGAW, AGAW).
+        SCALABLE_ADDRESS_BEYOND_AGAW = 0x84,
+        /// SGN.6: write permission fault in scalable translation.
+        SCALABLE_WRITE_ACCESS_DENIED = 0x85,
+        /// SGN.7: read permission fault in scalable second-stage translation.
+        SCALABLE_READ_ACCESS_DENIED = 0x86,
+        /// SGN.8: scalable translation output is in the interrupt address range.
+        SCALABLE_OUTPUT_ADDR_IN_INTR_RANGE = 0x87,
+
         // Interrupt remapping faults (§5.1.4.1)
 
         /// Reserved field set in remappable interrupt request.
@@ -790,6 +864,7 @@ open_enum! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn test_gcmd_gsts_bits_aligned() {
@@ -820,8 +895,93 @@ mod tests {
 
     #[test]
     fn test_iqa_queue_size() {
-        assert_eq!(IqaReg::new().with_qs(0).queue_size_bytes(), 256 * 16);
-        assert_eq!(IqaReg::new().with_qs(7).queue_size_bytes(), 32768 * 16);
+        for qs in 0..=7 {
+            for dw in [false, true] {
+                let raw = 0x1234_5678_9000 | ((dw as u64) << 11) | qs;
+                let iqa = IqaReg::from(raw);
+                assert_eq!(iqa.qs(), qs as u8);
+                assert_eq!(iqa.dw(), dw);
+                assert_eq!(iqa.queue_base_address(), 0x1234_5678_9000);
+                assert_eq!(iqa.queue_size_bytes(), 4096 << qs);
+            }
+        }
+        assert_eq!(IqaReg::new().with_dw(true).into_bits(), 0x800);
+        for bit in 3..=10 {
+            let iqa = IqaReg::from(1 << bit);
+            assert!(!iqa.dw());
+            assert_eq!(iqa.qs(), 0);
+            assert_eq!(iqa.queue_base_address(), 0);
+        }
+    }
+
+    #[test]
+    fn test_frcd_literal_layout() {
+        let raw = (1 << 63) | (1 << 62) | (2 << 60) | (0x7D << 32) | 0xFEDC;
+        let frcd = FrcdHi::from(raw);
+        assert_eq!(frcd.sid(), 0xFEDC);
+        assert_eq!(frcd.fr(), 0x7D);
+        assert_eq!(frcd.at(), 2);
+        assert!(frcd.t());
+        assert!(frcd.f());
+        assert_eq!(
+            FrcdHi::new()
+                .with_sid(0xFEDC)
+                .with_fr(0x7D)
+                .with_at(2)
+                .with_t(true)
+                .with_f(true)
+                .into_bits(),
+            raw
+        );
+        assert_eq!(FrcdHi::from(0xFF << 48).fr(), 0);
+    }
+
+    #[test]
+    fn test_translation_table_mode_encodings() {
+        assert_eq!(TranslationTableMode::LEGACY.0, 0);
+        assert_eq!(TranslationTableMode::SCALABLE.0, 1);
+        assert_eq!(TranslationTableMode::ABORT_DMA.0, 3);
+        for mode in 0..=3 {
+            let rtaddr = RtaddrReg::from(0x1234_5000 | ((mode as u64) << 10));
+            assert_eq!(TranslationTableMode(rtaddr.ttm()).0, mode);
+            assert_eq!(rtaddr.root_table_address(), 0x1234_5000);
+        }
+    }
+
+    #[test]
+    fn test_scalable_fault_reason_codes() {
+        // Independent literal encodings from §7.1.3, Table 26.
+        for (reason, expected) in [
+            (FaultReason::INVALID_ROOT_TABLE_MODE, 0x30),
+            (FaultReason::SCALABLE_ROOT_ACCESS_ERROR, 0x38),
+            (FaultReason::SCALABLE_ROOT_NOT_PRESENT, 0x39),
+            (FaultReason::SCALABLE_ROOT_RESERVED_BIT, 0x3a),
+            (FaultReason::SCALABLE_CONTEXT_ACCESS_ERROR, 0x40),
+            (FaultReason::SCALABLE_CONTEXT_NOT_PRESENT, 0x41),
+            (FaultReason::SCALABLE_CONTEXT_RESERVED_BIT, 0x42),
+            (FaultReason::SCALABLE_INVALID_CONTEXT, 0x43),
+            (FaultReason::PASID_DIRECTORY_ACCESS_ERROR, 0x50),
+            (FaultReason::PASID_DIRECTORY_NOT_PRESENT, 0x51),
+            (FaultReason::PASID_DIRECTORY_RESERVED_BIT, 0x52),
+            (FaultReason::PASID_TABLE_ACCESS_ERROR, 0x58),
+            (FaultReason::PASID_TABLE_NOT_PRESENT, 0x59),
+            (FaultReason::PASID_TABLE_RESERVED_BIT, 0x5a),
+            (FaultReason::PASID_TABLE_INVALID_ENTRY, 0x5b),
+            (FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR, 0x78),
+            (FaultReason::SCALABLE_SL_PTE_NOT_PRESENT, 0x79),
+            (FaultReason::SCALABLE_SL_PTE_RESERVED_BIT, 0x7a),
+            (FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR, 0x7b),
+            (FaultReason::SL_AD_UPDATE_NON_SNOOP, 0x7c),
+            (FaultReason::SL_AD_UPDATE_FAILED, 0x7d),
+            (FaultReason::SCALABLE_ADDRESS_BEYOND_HAW, 0x83),
+            (FaultReason::SCALABLE_ADDRESS_BEYOND_AGAW, 0x84),
+            (FaultReason::SCALABLE_WRITE_ACCESS_DENIED, 0x85),
+            (FaultReason::SCALABLE_READ_ACCESS_DENIED, 0x86),
+            (FaultReason::SCALABLE_OUTPUT_ADDR_IN_INTR_RANGE, 0x87),
+        ] {
+            assert_eq!(reason.0, expected);
+        }
+        assert_eq!(FaultReason(0xff).0, 0xff);
     }
 
     #[test]
