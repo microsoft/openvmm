@@ -16,6 +16,12 @@ pub(crate) const SCHEMA_VERSION: u32 = 5;
 /// callers. Readers that predate caller ownership ignore `caller_identity`
 /// and would restore the attachment as the VMM, so they must reject its state.
 pub(crate) const CALLER_IDENTITY_SCHEMA_VERSION: u32 = 6;
+/// The schema version of an attachment whose access policy has allowed or
+/// writable paths, which it records along with its denied paths. Readers that
+/// predate these paths would restore the attachment without them, and so
+/// could let the guest write everywhere in the share, so they must reject its
+/// state. The state records the ownership mode in `caller_identity`.
+pub(crate) const SUBTREE_POLICY_SCHEMA_VERSION: u32 = 7;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -70,6 +76,20 @@ pub(crate) struct SavedState {
     /// this field ran every request as the VMM.
     #[mesh(18)]
     pub caller_identity: bool,
+    /// The canonical share-relative paths that the attachment hides, recorded
+    /// only by version [`SUBTREE_POLICY_SCHEMA_VERSION`] states.
+    #[mesh(19)]
+    pub denied_paths: Vec<String>,
+    /// The canonical share-relative paths that the attachment exposes again
+    /// inside denied paths, recorded only by version
+    /// [`SUBTREE_POLICY_SCHEMA_VERSION`] states.
+    #[mesh(20)]
+    pub allowed_paths: Vec<String>,
+    /// The canonical share-relative paths that are the only writable parts of
+    /// the attachment, recorded only by version
+    /// [`SUBTREE_POLICY_SCHEMA_VERSION`] states.
+    #[mesh(21)]
+    pub writable_paths: Vec<String>,
 }
 
 #[derive(Protobuf)]

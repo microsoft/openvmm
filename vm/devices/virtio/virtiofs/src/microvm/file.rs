@@ -145,8 +145,9 @@ impl VirtioFsFile {
                         Ok(false) => break,
                         // As in `read_dir_with`, skip an entry whose name is
                         // gone, as after an unlink or a rename since the
-                        // snapshot listed it, or whose lookup the host refuses
-                        // with EACCES. Failing the read instead would fail
+                        // snapshot listed it, or reaches an object that the
+                        // access policy hides, as through a hard link to a
+                        // hidden file. Failing the read instead would fail
                         // every later read too, since each starts at the
                         // entry, so the guest could never list past it.
                         Err(error) if error == lx::Error::ENOENT || error == lx::Error::EACCES => {
@@ -227,7 +228,8 @@ impl VirtioFsFile {
             }
             if name != b"." && name != b".." {
                 match self.inode.child_path(&entry.name) {
-                    Ok(_) => {}
+                    Ok(path) if self.inode.volume.entry_listable(&path, entry.file_type) => {}
+                    Ok(_) => return Ok(true),
                     Err(error) if error == lx::Error::EACCES => return Ok(true),
                     Err(error) => return Err(error),
                 }

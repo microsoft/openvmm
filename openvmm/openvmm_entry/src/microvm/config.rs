@@ -105,7 +105,11 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let filesystems = if active {
             effective_microvm_filesystems(
                 &opt.microvm.microvm_mount,
-                &opt.microvm.microvm_mount_deny,
+                super::filesystem::MicrovmFilesystemPolicyPaths {
+                    denied: &opt.microvm.microvm_mount_deny,
+                    allowed: &opt.microvm.microvm_mount_allow,
+                    writable: &opt.microvm.microvm_mount_write,
+                },
                 opt.microvm.microvm_mount_owner.map_or(
                     openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm,
                     Into::into,
@@ -567,6 +571,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         root_identity: filesystem.attachment.identity.clone(),
                         read_only: filesystem.config.access.is_read_only(),
                         denied_paths: filesystem.config.denied_paths.clone(),
+                        allowed_paths: filesystem.config.allowed_paths.clone(),
+                        writable_paths: filesystem.config.writable_paths.clone(),
                         caller_identity: filesystem.config.owner.is_caller(),
                     },
                 )
