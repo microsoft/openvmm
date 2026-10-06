@@ -37,6 +37,10 @@
 //!   handling. With their feature bits clear, WHP does not implement
 //!   `IA32_TSC_ADJUST` and `IA32_TSC_DEADLINE` either; they raise #GP, and
 //!   so do the legacy L2-cache MSRs that the backend stubs for the PCAT BIOS.
+//!   WHP does not implement AMD's HWCR and DE_CFG either: under an AMD CPU
+//!   profile, OpenVMM serves them with the time ABI's fixed values
+//!   ([`AMD_CONFIG_MSRS`](virt::time_abi::msr::AMD_CONFIG_MSRS)), ahead of
+//!   the legacy stubs, which read HWCR as 0.
 //! - **Rates.** The guest TSC runs at the host rate: OpenVMM never sets the
 //!   `ProcessorClockFrequency` partition property. The offloaded APIC timer
 //!   runs at WHP's fixed 200 MHz (WHP cannot set `InterruptClockFrequency`).
@@ -58,6 +62,7 @@ use crate::profile_features::WhpFeatures;
 use crate::profile_features::profile_features;
 use crate::profile_features::supported_surface;
 use cpu_profile::CpuProfile;
+use cpu_profile::CpuVendor;
 use cpu_profile::PartitionProfile;
 use inspect::Inspect;
 use std::sync::Arc;
@@ -82,6 +87,8 @@ use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::msr::amd_config_msr_read;
+use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
@@ -700,10 +707,13 @@ pub(crate) enum MsrOutcome {
 }
 
 /// Serves an MSR access that the time ABI owns: the identity range through
-/// `msrs`, and the MSRs the time ABI hides, which raise #GP. Returns `None`
-/// for every other MSR, which the backend handles as before.
+/// `msrs`, the MSRs the time ABI hides, which raise #GP, and, for a CPU
+/// profile of `vendor` AMD, AMD's configuration MSRs
+/// ([`virt::time_abi::msr::AMD_CONFIG_MSRS`]). Returns `None` for every
+/// other MSR, which the backend handles as before.
 pub(crate) fn serve_msr(
     msrs: &TimeAbiMsrs,
+    vendor: CpuVendor,
     vp: VpIndex,
     msr: u32,
     access: MsrAccess,
@@ -719,6 +729,16 @@ pub(crate) fn serve_msr(
     }
     if LEGACY_L2_CACHE_MSRS.contains(&msr) {
         return Some(MsrOutcome::Fault);
+    }
+    if vendor == CpuVendor::Amd {
+        let outcome = match access {
+            MsrAccess::Read => amd_config_msr_read(msr).map(MsrOutcome::Read),
+            MsrAccess::Write(value) => amd_config_msr_write(msr, value)
+                .map(|result| result.map_or(MsrOutcome::Fault, |()| MsrOutcome::Written)),
+        };
+        if outcome.is_some() {
+            return outcome;
+        }
     }
     let outcome = match access {
         MsrAccess::Read => msrs.read(vp, msr)?.map(MsrOutcome::Read),
@@ -1196,7 +1216,13 @@ impl WhpProcessor<'_> {
         } else {
             MsrAccess::Read
         };
-        let Some(outcome) = serve_msr(&time_abi.msrs, self.vp.index, info.MsrNumber, access) else {
+        let Some(outcome) = serve_msr(
+            &time_abi.msrs,
+            time_abi.cpu_profile.cpu_vendor(),
+            self.vp.index,
+            info.MsrNumber,
+            access,
+        ) else {
             return Ok(false);
         };
         tracing::trace!(
@@ -1244,6 +1270,7 @@ impl WhpProcessor<'_> {
 #[cfg(test)]
 pub(crate) mod test_cpuid {
     use cpu_profile::CpuProfile;
+    use cpu_profile::CpuVendor;
     use cpu_profile::EffectiveCpuid;
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
@@ -1252,11 +1279,14 @@ pub(crate) mod test_cpuid {
     use vm_topology::processor::x86::ApicMode;
     use vm_topology::processor::x86::X2ApicState;
 
-    /// The pinned CPU profiles.
-    pub const PROFILES: [&str; 3] = [
+    /// Pinned CPU profiles of each vendor.
+    pub const PROFILES: [&str; 6] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
+        "amd.milan.v1",
+        "amd.genoa.v1",
+        "amd.turin.v1",
     ];
 
     /// Returns the topology of a VM with `vp_count` VPs in one socket.
@@ -1277,6 +1307,33 @@ pub(crate) mod test_cpuid {
             && effective
                 .results()
                 .any(|result| result.function == function && result.index == Some(index))
+    }
+
+    /// Returns the number of `profile`'s entries with a nonzero value, each
+    /// of which VP 0 of a partition of `profile` presents nonzero. The
+    /// profile's explicit zero entries, whose number grows with its maximum
+    /// leaves, present zero.
+    pub fn nonzero_entries(profile: &CpuProfile) -> usize {
+        profile
+            .cpuid()
+            .iter()
+            .filter(|entry| entry.values() != [0; 4])
+            .count()
+    }
+
+    /// Returns `value`, a result of `function` that VP 0 of a partition of
+    /// `profile` presents, without the bits in which core's table and the
+    /// profile programming of `de39f6aab` deliberately differ: that
+    /// programming predates AMD profiles, so it presents AMD's core count
+    /// (`0x80000008` ECX) and cache sharing (`0x8000001D` EAX) as zero.
+    pub fn without_amd_topology(profile: &CpuProfile, function: u32, value: [u32; 4]) -> [u32; 4] {
+        let ignored = match function {
+            0x8000_0008 | 0x8000_001d if profile.cpu_vendor() == CpuVendor::Amd => {
+                cpu_profile::vm_owned_bits(CpuVendor::Amd, function, value)
+            }
+            _ => [0; 4],
+        };
+        [0, 1, 2, 3].map(|register| value[register] & !ignored[register])
     }
 
     /// Lists every result of `effective` that `presented` does not match
@@ -1411,6 +1468,8 @@ mod tests {
     use super::test_cpuid;
     use super::*;
     use virt::time_abi::DeclaredRates;
+    use virt::time_abi::msr::MSR_AMD_DE_CFG;
+    use virt::time_abi::msr::MSR_AMD_HWCR;
     use virt::time_abi::msr::MSR_APIC_FREQUENCY;
     use virt::time_abi::msr::MSR_TSC_FREQUENCY;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
@@ -1650,6 +1709,15 @@ mod tests {
                 expected.push(0x1f);
             }
             expected.extend(0x4000_0000..=0x4000_0005);
+            // AMD's processor topology leaf carries each VP's APIC identity.
+            if partition
+                .config
+                .leaves()
+                .iter()
+                .any(|leaf| leaf.function == 0x8000_001e)
+            {
+                expected.push(0x8000_001e);
+            }
             // WHP answers the explicit zero leaves natively, and every other
             // leaf through CpuidResultList2.
             assert_eq!(partition.exits, expected, "{profile}");
@@ -1712,6 +1780,10 @@ mod tests {
             assert_eq!(leaf(1, 0).Mask.Ecx & ECX1_OSXSAVE, 0, "{profile}");
             assert_eq!(leaf(0xb, 0).Mask.Edx, 0, "{profile}");
             // The brand string is the profile's generic one, not the host's.
+            let generation = &cpu_profile::pinned(profile).unwrap().generation().name;
+            let generic = cpu_profile::derive::known_generation(generation)
+                .unwrap()
+                .brand;
             let brand: String = [0x8000_0002, 0x8000_0003, 0x8000_0004]
                 .iter()
                 .flat_map(|&function| {
@@ -1727,10 +1799,7 @@ mod tests {
                 .take_while(|&byte| byte != 0)
                 .map(char::from)
                 .collect();
-            assert!(
-                brand.starts_with("Intel(R) Xeon(R) Processor ("),
-                "{profile}: {brand}"
-            );
+            assert_eq!(brand, generic, "{profile}");
         }
     }
 
@@ -1817,19 +1886,20 @@ mod tests {
     /// of the CPUID. VP 0 observes exactly the CPUID of the profile
     /// programming of `de39f6aab` on every leaf and subleaf that either
     /// lists, on their unlisted subleaves, and past the maximum leaves, on a
-    /// WHP whose unprogrammed bits read zero. The one deliberate change is the
+    /// WHP whose unprogrammed bits read zero. The deliberate changes are the
     /// subleaf that ends each extended topology leaf: core's table lists it,
     /// and VP 0 presents it as listed, where the profile programming read
-    /// zero.
+    /// zero; and AMD's topology fields, which that programming predates
+    /// ([`test_cpuid::without_amd_topology`]).
     #[test]
     fn core_table_presents_what_the_profile_programming_did() {
         for profile in test_cpuid::PROFILES {
+            let pinned = cpu_profile::pinned(profile).unwrap();
             for vp_count in [1, 8] {
                 let mut new = Partition::new(profile, vp_count, X2ApicState::Supported);
                 new.whp.noise = false;
                 let old = Partition::profile_programmed(profile, vp_count, false);
-                let probes =
-                    test_cpuid::probes(&new.effective, cpu_profile::pinned(profile).unwrap());
+                let probes = test_cpuid::probes(&new.effective, pinned);
                 let differences: Vec<String> = probes
                     .iter()
                     .filter_map(|&(function, index)| {
@@ -1840,7 +1910,12 @@ mod tests {
                                 format!("{function:#x}.{index}: terminator {ours:08x?}, not {expected:08x?}")
                             });
                         }
-                        let theirs = normalize_cpuid(function, index, old.observe(0, function, index));
+                        let ours = test_cpuid::without_amd_topology(pinned, function, ours);
+                        let theirs = test_cpuid::without_amd_topology(
+                            pinned,
+                            function,
+                            normalize_cpuid(function, index, old.observe(0, function, index)),
+                        );
                         (ours != theirs).then(|| {
                             format!("{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}")
                         })
@@ -1856,10 +1931,10 @@ mod tests {
                     .iter()
                     .filter(|&&(function, index)| new.observe(0, function, index) != [0; 4])
                     .count();
-                let entries = cpu_profile::pinned(profile).unwrap().cpuid().len();
+                let nonzero = test_cpuid::nonzero_entries(pinned);
                 assert!(
-                    populated >= entries / 2,
-                    "{profile}: {populated} populated results of {entries} profile entries"
+                    populated >= nonzero,
+                    "{profile}: {populated} populated results of {nonzero} nonzero profile entries"
                 );
             }
         }
@@ -2152,8 +2227,10 @@ mod tests {
     #[test]
     fn msr_exits_serve_the_identity_and_hide_the_timer_msrs() {
         let msrs = declared_msrs();
-        let read = |vp, msr| serve_msr(&msrs, VpIndex::new(vp), msr, MsrAccess::Read);
-        let write = |msr, value| serve_msr(&msrs, VpIndex::BSP, msr, MsrAccess::Write(value));
+        let intel = CpuVendor::Intel;
+        let read = |vp, msr| serve_msr(&msrs, intel, VpIndex::new(vp), msr, MsrAccess::Read);
+        let write =
+            |msr, value| serve_msr(&msrs, intel, VpIndex::BSP, msr, MsrAccess::Write(value));
         assert_eq!(read(5, MSR_VP_INDEX), Some(MsrOutcome::Read(5)));
         assert_eq!(
             read(0, MSR_TSC_FREQUENCY),
@@ -2203,10 +2280,44 @@ mod tests {
             assert_eq!(read(0, msr), Some(MsrOutcome::Fault), "{msr:#x}");
             assert_eq!(write(msr, 0), Some(MsrOutcome::Fault), "{msr:#x}");
         }
-        // Every other MSR keeps its existing handling.
-        for msr in [0x10, 0x1b, 0x3a, 0x6df, 0x6e1, 0x3fff_ffff, 0x4000_0200] {
+        // Every other MSR keeps its existing handling, AMD's configuration
+        // MSRs included under an Intel profile.
+        for msr in [
+            0x10,
+            0x1b,
+            0x3a,
+            0x6df,
+            0x6e1,
+            0x3fff_ffff,
+            0x4000_0200,
+            MSR_AMD_HWCR,
+            MSR_AMD_DE_CFG,
+        ] {
             assert_eq!(read(0, msr), None, "{msr:#x}");
             assert_eq!(write(msr, 0), None, "{msr:#x}");
+        }
+    }
+
+    /// Under an AMD profile, OpenVMM serves HWCR and DE_CFG with the time
+    /// ABI's fixed values, before the backend's legacy stubs, which read HWCR
+    /// as 0.
+    #[test]
+    fn msr_exits_serve_amd_config_msrs_under_an_amd_profile() {
+        let msrs = declared_msrs();
+        let amd = CpuVendor::Amd;
+        let read = |msr| serve_msr(&msrs, amd, VpIndex::new(3), msr, MsrAccess::Read);
+        let write = |msr, value| serve_msr(&msrs, amd, VpIndex::BSP, msr, MsrAccess::Write(value));
+        assert_eq!(read(MSR_AMD_HWCR), Some(MsrOutcome::Read(1 << 24)));
+        assert_eq!(read(MSR_AMD_DE_CFG), Some(MsrOutcome::Read(1 << 1)));
+        assert_eq!(write(MSR_AMD_HWCR, 1 << 24), Some(MsrOutcome::Written));
+        assert_eq!(write(MSR_AMD_HWCR, 1 << 30), Some(MsrOutcome::Fault));
+        assert_eq!(write(MSR_AMD_DE_CFG, 0), Some(MsrOutcome::Fault));
+        // The identity and the hidden MSRs are served as under any profile.
+        assert_eq!(read(MSR_VP_INDEX), Some(MsrOutcome::Read(3)));
+        assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(MsrOutcome::Fault));
+        // Other AMD MSRs keep the backend's handling.
+        for msr in [0xc001_0010, 0xc001_0114, 0xc001_0140] {
+            assert_eq!(read(msr), None, "{msr:#x}");
         }
     }
 
@@ -2215,7 +2326,7 @@ mod tests {
         let msrs = TimeAbiMsrs::new();
         for msr in [MSR_TSC_FREQUENCY, MSR_APIC_FREQUENCY] {
             assert_eq!(
-                serve_msr(&msrs, VpIndex::BSP, msr, MsrAccess::Read),
+                serve_msr(&msrs, CpuVendor::Intel, VpIndex::BSP, msr, MsrAccess::Read),
                 Some(MsrOutcome::Fault)
             );
         }
@@ -2661,7 +2772,7 @@ mod whp_tests {
     /// one programmed from core's complete table and one with the profile
     /// programming of `de39f6aab`, present the same CPUID to VP 0, except the
     /// listed subleaf that ends leaf 0Bh, which the profile programming left
-    /// zero.
+    /// zero, and AMD's topology fields, which it predates.
     #[test]
     #[ignore = "requires WHP"]
     fn core_table_presents_what_the_profile_programming_did_on_whp() {
@@ -2772,6 +2883,8 @@ mod whp_tests {
                 function,
                 index,
             );
+            let ours = test_cpuid::without_amd_topology(profile, function, ours);
+            let theirs = test_cpuid::without_amd_topology(profile, function, theirs);
             if ours != theirs {
                 differences.push(format!(
                     "{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}"
@@ -2789,7 +2902,7 @@ mod whp_tests {
             programming.results.len()
         );
         assert!(differences.is_empty(), "{differences:#?}");
-        assert!(populated >= profile.cpuid().len() / 2);
+        assert!(populated >= test_cpuid::nonzero_entries(profile));
     }
 
     #[test]

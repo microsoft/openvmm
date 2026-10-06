@@ -29,7 +29,11 @@
 //!   and would read `IA32_TSC_DEADLINE` as 0 and ignore writes; KVM serves
 //!   reads of `MSR_IA32_BBL_CR_CTL3`, and OpenVMM stubs the other L2-cache
 //!   MSRs for the PCAT BIOS). KVM checks the filter before its in-kernel
-//!   Hyper-V MSRs, so those never see a guest access.
+//!   Hyper-V MSRs, so those never see a guest access. Under an AMD CPU
+//!   profile, the filter also denies HWCR and DE_CFG, which OpenVMM serves
+//!   with the time ABI's fixed values
+//!   ([`AMD_CONFIG_MSRS`](virt::time_abi::msr::AMD_CONFIG_MSRS)) instead of
+//!   KVM's own (HWCR reading 0).
 //! - **Invariant TSC.** With `"Hv#1"` and `AccessTscInvariantControls` in
 //!   CPUID, KVM (Linux 6.3 and later) hides the invariant-TSC bit of CPUID
 //!   `0x80000007` until its own copy of `HV_X64_MSR_TSC_INVARIANT_CONTROL` is
@@ -61,6 +65,7 @@
 use super::KvmPartitionInner;
 use crate::KvmError;
 use cpu_profile::CpuProfile;
+use cpu_profile::CpuVendor;
 use parking_lot::Mutex;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -79,8 +84,11 @@ use virt::time_abi::TscAnchor;
 use virt::time_abi::TscSetReport;
 use virt::time_abi::TscSyncMethod;
 use virt::time_abi::host::sample_host_time;
+use virt::time_abi::msr::AMD_CONFIG_MSRS;
 use virt::time_abi::msr::IDENTITY_MSR_RANGE;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+use virt::time_abi::msr::amd_config_msr_read;
+use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::rate::LAPIC_HZ_KVM;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::surface::SupportedMsrValue;
@@ -137,10 +145,29 @@ pub(crate) fn identity_msr_filter() -> [kvm::MsrFilterRange; 7] {
     ]
 }
 
+/// Returns the MSR filter ranges of a time ABI partition whose CPU profile is
+/// of `vendor`: [`identity_msr_filter`], and for AMD also AMD's
+/// configuration MSRs ([`AMD_CONFIG_MSRS`]), which KVM would otherwise
+/// serve itself (HWCR reading 0, and DE_CFG reading what the VMM last set).
+pub(crate) fn time_abi_msr_filter(vendor: CpuVendor) -> Vec<kvm::MsrFilterRange> {
+    let mut ranges = identity_msr_filter().to_vec();
+    if vendor == CpuVendor::Amd {
+        ranges.extend(
+            AMD_CONFIG_MSRS
+                .iter()
+                .map(|&(msr, _)| kvm::MsrFilterRange::deny(msr..=msr)),
+        );
+    }
+    ranges
+}
+
 /// Routes the time ABI's MSRs to user space: user-space exits for unknown
-/// and filtered MSRs, and the [`identity_msr_filter`] (every other MSR keeps
-/// its in-kernel handling).
-pub(crate) fn install_identity_msr_filter(vm: &kvm::Partition) -> Result<(), TimeAbiError> {
+/// and filtered MSRs, and the [`time_abi_msr_filter`] of a CPU profile of
+/// `vendor` (every other MSR keeps its in-kernel handling).
+pub(crate) fn install_identity_msr_filter(
+    vm: &kvm::Partition,
+    vendor: CpuVendor,
+) -> Result<(), TimeAbiError> {
     for (name, cap) in [
         (
             "KVM_CAP_X86_USER_SPACE_MSR",
@@ -156,7 +183,7 @@ pub(crate) fn install_identity_msr_filter(vm: &kvm::Partition) -> Result<(), Tim
     }
     vm.enable_msr_exits(kvm::KVM_MSR_EXIT_REASON_UNKNOWN | kvm::KVM_MSR_EXIT_REASON_FILTER)
         .map_err(|err| routing_error(format!("cannot enable user-space MSR exits: {err:#}")))?;
-    vm.set_msr_filter(true, &identity_msr_filter())
+    vm.set_msr_filter(true, &time_abi_msr_filter(vendor))
         .map_err(|err| routing_error(format!("cannot install the MSR filter: {err:#}")))?;
     Ok(())
 }
@@ -387,19 +414,24 @@ pub(crate) struct KvmTimeAbi {
     /// The `IA32_ARCH_CAPABILITIES` value of every vCPU, from the CPU
     /// profile ([`profile_arch_capabilities`]).
     arch_capabilities: Option<u64>,
+    /// Whether the CPU profile is AMD's, so that OpenVMM serves AMD's
+    /// configuration MSRs, which [`time_abi_msr_filter`] routes to it.
+    amd_config_msrs: bool,
 }
 
 impl KvmTimeAbi {
     /// Sets up the vCPUs of a new partition for the time ABI: KVM's
     /// paravirtual MSRs raise #GP, and KVM's copy of
-    /// `HV_X64_MSR_TSC_INVARIANT_CONTROL` is probed. `surface` and
-    /// `arch_capabilities` come from the partition's CPU profile.
+    /// `HV_X64_MSR_TSC_INVARIANT_CONTROL` is probed. `surface`,
+    /// `arch_capabilities`, and `vendor` come from the partition's CPU
+    /// profile.
     pub(crate) fn new(
         vm: &kvm::Partition,
         vcpus: &[u32],
         msrs: Arc<TimeAbiMsrs>,
         surface: SupportedCpuSurface,
         arch_capabilities: Option<u64>,
+        vendor: CpuVendor,
     ) -> Result<Self, TimeAbiError> {
         for &vcpu in vcpus {
             vm.vp(vcpu)
@@ -433,6 +465,7 @@ impl KvmTimeAbi {
             kvm_invariant_control,
             surface,
             arch_capabilities,
+            amd_config_msrs: vendor == CpuVendor::Amd,
         })
     }
 
@@ -466,6 +499,11 @@ impl KvmTimeAbi {
             tracelimit::info_ratelimited!(vp = vp.index(), msr, "hidden MSR read raises #GP");
             return Some(Err(MsrError::InvalidAccess));
         }
+        if self.amd_config_msrs
+            && let Some(value) = amd_config_msr_read(msr)
+        {
+            return Some(Ok(value));
+        }
         self.msrs.read(vp, msr)
     }
 
@@ -489,6 +527,11 @@ impl KvmTimeAbi {
                 "hidden MSR write raises #GP"
             );
             return Some(Err(MsrError::InvalidAccess));
+        }
+        if self.amd_config_msrs
+            && let Some(result) = amd_config_msr_write(msr, value)
+        {
+            return Some(result);
         }
         self.msrs.write(vp, msr, value)
     }
@@ -755,8 +798,7 @@ mod tests {
 
     #[test]
     fn filter_denies_exactly_the_owned_msrs() {
-        let filter = identity_msr_filter();
-        let owned = [
+        let identity = [
             (0x4000_0000, 0x4000_01ff),
             (0x3b, 0x3b),
             (0x6e0, 0x6e0),
@@ -765,12 +807,23 @@ mod tests {
             (0x118, 0x11b),
             (0x11e, 0x11e),
         ];
-        assert_eq!(filter.len(), owned.len());
-        for (range, (first, last)) in filter.iter().zip(owned) {
-            assert_eq!(range.base, first);
-            assert_eq!(range.base + range.nmsrs - 1, last);
-            assert!(range.read && range.write);
-            assert!(range.bitmap.iter().all(|&byte| byte == 0));
+        let amd = [(0xc001_0015, 0xc001_0015), (0xc001_1029, 0xc001_1029)];
+        assert_eq!(
+            identity_msr_filter().to_vec(),
+            time_abi_msr_filter(CpuVendor::Intel)
+        );
+        for (vendor, owned) in [
+            (CpuVendor::Intel, identity.to_vec()),
+            (CpuVendor::Amd, [identity.as_slice(), &amd].concat()),
+        ] {
+            let filter = time_abi_msr_filter(vendor);
+            assert_eq!(filter.len(), owned.len(), "{vendor}");
+            for (range, (first, last)) in filter.iter().zip(owned) {
+                assert_eq!(range.base, first, "{vendor}");
+                assert_eq!(range.base + range.nmsrs - 1, last, "{vendor}");
+                assert!(range.read && range.write, "{vendor}");
+                assert!(range.bitmap.iter().all(|&byte| byte == 0), "{vendor}");
+            }
         }
     }
 
@@ -1165,12 +1218,13 @@ mod tests {
         assert!(error.message.contains("VP 3: 0x9"), "{}", error.message);
     }
 
-    fn time_abi(msrs: Arc<TimeAbiMsrs>) -> KvmTimeAbi {
+    fn time_abi(msrs: Arc<TimeAbiMsrs>, vendor: CpuVendor) -> KvmTimeAbi {
         KvmTimeAbi {
             msrs,
             kvm_invariant_control: None,
             surface: SupportedCpuSurface::default(),
             arch_capabilities: None,
+            amd_config_msrs: vendor == CpuVendor::Amd,
         }
     }
 
@@ -1190,7 +1244,7 @@ mod tests {
             apic_hz: LAPIC_HZ_KVM,
         })
         .unwrap();
-        let time_abi = time_abi(msrs.clone());
+        let time_abi = time_abi(msrs.clone(), CpuVendor::Intel);
         let vp = VpIndex::new(2);
         let read = |msr| outcome(time_abi.read_msr(vp, msr));
         let write = |msr, value| outcome(time_abi.write_msr(vp, msr, value));
@@ -1217,8 +1271,10 @@ mod tests {
             assert_eq!(read(msr), Some(Err(())), "{msr:#x}");
             assert_eq!(write(msr, 0), Some(Err(())), "{msr:#x}");
         }
-        // Other unknown MSRs keep their existing handling.
-        for msr in [0x87, 0x8b, 0x117, 0x11c, 0x11f] {
+        // Other unknown MSRs keep their existing handling, and so do AMD's
+        // configuration MSRs under an Intel profile, which the filter does
+        // not route here.
+        for msr in [0x87, 0x8b, 0x117, 0x11c, 0x11f, 0xc001_0015, 0xc001_1029] {
             assert_eq!(read(msr), None, "{msr:#x}");
         }
         assert_eq!(write(0x4000_0200, 0), None);
@@ -1227,6 +1283,24 @@ mod tests {
         assert_eq!(write(MSR_TSC_INVARIANT_CONTROL, 1), Some(Ok(())));
         assert_eq!(msrs.tsc_invariant_control(), 1);
         assert_eq!(read(MSR_TSC_INVARIANT_CONTROL), Some(Ok(1)));
+    }
+
+    /// Under an AMD profile, the filter routes HWCR and DE_CFG to OpenVMM,
+    /// which serves the time ABI's fixed values.
+    #[test]
+    fn msr_exits_serve_amd_config_msrs_under_an_amd_profile() {
+        let time_abi = time_abi(Arc::new(TimeAbiMsrs::new()), CpuVendor::Amd);
+        let vp = VpIndex::new(1);
+        let read = |msr| outcome(time_abi.read_msr(vp, msr));
+        let write = |msr, value| outcome(time_abi.write_msr(vp, msr, value));
+        assert_eq!(read(0xc001_0015), Some(Ok(1 << 24)));
+        assert_eq!(read(0xc001_1029), Some(Ok(1 << 1)));
+        assert_eq!(write(0xc001_0015, 1 << 24), Some(Ok(())));
+        assert_eq!(write(0xc001_0015, 1 << 24 | 1 << 30), Some(Err(())));
+        assert_eq!(write(0xc001_1029, 0), Some(Err(())));
+        assert_eq!(read(MSR_VP_INDEX), Some(Ok(1)));
+        assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(Err(())));
+        assert_eq!(read(0xc001_0010), None);
     }
 
     #[test]
@@ -1260,7 +1334,8 @@ mod kvm_tests {
     #[ignore = "requires /dev/kvm"]
     fn identity_msr_filter_installs() {
         let vm = partition(1);
-        install_identity_msr_filter(&vm).unwrap();
+        install_identity_msr_filter(&vm, CpuVendor::Amd).unwrap();
+        install_identity_msr_filter(&vm, CpuVendor::Intel).unwrap();
         // Host-initiated accesses bypass the filter.
         let mut value = [0];
         vm.vp(0)
@@ -1332,6 +1407,7 @@ mod kvm_tests {
             msrs.clone(),
             SupportedCpuSurface::default(),
             None,
+            CpuVendor::Intel,
         )
         .unwrap();
         if time_abi.kvm_invariant_control.is_none() {
@@ -1390,6 +1466,7 @@ mod kvm_tests {
             Arc::new(TimeAbiMsrs::new()),
             surface,
             Some(value),
+            profile.cpu_vendor(),
         )
         .unwrap();
         time_abi.set_arch_capabilities(&vm.vp(0)).unwrap();
