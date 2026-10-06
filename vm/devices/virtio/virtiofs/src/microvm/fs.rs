@@ -7,7 +7,6 @@ use super::MAX_FUSE_REQUEST_BYTES;
 use super::owner::CallerIdentity;
 use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
-use super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
 use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
@@ -15,7 +14,7 @@ use super::saved_state::MAX_DIRECTORY_BYTES;
 use super::saved_state::MAX_DIRECTORY_ENTRIES;
 use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
-use super::saved_state::SCHEMA_VERSION;
+use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
 use super::saved_state::SavedHandle;
 use super::saved_state::SavedInode;
 use super::saved_state::SavedState;
@@ -24,6 +23,8 @@ use super::state::fuse_negotiation_from_session;
 use super::state::reopen_flags;
 use super::state::saved_identity;
 use super::state::saved_negotiation;
+use super::state::saved_policy_paths;
+use super::state::schema_version;
 use super::state::session_state_from_saved;
 use super::state::validate_identity;
 use super::state::validate_microvm_state;
@@ -148,23 +149,34 @@ impl VirtioFs {
             .sandbox(true)
             .confine_paths(true);
         let volume = mount_options.new_volume(root_path)?;
-        let denied_identities = profile
-            .denied_paths()
-            .iter()
-            .map(|path| {
-                volume
-                    .lstat(path)
-                    .map(|stat| (stat.device_nr, stat.inode_nr))
-            })
-            .collect::<lx::Result<Vec<_>>>()?;
+        let mut pinned_identities = HashMap::new();
+        for (path, reachable_at) in profile.subtree_policy().pinned_paths() {
+            let stat = volume.lstat(&path)?;
+            if reachable_at.is_some() && stat.mode & lx::S_IFMT != lx::S_IFDIR {
+                anyhow::bail!(
+                    "microVM virtio-fs path {} leads to an allowed path but is not a directory",
+                    path.display()
+                );
+            }
+            // An object pinned at two paths, such as through a bind mount, is
+            // reachable at neither.
+            pinned_identities
+                .entry((stat.device_nr, stat.inode_nr))
+                .and_modify(|pinned: &mut Option<PathBuf>| {
+                    if *pinned != reachable_at {
+                        *pinned = None;
+                    }
+                })
+                .or_insert(reachable_at);
+        }
         let mut inodes = InodeMap::new(false);
         let volume = Arc::new(VirtioFsVolume::new_with_strict_paths(
             volume,
             0,
             profile.is_readonly(),
             true,
-            profile.denied_paths().to_vec(),
-            denied_identities,
+            profile.subtree_policy().clone(),
+            pinned_identities,
         ));
         let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
         profile.validate_opened_root(root_path, &root_stat)?;
@@ -252,12 +264,13 @@ impl VirtioFs {
         volume_id: u32,
         old: &Path,
         new: &Path,
+        exchange: bool,
     ) -> lx::Result<()> {
         if self.is_microvm() {
             self.inner
                 .inodes
                 .read()
-                .preflight_microvm_rename(volume_id, old, new)
+                .preflight_microvm_rename(volume_id, old, new, exchange)
         } else {
             Ok(())
         }
@@ -400,13 +413,20 @@ impl VirtioFs {
             *self.inner.negotiation.read() == negotiation,
             "FUSE session and filesystem negotiation state disagree"
         );
-        let caller_identity = profile.owner_mode() == MicroVmOwnerMode::Caller;
-        Ok(SavedState {
-            schema_version: if caller_identity {
-                CALLER_IDENTITY_SCHEMA_VERSION
+        let schema_version = schema_version(profile);
+        let policy = profile.subtree_policy();
+        let (denied_paths, allowed_paths, writable_paths) =
+            if schema_version == SUBTREE_POLICY_SCHEMA_VERSION {
+                (
+                    saved_policy_paths(policy.denied_paths()),
+                    saved_policy_paths(policy.allowed_paths()),
+                    saved_policy_paths(policy.writable_paths()),
+                )
             } else {
-                SCHEMA_VERSION
-            },
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+        Ok(SavedState {
+            schema_version,
             attachment_id: profile.attachment_id().to_owned(),
             access_mode: match profile.access_mode() {
                 super::profile::MicroVmAccessMode::ReadOnly => 1,
@@ -426,7 +446,10 @@ impl VirtioFs {
             attachment_root_identity: profile.root_identity().to_vec(),
             maximum_request_size: MAX_FUSE_REQUEST_BYTES as u32,
             dormant: false,
-            caller_identity,
+            caller_identity: profile.owner_mode() == MicroVmOwnerMode::Caller,
+            denied_paths,
+            allowed_paths,
+            writable_paths,
         })
     }
 
