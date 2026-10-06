@@ -317,7 +317,204 @@ fn validate_microvm_filesystem_roots(
             );
         }
     }
+    #[cfg(target_os = "linux")]
+    if roots.len() > 1 {
+        let mountinfo = fs_err::read_to_string("/proc/self/mountinfo")?;
+        let roots = roots
+            .iter()
+            .map(|(root, _)| Path::new(root))
+            .collect::<Vec<_>>();
+        mount_sources::validate_disjoint(&mountinfo, &roots)?;
+    }
     Ok(())
+}
+
+/// Compares where the files of each host root come from.
+///
+/// A bind mount gives a directory a second canonical path and root identity,
+/// so it can expose part of one share as another share's root, or inside
+/// another share's tree. Each root reaches the source directory of the mount
+/// that contains it and the source of every mount below it, and two roots
+/// overlap when any of those ranges of one filesystem contains another.
+#[cfg(target_os = "linux")]
+mod mount_sources {
+    use anyhow::Context;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    struct Mount {
+        device: String,
+        root: PathBuf,
+        mount_point: PathBuf,
+    }
+
+    /// A directory tree of one filesystem, named by its device and its path
+    /// within that filesystem.
+    struct Source {
+        device: String,
+        path: PathBuf,
+    }
+
+    impl Source {
+        fn overlaps(&self, other: &Source) -> bool {
+            self.device == other.device
+                && (self.path.starts_with(&other.path) || other.path.starts_with(&self.path))
+        }
+    }
+
+    fn unescape(field: &str) -> anyhow::Result<PathBuf> {
+        use std::os::unix::ffi::OsStringExt as _;
+        let bytes = field.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'\\' {
+                let digits = bytes
+                    .get(index + 1..index + 4)
+                    .and_then(|digits| std::str::from_utf8(digits).ok())
+                    .and_then(|digits| u8::from_str_radix(digits, 8).ok())
+                    .with_context(|| format!("invalid escape in mountinfo field '{field}'"))?;
+                decoded.push(digits);
+                index += 4;
+            } else {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(decoded)))
+    }
+
+    fn parse(mountinfo: &str) -> anyhow::Result<Vec<Mount>> {
+        mountinfo
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let fields = line.split(' ').collect::<Vec<_>>();
+                anyhow::ensure!(fields.len() >= 5, "malformed mountinfo line '{line}'");
+                Ok(Mount {
+                    device: fields[2].to_owned(),
+                    root: unescape(fields[3])?,
+                    mount_point: unescape(fields[4])?,
+                })
+            })
+            .collect()
+    }
+
+    fn sources(mounts: &[Mount], root: &Path) -> anyhow::Result<Vec<Source>> {
+        // The deepest mount point that contains the root, and among mounts
+        // stacked there, the latest, which hides the others.
+        let (_, containing) = mounts
+            .iter()
+            .enumerate()
+            .filter(|(_, mount)| root.starts_with(&mount.mount_point))
+            .max_by_key(|(index, mount)| (mount.mount_point.components().count(), *index))
+            .with_context(|| format!("no mount contains {}", root.display()))?;
+        let relative = root.strip_prefix(&containing.mount_point)?;
+        let mut sources = vec![Source {
+            device: containing.device.clone(),
+            path: containing.root.join(relative),
+        }];
+        sources.extend(
+            mounts
+                .iter()
+                .filter(|mount| mount.mount_point != root && mount.mount_point.starts_with(root))
+                .map(|mount| Source {
+                    device: mount.device.clone(),
+                    path: mount.root.clone(),
+                }),
+        );
+        Ok(sources)
+    }
+
+    /// Rejects canonical roots that reach a common directory of a filesystem.
+    pub(super) fn validate_disjoint(mountinfo: &str, roots: &[&Path]) -> anyhow::Result<()> {
+        let mounts = parse(mountinfo)?;
+        let sources = roots
+            .iter()
+            .map(|root| sources(&mounts, root))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for (index, root_sources) in sources.iter().enumerate() {
+            for (other_index, other_sources) in sources[..index].iter().enumerate() {
+                anyhow::ensure!(
+                    !root_sources
+                        .iter()
+                        .any(|source| other_sources.iter().any(|other| source.overlaps(other))),
+                    "microVM filesystem host directories must not overlap: {} and {} reach the same files through a mount",
+                    roots[other_index].display(),
+                    roots[index].display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::validate_disjoint;
+        use std::path::Path;
+
+        const BASE: &str = "\
+22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+23 22 0:21 / /proc rw,nosuid shared:2 - proc proc rw
+";
+
+        fn check(mountinfo: &str, first: &str, second: &str) -> anyhow::Result<()> {
+            validate_disjoint(mountinfo, &[Path::new(first), Path::new(second)])
+        }
+
+        #[test]
+        fn separate_directories_of_one_filesystem_are_disjoint() {
+            check(BASE, "/workspace", "/toolcache").unwrap();
+            check(BASE, "/work", "/workspace").unwrap();
+        }
+
+        #[test]
+        fn a_bind_mount_of_a_subdirectory_overlaps_its_source() {
+            let mountinfo =
+                format!("{BASE}30 22 8:1 /workspace/cache /toolcache rw - ext4 /dev/sda1 rw\n");
+            let error = check(&mountinfo, "/workspace", "/toolcache").unwrap_err();
+            assert!(error.to_string().contains("through a mount"), "{error:#}");
+            check(&mountinfo, "/toolcache", "/workspace").unwrap_err();
+            // The bind mount's source is not inside an unrelated directory.
+            check(&mountinfo, "/srv", "/toolcache").unwrap();
+        }
+
+        #[test]
+        fn a_mount_below_one_root_overlaps_the_other_root() {
+            let mountinfo =
+                format!("{BASE}31 22 8:1 /toolcache /workspace/tools rw - ext4 /dev/sda1 rw\n");
+            check(&mountinfo, "/workspace", "/toolcache").unwrap_err();
+            check(&mountinfo, "/workspace", "/toolcache/node").unwrap_err();
+            check(&mountinfo, "/workspace", "/opt").unwrap();
+        }
+
+        #[test]
+        fn other_filesystems_and_unrelated_mounts_do_not_overlap() {
+            let mountinfo = format!(
+                "{BASE}40 22 8:2 / /data rw - ext4 /dev/sda2 rw\n\
+                 41 22 0:50 / /workspace/tmp rw - tmpfs tmpfs rw\n"
+            );
+            check(&mountinfo, "/workspace", "/data").unwrap();
+            // A second mount of the same filesystem reaches the same files.
+            let twice = format!("{mountinfo}42 22 8:2 / /mnt/data rw - ext4 /dev/sda2 rw\n");
+            check(&twice, "/data/a", "/mnt/data/a/b").unwrap_err();
+            check(&twice, "/data/a", "/mnt/data/b").unwrap();
+        }
+
+        #[test]
+        fn escaped_paths_and_stacked_mounts_resolve() {
+            let mountinfo = format!(
+                "{BASE}50 22 8:1 /src\\040dir /mnt/share\\040one rw - ext4 /dev/sda1 rw\n\
+                 51 22 8:2 / /mnt/share\\040one rw - ext4 /dev/sda2 rw\n"
+            );
+            // The later mount hides the earlier one at the same mount point.
+            check(&mountinfo, "/mnt/share one", "/src dir").unwrap();
+            check(&mountinfo, "/mnt/share one", "/data").unwrap();
+            let bind = format!("{BASE}52 22 8:1 /src\\040dir /mnt/share rw - ext4 /dev/sda1 rw\n");
+            check(&bind, "/mnt/share", "/src dir/sub").unwrap_err();
+            assert!(validate_disjoint("22 1 8:1", &[Path::new("/a"), Path::new("/b")]).is_err());
+        }
+    }
 }
 
 /// Builds the filesystems of the `--mount` options, which occupy the fixed
