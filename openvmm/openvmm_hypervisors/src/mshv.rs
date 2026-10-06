@@ -67,6 +67,19 @@ impl hypervisor_resources::HypervisorProbe for MshvProbe {
             virt_mshv::LinuxMshv::from(std::fs::File::from(fs_err::File::open("/dev/mshv")?));
         Ok(mshv.cpu_fingerprint()?)
     }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn profile_unlisted_cpuid(
+        &self,
+        params: &[(&str, &str)],
+        profile: &cpu_profile::CpuProfile,
+    ) -> anyhow::Result<Option<Vec<cpu_profile::cpuid::CpuidEntry>>> {
+        crate::reject_fingerprint_params("mshv", params)?;
+        anyhow::ensure!(virt_mshv::is_available()?, "MSHV is not available");
+        let mshv =
+            virt_mshv::LinuxMshv::from(std::fs::File::from(fs_err::File::open("/dev/mshv")?));
+        Ok(Some(mshv.profile_unlisted_cpuid(profile)?))
+    }
 }
 
 #[cfg(test)]

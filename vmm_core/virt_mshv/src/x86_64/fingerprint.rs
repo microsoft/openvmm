@@ -2,20 +2,27 @@
 // Licensed under the MIT License.
 
 //! The CPU fingerprint of the MSHV backend: the guest CPU surface and time
-//! capabilities that the Microsoft hypervisor supports on this host.
+//! capabilities that the Microsoft hypervisor supports on this host, and the
+//! CPUID entries outside a CPU profile that a partition configured from it
+//! presents.
 
+use super::profile_features;
+use super::time_abi;
 use crate::Error;
 use crate::ErrorInner;
 use crate::KernelError;
 use crate::LinuxMshv;
 use crate::VcpuFdExt;
 use crate::create_vm_with_retry;
+use cpu_profile::CpuProfile;
+use cpu_profile::cpuid::CpuidEntry;
 use cpu_profile::fingerprint::BackendFingerprint;
 use hvdef::HvPartitionPropertyCode;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
 use mshv_ioctls::VcpuFd;
 use mshv_ioctls::VmFd;
+use virt::time_abi::TimeAbiCode;
 
 const METHOD: &str = "HvCallGetVpCpuidValues on a probe partition that enables every processor \
      and XSAVE feature of the host partition";
@@ -149,6 +156,58 @@ impl LinuxMshv {
         drop(vmfd);
         Ok(fingerprint)
     }
+
+    /// Returns what VP 0 of a transient probe partition configured from
+    /// `profile` reads at every entry of the host's CPUID outside the
+    /// profile's tables ([`cpu_profile::unlisted_cpuid_candidates`]), each
+    /// read at subleaf 0 if subleaf-independent, for the `--cpu-fingerprint`
+    /// check that those entries read zero (`E_CPU_UNLISTED`).
+    ///
+    /// It measures what a time ABI cold boot checks on VP 0 of its partition.
+    /// The probe partition is created as a microVM's time ABI partition is:
+    /// without isolation, x2APIC, or SMT, and with the processor feature banks
+    /// and XSAVE features that derive from the profile within what the host
+    /// partition offers. So, unlike [`Self::cpu_fingerprint`]'s probe
+    /// partition with every feature of the host partition, it does not
+    /// present the XSAVE components of features that no profile enables, such
+    /// as CET's. VP 0 reads the candidates as a cold boot reads them, with its
+    /// reset XCR0 and XSS, in one bulk `HvCallGetVpCpuidValues` where the
+    /// hypervisor accepts it. The probe registers no CPUID results, which
+    /// cover only the profile's own entries. The partition has no memory,
+    /// never runs, and is destroyed before this returns.
+    ///
+    /// Fails with `E_PROFILE_UNSUPPORTED` if the host partition does not
+    /// offer the profile's features.
+    pub fn profile_unlisted_cpuid(&self, profile: &CpuProfile) -> Result<Vec<CpuidEntry>, Error> {
+        let host = profile_features::host_features(&self.mshv)?;
+        let features = profile_features::time_abi_features(profile, host)?;
+        let args = time_abi::with_features(
+            super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)?,
+            features,
+        );
+        let vmfd = create_vm_with_retry(&self.mshv, &args)?;
+        vmfd.initialize()
+            .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
+        let vp = vmfd
+            .create_vcpu(0)
+            .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+
+        let candidates =
+            cpu_profile::unlisted_cpuid_candidates(profile, &profile_features::host_cpuid_table());
+        let reads: Vec<(u32, u32)> = candidates
+            .iter()
+            .map(|&(leaf, subleaf)| (leaf, subleaf.unwrap_or(0)))
+            .collect();
+        let (values, _) = time_abi::vp0_cpuid_entries(&vp, &reads, TimeAbiCode::CpuUnlisted)?;
+
+        drop(vp);
+        drop(vmfd);
+        Ok(candidates
+            .into_iter()
+            .zip(values)
+            .map(|((leaf, subleaf), registers)| CpuidEntry::new(leaf, subleaf, registers))
+            .collect())
+    }
 }
 
 /// Writes the TSC of the probe virtual processor and reads it back, and
@@ -231,5 +290,45 @@ mod tests {
         assert_eq!(fingerprint.feature_banks.len(), super::FEATURE_BANKS.len());
         assert!(fingerprint.time.tsc_frequency_hz.is_some());
         assert!(fingerprint.time.lapic_timer_frequency_hz.is_some());
+    }
+
+    /// The fingerprint check reads the entries outside the host's profile on
+    /// a partition configured from the profile, as a cold boot does: they
+    /// read zero there, even where the probe partition with every feature of
+    /// the host partition presents host data, such as the CET XSAVE
+    /// components of a CET-capable host.
+    #[test]
+    #[ignore = "requires /dev/mshv"]
+    fn a_partition_of_the_host_profile_reads_zero_outside_it() {
+        let profile = match cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()) {
+            Ok(profile) => profile,
+            Err(err) => {
+                println!("skipped: no profile for this host: {err}");
+                return;
+            }
+        };
+        let mshv = LinuxMshv::new().unwrap();
+        let presented = mshv.profile_unlisted_cpuid(profile).unwrap();
+        let candidates = cpu_profile::unlisted_cpuid_candidates(
+            profile,
+            &super::profile_features::host_cpuid_table(),
+        );
+        assert_eq!(
+            presented
+                .iter()
+                .map(cpuid::CpuidEntry::key)
+                .collect::<Vec<_>>(),
+            candidates
+        );
+        cpu_profile::check_unlisted_cpuid(profile, &presented).unwrap();
+        let fingerprint = mshv.cpu_fingerprint().unwrap();
+        let all_features = cpu_profile::unlisted_cpuid_violations(profile, &fingerprint.cpuid);
+        println!(
+            "{}: {} host entries outside the profile read zero on its partition: {:x?}; the \
+             probe partition with every feature presents {all_features:?}",
+            profile.id(),
+            candidates.len(),
+            candidates
+        );
     }
 }

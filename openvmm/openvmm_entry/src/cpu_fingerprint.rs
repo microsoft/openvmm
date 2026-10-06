@@ -20,8 +20,9 @@ use std::path::Path;
 /// code (`E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNSUPPORTED`, or, for MSHV and
 /// WHP, `E_CPU_UNLISTED`) after the fingerprint is written, so hosts
 /// of new generations can still be fingerprinted. A backend that can
-/// configure a probe partition from the profile, as WHP can, is checked for
-/// `E_CPU_UNLISTED` on that partition, as a cold boot checks its own.
+/// configure a probe partition from the profile, as MSHV and WHP can, is
+/// checked for `E_CPU_UNLISTED` on that partition, as a cold boot checks its
+/// own.
 pub(crate) fn write(path: &Path, hypervisor: Option<&str>) -> anyhow::Result<()> {
     let backend = openvmm_helpers::hypervisor::fingerprint_backend(hypervisor)
         .context("failed to fingerprint the hypervisor backend")?;

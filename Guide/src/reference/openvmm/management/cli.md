@@ -534,10 +534,11 @@ guest state and protect the directory with host access controls.
   the profile does not list, a partition that reads non-zero at such an entry
   fails with `E_CPU_UNLISTED`, so that no such entry carries host data; the
   identity range `0x40000000` to `0x4fffffff` and the topology leaves `0xb`
-  and `0x1f` are exempt. WHP reads VP 0 of a second probe partition
+  and `0x1f` are exempt. Both read VP 0 of a second probe partition
   configured from the profile, as a cold boot configures its partition, at
-  the host's CPUID entries outside the profile; MSHV reads the fingerprint's
-  probe partition, which enables every feature the backend offers. KVM
+  the host's CPUID entries outside the profile, rather than the
+  fingerprint's probe partition, which enables every feature the backend
+  offers, such as the XSAVE components of CET, which no profile enables. KVM
   installs the profile as the guest's whole CPUID table and answers every
   other entry from it (zero, or the architecture's out-of-range and topology
   results), so the check does not apply. The fingerprint is still written, so
