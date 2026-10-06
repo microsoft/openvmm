@@ -81,10 +81,12 @@ pub(crate) struct MicrovmResources {
     pub(crate) network_attachment: Option<SnapshotAttachment>,
     /// The bound run-scoped egress policy.
     pub(crate) egress_policy: Option<EgressPolicy>,
-    /// Snapshot identity of the live filesystem root.
-    pub(crate) filesystem_attachment: Option<SnapshotAttachment>,
-    /// Canonical host path of the live filesystem root.
-    pub(crate) filesystem_root_path: Option<PathBuf>,
+    /// Snapshot identities of the live filesystem roots, in virtio-fs slot
+    /// order.
+    pub(crate) filesystem_attachments: Vec<SnapshotAttachment>,
+    /// Canonical host paths of the live filesystem roots, in virtio-fs slot
+    /// order.
+    pub(crate) filesystem_root_paths: Vec<PathBuf>,
     /// Under the time ABI, seals the time fields of the restore packet; the
     /// restoring worker takes it.
     pub(crate) restore_time_record:
