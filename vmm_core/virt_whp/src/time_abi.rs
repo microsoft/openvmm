@@ -1270,6 +1270,7 @@ impl WhpProcessor<'_> {
 #[cfg(test)]
 pub(crate) mod test_cpuid {
     use cpu_profile::CpuProfile;
+    use cpu_profile::CpuVendor;
     use cpu_profile::EffectiveCpuid;
     use virt::CpuidLeaf;
     use virt::CpuidLeafSet;
@@ -1278,11 +1279,12 @@ pub(crate) mod test_cpuid {
     use vm_topology::processor::x86::ApicMode;
     use vm_topology::processor::x86::X2ApicState;
 
-    /// The pinned CPU profiles.
-    pub const PROFILES: [&str; 3] = [
+    /// Pinned CPU profiles of each vendor.
+    pub const PROFILES: [&str; 4] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
+        "amd.milan.v1",
     ];
 
     /// Returns the topology of a VM with `vp_count` VPs in one socket.
@@ -1303,6 +1305,21 @@ pub(crate) mod test_cpuid {
             && effective
                 .results()
                 .any(|result| result.function == function && result.index == Some(index))
+    }
+
+    /// Returns `value`, a result of `function` that VP 0 of a partition of
+    /// `profile` presents, without the bits in which core's table and the
+    /// profile programming of `de39f6aab` deliberately differ: that
+    /// programming predates AMD profiles, so it presents AMD's core count
+    /// (`0x80000008` ECX) and cache sharing (`0x8000001D` EAX) as zero.
+    pub fn without_amd_topology(profile: &CpuProfile, function: u32, value: [u32; 4]) -> [u32; 4] {
+        let ignored = match function {
+            0x8000_0008 | 0x8000_001d if profile.cpu_vendor() == CpuVendor::Amd => {
+                cpu_profile::vm_owned_bits(CpuVendor::Amd, function, value)
+            }
+            _ => [0; 4],
+        };
+        [0, 1, 2, 3].map(|register| value[register] & !ignored[register])
     }
 
     /// Lists every result of `effective` that `presented` does not match
@@ -1678,6 +1695,15 @@ mod tests {
                 expected.push(0x1f);
             }
             expected.extend(0x4000_0000..=0x4000_0005);
+            // AMD's processor topology leaf carries each VP's APIC identity.
+            if partition
+                .config
+                .leaves()
+                .iter()
+                .any(|leaf| leaf.function == 0x8000_001e)
+            {
+                expected.push(0x8000_001e);
+            }
             // WHP answers the explicit zero leaves natively, and every other
             // leaf through CpuidResultList2.
             assert_eq!(partition.exits, expected, "{profile}");
@@ -1740,6 +1766,10 @@ mod tests {
             assert_eq!(leaf(1, 0).Mask.Ecx & ECX1_OSXSAVE, 0, "{profile}");
             assert_eq!(leaf(0xb, 0).Mask.Edx, 0, "{profile}");
             // The brand string is the profile's generic one, not the host's.
+            let generation = &cpu_profile::pinned(profile).unwrap().generation().name;
+            let generic = cpu_profile::derive::known_generation(generation)
+                .unwrap()
+                .brand;
             let brand: String = [0x8000_0002, 0x8000_0003, 0x8000_0004]
                 .iter()
                 .flat_map(|&function| {
@@ -1755,10 +1785,7 @@ mod tests {
                 .take_while(|&byte| byte != 0)
                 .map(char::from)
                 .collect();
-            assert!(
-                brand.starts_with("Intel(R) Xeon(R) Processor ("),
-                "{profile}: {brand}"
-            );
+            assert_eq!(brand, generic, "{profile}");
         }
     }
 
@@ -1845,19 +1872,20 @@ mod tests {
     /// of the CPUID. VP 0 observes exactly the CPUID of the profile
     /// programming of `de39f6aab` on every leaf and subleaf that either
     /// lists, on their unlisted subleaves, and past the maximum leaves, on a
-    /// WHP whose unprogrammed bits read zero. The one deliberate change is the
+    /// WHP whose unprogrammed bits read zero. The deliberate changes are the
     /// subleaf that ends each extended topology leaf: core's table lists it,
     /// and VP 0 presents it as listed, where the profile programming read
-    /// zero.
+    /// zero; and AMD's topology fields, which that programming predates
+    /// ([`test_cpuid::without_amd_topology`]).
     #[test]
     fn core_table_presents_what_the_profile_programming_did() {
         for profile in test_cpuid::PROFILES {
+            let pinned = cpu_profile::pinned(profile).unwrap();
             for vp_count in [1, 8] {
                 let mut new = Partition::new(profile, vp_count, X2ApicState::Supported);
                 new.whp.noise = false;
                 let old = Partition::profile_programmed(profile, vp_count, false);
-                let probes =
-                    test_cpuid::probes(&new.effective, cpu_profile::pinned(profile).unwrap());
+                let probes = test_cpuid::probes(&new.effective, pinned);
                 let differences: Vec<String> = probes
                     .iter()
                     .filter_map(|&(function, index)| {
@@ -1868,7 +1896,12 @@ mod tests {
                                 format!("{function:#x}.{index}: terminator {ours:08x?}, not {expected:08x?}")
                             });
                         }
-                        let theirs = normalize_cpuid(function, index, old.observe(0, function, index));
+                        let ours = test_cpuid::without_amd_topology(pinned, function, ours);
+                        let theirs = test_cpuid::without_amd_topology(
+                            pinned,
+                            function,
+                            normalize_cpuid(function, index, old.observe(0, function, index)),
+                        );
                         (ours != theirs).then(|| {
                             format!("{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}")
                         })
@@ -2725,7 +2758,7 @@ mod whp_tests {
     /// one programmed from core's complete table and one with the profile
     /// programming of `de39f6aab`, present the same CPUID to VP 0, except the
     /// listed subleaf that ends leaf 0Bh, which the profile programming left
-    /// zero.
+    /// zero, and AMD's topology fields, which it predates.
     #[test]
     #[ignore = "requires WHP"]
     fn core_table_presents_what_the_profile_programming_did_on_whp() {
@@ -2836,6 +2869,8 @@ mod whp_tests {
                 function,
                 index,
             );
+            let ours = test_cpuid::without_amd_topology(profile, function, ours);
+            let theirs = test_cpuid::without_amd_topology(profile, function, theirs);
             if ours != theirs {
                 differences.push(format!(
                     "{function:#x}.{index}: core table {ours:08x?}, profile {theirs:08x?}"

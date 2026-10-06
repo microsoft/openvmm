@@ -141,6 +141,8 @@ mod tests {
     use crate::cpuid::CpuidEntry;
     use crate::test_support::fingerprint;
     use crate::test_support::fingerprint_with;
+    use crate::test_support::host_fingerprint;
+    use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
     use crate::test_support::profile_entries;
     use test_with_tracing::test;
@@ -335,6 +337,39 @@ mod tests {
         .result
         .unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+    }
+
+    /// The host that `amd.milan.v1` was derived from supports it: an AMD EPYC
+    /// 7763 that WHP serves on an Azure host. Its probe partition presents
+    /// CET's XSAVE components, which a partition configured from the profile
+    /// does not, as on the 12th generation Intel Core host.
+    #[test]
+    fn the_milan_host_supports_its_profile() {
+        let fingerprint = host_fingerprint("whp", milan_whp_entries());
+        let error = check_fingerprint(&fingerprint).result.unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuUnlisted);
+        assert!(
+            error
+                .message
+                .contains("CPUID 0xd.11 is outside the profile"),
+            "{error}"
+        );
+        let check = check_fingerprint_with(&fingerprint, |profile| {
+            assert_eq!(profile.id(), "amd.milan.v1");
+            Ok(Some(vec![
+                CpuidEntry::new(0xd, Some(11), [0; 4]),
+                CpuidEntry::new(0xd, Some(12), [0; 4]),
+            ]))
+        });
+        check.result.as_ref().unwrap();
+        assert!(
+            check.summary_line(&fingerprint).starts_with(
+                "NVX-CPU-PROFILE: status=pass backend=whp generation=milan \
+                 profile=amd.milan.v1 profile_digest=sha256:463ee036"
+            ),
+            "{}",
+            check.summary_line(&fingerprint)
+        );
     }
 
     #[test]
