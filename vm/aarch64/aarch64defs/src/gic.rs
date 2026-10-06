@@ -62,8 +62,12 @@ impl IchLrState {
 #[bitfield(u64)]
 pub struct IchLrEl2 {
     pub vintid: u32,
-    #[bits(16)]
-    _reserved_32_47: u16,
+    #[bits(9)]
+    _reserved_32_40: u16,
+    pub eoi: bool,
+    /// Requests EOI maintenance for a software LR (HW is clear).
+    #[bits(6)]
+    _reserved_42_47: u8,
     pub priority: u8,
     #[bits(4)]
     _reserved_56_59: u8,
@@ -289,4 +293,17 @@ pub struct GicrSgi {
     pub rs: u8,
     pub aff3: u8,
     _res_56_63: u8,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IchLrEl2;
+
+    #[test]
+    fn ich_lr_eoi_is_bit_41() {
+        let encoded = u64::from(IchLrEl2::new().with_eoi(true));
+
+        assert_eq!(encoded, 1_u64 << 41);
+        assert!(IchLrEl2::from(1_u64 << 41).eoi());
+    }
 }
