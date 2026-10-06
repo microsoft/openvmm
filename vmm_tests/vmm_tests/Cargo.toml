@@ -42,6 +42,8 @@ vfio_assigned_device_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
 disk_vhd1.workspace = true
+disklayer_vhdx.workspace = true
+vhdx.workspace = true
 
 guid = { workspace = true, features = ["getrandom"] }
 hvs_file.workspace = true
