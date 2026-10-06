@@ -42,6 +42,8 @@ pub(crate) fn resolve(
             root_identity,
             read_only,
             denied_paths,
+            allowed_paths,
+            writable_paths,
             caller_identity,
         } => {
             validate_tag(resource, stable_id)?;
@@ -62,6 +64,8 @@ pub(crate) fn resolve(
                 root_identity.clone(),
                 *read_only,
                 denied_paths.clone(),
+                allowed_paths.clone(),
+                writable_paths.clone(),
                 if *caller_identity {
                     MicroVmOwnerMode::Caller
                 } else {
@@ -122,6 +126,8 @@ mod tests {
                     root_identity,
                     read_only: true,
                     denied_paths: Vec::new(),
+                    allowed_paths: Vec::new(),
+                    writable_paths: Vec::new(),
                     caller_identity: false,
                 },
             },
