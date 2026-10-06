@@ -2676,7 +2676,7 @@ impl OpenHclConfig {
                     let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
                         format!("OPENVMM_SHOW_SPANS={x}")
                     } else {
-                        "OPENVMM_SHOW_SPANS=true".to_owned()
+                        "OPENVMM_SHOW_SPANS=false".to_owned()
                     };
                     format!("{openhcl_tracing} {openhcl_show_spans}")
                 };

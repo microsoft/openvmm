@@ -389,8 +389,17 @@ impl ListenerTask {
 fn parse_uevent(buf: &str) -> anyhow::Result<Uevent<'_>> {
     let mut lines = buf.split('\0');
     let header = lines.next().context("missing event header")?;
-    let properties = lines.filter_map(|line| line.split_once('=')).collect();
-    tracing::debug!(header, ?properties, "uevent");
+    let properties: Vec<_> = lines.filter_map(|line| line.split_once('=')).collect();
+    tracing::debug!(
+        header,
+        // Omit ACTION and DEVPATH properties from the tracing output as they're
+        // deriveable from the header, and generate a lot of output
+        properties = ?properties
+            .iter()
+            .filter(|(key, _)| !matches!(*key, "ACTION" | "DEVPATH"))
+            .collect::<Vec<_>>(),
+        "uevent"
+    );
     let mut uevent = Uevent { header, properties };
     uevent.properties.sort_by_key(|(k, _)| *k);
     Ok(uevent)
