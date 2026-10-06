@@ -11,6 +11,11 @@ use crate::VirtioBlkDevice;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_layered::DiskLayer;
+use disk_layered::LayerConfiguration;
+use disk_layered::LayeredDisk;
+use disklayer_vhdx::VhdxLayer;
+use disklayer_vhdx::io::BlockingFile;
 use futures::future::Either;
 use futures::future::select;
 use guestmem::GuestMemory;
@@ -28,6 +33,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::time::Duration;
 use test_with_tracing::test;
+use vhdx::VhdxFile;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
@@ -532,6 +538,263 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
     disklayer_ram::ram_disk(size, read_only).unwrap()
 }
 
+/// Parameters for building a Rust-VHDX-backed [`Disk`] fixture.
+struct VhdxParams {
+    /// Virtual disk size in bytes.
+    disk_size: u64,
+    /// Block size in bytes (multiple of 1 MiB). 0 selects the 2 MiB default.
+    block_size: u32,
+    /// Logical sector size (512 or 4096).
+    logical_sector_size: u32,
+    /// Physical sector size (512 or 4096).
+    physical_sector_size: u32,
+    /// If true, create a fixed (fully allocated) image; otherwise dynamic.
+    fixed: bool,
+    /// If true, open the image read-only.
+    read_only: bool,
+}
+
+/// Build a [`Disk`] backed by the pure-Rust VHDX engine
+/// (`virtqueue -> virtio-blk -> DiskIo -> Rust VHDX`).
+///
+/// Returns the [`tempfile::TempDir`] alongside the disk; the caller MUST keep
+/// it alive for the duration of the test, otherwise the backing file is
+/// deleted out from under the open disk.
+async fn vhdx_disk(driver: &DefaultDriver, params: VhdxParams) -> (Disk, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.vhdx");
+
+    // Create an empty VHDX with the requested geometry.
+    let bf = BlockingFile::open(&path, false).unwrap();
+    let mut create_params = vhdx::CreateParams {
+        disk_size: params.disk_size,
+        block_size: params.block_size,
+        logical_sector_size: params.logical_sector_size,
+        physical_sector_size: params.physical_sector_size,
+        is_fully_allocated: params.fixed,
+        ..Default::default()
+    };
+    vhdx::create(&bf, &mut create_params).await.unwrap();
+
+    // Re-open and wrap as a VhdxLayer. `bf2` shares the same backing file so
+    // data I/O on resolved ranges targets the same descriptor.
+    let bf = BlockingFile::open(&path, params.read_only).unwrap();
+    let bf2 = bf.clone();
+    let vhdx = if params.read_only {
+        VhdxFile::open(bf).read_only().await.unwrap()
+    } else {
+        VhdxFile::open(bf).writable(driver).await.unwrap()
+    };
+    let layer = VhdxLayer::new(vhdx, bf2, params.read_only);
+
+    let layered = LayeredDisk::new(
+        params.read_only,
+        vec![LayerConfiguration {
+            layer: DiskLayer::new(layer),
+            write_through: false,
+            read_cache: false,
+        }],
+    )
+    .await
+    .unwrap();
+
+    (Disk::new(layered).unwrap(), dir)
+}
+
+/// Create an empty VHDX file of `size` bytes at `path` (512-byte sectors).
+async fn create_vhdx_file(path: &std::path::Path, size: u64) {
+    let bf = BlockingFile::open(path, false).unwrap();
+    let mut params = vhdx::CreateParams {
+        disk_size: size,
+        ..Default::default()
+    };
+    vhdx::create(&bf, &mut params).await.unwrap();
+}
+
+/// Open an existing VHDX file at `path` as a [`Disk`].
+///
+/// When `read_only` is true the file is opened read-only (replaying a dirty log
+/// if `allow_replay` is set); otherwise it is opened writable. The underlying
+/// file handle is always opened writable so log replay I/O can proceed.
+async fn open_vhdx_file_disk(
+    driver: &DefaultDriver,
+    path: &std::path::Path,
+    read_only: bool,
+    allow_replay: bool,
+) -> Disk {
+    let bf = BlockingFile::open(path, false).unwrap();
+    let bf2 = bf.clone();
+    let vhdx = if read_only {
+        VhdxFile::open(bf)
+            .allow_replay(allow_replay)
+            .read_only()
+            .await
+            .unwrap()
+    } else {
+        VhdxFile::open(bf).writable(driver).await.unwrap()
+    };
+    let layer = VhdxLayer::new(vhdx, bf2, read_only);
+    let layered = LayeredDisk::new(
+        read_only,
+        vec![LayerConfiguration {
+            layer: DiskLayer::new(layer),
+            write_through: false,
+            read_cache: false,
+        }],
+    )
+    .await
+    .unwrap();
+    Disk::new(layered).unwrap()
+}
+
+/// Storage backend under test. Parameterized tests run the same virtio-blk
+/// request coverage against both a RAM disk and the pure-Rust VHDX engine.
+#[derive(Clone, Copy, Debug)]
+enum Backend {
+    Ram,
+    Vhdx,
+}
+
+/// A [`Disk`] plus any resources (e.g. the VHDX temp dir) that must outlive it.
+struct BackendDisk {
+    disk: Disk,
+    _guard: Option<tempfile::TempDir>,
+}
+
+impl Backend {
+    /// Build a non-differencing disk of `size` bytes with the given geometry.
+    ///
+    /// `logical` and `physical` must be equal for the RAM backend, which models
+    /// a single sector size; the VHDX backend supports differing values (512e).
+    async fn make(
+        self,
+        driver: &DefaultDriver,
+        size: u64,
+        logical: u32,
+        physical: u32,
+        read_only: bool,
+    ) -> BackendDisk {
+        match self {
+            Backend::Ram => {
+                assert_eq!(logical, physical, "RAM backend cannot model 512e");
+                let disk = if logical == 512 {
+                    disklayer_ram::ram_disk_with_sector_size(size, read_only, logical).unwrap()
+                } else {
+                    // Minimal, obviously-correct 4K backend (also supports discard).
+                    Disk::new(TestDisk4K::new(size as usize, logical).with_discard()).unwrap()
+                };
+                BackendDisk { disk, _guard: None }
+            }
+            Backend::Vhdx => {
+                let (disk, dir) = vhdx_disk(
+                    driver,
+                    VhdxParams {
+                        disk_size: size,
+                        block_size: 0,
+                        logical_sector_size: logical,
+                        physical_sector_size: physical,
+                        fixed: false,
+                        read_only,
+                    },
+                )
+                .await;
+                BackendDisk {
+                    disk,
+                    _guard: Some(dir),
+                }
+            }
+        }
+    }
+}
+
+/// Generate `ram_<name>` and `vhdx_<name>` `#[async_test]` wrappers that run
+/// `<name>_impl` against each backend.
+macro_rules! backend_variants {
+    ($impl_fn:ident, $ram:ident, $vhdx:ident) => {
+        #[async_test]
+        async fn $ram(driver: DefaultDriver) {
+            $impl_fn(&driver, Backend::Ram).await;
+        }
+
+        #[async_test]
+        async fn $vhdx(driver: DefaultDriver) {
+            $impl_fn(&driver, Backend::Vhdx).await;
+        }
+    };
+}
+
+backend_variants!(
+    write_then_read_roundtrip_impl,
+    ram_write_then_read_roundtrip,
+    vhdx_write_then_read_roundtrip
+);
+backend_variants!(
+    read_unwritten_sector_returns_zeroes_impl,
+    ram_read_unwritten_sector_returns_zeroes,
+    vhdx_read_unwritten_sector_returns_zeroes
+);
+backend_variants!(
+    write_to_read_only_disk_fails_impl,
+    ram_write_to_read_only_disk_fails,
+    vhdx_write_to_read_only_disk_fails
+);
+backend_variants!(flush_succeeds_impl, ram_flush_succeeds, vhdx_flush_succeeds);
+backend_variants!(
+    multi_sector_write_read_impl,
+    ram_multi_sector_write_read,
+    vhdx_multi_sector_write_read
+);
+backend_variants!(
+    sequential_write_read_flush_impl,
+    ram_sequential_write_read_flush,
+    vhdx_sequential_write_read_flush
+);
+backend_variants!(
+    sector_offset_correctness_impl,
+    ram_sector_offset_correctness,
+    vhdx_sector_offset_correctness
+);
+backend_variants!(
+    write_read_4k_sector_disk_impl,
+    ram_write_read_4k_sector_disk,
+    vhdx_write_read_4k_sector_disk
+);
+backend_variants!(
+    sector_shift_multiple_offsets_4k_impl,
+    ram_sector_shift_multiple_offsets_4k,
+    vhdx_sector_shift_multiple_offsets_4k
+);
+backend_variants!(
+    discard_aligned_succeeds_impl,
+    ram_discard_aligned_succeeds,
+    vhdx_discard_aligned_succeeds
+);
+backend_variants!(
+    discard_misaligned_num_sectors_fails_impl,
+    ram_discard_misaligned_num_sectors_fails,
+    vhdx_discard_misaligned_num_sectors_fails
+);
+backend_variants!(
+    discard_misaligned_sector_fails_impl,
+    ram_discard_misaligned_sector_fails,
+    vhdx_discard_misaligned_sector_fails
+);
+backend_variants!(
+    discard_with_unmap_flag_returns_unsupp_impl,
+    ram_discard_with_unmap_flag_returns_unsupp,
+    vhdx_discard_with_unmap_flag_returns_unsupp
+);
+backend_variants!(
+    discard_on_read_only_disk_fails_impl,
+    ram_discard_on_read_only_disk_fails,
+    vhdx_discard_on_read_only_disk_fails
+);
+backend_variants!(
+    discard_512b_sector_any_count_succeeds_impl,
+    ram_discard_512b_sector_any_count_succeeds,
+    vhdx_discard_512b_sector_any_count_succeeds
+);
+
 /// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
 async fn with_timeout<F: Future>(
     driver: &DefaultDriver,
@@ -547,10 +810,9 @@ async fn with_timeout<F: Future>(
 }
 
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
-#[async_test]
-async fn write_then_read_roundtrip(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false); // 64 KiB
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn write_then_read_roundtrip_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write a recognizable pattern to sector 0.
@@ -579,10 +841,9 @@ async fn write_then_read_roundtrip(driver: DefaultDriver) {
 }
 
 /// Read from a sector that was never written — should succeed with zeroes.
-#[async_test]
-async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn read_unwritten_sector_returns_zeroes_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     let data_gpa = harness.post_read_request(0, 4, 512);
@@ -596,10 +857,9 @@ async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
 }
 
 /// Write to a read-only disk — should fail with IOERR status.
-#[async_test]
-async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, true);
-    let mut harness = TestHarness::new(&driver, disk, true);
+async fn write_to_read_only_disk_fails_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, true).await;
+    let mut harness = TestHarness::new(driver, disk, true);
     harness.enable().await;
 
     // Attempt to write — this should fail.
@@ -651,10 +911,9 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
 }
 
 /// Flush command should succeed.
-#[async_test]
-async fn flush_succeeds(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn flush_succeeds_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     harness.post_flush_request(0);
@@ -724,6 +983,43 @@ async fn get_id_returns_configured_serial(driver: DefaultDriver) {
     assert_eq!(id_buf, serial);
 }
 
+/// GET_ID on a VHDX image must surface the image's SCSI VPD page 0x83
+/// identifier (its Page 83 data GUID) as lowercase hex, rather than the generic
+/// default string returned when the backend has no disk id.
+#[async_test]
+async fn vhdx_get_id_returns_page83_identifier(driver: DefaultDriver) {
+    let BackendDisk { disk, _guard } = Backend::Vhdx
+        .make(&driver, 64 * 1024, 512, 512, false)
+        .await;
+
+    // The VHDX backend exposes its Page 83 data as the disk id. Compute the
+    // expected GET_ID response exactly as the device does: lowercase hex of the
+    // 16 id bytes, truncated to the virtio id length.
+    let disk_id = disk.disk_id().expect("vhdx exposes a page 83 identifier");
+    let hex: String = disk_id.iter().map(|b| format!("{b:02x}")).collect();
+    let mut expected = [0u8; VIRTIO_BLK_ID_BYTES];
+    let copy_len = hex.len().min(VIRTIO_BLK_ID_BYTES);
+    expected[..copy_len].copy_from_slice(&hex.as_bytes()[..copy_len]);
+
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    let id_gpa = harness.post_get_id_request(0);
+    let (_used_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, VIRTIO_BLK_ID_BYTES as u32 + 1);
+
+    let mut id_buf = [0u8; VIRTIO_BLK_ID_BYTES];
+    harness.mem.read_at(id_gpa, &mut id_buf).unwrap();
+    assert_eq!(
+        id_buf, expected,
+        "GET_ID should return the page 83 id as hex"
+    );
+    assert_ne!(
+        &id_buf, b"openvmm-virtio-blk\0\0",
+        "VHDX must not fall back to the default identifier"
+    );
+}
+
 /// Unsupported request type should return UNSUPP status.
 #[async_test]
 async fn unsupported_request_type(driver: DefaultDriver) {
@@ -741,10 +1037,9 @@ async fn unsupported_request_type(driver: DefaultDriver) {
 }
 
 /// Write to multiple sectors then read them back to verify multi-sector IO.
-#[async_test]
-async fn multi_sector_write_read(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn multi_sector_write_read_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write 2 sectors (1024 bytes) starting at sector 2.
@@ -764,10 +1059,9 @@ async fn multi_sector_write_read(driver: DefaultDriver) {
 
 /// Three sequential requests: write, read, flush — verifies the device
 /// correctly processes a sequence of different operations.
-#[async_test]
-async fn sequential_write_read_flush(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn sequential_write_read_flush_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write
@@ -802,10 +1096,9 @@ async fn sequential_write_read_flush(driver: DefaultDriver) {
 /// The real proof that the fix is correct is a unit test below that
 /// directly checks the arithmetic. The integration test ensures the
 /// full request path works at non-zero sector offsets.
-#[async_test]
-async fn sector_offset_correctness(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false); // 128 × 512-byte sectors
-    let mut harness = TestHarness::new(&driver, disk, false);
+async fn sector_offset_correctness_impl(driver: &DefaultDriver, backend: Backend) {
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 512, 512, false).await; // 128 × 512-byte sectors
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write to sector 10.
@@ -968,11 +1261,10 @@ impl DiskIo for TestDisk4K {
 /// `8 << 3 = 64`, which is well beyond the disk — the IO would fail or
 /// silently corrupt. With the fix (`>> sector_shift`), it correctly maps
 /// to disk sector `8 >> 3 = 1`.
-#[async_test]
-async fn write_read_4k_sector_disk(driver: DefaultDriver) {
+async fn write_read_4k_sector_disk_impl(driver: &DefaultDriver, backend: Backend) {
     // 64 KiB disk with 4096-byte sectors → 16 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(64 * 1024, 4096)).unwrap();
-    let mut harness = TestHarness::new(&driver, disk, false);
+    let BackendDisk { disk, _guard } = backend.make(driver, 64 * 1024, 4096, 4096, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write to virtio sector 8 (= byte offset 4096 = disk sector 1).
@@ -1006,11 +1298,10 @@ async fn write_read_4k_sector_disk(driver: DefaultDriver) {
 
 /// Write at various 512-byte-granularity offsets on a 4K disk and verify
 /// they land at the correct disk positions.
-#[async_test]
-async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
+async fn sector_shift_multiple_offsets_4k_impl(driver: &DefaultDriver, backend: Backend) {
     // 128 KiB disk with 4096-byte sectors → 32 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(128 * 1024, 4096)).unwrap();
-    let mut harness = TestHarness::new(&driver, disk, false);
+    let BackendDisk { disk, _guard } = backend.make(driver, 128 * 1024, 4096, 4096, false).await;
+    let mut harness = TestHarness::new(driver, disk, false);
     harness.enable().await;
 
     // Write different patterns to virtio sectors 0, 16, and 24.
@@ -1056,13 +1347,14 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
 /// Submit a discard request on a fresh harness and assert the expected status.
 async fn check_discard(
     driver: &DefaultDriver,
-    disk: Disk,
+    backend_disk: BackendDisk,
     read_only: bool,
     sector: u64,
     num_sectors: u32,
     flags: u32,
     expected_status: u8,
 ) {
+    let BackendDisk { disk, _guard } = backend_disk;
     let mut harness = TestHarness::new(driver, disk, read_only);
     harness.enable().await;
     let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
@@ -1071,18 +1363,13 @@ async fn check_discard(
     assert_eq!(harness.read_status(status_gpa), expected_status);
 }
 
-fn test_disk_4k_discard() -> Disk {
-    Disk::new(TestDisk4K::new(64 * 1024, 4096).with_discard()).unwrap()
-}
-
 /// Discard with properly aligned sector and num_sectors on a 4K disk
 /// should succeed.
-#[async_test]
-async fn discard_aligned_succeeds(driver: DefaultDriver) {
+async fn discard_aligned_succeeds_impl(driver: &DefaultDriver, backend: Backend) {
     // Discard virtio sector 8 (disk sector 1), num_sectors=8 (8×512 = 4096).
     check_discard(
-        &driver,
-        test_disk_4k_discard(),
+        driver,
+        backend.make(driver, 64 * 1024, 4096, 4096, false).await,
         false,
         8,
         8,
@@ -1095,12 +1382,11 @@ async fn discard_aligned_succeeds(driver: DefaultDriver) {
 /// Discard with num_sectors not aligned to the backend sector size (4K)
 /// should fail with IOERR. This is the bug the alignment validation
 /// fix was added to catch.
-#[async_test]
-async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
+async fn discard_misaligned_num_sectors_fails_impl(driver: &DefaultDriver, backend: Backend) {
     // num_sectors=5 is not a multiple of 8 (4096/512).
     check_discard(
-        &driver,
-        test_disk_4k_discard(),
+        driver,
+        backend.make(driver, 64 * 1024, 4096, 4096, false).await,
         false,
         0,
         5,
@@ -1112,12 +1398,11 @@ async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
 
 /// Discard with sector not aligned to the backend sector size (4K)
 /// should fail with IOERR.
-#[async_test]
-async fn discard_misaligned_sector_fails(driver: DefaultDriver) {
+async fn discard_misaligned_sector_fails_impl(driver: &DefaultDriver, backend: Backend) {
     // sector=3 is not aligned to 8 (4096/512).
     check_discard(
-        &driver,
-        test_disk_4k_discard(),
+        driver,
+        backend.make(driver, 64 * 1024, 4096, 4096, false).await,
         false,
         3,
         8,
@@ -1129,11 +1414,10 @@ async fn discard_misaligned_sector_fails(driver: DefaultDriver) {
 
 /// Discard with the unmap flag set should be rejected with UNSUPP
 /// per spec §5.2.6.2.
-#[async_test]
-async fn discard_with_unmap_flag_returns_unsupp(driver: DefaultDriver) {
+async fn discard_with_unmap_flag_returns_unsupp_impl(driver: &DefaultDriver, backend: Backend) {
     check_discard(
-        &driver,
-        test_disk_4k_discard(),
+        driver,
+        backend.make(driver, 64 * 1024, 4096, 4096, false).await,
         false,
         0,
         8,
@@ -1144,11 +1428,10 @@ async fn discard_with_unmap_flag_returns_unsupp(driver: DefaultDriver) {
 }
 
 /// Discard on a read-only disk should fail with IOERR.
-#[async_test]
-async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
+async fn discard_on_read_only_disk_fails_impl(driver: &DefaultDriver, backend: Backend) {
     check_discard(
-        &driver,
-        test_disk_4k_discard(),
+        driver,
+        backend.make(driver, 64 * 1024, 4096, 4096, true).await,
         true,
         0,
         8,
@@ -1161,12 +1444,11 @@ async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
 /// Discard on a 512-byte-sector disk (no shift) should succeed even with
 /// num_sectors values that would fail on a 4K disk — the alignment check
 /// is sector-size-dependent.
-#[async_test]
-async fn discard_512b_sector_any_count_succeeds(driver: DefaultDriver) {
+async fn discard_512b_sector_any_count_succeeds_impl(driver: &DefaultDriver, backend: Backend) {
     // sector_shift=0, sector_mask=0 → any num_sectors is "aligned".
     check_discard(
-        &driver,
-        ram_disk(64 * 1024, false),
+        driver,
+        backend.make(driver, 64 * 1024, 512, 512, false).await,
         false,
         0,
         5,
@@ -1427,4 +1709,404 @@ async fn cyclic_descriptor_chain_does_not_wedge_worker(driver: DefaultDriver) {
         harness.device.stop_queue(0),
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Rust VHDX backend tests
+//
+// These drive the virtio-blk device against the pure-Rust VHDX engine
+// (`virtqueue -> virtio-blk -> DiskIo -> Rust VHDX`) instead of a RAM disk.
+// Differencing-chain coverage requires parent-locator fixture setup
+// that this harness does not yet provide and is tracked separately.
+// ---------------------------------------------------------------------------
+
+/// (Data Path, Fixed): write and read the first and last sectors of
+/// a fixed image, and verify an untouched interior sector reads back zero
+/// (fixed payload is zero-initialized).
+#[async_test]
+async fn vhdx_fixed_write_read_first_and_last_sectors(driver: DefaultDriver) {
+    let (disk, _dir) = vhdx_disk(
+        &driver,
+        VhdxParams {
+            disk_size: 64 * 1024, // 128 sectors
+            block_size: 0,
+            logical_sector_size: 512,
+            physical_sector_size: 512,
+            fixed: true,
+            read_only: false,
+        },
+    )
+    .await;
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    let first: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
+    let last: Vec<u8> = (0..512).map(|i| ((i * 3 + 7) % 251) as u8).collect();
+
+    harness.post_write_request(0, 0, &first);
+    harness.wait_for_used().await;
+    harness.post_write_request(3, 127, &last);
+    harness.wait_for_used().await;
+
+    let gpa_first = harness.post_read_request(6, 0, 512);
+    harness.wait_for_used().await;
+    let gpa_last = harness.post_read_request(8, 127, 512);
+    harness.wait_for_used().await;
+    let gpa_mid = harness.post_read_request(10, 64, 512);
+    harness.wait_for_used().await;
+
+    let mut buf = vec![0u8; 512];
+    harness.mem.read_at(gpa_first, &mut buf).unwrap();
+    assert_eq!(buf, first, "sector 0 mismatch");
+    harness.mem.read_at(gpa_last, &mut buf).unwrap();
+    assert_eq!(buf, last, "last sector mismatch");
+    harness.mem.read_at(gpa_mid, &mut buf).unwrap();
+    assert!(
+        buf.iter().all(|&b| b == 0),
+        "interior sector should be zero"
+    );
+}
+
+/// (Data Path, Dynamic): write across a block boundary and verify an
+/// unallocated hole in an otherwise-touched block reads back zero.
+#[async_test]
+async fn vhdx_dynamic_block_boundary_and_holes(driver: DefaultDriver) {
+    // 2 MiB disk, 1 MiB blocks => 2 blocks of 2048 sectors each.
+    let (disk, _dir) = vhdx_disk(
+        &driver,
+        VhdxParams {
+            disk_size: 2 * 1024 * 1024,
+            block_size: 1024 * 1024,
+            logical_sector_size: 512,
+            physical_sector_size: 512,
+            fixed: false,
+            read_only: false,
+        },
+    )
+    .await;
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    let end_of_block0 = [0xA1u8; 512];
+    let start_of_block1 = [0xB2u8; 512];
+
+    harness.post_write_request(0, 2047, &end_of_block0); // last sector, block 0
+    harness.wait_for_used().await;
+    harness.post_write_request(3, 2048, &start_of_block1); // first sector, block 1
+    harness.wait_for_used().await;
+
+    let gpa0 = harness.post_read_request(6, 2047, 512);
+    harness.wait_for_used().await;
+    let gpa1 = harness.post_read_request(8, 2048, 512);
+    harness.wait_for_used().await;
+    let gpa_hole = harness.post_read_request(10, 3000, 512); // untouched hole in block 1
+    harness.wait_for_used().await;
+
+    let mut buf = vec![0u8; 512];
+    harness.mem.read_at(gpa0, &mut buf).unwrap();
+    assert_eq!(buf, end_of_block0, "last sector of block 0 mismatch");
+    harness.mem.read_at(gpa1, &mut buf).unwrap();
+    assert_eq!(buf, start_of_block1, "first sector of block 1 mismatch");
+    harness.mem.read_at(gpa_hole, &mut buf).unwrap();
+    assert!(
+        buf.iter().all(|&b| b == 0),
+        "unallocated hole should be zero"
+    );
+}
+
+/// (Geometry, 512e): on a 512-logical / 4096-physical image, a single
+/// 512-byte logical write must preserve neighboring logical sectors within the
+/// same 4 KiB physical sector (read-modify-write correctness).
+#[async_test]
+async fn vhdx_512e_partial_physical_sector_preserves_neighbors(driver: DefaultDriver) {
+    let (disk, _dir) = vhdx_disk(
+        &driver,
+        VhdxParams {
+            disk_size: 64 * 1024,
+            block_size: 0,
+            logical_sector_size: 512,
+            physical_sector_size: 4096,
+            fixed: false,
+            read_only: false,
+        },
+    )
+    .await;
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    // Fill one 4 KiB physical sector (8 logical sectors) with 0xAA.
+    let fill = vec![0xAAu8; 4096];
+    harness.post_write_request(0, 0, &fill);
+    harness.wait_for_used().await;
+
+    // Overwrite only logical sector 1 (512 bytes) with 0xBB.
+    let partial = [0xBBu8; 512];
+    harness.post_write_request(3, 1, &partial);
+    harness.wait_for_used().await;
+
+    // Read the whole physical sector back and check neighbor preservation.
+    let gpa = harness.post_read_request(6, 0, 4096);
+    harness.wait_for_used().await;
+    let mut buf = vec![0u8; 4096];
+    harness.mem.read_at(gpa, &mut buf).unwrap();
+    for (sector, chunk) in buf.chunks_exact(512).enumerate() {
+        let expected = if sector == 1 { 0xBB } else { 0xAA };
+        assert!(
+            chunk.iter().all(|&b| b == expected),
+            "logical sector {sector} not preserved (expected 0x{expected:02x})"
+        );
+    }
+}
+
+/// (Space Management): a block-aligned DISCARD on a non-differencing
+/// image zeroes the discarded range, preserves data in other blocks, and the
+/// range remains writable afterwards (write-after-trim).
+#[async_test]
+async fn vhdx_discard_zeroes_block_and_preserves_neighbor(driver: DefaultDriver) {
+    // 2 MiB disk, 1 MiB blocks => 2 blocks of 2048 sectors each.
+    let (disk, _dir) = vhdx_disk(
+        &driver,
+        VhdxParams {
+            disk_size: 2 * 1024 * 1024,
+            block_size: 1024 * 1024,
+            logical_sector_size: 512,
+            physical_sector_size: 512,
+            fixed: false,
+            read_only: false,
+        },
+    )
+    .await;
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    harness.post_write_request(0, 0, &[0xCCu8; 512]); // block 0
+    harness.wait_for_used().await;
+    harness.post_write_request(3, 2048, &[0xDDu8; 512]); // block 1
+    harness.wait_for_used().await;
+
+    // Discard all of block 0 (sectors 0..2048).
+    let status_gpa = harness.post_discard_request(6, 0, 2048, 0);
+    let (_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, 1);
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+
+    // Discarded sector reads back zero; neighboring block is preserved.
+    let gpa0 = harness.post_read_request(8, 0, 512);
+    harness.wait_for_used().await;
+    let gpa1 = harness.post_read_request(10, 2048, 512);
+    harness.wait_for_used().await;
+    let mut buf = [0u8; 512];
+    harness.mem.read_at(gpa0, &mut buf).unwrap();
+    assert!(
+        buf.iter().all(|&b| b == 0),
+        "discarded range should be zero"
+    );
+    harness.mem.read_at(gpa1, &mut buf).unwrap();
+    assert!(
+        buf.iter().all(|&b| b == 0xDD),
+        "neighbor block mutated by discard"
+    );
+
+    // Write-after-trim: the discarded range is still writable.
+    harness.post_write_request(12, 0, &[0xEEu8; 512]);
+    harness.wait_for_used().await;
+    let gpa2 = harness.post_read_request(15, 0, 512);
+    harness.wait_for_used().await;
+    harness.mem.read_at(gpa2, &mut buf).unwrap();
+    assert!(buf.iter().all(|&b| b == 0xEE), "write-after-trim failed");
+}
+
+/// (Durability): data written and FLUSHed through the virtio-blk
+/// device must survive closing and reopening the VHDX file.
+///
+/// This is VHDX-only: a RAM disk cannot model persistence across reopen, so it
+/// is not part of the shared `flush_succeeds` matrix.
+#[async_test]
+async fn vhdx_flush_persists_across_reopen(driver: DefaultDriver) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.vhdx");
+    let pattern: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
+
+    // Phase 1: create, write sector 0 through virtio-blk, FLUSH, then close
+    // (the writable disk is dropped at the end of this scope).
+    {
+        create_vhdx_file(&path, 64 * 1024).await;
+        let disk = open_vhdx_file_disk(&driver, &path, false, false).await;
+        let mut harness = TestHarness::new(&driver, disk, false);
+        harness.enable().await;
+
+        harness.post_write_request(0, 0, &pattern);
+        harness.wait_for_used().await;
+
+        harness.post_flush_request(3);
+        let (_id, len) = harness.wait_for_used().await;
+        assert_eq!(len, 1, "flush should complete with status only");
+    }
+
+    // Phase 2: reopen read-only (replaying any dirty log) and read sector 0.
+    let disk = open_vhdx_file_disk(&driver, &path, true, true).await;
+    let mut harness = TestHarness::new(&driver, disk, true);
+    harness.enable().await;
+
+    let gpa = harness.post_read_request(0, 0, 512);
+    harness.wait_for_used().await;
+    let mut readback = vec![0u8; 512];
+    harness.mem.read_at(gpa, &mut readback).unwrap();
+    assert_eq!(
+        readback, pattern,
+        "flushed data did not persist across reopen"
+    );
+}
+
+/// (Validation): requests addressing sectors beyond the VHDX
+/// capacity must fail with IOERR and must not corrupt in-range data.
+#[async_test]
+async fn vhdx_out_of_range_request_fails(driver: DefaultDriver) {
+    // 64 KiB dynamic VHDX => 128 valid sectors (0..128).
+    let BackendDisk { disk, _guard } = Backend::Vhdx
+        .make(&driver, 64 * 1024, 512, 512, false)
+        .await;
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable().await;
+
+    // Seed a known pattern at an in-range sector to detect corruption.
+    let pattern = [0x5Au8; 512];
+    harness.post_write_request(0, 0, &pattern);
+    harness.wait_for_used().await;
+
+    // Out-of-range READ (sector 500 >> 128) must fail with IOERR.
+    let oob = 500u64;
+    let data_gpa = harness.post_read_request(3, oob, 512);
+    harness.wait_for_used().await;
+    assert_eq!(
+        harness.read_status(data_gpa + 512),
+        VIRTIO_BLK_S_IOERR,
+        "out-of-range read should fail with IOERR"
+    );
+
+    // Out-of-range WRITE must fail with IOERR (manual chain to capture status).
+    let header_gpa = harness.alloc_data(REQ_HEADER_SIZE);
+    let wdata_gpa = harness.alloc_data(512);
+    let status_gpa = harness.alloc_data(1);
+    let header = VirtioBlkReqHeader {
+        request_type: VIRTIO_BLK_T_OUT,
+        reserved: 0,
+        sector: oob,
+    };
+    harness.mem.write_at(header_gpa, header.as_bytes()).unwrap();
+    harness.mem.write_at(wdata_gpa, &[0xEEu8; 512]).unwrap();
+    harness.mem.write_at(status_gpa, &[0xFFu8]).unwrap();
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        5,
+        header_gpa,
+        REQ_HEADER_SIZE,
+        DescriptorFlags::new().with_next(true),
+        6,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        6,
+        wdata_gpa,
+        512,
+        DescriptorFlags::new().with_next(true),
+        7,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        7,
+        status_gpa,
+        1,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        5,
+        &mut harness.avail_idx,
+    );
+    harness.queue_event.signal();
+    harness.wait_for_used().await;
+    assert_eq!(
+        harness.read_status(status_gpa),
+        VIRTIO_BLK_S_IOERR,
+        "out-of-range write should fail with IOERR"
+    );
+
+    // In-range data must be unchanged by the failed out-of-range operations.
+    let check_gpa = harness.post_read_request(9, 0, 512);
+    harness.wait_for_used().await;
+    let mut buf = [0u8; 512];
+    harness.mem.read_at(check_gpa, &mut buf).unwrap();
+    assert_eq!(buf, pattern, "in-range data corrupted by out-of-range op");
+}
+
+/// (Validation): opening a malformed/truncated image must fail
+/// cleanly (no panic), both read-only and writable.
+#[async_test]
+async fn vhdx_malformed_image_open_fails(driver: DefaultDriver) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad.vhdx");
+    // Garbage content: no valid VHDX file identifier / headers.
+    std::fs::write(&path, vec![0xFFu8; 64 * 1024]).unwrap();
+
+    let bf = BlockingFile::open(&path, false).unwrap();
+    assert!(
+        VhdxFile::open(bf).read_only().await.is_err(),
+        "malformed image must fail read-only open"
+    );
+
+    let bf = BlockingFile::open(&path, false).unwrap();
+    assert!(
+        VhdxFile::open(bf).writable(&driver).await.is_err(),
+        "malformed image must fail writable open"
+    );
+}
+
+/// (Validation): after an unclean shutdown the VHDX log is dirty; a
+/// read-only open without replay must be rejected, and opening with replay must
+/// recover the committed data.
+#[async_test]
+async fn vhdx_dirty_log_requires_replay(driver: DefaultDriver) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.vhdx");
+    create_vhdx_file(&path, 64 * 1024).await;
+    let pattern = [0xC7u8; 512];
+
+    // Phase 1: write + flush through the device, then drop WITHOUT a clean
+    // close, leaving the log dirty (simulates an unclean shutdown).
+    {
+        let disk = open_vhdx_file_disk(&driver, &path, false, false).await;
+        let mut harness = TestHarness::new(&driver, disk, false);
+        harness.enable().await;
+        harness.post_write_request(0, 0, &pattern);
+        harness.wait_for_used().await;
+        harness.post_flush_request(3);
+        harness.wait_for_used().await;
+        // dropped here: no close() => dirty log on disk.
+    }
+
+    // Phase 2: a read-only open WITHOUT replay must be rejected.
+    {
+        let bf = BlockingFile::open(&path, false).unwrap();
+        assert!(
+            VhdxFile::open(bf).read_only().await.is_err(),
+            "dirty-log read-only open without replay must fail"
+        );
+    }
+
+    // Phase 3: opening with replay recovers the committed data.
+    let disk = open_vhdx_file_disk(&driver, &path, true, true).await;
+    let mut harness = TestHarness::new(&driver, disk, true);
+    harness.enable().await;
+    let gpa = harness.post_read_request(0, 0, 512);
+    harness.wait_for_used().await;
+    let mut buf = [0u8; 512];
+    harness.mem.read_at(gpa, &mut buf).unwrap();
+    assert_eq!(buf, pattern, "data not recovered after log replay");
 }
