@@ -390,8 +390,8 @@ fn consume_eoi_count(lr_overflow: &mut Vec<u64>, mut eoi_count: usize) {
     }
 }
 
-/// Orders the software active/pending list the same way KVM does for overflow:
-/// deliverable pure-pending entries first, followed by active entries.
+/// Orders the software active/pending list for LR overflow: deliverable
+/// pure-pending entries first, followed by active entries.
 fn sort_gic_candidates(candidates: &mut [u64]) {
     candidates.sort_by_key(|lr| {
         (
@@ -925,13 +925,12 @@ impl UhProcessor<'_, CcaBacked> {
         Ok(())
     }
 
-    /// Folds the returned LR cache and repacks it using KVM's overflow policy.
+    /// Folds the returned LR cache and repacks it for LR overflow.
     ///
     /// Pure-pending interrupts are placed before active entries. Active entries
     /// that no longer fit remain in a software tail and are deactivated through
     /// EOIcount (EOImode 0) or trapped DIR writes (EOImode 1).
     fn poll_gic(&mut self, vtl: GuestVtl) {
-        let vp = self.vp_index();
         let gic_num_lrs = self.shared.gic_num_lrs;
 
         // Merge the returned hardware cache with the software-only tail before
