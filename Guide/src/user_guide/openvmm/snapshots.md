@@ -271,23 +271,34 @@ identity MSRs that return the declared TSC rate (`0x40000022`) and LAPIC rate
 command line must not set `tsc_early_khz=` or `lapic_timer_hz=`
 (`E_CMDLINE_CLOCK_TOKEN`). The TSC is invariant, and the LAPIC timer runs in
 one-shot mode at a fixed rate: 1 GHz on KVM and 200 MHz on MSHV and WHP.
-TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed.
+TSC-deadline mode, `IA32_TSC_ADJUST`, and kvmclock are not exposed. Under an
+AMD CPU profile, AMD's configuration MSRs read fixed values on every backend:
+HWCR (`0xc0010015`) only `TscFreqSel`, so Linux takes the TSC to count at the
+P0 frequency, and DE_CFG (`0xc0011029`) only `LFENCE` serialization. Writing
+the value read back changes nothing; any other write raises #GP.
 
 The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
 generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
 (Xeon Scalable, third generation: 6/106), `intel.emeraldrapids.v1` (Xeon
-Scalable, fifth generation: 6/207), and `intel.alderlake.v1` (Core, twelfth
-generation: 6/151 and 6/154). `--cpu-profile <ID>` selects one; the default,
+Scalable, fifth generation: 6/207), `intel.alderlake.v1` (Core, twelfth
+generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
+25/1), `amd.genoa.v1` (AMD EPYC, fourth generation: 25/17), and
+`amd.turin.v1` (AMD EPYC, fifth generation: 26/2). `--cpu-profile <ID>`
+selects one; the default,
 `auto`, selects the profile of the host's generation, and a host without one
-fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel development host without one,
-`--cpu-profile host` boots on a host profile instead: OpenVMM fingerprints the
-backend on this host, as `--cpu-fingerprint` does, and applies the pinned
-profiles' derivation policy to it. A host profile, `intel.host.v1`, serves only
-the host's CPU model and stepping, is not pinned, and can change with the
-host's microcode, firmware, or hypervisor. Every boot checks that the backend
+fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel or AMD development host without
+one, `--cpu-profile host` boots on a host profile instead: OpenVMM
+fingerprints the backend on this host, as `--cpu-fingerprint` does, and
+applies the pinned profiles' derivation policy to it. A host profile,
+`intel.host.v1` or `amd.host.v1`, serves only the host's CPU model and
+stepping, is not pinned, and can change with the host's microcode, firmware,
+or hypervisor. Every boot checks that the backend
 supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
-effective CPUID (`E_CPU_SURFACE`). A snapshot records the profile and the
+effective CPUID (`E_CPU_SURFACE`). On an Intel or AMD host, `auto`'s errors
+name `--cpu-profile host` both where no pinned profile serves the host and
+where the backend does not support the one that does, because a host profile
+derives from what the backend supports. A snapshot records the profile and the
 effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
 the same digest, or, for a host profile, the snapshot's own copy of it, which
 must match the recorded digest; a host of the profile's generation; and an
