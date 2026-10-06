@@ -33,7 +33,7 @@ pub(crate) struct MicrovmLaunch {
     resources: MicrovmResources,
     network: Option<MicrovmNetworkConfig>,
     filesystem_slot: bool,
-    filesystem: Option<MicrovmFilesystemConfig>,
+    filesystems: Vec<MicrovmFilesystemConfig>,
     snapshot_destination: Option<PathBuf>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
     snapshot_memory_handle: Option<std::fs::File>,
@@ -69,7 +69,7 @@ impl MicrovmLaunch {
                 std::env::current_dir().unwrap_or_default().join(path)
             }
         });
-        if let Some(root_path) = resources.filesystem_root_path.as_deref() {
+        for root_path in &resources.filesystem_root_paths {
             validate_microvm_filesystem_private_storage(
                 root_path,
                 snapshot_destination.as_deref(),
@@ -137,7 +137,7 @@ impl MicrovmLaunch {
             resources,
             network: vm_config.microvm.network.clone(),
             filesystem_slot,
-            filesystem: vm_config.microvm.filesystem.clone(),
+            filesystems: vm_config.microvm.filesystems.clone(),
             snapshot_destination,
             snapshot_memory_file,
             snapshot_memory_handle,
@@ -239,11 +239,14 @@ impl MicrovmLaunch {
                 .zip(resources.egress_policy.as_ref())
                 .zip(resources.network_attachment.as_ref())
                 .map(|((network, policy), attachment)| (network, policy, attachment)),
-            self.filesystem
-                .as_ref()
-                .zip(resources.filesystem_root_path.as_deref())
-                .zip(resources.filesystem_attachment.as_ref())
-                .map(|((filesystem, root_path), attachment)| (filesystem, root_path, attachment)),
+            self.filesystems
+                .iter()
+                .zip(&resources.filesystem_root_paths)
+                .zip(&resources.filesystem_attachments)
+                .map(|((filesystem, root_path), attachment)| {
+                    (filesystem, root_path.as_path(), attachment)
+                })
+                .collect(),
             resources.console_attachment.as_ref(),
             resources.control_console_attachment.as_ref(),
             sandbox_blocks,
@@ -282,7 +285,7 @@ impl MicrovmLaunch {
             resources: self.resources,
             network: self.network,
             filesystem_slot: self.filesystem_slot,
-            filesystem: self.filesystem,
+            filesystems: self.filesystems,
             snapshot_memory_file: self.snapshot_memory_file,
             _private_scratch_dir: self.restore.private_scratch_dir,
         }

@@ -286,12 +286,13 @@ impl SnapshotMicrovmFilesystem {
     fn new(
         config: &openvmm_defs::microvm::MicrovmFilesystemConfig,
         canonical_host_path: &str,
+        slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
     ) -> Self {
         Self {
             guest_mount_target: config.guest_mount_target.clone(),
             access_mode: config.access.as_str().to_owned(),
             restore_mode: "live-revalidate".to_owned(),
-            tag: "microvm".to_owned(),
+            tag: slot.tag.to_owned(),
             high_priority_queue_count: 1,
             request_queue_count: 1,
             shared_memory_size: 0,
@@ -411,7 +412,8 @@ pub struct SnapshotMachineContract {
     /// Static identity of the optional microVM virtio-net device.
     #[mesh(18)]
     pub microvm_network: Option<SnapshotMicrovmNetwork>,
-    /// Guest-visible policy of the optional microVM virtio-fs device.
+    /// Guest-visible policy of the optional microVM virtio-fs device in the
+    /// first slot.
     #[mesh(19)]
     pub microvm_filesystem: Option<SnapshotMicrovmFilesystem>,
     /// Fixed-role sandbox blocks in guest-visible order.
@@ -450,6 +452,11 @@ pub struct SnapshotMachineContract {
     /// The NVX time ABI CPU profile record; required.
     #[mesh(32)]
     pub cpu_profile: Option<openvmm_defs::time_abi::SnapshotCpuProfile>,
+    /// Guest-visible policies of the virtio-fs slots after the first, in slot
+    /// order. Each of these slots exists only with its filesystem attached,
+    /// which requires a filesystem in the first slot.
+    #[mesh(33)]
+    pub microvm_additional_filesystems: Vec<SnapshotMicrovmFilesystem>,
 }
 
 impl SnapshotMachineContract {
@@ -457,6 +464,14 @@ impl SnapshotMachineContract {
     pub fn set_effective_command_line(&mut self, command_line: String) {
         self.effective_command_line_sha256 = sha2::Sha256::digest(command_line.as_bytes()).to_vec();
         self.effective_command_line = command_line;
+    }
+
+    /// Returns the policies of the attached microVM filesystems, in
+    /// virtio-fs slot order.
+    pub fn microvm_filesystems(&self) -> impl Iterator<Item = &SnapshotMicrovmFilesystem> {
+        self.microvm_filesystem
+            .iter()
+            .chain(&self.microvm_additional_filesystems)
     }
 }
 
@@ -643,8 +658,88 @@ fn memory_expansion_prefix(
     Ok(prefix)
 }
 
+/// Returns the snapshot device of a fixed virtio-fs slot.
+fn microvm_filesystem_device(
+    slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
+    order: usize,
+) -> SnapshotDevice {
+    SnapshotDevice {
+        stable_id: slot.stable_id.to_owned(),
+        state_unit_name: format!("virtiofs-{}", slot.mmio_base),
+        kind: "virtio-fs".to_owned(),
+        order: order as u32,
+        ranges: vec![SnapshotDeviceRange {
+            address_space: "mmio".to_owned(),
+            start: slot.mmio_base,
+            length: openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
+        }],
+        irq: Some(slot.irq),
+        transport: "virtio-mmio".to_owned(),
+        feature_banks: vec![
+            openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES as u32,
+            (openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES >> 32) as u32,
+        ],
+        queue_count: 2,
+        queue_max_sizes: vec![256, 256],
+    }
+}
+
+/// Validates the live attachment of the filesystem in `slot` and returns its
+/// snapshot policy.
+fn microvm_filesystem_policy(
+    source_hypervisor: &str,
+    effective_command_line: &str,
+    slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
+    filesystem: &openvmm_defs::microvm::MicrovmFilesystemConfig,
+    canonical_host_path: &Path,
+    attachment: &SnapshotAttachment,
+) -> anyhow::Result<SnapshotMicrovmFilesystem> {
+    let canonical_host_path = canonical_host_path
+        .to_str()
+        .context("microVM filesystem canonical host path is not valid UTF-8")?;
+    anyhow::ensure!(
+        !canonical_host_path.is_empty(),
+        "microVM filesystem canonical host path is empty"
+    );
+    anyhow::ensure!(
+        attachment.stable_id == slot.stable_id
+            && attachment.kind == "virtio-fs"
+            && attachment.required
+            && attachment.reconnect_policy == "live-revalidate"
+            && match source_hypervisor {
+                "kvm" | "mshv" => attachment.identity_kind == "unix-device-inode-v1",
+                "whp" => attachment.identity_kind == "windows-volume-file-id-v1",
+                _ => false,
+            }
+            && !attachment.identity.is_empty()
+            && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES
+            && attachment.length == 0
+            && attachment.reconnect_timeout_ms == 0,
+        "microVM filesystem attachment has an unsupported live-revalidation policy"
+    );
+    let tokens = effective_command_line
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>();
+    let fragment = filesystem.command_line_fragment(slot);
+    let fragment = fragment.split_ascii_whitespace().collect::<Vec<_>>();
+    anyhow::ensure!(
+        tokens
+            .windows(fragment.len())
+            .any(|window| window == fragment),
+        "microVM filesystem command line does not match its saved policy"
+    );
+    Ok(SnapshotMicrovmFilesystem::new(
+        filesystem,
+        canonical_host_path,
+        slot,
+    ))
+}
+
 /// Builds the authoritative microVM machine contract, with the time ABI
 /// records `time` and `cpu_profile`.
+///
+/// `filesystem_slot` reserves the first virtio-fs slot, and `filesystems`
+/// occupy the virtio-fs slots in order.
 pub fn microvm_machine_contract(
     source_hypervisor: &str,
     boot_layout_version: u32,
@@ -655,7 +750,7 @@ pub fn microvm_machine_contract(
         SnapshotAttachment,
     )>,
     filesystem_slot: bool,
-    filesystem: Option<(
+    filesystems: Vec<(
         &openvmm_defs::microvm::MicrovmFilesystemConfig,
         &Path,
         SnapshotAttachment,
@@ -846,88 +941,47 @@ pub fn microvm_machine_contract(
     } else {
         None
     };
-    anyhow::ensure!(
-        filesystem.is_none() || filesystem_slot,
-        "microVM filesystem policy requires the reserved virtio-fs slot"
-    );
-    if filesystem_slot {
-        let discovery = format!(
-            "virtio_mmio.device={:#x}@{:#x}:{}",
-            openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
-            openvmm_defs::microvm::MICROVM_VIRTIO_FS_MMIO_BASE,
-            openvmm_defs::microvm::MICROVM_VIRTIO_FS_IRQ,
-        );
+    let filesystem_slot_count =
+        openvmm_defs::microvm::microvm_filesystem_slot_count(filesystem_slot, filesystems.len())?;
+    let filesystem_slots =
+        &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[..filesystem_slot_count];
+    openvmm_defs::microvm::validate_microvm_filesystems(
+        &filesystems
+            .iter()
+            .map(|(filesystem, _, _)| (*filesystem).clone())
+            .collect::<Vec<_>>(),
+    )?;
+    for slot in filesystem_slots {
         anyhow::ensure!(
             effective_command_line
                 .split_ascii_whitespace()
-                .any(|token| token == discovery),
-            "microVM virtio-fs slot is missing from the effective command line"
+                .any(|token| token == slot.discovery_token()),
+            "microVM virtio-fs slot {} is missing from the effective command line",
+            slot.stable_id
         );
-        devices.push(SnapshotDevice {
-            stable_id: "fs:microvm0".to_owned(),
-            state_unit_name: format!(
-                "virtiofs-{}",
-                openvmm_defs::microvm::MICROVM_VIRTIO_FS_MMIO_BASE
-            ),
-            kind: "virtio-fs".to_owned(),
-            order: devices.len() as u32,
-            ranges: vec![mmio(
-                openvmm_defs::microvm::MICROVM_VIRTIO_FS_MMIO_BASE,
-                openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
-            )],
-            irq: Some(openvmm_defs::microvm::MICROVM_VIRTIO_FS_IRQ),
-            transport: "virtio-mmio".to_owned(),
-            feature_banks: vec![
-                openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES as u32,
-                (openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES >> 32) as u32,
-            ],
-            queue_count: 2,
-            queue_max_sizes: vec![256, 256],
-        });
     }
-    let microvm_filesystem = if let Some((filesystem, canonical_host_path, attachment)) = filesystem
+    if let Some(slot) = filesystem_slots.first() {
+        devices.push(microvm_filesystem_device(slot, devices.len()));
+    }
+    let mut filesystem_policies = Vec::with_capacity(filesystems.len());
+    let mut filesystem_attachments = Vec::with_capacity(filesystems.len());
+    for ((filesystem, canonical_host_path, attachment), slot) in
+        filesystems.into_iter().zip(filesystem_slots)
     {
-        let canonical_host_path = canonical_host_path
-            .to_str()
-            .context("microVM filesystem canonical host path is not valid UTF-8")?;
-        anyhow::ensure!(
-            !canonical_host_path.is_empty(),
-            "microVM filesystem canonical host path is empty"
-        );
-        anyhow::ensure!(
-            attachment.stable_id == "fs:microvm0"
-                && attachment.kind == "virtio-fs"
-                && attachment.required
-                && attachment.reconnect_policy == "live-revalidate"
-                && match source_hypervisor {
-                    "kvm" | "mshv" => attachment.identity_kind == "unix-device-inode-v1",
-                    "whp" => attachment.identity_kind == "windows-volume-file-id-v1",
-                    _ => false,
-                }
-                && !attachment.identity.is_empty()
-                && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES
-                && attachment.length == 0
-                && attachment.reconnect_timeout_ms == 0,
-            "microVM filesystem attachment has an unsupported live-revalidation policy"
-        );
-        let tokens = effective_command_line
-            .split_ascii_whitespace()
-            .collect::<HashSet<_>>();
-        anyhow::ensure!(
-            filesystem
-                .command_line_fragment()
-                .split_ascii_whitespace()
-                .all(|token| tokens.contains(token)),
-            "microVM filesystem command line does not match its saved policy"
-        );
-        attachments.push(attachment);
-        Some(SnapshotMicrovmFilesystem::new(
+        filesystem_policies.push(microvm_filesystem_policy(
+            source_hypervisor,
+            &effective_command_line,
+            slot,
             filesystem,
             canonical_host_path,
-        ))
-    } else {
-        None
-    };
+            &attachment,
+        )?);
+        filesystem_attachments.push(attachment);
+    }
+    let mut filesystem_policies = filesystem_policies.into_iter();
+    let mut filesystem_attachments = filesystem_attachments.into_iter();
+    let microvm_filesystem = filesystem_policies.next();
+    attachments.extend(filesystem_attachments.next());
     if let Some(attachment) = console_attachment {
         let policy_is_valid = match attachment.reconnect_policy.as_str() {
             "recreate-listener" => {
@@ -1090,6 +1144,10 @@ pub fn microvm_machine_contract(
         });
         attachments.push(attachment);
     }
+    for slot in filesystem_slots.iter().skip(1) {
+        devices.push(microvm_filesystem_device(slot, devices.len()));
+    }
+    attachments.extend(filesystem_attachments);
 
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
@@ -1105,6 +1163,7 @@ pub fn microvm_machine_contract(
         boot_layout_version,
         microvm_network,
         microvm_filesystem,
+        microvm_additional_filesystems: filesystem_policies.collect(),
         microvm_sandbox_blocks: sandbox_blocks,
         microvm_filesystem_slot_version: if filesystem_slot {
             MICROVM_FILESYSTEM_SLOT_VERSION
@@ -1254,7 +1313,8 @@ pub fn validate_microvm_machine_contract(
         "snapshot static network identity doesn't match the requested machine"
     );
     anyhow::ensure!(
-        contract.microvm_filesystem == expected.microvm_filesystem,
+        contract.microvm_filesystem == expected.microvm_filesystem
+            && contract.microvm_additional_filesystems == expected.microvm_additional_filesystems,
         "snapshot filesystem policy doesn't match the requested machine"
     );
     anyhow::ensure!(
@@ -1455,7 +1515,17 @@ pub(super) fn validate_machine_contract_shape(
         );
         validate_sha256(&network.egress_policy_sha256, "egress policy")?;
     }
-    if let Some(filesystem) = &contract.microvm_filesystem {
+    let slots = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS;
+    anyhow::ensure!(
+        contract.microvm_additional_filesystems.is_empty() || contract.microvm_filesystem.is_some(),
+        "snapshot microVM filesystem slots after the first require a filesystem in the first slot"
+    );
+    anyhow::ensure!(
+        contract.microvm_additional_filesystems.len() < slots.len(),
+        "snapshot has more microVM filesystems than virtio-fs slots"
+    );
+    let mut filesystems = Vec::with_capacity(slots.len());
+    for (filesystem, slot) in contract.microvm_filesystems().zip(slots) {
         anyhow::ensure!(
             !filesystem.canonical_host_path.is_empty(),
             "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
@@ -1473,19 +1543,23 @@ pub(super) fn validate_machine_contract_shape(
         .context("snapshot filesystem policy is invalid")?
         .with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?);
         anyhow::ensure!(
-            *filesystem == SnapshotMicrovmFilesystem::new(&parsed, &filesystem.canonical_host_path),
+            *filesystem
+                == SnapshotMicrovmFilesystem::new(&parsed, &filesystem.canonical_host_path, slot),
             "snapshot filesystem policy is not canonical"
         );
+        filesystems.push(parsed);
     }
+    openvmm_defs::microvm::validate_microvm_filesystems(&filesystems)
+        .context("snapshot filesystem policies are invalid")?;
 
     let has_filesystem_device = contract
         .devices
         .iter()
-        .any(|device| device.stable_id == "fs:microvm0");
+        .any(|device| device.stable_id == slots[0].stable_id);
     let has_filesystem_attachment = contract
         .attachments
         .iter()
-        .any(|attachment| attachment.stable_id == "fs:microvm0");
+        .any(|attachment| attachment.stable_id == slots[0].stable_id);
     match contract.microvm_filesystem_slot_version {
         0 => anyhow::ensure!(
             has_filesystem_device == contract.microvm_filesystem.is_some()
@@ -1500,6 +1574,23 @@ pub(super) fn validate_machine_contract_shape(
         version => anyhow::bail!(
             "snapshot microVM filesystem slot capability version {version} is unsupported"
         ),
+    }
+    // A slot after the first exists only with its filesystem attached.
+    for (index, slot) in slots.iter().enumerate().skip(1) {
+        let attached = contract.microvm_additional_filesystems.len() >= index;
+        let has_device = contract
+            .devices
+            .iter()
+            .any(|device| device.stable_id == slot.stable_id);
+        let has_attachment = contract
+            .attachments
+            .iter()
+            .any(|attachment| attachment.stable_id == slot.stable_id);
+        anyhow::ensure!(
+            has_device == attached && has_attachment == attached,
+            "snapshot microVM filesystem slot {} device, policy, and attachment inventories disagree",
+            slot.stable_id
+        );
     }
 
     if !contract.microvm_sandbox_blocks.is_empty() {
@@ -1947,6 +2038,7 @@ pub(super) fn test_machine_contract() -> SnapshotMachineContract {
         boot_layout_version: MICROVM_BOOT_LAYOUT_VERSION,
         microvm_network: None,
         microvm_filesystem: None,
+        microvm_additional_filesystems: Vec::new(),
         microvm_sandbox_blocks: Vec::new(),
         microvm_filesystem_slot_version: 0,
         boot_online_vp_count: 0,
@@ -2066,8 +2158,14 @@ mod tests {
     }
 
     fn microvm_filesystem_attachment(source_hypervisor: &str) -> SnapshotAttachment {
+        microvm_slot_attachment(source_hypervisor, 0)
+    }
+
+    fn microvm_slot_attachment(source_hypervisor: &str, slot: usize) -> SnapshotAttachment {
         SnapshotAttachment {
-            stable_id: "fs:microvm0".to_owned(),
+            stable_id: openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[slot]
+                .stable_id
+                .to_owned(),
             kind: "virtio-fs".to_owned(),
             required: true,
             reconnect_policy: "live-revalidate".to_owned(),
@@ -2077,7 +2175,7 @@ mod tests {
                 _ => unreachable!(),
             }
             .to_owned(),
-            identity: b"root-object-v1".to_vec(),
+            identity: format!("root-object-v1-{slot}").into_bytes(),
             length: 0,
             reconnect_timeout_ms: 0,
         }
@@ -2120,7 +2218,7 @@ mod tests {
                 microvm_network_attachment(source_hypervisor),
             )),
             false,
-            None,
+            Vec::new(),
             None,
             None,
             Vec::new(),
@@ -2155,7 +2253,7 @@ mod tests {
                 .to_owned(),
             None,
             false,
-            None,
+            Vec::new(),
             Some(microvm_console_attachment()),
             None,
             Vec::new(),
@@ -2213,7 +2311,7 @@ mod tests {
             command_line,
             None,
             false,
-            None,
+            Vec::new(),
             Some(microvm_console_attachment()),
             Some(control_console_attachment),
             vec![
@@ -2298,7 +2396,7 @@ mod tests {
         .with_owner(owner);
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6 {}",
-            filesystem.command_line_fragment()
+            filesystem.command_line_fragment(&openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0])
         );
         microvm_machine_contract(
             source_hypervisor,
@@ -2306,7 +2404,7 @@ mod tests {
             command_line,
             None,
             true,
-            Some((
+            vec![(
                 &filesystem,
                 Path::new(if cfg!(windows) {
                     r"C:\microvm-share"
@@ -2314,7 +2412,7 @@ mod tests {
                     "/microvm-share"
                 }),
                 microvm_filesystem_attachment(source_hypervisor),
-            )),
+            )],
             None,
             None,
             Vec::new(),
@@ -2349,7 +2447,7 @@ mod tests {
                 .to_owned(),
             None,
             true,
-            None,
+            Vec::new(),
             None,
             None,
             Vec::new(),
@@ -2374,6 +2472,300 @@ mod tests {
             crate::snapshot::time::tests::test_cpu_profile(),
         )
         .unwrap()
+    }
+
+    fn two_filesystems() -> [openvmm_defs::microvm::MicrovmFilesystemConfig; 2] {
+        [
+            openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                "/workspace".to_owned(),
+                openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+            )
+            .and_then(|config| config.with_denied_paths(vec!["secrets".to_owned()]))
+            .unwrap(),
+            openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                "/opt/hostedtoolcache".to_owned(),
+                openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+            )
+            .unwrap(),
+        ]
+    }
+
+    fn microvm_share_path(slot: usize) -> &'static Path {
+        Path::new(match (cfg!(windows), slot) {
+            (true, 0) => r"C:\workspace",
+            (true, _) => r"C:\toolcache",
+            (false, 0) => "/workspace",
+            (false, _) => "/toolcache",
+        })
+    }
+
+    fn filesystems_contract(
+        source_hypervisor: &str,
+        command_line: String,
+        filesystem_slot: bool,
+        filesystems: Vec<(
+            &openvmm_defs::microvm::MicrovmFilesystemConfig,
+            &Path,
+            SnapshotAttachment,
+        )>,
+    ) -> anyhow::Result<SnapshotMachineContract> {
+        microvm_machine_contract(
+            source_hypervisor,
+            MICROVM_BOOT_LAYOUT_VERSION,
+            command_line,
+            None,
+            filesystem_slot,
+            filesystems,
+            None,
+            None,
+            Vec::new(),
+            1,
+            1024,
+            None,
+            [
+                "partition",
+                "vmtime",
+                "pic",
+                "ioapic",
+                "pit",
+                "rtc",
+                "microvm-portb",
+                "microvm-shutdown",
+                "microvm-snapshot-request",
+                "virtiofs-3489665024",
+                "virtiofs-3489693696",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            crate::snapshot::time::tests::test_time_contract(),
+            crate::snapshot::time::tests::test_cpu_profile(),
+        )
+    }
+
+    fn slot_filesystems<'a>(
+        source_hypervisor: &str,
+        filesystems: &'a [openvmm_defs::microvm::MicrovmFilesystemConfig],
+    ) -> Vec<(
+        &'a openvmm_defs::microvm::MicrovmFilesystemConfig,
+        &'static Path,
+        SnapshotAttachment,
+    )> {
+        filesystems
+            .iter()
+            .enumerate()
+            .map(|(slot, filesystem)| {
+                (
+                    filesystem,
+                    microvm_share_path(slot),
+                    microvm_slot_attachment(source_hypervisor, slot),
+                )
+            })
+            .collect()
+    }
+
+    fn two_filesystem_command_line() -> String {
+        let mut command_line =
+            openvmm_defs::microvm::build_microvm_command_line(&[], false).unwrap();
+        openvmm_defs::microvm::append_microvm_virtio_discovery(
+            &mut command_line,
+            None,
+            true,
+            &two_filesystems(),
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        command_line
+    }
+
+    fn generated_two_filesystem_contract(source_hypervisor: &str) -> SnapshotMachineContract {
+        let filesystems = two_filesystems();
+        filesystems_contract(
+            source_hypervisor,
+            two_filesystem_command_line(),
+            true,
+            slot_filesystems(source_hypervisor, &filesystems),
+        )
+        .unwrap()
+    }
+
+    fn two_filesystem_manifest(contract: &SnapshotMachineContract) -> SnapshotManifest {
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        manifest
+    }
+
+    #[test]
+    fn generated_microvm_two_filesystem_contract_has_fixed_abi() {
+        for source_hypervisor in ["kvm", "mshv", "whp"] {
+            let contract = generated_two_filesystem_contract(source_hypervisor);
+            let first = contract
+                .devices
+                .iter()
+                .find(|device| device.stable_id == "fs:microvm0")
+                .unwrap();
+            assert_eq!(first.state_unit_name, "virtiofs-3489665024");
+            assert_eq!(first.ranges[0].start, 0xd000_1000);
+            assert_eq!(first.irq, Some(6));
+            // The second slot follows every other device, in address order.
+            let second = contract.devices.last().unwrap();
+            assert_eq!(second.stable_id, "fs:microvm1");
+            assert_eq!(second.state_unit_name, "virtiofs-3489693696");
+            assert_eq!(second.ranges[0].start, 0xd000_8000);
+            assert_eq!(second.ranges[0].length, 0x1000);
+            assert_eq!(second.irq, Some(13));
+            assert_eq!(second.transport, "virtio-mmio");
+            assert_eq!(second.feature_banks, first.feature_banks);
+            assert_eq!(second.queue_max_sizes, first.queue_max_sizes);
+            assert_eq!(
+                contract.attachments,
+                [
+                    microvm_slot_attachment(source_hypervisor, 0),
+                    microvm_slot_attachment(source_hypervisor, 1),
+                ]
+            );
+
+            let workspace = contract.microvm_filesystem.as_ref().unwrap();
+            assert_eq!(workspace.guest_mount_target, "/workspace");
+            assert_eq!(workspace.access_mode, "rw");
+            assert_eq!(workspace.tag, "microvm");
+            assert_eq!(workspace.denied_paths, ["secrets"]);
+            let [toolcache] = contract.microvm_additional_filesystems.as_slice() else {
+                panic!("the second share is missing from the contract");
+            };
+            assert_eq!(toolcache.guest_mount_target, "/opt/hostedtoolcache");
+            assert_eq!(toolcache.access_mode, "ro");
+            assert_eq!(toolcache.tag, "microvm1");
+            assert!(toolcache.denied_paths.is_empty());
+            assert_eq!(
+                toolcache.canonical_host_path,
+                microvm_share_path(1).to_str().unwrap()
+            );
+
+            validate_microvm_machine_contract(&two_filesystem_manifest(&contract), &contract)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn validate_microvm_contract_rejects_a_missing_or_changed_second_share() {
+        let contract = generated_two_filesystem_contract("kvm");
+        let manifest = two_filesystem_manifest(&contract);
+        let filesystems = two_filesystems();
+
+        let only_first = filesystems_contract(
+            "kvm",
+            contract.effective_command_line.clone(),
+            true,
+            slot_filesystems("kvm", &filesystems[..1]),
+        )
+        .unwrap();
+        let error = validate_microvm_machine_contract(&manifest, &only_first).unwrap_err();
+        assert!(error.to_string().contains("device inventory"));
+
+        let mut writable = filesystems.clone();
+        writable[1] = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+            "/opt/hostedtoolcache".to_owned(),
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+        )
+        .unwrap();
+        let error = filesystems_contract(
+            "kvm",
+            contract.effective_command_line.clone(),
+            true,
+            slot_filesystems("kvm", &writable),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match its saved policy")
+        );
+
+        let mut replaced = contract.clone();
+        replaced.attachments[1].identity = b"another-root".to_vec();
+        let error = validate_microvm_machine_contract(&manifest, &replaced).unwrap_err();
+        assert!(error.to_string().contains("attachment inventory"));
+
+        let mut moved = contract.clone();
+        moved.microvm_additional_filesystems[0].canonical_host_path = "/moved".to_owned();
+        let error = validate_microvm_machine_contract(&manifest, &moved).unwrap_err();
+        assert!(error.to_string().contains("filesystem policy"));
+    }
+
+    #[test]
+    fn microvm_contract_shape_rejects_an_inconsistent_second_slot() {
+        let contract = generated_two_filesystem_contract("whp");
+        validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+
+        let mut missing_device = contract.clone();
+        missing_device.devices.pop();
+        let mut missing_attachment = contract.clone();
+        missing_attachment.attachments.pop();
+        let mut missing_policy = contract.clone();
+        missing_policy.microvm_additional_filesystems.clear();
+        for invalid in [missing_device, missing_attachment, missing_policy] {
+            let error = validate_machine_contract_shape(&invalid, 1024, 1).unwrap_err();
+            assert!(error.to_string().contains("fs:microvm1"), "{error:#}");
+        }
+
+        let mut without_first = contract.clone();
+        without_first.microvm_filesystem = None;
+        let error = validate_machine_contract_shape(&without_first, 1024, 1).unwrap_err();
+        assert!(error.to_string().contains("first slot"));
+
+        let mut first_tag = contract.clone();
+        first_tag.microvm_additional_filesystems[0].tag = "microvm".to_owned();
+        let error = validate_machine_contract_shape(&first_tag, 1024, 1).unwrap_err();
+        assert!(error.to_string().contains("not canonical"));
+
+        let mut nested = contract.clone();
+        nested.microvm_additional_filesystems[0].guest_mount_target = "/workspace/cache".to_owned();
+        let error = validate_machine_contract_shape(&nested, 1024, 1).unwrap_err();
+        assert!(format!("{error:#}").contains("overlap"));
+
+        let mut too_many = contract.clone();
+        too_many
+            .microvm_additional_filesystems
+            .push(too_many.microvm_additional_filesystems[0].clone());
+        let error = validate_machine_contract_shape(&too_many, 1024, 1).unwrap_err();
+        assert!(error.to_string().contains("more microVM filesystems"));
+    }
+
+    #[test]
+    fn microvm_contract_builder_rejects_misplaced_second_share() {
+        let filesystems = two_filesystems();
+        let command_line = two_filesystem_command_line();
+
+        // Shares occupy the slots after the reserved first slot.
+        assert!(
+            filesystems_contract(
+                "kvm",
+                command_line.clone(),
+                false,
+                slot_filesystems("kvm", &filesystems),
+            )
+            .is_err()
+        );
+
+        let mut swapped = slot_filesystems("kvm", &filesystems);
+        swapped[0].2 = microvm_slot_attachment("kvm", 1);
+        swapped[1].2 = microvm_slot_attachment("kvm", 0);
+        let error = filesystems_contract("kvm", command_line.clone(), true, swapped).unwrap_err();
+        assert!(error.to_string().contains("live-revalidation policy"));
+
+        let undiscovered = command_line.replace(" virtio_mmio.device=0x1000@0xd0008000:13", "");
+        let error = filesystems_contract(
+            "kvm",
+            undiscovered,
+            true,
+            slot_filesystems("kvm", &filesystems),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fs:microvm1"));
     }
 
     #[test]
@@ -3020,7 +3412,7 @@ mod tests {
                 "console=hvc0".to_owned(),
                 None,
                 false,
-                None,
+                Vec::new(),
                 None,
                 None,
                 Vec::new(),
@@ -3052,7 +3444,7 @@ mod tests {
             &mut command_line,
             None,
             false,
-            None,
+            &[],
             true,
             true,
             &[
