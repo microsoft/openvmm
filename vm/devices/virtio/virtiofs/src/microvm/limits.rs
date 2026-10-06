@@ -12,6 +12,7 @@ use super::state::relative_path_encoded_len;
 use super::state::validate_relative_path;
 use crate::InodeMap;
 use crate::inode::VirtioFsInode;
+use crate::inode::exchanged_path;
 use crate::inode::renamed_path;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -87,13 +88,19 @@ impl InodeMap {
         volume_id: u32,
         old: &Path,
         new: &Path,
+        exchange: bool,
     ) -> lx::Result<()> {
         Self::validate_microvm_alias_path(new)?;
         let mut alias_count = 0usize;
         let mut alias_bytes = 0usize;
         for inode in self.inodes_by_node_id.values.values() {
             let mut aliases: BTreeSet<_> = inode.aliases().into_iter().collect();
-            if inode.volume_id() == volume_id {
+            if inode.volume_id() == volume_id && exchange {
+                aliases = aliases
+                    .iter()
+                    .map(|alias| exchanged_path(alias, old, new))
+                    .collect();
+            } else if inode.volume_id() == volume_id {
                 aliases.retain(|alias| !alias.starts_with(new));
                 let replacements: Vec<_> = aliases
                     .iter()
