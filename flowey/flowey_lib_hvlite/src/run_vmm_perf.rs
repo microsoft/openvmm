@@ -43,7 +43,7 @@ flowey_request! {
         pub temp_dir: Option<ReadVar<PathBuf>>,
         pub profiles: Vec<VmmPerfProfile>,
         pub vm_sizes_json: Option<String>,
-        pub parameters_json: Option<String>,
+        pub parameters_json: Option<ReadVar<String>>,
         /// Wait for host dependencies to be installed before running VMM.Perf.
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
         pub output: WriteVar<VmmPerfRunOutput>,
@@ -80,6 +80,7 @@ impl SimpleFlowNode for Node {
             let runtime_archive = runtime_archive.claim(ctx);
             let output_dir = output_dir.claim(ctx);
             let temp_dir = temp_dir.map(|temp_dir| temp_dir.claim(ctx));
+            let parameters_json = parameters_json.map(|parameters_json| parameters_json.claim(ctx));
             let output = output.claim(ctx);
 
             move |rt| {
@@ -97,6 +98,8 @@ impl SimpleFlowNode for Node {
                 let temp_dir = temp_dir
                     .map(|temp_dir| rt.read(temp_dir).absolute())
                     .transpose()?;
+                let parameters_json =
+                    parameters_json.map(|parameters_json| rt.read(parameters_json));
 
                 runner.make_executable()?;
                 openvmm.make_executable()?;
@@ -127,9 +130,9 @@ impl SimpleFlowNode for Node {
                     args.push("--vm-sizes-json".into());
                     args.push(vm_sizes_json.clone());
                 }
-                if let Some(parameters_json) = &parameters_json {
+                if let Some(parameters_json) = parameters_json {
                     args.push("--parameters-json".into());
-                    args.push(parameters_json.clone());
+                    args.push(parameters_json);
                 }
 
                 let process = flowey::shell_cmd!(rt, "{runner} {args...}")

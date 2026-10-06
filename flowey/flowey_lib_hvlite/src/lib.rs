@@ -45,6 +45,7 @@ pub mod common;
 pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_release_igvm_files_from_gh;
 pub mod download_uefi_mu_msvm;
+pub mod download_vmm_perf_guest_image;
 pub mod download_vmm_perf_runtime;
 pub mod download_vmm_tests_built_artifacts;
 pub mod git_checkout_openvmm_repo;

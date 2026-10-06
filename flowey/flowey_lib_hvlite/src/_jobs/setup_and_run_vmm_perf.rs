@@ -5,17 +5,19 @@
 
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_vmm_perf::VmmPerfOutput;
-use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
 use crate::run_vmm_perf::VmmPerfProfile;
+use anyhow::Context as _;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
         pub label: String,
+        pub target: CommonTriple,
         pub runner: ReadVar<VmmPerfOutput>,
         pub openvmm: ReadVar<OpenvmmOutput>,
         pub profiles: Vec<VmmPerfProfile>,
@@ -37,6 +39,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
+        ctx.import::<crate::download_vmm_perf_guest_image::Node>();
         ctx.import::<crate::download_vmm_perf_runtime::Node>();
         ctx.import::<crate::install_vmm_tests_external_deps::Node>();
         ctx.import::<crate::run_vmm_perf::Node>();
@@ -46,6 +49,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             label,
+            target,
             runner,
             openvmm,
             profiles,
@@ -82,17 +86,61 @@ impl SimpleFlowNode for Node {
         });
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install)];
 
+        let target_is_windows = matches!(
+            target.as_triple().operating_system,
+            target_lexicon::OperatingSystem::Windows
+        );
+        anyhow::ensure!(
+            target_is_windows == matches!(ctx.platform(), FlowPlatform::Windows),
+            "VMM.Perf target {target} does not match job platform {:?}",
+            ctx.platform()
+        );
+        let arch = target.common_arch()?;
         let firmware = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-            arch: CommonArch::X86_64,
+            arch,
             flavor: None,
             msvm_fd: v,
         });
         let runtime_archive = match runtime_archive {
             Some(runtime_archive) => runtime_archive,
             None => ctx.reqv(|v| crate::download_vmm_perf_runtime::Request::Get {
-                arch: CommonArch::X86_64,
+                arch,
                 runtime_archive: v,
             }),
+        };
+        let guest_image = matches!(
+            (ctx.platform(), arch),
+            (FlowPlatform::Windows, crate::common::CommonArch::Aarch64)
+        )
+        .then(|| {
+            ctx.reqv(|v| crate::download_vmm_perf_guest_image::Request::Get {
+                arch,
+                guest_image: v,
+            })
+        });
+        let parameters_json = match guest_image {
+            Some(guest_image) => {
+                let parameters = match parameters_json {
+                    Some(parameters_json) => serde_json::from_str::<
+                        serde_json::Map<String, serde_json::Value>,
+                    >(&parameters_json)
+                    .context("failed to parse VMM.Perf parameters JSON")?,
+                    None => serde_json::Map::new(),
+                };
+                anyhow::ensure!(
+                    !parameters.contains_key("GuestImage"),
+                    "VMM.Perf parameters JSON already specifies GuestImage"
+                );
+                Some(guest_image.map(ctx, move |guest_image| {
+                    let mut parameters = parameters.clone();
+                    parameters.insert(
+                        "GuestImage".into(),
+                        serde_json::Value::String(guest_image.display().to_string()),
+                    );
+                    serde_json::Value::Object(parameters).to_string()
+                }))
+            }
+            None => parameters_json.map(ReadVar::from_static),
         };
         let job_root = match ctx.backend() {
             FlowBackend::Local => root_dir

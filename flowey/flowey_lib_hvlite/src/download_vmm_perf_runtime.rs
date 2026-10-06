@@ -14,13 +14,15 @@ use std::path::Path;
 
 // Update the version and all hashes together when refreshing the archives
 // published to the public VMM.Perf runtime source below.
-const VMM_PERF_RUNTIME_VERSION: &str = "20260906.1";
+const VMM_PERF_RUNTIME_VERSION: &str = "20260930.2";
 const VMM_PERF_RUNTIME_LINUX_X64_SHA256: &str =
-    "815d473b8a3e85f073fd31b0edb6510370d3f5aa21bf8a385c02fbbbe9018834";
+    "7bca21122c7976c58cd5a88e1047f1ac3d9189b9729c22c0321ac374f8e0b018";
 const VMM_PERF_RUNTIME_LINUX_ARM64_SHA256: &str =
-    "2b0a650caa8ebc9515a884aa6d93ec4d9ba9e8972b1bce5eac36f9c3d15e3f79";
+    "7cee306ad8807a466aa6ffa2a9f621df16c158bad019d77c9e19fe0c5bf1be04";
 const VMM_PERF_RUNTIME_WINDOWS_X64_SHA256: &str =
-    "bf348a4c3e8a1dc5ad0f9714a70d8916bb0c944affdfb264196ff013802c5327";
+    "e0b3bc076d5fceecc72c515a5a958eee491e7a82a63ec5e8dc157d8eb21a4e5c";
+const VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256: &str =
+    "21f0abd9473c8935b7fc041689e853cf800996abd443e42ddfbed00c76f0d650";
 
 flowey_request! {
     pub enum Request {
@@ -148,19 +150,23 @@ fn runtime_archive_info(
         (FlowPlatform::Windows, CommonArch::X86_64) => {
             Ok(("vmm-perf-win-x64.zip", VMM_PERF_RUNTIME_WINDOWS_X64_SHA256))
         }
+        (FlowPlatform::Windows, CommonArch::Aarch64) => Ok((
+            "vmm-perf-win-arm64.zip",
+            VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256,
+        )),
         _ => anyhow::bail!("no VMM.Perf runtime archive for {arch:?} on {platform:?}"),
     }
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+pub(crate) fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
     let mut file = fs_err::File::open(path)
-        .with_context(|| format!("failed to open VMM.Perf runtime {}", path.display()))?;
+        .with_context(|| format!("failed to open VMM.Perf artifact {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     loop {
         let bytes_read = file
             .read(&mut buffer)
-            .with_context(|| format!("failed to read VMM.Perf runtime {}", path.display()))?;
+            .with_context(|| format!("failed to read VMM.Perf artifact {}", path.display()))?;
         if bytes_read == 0 {
             break;
         }
@@ -173,7 +179,7 @@ fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
         .collect::<String>();
     anyhow::ensure!(
         actual == expected,
-        "VMM.Perf runtime SHA-256 mismatch for {}: expected {expected}, found {actual}",
+        "VMM.Perf artifact SHA-256 mismatch for {}: expected {expected}, found {actual}",
         path.display()
     );
     Ok(())

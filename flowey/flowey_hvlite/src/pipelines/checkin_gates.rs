@@ -228,13 +228,13 @@ impl IntoPipeline for CheckinGatesCli {
         let mut vmm_tests_artifacts_linux_aarch64_tcg =
             vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxAarch64Tcg::default();
 
-        // Run VMM.Perf after merge, or before merge through the opt-in release
-        // PR pipeline.
+        // Temporarily run VMM.Perf on regular PRs while validating Windows ARM64,
+        // in addition to post-merge and opt-in release PR runs.
         let enable_vmm_perf = matches!(
             (backend_hint, config),
             (
                 PipelineBackendHint::Github,
-                PipelineConfig::Ci | PipelineConfig::PrRelease
+                PipelineConfig::Ci | PipelineConfig::Pr | PipelineConfig::PrRelease
             )
         );
         let mut use_vmm_perf_runner_gnu_x64 = None;
@@ -243,6 +243,8 @@ impl IntoPipeline for CheckinGatesCli {
         let mut use_vmm_perf_openvmm_musl_x64 = None;
         let mut use_vmm_perf_runner_windows_x64 = None;
         let mut use_vmm_perf_openvmm_windows_x64 = None;
+        let mut use_vmm_perf_runner_windows_aarch64 = None;
+        let mut use_vmm_perf_openvmm_windows_aarch64 = None;
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -633,6 +635,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_aarch64
                         .use_nextest_vmm_tests_archive_windows_aarch64 =
                         Some(use_vmm_tests_archive.clone());
+                    use_vmm_perf_runner_windows_aarch64 = Some(use_vmm_perf);
+                    use_vmm_perf_openvmm_windows_aarch64 = Some(use_openvmm.clone());
                 }
             }
             // emit a job for artifacts which _are not_ in the VMM tests "hot
@@ -1898,10 +1902,16 @@ impl IntoPipeline for CheckinGatesCli {
                 use_vmm_perf_runner_windows_x64.context("missing x64 Windows VMM.Perf runner")?;
             let openvmm_windows = use_vmm_perf_openvmm_windows_x64
                 .context("missing x64 Windows OpenVMM artifact for VMM.Perf")?;
-            for (label, platform, pool, openvmm, runner, hugetlb_pages) in [
+            let runner_windows_aarch64 = use_vmm_perf_runner_windows_aarch64
+                .context("missing ARM64 Windows VMM.Perf runner")?;
+            let openvmm_windows_aarch64 = use_vmm_perf_openvmm_windows_aarch64
+                .context("missing ARM64 Windows OpenVMM artifact for VMM.Perf")?;
+            for (label, platform, flow_arch, target, pool, openvmm, runner, hugetlb_pages) in [
                 (
                     "x64-linux-amd-kvm",
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    CommonTriple::X86_64_LINUX_GNU,
                     gh_pools::linux_amd_v7_1es(),
                     openvmm_gnu,
                     runner_gnu,
@@ -1910,6 +1920,8 @@ impl IntoPipeline for CheckinGatesCli {
                 (
                     "x64-linux-intel-mshv",
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                    FlowArch::X86_64,
+                    CommonTriple::X86_64_LINUX_MUSL,
                     gh_pools::linux_mshv_intel_v5_1es(),
                     openvmm_musl,
                     runner_musl,
@@ -1918,6 +1930,8 @@ impl IntoPipeline for CheckinGatesCli {
                 (
                     "x64-windows-amd",
                     FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    CommonTriple::X86_64_WINDOWS_MSVC,
                     gh_pools::windows_amd_v6_1es(),
                     openvmm_windows.clone(),
                     runner_windows.clone(),
@@ -1926,24 +1940,33 @@ impl IntoPipeline for CheckinGatesCli {
                 (
                     "x64-windows-intel",
                     FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    CommonTriple::X86_64_WINDOWS_MSVC,
                     gh_pools::windows_intel_v6_1es(),
                     openvmm_windows,
                     runner_windows,
                     None,
                 ),
+                (
+                    "aarch64-windows",
+                    FlowPlatform::Windows,
+                    FlowArch::Aarch64,
+                    CommonTriple::AARCH64_WINDOWS_MSVC,
+                    gh_pools::windows_arm_self_hosted_baremetal(),
+                    openvmm_windows_aarch64,
+                    runner_windows_aarch64,
+                    None,
+                ),
             ] {
                 let job = pipeline
-                    .new_job(
-                        platform,
-                        FlowArch::X86_64,
-                        format!("run vmm-perf [{label}]"),
-                    )
+                    .new_job(platform, flow_arch, format!("run vmm-perf [{label}]"))
                     .gh_set_pool(pool)
                     .with_timeout_in_minutes(120)
                     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                     .dep_on(
                         |ctx| flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf::Params {
                             label: format!("{label}-vmm-perf"),
+                            target: target.clone(),
                             runner: ctx.use_typed_artifact(&runner),
                             openvmm: ctx.use_typed_artifact(&openvmm),
                             profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
