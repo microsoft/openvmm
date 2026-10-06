@@ -20,11 +20,6 @@ const IOVA: u64 = 0x1234_5678_9abc;
 
 fn final_ecap() -> EcapReg {
     EcapReg::from(ECAP_VALUE)
-        .with_smts(true)
-        .with_ssts(true)
-        .with_ssads(true)
-        .with_smpwcs(true)
-        .with_rps(true)
 }
 
 fn put(gm: &GuestMemory, address: u64, words: &[u64]) {
@@ -139,21 +134,18 @@ impl Fixture {
         iova: u64,
         write: bool,
     ) -> Result<u64, iommu_common::TranslationFault<VtdFault>> {
-        self.dev.shared.translator().translate_with_capabilities(
-            self.rid,
-            iova,
-            write,
-            final_ecap(),
-            |gpa| {
+        self.dev
+            .shared
+            .translator()
+            .translate(self.rid, iova, write, |gpa| {
                 // Invalidation's write lock must also drain the DMA operation.
                 assert!(self.dev.shared.state.try_write().is_none());
                 gpa
-            },
-        )
+            })
     }
 
     fn assert_fault(&mut self, iova: u64, write: bool, reason: u8, suppressed: bool) {
-        self.assert_fault_with_capabilities(iova, write, reason, suppressed, final_ecap());
+        self.assert_fault_using(iova, write, reason, suppressed, None);
     }
 
     fn translate_legacy(&self, iova: u64, write: bool) -> u64 {
@@ -185,17 +177,27 @@ impl Fixture {
         suppressed: bool,
         ecap: EcapReg,
     ) {
+        self.assert_fault_using(iova, write, reason, suppressed, Some(ecap));
+    }
+
+    fn assert_fault_using(
+        &mut self,
+        iova: u64,
+        write: bool,
+        reason: u8,
+        suppressed: bool,
+        ecap: Option<EcapReg>,
+    ) {
         write32(&mut self.dev, 0x12c, 1 << 31);
         write32(&mut self.dev, 0x034, u32::MAX);
         let previous = (read64(&mut self.dev, 0x120), read64(&mut self.dev, 0x128));
-        let fault = self
-            .dev
-            .shared
-            .translator()
-            .translate_with_capabilities(self.rid, iova, write, ecap, |_| {
-                panic!("DMA operation ran on a fault")
-            })
-            .unwrap_err();
+        let translator = self.dev.shared.translator();
+        let op = |_| panic!("DMA operation ran on a fault");
+        let fault = match ecap {
+            Some(ecap) => translator.translate_with_capabilities(self.rid, iova, write, ecap, op),
+            None => translator.translate(self.rid, iova, write, op),
+        }
+        .unwrap_err();
         assert_eq!(fault.iova, iova);
         assert_eq!(fault.error.source_id(), self.rid);
         assert_eq!(fault.error.fault_address(), iova);
@@ -969,27 +971,22 @@ fn raw_mode_and_root_do_not_take_effect_before_srtp() {
     );
     write32(&mut f.dev, 0x018, 0);
     write32(&mut f.dev, 0x018, (1 << 30) | (1 << 31));
-    f.assert_fault_with_capabilities(IOVA, true, 0x30, false, EcapReg::from(ECAP_VALUE));
+    f.assert_fault(IOVA, true, 0x38, false);
 }
 
 #[test]
-fn production_capabilities_gate_scalable_and_reserved_modes_without_dma() {
+fn prior_profile_gates_scalable_but_production_only_rejects_reserved_modes() {
     for mode in [1, 2, 3] {
         let mut f = Fixture::new(0xff80, 0, 0);
         f.fpd(7);
         write64(&mut f.dev, 0x020, ROOT | (mode << 10));
         write32(&mut f.dev, 0x018, (1 << 30) | (1 << 31));
-        f.assert_fault_with_capabilities(IOVA, false, 0x30, false, EcapReg::from(ECAP_VALUE));
-        let fault = f
-            .dev
-            .shared
-            .translator()
-            .translate(f.rid, IOVA, true, |_| {
-                panic!("production DMA in unsupported mode")
-            })
-            .unwrap_err();
-        assert_eq!(fault.error.fault_reason().0, 0x30);
-        if mode != 1 {
+        // Keep the predecessor's negative-profile regression independent of
+        // the current advertisement.
+        f.assert_fault_with_capabilities(IOVA, false, 0x30, false, EcapReg::from(0x00f0_10db));
+        if mode == 1 {
+            assert_eq!(f.translate(IOVA, true).unwrap(), GPA | 0xabc);
+        } else {
             f.assert_fault(IOVA, true, 0x30, false);
         }
         write32(&mut f.dev, 0x018, 0);
@@ -1001,7 +998,7 @@ fn production_capabilities_gate_scalable_and_reserved_modes_without_dma() {
                 .unwrap(),
             u64::MAX
         );
-        assert_eq!(read64(&mut f.dev, 0x010), 0x00f0_10db);
+        assert_eq!(read64(&mut f.dev, 0x010), 0x0003_6800_00f0_10db);
     }
 }
 
@@ -1484,7 +1481,7 @@ fn all_lookup_bytes_must_be_readable_before_using_entry_fields() {
         write32(&mut dev, 0x018, (1 << 30) | (1 << 31));
         let fault = shared
             .translator()
-            .translate_with_capabilities(0, IOVA, false, final_ecap(), |_| {
+            .translate(0, IOVA, false, |_| {
                 panic!("DMA after a partial lookup read")
             })
             .unwrap_err();
