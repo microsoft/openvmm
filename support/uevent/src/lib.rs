@@ -393,7 +393,7 @@ fn parse_uevent(buf: &str) -> anyhow::Result<Uevent<'_>> {
     tracing::debug!(
         header,
         // Omit ACTION and DEVPATH properties from the tracing output as they're
-        // deriveable from the header, and generate a lot of output
+        // derivable from the header, and generate a lot of output
         properties = ?properties
             .iter()
             .filter(|(key, _)| !matches!(*key, "ACTION" | "DEVPATH"))
