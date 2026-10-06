@@ -37,6 +37,10 @@
 //!   handling. With their feature bits clear, WHP does not implement
 //!   `IA32_TSC_ADJUST` and `IA32_TSC_DEADLINE` either; they raise #GP, and
 //!   so do the legacy L2-cache MSRs that the backend stubs for the PCAT BIOS.
+//!   WHP does not implement AMD's HWCR and DE_CFG either: under an AMD CPU
+//!   profile, OpenVMM serves them with the time ABI's fixed values
+//!   ([`AMD_CONFIG_MSRS`](virt::time_abi::msr::AMD_CONFIG_MSRS)), ahead of
+//!   the legacy stubs, which read HWCR as 0.
 //! - **Rates.** The guest TSC runs at the host rate: OpenVMM never sets the
 //!   `ProcessorClockFrequency` partition property. The offloaded APIC timer
 //!   runs at WHP's fixed 200 MHz (WHP cannot set `InterruptClockFrequency`).
@@ -58,6 +62,7 @@ use crate::profile_features::WhpFeatures;
 use crate::profile_features::profile_features;
 use crate::profile_features::supported_surface;
 use cpu_profile::CpuProfile;
+use cpu_profile::CpuVendor;
 use cpu_profile::PartitionProfile;
 use inspect::Inspect;
 use std::sync::Arc;
@@ -82,6 +87,8 @@ use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::HYPERVISOR_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::msr::amd_config_msr_read;
+use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
@@ -700,10 +707,13 @@ pub(crate) enum MsrOutcome {
 }
 
 /// Serves an MSR access that the time ABI owns: the identity range through
-/// `msrs`, and the MSRs the time ABI hides, which raise #GP. Returns `None`
-/// for every other MSR, which the backend handles as before.
+/// `msrs`, the MSRs the time ABI hides, which raise #GP, and, for a CPU
+/// profile of `vendor` AMD, AMD's configuration MSRs
+/// ([`virt::time_abi::msr::AMD_CONFIG_MSRS`]). Returns `None` for every
+/// other MSR, which the backend handles as before.
 pub(crate) fn serve_msr(
     msrs: &TimeAbiMsrs,
+    vendor: CpuVendor,
     vp: VpIndex,
     msr: u32,
     access: MsrAccess,
@@ -719,6 +729,16 @@ pub(crate) fn serve_msr(
     }
     if LEGACY_L2_CACHE_MSRS.contains(&msr) {
         return Some(MsrOutcome::Fault);
+    }
+    if vendor == CpuVendor::Amd {
+        let outcome = match access {
+            MsrAccess::Read => amd_config_msr_read(msr).map(MsrOutcome::Read),
+            MsrAccess::Write(value) => amd_config_msr_write(msr, value)
+                .map(|result| result.map_or(MsrOutcome::Fault, |()| MsrOutcome::Written)),
+        };
+        if outcome.is_some() {
+            return outcome;
+        }
     }
     let outcome = match access {
         MsrAccess::Read => msrs.read(vp, msr)?.map(MsrOutcome::Read),
@@ -1196,7 +1216,13 @@ impl WhpProcessor<'_> {
         } else {
             MsrAccess::Read
         };
-        let Some(outcome) = serve_msr(&time_abi.msrs, self.vp.index, info.MsrNumber, access) else {
+        let Some(outcome) = serve_msr(
+            &time_abi.msrs,
+            time_abi.cpu_profile.cpu_vendor(),
+            self.vp.index,
+            info.MsrNumber,
+            access,
+        ) else {
             return Ok(false);
         };
         tracing::trace!(
@@ -1411,6 +1437,8 @@ mod tests {
     use super::test_cpuid;
     use super::*;
     use virt::time_abi::DeclaredRates;
+    use virt::time_abi::msr::MSR_AMD_DE_CFG;
+    use virt::time_abi::msr::MSR_AMD_HWCR;
     use virt::time_abi::msr::MSR_APIC_FREQUENCY;
     use virt::time_abi::msr::MSR_TSC_FREQUENCY;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
@@ -2152,8 +2180,10 @@ mod tests {
     #[test]
     fn msr_exits_serve_the_identity_and_hide_the_timer_msrs() {
         let msrs = declared_msrs();
-        let read = |vp, msr| serve_msr(&msrs, VpIndex::new(vp), msr, MsrAccess::Read);
-        let write = |msr, value| serve_msr(&msrs, VpIndex::BSP, msr, MsrAccess::Write(value));
+        let intel = CpuVendor::Intel;
+        let read = |vp, msr| serve_msr(&msrs, intel, VpIndex::new(vp), msr, MsrAccess::Read);
+        let write =
+            |msr, value| serve_msr(&msrs, intel, VpIndex::BSP, msr, MsrAccess::Write(value));
         assert_eq!(read(5, MSR_VP_INDEX), Some(MsrOutcome::Read(5)));
         assert_eq!(
             read(0, MSR_TSC_FREQUENCY),
@@ -2203,10 +2233,44 @@ mod tests {
             assert_eq!(read(0, msr), Some(MsrOutcome::Fault), "{msr:#x}");
             assert_eq!(write(msr, 0), Some(MsrOutcome::Fault), "{msr:#x}");
         }
-        // Every other MSR keeps its existing handling.
-        for msr in [0x10, 0x1b, 0x3a, 0x6df, 0x6e1, 0x3fff_ffff, 0x4000_0200] {
+        // Every other MSR keeps its existing handling, AMD's configuration
+        // MSRs included under an Intel profile.
+        for msr in [
+            0x10,
+            0x1b,
+            0x3a,
+            0x6df,
+            0x6e1,
+            0x3fff_ffff,
+            0x4000_0200,
+            MSR_AMD_HWCR,
+            MSR_AMD_DE_CFG,
+        ] {
             assert_eq!(read(0, msr), None, "{msr:#x}");
             assert_eq!(write(msr, 0), None, "{msr:#x}");
+        }
+    }
+
+    /// Under an AMD profile, OpenVMM serves HWCR and DE_CFG with the time
+    /// ABI's fixed values, before the backend's legacy stubs, which read HWCR
+    /// as 0.
+    #[test]
+    fn msr_exits_serve_amd_config_msrs_under_an_amd_profile() {
+        let msrs = declared_msrs();
+        let amd = CpuVendor::Amd;
+        let read = |msr| serve_msr(&msrs, amd, VpIndex::new(3), msr, MsrAccess::Read);
+        let write = |msr, value| serve_msr(&msrs, amd, VpIndex::BSP, msr, MsrAccess::Write(value));
+        assert_eq!(read(MSR_AMD_HWCR), Some(MsrOutcome::Read(1 << 24)));
+        assert_eq!(read(MSR_AMD_DE_CFG), Some(MsrOutcome::Read(1 << 1)));
+        assert_eq!(write(MSR_AMD_HWCR, 1 << 24), Some(MsrOutcome::Written));
+        assert_eq!(write(MSR_AMD_HWCR, 1 << 30), Some(MsrOutcome::Fault));
+        assert_eq!(write(MSR_AMD_DE_CFG, 0), Some(MsrOutcome::Fault));
+        // The identity and the hidden MSRs are served as under any profile.
+        assert_eq!(read(MSR_VP_INDEX), Some(MsrOutcome::Read(3)));
+        assert_eq!(read(MSR_IA32_TSC_ADJUST), Some(MsrOutcome::Fault));
+        // Other AMD MSRs keep the backend's handling.
+        for msr in [0xc001_0010, 0xc001_0114, 0xc001_0140] {
+            assert_eq!(read(msr), None, "{msr:#x}");
         }
     }
 
@@ -2215,7 +2279,7 @@ mod tests {
         let msrs = TimeAbiMsrs::new();
         for msr in [MSR_TSC_FREQUENCY, MSR_APIC_FREQUENCY] {
             assert_eq!(
-                serve_msr(&msrs, VpIndex::BSP, msr, MsrAccess::Read),
+                serve_msr(&msrs, CpuVendor::Intel, VpIndex::BSP, msr, MsrAccess::Read),
                 Some(MsrOutcome::Fault)
             );
         }
