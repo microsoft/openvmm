@@ -5,7 +5,9 @@
 //!
 //! OpenVMM serves the whole identity MSR range itself on every backend. Each
 //! backend routes accesses in [`IDENTITY_MSR_RANGE`] to one shared
-//! [`TimeAbiMsrs`] before any other MSR handling.
+//! [`TimeAbiMsrs`] before any other MSR handling. On a partition with an AMD
+//! CPU profile, each backend also serves AMD's configuration MSRs
+//! ([`AMD_CONFIG_MSRS`]) with fixed values.
 
 use super::DeclaredRates;
 use crate::x86::MsrError;
@@ -31,6 +33,58 @@ pub const MSR_TSC_FREQUENCY: u32 = 0x4000_0022;
 pub const MSR_APIC_FREQUENCY: u32 = 0x4000_0023;
 /// `HV_X64_MSR_TSC_INVARIANT_CONTROL`: 0 or 1, partition-wide guest state.
 pub const MSR_TSC_INVARIANT_CONTROL: u32 = 0x4000_0118;
+
+/// `MSR_K7_HWCR`, AMD's hardware configuration register.
+pub const MSR_AMD_HWCR: u32 = 0xc001_0015;
+/// HWCR's `TscFreqSel`, bit 24: the TSC counts at the P0 frequency.
+pub const HWCR_TSC_FREQ_SEL: u64 = 1 << 24;
+/// `MSR_AMD64_DE_CFG`, AMD's decode configuration register.
+pub const MSR_AMD_DE_CFG: u32 = 0xc001_1029;
+/// DE_CFG's `LFENCE` serialization bit, bit 1: `LFENCE` is dispatch
+/// serializing.
+pub const DE_CFG_LFENCE_SERIALIZE: u64 = 1 << 1;
+
+/// The AMD configuration MSRs that a partition with an AMD CPU profile
+/// presents on every backend, with the value that every read returns:
+///
+/// - HWCR sets only `TscFreqSel`. Linux reads HWCR with an unchecked
+///   `rdmsr` on every AMD CPU with an invariant TSC, which the time ABI's
+///   CPUID always sets: a fault would fail the guest's `G_UNCHECKED_MSR`
+///   check, and a clear `TscFreqSel` makes Linux warn that the TSC does not
+///   count at the P0 frequency.
+/// - DE_CFG sets only `LFENCE` serialization, which Linux otherwise tries to
+///   set itself on a CPU whose CPUID does not enumerate it.
+///
+/// A write of the value that a read returns succeeds and changes nothing;
+/// any other write raises #GP. Linux writes neither MSR on a CPU whose CPUID
+/// clears the instructions-retired counter and CPUID faulting, as the
+/// profiles' derivation policy does.
+pub const AMD_CONFIG_MSRS: [(u32, u64); 2] = [
+    (MSR_AMD_HWCR, HWCR_TSC_FREQ_SEL),
+    (MSR_AMD_DE_CFG, DE_CFG_LFENCE_SERIALIZE),
+];
+
+/// Handles a guest read of `msr` on a partition with an AMD CPU profile:
+/// the value of one of the [`AMD_CONFIG_MSRS`], or `None` for any other MSR,
+/// which the backend handles as before.
+pub fn amd_config_msr_read(msr: u32) -> Option<u64> {
+    AMD_CONFIG_MSRS
+        .iter()
+        .find(|&&(index, _)| index == msr)
+        .map(|&(_, value)| value)
+}
+
+/// Handles a guest write of `value` to `msr` on a partition with an AMD CPU
+/// profile, with the same contract as [`amd_config_msr_read`]: writing the
+/// value that a read returns succeeds, and any other value raises #GP.
+pub fn amd_config_msr_write(msr: u32, value: u64) -> Option<Result<(), MsrError>> {
+    let fixed = amd_config_msr_read(msr)?;
+    Some(if value == fixed {
+        Ok(())
+    } else {
+        Err(MsrError::InvalidAccess)
+    })
+}
 
 /// The rates were declared before, with different values.
 #[derive(Debug, Error)]
@@ -240,6 +294,30 @@ mod tests {
             assert!(gp(msrs.write(vp, msr, 0)), "{msr:#x}");
         }
         assert!(msrs.write(vp, 0x4000_0200, 0).is_none());
+    }
+
+    #[test]
+    fn amd_config_msrs_read_fixed_values_and_accept_only_them() {
+        assert_eq!(amd_config_msr_read(MSR_AMD_HWCR), Some(1 << 24));
+        assert_eq!(amd_config_msr_read(MSR_AMD_DE_CFG), Some(1 << 1));
+        for msr in [0xc001_0010, 0xc001_0114, 0x4000_0022, 0x10] {
+            assert_eq!(amd_config_msr_read(msr), None, "{msr:#x}");
+            assert!(amd_config_msr_write(msr, 0).is_none(), "{msr:#x}");
+        }
+        // Linux's msr_set_bit writes nothing when the bit is set already.
+        assert!(matches!(
+            amd_config_msr_write(MSR_AMD_HWCR, 1 << 24),
+            Some(Ok(()))
+        ));
+        assert!(matches!(
+            amd_config_msr_write(MSR_AMD_DE_CFG, 1 << 1),
+            Some(Ok(()))
+        ));
+        // Setting IRPERF_EN or McStatusWrEn, or clearing a fixed bit.
+        assert!(gp(amd_config_msr_write(MSR_AMD_HWCR, 1 << 24 | 1 << 30)));
+        assert!(gp(amd_config_msr_write(MSR_AMD_HWCR, 1 << 24 | 1 << 18)));
+        assert!(gp(amd_config_msr_write(MSR_AMD_HWCR, 0)));
+        assert!(gp(amd_config_msr_write(MSR_AMD_DE_CFG, 0)));
     }
 
     #[test]
