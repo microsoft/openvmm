@@ -13,6 +13,9 @@ mod limits;
 pub(crate) mod owner;
 #[cfg(test)]
 mod owner_tests;
+pub(crate) mod policy;
+#[cfg(test)]
+mod policy_tests;
 pub mod profile;
 pub(crate) mod resolver;
 pub(crate) mod saved_state;
