@@ -221,6 +221,23 @@ describes the source definitions.
   same device, hard-link aliases, symlinks, junctions, and bind-mount aliases
   cannot re-expose it.
 
+  `--mount-allow <HOST_PATH>` is repeatable and exposes an existing file or
+  directory inside a `--mount-deny` path again. The hidden directories on the
+  way to it become traverse-only: the guest can look them up and list the
+  entries that lead to allowed paths, but sees nothing else in them and cannot
+  modify them. The nearest denied or allowed path that contains an allowed
+  path must be a denied path; a denied path may nest inside an allowed path.
+
+  `--mount-write <HOST_PATH>` is repeatable and limits the guest's writes in a
+  read-write share to existing files or directories and everything below
+  them. The rest of the share is read-only, and the guest's modifications
+  there fail with `EROFS`; a hard link to a read-only file from a writable
+  path fails with `EXDEV`. Writable paths must not overlap or be hidden by a
+  denied path, and a read-only share rejects them. `--mount-allow` and
+  `--mount-write` paths follow the same canonicalization and share
+  attribution rules as `--mount-deny`.
+  See [virtio-fs](../../devices/virtio/virtio-fs.md#access-policy).
+
   `--mount-owner <vmm|caller>` selects the host identity of the guest's
   operations. `vmm`, the default, runs them all as OpenVMM. `caller` runs
   each one as its guest caller's UID and GID, without supplementary groups or
@@ -235,8 +252,9 @@ describes the source definitions.
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
   directory contents or native handles. An active snapshot requires
   `--mount` again for every captured share, in capture order, with the exact
-  canonical host path, guest target, access mode, denied-path set, and
-  `--mount-owner` mode; the live roots and every saved object identity are
+  canonical host path, guest target, access mode, denied, allowed, and
+  writable paths, and `--mount-owner` mode; the live roots and every saved
+  object identity are
   also revalidated before vCPUs start. A snapshot captured without `--mount`
   may remain dormant or bind one new attachment to the first slot. The resumed
   guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
