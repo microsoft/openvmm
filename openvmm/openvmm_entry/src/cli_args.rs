@@ -821,7 +821,7 @@ options:
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
-    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 
