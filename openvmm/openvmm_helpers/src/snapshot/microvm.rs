@@ -250,6 +250,15 @@ pub struct SnapshotMicrovmFilesystem {
     /// what snapshots that predate this field used, or `caller`.
     #[mesh(13)]
     pub owner_mode: String,
+    /// Canonical host-relative paths inside denied paths that the virtio-fs
+    /// server exposes again. Snapshots that predate this field have none.
+    #[mesh(14)]
+    pub allowed_paths: Vec<String>,
+    /// Canonical host-relative paths that are the only parts of a read-write
+    /// filesystem that the guest can modify, or none when all of it is
+    /// writable, as in snapshots that predate this field.
+    #[mesh(15)]
+    pub writable_paths: Vec<String>,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -309,6 +318,8 @@ impl SnapshotMicrovmFilesystem {
                         .to_owned()
                 }
             },
+            allowed_paths: config.allowed_paths.clone(),
+            writable_paths: config.writable_paths.clone(),
         }
     }
 }
@@ -1556,7 +1567,13 @@ pub(super) fn validate_machine_contract_shape(
             filesystem.guest_mount_target.clone(),
             access,
         )
-        .and_then(|config| config.with_denied_paths(filesystem.denied_paths.clone()))
+        .and_then(|config| {
+            config.with_access_policy(
+                filesystem.denied_paths.clone(),
+                filesystem.allowed_paths.clone(),
+                filesystem.writable_paths.clone(),
+            )
+        })
         .context("snapshot filesystem policy is invalid")?
         .with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?);
         anyhow::ensure!(
@@ -2411,6 +2428,13 @@ mod tests {
         .and_then(|config| config.with_denied_paths(vec!["secrets".to_owned()]))
         .unwrap()
         .with_owner(owner);
+        generated_filesystem_contract_with_config(source_hypervisor, &filesystem)
+    }
+
+    fn generated_filesystem_contract_with_config(
+        source_hypervisor: &str,
+        filesystem: &openvmm_defs::microvm::MicrovmFilesystemConfig,
+    ) -> SnapshotMachineContract {
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6 {}",
             filesystem.command_line_fragment(&openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0])
@@ -2422,7 +2446,7 @@ mod tests {
             None,
             true,
             vec![(
-                &filesystem,
+                filesystem,
                 Path::new(if cfg!(windows) {
                     r"C:\microvm-share"
                 } else {
@@ -3057,6 +3081,44 @@ mod tests {
                 .to_string()
                 .contains("owner mode 'vmm' is unsupported")
         );
+    }
+
+    #[test]
+    fn microvm_filesystem_access_policy_is_recorded_and_validated() {
+        let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+            "/mnt/share".to_owned(),
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+        )
+        .and_then(|config| {
+            config.with_access_policy(
+                vec!["logs".to_owned()],
+                vec!["logs/payloads".to_owned()],
+                vec!["out".to_owned()],
+            )
+        })
+        .unwrap();
+        let contract = generated_filesystem_contract_with_config("kvm", &filesystem);
+        let saved = contract.microvm_filesystem.as_ref().unwrap();
+        assert_eq!(saved.denied_paths, ["logs"]);
+        assert_eq!(saved.allowed_paths, ["logs/payloads"]);
+        assert_eq!(saved.writable_paths, ["out"]);
+        validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+
+        // A policy that the configuration would reject is not a valid
+        // contract either.
+        let tampers: [fn(&mut SnapshotMicrovmFilesystem); 2] = [
+            |filesystem| filesystem.allowed_paths = vec!["payloads".to_owned()],
+            |filesystem| filesystem.writable_paths = vec!["logs/secret".to_owned()],
+        ];
+        for tamper in tampers {
+            let mut contract = contract.clone();
+            tamper(contract.microvm_filesystem.as_mut().unwrap());
+            let error = validate_machine_contract_shape(&contract, 1024, 1).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("snapshot filesystem policy is invalid"),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]

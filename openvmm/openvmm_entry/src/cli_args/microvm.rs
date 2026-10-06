@@ -362,6 +362,42 @@ pub struct MicrovmCli {
     )]
     pub microvm_mount_deny: Vec<PathBuf>,
 
+    /// Expose an existing host path inside a `--mount-deny` path again
+    ///
+    /// The path and everything below it become visible in the `--mount`
+    /// whose host directory contains it, subject to the export's write
+    /// policy. The hidden directories on the way to it become traverse-only:
+    /// the guest can look them up and list the entries that lead to allowed
+    /// paths, but sees nothing else in them and cannot modify them. The
+    /// nearest `--mount-deny` or `--mount-allow` path that contains the path
+    /// must be a `--mount-deny` path, which may itself lie inside another
+    /// `--mount-allow` path. A relative path is relative to the host
+    /// directory of the only `--mount`; with several, the path must be
+    /// absolute.
+    #[clap(
+        long = "mount-allow",
+        value_name = "HOST_PATH",
+        requires = "microvm_mount"
+    )]
+    pub microvm_mount_allow: Vec<PathBuf>,
+
+    /// Limit the guest's writes in a read-write `--mount` to an existing host
+    /// path
+    ///
+    /// Repeat to declare more writable files or directories. With any, they
+    /// and everything below them are the only parts of the `--mount` whose
+    /// host directory contains them that the guest can modify; the rest of
+    /// it is read-only, and the guest's modifications there fail with EROFS.
+    /// The paths must not overlap or be hidden by `--mount-deny`. A relative
+    /// path is relative to the host directory of the only `--mount`; with
+    /// several, the path must be absolute.
+    #[clap(
+        long = "mount-write",
+        value_name = "HOST_PATH",
+        requires = "microvm_mount"
+    )]
+    pub microvm_mount_write: Vec<PathBuf>,
+
     /// Select the host identity of the guest's `--mount` operations
     ///
     /// `vmm` (the default) performs every operation as OpenVMM. `caller`
@@ -535,6 +571,8 @@ impl Options {
                     && self.microvm.allow_endpoint.is_empty()
                     && self.microvm.microvm_mount.is_empty()
                     && self.microvm.microvm_mount_deny.is_empty()
+                    && self.microvm.microvm_mount_allow.is_empty()
+                    && self.microvm.microvm_mount_write.is_empty()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.microvm_lifecycle.is_none()
@@ -779,6 +817,14 @@ impl Options {
         anyhow::ensure!(
             self.microvm.microvm_mount_deny.len() <= 128,
             "microVM filesystem permits at most 128 denied paths"
+        );
+        anyhow::ensure!(
+            self.microvm.microvm_mount_allow.len() <= 128,
+            "microVM filesystem permits at most 128 allowed paths"
+        );
+        anyhow::ensure!(
+            self.microvm.microvm_mount_write.len() <= 128,
+            "microVM filesystem permits at most 128 writable paths"
         );
         openvmm_defs::microvm::validate_microvm_filesystems(
             &self

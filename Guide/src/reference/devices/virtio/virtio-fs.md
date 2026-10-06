@@ -78,9 +78,9 @@ other share denies or exposes with a different access mode. On Linux,
 OpenVMM also compares the filesystem sources that each directory reaches,
 from `/proc/self/mountinfo`, including the mounts below it, so a bind mount
 or nested mount can't expose part of one share as, or inside, the other.
-With several attachments, each `--mount-deny` must be an absolute host path,
-and it applies to the share whose directory contains it. `--mount-owner`
-applies to every share.
+With several attachments, each `--mount-deny`, `--mount-allow`, and
+`--mount-write` must be an absolute host path, and it applies to the share
+whose directory contains it. `--mount-owner` applies to every share.
 
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
 `virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line,
@@ -88,10 +88,71 @@ one triplet per share in slot order. The first slot is always discoverable,
 and the second slot's `virtio_mmio.device=` token follows the control
 console's. Active attachment policies and their canonical absolute host paths
 become snapshot-authoritative.
-Repeat `--mount-deny` to hide existing host files or directories. OpenVMM
-canonicalizes each entry relative to its export and rejects paths outside the
-roots, a root itself, overlapping entries, symlink/reparse components, and
-nested-mount crossings before opening the device.
+
+### Access policy
+
+Three repeatable options refine what the guest can see and modify inside a
+share. Each names an existing host file or directory. A relative path is
+relative to the host directory of the only `--mount`; with several shares,
+the path must be absolute, and it applies to the share whose directory
+contains it.
+
+- `--mount-deny <HOST_PATH>` hides the path and everything below it.
+- `--mount-allow <HOST_PATH>` exposes the path and everything below it again,
+  inside a denied path. The nearest denied or allowed path that contains an
+  allowed path must be a denied path, and the nearest one that contains a
+  denied path must be an allowed path, if any, so denied paths may nest inside
+  allowed paths.
+- `--mount-write <HOST_PATH>`, on a read-write share, makes the path and
+  everything below it one of the only parts of the share that the guest can
+  modify. The rest of the share is read-only. Writable paths must not
+  overlap or lie in a hidden part of the share. A read-only share rejects
+  them.
+
+```bash
+openvmm --machine microvm \
+  --mount /tmp/gh-aw,path/to/gh-aw,rw \
+  --mount-deny path/to/gh-aw/mcp-logs \
+  --mount-allow path/to/gh-aw/mcp-logs/payloads \
+  --mount-write path/to/gh-aw/agent \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
+
+A hidden directory on the way from a denied path to an allowed path is
+*traverse-only*. The guest can look it up and list it, but the listing shows
+only the directories that lead to allowed paths. Every other name in it fails
+with `EACCES`, and the guest cannot modify the directory or its entries. In
+the example above, the guest sees `mcp-logs` with only `payloads` in it.
+Allowed paths follow the share's write policy: here `payloads` is read-only
+because it is not inside a writable path, but without `--mount-write` it
+would be writable like the rest of the read-write share.
+
+The guest's modifications of a traverse-only directory or its entries, and
+with `--mount-write` of anything outside the writable paths, fail with
+`EROFS` before HostFs touches the host:
+creating, linking, renaming, or removing an entry; writing, truncating, or
+opening a file for writing; and changing attributes or extended attributes.
+Moving an entry into or out of a writable path changes a read-only directory,
+so it also fails with `EROFS`. A hard link to a read-only file from inside a
+writable path would make the file writable, so it fails with `EXDEV`, as a
+link across mounts does. An object with several names is writable only if
+every name that the guest has used for it is writable.
+
+OpenVMM canonicalizes each policy path relative to its export and rejects
+paths that do not exist, paths outside the roots, a root itself, duplicates,
+redundant or contradictory combinations, symlink/reparse components, and
+nested-mount crossings before opening the device. HostFs also requires every
+traverse-only path to be a directory when it attaches the share.
+
+```admonish warning
+The policy applies to names inside the export. A host hard link or bind
+mount that makes a read-only object reachable inside a writable path also
+makes that object writable, and one that makes part of a denied path
+reachable elsewhere exposes that part. HostFs pins the objects of denied
+paths and traverse-only directories, so it rejects those objects themselves
+at any other name, but not their contents. Do not place such aliases inside
+an export.
+```
 
 A read-write attachment lets the guest create symbolic links, so ordinary
 build tools (package managers, virtual environments, and language
@@ -173,13 +234,19 @@ lookups and newly opened directories still observe the live host tree.
 
 Restoring a snapshot captured with an active attachment requires a fresh
 `--mount` argument for every captured share, in the same order, with the exact
-same denied-path set, canonical host path, guest target, mode, and
-`--mount-owner` mode. Identity validation remains independent: before any vCPU
+same denied, allowed, and writable paths, canonical host path, guest target,
+mode, and `--mount-owner` mode. Identity validation remains independent: before any vCPU
 starts, OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
 without being followed, and an alias whose ancestor has become a link fails
-restore.
+restore. A handle that the guest held open for writing must still be on a
+writable path.
+
+The device state of an attachment with allowed or writable paths records its
+complete access policy, and a restore must supply the same one. OpenVMM
+releases that predate these paths reject that state rather than restore the
+share without them.
 
 `--mount-owner caller` applies only to guest requests. Capture and restore
 still revalidate saved names and reopen saved handles as the OpenVMM process.
@@ -238,11 +305,16 @@ any ancestor that is a symbolic link or reparse point before each operation.
 Denied paths are enforced in the server namespace rather than by guest mount
 layout. Lookup and mutation operations reject denied prefixes, directory
 enumeration omits their names, and denied root object identities reject
-hard-link, junction, and bind-mount aliases. A guest-created link cannot reach
-a denied path because the guest resolves it and every resulting host lookup
-applies the same policy. Mounting the same virtio-fs tag at another guest path
-does not change the policy, and each share's policy applies only to requests
-for its own tag.
+hard-link, junction, and bind-mount aliases. A traverse-only directory's object
+is accepted only at its own path, and only as a directory, so neither a host
+rename nor another name for it exposes its hidden entries. A guest-created
+link cannot reach a denied path because the guest resolves it and every
+resulting host lookup applies the same policy. Writable paths are enforced the
+same way: every mutation checks the names that it changes and the object that
+it modifies against the policy before the host operation. Mounting the same
+virtio-fs tag at another guest path, or remounting it read-write, does not
+change the policy, and each share's policy applies only to requests for its
+own tag.
 
 ```admonish warning
 On Windows, the check for host-created NT symbolic links and junctions in
@@ -260,6 +332,8 @@ false success.
 
 - Device implementation:
   `vm/devices/virtio/virtiofs/`
+- Share access policy:
+  `vm/devices/virtio/virtiofs/src/microvm/policy.rs`
 - Per-thread filesystem credentials:
   `vm/devices/support/fs/lxutil/src/unix/credentials.rs`
 - FUSE session implementation:

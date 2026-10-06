@@ -3,6 +3,8 @@
 
 //! microVM path confinement and persisted inode reconstruction.
 
+use super::policy::PathVisibility;
+use super::policy::SubtreePolicy;
 use super::saved_state::MAX_PATH_BYTES;
 use super::state::relative_path_encoded_len;
 use super::state::validate_relative_path;
@@ -10,6 +12,7 @@ use crate::inode::VirtioFsInode;
 use crate::inode::VirtioFsVolume;
 use lxutil::LxVolume;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,16 +25,16 @@ impl VirtioFsVolume {
         id: u32,
         readonly: bool,
         strict_paths: bool,
-        denied_paths: Vec<PathBuf>,
-        denied_identities: Vec<(u64, u64)>,
+        policy: SubtreePolicy,
+        pinned_identities: HashMap<(u64, u64), Option<PathBuf>>,
     ) -> Self {
         Self {
             volume: Arc::new(volume),
             id,
             readonly,
             strict_paths,
-            denied_paths,
-            denied_identities,
+            policy,
+            pinned_identities,
         }
     }
 
@@ -39,25 +42,58 @@ impl VirtioFsVolume {
         self.strict_paths
     }
 
+    /// Rejects a path that the access policy hides from the guest.
     pub(crate) fn ensure_path_allowed(&self, path: &Path) -> lx::Result<()> {
-        if self
-            .denied_paths
-            .iter()
-            .any(|denied| path.starts_with(denied))
+        if self.policy.visibility(path) == PathVisibility::Hidden {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
+    }
+
+    /// Rejects an object that the guest reached at `path` but must not see
+    /// there: a hidden object pinned when the share was attached, which may
+    /// be reachable only at its own path or not at all, or anything but a
+    /// directory at a traverse-only path.
+    pub(crate) fn ensure_object_allowed(&self, path: &Path, stat: &lx::Stat) -> lx::Result<()> {
+        if let Some(reachable_at) = self.pinned_identities.get(&(stat.device_nr, stat.inode_nr)) {
+            if reachable_at.as_deref() != Some(path) {
+                return Err(lx::Error::EACCES);
+            }
+        }
+        if self.policy.visibility(path) == PathVisibility::TraverseOnly
+            && stat.mode & lx::S_IFMT != lx::S_IFDIR
         {
             return Err(lx::Error::EACCES);
         }
         Ok(())
     }
 
-    pub(crate) fn ensure_identity_allowed(&self, stat: &lx::Stat) -> lx::Result<()> {
-        if self
-            .denied_identities
-            .contains(&(stat.device_nr, stat.inode_nr))
-        {
-            return Err(lx::Error::EACCES);
+    /// Returns whether the guest may modify `path`, or an entry at `path`.
+    pub(crate) fn path_writable(&self, path: &Path) -> bool {
+        !self.readonly && self.policy.is_writable(path)
+    }
+
+    /// Returns whether the access policy makes some visible path read-only.
+    pub(crate) fn restricts_writes(&self) -> bool {
+        self.policy.restricts_writes()
+    }
+
+    /// Returns whether a directory entry named by `path` is one that the guest
+    /// may list: every visible entry, and only the directories among the
+    /// traverse-only entries. Filesystems may report an entry's type as
+    /// unknown, so the host resolves it for a traverse-only entry.
+    pub(crate) fn entry_listable(&self, path: &Path, file_type: u8) -> bool {
+        match self.policy.visibility(path) {
+            PathVisibility::Visible => true,
+            PathVisibility::TraverseOnly => match file_type {
+                lx::DT_DIR => true,
+                lx::DT_UNK => self
+                    .lstat(path)
+                    .is_ok_and(|stat| stat.mode & lx::S_IFMT == lx::S_IFDIR),
+                _ => false,
+            },
+            PathVisibility::Hidden => false,
         }
-        Ok(())
     }
 }
 
@@ -76,7 +112,9 @@ impl VirtioFsInode {
         if lookup_count == 0 {
             return Err(lx::Error::EINVAL);
         }
-        volume.ensure_identity_allowed(stat)?;
+        for alias in &aliases {
+            volume.ensure_object_allowed(alias, stat)?;
+        }
         let mut inode = Self::with_attr(volume, path, stat);
         inode.lookup_count = AtomicU64::new(lookup_count);
         let aliases: BTreeSet<_> = aliases.into_iter().collect();
@@ -106,6 +144,21 @@ impl VirtioFsInode {
     /// object never follow.
     pub(crate) fn validate_confined_object(&self) -> lx::Result<()> {
         self.validate_confined_paths(true)
+    }
+
+    /// Returns whether the volume's access policy lets the guest modify this
+    /// object through every path that it knows for the object, so that no
+    /// alias, such as a hard link, makes a read-only object writable.
+    pub(crate) fn policy_permits_writes(&self) -> bool {
+        if !self.volume.restricts_writes() {
+            return true;
+        }
+        let aliases = self.aliases();
+        let primary = self.clone_path();
+        self.volume.policy.is_writable(&primary)
+            && aliases
+                .iter()
+                .all(|alias| self.volume.policy.is_writable(alias))
     }
 
     fn validate_confined_paths(&self, allow_final_link: bool) -> lx::Result<()> {

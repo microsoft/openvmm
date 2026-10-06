@@ -177,9 +177,12 @@ before vCPUs start. The device uses MMIO `0xd0002000`, IRQ 7, and selects
 `DevicesConfig.virtiofs_config` may bind one HostFs attachment to the fixed
 microVM slot. Set `tag` to `microvm`, supply `root_path`, and set
 `guest_mount_target` to an absolute Linux path. `read_write=false` selects the
-default read-only policy. Restoring an active attachment requires the exact
-same canonical root path, tag, guest target, and access mode, and the live root
-must retain its saved identity. A snapshot captured with the slot dormant may
+default read-only policy. The management API cannot set an access policy, so a
+cold-booted attachment has no denied, allowed, or writable paths. Restoring an
+active attachment requires the exact same canonical root path, tag, guest
+target, and access mode, and the live root must retain its saved identity;
+the snapshot's denied, allowed, and writable paths apply again. A snapshot
+captured with the slot dormant may
 omit the attachment or supply a new one; after `ResumeVM`, the guest explicitly
 mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 6, one
 request queue, and no DAX window. The management API binds only the first
