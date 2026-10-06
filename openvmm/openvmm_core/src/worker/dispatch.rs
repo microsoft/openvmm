@@ -365,12 +365,28 @@ impl Worker for VmWorker {
             .shared_memory
             .map(|fd| restore_params.shared_memory_backing(fd));
 
+        // A cold boot whose built-in CPU profile this host cannot boot names
+        // the host profile where one could boot instead.
+        #[cfg(guest_arch = "x86_64")]
+        let hint = {
+            let requested = manifest
+                .microvm
+                .time_abi
+                .as_ref()
+                .map(|time_abi| time_abi.cpu_profile.clone());
+            let restoring = parameters.saved_state.is_some();
+            move |err| time_abi::hint_cold_boot(err, requested.as_deref(), restoring)
+        };
+        #[cfg(not(guest_arch = "x86_64"))]
+        let hint = |err: anyhow::Error| err;
+
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor.0,
             manifest,
             shared_memory,
-        ))?;
+        ))
+        .map_err(&hint)?;
         let saved_state = parameters
             .saved_state
             .map(|m| m.parse())
@@ -379,7 +395,8 @@ impl Worker for VmWorker {
         microvm_params.check_cold_boot(&vm, saved_state.is_some())?;
 
         let mut vm =
-            block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))?;
+            block_with_io(|_| vm.load(saved_state, parameters.notify, restore_params.state))
+                .map_err(&hint)?;
         vm.snapshot_boundary = microvm_params.snapshot_boundary;
 
         LOADED_VM.store(&vm);

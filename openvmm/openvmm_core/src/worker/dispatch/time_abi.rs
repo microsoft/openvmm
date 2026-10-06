@@ -163,11 +163,67 @@ fn select_on_host(
             && err.code == ProfileErrorCode::ProfileHostUnknown
             && cpu_profile::supports_host_profiles(host)
         {
-            err.message.push_str(
-                "; --cpu-profile host boots on a profile derived from this host, for development",
-            );
+            err.message.push_str("; ");
+            err.message.push_str(HOST_PROFILE_HINT);
         }
         err
+    })
+}
+
+/// What a failed cold boot with `--cpu-profile auto` suggests where host
+/// profiles serve the host CPU and a host profile could boot.
+const HOST_PROFILE_HINT: &str =
+    "--cpu-profile host boots on a profile derived from this host, for development";
+
+/// Names `--cpu-profile host` in `err`, the failure of a VM worker that cold
+/// booted with `--cpu-profile requested` on the host CPU `host`, where a host
+/// profile could boot instead: `auto` selected a built-in profile that this
+/// host's backend does not support (`E_PROFILE_UNSUPPORTED`), and host
+/// profiles serve the CPU's vendor. A host profile derives from what the
+/// backend supports. As for `E_PROFILE_HOST_UNKNOWN`
+/// ([`select_cpu_profile`]), an explicit profile ID and `host` get no hint.
+///
+/// The hint is a context of `err`, which keeps the backend's error chain:
+/// the code, where the backend found the shortfall, and what it lacks.
+fn hint_host_profile(
+    err: anyhow::Error,
+    requested: &str,
+    host: &HostCpuSignature,
+) -> anyhow::Error {
+    if requested != cpu_profile::AUTO
+        || !cpu_profile::supports_host_profiles(host)
+        || leading_code(&err) != Some(TimeAbiCode::ProfileUnsupported)
+    {
+        return err;
+    }
+    err.context(format!(
+        "this host cannot boot the built-in CPU profile that --cpu-profile auto selected; \
+         {HOST_PROFILE_HINT}"
+    ))
+}
+
+/// Returns `err`, the failure of a VM worker, with the hint of
+/// [`hint_host_profile`] if the worker cold booted a time ABI microVM with
+/// `--cpu-profile requested` on this host. A restore (`restoring`), which
+/// takes the snapshot's profile, gets none.
+pub(super) fn hint_cold_boot(
+    err: anyhow::Error,
+    requested: Option<&str>,
+    restoring: bool,
+) -> anyhow::Error {
+    match (requested, restoring, host_cpu()) {
+        (Some(requested), false, Ok(host)) => hint_host_profile(err, requested, &host),
+        _ => err,
+    }
+}
+
+/// Returns the time ABI code that OpenVMM's exit message gives `err`: the
+/// first bracketed code in its chain.
+fn leading_code(err: &anyhow::Error) -> Option<TimeAbiCode> {
+    let chain = format!("{err:#}");
+    chain.match_indices("[E_").find_map(|(start, _)| {
+        let code = &chain[start + 1..];
+        TimeAbiCode::from_name(&code[..code.find(']')?])
     })
 }
 
@@ -718,10 +774,12 @@ mod tests {
     /// The signature of the test profile's CPU, an Ice Lake-SP Xeon.
     const TEST_SIGNATURE: u32 = 0x0006_06a6;
 
-    /// The end of the `E_PROFILE_HOST_UNKNOWN` message of `auto` on a host
-    /// that host profiles serve.
-    const HOST_PROFILE_HINT: &str =
-        "; --cpu-profile host boots on a profile derived from this host, for development";
+    /// Returns whether `message` ends with the `--cpu-profile host` hint, as
+    /// `auto`'s `E_PROFILE_HOST_UNKNOWN` message does on a host that host
+    /// profiles serve.
+    fn ends_with_hint(message: &str) -> bool {
+        message.ends_with(&format!("; {HOST_PROFILE_HINT}"))
+    }
 
     fn test_profile() -> &'static CpuProfile {
         cpu_profile::pinned(TEST_PROFILE).unwrap()
@@ -1056,7 +1114,7 @@ mod tests {
                     "{message}"
                 );
                 assert_eq!(
-                    message.ends_with(HOST_PROFILE_HINT),
+                    ends_with_hint(&message),
                     cpu_profile::supports_host_profiles(&host),
                     "{message}"
                 );
@@ -1073,15 +1131,16 @@ mod tests {
     }
 
     /// `auto` names `--cpu-profile host` only where a host profile can boot:
-    /// on Intel CPUs that no pinned profile serves.
+    /// on Intel and AMD CPUs that no pinned profile serves.
     #[test]
     fn auto_names_host_profiles_only_where_they_serve() {
         let tiger_lake = HostCpuSignature::new(*b"GenuineIntel", 0x0008_06c1);
         let zen3 = HostCpuSignature::new(*b"AuthenticAMD", 0x00a2_0f12);
-        for (host, hint) in [(tiger_lake, true), (zen3, false)] {
+        let hygon = HostCpuSignature::new(*b"HygonGenuine", 0x0090_0f01);
+        for (host, hint) in [(tiger_lake, true), (zen3, true), (hygon, false)] {
             let error = select_on_host(cpu_profile::AUTO, &host, None).unwrap_err();
             assert_eq!(error.code, ProfileErrorCode::ProfileHostUnknown, "{error}");
-            assert_eq!(error.message.ends_with(HOST_PROFILE_HINT), hint, "{error}");
+            assert_eq!(ends_with_hint(&error.message), hint, "{error}");
             assert_eq!(
                 error.message.contains("--cpu-profile host"),
                 hint,
@@ -1092,6 +1151,64 @@ mod tests {
         let error = select_on_host(TEST_PROFILE, &tiger_lake, None).unwrap_err();
         assert_eq!(error.code, ProfileErrorCode::CpuGeneration, "{error}");
         assert!(!error.message.contains("--cpu-profile host"), "{error}");
+    }
+
+    /// A cold boot with `auto` names `--cpu-profile host` where the backend
+    /// does not support the built-in profile that `auto` selected, on Intel
+    /// and AMD CPUs only, as it does where no built-in profile serves the
+    /// host. The hint keeps the backend's error chain.
+    #[test]
+    fn auto_names_host_profiles_where_the_backend_lacks_the_profile() {
+        let unsupported = || {
+            anyhow::Error::new(TimeAbiError::new(
+                TimeAbiCode::ProfileUnsupported,
+                "the kvm backend does not support CPU profile amd.milan.v1",
+            ))
+            .context("failed to create the prototype partition")
+        };
+        let icelake = HostCpuSignature::new(*b"GenuineIntel", TEST_SIGNATURE);
+        let milan = HostCpuSignature::new(*b"AuthenticAMD", 0x00a0_0f11);
+        let hygon = HostCpuSignature::new(*b"HygonGenuine", 0x0090_0f01);
+        for host in [&icelake, &milan] {
+            let err = hint_host_profile(unsupported(), cpu_profile::AUTO, host);
+            let message = format!("{err:#}");
+            assert!(message.starts_with("this host cannot boot the built-in CPU profile that --cpu-profile auto selected; --cpu-profile host boots"), "{message}");
+            assert!(
+                message.ends_with(&format!("{:#}", unsupported())),
+                "{message}"
+            );
+            assert_eq!(
+                leading_code(&err),
+                Some(TimeAbiCode::ProfileUnsupported),
+                "{message}"
+            );
+        }
+        // Another vendor's CPU, an explicit profile, `host`, and other
+        // failures get no hint.
+        for (requested, host, err) in [
+            (cpu_profile::AUTO, &hygon, unsupported()),
+            (TEST_PROFILE, &icelake, unsupported()),
+            (cpu_profile::HOST, &milan, unsupported()),
+            (
+                cpu_profile::AUTO,
+                &milan,
+                anyhow::Error::new(TimeAbiError::new(TimeAbiCode::CpuSurface, "VP 0 differs"))
+                    .context("failed to create the prototype partition"),
+            ),
+            (
+                cpu_profile::AUTO,
+                &milan,
+                anyhow::anyhow!("no time ABI code"),
+            ),
+        ] {
+            let message = format!("{:#}", hint_host_profile(err, requested, host));
+            assert!(!message.contains(HOST_PROFILE_HINT), "{message}");
+        }
+        // Neither does a restore, nor a VM without the time ABI.
+        for (requested, restoring) in [(Some(cpu_profile::AUTO), true), (None, false)] {
+            let message = format!("{:#}", hint_cold_boot(unsupported(), requested, restoring));
+            assert_eq!(message, format!("{:#}", unsupported()));
+        }
     }
 
     #[test]

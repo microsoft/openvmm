@@ -248,7 +248,7 @@ pub fn select_auto(host: &HostCpuSignature) -> Result<&'static CpuProfile, Profi
 /// [`Generation::contains`](crate::Generation::contains) does for the
 /// generation of a parsed profile.
 fn covers(generation: &KnownGeneration, host: &HostCpuSignature) -> bool {
-    let vendor = generation.vendor.as_bytes();
+    let vendor = generation.vendor.cpuid_vendor().as_bytes();
     let (family, model, stepping) = decode_signature(vendor, host.signature());
     host.vendor().as_slice() == vendor
         && generation
@@ -455,7 +455,7 @@ mod tests {
                 pinned.digest,
                 "{id}"
             );
-            assert_eq!(profile.vendor(), pinned.generation.vendor);
+            assert_eq!(profile.vendor(), pinned.generation.vendor.cpuid_vendor());
             assert_eq!(profile.generation(), &pinned.generation.generation());
             assert_eq!(
                 pinned_record(id),
@@ -485,7 +485,8 @@ mod tests {
         for (i, profile) in pinned_profiles().iter().enumerate() {
             let generation = profile.generation();
             let known = derive::known_generation(&generation.name).unwrap();
-            assert_eq!(profile.vendor(), known.vendor);
+            assert_eq!(profile.vendor(), known.vendor.cpuid_vendor());
+            assert_eq!(profile.cpu_vendor(), known.vendor);
             assert_eq!(
                 generation
                     .cpus

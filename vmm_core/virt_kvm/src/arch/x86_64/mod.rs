@@ -795,21 +795,20 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 /// However, KVM also passes through AMD PSFD without including it in that
 /// check. PSFD is architecturally controlled via the SPEC_CTRL MSR, so a
 /// guest that sees PSFD and infers SPEC_CTRL MSR support (as Hyper-V
-/// does) will #GP when writing the MSR.
+/// does) will #GP when writing the MSR. AMD CPU profiles keep PSFD under
+/// the same condition (`cpu_profile::derive::has_spec_ctrl_control`).
 ///
 /// Returns a leaf that strips PSFD when it should not be advertised.
 fn strip_psfd_leaf(cpuid: &CpuidLeafSet) -> Option<CpuidLeaf> {
     use x86defs::cpuid::ExtendedAddressSpaceSizesEbx;
-    use x86defs::cpuid::ExtendedFeatureSubleaf0Edx;
 
     let leaf7 = cpuid.result(CpuidFunction::ExtendedFeatures.0, 0, &[0; 4]);
     let leaf80000008 = cpuid.result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4]);
 
-    let edx = ExtendedFeatureSubleaf0Edx::from(leaf7[3]);
     let ebx = ExtendedAddressSpaceSizesEbx::from(leaf80000008[1]);
 
     // Mirror KVM's guest_has_spec_ctrl_msr() check.
-    let has_spec_ctrl_msr = edx.ibrs() || ebx.ibrs() || ebx.stibp() || ebx.ssbd();
+    let has_spec_ctrl_msr = cpu_profile::derive::has_spec_ctrl_control(leaf7[3], leaf80000008[1]);
     if !has_spec_ctrl_msr && ebx.psfd() {
         let psfd_mask = ExtendedAddressSpaceSizesEbx::new().with_psfd(true);
         Some(

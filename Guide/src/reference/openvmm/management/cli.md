@@ -399,7 +399,10 @@ describes the source definitions.
   derive a development profile from this host's backend fingerprint for a
   host that no pinned profile serves. `auto` never selects a host profile. A
   host without a profile, or a profile of another generation, fails before the
-  partition is created. A restore uses the snapshot's profile and rejects any
+  partition is created. On an Intel or AMD host, `auto`'s errors name
+  `--cpu-profile host` when no pinned profile serves the host and when the
+  backend does not support the pinned profile (`E_PROFILE_UNSUPPORTED`). A
+  restore uses the snapshot's profile and rejects any
   other; `host` also names a host profile that the snapshot recorded. See
   [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
 * `--x-time-abi-verify`: Build the microVM partition and run the time ABI

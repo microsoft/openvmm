@@ -263,14 +263,18 @@ generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
 Scalable, fifth generation: 6/207), and `intel.alderlake.v1` (Core, twelfth
 generation: 6/151 and 6/154). `--cpu-profile <ID>` selects one; the default,
 `auto`, selects the profile of the host's generation, and a host without one
-fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel development host without one,
-`--cpu-profile host` boots on a host profile instead: OpenVMM fingerprints the
-backend on this host, as `--cpu-fingerprint` does, and applies the pinned
-profiles' derivation policy to it. A host profile, `intel.host.v1`, serves only
-the host's CPU model and stepping, is not pinned, and can change with the
-host's microcode, firmware, or hypervisor. Every boot checks that the backend
+fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel or AMD development host without
+one, `--cpu-profile host` boots on a host profile instead: OpenVMM
+fingerprints the backend on this host, as `--cpu-fingerprint` does, and
+applies the pinned profiles' derivation policy to it. A host profile,
+`intel.host.v1` or `amd.host.v1`, serves only the host's CPU model and
+stepping, is not pinned, and can change with the host's microcode, firmware,
+or hypervisor. Every boot checks that the backend
 supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
-effective CPUID (`E_CPU_SURFACE`). A snapshot records the profile and the
+effective CPUID (`E_CPU_SURFACE`). On an Intel or AMD host, `auto`'s errors
+name `--cpu-profile host` both where no pinned profile serves the host and
+where the backend does not support the one that does, because a host profile
+derives from what the backend supports. A snapshot records the profile and the
 effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
 the same digest, or, for a host profile, the snapshot's own copy of it, which
 must match the recorded digest; a host of the profile's generation; and an

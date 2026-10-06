@@ -145,8 +145,10 @@ pub(crate) enum RegisterClass {
     /// may not exceed the backend's.
     Limits(&'static [(u32, u32)]),
     /// Values that do not constrain the host, or that other checks cover:
-    /// the vendor and signature (generation check), descriptive cache, TLB,
-    /// and brand information, and the XSAVE leaf (layout check).
+    /// the vendor and signature (generation check), AMD's copy of the
+    /// signature in `0x80000001` EAX, which Intel CPUs leave zero,
+    /// descriptive cache, TLB, and brand information (AMD's cache topology
+    /// leaf `0x8000001D` included), and the XSAVE leaf (layout check).
     Informational,
 }
 
@@ -156,8 +158,9 @@ pub(crate) fn register_class(leaf: u32, subleaf: u32, register: usize) -> Regist
     match (leaf, subleaf, register) {
         (0x0, _, 0) | (0x8000_0000, _, 0) | (0x7, 0, 0) => RegisterClass::Limits(ALL),
         (0x8000_0008, _, 0) => RegisterClass::Limits(ADDRESS_WIDTHS),
-        (0x0 | 0x2 | 0x3 | 0x4 | 0xd | 0x18, _, _)
-        | (0x1, _, 0 | 1)
+        (0x0 | 0x2 | 0x3 | 0x4 | 0xd | 0x18 | 0x8000_001d, _, _)
+        | (0x1 | 0x8000_0001, _, 0)
+        | (0x1, _, 1)
         | (0x8000_0002..=0x8000_0006, _, _)
         | (0x8000_0008, _, 2 | 3) => RegisterClass::Informational,
         _ => RegisterClass::Features,

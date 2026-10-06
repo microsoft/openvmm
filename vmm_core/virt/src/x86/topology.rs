@@ -69,7 +69,8 @@ pub fn per_vp_cpuid_bits(function: u32) -> [u32; 4] {
 /// Adds appropriately masked leaves for reporting processor topology.
 ///
 /// This includes some bits of leaves 01h and 04h, plus all of leaves 0Bh and
-/// 1Fh
+/// 1Fh, and on AMD processors the core count of leaf 80000008h, the
+/// cache-sharing counts of leaf 8000001Dh, and leaf 8000001Eh.
 pub fn topology_cpuid<'a>(
     topology: &'a ProcessorTopology<X86Topology>,
     cpuid: CpuidFn<'a>,
@@ -126,6 +127,7 @@ pub fn topology_cpuid<'a>(
     if vendor.is_amd_compatible() {
         // Add AMD-specific topology leaves here.
         amd_extended_address_space_sizes_cpuid(topology, leaves);
+        amd_cache_topology_cpuid(topology, cpuid, leaves);
         amd_processor_topology_definition_cpuid(topology, leaves);
     }
 
@@ -290,6 +292,52 @@ fn amd_extended_address_space_sizes_cpuid(
     );
 }
 
+/// Adds the cache-sharing counts of leaf 8000001Dh (Cache Topology
+/// Information) for AMD processors, as [`cache_parameters_cpuid`] sets them
+/// in leaf 04h for Intel processors: each VP has its own L1 and L2 caches,
+/// shared only with its SMT sibling, and the socket shares the level 3
+/// cache.
+///
+/// Each subleaf describes one cache, up to the first with a null cache type,
+/// and only its `EAX[25:14]`, the number of logical processors sharing the
+/// cache less one, changes. Linux derives each CPU's last-level cache from
+/// the last cache's count, so without it a guest would see the host's L3
+/// grouping, such as one L3 per core complex.
+fn amd_cache_topology_cpuid(
+    topology: &ProcessorTopology<X86Topology>,
+    cpuid: CpuidFn<'_>,
+    leaves: &mut Vec<CpuidLeaf>,
+) {
+    // AMD's EAX matches leaf 04h's below bit 26, where leaf 04h counts the
+    // cores per socket and AMD reserves the bits.
+    const MAX_SHARING_MINUS_ONE: u32 = 0xfff;
+    let threads_per_core = if topology.smt_enabled() { 2 } else { 1 };
+    for i in 0..=255 {
+        let descriptor =
+            CacheParametersEax::from(cpuid(CpuidFunction::CacheTopologyDefinition.0, i)[0]);
+        if descriptor.cache_type() == 0 {
+            break;
+        }
+        let sharing = if descriptor.cache_level() == 3 {
+            topology.reserved_vps_per_socket()
+        } else {
+            threads_per_core
+        };
+        let eax = CacheParametersEax::new()
+            .with_threads_sharing_cache_minus_one(min(MAX_SHARING_MINUS_ONE, sharing - 1));
+        let eax_mask =
+            CacheParametersEax::new().with_threads_sharing_cache_minus_one(MAX_SHARING_MINUS_ONE);
+        leaves.push(
+            CpuidLeaf::new(
+                CpuidFunction::CacheTopologyDefinition.0,
+                [eax.into(), 0, 0, 0],
+            )
+            .indexed(i)
+            .masked([eax_mask.into(), 0, 0, 0]),
+        );
+    }
+}
+
 /// Adds leaf 8000001Eh (Processor Topology Definition) for AMD processors.
 fn amd_processor_topology_definition_cpuid(
     topology: &ProcessorTopology<X86Topology>,
@@ -413,6 +461,84 @@ mod tests {
                         "{context}"
                     );
                 }
+            }
+        }
+    }
+
+    /// An AMD CPU with maximum basic leaf 0xd and four caches in leaf
+    /// 0x8000001D, as an AMD EPYC 7763 reports them through WHP: L1 data, L1
+    /// instruction, L2, and L3, with no cache-sharing counts.
+    fn amd_cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
+        match (leaf, subleaf) {
+            (0, _) => [
+                0xd,
+                u32::from_le_bytes(*b"Auth"),
+                u32::from_le_bytes(*b"cAMD"),
+                u32::from_le_bytes(*b"enti"),
+            ],
+            (0x8000_001d, 0) => [0x121, 0x01c0_003f, 0x3f, 0],
+            (0x8000_001d, 1) => [0x122, 0x01c0_003f, 0x3f, 0],
+            (0x8000_001d, 2) => [0x143, 0x01c0_003f, 0x3ff, 2],
+            (0x8000_001d, 3) => [0x163, 0x03c0_003f, 0x7fff, 1],
+            _ => [0; 4],
+        }
+    }
+
+    /// On AMD, the L1 and L2 caches belong to a core, and the L3 cache to
+    /// the socket, as leaf 4 reports on Intel: in leaf 0x8000001D, whose
+    /// subleaves each describe one cache.
+    #[test]
+    fn amd_l3_cache_is_shared_by_the_socket() {
+        for vps in [1, 2, 6, 8] {
+            for smt in [false, true] {
+                let topology = TopologyBuilder::new_x86()
+                    .vps_per_socket(vps)
+                    .smt_enabled(smt)
+                    .x2apic(X2ApicState::Supported)
+                    .build(vps)
+                    .unwrap();
+                let threads_per_core = if topology.smt_enabled() { 2 } else { 1 };
+                let reserved = topology.reserved_vps_per_socket();
+                let mut leaves = Vec::new();
+                topology_cpuid(&topology, &amd_cpuid, &mut leaves).unwrap();
+                let caches: Vec<_> = leaves
+                    .iter()
+                    .filter(|leaf| leaf.function == CpuidFunction::CacheTopologyDefinition.0)
+                    .map(|leaf| leaf.index)
+                    .collect();
+                assert_eq!(caches, [Some(0), Some(1), Some(2), Some(3)]);
+                assert!(
+                    !leaves
+                        .iter()
+                        .any(|leaf| leaf.function == CpuidFunction::CacheParameters.0)
+                );
+                let set = CpuidLeafSet::new(leaves);
+                for subleaf in 0..4 {
+                    let native = amd_cpuid(0x8000_001d, subleaf);
+                    let result = set.result(0x8000_001d, subleaf, &native);
+                    let context = format!("{vps} VPs, smt {smt}, subleaf {subleaf}");
+                    // Only the sharing count changes.
+                    assert_eq!(result[1..], native[1..], "{context}");
+                    assert_eq!(
+                        result[0] & !0x03ff_c000,
+                        native[0] & !0x03ff_c000,
+                        "{context}"
+                    );
+                    let eax = CacheParametersEax::from(result[0]);
+                    let sharing = if eax.cache_level() == 3 {
+                        reserved
+                    } else {
+                        threads_per_core
+                    };
+                    assert_eq!(
+                        eax.threads_sharing_cache_minus_one() + 1,
+                        sharing,
+                        "{context}"
+                    );
+                }
+                // The null cache that ends the enumeration keeps its native
+                // value.
+                assert_eq!(set.result(0x8000_001d, 4, &[0; 4]), [0; 4]);
             }
         }
     }

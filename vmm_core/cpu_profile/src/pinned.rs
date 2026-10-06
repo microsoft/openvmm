@@ -86,7 +86,7 @@ impl PinnedProfile {
                     .collect(),
             },
             schema: SCHEMA.to_owned(),
-            vendor: self.generation.vendor.to_owned(),
+            vendor: self.generation.vendor.cpuid_vendor().to_owned(),
             xcr0: Hex64(self.xcr0),
             xsave_components: self.xsave_components.to_vec(),
             xss: Hex64(self.xss),

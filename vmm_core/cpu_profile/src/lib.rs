@@ -77,6 +77,7 @@ mod surface;
 #[cfg(test)]
 mod test_support;
 mod unlisted;
+mod vendor;
 
 pub use catalog::AUTO;
 pub use catalog::HOST;
@@ -130,3 +131,4 @@ pub use surface::verify_support_with_unlisted;
 pub use unlisted::check_unlisted_cpuid;
 pub use unlisted::unlisted_cpuid_candidates;
 pub use unlisted::unlisted_cpuid_violations;
+pub use vendor::CpuVendor;
