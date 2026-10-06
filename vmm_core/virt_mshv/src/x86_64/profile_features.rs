@@ -237,14 +237,14 @@ mod tests {
                     word.name()
                 );
             }
-            // Every mapped bit follows the profile.
+            // Every mapped bit follows the profile, on its vendor's bits.
             for feature in HV_FEATURES
                 .iter()
                 .filter(|feature| !feature.is_time_policy())
             {
                 let offered = has(&host, feature.word, feature.mask);
                 let kept = has(&features, feature.word, feature.mask);
-                match hv_banks::pinned(profile, feature.cpuid) {
+                match feature.pinned_by(profile) {
                     Pinned::Clear => assert!(!kept, "{id}: {}", feature.name()),
                     Pinned::Set => assert!(kept, "{id}: {}", feature.name()),
                     Pinned::Unpinned => assert_eq!(kept, offered, "{id}: {}", feature.name()),
@@ -466,11 +466,18 @@ mod hw {
         Ok(Probe { vmfd, vp })
     }
 
-    /// The leaves and subleaves of the mapped features.
-    fn feature_leaves() -> Vec<(u32, u32)> {
+    /// The vendor of this host's CPU, whose CPUID bits the features control.
+    fn host_vendor() -> cpu_profile::CpuVendor {
+        cpu_profile::CpuVendor::from_cpuid_vendor(&HostCpuSignature::current().vendor())
+            .unwrap_or(cpu_profile::CpuVendor::Intel)
+    }
+
+    /// The leaves and subleaves of the mapped features on `vendor`'s CPUs.
+    fn feature_leaves(vendor: cpu_profile::CpuVendor) -> Vec<(u32, u32)> {
         let mut leaves: Vec<_> = HV_FEATURES
             .iter()
-            .map(|feature| (feature.cpuid.leaf, feature.cpuid.subleaf))
+            .filter_map(|feature| feature.cpuid_for(vendor))
+            .map(|cpuid| (cpuid.leaf, cpuid.subleaf))
             .collect();
         leaves.sort_unstable();
         leaves.dedup();
@@ -508,28 +515,31 @@ mod hw {
             .join(" ")
     }
 
-    /// Whether another feature bit controls the same CPUID bit, so that
-    /// clearing one of them alone may leave it set.
-    fn shared(feature: &HvFeature) -> bool {
-        HV_FEATURES
-            .iter()
-            .filter(|other| other.cpuid == feature.cpuid)
-            .count()
-            > 1
+    /// Whether another feature bit controls the same CPUID bit on `vendor`'s
+    /// CPUs, so that clearing one of them alone may leave it set.
+    fn shared(feature: &HvFeature, vendor: cpu_profile::CpuVendor) -> bool {
+        feature.cpuid_for(vendor).is_some_and(|bit| {
+            HV_FEATURES
+                .iter()
+                .filter(|other| other.cpuid_for(vendor) == Some(bit))
+                .count()
+                > 1
+        })
     }
 
     /// Clears each feature bit the host offers, one at a time, and checks that
-    /// every mapped one removes its CPUID bit.
+    /// every mapped one removes its CPUID bit on this host's vendor.
     #[test]
     #[ignore = "requires /dev/mshv"]
     fn features_control_the_mapped_cpuid_bits() {
         let mshv = Mshv::new().unwrap();
         let host = host_features(&mshv).unwrap();
+        let vendor = host_vendor();
         println!(
-            "host: bank0 {:#x} bank1 {:#x} xsave {:#x}",
+            "{vendor}: host: bank0 {:#x} bank1 {:#x} xsave {:#x}",
             host.banks[0], host.banks[1], host.xsave
         );
-        let leaves = feature_leaves();
+        let leaves = feature_leaves(vendor);
         let base = feature_cpuid(&probe_partition(&mshv, host).unwrap(), &leaves);
         let mut failures = Vec::new();
         for word in HvFeatureWord::ALL {
@@ -550,19 +560,20 @@ mod hw {
                 };
                 let removed = removed(&leaves, &base, &probe);
                 let mut verdict = "";
-                if let Some(feature) = feature {
+                if let Some((feature, cpuid)) =
+                    feature.and_then(|feature| Some((feature, feature.cpuid_for(vendor)?)))
+                {
                     let index = leaves
                         .iter()
-                        .position(|&key| key == (feature.cpuid.leaf, feature.cpuid.subleaf))
+                        .position(|&key| key == (cpuid.leaf, cpuid.subleaf))
                         .unwrap();
-                    let offered =
-                        base[index][feature.cpuid.register] & (1 << feature.cpuid.bit) != 0;
-                    if offered && !shared(feature) && !removed.contains(&feature.cpuid) {
+                    let offered = base[index][cpuid.register] & (1 << cpuid.bit) != 0;
+                    if offered && !shared(feature, vendor) && !removed.contains(&cpuid) {
                         verdict = " MISMATCH";
                         failures.push(format!(
                             "{} bit {bit} {name}: expected {} removed {}",
                             word.name(),
-                            feature.cpuid,
+                            cpuid,
                             list(&removed)
                         ));
                     }
@@ -810,7 +821,9 @@ mod hw {
                 let differs = (value ^ entry.values()[register]) & mask;
                 for bit in (0..32).filter(|bit| differs & (1 << bit) != 0) {
                     let at = CpuidBit::new(leaf, subleaf.unwrap_or(0), register, bit);
-                    let feature = HV_FEATURES.iter().find(|feature| feature.cpuid == at);
+                    let feature = HV_FEATURES
+                        .iter()
+                        .find(|feature| feature.cpuid_for(profile.cpu_vendor()) == Some(at));
                     match feature {
                         Some(feature) if !feature.is_time_policy() => failures.push(format!(
                             "{at} ({}): presented {}, pinned {}",
