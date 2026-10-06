@@ -16,16 +16,19 @@
 //!   `HV_X64_MSR_TSC_INVARIANT_CONTROL` to [`TimeAbiMsrs`]. The hypervisor
 //!   raises #GP itself for writes to the three read-only identity MSRs, even
 //!   when they are intercepted, and for every other MSR of the identity range.
+//!   Under an AMD CPU profile, intercepts also route HWCR and DE_CFG, which
+//!   OpenVMM serves with the time ABI's fixed values ([`AMD_CONFIG_MSRS`]);
+//!   no AMD MSHV host has verified them yet.
 //! - CPUID intercept results present the configured CPUID verbatim: it is the
 //!   CPU profile's complete effective CPUID, and the backend adds nothing to
-//!   it. The extended topology leaves are registered once per VP with that
-//!   VP's x2APIC ID, which the hypervisor does not provide for these
-//!   partitions. Entries the effective CPUID does not list show the
-//!   hypervisor's own guest view, which reads zero there: the CPUID sweep
-//!   hardware test checks it, and verification (`E_CPU_UNLISTED`) checks the
-//!   ones the host enumerates at every boot and restore. The hypervisor
-//!   reports no hypervisor leaf of its own, which preflight verifies at
-//!   sentinel leaves.
+//!   it. The per-VP topology leaves (the extended topology leaves and AMD's
+//!   `0x8000001E`) are registered once per VP with that VP's APIC identity,
+//!   which the hypervisor does not provide for these partitions. Entries the
+//!   effective CPUID does not list show the hypervisor's own guest view,
+//!   which reads zero there: the CPUID sweep hardware test checks it, and
+//!   verification (`E_CPU_UNLISTED`) checks the ones the host enumerates at
+//!   every boot and restore. The hypervisor reports no hypervisor leaf of its
+//!   own, which preflight verifies at sentinel leaves.
 //! - The processor feature banks follow the CPU profile (see
 //!   [`profile_features`](super::profile_features)), keep the invariant TSC,
 //!   and hide the TSC-deadline timer, `IA32_TSC_ADJUST`, and APERF/MPERF.
@@ -43,6 +46,7 @@ use crate::MshvPartitionInner;
 use crate::MshvProcessor;
 use crate::VcpuFdExt;
 use cpu_profile::CpuProfile;
+use cpu_profile::CpuVendor;
 use cpu_profile::PartitionProfile;
 use cpu_profile::hv_banks::HvFeatures;
 use hvdef::HvInterceptAccessType;
@@ -75,10 +79,13 @@ use virt::time_abi::TscSyncMethod;
 use virt::time_abi::host::sample_host_time;
 use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
+use virt::time_abi::msr::AMD_CONFIG_MSRS;
 use virt::time_abi::msr::MSR_APIC_FREQUENCY;
 use virt::time_abi::msr::MSR_TSC_FREQUENCY;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::MSR_VP_INDEX;
+use virt::time_abi::msr::amd_config_msr_read;
+use virt::time_abi::msr::amd_config_msr_write;
 use virt::time_abi::surface::SupportedCpuSurface;
 
 /// The identity MSRs that OpenVMM serves. The hypervisor raises #GP for
@@ -449,10 +456,23 @@ fn msr_index_intercept(msr: u32) -> mshv_bindings::mshv_install_intercept {
     }
 }
 
-/// Routes the identity MSRs to OpenVMM. Fails with `E_IDENTITY_ROUTING`,
-/// naming the MSR whose intercept the hypervisor refused.
-pub(super) fn route_identity_msrs(vmfd: &VmFd) -> Result<(), TimeAbiError> {
-    install_msr_intercepts(vmfd, &ROUTED_MSRS)
+/// Returns the MSRs that a time ABI partition with a CPU profile of `vendor`
+/// routes to OpenVMM: the identity MSRs it serves, and under an AMD profile
+/// AMD's configuration MSRs, whose fixed values OpenVMM serves too
+/// ([`AMD_CONFIG_MSRS`]).
+pub(super) fn routed_msrs(vendor: CpuVendor) -> Vec<u32> {
+    let mut msrs = ROUTED_MSRS.to_vec();
+    if vendor == CpuVendor::Amd {
+        msrs.extend(AMD_CONFIG_MSRS.iter().map(|&(msr, _)| msr));
+    }
+    msrs
+}
+
+/// Routes the time ABI's MSRs of a CPU profile of `vendor` to OpenVMM
+/// ([`routed_msrs`]). Fails with `E_IDENTITY_ROUTING`, naming the MSR whose
+/// intercept the hypervisor refused.
+pub(super) fn route_identity_msrs(vmfd: &VmFd, vendor: CpuVendor) -> Result<(), TimeAbiError> {
+    install_msr_intercepts(vmfd, &routed_msrs(vendor))
 }
 
 fn install_msr_intercepts(vmfd: &VmFd, msrs: &[u32]) -> Result<(), TimeAbiError> {
@@ -491,18 +511,48 @@ pub(super) fn partition_cpuid(config: &CpuidLeafSet) -> CpuidLeafSet {
 /// Returns whether CPUID leaf `function` carries a field that differs per VP
 /// and that the hypervisor does not provide for a time ABI partition: the
 /// extended topology leaves `0xB` and `0x1F`, whose `EDX` is the VP's x2APIC
-/// ID. The hypervisor does not implement them for these partitions and reads
-/// that `EDX` as 0 on every VP, so each VP gets its own result. Leaf 1's
-/// initial APIC ID, the other per-VP field on Intel, is the hypervisor's own.
+/// ID, and AMD's processor topology leaf `0x8000001E`, whose extended APIC,
+/// compute unit, and node IDs are the VP's. The hypervisor does not
+/// implement the extended topology leaves for these partitions and reads
+/// that `EDX` as 0 on every VP, so each VP gets its own results; without
+/// `0x8000001E`'s, a guest that takes its APIC ID from there would log
+/// `APIC ID mismatch` on every AP. Leaf 1's initial APIC ID, the other
+/// per-VP field, is the hypervisor's own.
 pub(super) fn is_per_vp_leaf(function: u32) -> bool {
-    matches!(function, 0xb | 0x1f)
+    matches!(function, 0xb | 0x1f | 0x8000_001e)
 }
 
-/// Returns `leaf` for the VP with x2APIC ID `apic_id`: its `EDX` is that ID.
-pub(super) fn with_x2apic_id(leaf: &CpuidLeaf, apic_id: u32) -> CpuidLeaf {
+/// Returns `leaf` for the VP with APIC ID `apic_id` in a partition with
+/// `reserved_vps_per_socket` APIC IDs per socket, its per-VP fields set as
+/// `virt::x86::topology` sets the BSP's: the x2APIC ID in the extended
+/// topology leaves' `EDX`, and in `0x8000001E` the extended APIC ID, the
+/// compute unit ID within the socket, and the socket's node ID.
+pub(super) fn with_vp_identity(
+    leaf: &CpuidLeaf,
+    apic_id: u32,
+    reserved_vps_per_socket: u32,
+) -> CpuidLeaf {
     let mut leaf = *leaf;
-    leaf.result[3] = apic_id;
-    leaf.mask[3] = !0;
+    if leaf.function == 0x8000_001e {
+        let ebx = x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(leaf.result[1]);
+        let threads_per_compute_unit = u32::from(ebx.threads_per_compute_unit()) + 1;
+        let reserved_vps_per_socket = reserved_vps_per_socket.max(1);
+        leaf.result[0] = apic_id;
+        leaf.result[1] = ebx
+            .with_compute_unit_id(
+                (apic_id % reserved_vps_per_socket / threads_per_compute_unit) as u8,
+            )
+            .into();
+        leaf.result[2] = x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(leaf.result[2])
+            .with_node_id((apic_id / reserved_vps_per_socket) as u8)
+            .into();
+    } else {
+        leaf.result[3] = apic_id;
+    }
+    let per_vp = virt::x86::topology::per_vp_cpuid_bits(leaf.function);
+    for (mask, per_vp) in leaf.mask.iter_mut().zip(per_vp) {
+        *mask |= per_vp;
+    }
     leaf
 }
 
@@ -524,24 +574,43 @@ enum MsrOutcome {
     Fault,
 }
 
-/// Serves an intercepted access through the identity MSR handler.
-fn serve_identity_msr(msrs: &TimeAbiMsrs, vp: VpIndex, msr: u32, access: MsrAccess) -> MsrOutcome {
-    let outcome = match access {
+/// Serves an intercepted access of a partition whose CPU profile is of
+/// `vendor`: under an AMD profile, AMD's configuration MSRs with their fixed
+/// values, and otherwise the identity MSRs through their handler.
+fn serve_time_abi_msr(
+    msrs: &TimeAbiMsrs,
+    vendor: CpuVendor,
+    vp: VpIndex,
+    msr: u32,
+    access: MsrAccess,
+) -> MsrOutcome {
+    let amd = || match access {
+        MsrAccess::Read => amd_config_msr_read(msr).map(|value| Ok(MsrOutcome::Read(value))),
+        MsrAccess::Write(value) => {
+            amd_config_msr_write(msr, value).map(|r| r.map(|()| MsrOutcome::Written))
+        }
+    };
+    let identity = || match access {
         MsrAccess::Read => msrs.read(vp, msr).map(|r| r.map(MsrOutcome::Read)),
         MsrAccess::Write(value) => msrs
             .write(vp, msr, value)
             .map(|r| r.map(|()| MsrOutcome::Written)),
     };
+    let outcome = if vendor == CpuVendor::Amd {
+        amd().or_else(identity)
+    } else {
+        identity()
+    };
     match outcome {
         Some(Ok(outcome)) => outcome,
         Some(Err(_)) => MsrOutcome::Fault,
         None => {
-            // Only identity MSRs are intercepted, so this is a hypervisor
+            // Only the routed MSRs are intercepted, so this is a hypervisor
             // defect; the access still faults as an unknown MSR would.
             tracelimit::error_ratelimited!(
                 vp = vp.index(),
                 msr,
-                "MSR intercept outside the time ABI identity range"
+                "MSR intercept outside the time ABI's routed MSRs"
             );
             MsrOutcome::Fault
         }
@@ -560,7 +629,7 @@ fn gp_fault_event() -> u128 {
 }
 
 impl MshvProcessor<'_> {
-    /// Completes an intercepted identity MSR access, or raises #GP.
+    /// Completes an intercepted access to a time ABI MSR, or raises #GP.
     pub(super) fn handle_time_abi_msr_intercept(
         &mut self,
         time_abi: &MshvTimeAbi,
@@ -572,13 +641,19 @@ impl MshvProcessor<'_> {
         } else {
             MsrAccess::Read
         };
-        let outcome = serve_identity_msr(&time_abi.msrs, self.vpindex, info.msr_number, access);
+        let outcome = serve_time_abi_msr(
+            &time_abi.msrs,
+            time_abi.cpu_profile.cpu_vendor(),
+            self.vpindex,
+            info.msr_number,
+            access,
+        );
         tracing::trace!(
             vp = self.vpindex.index(),
             msr = info.msr_number,
             ?access,
             ?outcome,
-            "time ABI identity MSR access"
+            "time ABI MSR access"
         );
         let next_rip = info.header.rip + u64::from(info.header.instruction_len());
         match outcome {
@@ -1248,6 +1323,61 @@ mod tests {
         msrs
     }
 
+    /// Serves an intercepted access under an Intel profile, which routes the
+    /// identity MSRs only.
+    fn serve_identity_msr(
+        msrs: &TimeAbiMsrs,
+        vp: VpIndex,
+        msr: u32,
+        access: MsrAccess,
+    ) -> MsrOutcome {
+        serve_time_abi_msr(msrs, CpuVendor::Intel, vp, msr, access)
+    }
+
+    /// An AMD profile also routes HWCR and DE_CFG, which OpenVMM serves with
+    /// the time ABI's fixed values.
+    #[test]
+    fn amd_profiles_route_and_serve_the_amd_config_msrs() {
+        assert_eq!(routed_msrs(CpuVendor::Intel), ROUTED_MSRS);
+        assert_eq!(
+            routed_msrs(CpuVendor::Amd),
+            [
+                0x4000_0002,
+                0x4000_0022,
+                0x4000_0023,
+                0x4000_0118,
+                0xc001_0015,
+                0xc001_1029
+            ]
+        );
+        let msrs = declared_msrs();
+        let serve =
+            |msr, access| serve_time_abi_msr(&msrs, CpuVendor::Amd, VpIndex::new(2), msr, access);
+        assert_eq!(
+            serve(0xc001_0015, MsrAccess::Read),
+            MsrOutcome::Read(1 << 24)
+        );
+        assert_eq!(
+            serve(0xc001_1029, MsrAccess::Read),
+            MsrOutcome::Read(1 << 1)
+        );
+        assert_eq!(
+            serve(0xc001_0015, MsrAccess::Write(1 << 24)),
+            MsrOutcome::Written
+        );
+        assert_eq!(
+            serve(0xc001_0015, MsrAccess::Write(1 << 24 | 1 << 30)),
+            MsrOutcome::Fault
+        );
+        assert_eq!(serve(0xc001_1029, MsrAccess::Write(0)), MsrOutcome::Fault);
+        assert_eq!(serve(MSR_VP_INDEX, MsrAccess::Read), MsrOutcome::Read(2));
+        // An Intel profile does not route them, so an intercept faults.
+        assert_eq!(
+            serve_identity_msr(&msrs, VpIndex::BSP, 0xc001_0015, MsrAccess::Read),
+            MsrOutcome::Fault
+        );
+    }
+
     #[test]
     fn identity_msr_reads_follow_the_abi_table() {
         let msrs = declared_msrs();
@@ -1405,22 +1535,38 @@ mod tests {
     }
 
     #[test]
-    fn extended_topology_leaves_take_each_vp_x2apic_id() {
-        for function in [0xb, 0x1f] {
+    fn per_vp_topology_leaves_take_each_vp_apic_identity() {
+        for function in [0xb, 0x1f, 0x8000_001e] {
             assert!(is_per_vp_leaf(function), "{function:#x}");
         }
         // Leaf 1's initial APIC ID is the hypervisor's own per-VP value.
-        for function in [0, 1, 4, 0xd, 0x4000_0000, 0x8000_001e] {
+        for function in [0, 1, 4, 0xd, 0x4000_0000, 0x8000_001d] {
             assert!(!is_per_vp_leaf(function), "{function:#x}");
         }
         let level = CpuidLeaf::new(0xb, [1, 2, 0x100, 0])
             .indexed(0)
             .masked([!0, !0, !0, 0]);
-        let leaf = with_x2apic_id(&level, 5);
+        let leaf = with_vp_identity(&level, 5, 8);
         assert_eq!(
             (leaf.function, leaf.index, leaf.result, leaf.mask),
             (0xb, Some(0), [1, 2, 0x100, 5], [!0; 4])
         );
+
+        // AMD's processor topology, as the partition table holds it: the
+        // threads per compute unit and the nodes per processor, with the
+        // per-VP IDs unmasked. With SMT, APIC IDs 2 and 3 share compute unit
+        // 1; APIC ID 13 is compute unit 2 of socket 1's node.
+        let amd =
+            CpuidLeaf::new(0x8000_001e, [0, 0x100, 0, 0]).masked([0, 0xffff_ff00, 0xffff_ff00, !0]);
+        for (apic_id, expected) in [
+            (0, [0, 0x100, 0, 0]),
+            (3, [3, 0x101, 0, 0]),
+            (13, [13, 0x102, 1, 0]),
+        ] {
+            let leaf = with_vp_identity(&amd, apic_id, 8);
+            assert_eq!(leaf.result, expected, "APIC ID {apic_id}");
+            assert_eq!(leaf.mask, [!0; 4], "APIC ID {apic_id}");
+        }
     }
 
     #[test]
@@ -2292,11 +2438,13 @@ mod hw {
         println!("planted {function:#x}.{index:?} = {planted:x?}: {error}");
     }
 
-    /// Every VP of a time ABI partition reads its own x2APIC ID in `EDX` of
-    /// the extended topology leaves, which OpenVMM registers per VP because
-    /// the hypervisor reads it as 0 on every VP, and the table's other
-    /// registers. Leaf 1's initial APIC ID is the hypervisor's own and must
-    /// be the VP's too.
+    /// Every VP of a time ABI partition reads its own APIC identity in the
+    /// per-VP topology leaves, which OpenVMM registers per VP because the
+    /// hypervisor reads it as 0 on every VP: the x2APIC ID in `EDX` of the
+    /// extended topology leaves, and, under an AMD profile, the extended
+    /// APIC, compute unit, and node IDs of `0x8000001E`; and the table's
+    /// other registers. Leaf 1's initial APIC ID is the hypervisor's own and
+    /// must be the VP's too.
     #[async_test]
     #[ignore = "requires /dev/mshv"]
     async fn extended_topology_reports_each_vp_x2apic_id(driver: DefaultDriver) {
@@ -2369,7 +2517,11 @@ mod hw {
             for leaf in &topology_leaves {
                 let index = leaf.index.unwrap_or(0);
                 let actual = vcpufd.get_cpuid_values(leaf.function, index, 0, 0).unwrap();
-                let expected = with_x2apic_id(leaf, vp.apic_id);
+                let expected = with_vp_identity(
+                    leaf,
+                    vp.apic_id,
+                    processor_topology.reserved_vps_per_socket(),
+                );
                 assert!(
                     (0..4).all(|r| (actual[r] ^ expected.result[r]) & expected.mask[r] == 0),
                     "VP {} CPUID {:#x}.{index}: {actual:08x?}, expected {:08x?}",
@@ -2415,7 +2567,7 @@ mod hw {
         );
         let vmfd = crate::create_vm_with_retry(&mshv, &args).unwrap();
         vmfd.initialize().unwrap();
-        route_identity_msrs(&vmfd).unwrap();
+        route_identity_msrs(&vmfd, CpuVendor::Intel).unwrap();
         let error = install_msr_intercepts(&vmfd, &[0x10a]).unwrap_err();
         println!("refused intercept: {error}");
         assert_eq!(error.code, TimeAbiCode::IdentityRouting);

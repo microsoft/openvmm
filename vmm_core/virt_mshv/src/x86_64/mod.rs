@@ -172,8 +172,8 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
-        if config.time_abi.is_some() {
-            time_abi::route_identity_msrs(&vmfd)?;
+        if let Some(time_abi) = &config.time_abi {
+            time_abi::route_identity_msrs(&vmfd, time_abi.cpu_profile.cpu_vendor())?;
         }
 
         if snp {
@@ -824,10 +824,10 @@ impl MshvPartitionInner {
     /// created here, so the time ABI's synchronized TSC set sees exactly the
     /// created VPs.
     ///
-    /// A time ABI partition's extended topology leaves get this VP's own
-    /// results here, with its x2APIC ID in EDX: the hypervisor does not
-    /// provide that ID for these partitions, and accepts a per-VP result only
-    /// once the VP exists.
+    /// A time ABI partition's per-VP topology leaves (`0xB`, `0x1F`, and
+    /// AMD's `0x8000001E`) get this VP's own results here, with its APIC
+    /// identity: the hypervisor does not provide it for these partitions,
+    /// and accepts a per-VP result only once the VP exists.
     fn create_vp(&self, vp_index: VpIndex) -> Result<VcpuFd, Error> {
         if let Some(time_abi) = &self.time_abi {
             time_abi.check_vp_creation(vp_index)?;
@@ -840,6 +840,7 @@ impl MshvPartitionInner {
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
         if self.time_abi.is_some() {
             let apic_id = self.vp(vp_index).vp_info.apic_id;
+            let reserved_vps_per_socket = self.config.processor_topology.reserved_vps_per_socket();
             for leaf in self
                 .config
                 .cpuid
@@ -850,7 +851,7 @@ impl MshvPartitionInner {
                 register_cpuid_result_for(
                     &self.vmfd,
                     vp_index.index(),
-                    &time_abi::with_x2apic_id(leaf, apic_id),
+                    &time_abi::with_vp_identity(leaf, apic_id, reserved_vps_per_socket),
                 )?;
             }
         }

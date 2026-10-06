@@ -465,8 +465,8 @@ impl virt::Hypervisor for Kvm {
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;
-        if config.time_abi.is_some() {
-            time_abi::install_identity_msr_filter(&vm)?;
+        if let Some(time_abi) = &config.time_abi {
+            time_abi::install_identity_msr_filter(&vm, time_abi.cpu_profile.cpu_vendor())?;
         }
 
         if let Some(sev) = &sev {
@@ -615,6 +615,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     config.msrs.clone(),
                     surface,
                     arch_capabilities,
+                    profile.cpu_vendor(),
                 )?)
             }
             None => None,
