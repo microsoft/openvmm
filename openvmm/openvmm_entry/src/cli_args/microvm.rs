@@ -335,19 +335,26 @@ pub struct MicrovmCli {
     #[clap(long, value_name = "IPv4:TCP-PORT", conflicts_with_all = ["allow_host", "block_host"])]
     pub allow_endpoint: Vec<net_backend_resources::egress::TcpEndpoint>,
 
-    /// attach the microVM virtio-fs device
+    /// attach a host directory to the next fixed microVM virtio-fs slot
     ///
-    /// An active snapshot requires the same canonical host path, guest target,
-    /// and mode. A dormant-slot snapshot may bind a new attachment on restore;
-    /// the resumed guest must mount the `microvm` tag explicitly.
+    /// Repeat once to attach a second directory. The first directory uses the
+    /// `microvm` tag and the second the `microvm1` tag. Guest targets and host
+    /// directories must not overlap. An active snapshot requires the same
+    /// canonical host paths, guest targets, and modes, in the same order. A
+    /// dormant-slot snapshot may bind one new attachment on restore; the
+    /// resumed guest must mount the `microvm` tag explicitly.
     #[clap(
         long = "mount",
         value_name = "GUEST_TARGET,HOST_PATH[,ro|rw]",
         conflicts_with_all = ["virtio_fs", "virtio_fs_shmem"]
     )]
-    pub microvm_mount: Option<MicrovmMountCli>,
+    pub microvm_mount: Vec<MicrovmMountCli>,
 
-    /// Hide an existing host path inside the microVM filesystem export.
+    /// Hide an existing host path inside a microVM filesystem export.
+    ///
+    /// The path is hidden in the `--mount` whose host directory contains it.
+    /// A relative path is relative to the host directory of the only
+    /// `--mount`; with several, the path must be absolute.
     #[clap(
         long = "mount-deny",
         value_name = "HOST_PATH",
@@ -364,7 +371,8 @@ pub struct MicrovmCli {
     /// `caller` requires a Linux host. It also requires CAP_SETUID and
     /// CAP_SETGID unless every caller has OpenVMM's own UID and GID and
     /// OpenVMM has no other supplementary groups; an operation that cannot
-    /// run as its caller fails with EPERM.
+    /// run as its caller fails with EPERM. The mode applies to every
+    /// `--mount`.
     #[clap(
         long = "mount-owner",
         value_enum,
@@ -525,7 +533,7 @@ impl Options {
                     && self.microvm.allow_host.is_empty()
                     && self.microvm.block_host.is_empty()
                     && self.microvm.allow_endpoint.is_empty()
-                    && self.microvm.microvm_mount.is_none()
+                    && self.microvm.microvm_mount.is_empty()
                     && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
@@ -772,6 +780,20 @@ impl Options {
             self.microvm.microvm_mount_deny.len() <= 128,
             "microVM filesystem permits at most 128 denied paths"
         );
+        openvmm_defs::microvm::validate_microvm_filesystems(
+            &self
+                .microvm
+                .microvm_mount
+                .iter()
+                .map(|mount| {
+                    openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                        mount.guest_target.clone(),
+                        mount.access,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .context("invalid --mount options")?;
         anyhow::ensure!(
             cfg!(target_os = "linux")
                 || self.microvm.microvm_mount_owner != Some(MicrovmMountOwnerCli::Caller),
@@ -1339,7 +1361,7 @@ mod tests {
                 read_only: false,
             },
         ];
-        append_microvm_virtio_discovery(&mut with_devices, None, false, None, true, false, &blocks)
+        append_microvm_virtio_discovery(&mut with_devices, None, false, &[], true, false, &blocks)
             .unwrap();
         assert_eq!(
             with_devices,
@@ -1352,7 +1374,7 @@ mod tests {
             &mut with_control_console,
             None,
             false,
-            None,
+            &[],
             true,
             true,
             &[],
@@ -1379,7 +1401,7 @@ mod tests {
                 false,
             )),
             false,
-            None,
+            &[],
             false,
             false,
             &[],
@@ -1400,7 +1422,7 @@ mod tests {
                 true,
             )),
             false,
-            None,
+            &[],
             false,
             false,
             &[],
@@ -1418,7 +1440,7 @@ mod tests {
             &mut with_filesystem,
             None,
             true,
-            Some(&filesystem),
+            std::slice::from_ref(&filesystem),
             false,
             false,
             &[],
@@ -2215,5 +2237,53 @@ mod tests {
         assert!(MicrovmMountCli::from_str("relative,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/../escape,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/share,host,write").is_err());
+    }
+
+    #[test]
+    fn test_microvm_mount_is_repeatable_up_to_the_slot_count() {
+        let parse = |mounts: &[&str]| {
+            let mut args = vec!["openvmm", "--machine", "microvm"];
+            for mount in mounts {
+                args.extend(["--mount", mount]);
+            }
+            Options::try_parse_from(args).unwrap()
+        };
+        let options = parse(&["/workspace,work,rw", "/opt/hostedtoolcache,tools"]);
+        options.validate_microvm_options().unwrap();
+        let targets = options
+            .microvm
+            .microvm_mount
+            .iter()
+            .map(|mount| (mount.guest_target.as_str(), mount.access))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            [
+                (
+                    "/workspace",
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
+                ),
+                (
+                    "/opt/hostedtoolcache",
+                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly
+                ),
+            ]
+        );
+
+        for (mounts, expected) in [
+            (&["/a,a", "/b,b", "/c,c"][..], "at most 2 filesystems"),
+            (&["/workspace,a,rw", "/workspace,b"][..], "overlap"),
+            (&["/workspace,a,rw", "/workspace/cache,b"][..], "overlap"),
+            (&["/opt/tools/node,a", "/opt,b,rw"][..], "overlap"),
+        ] {
+            let error = parse(mounts).validate_microvm_options().unwrap_err();
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        }
+
+        // --mount-deny and --mount-owner still require a --mount.
+        assert!(
+            Options::try_parse_from(["openvmm", "--machine", "microvm", "--mount-deny", "x"])
+                .is_err()
+        );
     }
 }

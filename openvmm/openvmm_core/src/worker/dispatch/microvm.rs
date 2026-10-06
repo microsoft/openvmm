@@ -64,7 +64,7 @@ impl From<MicrovmConfig> for MicrovmManifest {
     fn from(config: MicrovmConfig) -> Self {
         let MicrovmConfig {
             network: _,
-            filesystem: _,
+            filesystems: _,
             sandbox_blocks,
             filesystem_bootstrap: _,
             memory_capacity,
@@ -475,6 +475,7 @@ fn virtio_mmio_config(
     id: &str,
     sandbox_blocks: &[openvmm_defs::microvm::MicrovmSandboxBlockConfig],
     sandbox_block_index: &mut usize,
+    filesystem_index: &mut usize,
     chipset_mmio: ChipsetMmioRanges,
 ) -> anyhow::Result<(u64, u64, u32, u64, VirtioMmioInterruptMode)> {
     let (start, irq) = match id {
@@ -482,10 +483,14 @@ fn virtio_mmio_config(
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
             openvmm_defs::microvm::microvm_virtio_net_irq(None)?,
         ),
-        "virtiofs" => (
-            openvmm_defs::microvm::MICROVM_VIRTIO_FS_MMIO_BASE,
-            openvmm_defs::microvm::MICROVM_VIRTIO_FS_IRQ,
-        ),
+        // The configuration orders virtio-fs devices by slot.
+        "virtiofs" => {
+            let slot = openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
+                .get(*filesystem_index)
+                .context("microVM has more virtio-fs devices than fixed slots")?;
+            *filesystem_index += 1;
+            (slot.mmio_base, slot.irq)
+        }
         "virtio-console" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
@@ -535,6 +540,7 @@ fn virtio_mmio_config(
 pub(super) struct VirtioMmioSlots<'a> {
     sandbox_blocks: &'a [openvmm_defs::microvm::MicrovmSandboxBlockConfig],
     sandbox_block_index: usize,
+    filesystem_index: usize,
     chipset_mmio: ChipsetMmioRanges,
 }
 
@@ -546,6 +552,7 @@ impl<'a> VirtioMmioSlots<'a> {
         Self {
             sandbox_blocks,
             sandbox_block_index: 0,
+            filesystem_index: 0,
             chipset_mmio,
         }
     }
@@ -564,6 +571,7 @@ impl<'a> VirtioMmioSlots<'a> {
             id,
             self.sandbox_blocks,
             &mut self.sandbox_block_index,
+            &mut self.filesystem_index,
             self.chipset_mmio,
         )?;
         let id = format!("{id}-{mmio_start}");
