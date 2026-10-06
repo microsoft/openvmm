@@ -369,8 +369,103 @@ pub struct MicrovmFilesystemConfig {
     pub access: MicrovmFilesystemAccess,
     /// Canonical host-relative paths hidden by the virtio-fs server.
     pub denied_paths: Vec<String>,
+    /// Canonical host-relative paths inside denied paths that the virtio-fs
+    /// server exposes again.
+    pub allowed_paths: Vec<String>,
+    /// Canonical host-relative paths that are the only parts of a read-write
+    /// filesystem that the guest can modify; none makes all of it writable.
+    pub writable_paths: Vec<String>,
     /// Snapshot-authoritative host identity of guest operations.
     pub owner: MicrovmFilesystemOwner,
+}
+
+/// A kind of path in the access policy of a microVM filesystem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicrovmFilesystemPathKind {
+    /// A path hidden from the guest.
+    Denied,
+    /// A path inside a denied path that the guest can reach again.
+    Allowed,
+    /// One of the only paths that the guest can modify.
+    Writable,
+}
+
+impl std::fmt::Display for MicrovmFilesystemPathKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Denied => "denied",
+            Self::Allowed => "allowed",
+            Self::Writable => "writable",
+        })
+    }
+}
+
+/// Returns whether the canonical relative path `inner` equals or is inside the
+/// canonical relative path `outer`.
+fn policy_path_contains(outer: &str, inner: &str) -> bool {
+    inner
+        .strip_prefix(outer)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+}
+
+/// Returns whether the nearest denied or allowed path that contains `path` is
+/// a denied path (`Some(true)`), an allowed path (`Some(false)`), or neither.
+/// `path` itself counts only when `inclusive`.
+fn nearest_policy_rule(
+    path: &str,
+    denied: &[String],
+    allowed: &[String],
+    inclusive: bool,
+) -> Option<bool> {
+    denied
+        .iter()
+        .map(|rule| (rule, true))
+        .chain(allowed.iter().map(|rule| (rule, false)))
+        .filter(|(rule, _)| (inclusive || *rule != path) && policy_path_contains(rule, path))
+        .max_by_key(|(rule, _)| rule.len())
+        .map(|(_, denied)| denied)
+}
+
+/// Validates one list of canonical, host-relative policy paths in lexical
+/// order, without regard to the filesystem's other policy paths.
+pub fn validate_microvm_filesystem_policy_paths(
+    kind: MicrovmFilesystemPathKind,
+    paths: &[String],
+) -> Result<(), InvalidMicrovmFilesystemConfig> {
+    if paths.len() > 128 {
+        return Err(InvalidMicrovmFilesystemConfig::TooManyPolicyPaths(kind));
+    }
+    let total_bytes = paths
+        .iter()
+        .try_fold(0usize, |total, path| total.checked_add(path.len()))
+        .ok_or(InvalidMicrovmFilesystemConfig::PolicyPathsTooLarge(kind))?;
+    if total_bytes > 16 * 1024 {
+        return Err(InvalidMicrovmFilesystemConfig::PolicyPathsTooLarge(kind));
+    }
+    for path in paths {
+        if path.is_empty()
+            || path.len() > 4096
+            || path.starts_with('/')
+            || path.ends_with('/')
+            || path.chars().any(|character| {
+                character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
+            })
+            || path
+                .split('/')
+                .any(|component| component.is_empty() || matches!(component, "." | ".."))
+        {
+            return Err(InvalidMicrovmFilesystemConfig::InvalidPolicyPath(
+                kind,
+                path.clone(),
+            ));
+        }
+    }
+    if paths.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(InvalidMicrovmFilesystemConfig::NonCanonicalPolicyPaths(
+            kind,
+        ));
+    }
+    Ok(())
 }
 
 impl MicrovmFilesystemConfig {
@@ -399,6 +494,8 @@ impl MicrovmFilesystemConfig {
             guest_mount_target,
             access,
             denied_paths: Vec::new(),
+            allowed_paths: Vec::new(),
+            writable_paths: Vec::new(),
             owner: MicrovmFilesystemOwner::Vmm,
         })
     }
@@ -411,50 +508,72 @@ impl MicrovmFilesystemConfig {
 
     /// Adds a canonical, non-overlapping denied-path policy.
     pub fn with_denied_paths(
-        mut self,
+        self,
         denied_paths: Vec<String>,
     ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
-        if denied_paths.len() > 128 {
-            return Err(InvalidMicrovmFilesystemConfig::TooManyDeniedPaths);
-        }
-        let total_bytes = denied_paths
-            .iter()
-            .try_fold(0usize, |total, path| total.checked_add(path.len()))
-            .ok_or(InvalidMicrovmFilesystemConfig::DeniedPathsTooLarge)?;
-        if total_bytes > 16 * 1024 {
-            return Err(InvalidMicrovmFilesystemConfig::DeniedPathsTooLarge);
-        }
+        self.with_access_policy(denied_paths, Vec::new(), Vec::new())
+    }
+
+    /// Adds the complete access policy of the filesystem, as canonical
+    /// host-relative paths in lexical order.
+    ///
+    /// Denied paths hide subtrees, and allowed paths expose subtrees of denied
+    /// paths again. The nearest denied or allowed path that contains a denied
+    /// path must be an allowed path, if any, and the nearest one that contains
+    /// an allowed path must be a denied path. Writable paths, when present, are
+    /// the only parts of a read-write filesystem that the guest can modify; they
+    /// must not overlap or be inside a denied path that no allowed path exposes.
+    pub fn with_access_policy(
+        mut self,
+        denied_paths: Vec<String>,
+        allowed_paths: Vec<String>,
+        writable_paths: Vec<String>,
+    ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        validate_microvm_filesystem_policy_paths(MicrovmFilesystemPathKind::Denied, &denied_paths)?;
+        validate_microvm_filesystem_policy_paths(
+            MicrovmFilesystemPathKind::Allowed,
+            &allowed_paths,
+        )?;
+        validate_microvm_filesystem_policy_paths(
+            MicrovmFilesystemPathKind::Writable,
+            &writable_paths,
+        )?;
         for path in &denied_paths {
-            if path.is_empty()
-                || path.len() > 4096
-                || path.starts_with('/')
-                || path.ends_with('/')
-                || path.chars().any(|character| {
-                    character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
-                })
-                || path
-                    .split('/')
-                    .any(|component| component.is_empty() || matches!(component, "." | ".."))
+            if nearest_policy_rule(path, &denied_paths, &allowed_paths, false) == Some(true) {
+                return Err(InvalidMicrovmFilesystemConfig::OverlappingDeniedPaths);
+            }
+        }
+        for path in &allowed_paths {
+            if denied_paths.contains(path)
+                || nearest_policy_rule(path, &denied_paths, &allowed_paths, false) != Some(true)
             {
-                return Err(InvalidMicrovmFilesystemConfig::InvalidDeniedPath(
+                return Err(InvalidMicrovmFilesystemConfig::MisplacedAllowedPath(
                     path.clone(),
                 ));
             }
         }
-        let mut canonical = denied_paths.clone();
-        canonical.sort_unstable();
-        if canonical != denied_paths {
-            return Err(InvalidMicrovmFilesystemConfig::NonCanonicalDeniedPaths);
+        if self.access.is_read_only() && !writable_paths.is_empty() {
+            return Err(InvalidMicrovmFilesystemConfig::ReadOnlyWritablePaths);
         }
-        for pair in denied_paths.windows(2) {
-            if pair[1]
-                .strip_prefix(&pair[0])
-                .is_some_and(|suffix| suffix.starts_with('/'))
+        for (index, path) in writable_paths.iter().enumerate() {
+            if writable_paths
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    other_index != index && policy_path_contains(other, path)
+                })
             {
-                return Err(InvalidMicrovmFilesystemConfig::OverlappingDeniedPaths);
+                return Err(InvalidMicrovmFilesystemConfig::OverlappingWritablePaths);
+            }
+            if nearest_policy_rule(path, &denied_paths, &allowed_paths, true) == Some(true) {
+                return Err(InvalidMicrovmFilesystemConfig::HiddenWritablePath(
+                    path.clone(),
+                ));
             }
         }
         self.denied_paths = denied_paths;
+        self.allowed_paths = allowed_paths;
+        self.writable_paths = writable_paths;
         Ok(self)
     }
 
@@ -513,23 +632,39 @@ pub enum InvalidMicrovmFilesystemConfig {
         "invalid guest mount target '{0}': expected an absolute non-root Linux path without empty, dot, parent, whitespace, backslash, or '=' components"
     )]
     InvalidGuestTarget(String),
-    /// A denied path was not a canonical relative path.
+    /// A policy path was not a canonical relative path.
     #[error(
-        "invalid denied path '{0}': expected a relative path without empty, dot, parent, whitespace, backslash, or ':' components"
+        "invalid {0} path '{1}': expected a relative path without empty, dot, parent, whitespace, backslash, or ':' components"
     )]
-    InvalidDeniedPath(String),
-    /// The denied-path list exceeded its count bound.
-    #[error("microVM filesystem permits at most 128 denied paths")]
-    TooManyDeniedPaths,
-    /// The denied-path list exceeded its aggregate byte bound.
-    #[error("microVM filesystem denied paths exceed the 16-KiB aggregate limit")]
-    DeniedPathsTooLarge,
-    /// The denied-path list did not preserve canonical lexical order.
-    #[error("microVM filesystem denied paths are not in canonical order")]
-    NonCanonicalDeniedPaths,
-    /// One denied path contained another denied path.
-    #[error("microVM filesystem denied paths overlap")]
+    InvalidPolicyPath(MicrovmFilesystemPathKind, String),
+    /// A policy-path list exceeded its count bound.
+    #[error("microVM filesystem permits at most 128 {0} paths")]
+    TooManyPolicyPaths(MicrovmFilesystemPathKind),
+    /// A policy-path list exceeded its aggregate byte bound.
+    #[error("microVM filesystem {0} paths exceed the 16-KiB aggregate limit")]
+    PolicyPathsTooLarge(MicrovmFilesystemPathKind),
+    /// A policy-path list was not unique and in canonical lexical order.
+    #[error("microVM filesystem {0} paths are not in canonical order")]
+    NonCanonicalPolicyPaths(MicrovmFilesystemPathKind),
+    /// A denied path was inside another denied path, with no allowed path
+    /// between them.
+    #[error("microVM filesystem denied paths overlap without an allowed path between them")]
     OverlappingDeniedPaths,
+    /// An allowed path was not inside a denied path, or was inside another
+    /// allowed path with no denied path between them.
+    #[error(
+        "microVM filesystem allowed path '{0}' must be inside a denied path, with no other allowed path between them"
+    )]
+    MisplacedAllowedPath(String),
+    /// A read-only filesystem had writable paths.
+    #[error("a read-only microVM filesystem cannot have writable paths")]
+    ReadOnlyWritablePaths,
+    /// One writable path contained another.
+    #[error("microVM filesystem writable paths overlap")]
+    OverlappingWritablePaths,
+    /// A writable path was inside a denied path that no allowed path exposes.
+    #[error("microVM filesystem writable path '{0}' is hidden by a denied path")]
+    HiddenWritablePath(String),
     /// More filesystems were attached than the microVM has virtio-fs slots.
     #[error("microVM permits at most {} filesystems", MICROVM_FILESYSTEM_SLOTS.len())]
     TooManyFilesystems,
@@ -1907,6 +2042,145 @@ mod tests {
                 filesystem("/c", ReadOnly),
             ]),
             Err(InvalidMicrovmFilesystemConfig::TooManyFilesystems)
+        );
+    }
+
+    #[test]
+    fn microvm_filesystem_access_policy_is_canonical_and_consistent() {
+        use MicrovmFilesystemAccess::ReadOnly;
+        use MicrovmFilesystemAccess::ReadWrite;
+        use MicrovmFilesystemPathKind::Allowed;
+        use MicrovmFilesystemPathKind::Denied;
+        use MicrovmFilesystemPathKind::Writable;
+
+        fn owned(paths: &[&str]) -> Vec<String> {
+            paths.iter().map(|path| (*path).to_owned()).collect()
+        }
+        let policy = |access, denied: &[&str], allowed: &[&str], writable: &[&str]| {
+            filesystem("/workspace", access).with_access_policy(
+                owned(denied),
+                owned(allowed),
+                owned(writable),
+            )
+        };
+
+        // A denied path may nest inside an allowed path, and lexical order
+        // puts `logs-old` before `logs/...`.
+        let config = policy(
+            ReadWrite,
+            &["logs", "logs-old", "logs/payloads/private"],
+            &["logs/payloads"],
+            &["logs/payloads/out", "out"],
+        )
+        .unwrap();
+        assert_eq!(config.allowed_paths, ["logs/payloads"]);
+        assert_eq!(config.writable_paths, ["logs/payloads/out", "out"]);
+        assert_eq!(
+            config
+                .clone()
+                .with_owner(MicrovmFilesystemOwner::Caller)
+                .owner,
+            MicrovmFilesystemOwner::Caller
+        );
+        assert_eq!(
+            filesystem("/workspace", ReadOnly)
+                .with_denied_paths(owned(&["secrets"]))
+                .unwrap()
+                .denied_paths,
+            ["secrets"]
+        );
+
+        for (access, denied, allowed, writable, expected) in [
+            (
+                ReadWrite,
+                vec!["a", "a/b"],
+                vec![],
+                vec![],
+                InvalidMicrovmFilesystemConfig::OverlappingDeniedPaths,
+            ),
+            (
+                ReadWrite,
+                vec!["b", "a"],
+                vec![],
+                vec![],
+                InvalidMicrovmFilesystemConfig::NonCanonicalPolicyPaths(Denied),
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["a/c", "a/b"],
+                vec![],
+                InvalidMicrovmFilesystemConfig::NonCanonicalPolicyPaths(Allowed),
+            ),
+            (
+                ReadWrite,
+                vec![],
+                vec![],
+                vec!["out", "out"],
+                InvalidMicrovmFilesystemConfig::NonCanonicalPolicyPaths(Writable),
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["a/../b"],
+                vec![],
+                InvalidMicrovmFilesystemConfig::InvalidPolicyPath(Allowed, "a/../b".to_owned()),
+            ),
+            (
+                ReadWrite,
+                vec![],
+                vec![],
+                vec!["/out"],
+                InvalidMicrovmFilesystemConfig::InvalidPolicyPath(Writable, "/out".to_owned()),
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["b"],
+                vec![],
+                InvalidMicrovmFilesystemConfig::MisplacedAllowedPath("b".to_owned()),
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["a"],
+                vec![],
+                InvalidMicrovmFilesystemConfig::MisplacedAllowedPath("a".to_owned()),
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["a/b", "a/b/c"],
+                vec![],
+                InvalidMicrovmFilesystemConfig::MisplacedAllowedPath("a/b/c".to_owned()),
+            ),
+            (
+                ReadOnly,
+                vec![],
+                vec![],
+                vec!["out"],
+                InvalidMicrovmFilesystemConfig::ReadOnlyWritablePaths,
+            ),
+            (
+                ReadWrite,
+                vec![],
+                vec![],
+                vec!["out", "out/cache"],
+                InvalidMicrovmFilesystemConfig::OverlappingWritablePaths,
+            ),
+            (
+                ReadWrite,
+                vec!["a"],
+                vec!["a/b/c"],
+                vec!["a/b"],
+                InvalidMicrovmFilesystemConfig::HiddenWritablePath("a/b".to_owned()),
+            ),
+        ] {
+            assert_eq!(policy(access, &denied, &allowed, &writable), Err(expected));
+        }
+        assert_eq!(
+            policy(ReadWrite, &[], &[], &vec!["out"; 129]),
+            Err(InvalidMicrovmFilesystemConfig::TooManyPolicyPaths(Writable))
         );
     }
 

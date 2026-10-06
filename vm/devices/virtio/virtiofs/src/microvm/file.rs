@@ -105,7 +105,8 @@ impl VirtioFsFile {
             }
             if name != b"." && name != b".." {
                 match self.inode.child_path(&entry.name) {
-                    Ok(_) => {}
+                    Ok(path) if self.inode.volume.entry_listable(&path, entry.file_type) => {}
+                    Ok(_) => return Ok(true),
                     Err(error) if error == lx::Error::EACCES => return Ok(true),
                     Err(error) => return Err(error),
                 }
