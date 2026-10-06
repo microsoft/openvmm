@@ -33,6 +33,7 @@ use crate::error::ProfileErrorCode;
 use crate::fingerprint::IA32_ARCH_CAPABILITIES;
 use crate::signature::HostCpuSignature;
 use crate::signature::decode_signature;
+use crate::vendor::CpuVendor;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -203,6 +204,16 @@ impl CpuProfile {
     /// Returns the 12-character CPUID vendor string, such as `GenuineIntel`.
     pub fn vendor(&self) -> &str {
         &self.vendor
+    }
+
+    /// Returns the vendor of the profile's CPUs, which decides the layout of
+    /// the fields that OpenVMM sets per VM ([`vm_owned_bits`]).
+    pub fn cpu_vendor(&self) -> CpuVendor {
+        // Validation accepts only the vendors that profiles serve, and a
+        // pinned profile's vendor is its known generation's, which the
+        // catalog's tests check.
+        CpuVendor::from_cpuid_vendor(self.vendor.as_bytes())
+            .expect("a valid profile has a vendor that profiles serve")
     }
 
     /// Returns the CPU generation the profile serves.
@@ -394,8 +405,8 @@ impl CpuProfile {
         if self.schema != SCHEMA {
             return Err(format!("schema {:?} is not {SCHEMA:?}", self.schema));
         }
-        self.validate_identity()?;
-        self.validate_cpuid()?;
+        let vendor = self.validate_identity()?;
+        self.validate_cpuid(vendor)?;
         self.validate_xsave()?;
         self.validate_msrs()?;
         let width = self.lookup(EXTENDED_LEAF_BASE + 8, 0)[0] & 0xff;
@@ -408,13 +419,12 @@ impl CpuProfile {
         Ok(())
     }
 
-    fn validate_identity(&self) -> Result<(), String> {
-        // Only Intel profiles exist; AMD profiles wait for an AMD host, and
-        // their topology fields differ.
-        let vendor_short = match self.vendor.as_str() {
-            "GenuineIntel" => "intel",
-            vendor => return Err(format!("unsupported vendor {vendor:?}")),
+    /// Checks the profile's identity and returns its vendor.
+    fn validate_identity(&self) -> Result<CpuVendor, String> {
+        let Some(cpu_vendor) = CpuVendor::from_cpuid_vendor(self.vendor.as_bytes()) else {
+            return Err(format!("unsupported vendor {:?}", self.vendor));
         };
+        let vendor_short = cpu_vendor.id();
         let name = &self.generation.name;
         if !is_id_component(name) {
             return Err(format!("invalid generation name {name:?}"));
@@ -457,10 +467,10 @@ impl CpuProfile {
                 signature.signature()
             ));
         }
-        Ok(())
+        Ok(cpu_vendor)
     }
 
-    fn validate_cpuid(&self) -> Result<(), String> {
+    fn validate_cpuid(&self, vendor: CpuVendor) -> Result<(), String> {
         for pair in self.cpuid.windows(2) {
             if pair[0].key() >= pair[1].key() {
                 return Err(format!(
@@ -493,7 +503,7 @@ impl CpuProfile {
                 ));
             }
             let value = entry.values();
-            let expected_mask = pinned_mask(leaf, entry.subleaf.map(|s| s.0), value);
+            let expected_mask = pinned_mask(vendor, leaf, entry.subleaf.map(|s| s.0), value);
             if entry.masks() != expected_mask {
                 return Err(format!(
                     "{} has mask {:#x?}, expected {expected_mask:#x?}",
@@ -535,8 +545,10 @@ impl CpuProfile {
             return vec![None];
         }
         let last = match leaf {
-            // Up to and including the first subleaf with a null cache type.
-            0x4 => (0..0x40)
+            // Up to and including the first subleaf with a null cache type:
+            // Intel's deterministic cache parameters, and AMD's cache
+            // topology.
+            0x4 | 0x8000_001d => (0..0x40)
                 .find(|&subleaf| self.lookup(leaf, subleaf)[0] & 0x1f == 0)
                 .unwrap_or(0x3f),
             0xd => {
@@ -644,18 +656,32 @@ pub(crate) fn find(entries: &[CpuidLeafValue], leaf: u32, subleaf: u32) -> Optio
 }
 
 /// Returns the bits of CPUID `leaf` that OpenVMM sets from the VM
-/// configuration, given the leaf's output `value`:
+/// configuration, given the leaf's output `value`, in a profile of `vendor`'s
+/// CPUs:
 ///
 /// - `CPUID.1:EBX[31:16]`, the logical processor count and initial APIC ID,
 ///   and `CPUID.1:ECX[21]`, x2APIC, which the APIC mode decides;
-/// - `CPUID.4:EAX[31:14]`, the core and cache-sharing counts, in every
-///   subleaf that describes a cache; and
-/// - every bit of the topology leaves in [`VM_OWNED_LEAVES`].
-pub fn vm_owned_bits(leaf: u32, value: [u32; 4]) -> [u32; 4] {
-    match leaf {
-        0x1 => [0, 0xffff_0000, 1 << 21, 0],
-        0x4 if value[0] & 0x1f != 0 => [0xffff_c000, 0, 0, 0],
-        leaf if VM_OWNED_LEAVES.contains(&leaf) => [!0; 4],
+/// - every bit of the topology leaves in [`VM_OWNED_LEAVES`];
+/// - on Intel, `CPUID.4:EAX[31:14]`, the core and cache-sharing counts, in
+///   every subleaf that describes a cache; and
+/// - on AMD, the core count and APIC ID size, `CPUID.0x80000008:ECX[7:0]` and
+///   `ECX[15:12]`; the cache-sharing count, `CPUID.0x8000001D:EAX[25:14]`, in
+///   every subleaf that describes a cache; and the processor topology of
+///   `CPUID.0x8000001E`: the extended APIC ID in `EAX`, the compute unit ID
+///   and threads per compute unit in `EBX[15:0]`, and the node ID and nodes
+///   per processor in `ECX[10:0]`.
+///
+/// Each vendor's fields are VM-owned only in its own profiles: the Intel
+/// profiles pin AMD's topology fields, which Intel CPUs leave zero.
+pub fn vm_owned_bits(vendor: CpuVendor, leaf: u32, value: [u32; 4]) -> [u32; 4] {
+    let describes_cache = value[0] & 0x1f != 0;
+    match (vendor, leaf) {
+        (_, 0x1) => [0, 0xffff_0000, 1 << 21, 0],
+        (_, leaf) if VM_OWNED_LEAVES.contains(&leaf) => [!0; 4],
+        (CpuVendor::Intel, 0x4) if describes_cache => [0xffff_c000, 0, 0, 0],
+        (CpuVendor::Amd, 0x8000_0008) => [0, 0, 0xf0ff, 0],
+        (CpuVendor::Amd, 0x8000_001d) if describes_cache => [0x03ff_c000, 0, 0, 0],
+        (CpuVendor::Amd, 0x8000_001e) => [!0, 0xffff, 0x7ff, 0],
         _ => [0; 4],
     }
 }
@@ -674,9 +700,15 @@ pub fn runtime_owned_bits(leaf: u32, subleaf: Option<u32>) -> [u32; 4] {
 }
 
 /// Returns the bits of CPUID `leaf` and `subleaf`, with output `value`, that
-/// a profile pins: every bit that is neither VM-owned nor runtime-owned.
-pub fn pinned_mask(leaf: u32, subleaf: Option<u32>, value: [u32; 4]) -> [u32; 4] {
-    let vm = vm_owned_bits(leaf, value);
+/// a profile of `vendor`'s CPUs pins: every bit that is neither VM-owned nor
+/// runtime-owned.
+pub fn pinned_mask(
+    vendor: CpuVendor,
+    leaf: u32,
+    subleaf: Option<u32>,
+    value: [u32; 4],
+) -> [u32; 4] {
+    let vm = vm_owned_bits(vendor, leaf, value);
     let runtime = runtime_owned_bits(leaf, subleaf);
     [0, 1, 2, 3].map(|register| !(vm[register] | runtime[register]))
 }
@@ -820,8 +852,20 @@ mod tests {
             "is not intel.icelake-sp.v<revision>",
         );
         assert_invalid(
-            decode_edited(|value| value["vendor"] = json!("AuthenticAMD")),
+            decode_edited(|value| value["vendor"] = json!("HygonGenuine")),
             "unsupported vendor",
+        );
+        // An AMD vendor on an Intel profile's ID and CPUID.
+        assert_invalid(
+            decode_edited(|value| value["vendor"] = json!("AuthenticAMD")),
+            "is not amd.icelake-sp.v<revision>",
+        );
+        assert_invalid(
+            decode_edited(|value| {
+                value["vendor"] = json!("AuthenticAMD");
+                value["id"] = json!("amd.icelake-sp.v1");
+            }),
+            "CPUID leaf 0 reports vendor \"GenuineIntel\", not \"AuthenticAMD\"",
         );
         assert_invalid(
             decode_edited(|value| value["generation"]["cpus"][0]["model"] = json!(85)),
@@ -914,20 +958,51 @@ mod tests {
 
     #[test]
     fn masks_leave_the_vm_and_runtime_fields_to_openvmm() {
+        for vendor in CpuVendor::ALL {
+            assert_eq!(
+                pinned_mask(vendor, 1, None, [0; 4]),
+                [!0, 0x0000_ffff, !(1 << 21 | 1 << 27), !0]
+            );
+            assert_eq!(
+                pinned_mask(vendor, 7, Some(0), [0; 4]),
+                [!0, !0, !(1 << 4), !0]
+            );
+            assert_eq!(pinned_mask(vendor, 0xd, Some(1), [0; 4]), [!0, 0, !0, !0]);
+            assert_eq!(pinned_mask(vendor, 0xd, Some(2), [0; 4]), [!0; 4]);
+            assert_eq!(pinned_mask(vendor, 0xb, Some(0), [0; 4]), [0; 4]);
+        }
+        let intel = CpuVendor::Intel;
         assert_eq!(
-            pinned_mask(1, None, [0; 4]),
-            [!0, 0x0000_ffff, !(1 << 21 | 1 << 27), !0]
-        );
-        assert_eq!(
-            pinned_mask(4, Some(0), [0x121, 0, 0, 0]),
+            pinned_mask(intel, 4, Some(0), [0x121, 0, 0, 0]),
             [0x3fff, !0, !0, !0]
         );
         // The null cache type that ends leaf 4 has no VM fields.
-        assert_eq!(pinned_mask(4, Some(4), [0; 4]), [!0; 4]);
-        assert_eq!(pinned_mask(7, Some(0), [0; 4]), [!0, !0, !(1 << 4), !0]);
-        assert_eq!(pinned_mask(0xd, Some(1), [0; 4]), [!0, 0, !0, !0]);
-        assert_eq!(pinned_mask(0xd, Some(2), [0; 4]), [!0; 4]);
-        assert_eq!(pinned_mask(0xb, Some(0), [0; 4]), [0; 4]);
+        assert_eq!(pinned_mask(intel, 4, Some(4), [0; 4]), [!0; 4]);
+        // Intel profiles pin AMD's topology fields.
+        assert_eq!(pinned_mask(intel, 0x8000_0008, None, [0; 4]), [!0; 4]);
+        assert_eq!(
+            pinned_mask(intel, 0x8000_001d, Some(0), [0x121, 0, 0, 0]),
+            [!0; 4]
+        );
+        assert_eq!(pinned_mask(intel, 0x8000_001e, None, [0; 4]), [!0; 4]);
+
+        // AMD profiles leave AMD's to the VM, and pin leaf 4, which AMD
+        // CPUs leave zero.
+        let amd = CpuVendor::Amd;
+        assert_eq!(pinned_mask(amd, 4, Some(0), [0x121, 0, 0, 0]), [!0; 4]);
+        assert_eq!(
+            pinned_mask(amd, 0x8000_0008, None, [0; 4]),
+            [!0, !0, !0xf0ff, !0]
+        );
+        assert_eq!(
+            pinned_mask(amd, 0x8000_001d, Some(3), [0x163, 0, 0, 0]),
+            [0xfc00_3fff, !0, !0, !0]
+        );
+        assert_eq!(pinned_mask(amd, 0x8000_001d, Some(4), [0; 4]), [!0; 4]);
+        assert_eq!(
+            pinned_mask(amd, 0x8000_001e, None, [0; 4]),
+            [0, 0xffff_0000, 0xffff_f800, !0]
+        );
     }
 
     #[test]

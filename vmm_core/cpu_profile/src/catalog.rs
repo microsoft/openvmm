@@ -248,7 +248,7 @@ pub fn select_auto(host: &HostCpuSignature) -> Result<&'static CpuProfile, Profi
 /// [`Generation::contains`](crate::Generation::contains) does for the
 /// generation of a parsed profile.
 fn covers(generation: &KnownGeneration, host: &HostCpuSignature) -> bool {
-    let vendor = generation.vendor.as_bytes();
+    let vendor = generation.vendor.cpuid_vendor().as_bytes();
     let (family, model, stepping) = decode_signature(vendor, host.signature());
     host.vendor().as_slice() == vendor
         && generation
@@ -399,9 +399,20 @@ mod tests {
     const ALDER_LAKE: u32 = 0x0009_06a3;
     const ALDER_LAKE_S: u32 = 0x0009_0672;
     const TIGER_LAKE: u32 = 0x0008_06c1;
+    const MILAN: u32 = 0x00a0_0f11;
+    const MILAN_X: u32 = 0x00a0_0f12;
+    const GENOA: u32 = 0x00a1_0f11;
+    const GENOA_STEPPING_2: u32 = 0x00a1_0f12;
+    const RAPHAEL: u32 = 0x00a6_0f12;
+    const TURIN: u32 = 0x00b0_0f21;
+    const TURIN_DENSE: u32 = 0x00b1_0f10;
 
     fn intel(signature: u32) -> HostCpuSignature {
         HostCpuSignature::new(*b"GenuineIntel", signature)
+    }
+
+    fn amd(signature: u32) -> HostCpuSignature {
+        HostCpuSignature::new(*b"AuthenticAMD", signature)
     }
 
     fn code<T: fmt::Debug>(result: Result<T, ProfileError>) -> ProfileErrorCode {
@@ -411,7 +422,7 @@ mod tests {
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 4] = [
+    const FILES: [(&str, &str, &str); 7] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -431,6 +442,21 @@ mod tests {
             "intel.alderlake.v1",
             include_str!("../profiles/intel.alderlake.v1.json"),
             "sha256:2dfb6ccfd5a195b1614e6d963615c3372f40806b8f19b0d8425142f8c18a0c2e",
+        ),
+        (
+            "amd.milan.v1",
+            include_str!("../profiles/amd.milan.v1.json"),
+            "sha256:463ee0368dc01bf56a3ab1157d62b21b51d11b3dcccb46c804864748ef696543",
+        ),
+        (
+            "amd.genoa.v1",
+            include_str!("../profiles/amd.genoa.v1.json"),
+            "sha256:894ac647399039242eb0f0e6582e91691234446ebc9362576d7c5613f34b966b",
+        ),
+        (
+            "amd.turin.v1",
+            include_str!("../profiles/amd.turin.v1.json"),
+            "sha256:0d9d044922eae3f27442178249f0b60feb0db07efe446e6641a1fcbfbb3a04ff",
         ),
     ];
 
@@ -455,7 +481,7 @@ mod tests {
                 pinned.digest,
                 "{id}"
             );
-            assert_eq!(profile.vendor(), pinned.generation.vendor);
+            assert_eq!(profile.vendor(), pinned.generation.vendor.cpuid_vendor());
             assert_eq!(profile.generation(), &pinned.generation.generation());
             assert_eq!(
                 pinned_record(id),
@@ -485,7 +511,8 @@ mod tests {
         for (i, profile) in pinned_profiles().iter().enumerate() {
             let generation = profile.generation();
             let known = derive::known_generation(&generation.name).unwrap();
-            assert_eq!(profile.vendor(), known.vendor);
+            assert_eq!(profile.vendor(), known.vendor.cpuid_vendor());
+            assert_eq!(profile.cpu_vendor(), known.vendor);
             assert_eq!(
                 generation
                     .cpus
@@ -511,21 +538,34 @@ mod tests {
 
     #[test]
     fn auto_selects_the_host_generation_or_fails() {
-        for (signature, id, generation) in [
-            (SKYLAKE, "intel.skylake-sp.v1", "skylake-sp"),
-            (ICELAKE, "intel.icelake-sp.v1", "icelake-sp"),
-            (EMERALDRAPIDS, "intel.emeraldrapids.v1", "emeraldrapids"),
-            (ALDER_LAKE, "intel.alderlake.v1", "alderlake"),
-            (ALDER_LAKE_S, "intel.alderlake.v1", "alderlake"),
+        for (host, id, generation) in [
+            (intel(SKYLAKE), "intel.skylake-sp.v1", "skylake-sp"),
+            (intel(ICELAKE), "intel.icelake-sp.v1", "icelake-sp"),
+            (
+                intel(EMERALDRAPIDS),
+                "intel.emeraldrapids.v1",
+                "emeraldrapids",
+            ),
+            (intel(ALDER_LAKE), "intel.alderlake.v1", "alderlake"),
+            (intel(ALDER_LAKE_S), "intel.alderlake.v1", "alderlake"),
+            (amd(MILAN), "amd.milan.v1", "milan"),
+            (amd(MILAN_X), "amd.milan.v1", "milan"),
+            (amd(GENOA), "amd.genoa.v1", "genoa"),
+            (amd(GENOA_STEPPING_2), "amd.genoa.v1", "genoa"),
+            (amd(TURIN), "amd.turin.v1", "turin"),
         ] {
-            assert_eq!(select_auto(&intel(signature)).unwrap().id(), id);
-            assert_eq!(select(AUTO, &intel(signature)).unwrap().id(), id);
-            assert_eq!(generation_of(&intel(signature)), Some(generation));
+            assert_eq!(select_auto(&host).unwrap().id(), id);
+            assert_eq!(select(AUTO, &host).unwrap().id(), id);
+            assert_eq!(generation_of(&host), Some(generation));
         }
         for host in [
             intel(CASCADE_LAKE),
             intel(TIGER_LAKE),
-            HostCpuSignature::new(*b"AuthenticAMD", 0x00a1_0f11),
+            amd(RAPHAEL),
+            amd(TURIN_DENSE),
+            // The vendor decides too: no Intel CPU has Milan's signature.
+            intel(MILAN),
+            HostCpuSignature::new(*b"HygonGenuine", MILAN),
         ] {
             assert_eq!(
                 code(select_auto(&host)),
@@ -597,7 +637,11 @@ mod tests {
                     (6, 151),
                     (6, 154),
                     (6, 207),
+                    (25, 1),
                     (25, 17),
+                    (25, 97),
+                    (26, 2),
+                    (26, 17),
                 ] {
                     for stepping in 0..16 {
                         // Encode the display family and model as CPUID.1:EAX does.
@@ -637,6 +681,34 @@ mod tests {
             ProfileErrorCode::ProfileUnknown
         );
         assert_eq!(code(select("", &host)), ProfileErrorCode::ProfileUnknown);
+
+        // Another vendor's generation.
+        assert_eq!(
+            select("amd.milan.v1", &amd(MILAN)).unwrap().id(),
+            "amd.milan.v1"
+        );
+        assert_eq!(
+            code(select("intel.skylake-sp.v1", &amd(MILAN))),
+            ProfileErrorCode::CpuGeneration
+        );
+        assert_eq!(
+            code(select("amd.milan.v1", &host)),
+            ProfileErrorCode::CpuGeneration
+        );
+
+        // Another generation of the same vendor.
+        assert_eq!(
+            select("amd.turin.v1", &amd(TURIN)).unwrap().id(),
+            "amd.turin.v1"
+        );
+        assert_eq!(
+            code(select("amd.genoa.v1", &amd(TURIN))),
+            ProfileErrorCode::CpuGeneration
+        );
+        assert_eq!(
+            code(select("amd.milan.v1", &amd(GENOA))),
+            ProfileErrorCode::CpuGeneration
+        );
     }
 
     #[test]
