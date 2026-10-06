@@ -9,6 +9,12 @@
 //!
 //! Unlike the AMD IOMMU (which is a PCI device), VT-d is a pure MMIO platform
 //! device discovered via the ACPI DMAR table. It has no PCI config space.
+//!
+//! Scalable RID-derived PASID lookup is implemented internally, but remains
+//! gated by the unadvertised SMTS capability. Second-stage A/D metadata is
+//! resolved without mutation; SSADE-enabled DMA fails closed until atomic
+//! updates are implemented. Explicit PASID and first-stage/nested walks are
+//! not supported.
 
 #![forbid(unsafe_code)]
 
@@ -59,10 +65,19 @@ use spec::root_context::AddressWidth;
 use spec::root_context::ContextEntry;
 use spec::root_context::RootEntry;
 use spec::root_context::TranslationType;
+use spec::scalable::PasidDirectoryEntry;
+use spec::scalable::PasidTableEntry;
+use spec::scalable::PasidTranslationType;
+use spec::scalable::ScalableContextEntry;
+use spec::scalable::ScalableRootEntry;
+use spec::scalable::ScalableValidationError;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
+use zerocopy::Immutable;
 use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// MMIO region size (4KB).
 pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
@@ -76,6 +91,11 @@ const VER_VALUE: u32 = VersionReg::new().with_max(1).with_min(0).into_bits();
 
 /// Maximum guest address width in bits.
 const MGAW_BITS: u8 = 48;
+
+/// Host width advertised by OpenVMM's IntelVtdDmarConfig, independently of
+/// second-stage input MGAW/AGAW. SlPte can encode up to 52 address bits.
+const HAW_BITS: u8 = 48;
+const HOST_ADDRESS_MASK: u64 = (1 << HAW_BITS) - 1;
 
 /// SAGAW bitmask: supported address widths (39-bit + 48-bit).
 const SAGAW_MASK: u8 = (1 << AddressWidth::AW_39BIT.0) | (1 << AddressWidth::AW_48BIT.0);
@@ -282,6 +302,97 @@ impl InvalidationQueue {
 // Shared IOMMU State
 // =============================================================================
 
+/// Original, untagged DMA request and the fault policy accumulated during lookup.
+#[derive(Debug, Clone, Copy)]
+struct TranslationContext {
+    source_id: u16,
+    iova: u64,
+    mode: TranslationTableMode,
+    fpd: bool,
+}
+
+impl TranslationContext {
+    fn reason(self, legacy: FaultReason, scalable: FaultReason) -> FaultReason {
+        if self.mode == TranslationTableMode::LEGACY {
+            legacy
+        } else {
+            scalable
+        }
+    }
+
+    fn fault(self, reason: FaultReason) -> VtdFault {
+        let Self {
+            source_id,
+            iova,
+            fpd,
+            ..
+        } = self;
+        match reason {
+            FaultReason::ROOT_NOT_PRESENT => VtdFault::RootNotPresent { source_id, iova },
+            FaultReason::CONTEXT_NOT_PRESENT => VtdFault::ContextNotPresent {
+                source_id,
+                iova,
+                fpd,
+            },
+            FaultReason::INVALID_CONTEXT_ENTRY => VtdFault::InvalidContextEntry {
+                source_id,
+                iova,
+                fpd,
+            },
+            FaultReason::ADDRESS_BEYOND_MGAW => VtdFault::AddressBeyondMgaw {
+                source_id,
+                iova,
+                fpd,
+            },
+            FaultReason::WRITE_ACCESS_DENIED | FaultReason::READ_ACCESS_DENIED => {
+                VtdFault::AccessDenied {
+                    source_id,
+                    iova,
+                    fpd,
+                    write: reason == FaultReason::WRITE_ACCESS_DENIED,
+                }
+            }
+            FaultReason::ROOT_ENTRY_ACCESS_ERROR => {
+                VtdFault::RootEntryAccessError { source_id, iova }
+            }
+            FaultReason::CONTEXT_ENTRY_ACCESS_ERROR => {
+                VtdFault::ContextEntryAccessError { source_id, iova }
+            }
+            FaultReason::SL_PTE_ACCESS_ERROR => VtdFault::PageTableAccessError {
+                source_id,
+                iova,
+                fpd,
+            },
+            _ => VtdFault::Dma {
+                source_id,
+                iova,
+                reason,
+                fpd,
+            },
+        }
+    }
+}
+
+/// Validated lookup result; pass-through has no paging/A-D configuration.
+#[derive(Debug)]
+enum TranslationDescriptor {
+    PassThrough {
+        context: TranslationContext,
+        domain_id: u16,
+    },
+    SecondStage(SecondStageTranslation),
+}
+
+#[derive(Debug)]
+struct SecondStageTranslation {
+    context: TranslationContext,
+    root: u64,
+    levels: u8,
+    domain_id: u16,
+    ssade: bool,
+    pwsnp: bool,
+}
+
 /// Shared VT-d IOMMU state accessible by per-device wrappers.
 ///
 /// This struct holds the MMIO register state and guest memory reference
@@ -374,7 +485,7 @@ impl VtdSharedState {
     /// Record a translation fault in the Fault Recording Register.
     ///
     /// Must be called under a **write lock** on `self.state`.
-    /// If FPD is set, the fault is silently suppressed.
+    /// `fpd` must already account for the fault's qualification (Table 26).
     fn record_fault_locked(
         &self,
         state: &mut VtdState,
@@ -425,6 +536,8 @@ impl VtdSharedState {
 
     /// Translate an IOVA to a GPA while holding the read lock.
     ///
+    /// Production callers use ECAP_VALUE; the private policy boundary also
+    /// permits exercising the final second-stage profile before advertising it.
     /// Returns `Ok(gpa)` on success or `Err(VtdFault)` on failure.
     fn translate_locked(
         &self,
@@ -433,171 +546,343 @@ impl VtdSharedState {
         devfn: u8,
         iova: u64,
         write: bool,
+        ecap: EcapReg,
     ) -> Result<u64, VtdFault> {
-        let gsts = state.gsts;
-        if !gsts.tes() {
-            // Translation disabled — identity mapping.
+        if !state.gsts.tes() {
             return Ok(iova);
         }
 
-        // Check IOVA against MGAW.
-        if iova >= (1u64 << MGAW_BITS) {
-            return Err(VtdFault::AddressBeyondMgaw {
-                source_id: bdf(bus, devfn),
-                iova,
-            });
-        }
-
-        // Root entry lookup.
-        let root_table_addr = state.latched_rtaddr.root_table_address();
-        let root_entry = self.lookup_root_entry(root_table_addr, bus)?;
-        let source_id = bdf(bus, devfn);
-
-        // Context entry lookup.
-        let context_table_ptr = root_entry.lo.context_table_address();
-        let context_entry = self.lookup_context_entry(context_table_ptr, devfn, source_id)?;
-
-        let fpd = context_entry.lo.fpd();
-        let tt = TranslationType(context_entry.lo.tt());
-        let aw = AddressWidth(context_entry.hi.aw());
-
-        match tt {
-            TranslationType::UNTRANSLATED_ONLY | TranslationType::ALL => {
-                let levels = aw.levels().ok_or(VtdFault::InvalidContextEntry {
-                    source_id,
-                    iova,
-                    fpd,
-                })?;
-                let pt_root = context_entry.lo.page_table_address();
-                self.walk_sl_page_table(pt_root, iova, levels, write, source_id, fpd)
+        let context = TranslationContext {
+            source_id: bdf(bus, devfn),
+            iova,
+            mode: TranslationTableMode(state.latched_rtaddr.ttm()),
+            fpd: false,
+        };
+        let root = state.latched_rtaddr.root_table_address();
+        let translation = match context.mode {
+            TranslationTableMode::LEGACY => self.resolve_legacy(root, context, ecap)?,
+            TranslationTableMode::SCALABLE if ecap.smts() => {
+                self.resolve_scalable(root, context, ecap)?
             }
-            TranslationType::PASS_THROUGH => Ok(iova),
-            _ => Err(VtdFault::InvalidContextEntry {
-                source_id,
-                iova,
-                fpd,
-            }),
+            _ => return Err(context.fault(FaultReason::INVALID_ROOT_TABLE_MODE)),
+        };
+        match translation {
+            TranslationDescriptor::PassThrough { context, domain_id } => {
+                tracing::trace!(domain_id, "vtd: pass-through DMA");
+                if iova > HOST_ADDRESS_MASK {
+                    return Err(context.fault(context.reason(
+                        FaultReason::ADDRESS_BEYOND_MGAW,
+                        FaultReason::SCALABLE_ADDRESS_BEYOND_HAW,
+                    )));
+                }
+                Self::check_dma_output(context, iova)
+            }
+            TranslationDescriptor::SecondStage(translation) => {
+                self.walk_sl_page_table(&translation, write, ecap)
+            }
         }
     }
 
-    /// Look up a root entry by bus number.
-    fn lookup_root_entry(&self, root_table_addr: u64, bus: u8) -> Result<RootEntry, VtdFault> {
-        let entry_addr = root_table_addr + (bus as u64) * 16;
-        let entry: RootEntry = self.guest_memory.read_plain(entry_addr).map_err(|_| {
-            VtdFault::RootEntryAccessError {
-                source_id: (bus as u16) << 8,
-                iova: 0,
+    fn resolve_legacy(
+        &self,
+        root: u64,
+        mut context: TranslationContext,
+        ecap: EcapReg,
+    ) -> Result<TranslationDescriptor, VtdFault> {
+        let entry: RootEntry = self.read_translation_entry(
+            root,
+            u64::from(context.source_id >> 8),
+            context,
+            FaultReason::ROOT_ENTRY_ACCESS_ERROR,
+        )?;
+        if !entry.lo.p() {
+            return Err(context.fault(FaultReason::ROOT_NOT_PRESENT));
+        }
+        if entry.lo.into_bits() & (0xffe | !HOST_ADDRESS_MASK) != 0 || entry.hi != 0 {
+            return Err(context.fault(FaultReason::ROOT_ENTRY_RESERVED_BIT));
+        }
+        let entry: ContextEntry = self.read_translation_entry(
+            entry.lo.context_table_address(),
+            u64::from(context.source_id & 0xff),
+            context,
+            FaultReason::CONTEXT_ENTRY_ACCESS_ERROR,
+        )?;
+        context.fpd = entry.lo.fpd();
+        if !entry.lo.p() {
+            return Err(context.fault(FaultReason::CONTEXT_NOT_PRESENT));
+        }
+        // Context bits 70:67 are ignored, not reserved (§9.3).
+        if entry.lo.into_bits() & 0xff0 != 0 || entry.hi.into_bits() & 0xffff_ffff_ff00_0080 != 0 {
+            return Err(context.fault(FaultReason::CONTEXT_ENTRY_RESERVED_BIT));
+        }
+        let aw = AddressWidth(entry.hi.aw());
+        let domain_id = entry.hi.did();
+        match TranslationType(entry.lo.tt()) {
+            TranslationType::PASS_THROUGH if ecap.pt() => {
+                if aw != AddressWidth::AW_48BIT {
+                    return Err(context.fault(FaultReason::INVALID_CONTEXT_ENTRY));
+                }
+                Ok(TranslationDescriptor::PassThrough { context, domain_id })
             }
+            TranslationType::UNTRANSLATED_ONLY | TranslationType::ALL => {
+                if entry.lo.page_table_address() > HOST_ADDRESS_MASK {
+                    return Err(context.fault(FaultReason::CONTEXT_ENTRY_RESERVED_BIT));
+                }
+                let levels = Self::supported_levels(aw)
+                    .ok_or_else(|| context.fault(FaultReason::INVALID_CONTEXT_ENTRY))?;
+                Ok(TranslationDescriptor::SecondStage(SecondStageTranslation {
+                    context,
+                    root: entry.lo.page_table_address(),
+                    levels,
+                    domain_id,
+                    ssade: false,
+                    pwsnp: ecap.c(),
+                }))
+            }
+            _ => Err(context.fault(FaultReason::INVALID_CONTEXT_ENTRY)),
+        }
+    }
+
+    /// Resolve an untagged RID through the scalable tables (§§3.4.3, 9.2, 9.4-9.6).
+    fn resolve_scalable(
+        &self,
+        root: u64,
+        mut context: TranslationContext,
+        ecap: EcapReg,
+    ) -> Result<TranslationDescriptor, VtdFault> {
+        let devfn = context.source_id as u8;
+        let entry: ScalableRootEntry = self.read_translation_entry(
+            root,
+            u64::from(context.source_id >> 8),
+            context,
+            FaultReason::SCALABLE_ROOT_ACCESS_ERROR,
+        )?;
+        let half = entry.half(devfn);
+        half.validate(HAW_BITS).map_err(|error| {
+            context.fault(match error {
+                ScalableValidationError::NotPresent => FaultReason::SCALABLE_ROOT_NOT_PRESENT,
+                _ => FaultReason::SCALABLE_ROOT_RESERVED_BIT,
+            })
         })?;
 
-        if !entry.lo.p() {
-            return Err(VtdFault::RootNotPresent {
-                source_id: (bus as u16) << 8,
-                iova: 0,
-            });
+        let entry: ScalableContextEntry = self.read_translation_entry(
+            half.context_table_address(),
+            ScalableContextEntry::table_index(devfn) as u64,
+            context,
+            FaultReason::SCALABLE_CONTEXT_ACCESS_ERROR,
+        )?;
+        context.fpd |= entry.lo.fpd();
+        entry.validate(HAW_BITS).map_err(|error| {
+            context.fault(match error {
+                ScalableValidationError::NotPresent => FaultReason::SCALABLE_CONTEXT_NOT_PRESENT,
+                ScalableValidationError::PasidOutOfRange { .. } => {
+                    FaultReason::SCALABLE_INVALID_CONTEXT
+                }
+                _ => FaultReason::SCALABLE_CONTEXT_RESERVED_BIT,
+            })
+        })?;
+        if !ecap.rps() && entry.hi.rid_pasid() != 0 {
+            return Err(context.fault(FaultReason::SCALABLE_CONTEXT_RESERVED_BIT));
         }
+        let (directory_index, table_index) = entry
+            .pasid_indices(entry.hi.rid_pasid())
+            .map_err(|_| context.fault(FaultReason::SCALABLE_INVALID_CONTEXT))?;
 
-        Ok(entry)
+        let entry: PasidDirectoryEntry = self.read_translation_entry(
+            entry.directory_address(),
+            u64::from(directory_index),
+            context,
+            FaultReason::PASID_DIRECTORY_ACCESS_ERROR,
+        )?;
+        context.fpd |= entry.fpd();
+        entry.validate(HAW_BITS).map_err(|error| {
+            context.fault(match error {
+                ScalableValidationError::NotPresent => FaultReason::PASID_DIRECTORY_NOT_PRESENT,
+                _ => FaultReason::PASID_DIRECTORY_RESERVED_BIT,
+            })
+        })?;
+
+        let entry: PasidTableEntry = self.read_translation_entry(
+            entry.table_address(),
+            u64::from(table_index),
+            context,
+            FaultReason::PASID_TABLE_ACCESS_ERROR,
+        )?;
+        context.fpd |= entry.lo.fpd();
+        entry.validate(HAW_BITS).map_err(|error| {
+            context.fault(match error {
+                ScalableValidationError::NotPresent => FaultReason::PASID_TABLE_NOT_PRESENT,
+                ScalableValidationError::UnsupportedTranslationType(_)
+                | ScalableValidationError::UnsupportedAddressWidth(_) => {
+                    FaultReason::PASID_TABLE_INVALID_ENTRY
+                }
+                _ => FaultReason::PASID_TABLE_RESERVED_BIT,
+            })
+        })?;
+        if (!ecap.ssts() && (entry.lo.aw() != 0 || entry.lo.ssptptr() != 0 || entry.lo.ssade()))
+            || (!ecap.ssads() && entry.lo.ssade())
+            || (!ecap.smpwcs() && entry.hi.pwsnp())
+            || (!ecap.sc() && entry.hi.pgsnp())
+        {
+            return Err(context.fault(FaultReason::PASID_TABLE_RESERVED_BIT));
+        }
+        let domain_id = entry.hi.did();
+        match PasidTranslationType(entry.lo.pgtt()) {
+            PasidTranslationType::PASS_THROUGH if ecap.pt() => {
+                Ok(TranslationDescriptor::PassThrough { context, domain_id })
+            }
+            PasidTranslationType::SECOND_STAGE if ecap.ssts() => {
+                let levels = Self::supported_levels(AddressWidth(entry.lo.aw()))
+                    .ok_or_else(|| context.fault(FaultReason::PASID_TABLE_INVALID_ENTRY))?;
+                Ok(TranslationDescriptor::SecondStage(SecondStageTranslation {
+                    context,
+                    root: entry.page_table_address(),
+                    levels,
+                    domain_id,
+                    ssade: entry.lo.ssade(),
+                    pwsnp: entry.hi.pwsnp(),
+                }))
+            }
+            _ => Err(context.fault(FaultReason::PASID_TABLE_INVALID_ENTRY)),
+        }
     }
 
-    /// Look up a context entry by devfn.
-    fn lookup_context_entry(
+    fn supported_levels(aw: AddressWidth) -> Option<u8> {
+        match aw {
+            AddressWidth::AW_39BIT => Some(3),
+            AddressWidth::AW_48BIT => Some(4),
+            _ => None,
+        }
+    }
+
+    fn read_translation_entry<T: FromBytes + KnownLayout + Immutable>(
         &self,
-        context_table_ptr: u64,
-        devfn: u8,
-        source_id: u16,
-    ) -> Result<ContextEntry, VtdFault> {
-        let entry_addr = context_table_ptr + (devfn as u64) * 16;
-        let entry: ContextEntry = self
-            .guest_memory
-            .read_plain(entry_addr)
-            .map_err(|_| VtdFault::ContextEntryAccessError { source_id, iova: 0 })?;
-
-        if !entry.lo.p() {
-            return Err(VtdFault::ContextNotPresent { source_id, iova: 0 });
-        }
-
-        Ok(entry)
+        base: u64,
+        index: u64,
+        context: TranslationContext,
+        reason: FaultReason,
+    ) -> Result<T, VtdFault> {
+        let size = size_of::<T>() as u64;
+        let address = index
+            .checked_mul(size)
+            .and_then(|offset| base.checked_add(offset));
+        let address = address
+            .filter(|address| {
+                address
+                    .checked_add(size - 1)
+                    .is_some_and(|end| end <= HOST_ADDRESS_MASK)
+            })
+            .ok_or_else(|| context.fault(reason))?;
+        self.guest_memory
+            .read_plain(address)
+            .map_err(|_| context.fault(reason))
     }
 
-    /// Walk second-level page tables to translate an IOVA to a GPA.
+    fn check_dma_output(context: TranslationContext, gpa: u64) -> Result<u64, VtdFault> {
+        if gpa & !0xf_ffff == 0xfee0_0000 {
+            return Err(context.fault(context.reason(
+                FaultReason::OUTPUT_ADDR_IN_INTR_RANGE,
+                FaultReason::SCALABLE_OUTPUT_ADDR_IN_INTR_RANGE,
+            )));
+        }
+        Ok(gpa)
+    }
+
+    /// Shared second-stage walk (§§3.7, 3.7.1, 9.8). No A/D mutation yet.
     fn walk_sl_page_table(
         &self,
-        pt_root: u64,
-        iova: u64,
-        levels: u8,
+        translation: &SecondStageTranslation,
         write: bool,
-        source_id: u16,
-        fpd: bool,
+        ecap: EcapReg,
     ) -> Result<u64, VtdFault> {
-        let mut table_addr = pt_root;
-        let mut can_read = true;
-        let mut can_write = true;
-
-        for level in (1..=levels).rev() {
-            let index = SlPte::iova_index(iova, level);
-            let pte_addr = table_addr + (index as u64) * 8;
-
-            let pte: SlPte = self.guest_memory.read_plain(pte_addr).map_err(|_| {
-                VtdFault::PageTableAccessError {
-                    source_id,
-                    iova,
-                    fpd,
-                }
-            })?;
-
-            if !pte.is_present() {
-                // R=W=0: fault reason depends on access type (§7.1.3).
-                // Write → 0x05 (write denied), Read → 0x06 (read denied).
-                return Err(VtdFault::AccessDenied {
-                    source_id,
-                    iova,
-                    fpd,
-                    write,
-                });
-            }
-
-            // AND-accumulate permissions across levels (§3.7.1).
-            can_read &= pte.r();
-            can_write &= pte.w();
-
-            // Large page check at level 2 (2MB) and level 3 (1GB).
-            if pte.ps() && (level == 2 || level == 3) {
-                if (write && !can_write) || (!write && !can_read) {
-                    return Err(VtdFault::AccessDenied {
-                        source_id,
-                        iova,
-                        fpd,
-                        write,
-                    });
-                }
-                return Ok(pte.large_page_gpa(iova, level));
-            }
-
-            if level == 1 {
-                // Leaf entry (4KB page).
-                if (write && !can_write) || (!write && !can_read) {
-                    return Err(VtdFault::AccessDenied {
-                        source_id,
-                        iova,
-                        fpd,
-                        write,
-                    });
-                }
-                return Ok(pte.phys_address() | (iova & 0xFFF));
-            }
-
-            // Non-leaf: follow to next level.
-            table_addr = pte.phys_address();
+        let &SecondStageTranslation {
+            context,
+            root,
+            levels,
+            domain_id,
+            ssade,
+            pwsnp,
+        } = translation;
+        tracing::trace!(domain_id, ssade, pwsnp, "vtd: second-stage DMA");
+        if !matches!(levels, 3 | 4) {
+            return Err(context.fault(context.reason(
+                FaultReason::INVALID_CONTEXT_ENTRY,
+                FaultReason::PASID_TABLE_INVALID_ENTRY,
+            )));
+        }
+        let iova = context.iova;
+        if iova >> MGAW_BITS.min(12 + 9 * levels) != 0 {
+            return Err(context.fault(context.reason(
+                FaultReason::ADDRESS_BEYOND_MGAW,
+                FaultReason::SCALABLE_ADDRESS_BEYOND_AGAW,
+            )));
+        }
+        // Fail closed until atomic A/D updates are implemented. Resolving an
+        // SSADE descriptor is supported, completing tracked DMA is not.
+        if ssade {
+            return Err(context.fault(FaultReason::SL_AD_UPDATE_FAILED));
         }
 
-        // Should not reach here if levels >= 1.
-        Err(VtdFault::AccessDenied {
-            source_id,
-            iova,
-            fpd,
-            write,
-        })
+        let mut table_addr = root;
+        let mut can_read = true;
+        let mut can_write = true;
+        for level in (1..=levels).rev() {
+            let reason = context.reason(
+                FaultReason::SL_PTE_ACCESS_ERROR,
+                if level == levels {
+                    FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR
+                } else {
+                    FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR
+                },
+            );
+            let pte: SlPte = self.read_translation_entry(
+                table_addr,
+                SlPte::iova_index(iova, level) as u64,
+                context,
+                reason,
+            )?;
+            can_read &= pte.r();
+            can_write &= pte.w();
+            let denied = context.reason(
+                if write {
+                    FaultReason::WRITE_ACCESS_DENIED
+                } else {
+                    FaultReason::READ_ACCESS_DENIED
+                },
+                if write {
+                    FaultReason::SCALABLE_WRITE_ACCESS_DENIED
+                } else {
+                    FaultReason::SCALABLE_READ_ACCESS_DENIED
+                },
+            );
+            if !pte.is_present() || (!can_read && !can_write) {
+                return Err(
+                    context.fault(context.reason(denied, FaultReason::SCALABLE_SL_PTE_NOT_PRESENT))
+                );
+            }
+
+            let leaf = level == 1 || (pte.ps() && matches!(level, 2 | 3));
+            let offset_mask = SlPte::page_size_at_level(level) - 1;
+            let reserved = (1 << 62)
+                | (((1u64 << 52) - 1) & !HOST_ADDRESS_MASK)
+                | if !leaf || !ecap.sc() { 1 << 11 } else { 0 }
+                | if level == 4 { 1 << 7 } else { 0 }
+                | if leaf { offset_mask & !0xfff } else { 0 };
+            if pte.into_bits() & reserved != 0 {
+                return Err(context.fault(context.reason(
+                    FaultReason::SL_PTE_RESERVED_BIT,
+                    FaultReason::SCALABLE_SL_PTE_RESERVED_BIT,
+                )));
+            }
+            if leaf {
+                if (write && !can_write) || (!write && !can_read) {
+                    return Err(context.fault(denied));
+                }
+                return Self::check_dma_output(context, pte.phys_address() | (iova & offset_mask));
+            }
+            table_addr = pte.phys_address();
+        }
+        unreachable!("a validated second-stage walk always reaches a leaf")
     }
 
     // =========================================================================
@@ -826,11 +1111,23 @@ impl VtdSharedState {
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
 pub enum VtdFault {
+    #[error("DMA fault {reason:?} (source_id={source_id:#06x}, iova={iova:#x})")]
+    Dma {
+        source_id: u16,
+        iova: u64,
+        reason: FaultReason,
+        fpd: bool,
+    },
+
     #[error("root entry not present (source_id={source_id:#06x})")]
     RootNotPresent { source_id: u16, iova: u64 },
 
     #[error("context entry not present (source_id={source_id:#06x})")]
-    ContextNotPresent { source_id: u16, iova: u64 },
+    ContextNotPresent {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
 
     #[error("invalid context entry (source_id={source_id:#06x}, iova={iova:#x})")]
     InvalidContextEntry {
@@ -840,7 +1137,11 @@ pub enum VtdFault {
     },
 
     #[error("IOVA beyond MGAW (source_id={source_id:#06x}, iova={iova:#x})")]
-    AddressBeyondMgaw { source_id: u16, iova: u64 },
+    AddressBeyondMgaw {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+    },
 
     #[error("{} access denied (source_id={source_id:#06x}, iova={iova:#x})", if *write { "write" } else { "read" })]
     AccessDenied {
@@ -898,6 +1199,7 @@ impl VtdFault {
     /// Get the fault reason code for this fault.
     fn fault_reason(&self) -> FaultReason {
         match self {
+            Self::Dma { reason, .. } => *reason,
             Self::RootNotPresent { .. } => FaultReason::ROOT_NOT_PRESENT,
             Self::ContextNotPresent { .. } => FaultReason::CONTEXT_NOT_PRESENT,
             Self::InvalidContextEntry { .. } => FaultReason::INVALID_CONTEXT_ENTRY,
@@ -919,7 +1221,8 @@ impl VtdFault {
     /// Get the source ID from this fault.
     fn source_id(&self) -> u16 {
         match self {
-            Self::RootNotPresent { source_id, .. }
+            Self::Dma { source_id, .. }
+            | Self::RootNotPresent { source_id, .. }
             | Self::ContextNotPresent { source_id, .. }
             | Self::InvalidContextEntry { source_id, .. }
             | Self::AddressBeyondMgaw { source_id, .. }
@@ -939,7 +1242,8 @@ impl VtdFault {
     /// Get the faulting address (IOVA for DMA, 0 for IR faults).
     fn fault_address(&self) -> u64 {
         match self {
-            Self::RootNotPresent { iova, .. }
+            Self::Dma { iova, .. }
+            | Self::RootNotPresent { iova, .. }
             | Self::ContextNotPresent { iova, .. }
             | Self::InvalidContextEntry { iova, .. }
             | Self::AddressBeyondMgaw { iova, .. }
@@ -960,7 +1264,23 @@ impl VtdFault {
     /// Whether fault processing is disabled for this fault.
     fn fpd(&self) -> bool {
         match self {
-            Self::InvalidContextEntry { fpd, .. }
+            // Table 26: lookup access errors are unqualified even after a
+            // parent FPD has been observed. Page-walk faults are qualified.
+            Self::Dma { reason, fpd, .. } => {
+                *fpd && !matches!(
+                    *reason,
+                    FaultReason::INVALID_ROOT_TABLE_MODE
+                        | FaultReason::SCALABLE_ROOT_ACCESS_ERROR
+                        | FaultReason::SCALABLE_ROOT_NOT_PRESENT
+                        | FaultReason::SCALABLE_ROOT_RESERVED_BIT
+                        | FaultReason::SCALABLE_CONTEXT_ACCESS_ERROR
+                        | FaultReason::PASID_DIRECTORY_ACCESS_ERROR
+                        | FaultReason::PASID_TABLE_ACCESS_ERROR
+                )
+            }
+            Self::ContextNotPresent { fpd, .. }
+            | Self::AddressBeyondMgaw { fpd, .. }
+            | Self::InvalidContextEntry { fpd, .. }
             | Self::AccessDenied { fpd, .. }
             | Self::PageTableAccessError { fpd, .. }
             | Self::IrteNotPresent { fpd, .. }
@@ -968,8 +1288,6 @@ impl VtdFault {
             | Self::SourceValidationFailed { fpd, .. } => *fpd,
             // Faults without FPD context are always recorded.
             Self::RootNotPresent { .. }
-            | Self::ContextNotPresent { .. }
-            | Self::AddressBeyondMgaw { .. }
             | Self::RootEntryAccessError { .. }
             | Self::ContextEntryAccessError { .. }
             | Self::IrteAccessError { .. }
@@ -1031,6 +1349,19 @@ impl iommu_common::IommuTranslator for VtdTranslator {
         write: bool,
         op: impl FnOnce(u64) -> R,
     ) -> Result<R, iommu_common::TranslationFault<VtdFault>> {
+        self.translate_with_capabilities(rid, iova, write, EcapReg::from(ECAP_VALUE), op)
+    }
+}
+
+impl VtdTranslator {
+    fn translate_with_capabilities<R>(
+        &self,
+        rid: u16,
+        iova: u64,
+        write: bool,
+        ecap: EcapReg,
+        op: impl FnOnce(u64) -> R,
+    ) -> Result<R, iommu_common::TranslationFault<VtdFault>> {
         let bus = (rid >> 8) as u8;
         let devfn = rid as u8;
 
@@ -1038,7 +1369,7 @@ impl iommu_common::IommuTranslator for VtdTranslator {
         let state = self.shared.state.read();
         let gpa = match self
             .shared
-            .translate_locked(&state, bus, devfn, iova, write)
+            .translate_locked(&state, bus, devfn, iova, write, ecap)
         {
             Ok(gpa) => gpa,
             Err(fault) => {
@@ -1890,6 +2221,7 @@ impl InspectMut for IntelVtdDevice {
 #[cfg(test)]
 mod tests {
     mod queued_invalidation;
+    mod scalable_translation;
 
     use super::*;
     use guestmem::GuestMemory;
@@ -2398,7 +2730,7 @@ mod tests {
         let (_dev, shared) = create_test_device_with_translation();
         let state = shared.state.read();
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0x0000, false)
+            .translate_locked(&state, 0, 0, 0x0000, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, TARGET_GPA);
     }
@@ -2409,7 +2741,7 @@ mod tests {
         let state = shared.state.read();
         // IOVA 0x123 → TARGET_GPA + 0x123
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0x0123, false)
+            .translate_locked(&state, 0, 0, 0x0123, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, TARGET_GPA + 0x123);
     }
@@ -2424,7 +2756,7 @@ mod tests {
         }
         let state = shared.state.read();
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0xDEAD_BEEF, false)
+            .translate_locked(&state, 0, 0, 0xDEAD_BEEF, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, 0xDEAD_BEEF);
     }
@@ -2493,7 +2825,7 @@ mod tests {
 
         let state = shared.state.read();
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0x0000, false)
+            .translate_locked(&state, 0, 0, 0x0000, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, TARGET_GPA);
     }
@@ -2564,7 +2896,7 @@ mod tests {
         let state = shared.state.read();
         // IOVA 0x1234 within the 2MB page → GPA 0x201234.
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0x1234, false)
+            .translate_locked(&state, 0, 0, 0x1234, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, 0x20_1234);
     }
@@ -2611,7 +2943,7 @@ mod tests {
 
         let state = shared.state.read();
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0xABCD_0000, false)
+            .translate_locked(&state, 0, 0, 0xABCD_0000, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, 0xABCD_0000);
     }
@@ -2644,7 +2976,7 @@ mod tests {
 
         let state = shared.state.read();
         let err = shared
-            .translate_locked(&state, 0, 0, 0x1000, false)
+            .translate_locked(&state, 0, 0, 0x1000, false, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         assert!(matches!(err, VtdFault::RootNotPresent { .. }));
     }
@@ -2686,7 +3018,7 @@ mod tests {
 
         let state = shared.state.read();
         let err = shared
-            .translate_locked(&state, 0, 0, 0x1000, false)
+            .translate_locked(&state, 0, 0, 0x1000, false, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         assert!(matches!(err, VtdFault::ContextNotPresent { .. }));
     }
@@ -2704,7 +3036,7 @@ mod tests {
 
         let state = shared.state.read();
         let err = shared
-            .translate_locked(&state, 0, 0, 0x1000, false)
+            .translate_locked(&state, 0, 0, 0x1000, false, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         // Non-present PTE (R=W=0) on a read → AccessDenied with write=false (fault 0x06).
         assert!(matches!(err, VtdFault::AccessDenied { write: false, .. }));
@@ -2724,12 +3056,12 @@ mod tests {
         let state = shared.state.read();
         // Read should succeed.
         let gpa = shared
-            .translate_locked(&state, 0, 0, 0x0000, false)
+            .translate_locked(&state, 0, 0, 0x0000, false, EcapReg::from(ECAP_VALUE))
             .unwrap();
         assert_eq!(gpa, 0); // PTE address field is 0
         // Write should fail.
         let err = shared
-            .translate_locked(&state, 0, 0, 0x0000, true)
+            .translate_locked(&state, 0, 0, 0x0000, true, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         assert!(matches!(err, VtdFault::AccessDenied { write: true, .. }));
     }
@@ -2751,7 +3083,7 @@ mod tests {
 
         let state = shared.state.read();
         let err = shared
-            .translate_locked(&state, 0, 0, 0x0000, true)
+            .translate_locked(&state, 0, 0, 0x0000, true, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         assert!(matches!(err, VtdFault::AccessDenied { write: true, .. }));
     }
@@ -2800,7 +3132,7 @@ mod tests {
         // Translation should fail (PTE not present in zeroed memory).
         let state = shared.state.read();
         let err = shared
-            .translate_locked(&state, 0, 0, 0x0000, false)
+            .translate_locked(&state, 0, 0, 0x0000, false, EcapReg::from(ECAP_VALUE))
             .unwrap_err();
         assert!(err.fpd()); // FPD should be true
 
@@ -3292,6 +3624,7 @@ mod tests {
         let fault2 = VtdFault::ContextNotPresent {
             source_id: 0x0200,
             iova: 0x2000,
+            fpd: false,
         };
         fault2.record(&shared, false);
 
