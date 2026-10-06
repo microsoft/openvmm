@@ -7,8 +7,9 @@
 //! table format is EPT-like: 64-bit entries, 9 bits per level, with R/W
 //! permission bits in bits 1:0 (bit 2 is ignored) and a PS bit at bit 7 for large
 //! pages at levels 2 (2MB) and 3 (1GB).
-//! Accessed (bit 8) and leaf dirty (bit 9) flags are ignored unless SSADE
-//! is enabled in the referencing scalable-mode PASID-table entry (§3.7.2).
+//! Accessed (bit 8) and leaf dirty (bit 9) flags are ignored unless Second Stage
+//! Access/Dirty bit Enable (SSADE) is set in the referencing scalable-mode
+//! PASID-table entry (§3.7.2).
 //!
 //! Page table level parameters:
 //! - Level 4: VA\[47:39\], 9 bits → 512GB region
@@ -42,9 +43,12 @@ pub struct SlPte {
     /// Page Size — 1 = this is a leaf entry for a large page.
     /// Valid at level 3 (1GB) and level 2 (2MB). Must be 0 at level 4.
     pub ps: bool,
-    /// Accessed (bit 8); ignored when SSADE is clear.
+    /// Accessed (bit 8): hardware sets this when using the entry for translation.
+    /// Enabled by Second Stage Access/Dirty bit Enable (SSADE) in the
+    /// referencing scalable-mode PASID-table entry; otherwise ignored.
     pub a: bool,
-    /// Dirty (bit 9); ignored in non-leaf entries or when SSADE is clear.
+    /// Dirty (bit 9): hardware sets this on the leaf entry for a DMA write.
+    /// Ignored in non-leaf entries or when the PASID-table SSADE field is clear.
     pub d: bool,
     #[bits(1)]
     _ignored2: u64,

@@ -326,7 +326,9 @@ pub struct PasidTableEntryLo {
     /// PASID granular translation type; see [`PasidTranslationType`].
     #[bits(3)]
     pub pgtt: u8,
-    /// Enable second-stage accessed/dirty flags; ignored for pass-through.
+    /// Second Stage Access/Dirty bit Enable (SSADE, bit 9).
+    /// Enables hardware updates of accessed and leaf dirty flags in the
+    /// referenced second-stage paging entries; ignored for pass-through.
     pub ssade: bool,
     #[bits(2)]
     _reserved2: u64,
