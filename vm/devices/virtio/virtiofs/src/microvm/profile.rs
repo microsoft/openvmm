@@ -3,6 +3,7 @@
 
 //! The fixed virtio-fs contract used by the microVM profile.
 
+use super::policy::SubtreePolicy;
 #[cfg(windows)]
 use anyhow::Context as _;
 use std::path::Path;
@@ -117,6 +118,14 @@ pub enum MicroVmProfileError {
     /// The denied-path list was not canonical.
     #[error("microVM virtio-fs denied paths are invalid")]
     InvalidDeniedPaths,
+    /// The allowed-path list was not canonical, or an allowed path was not
+    /// inside a denied path.
+    #[error("microVM virtio-fs allowed paths are invalid")]
+    InvalidAllowedPaths,
+    /// The writable-path list was not canonical, overlapped, was hidden, or
+    /// belonged to a read-only share.
+    #[error("microVM virtio-fs writable paths are invalid")]
+    InvalidWritablePaths,
     /// Caller ownership needs per-thread filesystem credentials, which only
     /// Linux provides.
     #[error("microVM virtio-fs caller ownership requires a Linux host")]
@@ -134,7 +143,7 @@ pub struct MicroVmVirtioFsProfile {
     mount_tag: &'static str,
     root_identity: Vec<u8>,
     access_mode: MicroVmAccessMode,
-    denied_paths: Vec<PathBuf>,
+    policy: SubtreePolicy,
     owner_mode: MicroVmOwnerMode,
 }
 
@@ -150,12 +159,40 @@ impl MicroVmVirtioFsProfile {
         read_only: bool,
         denied_paths: Vec<String>,
     ) -> Result<Self, MicroVmProfileError> {
+        Self::from_attachment_with_policy(
+            stable_id,
+            root_identity,
+            read_only,
+            denied_paths,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Builds the profile like [`Self::from_attachment`], with the complete
+    /// access policy of the share: `allowed_paths` exposes subtrees of
+    /// `denied_paths` again, and `writable_paths`, when not empty, are the only
+    /// subtrees of a read-write share that the guest can modify. Each list
+    /// holds unique, canonical share-relative paths in lexical order.
+    pub fn from_attachment_with_policy(
+        stable_id: String,
+        root_identity: Vec<u8>,
+        read_only: bool,
+        denied_paths: Vec<String>,
+        allowed_paths: Vec<String>,
+        writable_paths: Vec<String>,
+    ) -> Result<Self, MicroVmProfileError> {
         let mount_tag =
             microvm_mount_tag(&stable_id).ok_or(MicroVmProfileError::InvalidStableId)?;
         if root_identity.is_empty() || root_identity.len() > MAX_ROOT_IDENTITY_SIZE {
             return Err(MicroVmProfileError::InvalidRootIdentity);
         }
-        let denied_paths = Self::parse_denied_paths(denied_paths)?;
+        let policy = SubtreePolicy::new(
+            Self::parse_policy_paths(denied_paths, MicroVmProfileError::InvalidDeniedPaths)?,
+            Self::parse_policy_paths(allowed_paths, MicroVmProfileError::InvalidAllowedPaths)?,
+            Self::parse_policy_paths(writable_paths, MicroVmProfileError::InvalidWritablePaths)?,
+            read_only,
+        )?;
         Ok(Self {
             stable_id,
             mount_tag,
@@ -165,7 +202,7 @@ impl MicroVmVirtioFsProfile {
             } else {
                 MicroVmAccessMode::ReadWrite
             },
-            denied_paths,
+            policy,
             owner_mode: MicroVmOwnerMode::Vmm,
         })
     }
@@ -279,7 +316,25 @@ impl MicroVmVirtioFsProfile {
 
     /// Returns canonical host-relative paths hidden from the guest.
     pub fn denied_paths(&self) -> &[PathBuf] {
-        &self.denied_paths
+        self.policy.denied_paths()
+    }
+
+    /// Returns canonical host-relative paths that are exposed again inside
+    /// denied paths.
+    pub fn allowed_paths(&self) -> &[PathBuf] {
+        self.policy.allowed_paths()
+    }
+
+    /// Returns the canonical host-relative paths that are the only writable
+    /// parts of a read-write share, or nothing when the whole share is
+    /// writable.
+    pub fn writable_paths(&self) -> &[PathBuf] {
+        self.policy.writable_paths()
+    }
+
+    /// Returns the share's access policy.
+    pub(crate) fn subtree_policy(&self) -> &SubtreePolicy {
+        &self.policy
     }
 
     /// Returns the entry-cache lifetime required by the ABI.
@@ -287,9 +342,14 @@ impl MicroVmVirtioFsProfile {
         Duration::ZERO
     }
 
-    fn parse_denied_paths(paths: Vec<String>) -> Result<Vec<PathBuf>, MicroVmProfileError> {
-        if paths.len() > 128 {
-            return Err(MicroVmProfileError::InvalidDeniedPaths);
+    /// Parses unique, canonical share-relative paths in lexical order, which is
+    /// the order that the snapshot contract records.
+    fn parse_policy_paths(
+        paths: Vec<String>,
+        error: MicroVmProfileError,
+    ) -> Result<Vec<PathBuf>, MicroVmProfileError> {
+        if paths.len() > 128 || paths.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(error);
         }
         let mut parsed = Vec::with_capacity(paths.len());
         for path in paths {
@@ -301,26 +361,16 @@ impl MicroVmVirtioFsProfile {
                     character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
                 })
             {
-                return Err(MicroVmProfileError::InvalidDeniedPaths);
+                return Err(error);
             }
             let mut relative = PathBuf::new();
             for component in path.split('/') {
                 if component.is_empty() || matches!(component, "." | "..") {
-                    return Err(MicroVmProfileError::InvalidDeniedPaths);
+                    return Err(error);
                 }
                 relative.push(component);
             }
             parsed.push(relative);
-        }
-        let mut canonical = parsed.clone();
-        canonical.sort_unstable();
-        if canonical != parsed {
-            return Err(MicroVmProfileError::InvalidDeniedPaths);
-        }
-        for pair in parsed.windows(2) {
-            if pair[1].starts_with(&pair[0]) {
-                return Err(MicroVmProfileError::InvalidDeniedPaths);
-            }
         }
         Ok(parsed)
     }
@@ -533,6 +583,61 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn profile_carries_a_canonical_subtree_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = microvm_root_identity(root.path()).unwrap();
+        fn owned(paths: &[&str]) -> Vec<String> {
+            paths.iter().map(|path| (*path).to_owned()).collect()
+        }
+        let with_policy =
+            |read_only: bool, denied: &[&str], allowed: &[&str], writable: &[&str]| {
+                MicroVmVirtioFsProfile::from_attachment_with_policy(
+                    MICROVM_ATTACHMENT_ID.to_owned(),
+                    identity.clone(),
+                    read_only,
+                    owned(denied),
+                    owned(allowed),
+                    owned(writable),
+                )
+            };
+
+        // Paths are in the lexical order of the snapshot contract, in which a
+        // sibling such as `logs-old` sorts before `logs/...`.
+        let profile = with_policy(
+            false,
+            &["logs", "logs-old"],
+            &["logs/payloads"],
+            &["out", "out-cache"],
+        )
+        .unwrap();
+        assert_eq!(
+            profile.denied_paths(),
+            [PathBuf::from("logs"), PathBuf::from("logs-old")]
+        );
+        assert_eq!(
+            profile.allowed_paths(),
+            [["logs", "payloads"].iter().collect::<PathBuf>()]
+        );
+        assert_eq!(
+            profile.writable_paths(),
+            [PathBuf::from("out"), PathBuf::from("out-cache")]
+        );
+        assert!(profile.subtree_policy().restricts_writes());
+
+        for (read_only, denied, allowed, writable) in [
+            (false, vec!["logs"], vec!["payloads"], vec![]),
+            (false, vec!["logs"], vec!["logs/b", "logs/a"], vec![]),
+            (false, vec!["logs"], vec!["logs/../escape"], vec![]),
+            (true, vec![], vec![], vec!["out"]),
+            (false, vec![], vec![], vec!["out", "out"]),
+            (false, vec![], vec![], vec!["out/"]),
+            (false, vec!["logs"], vec![], vec!["logs/out"]),
+        ] {
+            assert!(with_policy(read_only, &denied, &allowed, &writable).is_err());
         }
     }
 }
