@@ -74,10 +74,13 @@ either tag. OpenVMM rejects more than two attachments, guest targets that
 equal or contain one another, and host directories that equal, contain, or
 are contained in one another (compared after canonicalization and by root
 object identity), because one share could otherwise reach files that the
-other share denies or exposes with a different access mode. With several
-attachments, each `--mount-deny` must be an absolute host path, and it
-applies to the share whose directory contains it. `--mount-owner` applies to
-every share.
+other share denies or exposes with a different access mode. On Linux,
+OpenVMM also compares the filesystem sources that each directory reaches,
+from `/proc/self/mountinfo`, including the mounts below it, so a bind mount
+or nested mount can't expose part of one share as, or inside, the other.
+With several attachments, each `--mount-deny` must be an absolute host path,
+and it applies to the share whose directory contains it. `--mount-owner`
+applies to every share.
 
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
 `virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line,
@@ -171,8 +174,8 @@ lookups and newly opened directories still observe the live host tree.
 Restoring a snapshot captured with an active attachment requires a fresh
 `--mount` argument for every captured share, in the same order, with the exact
 same denied-path set, canonical host path, guest target, mode, and
-`--mount-owner` mode. Identity validation remains independent: before any vCPU starts,
-OpenVMM pins the supplied root and validates its saved root and object
+`--mount-owner` mode. Identity validation remains independent: before any vCPU
+starts, OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
 without being followed, and an alias whose ancestor has become a link fails

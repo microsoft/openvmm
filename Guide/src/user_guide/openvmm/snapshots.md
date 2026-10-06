@@ -330,13 +330,13 @@ of attempting a live rollback. This applies to both capture and the
 post-restore acknowledgement boundary. Teardown still depends on the affected
 backends responding; it does not provide a bounded shutdown deadline.
 
-For microVM virtio-fs, the manifest always records the fixed, guest-discoverable
-first slot. A dormant slot has no host attachment or filesystem policy and carries
-explicit dormant device-private state. An active slot also records the stable
-attachment ID, exact canonical host path, pinned root identity, guest mount
-target, access mode, ownership mode, no-DAX queue policy, and `live-revalidate` restore mode.
-A second slot is recorded only when a second share was attached, with the
-same fields for that share.
+For microVM virtio-fs, the manifest always records the fixed,
+guest-discoverable first slot. A dormant slot has no host attachment or
+filesystem policy and carries explicit dormant device-private state. An active
+slot also records the stable attachment ID, exact canonical host path, pinned
+root identity, guest mount target, access mode, ownership mode, no-DAX queue
+policy, and `live-revalidate` restore mode. A second slot is recorded only
+when a second share was attached, with the same fields for that share.
 Its device-private payload records FUSE negotiation, namespace IDs and aliases,
 lookup counts, reopenable handles, bounded directory-entry snapshots and
 cookies, and queue progress. Native file descriptors and Windows handles are
@@ -344,12 +344,12 @@ never serialized.
 
 Restoring active slots requires a fresh
 `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment for each, in capture
-order, with the same canonical
-host path, target, and mode, and the same `--mount-owner` mode. OpenVMM independently validates the roots and every
+order, with the same canonical host path, target, and mode, and the same
+`--mount-owner` mode. OpenVMM independently validates the roots and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
-restore without an attachment or bind one new attachment to the first slot. For a new attachment, the
-resumed guest explicitly mounts tag `microvm`; the cold-boot mount hook does not
-run again.
+restore without an attachment or bind one new attachment to the first slot.
+For a new attachment, the resumed guest explicitly mounts tag `microvm`; the
+cold-boot mount hook does not run again.
 
 ```admonish warning
 The host directory is external live state, not snapshot content. Host

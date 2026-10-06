@@ -688,7 +688,6 @@ fn microvm_filesystem_device(
 /// snapshot policy.
 fn microvm_filesystem_policy(
     source_hypervisor: &str,
-    effective_command_line: &str,
     slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
     filesystem: &openvmm_defs::microvm::MicrovmFilesystemConfig,
     canonical_host_path: &Path,
@@ -716,17 +715,6 @@ fn microvm_filesystem_policy(
             && attachment.length == 0
             && attachment.reconnect_timeout_ms == 0,
         "microVM filesystem attachment has an unsupported live-revalidation policy"
-    );
-    let tokens = effective_command_line
-        .split_ascii_whitespace()
-        .collect::<Vec<_>>();
-    let fragment = filesystem.command_line_fragment(slot);
-    let fragment = fragment.split_ascii_whitespace().collect::<Vec<_>>();
-    anyhow::ensure!(
-        tokens
-            .windows(fragment.len())
-            .any(|window| window == fragment),
-        "microVM filesystem command line does not match its saved policy"
     );
     Ok(SnapshotMicrovmFilesystem::new(
         filesystem,
@@ -951,15 +939,45 @@ pub fn microvm_machine_contract(
             .map(|(filesystem, _, _)| (*filesystem).clone())
             .collect::<Vec<_>>(),
     )?;
-    for slot in filesystem_slots {
+    let tokens = effective_command_line
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>();
+    for (index, slot) in openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
+        .iter()
+        .enumerate()
+    {
+        let discovery = slot.discovery_token();
+        let expected = usize::from(index < filesystem_slot_count);
         anyhow::ensure!(
-            effective_command_line
-                .split_ascii_whitespace()
-                .any(|token| token == slot.discovery_token()),
-            "microVM virtio-fs slot {} is missing from the effective command line",
+            tokens.iter().filter(|token| **token == discovery).count() == expected,
+            "microVM virtio-fs slot {} must be discovered {expected} time(s) by the effective command line",
             slot.stable_id
         );
     }
+    // The bootstrap triplets of the attached filesystems, exactly and in slot
+    // order.
+    let bootstrap = tokens
+        .iter()
+        .copied()
+        .filter(|token| {
+            ["virtfs_dir=", "virtfs_tag=", "virtfs_mode="]
+                .iter()
+                .any(|prefix| token.starts_with(prefix))
+        })
+        .collect::<Vec<_>>();
+    let expected_bootstrap = filesystems
+        .iter()
+        .zip(filesystem_slots)
+        .map(|((filesystem, _, _), slot)| filesystem.command_line_fragment(slot))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        bootstrap
+            == expected_bootstrap
+                .iter()
+                .flat_map(|fragment| fragment.split_ascii_whitespace())
+                .collect::<Vec<_>>(),
+        "microVM filesystem command line does not match its saved policy"
+    );
     if let Some(slot) = filesystem_slots.first() {
         devices.push(microvm_filesystem_device(slot, devices.len()));
     }
@@ -970,7 +988,6 @@ pub fn microvm_machine_contract(
     {
         filesystem_policies.push(microvm_filesystem_policy(
             source_hypervisor,
-            &effective_command_line,
             slot,
             filesystem,
             canonical_host_path,
@@ -2564,13 +2581,19 @@ mod tests {
     }
 
     fn two_filesystem_command_line() -> String {
+        filesystems_command_line(&two_filesystems())
+    }
+
+    fn filesystems_command_line(
+        filesystems: &[openvmm_defs::microvm::MicrovmFilesystemConfig],
+    ) -> String {
         let mut command_line =
             openvmm_defs::microvm::build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
             true,
-            &two_filesystems(),
+            filesystems,
             false,
             false,
             &[],
@@ -2656,15 +2679,21 @@ mod tests {
         let manifest = two_filesystem_manifest(&contract);
         let filesystems = two_filesystems();
 
+        // A machine with only the first share has another command line and
+        // device inventory, so it can't restore the two-share snapshot.
         let only_first = filesystems_contract(
             "kvm",
-            contract.effective_command_line.clone(),
+            filesystems_command_line(&filesystems[..1]),
             true,
             slot_filesystems("kvm", &filesystems[..1]),
         )
         .unwrap();
         let error = validate_microvm_machine_contract(&manifest, &only_first).unwrap_err();
-        assert!(error.to_string().contains("device inventory"));
+        assert!(
+            error
+                .to_string()
+                .contains("doesn't match the requested machine")
+        );
 
         let mut writable = filesystems.clone();
         writable[1] = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
@@ -2766,6 +2795,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("fs:microvm1"));
+
+        // The contract requires each slot's discovery token once and the
+        // bootstrap triplets exactly, in slot order.
+        let first = "virtfs_dir=/workspace virtfs_tag=microvm virtfs_mode=rw";
+        let second = "virtfs_dir=/opt/hostedtoolcache virtfs_tag=microvm1 virtfs_mode=ro";
+        assert!(command_line.ends_with(&format!("{first} {second}")));
+        for invalid in [
+            command_line.replace(&format!("{first} {second}"), &format!("{second} {first}")),
+            format!("{command_line} {second}"),
+            format!("{command_line} virtfs_mode=ro"),
+            command_line.replace(
+                " virtio_mmio.device=0x1000@0xd0008000:13",
+                " virtio_mmio.device=0x1000@0xd0008000:13 virtio_mmio.device=0x1000@0xd0008000:13",
+            ),
+        ] {
+            assert!(
+                filesystems_contract("kvm", invalid, true, slot_filesystems("kvm", &filesystems))
+                    .is_err()
+            );
+        }
+        let error = filesystems_contract(
+            "kvm",
+            command_line.clone(),
+            true,
+            slot_filesystems("kvm", &filesystems[..1]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fs:microvm1"), "{error:#}");
     }
 
     #[test]
