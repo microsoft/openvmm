@@ -299,18 +299,44 @@ pub(super) mod tests {
     const TEST_SIGNATURE: u32 = 0x0006_06a6;
 
     /// Returns the effective CPUID of a partition with `vp_count` VPs and
-    /// `profile`: the topology fields OpenVMM sets for one socket, an xAPIC,
-    /// and no identity leaves.
+    /// `profile`: the topology fields OpenVMM sets for one socket, of the
+    /// profile's vendor, an xAPIC, and no identity leaves.
     fn test_effective_cpuid(
         profile: &cpu_profile::CpuProfile,
         vp_count: u32,
     ) -> cpu_profile::EffectiveCpuid {
+        use cpu_profile::CpuVendor;
         use cpu_profile::CpuidResult;
         let mut vm = vec![
             CpuidResult::new(1, [0, vp_count << 16, 0, 0]).masked([0, 0xffff_0000, 0, 0]),
-            CpuidResult::new(4, [(vp_count - 1) << 26, 0, 0, 0]).masked([0xffff_c000, 0, 0, 0]),
             cpu_profile::x2apic_cpuid(false),
         ];
+        match profile.cpu_vendor() {
+            CpuVendor::Intel => vm.push(
+                CpuidResult::new(4, [(vp_count - 1) << 26, 0, 0, 0]).masked([0xffff_c000, 0, 0, 0]),
+            ),
+            CpuVendor::Amd => {
+                let apic_id_size = vp_count.next_power_of_two().trailing_zeros();
+                vm.push(
+                    CpuidResult::new(0x8000_0008, [0, 0, (vp_count - 1) | apic_id_size << 12, 0])
+                        .masked([0, 0, 0xf0ff, 0]),
+                );
+                // The L3 cache is the socket's; the others are each VP's.
+                for subleaf in 0.. {
+                    let eax = profile.lookup(0x8000_001d, subleaf)[0];
+                    if eax & 0x1f == 0 {
+                        break;
+                    }
+                    let sharing = if (eax >> 5) & 7 == 3 { vp_count - 1 } else { 0 };
+                    vm.push(
+                        CpuidResult::new(0x8000_001d, [sharing << 14, 0, 0, 0])
+                            .indexed(subleaf)
+                            .masked([0x03ff_c000, 0, 0, 0]),
+                    );
+                }
+                vm.push(CpuidResult::new(0x8000_001e, [0; 4]).masked([!0, 0xffff, 0x7ff, 0]));
+            }
+        }
         let max_basic = profile.lookup(0, 0)[0];
         for leaf in cpu_profile::VM_OWNED_LEAVES
             .into_iter()

@@ -187,7 +187,7 @@ impl KnownGeneration {
 }
 
 /// The generations profiles exist for.
-pub const KNOWN_GENERATIONS: [KnownGeneration; 4] = [
+pub const KNOWN_GENERATIONS: [KnownGeneration; 5] = [
     KnownGeneration {
         vendor: CpuVendor::Intel,
         name: "skylake-sp",
@@ -217,6 +217,15 @@ pub const KNOWN_GENERATIONS: [KnownGeneration; 4] = [
         cpus: &[(6, 151, [0, 15]), (6, 154, [0, 15])],
         description: "Intel Core, twelfth generation (Alder Lake)",
         brand: "Intel(R) Core(TM) Processor (Alder Lake)",
+    },
+    KnownGeneration {
+        vendor: CpuVendor::Amd,
+        name: "milan",
+        // Every stepping of the Milan die, Milan-X's included (stepping 2):
+        // no other generation uses family 25 model 1. Genoa is model 17.
+        cpus: &[(25, 1, [0, 15])],
+        description: "AMD EPYC, third generation (Milan)",
+        brand: "AMD EPYC Processor (Milan)",
     },
 ];
 
@@ -1273,25 +1282,45 @@ mod tests {
     }
 
     /// Returns the profile of AMD's Milan generation that `fingerprints`
-    /// derive, as a catalog would pin it.
+    /// derive, as the catalog pins it.
     fn derive_milan(fingerprints: &[CpuFingerprint]) -> Result<CpuProfile, DeriveError> {
-        derive(
-            &Target {
-                vendor: CpuVendor::Amd,
-                generation: Generation {
-                    name: "milan".to_owned(),
-                    cpus: vec![GenerationCpu {
-                        family: 0x19,
-                        model: 1,
-                        steppings: [0, 15],
-                    }],
-                },
-                description: "AMD EPYC (Milan) for a test".to_owned(),
-                brand: "AMD EPYC Processor (Milan)",
-            },
-            1,
-            fingerprints,
-        )
+        derive_profile(generation("milan"), 1, fingerprints)
+    }
+
+    /// The pinned Milan profile is the policy's profile of the one host it was
+    /// derived from: an AMD EPYC 7763 that WHP serves on an Azure host, whose
+    /// CPUID `test_support::MILAN_WHP_CPUID` records.
+    #[test]
+    fn the_milan_profile_is_its_hosts_derivation() {
+        let pinned = profile("amd.milan.v1");
+        let derived = derive_milan(&[host_fingerprint("whp", milan_whp_entries())]).unwrap();
+        assert_eq!(derived.id(), pinned.id());
+        assert_eq!(derived.description(), pinned.description());
+        assert_eq!(derived.generation(), pinned.generation());
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+        assert_eq!(derived.xcr0(), pinned.xcr0());
+        assert_eq!(derived.xss(), pinned.xss());
+        assert_eq!(derived.xsave_components(), pinned.xsave_components());
+        assert_eq!(derived.msrs(), pinned.msrs());
+        assert_eq!(brand(pinned), "AMD EPYC Processor (Milan)");
+    }
+
+    /// A KVM host of the same CPU supports the Milan profile: KVM never
+    /// enumerates `BTC_NO`, and OpenVMM's KVM backend withholds PSFD without
+    /// a `SPEC_CTRL` control, which that host's KVM, nested on Azure, would
+    /// not offer either; the profile has neither.
+    #[test]
+    fn a_kvm_host_of_its_cpu_supports_the_milan_profile() {
+        let mut entries = milan_whp_entries();
+        set(&mut entries, 0x8000_0008, None, 1, |ebx| {
+            ebx & !(AMD_PSFD | AMD_BTC_NO)
+        });
+        let surface =
+            crate::HostCpuSurface::from_fingerprint(&host_fingerprint("kvm", entries).backend);
+        assert_eq!(
+            crate::support_violations(profile("amd.milan.v1"), &surface),
+            Vec::<String>::new()
+        );
     }
 
     /// The CPUID entry of `profile` at `leaf` and `subleaf`.
