@@ -875,12 +875,9 @@ pub(crate) async fn run_repl(
                 {
                     Ok(snapshot_id) => {
                         snapshot_saved = true;
-                        let snapshot_id = <&[u8; 16]>::try_from(snapshot_id.as_slice())
-                            .map(guid::Guid::from_slice)
-                            .ok();
                         tracing::info!(
                             dir = %dir.display(),
-                            ?snapshot_id,
+                            %snapshot_id,
                             "snapshot saved; VM is paused. \
                              Resume is blocked to prevent snapshot corruption. \
                              Use 'shutdown' to exit."

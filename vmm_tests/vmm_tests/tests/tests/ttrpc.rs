@@ -987,6 +987,39 @@ async fn test_ttrpc_interface(
                     "after ResumeVm, expected RUNNING"
                 );
 
+                // A destination that already holds a snapshot is rejected
+                // before the VM is paused.
+                std::fs::create_dir_all(&snapshot_path).unwrap();
+                std::fs::write(snapshot_path.join("manifest.bin"), b"existing").unwrap();
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "SaveVm into an existing snapshot: {}",
+                    err.message
+                );
+                assert_eq!(
+                    std::fs::read(snapshot_path.join("manifest.bin")).unwrap(),
+                    b"existing",
+                    "SaveVm must not overwrite an existing snapshot"
+                );
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "a rejected SaveVm should leave the VM running"
+                );
+                std::fs::remove_dir_all(&snapshot_path).unwrap();
+
                 let save_result = client
                     .call()
                     .start(
@@ -998,9 +1031,11 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap();
                 let snapshot_id = save_result.snapshot_id;
-                assert_eq!(snapshot_id.len(), 16, "SaveVm should return a GUID");
+                let parsed_id: Guid = snapshot_id
+                    .parse()
+                    .expect("SaveVm should return a GUID string");
                 assert!(
-                    snapshot_id.iter().any(|&b| b != 0),
+                    !parsed_id.is_zero(),
                     "SaveVm should return a non-zero snapshot ID"
                 );
                 for name in ["manifest.bin", "state.bin", "memory.bin"] {
@@ -1021,6 +1056,25 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
 
+                // Saving again into the same directory must not overwrite the
+                // snapshot.
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "second SaveVm into the same directory: {}",
+                    err.message
+                );
+
                 client
                     .call()
                     .start(vmservice::Vm::TeardownVm, ())
@@ -1029,9 +1083,28 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap_err();
 
-                let mut wrong_snapshot_id = snapshot_id.clone();
-                wrong_snapshot_id[0] ^= 0xff;
-                client
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: snapshot_path.to_string_lossy().into_owned(),
+                            config: restore_config.clone(),
+                            expected_snapshot_id: Some("not-a-guid".to_string()),
+                            resume: false,
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::InvalidArgument as i32,
+                    "RestoreVm with a malformed snapshot ID: {}",
+                    err.message
+                );
+
+                let wrong_snapshot_id = Guid::new_random().to_string();
+                let err = client
                     .call()
                     .start(
                         vmservice::Vm::RestoreVm,
@@ -1044,6 +1117,12 @@ async fn test_ttrpc_interface(
                     )
                     .await
                     .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "RestoreVm with the wrong snapshot ID: {}",
+                    err.message
+                );
                 let restore_result = client
                     .call()
                     .start(
@@ -1051,7 +1130,9 @@ async fn test_ttrpc_interface(
                         vmservice::RestoreVmRequest {
                             source_dir: snapshot_path.to_string_lossy().into_owned(),
                             config: restore_config,
-                            expected_snapshot_id: Some(snapshot_id.clone()),
+                            // The expected ID is compared as a GUID, so case
+                            // doesn't matter.
+                            expected_snapshot_id: Some(snapshot_id.to_uppercase()),
                             resume: false,
                         },
                     )

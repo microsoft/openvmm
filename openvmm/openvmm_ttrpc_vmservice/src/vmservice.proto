@@ -30,12 +30,14 @@ service VM {
     // SaveVM captures the VM's memory, device state, and processor state into
     // a snapshot directory and returns a unique snapshot ID, which is also
     // stored in the snapshot manifest. The VM is paused by this call and
-    // remains paused after it completes.
+    // remains paused after it completes. Cancelling the call only stops the
+    // caller from waiting; the save may still complete.
     rpc SaveVM(SaveVMRequest) returns (SaveVmResult);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device
     // configuration. The service must not already contain a VM. The VM stays
-    // paused unless resume is set.
+    // paused unless resume is set. The snapshot's memory.bin is used in place,
+    // so a snapshot can be restored only once.
     rpc RestoreVM(RestoreVMRequest) returns (RestoreVmResult);
 
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
@@ -776,8 +778,8 @@ message SaveVMRequest {
 }
 
 message SaveVmResult {
-    // OpenVMM-generated UUID for the snapshot.
-    bytes snapshot_id = 1;
+    // OpenVMM-generated GUID for the snapshot.
+    string snapshot_id = 1;
 }
 
 message RestoreVMRequest {
@@ -786,14 +788,14 @@ message RestoreVMRequest {
     VMConfig config = 2;
     // If set, restore fails unless it matches the snapshot ID in the
     // snapshot manifest.
-    optional bytes expected_snapshot_id = 3;
+    optional string expected_snapshot_id = 3;
     // Resume the restored VM immediately. Otherwise it remains paused.
     bool resume = 4;
 }
 
 message RestoreVmResult {
     // Snapshot ID read from the snapshot manifest.
-    bytes snapshot_id = 1;
+    string snapshot_id = 1;
 }
 
 message MemoryStats {

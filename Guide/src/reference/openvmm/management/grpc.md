@@ -49,17 +49,20 @@ before their implementation is connected end to end.
 `MemoryConfig.backing_file_path` setting. The currently supported
 implementation hard-links that backing file into the snapshot, and the VM
 remains paused and cannot be resumed afterward. Each save generates a unique
-snapshot ID (a GUID, as 16 bytes) that is stored in `manifest.bin` and
-returned in `SaveVmResult.snapshot_id`.
+snapshot ID (a GUID string) that is stored in
+`manifest.bin` and returned in `SaveVmResult.snapshot_id`. A destination that
+already contains a snapshot is rejected, and `manifest.bin` is written last.
+Cancelling `SaveVM` only stops the caller from waiting; the save may still
+complete.
 
 `RestoreVM` creates a VM from a snapshot directory and a compatible
 `VMConfig`. Device configuration is not stored in the snapshot and must be
 supplied by the caller. `memory.bin` is used directly as mutable guest memory,
-so `MemoryConfig.backing_file_path` must not be set. If
-`expected_snapshot_id` is provided, the restore fails unless it matches the
-snapshot ID in `manifest.bin`. The restored snapshot's ID is returned in
-`RestoreVmResult.snapshot_id`. Set `resume` to start the restored VM
-immediately; otherwise it is created paused.
+so `MemoryConfig.backing_file_path` must not be set, and a snapshot can be
+restored only once. If `expected_snapshot_id` is provided, the restore fails
+unless it matches the snapshot ID in `manifest.bin`. The restored snapshot's
+ID is returned in `RestoreVmResult.snapshot_id`. Set `resume` to start the
+restored VM immediately; otherwise it is created paused.
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
