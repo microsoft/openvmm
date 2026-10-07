@@ -344,8 +344,8 @@ impl GetReferenceTime for HvfPartitionInner {
 
 impl virt::irqcon::ControlGic for HvfPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
-        if let Some(vp) = self.gicd.set_pending(irq_id, high) {
-            if let Some(vp) = self.vps.get(vp as usize) {
+        for vp in self.gicd.set_spi_irq(irq_id, high) {
+            if let Some(vp) = self.vps.get(vp.index() as usize) {
                 vp.wake();
             }
         }
@@ -1172,17 +1172,25 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    if self.partition.gicd.irq_pending(&self.gicr) {
+                    let mut interrupt_pending = false;
+                    for (group1, interrupt_type) in [
+                        (false, abi::HvInterruptType::FIQ),
+                        (true, abi::HvInterruptType::IRQ),
+                    ] {
+                        let pending = self.partition.gicd.irq_pending(&self.gicr, group1);
                         // SAFETY: no requirements.
                         unsafe {
                             abi::hv_vcpu_set_pending_interrupt(
                                 self.vcpu.vcpu,
-                                abi::HvInterruptType::IRQ,
-                                true,
+                                interrupt_type,
+                                pending,
                             )
                         }
                         .chk()
                         .map_err(|err| dev.fatal_error(err.into()))?;
+                        interrupt_pending |= pending;
+                    }
+                    if interrupt_pending {
                         self.wfi = false;
                     }
 
