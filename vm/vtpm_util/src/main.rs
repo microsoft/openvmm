@@ -57,7 +57,7 @@ enum Command {
     },
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let args = CmdArgs::parse();
 
     tracing_subscriber::fmt()
@@ -76,16 +76,22 @@ fn main() {
             vtpm_blob_path,
             srk_out_path,
         } => vtpm_util::write_srk(&vtpm_blob_path, &srk_out_path),
-        Command::PrintKeyName { srk_pub_path } => vtpm_util::print_key_name(&srk_pub_path),
+        Command::PrintKeyName { srk_pub_path } => {
+            vtpm_util::print_key_name(&srk_pub_path);
+            Ok(())
+        }
         Command::CreateRandomKeyInTpm2ImportBlobFormat {
             algorithm,
             public_key_file,
             private_key_tpm2b_file,
-        } => match algorithm {
-            KeyAlgorithm::Rsa => vtpm_util::create_random_rsa_key_in_tpm2_import_blob_format(
-                &public_key_file,
-                &private_key_tpm2b_file,
-            ),
-        },
+        } => {
+            match algorithm {
+                KeyAlgorithm::Rsa => vtpm_util::create_random_rsa_key_in_tpm2_import_blob_format(
+                    &public_key_file,
+                    &private_key_tpm2b_file,
+                ),
+            }
+            Ok(())
+        }
     }
 }

@@ -11268,6 +11268,7 @@ dependencies = [
 name = "vtpm_util"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "clap",
  "getrandom 0.4.2",
