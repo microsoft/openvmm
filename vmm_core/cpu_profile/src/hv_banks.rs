@@ -1280,4 +1280,47 @@ mod tests {
             "intel_prefetch_support"
         ));
     }
+
+    /// The Genoa hosts of `test_support::GENOA_MSHV_CPUID` and
+    /// `test_support::GENOA_WHP_CPUID` offer neither TSA immunity, so they
+    /// cannot present `amd.genoa.v1`, which pins both, and present
+    /// `amd.genoa.v2`, which clears them. WHP offers its Genoa host the
+    /// processor features that it offers the Milan host.
+    #[test]
+    fn the_genoa_mshv_and_whp_hosts_present_the_second_genoa_profile() {
+        assert_eq!(crate::test_support::GENOA_WHP_HOST, MILAN_WHP_HOST);
+        for (backend, host) in [
+            ("mshv", crate::test_support::GENOA_MSHV_HOST),
+            ("whp", crate::test_support::GENOA_WHP_HOST),
+        ] {
+            let error = profile_features(profile("amd.genoa.v1"), host).unwrap_err();
+            assert_eq!(
+                error.code,
+                ProfileErrorCode::ProfileUnsupported,
+                "{backend}"
+            );
+            assert!(
+                error
+                    .message
+                    .ends_with("they lack tsa_l1_no_support, tsa_sq_no_support"),
+                "{backend}: {error}"
+            );
+
+            let features = profile_features(profile("amd.genoa.v2"), host).unwrap();
+            for word in HvFeatureWord::ALL {
+                assert_eq!(
+                    features.word(word) & !host.word(word),
+                    0,
+                    "{backend}: {}",
+                    word.name()
+                );
+            }
+            for name in ["tsa_l1_no_support", "tsa_sq_no_support"] {
+                assert!(
+                    !has(&features, HvFeatureWord::Bank1, name),
+                    "{backend}: {name}"
+                );
+            }
+        }
+    }
 }
