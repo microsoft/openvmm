@@ -33,7 +33,8 @@ use smoltcp::wire::NdiscRepr;
 use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
-const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0xabcd, 0, 0, 0, 0, 0, 0);
+// Locally assigned ULA with the pseudorandom RFC 4193 Global ID 64:a0:50:ce:a6.
+const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0xfd64, 0xa050, 0xcea6, 0, 0, 0, 0, 0);
 const LINK_LOCAL_ALL_NODES: Ipv6Address =
     Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
@@ -453,5 +454,15 @@ impl<T: Client> Access<'_, T> {
         };
 
         Ipv6Address::from_octets((addr_u128 & mask).to_be_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_prefix_is_locally_assigned_ula() {
+        assert_eq!(NETWORK_PREFIX_BASE.octets()[0], 0xfd);
     }
 }
