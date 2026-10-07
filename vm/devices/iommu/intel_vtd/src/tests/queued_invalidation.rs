@@ -184,7 +184,7 @@ fn test_legacy_queue_uses_only_16_bytes() {
 
 #[test]
 fn test_raw_mmio_dw_is_bit_11_and_remains_gated() {
-    let (mut dev, gm, _) = make_queue(false, 0);
+    let (mut dev, gm, msi) = make_queue(false, 0);
     write32(&mut dev, 0x018, 0);
     write64(&mut dev, 0x090, BASE | (1 << 11));
     put(&gm, 0, wait(0xbeef, SW), true);
@@ -192,6 +192,8 @@ fn test_raw_mmio_dw_is_bit_11_and_remains_gated() {
     assert_queue(&mut dev, 0, false); // QI disabled.
     write32(&mut dev, 0x018, 1 << 26);
     assert_queue(&mut dev, 0, true);
+    assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+    assert!(msi.events.lock().is_empty());
     assert_eq!(read64(&mut dev, 0x090), BASE | (1 << 11));
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
     assert_eq!(read64(&mut dev, 0x010), 0x00f0_10db);
@@ -203,6 +205,9 @@ fn test_raw_mmio_dw_is_bit_11_and_remains_gated() {
     write32(&mut dev, 0x034, 1 << 4);
     assert_queue(&mut dev, 16, false);
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xbeef);
+    assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+    write32(&mut dev, 0x038, 0);
+    assert!(msi.events.lock().is_empty());
 }
 
 #[test]
@@ -458,8 +463,147 @@ fn test_queue_fault_event_mask_and_unmask() {
 }
 
 #[test]
+fn test_queue_fault_acknowledgement_cancels_pending_interrupt() {
+    let (mut dev, gm, msi) = make_queue(false, 0);
+    write32(&mut dev, 0x03c, 0x51);
+    write32(&mut dev, 0x040, 0xfee01000);
+    put(&gm, 16, wait(0xabcd, SW), false);
+    write64(&mut dev, 0x088, 32); // Entirely zero Type 0 is invalid, unlike Type 5.
+    assert_queue(&mut dev, 0, true);
+    assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+    assert!(msi.events.lock().is_empty());
+    write32(&mut dev, 0x034, 0); // Writing zero does not acknowledge IQE.
+    assert_queue(&mut dev, 0, true);
+    assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+
+    put(&gm, 0, [0x11, 0, 0, 0], false);
+    write32(&mut dev, 0x034, 1 << 4);
+    assert_queue(&mut dev, 32, false);
+    assert_eq!(read32(&mut dev, 0x034), 0);
+    assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xabcd);
+    assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+    write32(&mut dev, 0x038, 0);
+    assert!(msi.events.lock().is_empty());
+
+    // Cancelling a serviced interrupt must not suppress a later, new error.
+    write64(&mut dev, 0x088, 48);
+    assert_queue(&mut dev, 32, true);
+    assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+    assert_eq!(&*msi.events.lock(), &[(0xfee01000, 0x51, 0xabcd)]);
+}
+
+#[test]
+fn test_queue_fault_acknowledgement_repends_on_resume_error() {
+    for masked in [false, true] {
+        for repaired in [false, true] {
+            let (mut dev, gm, msi) = make_queue(false, 0);
+            write32(&mut dev, 0x03c, 0x51);
+            write32(&mut dev, 0x040, 0xfee01000);
+            write32(&mut dev, 0x038, (masked as u32) << 31);
+            write64(&mut dev, 0x088, 16);
+            assert_queue(&mut dev, 0, true);
+            assert_eq!(msi.events.lock().len(), usize::from(!masked));
+
+            let head = if repaired { 16 } else { 0 };
+            if repaired {
+                put(&gm, 0, [0x11, 0, 0, 0], false);
+                write64(&mut dev, 0x088, 32);
+                assert_queue(&mut dev, 0, true);
+            }
+            // Resume either encounters the same bad descriptor or a new one.
+            // Reconciliation must precede execution, not cancel the new event.
+            write32(&mut dev, 0x034, 1 << 4);
+            assert_queue(&mut dev, head, true);
+            assert_eq!(FectlReg::from(read32(&mut dev, 0x038)).ip(), masked);
+            assert_eq!(msi.events.lock().len(), 2 * usize::from(!masked));
+            write32(&mut dev, 0x038, 0);
+            assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+            assert_eq!(
+                &*msi.events.lock(),
+                &vec![(0xfee01000, 0x51, 0); if masked { 1 } else { 2 }]
+            );
+
+            put(&gm, head, wait(0xabcd, SW), false);
+            write32(&mut dev, 0x034, 1 << 4);
+            assert_queue(&mut dev, head + 16, false);
+            assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xabcd);
+            assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+            assert_eq!(msi.events.lock().len(), if masked { 1 } else { 2 });
+        }
+    }
+}
+
+#[test]
+fn test_fault_acknowledgement_preserves_only_undelivered_interrupts() {
+    const PPF: u32 = 1 << 1;
+    const RW1C: u32 = 1 | (1 << 4) | (1 << 5) | (1 << 6); // PFO, IQE, ICE, ITE.
+    for remaining in [PPF, 1, 1 << 4, 1 << 5, 1 << 6] {
+        for deliver in [false, true] {
+            let (mut dev, _, msi) = make_queue(false, 0);
+            write32(&mut dev, 0x03c, 0x51);
+            write32(&mut dev, 0x040, 0xfee01000);
+            write64(&mut dev, 0x088, 16);
+            assert_queue(&mut dev, 0, true);
+            write32(&mut dev, 0x018, 0); // Isolate acknowledgement from queue retry.
+            let fault = VtdFault::RootNotPresent {
+                source_id: 0x0100,
+                iova: 0x1000,
+            };
+            fault.record(&dev.shared, false);
+            fault.record(&dev.shared, false); // Occupied primary record sets PFO.
+            {
+                let mut state = dev.shared.state.write();
+                // Device-TLB errors cannot currently be raised by the guest.
+                state.fsts.set_ice(true);
+                state.fsts.set_ite(true);
+                assert!(!state.fsts.ppf()); // PPF must come from FRCD.F.
+            }
+            assert_eq!(read32(&mut dev, 0x034), RW1C | PPF);
+            assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+            assert!(msi.events.lock().is_empty());
+
+            // FSTS writes cannot acknowledge PPF, even when its bit is written.
+            write32(&mut dev, 0x034, (RW1C & !remaining) | PPF);
+            assert_eq!(read32(&mut dev, 0x034), remaining | PPF);
+            assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+            if remaining != PPF {
+                write32(&mut dev, 0x12c, 1 << 31);
+            }
+            assert_eq!(read32(&mut dev, 0x034), remaining);
+            assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+            if deliver {
+                write32(&mut dev, 0x038, 0);
+                assert_eq!(&*msi.events.lock(), &[(0xfee01000, 0x51, 0)]);
+                assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+                write32(&mut dev, 0x038, 1 << 31);
+            }
+
+            // Neither acknowledgement path may re-latch a delivered interrupt
+            // just because an old status remains, or drop an undelivered one.
+            write32(&mut dev, 0x034, 0);
+            write32(&mut dev, 0x12c, if remaining == PPF { 0 } else { 1 << 31 });
+            assert_eq!(read32(&mut dev, 0x034), remaining);
+            assert_eq!(FectlReg::from(read32(&mut dev, 0x038)).ip(), !deliver);
+
+            if remaining == PPF {
+                write64(&mut dev, 0x128, 1 << 63);
+            } else {
+                write32(&mut dev, 0x034, remaining);
+            }
+            assert_eq!(read32(&mut dev, 0x034), 0);
+            assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+            write32(&mut dev, 0x038, 0);
+            assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+            assert_eq!(msi.events.lock().len(), usize::from(deliver));
+        }
+    }
+}
+
+#[test]
 fn test_wait_sw_if_fn_combinations() {
     for dw in [false, true] {
+        // Notifications and fence ordering are independent (§§6.5.2.8/.11).
+        // Keep all eight combinations, including Type 5 with every flag clear.
         for flags in 0..8 {
             let (mut dev, gm, msi) = make_queue(dw, 0);
             write32(&mut dev, 0x0a0, 0);
@@ -478,6 +622,36 @@ fn test_wait_sw_if_fn_combinations() {
                 assert!(events.is_empty());
             }
         }
+    }
+}
+
+#[test]
+fn test_zero_flag_wait_after_queue_work_has_no_notification() {
+    for dw in [false, true] {
+        let (mut dev, gm, msi) = make_queue(dw, 0);
+        let route = Arc::new(CountingRoute {
+            device_id: 0,
+            retranslate_count: AtomicU32::new(0),
+        });
+        let route_dyn: Arc<dyn iommu_common::RetranslateInterrupts> = route.clone();
+        iommu_common::InterruptRemapper::register_route(&*dev.shared, &route_dyn);
+        write32(&mut dev, 0x038, 0);
+        write32(&mut dev, 0x0a0, 0);
+        gm.write_plain(STATUS, &0x12345678u32).unwrap();
+        let stride = if dw { 32 } else { 16 };
+        put(&gm, 0, [4, 0, 0, 0], dw);
+        // Type 5 remains a wait with notifications and fence disabled; status
+        // data/address are ignored when SW=0 (§6.5.2.8).
+        put(&gm, stride, wait(0xdeadbeef, 0), dw);
+        submit(&mut dev, 2 * stride, dw);
+        assert_queue(&mut dev, 2 * stride, false);
+        assert_eq!(route.retranslate_count.load(Ordering::SeqCst), 1);
+        assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0x12345678);
+        assert_eq!(read32(&mut dev, 0x034), 0);
+        assert_eq!(read32(&mut dev, 0x09c), 0);
+        assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+        assert!(!IectlReg::from(read32(&mut dev, 0x0a0)).ip());
+        assert!(msi.events.lock().is_empty());
     }
 }
 

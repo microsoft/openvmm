@@ -164,6 +164,10 @@ impl InvalidationDescriptor256 {
             DescriptorType::IOTLB_INVALIDATE => (0x0000_0000_ffff_00ff, 0xffff_ffff_ffff_f07f),
             DescriptorType::INTERRUPT_ENTRY_CACHE_INVALIDATE => (0x0000_ffff_f800_001f, 0),
             DescriptorType::INVALIDATION_WAIT => {
+                // SW/IF independently select notifications; FN controls ordering
+                // (§§6.5.2.8 and 6.5.2.11). We accept Type 5 with all three
+                // clear: no notification or fence, not an invalid Type 0.
+                // §7.10 gives a fence-only example, not a minimum-flag rule.
                 let mask = if ecap.pds() { 0xff } else { 0x7f };
                 (0xffff_ffff_0000_0000 | mask, 0xffff_ffff_ffff_fffc)
             }
@@ -252,6 +256,11 @@ open_enum! {
 
 /// Invalidation Wait Descriptor (type 0x05, §6.5.2.8).
 ///
+/// SW and IF independently request completion notifications; both may be
+/// disabled. FN controls following-descriptor ordering, not notification
+/// (§6.5.2.11). This implementation accepts SW=IF=FN=0 as a wait without
+/// notification or fence; §7.10 also gives an explicit fence-only example.
+///
 /// ```text
 /// Bits [3:0]   = Type (0x05)
 /// Bit  [4]     = IF (Interrupt Flag — generate invalidation completion event)
@@ -272,11 +281,12 @@ pub struct InvalidationWaitDw0Dw1 {
     /// Descriptor type (must be 0x05).
     #[bits(4)]
     pub desc_type: u8,
-    /// Interrupt Flag — 1 = generate invalidation completion event.
+    /// Interrupt Flag — 1 = generate invalidation completion event; 0 = no event.
     pub iflag: bool,
-    /// Status Write — 1 = write status_data to status_address.
+    /// Status Write — 1 = write status_data to status_address; 0 = ignore both.
     pub sw: bool,
     /// Fence — 1 = complete this wait before executing following descriptors.
+    /// If 0, following descriptors may execute before this wait completes.
     pub fn_flag: bool,
     /// Page-request Drain.
     pub pd: bool,

@@ -1261,6 +1261,15 @@ impl IntelVtdDevice {
         fsts.into_bits()
     }
 
+    /// Cancel an undelivered fault interrupt once all sources are serviced
+    /// (§§7.3 and 11.4.7.2). Residual status must not re-latch a delivered event.
+    fn reconcile_fault_interrupt(&self, state: &mut VtdState) {
+        let fsts = FstsReg::from(self.read_fsts(state));
+        if !fsts.ppf() && !fsts.pfo() && !fsts.iqe() && !fsts.ice() && !fsts.ite() {
+            state.fectl.set_ip(false);
+        }
+    }
+
     // =========================================================================
     // MMIO Register Write (DWORD granularity)
     // =========================================================================
@@ -1335,6 +1344,7 @@ impl IntelVtdDevice {
                     fsts.set_ite(false);
                 }
                 state.fsts = fsts;
+                self.reconcile_fault_interrupt(&mut state);
                 process_queue = write_val.iqe() || write_val.ite();
             }
 
@@ -1431,6 +1441,7 @@ impl IntelVtdDevice {
                 // F bit (bit 31 of this DWORD = bit 63 of FRCD_HI) is RW1C.
                 if (value >> 31) & 1 != 0 {
                     state.frcd_hi = state.frcd_hi.with_f(false);
+                    self.reconcile_fault_interrupt(&mut state);
                 }
             }
 
