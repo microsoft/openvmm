@@ -136,6 +136,9 @@ impl SimpleFlowNode for Node {
                 }
 
                 let process = flowey::shell_cmd!(rt, "{runner} {args...}")
+                    .env("OPENVMM_LOG", "debug")
+                    .env("OPENVMM_LOG_SPANS", "1")
+                    .env("RUST_BACKTRACE", "1")
                     .ignore_status()
                     .output()?;
                 if !process.stdout.is_empty() {
