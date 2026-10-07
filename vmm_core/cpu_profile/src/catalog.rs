@@ -437,7 +437,7 @@ mod tests {
     /// The pinned JSON files, the source of the static data, and their golden
     /// digests. Released profiles are immutable: changing a golden digest is
     /// a deliberate act, here.
-    const FILES: [(&str, &str, &str); 7] = [
+    const FILES: [(&str, &str, &str); 8] = [
         (
             "intel.skylake-sp.v1",
             include_str!("../profiles/intel.skylake-sp.v1.json"),
@@ -467,6 +467,11 @@ mod tests {
             "amd.genoa.v1",
             include_str!("../profiles/amd.genoa.v1.json"),
             "sha256:894ac647399039242eb0f0e6582e91691234446ebc9362576d7c5613f34b966b",
+        ),
+        (
+            "amd.genoa.v2",
+            include_str!("../profiles/amd.genoa.v2.json"),
+            "sha256:8ee00e9ee8fd5defe3eebdc343733195d477f5f3449defa403f616d530a84839",
         ),
         (
             "amd.turin.v1",
@@ -565,8 +570,8 @@ mod tests {
             (intel(ALDER_LAKE_S), "intel.alderlake.v1", "alderlake"),
             (amd(MILAN), "amd.milan.v1", "milan"),
             (amd(MILAN_X), "amd.milan.v1", "milan"),
-            (amd(GENOA), "amd.genoa.v1", "genoa"),
-            (amd(GENOA_STEPPING_2), "amd.genoa.v1", "genoa"),
+            (amd(GENOA), "amd.genoa.v2", "genoa"),
+            (amd(GENOA_STEPPING_2), "amd.genoa.v2", "genoa"),
             (amd(TURIN), "amd.turin.v1", "turin"),
         ] {
             assert_eq!(select_auto(&host).unwrap().id(), id);
@@ -725,6 +730,13 @@ mod tests {
         assert_eq!(
             code(select("amd.milan.v1", &amd(GENOA))),
             ProfileErrorCode::CpuGeneration
+        );
+
+        // An earlier revision of the host's generation, which auto no longer
+        // selects.
+        assert_eq!(
+            select("amd.genoa.v1", &amd(GENOA)).unwrap().id(),
+            "amd.genoa.v1"
         );
     }
 
