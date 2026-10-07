@@ -25,8 +25,10 @@ pub struct IchHcrEl2 {
 
 #[bitfield(u64)]
 pub struct IchVmcrEl2 {
-    #[bits(9)]
-    _reserved_0_8: u16,
+    pub veng0: bool,
+    pub veng1: bool,
+    #[bits(7)]
+    _reserved_2_8: u8,
     pub veoim: bool,
     #[bits(54)]
     _reserved_10_63: u64,
@@ -298,6 +300,7 @@ pub struct GicrSgi {
 #[cfg(test)]
 mod tests {
     use super::IchLrEl2;
+    use super::IchVmcrEl2;
 
     #[test]
     fn ich_lr_eoi_is_bit_41() {
@@ -305,5 +308,14 @@ mod tests {
 
         assert_eq!(encoded, 1_u64 << 41);
         assert!(IchLrEl2::from(1_u64 << 41).eoi());
+    }
+
+    #[test]
+    fn ich_vmcr_group_enables_are_bits_zero_and_one() {
+        let encoded = u64::from(IchVmcrEl2::new().with_veng0(true).with_veng1(true));
+
+        assert_eq!(encoded, 0b11);
+        assert!(IchVmcrEl2::from(1).veng0());
+        assert!(IchVmcrEl2::from(2).veng1());
     }
 }

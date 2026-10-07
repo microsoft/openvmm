@@ -367,13 +367,21 @@ fn consume_eoi_count(lr_overflow: &mut Vec<u64>, mut eoi_count: usize) {
     }
 }
 
-/// Orders the software active/pending list for LR overflow: deliverable
-/// pure-pending entries first, followed by active entries.
-fn sort_gic_candidates(candidates: &mut [u64]) {
+/// Orders the software active/pending list for LR overflow: pure-pending
+/// entries from enabled groups first, then disabled groups, followed by active
+/// entries.
+fn sort_gic_candidates(candidates: &mut [u64], vmcr: IchVmcrEl2) {
     candidates.sort_by_key(|lr| {
         let lr = IchLrEl2::from(*lr);
+        let pending = lr.state() == IchLrState::PENDING;
+        let group_enabled = if lr.group1() {
+            vmcr.veng1()
+        } else {
+            vmcr.veng0()
+        };
         (
-            lr.state() != IchLrState::PENDING,
+            !pending,
+            pending && !group_enabled,
             lr.priority(),
             lr.vintid(),
         )
@@ -867,24 +875,19 @@ impl UhProcessor<'_, CcaBacked> {
                 }
                 true
             }
-            // The software GIC does not distinguish the SGI1 aliases.
-            SystemReg::ICC_SGI0R_EL1 | SystemReg::ICC_SGI1R_EL1 | SystemReg::ICC_ASGI1R_EL1 => {
-                self.shared.cvm.gic.write_sysreg(
-                    self.vp_index(),
-                    if system_reg == SystemReg::ICC_ASGI1R_EL1 {
-                        SystemReg::ICC_SGI1R_EL1
-                    } else {
-                        system_reg
-                    },
-                    value,
-                    |target_vp| {
+            sgi_reg @ (SystemReg::ICC_SGI0R_EL1
+            | SystemReg::ICC_SGI1R_EL1
+            | SystemReg::ICC_ASGI1R_EL1) => {
+                self.shared
+                    .cvm
+                    .gic
+                    .write_sysreg(self.vp_index(), sgi_reg, value, |target_vp| {
                         tracing::trace!(
                             target_vp,
                             ?system_reg,
                             "GIC sysreg write raised an interrupt"
                         );
-                    },
-                )
+                    })
             }
             _ => false,
         };
@@ -1018,7 +1021,10 @@ impl UhProcessor<'_, CcaBacked> {
             }
         }
 
-        sort_gic_candidates(&mut candidates);
+        sort_gic_candidates(
+            &mut candidates,
+            IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr),
+        );
         let overflow = if candidates.len() > gic_num_lrs {
             candidates.split_off(gic_num_lrs)
         } else {
@@ -1474,6 +1480,40 @@ mod tests {
     }
 
     #[test]
+    fn virtual_interrupt_lrs_preserve_interrupt_groups() {
+        let group0 = PendingInterrupt {
+            intid: 4,
+            priority: 0x20,
+            group1: false,
+            level_triggered: false,
+        };
+        let group1 = PendingInterrupt {
+            intid: 5,
+            priority: 0x20,
+            group1: true,
+            level_triggered: false,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(
+            &mut lrs,
+            HashMap::from([
+                (u64::from(group0.intid), group0),
+                (u64::from(group1.intid), group1),
+            ]),
+        );
+
+        let groups = lrs
+            .into_iter()
+            .map(|lr| {
+                let lr = IchLrEl2::from(lr);
+                (lr.vintid(), lr.group1())
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(groups.get(&group0.intid), Some(&false));
+        assert_eq!(groups.get(&group1.intid), Some(&true));
+    }
+
+    #[test]
     fn only_pure_pending_lrs_count_for_npie() {
         assert!(lr_is_pending(lr(0, 0, IchLrState::PENDING)));
         assert!(!lr_is_pending(lr(0, 0, IchLrState::ACTIVE)));
@@ -1523,9 +1563,26 @@ mod tests {
             lr(3, 0x40, IchLrState::PENDING),
         ];
 
-        sort_gic_candidates(&mut lrs);
+        sort_gic_candidates(
+            &mut lrs,
+            IchVmcrEl2::new().with_veng0(true).with_veng1(true),
+        );
 
         assert_eq!(lrs.map(|lr| IchLrEl2::from(lr).vintid()), [3, 2, 1]);
+    }
+
+    #[test]
+    fn pending_candidates_prefer_the_vmcr_enabled_group() {
+        let group0 = lr(1, 0x10, IchLrState::PENDING);
+        let group1: u64 = IchLrEl2::from(lr(2, 0x80, IchLrState::PENDING))
+            .with_group1(true)
+            .into();
+        let active = lr(3, 0, IchLrState::ACTIVE);
+        let mut lrs = [group0, active, group1];
+
+        sort_gic_candidates(&mut lrs, IchVmcrEl2::new().with_veng1(true));
+
+        assert_eq!(lrs.map(|lr| IchLrEl2::from(lr).vintid()), [2, 1, 3]);
     }
 
     #[test]
