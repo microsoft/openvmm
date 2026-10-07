@@ -7654,7 +7654,7 @@ jobs:
     - name: download VMM.Perf runtime (vmm-perf-win-arm64.zip)
       run: flowey.exe e 33 flowey_lib_hvlite::download_vmm_perf_runtime 0
       shell: bash
-    - name: download VMM.Perf guest image (noble-server-cloudimg-arm64-fio-iperf3.zip)
+    - name: download VMM.Perf guest image (noble-server-cloudimg-arm64-fio-iperf3-vhd.zip)
       run: |-
         flowey.exe e 33 flowey_lib_hvlite::download_vmm_perf_guest_image 0
         flowey.exe e 33 flowey_lib_hvlite::_jobs::setup_and_run_vmm_perf 0
