@@ -678,6 +678,11 @@ impl VtdSharedState {
             FaultReason::SCALABLE_CONTEXT_ACCESS_ERROR,
         )?;
         context.fpd |= entry.lo.fpd();
+        // Apply capability-dependent reserved-zero rules before profile validation,
+        // but ignore all fields except FPD when P=0 (§9.4).
+        if entry.lo.p() && !ecap.rps() && entry.hi.rid_pasid() != 0 {
+            return Err(context.fault(FaultReason::SCALABLE_CONTEXT_RESERVED_BIT));
+        }
         entry.validate(HAW_BITS).map_err(|error| {
             context.fault(match error {
                 ScalableValidationError::NotPresent => FaultReason::SCALABLE_CONTEXT_NOT_PRESENT,
@@ -687,9 +692,6 @@ impl VtdSharedState {
                 _ => FaultReason::SCALABLE_CONTEXT_RESERVED_BIT,
             })
         })?;
-        if !ecap.rps() && entry.hi.rid_pasid() != 0 {
-            return Err(context.fault(FaultReason::SCALABLE_CONTEXT_RESERVED_BIT));
-        }
         let (directory_index, table_index) = entry
             .pasid_indices(entry.hi.rid_pasid())
             .map_err(|_| context.fault(FaultReason::SCALABLE_INVALID_CONTEXT))?;
@@ -715,6 +717,17 @@ impl VtdSharedState {
             FaultReason::PASID_TABLE_ACCESS_ERROR,
         )?;
         context.fpd |= entry.lo.fpd();
+        // Capability-dependent reserved fields must not reach PGTT/AW validation;
+        // not-present entries still ignore everything except FPD (§9.6).
+        if entry.lo.p()
+            && ((!ecap.ssts()
+                && (entry.lo.aw() != 0 || entry.lo.ssptptr() != 0 || entry.lo.ssade()))
+                || (!ecap.ssads() && entry.lo.ssade())
+                || (!ecap.smpwcs() && entry.hi.pwsnp())
+                || (!ecap.sc() && entry.hi.pgsnp()))
+        {
+            return Err(context.fault(FaultReason::PASID_TABLE_RESERVED_BIT));
+        }
         entry.validate(HAW_BITS).map_err(|error| {
             context.fault(match error {
                 ScalableValidationError::NotPresent => FaultReason::PASID_TABLE_NOT_PRESENT,
@@ -725,13 +738,6 @@ impl VtdSharedState {
                 _ => FaultReason::PASID_TABLE_RESERVED_BIT,
             })
         })?;
-        if (!ecap.ssts() && (entry.lo.aw() != 0 || entry.lo.ssptptr() != 0 || entry.lo.ssade()))
-            || (!ecap.ssads() && entry.lo.ssade())
-            || (!ecap.smpwcs() && entry.hi.pwsnp())
-            || (!ecap.sc() && entry.hi.pgsnp())
-        {
-            return Err(context.fault(FaultReason::PASID_TABLE_RESERVED_BIT));
-        }
         let domain_id = entry.hi.did();
         match PasidTranslationType(entry.lo.pgtt()) {
             PasidTranslationType::PASS_THROUGH if ecap.pt() => {

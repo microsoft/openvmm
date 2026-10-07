@@ -344,21 +344,40 @@ fn pass_through_ignores_paging_configuration_but_preserves_domain() {
 fn absent_lookup_entries_ignore_other_fields_and_honor_local_fpd() {
     for stage in 0..4 {
         for fpd in 0..8 {
-            let mut f = Fixture::new(0xffff, 0xabcde, 7);
-            f.fpd(fpd);
-            let address = f.entries[stage];
-            let words = [1, 4, 1, 8][stage];
-            for word in 0..words {
-                let value = if word == 0 {
-                    !3 | (f.word(address) & 2)
-                } else {
-                    u64::MAX
-                };
-                put(&f.gm, address + word * 8, &[value]);
-            }
-            let suppress = fpd & ((1 << stage) - 1) != 0;
-            for write in [false, true] {
-                f.assert_fault(IOVA, write, [0x39, 0x41, 0x51, 0x59][stage], suppress);
+            for (ecap, pasid) in [
+                (final_ecap(), 0xabcde),
+                (
+                    final_ecap()
+                        .with_rps(false)
+                        .with_ssts(false)
+                        .with_ssads(false)
+                        .with_smpwcs(false)
+                        .with_sc(false),
+                    0,
+                ),
+            ] {
+                let mut f = Fixture::new(0xffff, pasid, 7);
+                f.fpd(fpd);
+                let address = f.entries[stage];
+                let words = [1, 4, 1, 8][stage];
+                for word in 0..words {
+                    let value = if word == 0 {
+                        !3 | (f.word(address) & 2)
+                    } else {
+                        u64::MAX
+                    };
+                    put(&f.gm, address + word * 8, &[value]);
+                }
+                let suppress = fpd & ((1 << stage) - 1) != 0;
+                for write in [false, true] {
+                    f.assert_fault_with_capabilities(
+                        IOVA,
+                        write,
+                        [0x39, 0x41, 0x51, 0x59][stage],
+                        suppress,
+                        ecap,
+                    );
+                }
             }
         }
     }
@@ -471,6 +490,125 @@ fn capability_policy_respects_reserved_zero_fields_even_for_pass_through() {
     f.assert_fault_with_capabilities(IOVA, false, 0x5b, false, final_ecap().with_pt(false));
     put(&f.gm, f.entries[3], &[1 | (4 << 6) | (1 << 2)]);
     f.assert_fault_with_capabilities(IOVA, false, 0x5a, false, final_ecap().with_ssts(false));
+}
+
+#[test]
+fn context_capability_validation_precedes_rid_pasid_range_check() {
+    for pasid in [1, 8191, 8192, (1 << 20) - 1] {
+        for fpd in 0..8 {
+            let mut f = Fixture::new(0x12ff, pasid, 0);
+            f.fpd(fpd);
+            for present in [false, true] {
+                let address = f.entries[1];
+                put(
+                    &f.gm,
+                    address,
+                    &[(f.word(address) & !1) | u64::from(present)],
+                );
+                for write in [false, true] {
+                    f.assert_fault_with_capabilities(
+                        IOVA,
+                        write,
+                        if present { 0x42 } else { 0x41 },
+                        fpd & 1 != 0,
+                        final_ecap().with_rps(false),
+                    );
+                    if !present || pasid >= 8192 {
+                        f.assert_fault(
+                            IOVA,
+                            write,
+                            if present { 0x43 } else { 0x41 },
+                            fpd & 1 != 0,
+                        );
+                    } else {
+                        assert_eq!(f.translate(IOVA, write).unwrap(), GPA | 0xabc);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pasid_capability_validation_precedes_invalid_pgtt_and_aw() {
+    for (ecap, lo, hi) in [
+        (final_ecap().with_ssts(false), 7 << 2, 0),
+        (final_ecap().with_ssts(false), SL_ROOT, 0),
+        (final_ecap().with_ssts(false), 1 << 9, 0),
+        (final_ecap().with_ssads(false), 1 << 9, 0),
+        (final_ecap().with_smpwcs(false), 0, 1 << 23),
+        (final_ecap().with_sc(false), 0, 1 << 24),
+    ] {
+        for (pgtt, aw) in [(2, 7), (0, 0), (1, 0), (3, 0), (7, 0)] {
+            for fpd in 0..8 {
+                let mut f = Fixture::new(0x12ff, 64, 0);
+                for present in [false, true] {
+                    put(
+                        &f.gm,
+                        f.entries[3],
+                        &[
+                            lo | (pgtt << 6) | (aw << 2) | u64::from(present),
+                            0xbeef | hi,
+                        ],
+                    );
+                    f.fpd(fpd);
+                    for write in [false, true] {
+                        f.assert_fault_with_capabilities(
+                            IOVA,
+                            write,
+                            if present { 0x5a } else { 0x59 },
+                            fpd != 0,
+                            ecap,
+                        );
+                        f.assert_fault(IOVA, write, if present { 0x5b } else { 0x59 }, fpd != 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_capability_reserved_fields_preserve_supported_translations() {
+    for ecap in [
+        final_ecap().with_rps(false),
+        final_ecap().with_ssads(false),
+        final_ecap().with_smpwcs(false),
+        final_ecap().with_sc(false),
+        final_ecap().with_ssts(false),
+        final_ecap()
+            .with_rps(false)
+            .with_ssts(false)
+            .with_ssads(false)
+            .with_smpwcs(false)
+            .with_sc(false),
+    ] {
+        for pgtt in [2, 4] {
+            for fpd in 0..8 {
+                let mut f = Fixture::new(0x12ff, 0, 0);
+                let paging = if pgtt == 2 && ecap.ssts() {
+                    SL_ROOT | (2 << 2)
+                } else {
+                    0
+                };
+                put(&f.gm, f.entries[3], &[paging | 1 | (pgtt << 6)]);
+                f.fpd(fpd);
+                for write in [false, true] {
+                    if pgtt == 2 && !ecap.ssts() {
+                        f.assert_fault_with_capabilities(IOVA, write, 0x5b, fpd != 0, ecap);
+                    } else {
+                        let gpa = f
+                            .dev
+                            .shared
+                            .translator()
+                            .translate_with_capabilities(f.rid, IOVA, write, ecap, |gpa| gpa)
+                            .unwrap();
+                        assert_eq!(gpa, if pgtt == 2 { GPA | 0xabc } else { IOVA });
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
