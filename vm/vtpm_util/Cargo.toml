@@ -1,0 +1,29 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vtpm_util"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+clap = { workspace = true, features = ["derive"] }
+getrandom.workspace = true
+hex.workspace = true
+ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
+# TPM import blobs require an RSA private prime, which `crypto` does not expose.
+openssl = { workspace = true, features = ["vendored"] }
+parking_lot.workspace = true
+sha2.workspace = true
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true
