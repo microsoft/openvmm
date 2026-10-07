@@ -27,22 +27,22 @@ use windows::Win32::Security::Cryptography::BCRYPT_RSAPRIVATE_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
 use windows::Win32::Security::Cryptography::CNG_RSA_PRIVATE_KEY_BLOB;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
 use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ENCODE_ALLOC_FLAG;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 use windows::Win32::Security::Cryptography::CRYPT_PRIVATE_KEY_INFO;
 use windows::Win32::Security::Cryptography::CryptDecodeObjectEx;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CryptEncodeObjectEx;
 use windows::Win32::Security::Cryptography::PKCS_7_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::PKCS_PRIVATE_KEY_INFO;
 use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::core::PSTR;
 
 fn err(err: windows_result::Error, op: &'static str) -> RsaError {
@@ -245,7 +245,7 @@ impl RsaKeyPairInner {
         Ok(Self(handle))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         // Step 1: export the key as a BCrypt full-private blob, which
         // contains every field needed by the PKCS#1 RSAPrivateKey ASN.1
@@ -322,6 +322,56 @@ impl RsaKeyPairInner {
             CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))?
         };
         Ok(pkcs8_buf.as_bytes().to_vec())
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        use windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_MAGIC;
+        use zerocopy::FromBytes;
+
+        let blob = export_key(&self.0, BCRYPT_RSAFULLPRIVATE_BLOB)?;
+
+        // BCRYPT_RSAKEY_BLOB consists of six native-endian u32 fields.
+        let ([magic, _bits, cb_e, cb_n, cb_p, cb_q], mut rest) =
+            <[u32; 6]>::read_from_prefix(&blob)
+                .map_err(|_| invalid_err("exported RSA private key blob is too small"))?;
+        if magic != BCRYPT_RSAFULLPRIVATE_MAGIC.0 {
+            return Err(invalid_err(
+                "exported RSA private key blob has an invalid magic value",
+            ));
+        }
+        let mut take_component = |size: u32| -> Result<Vec<u8>, RsaError> {
+            if size == 0 {
+                return Err(invalid_err(
+                    "exported RSA private key has an empty component",
+                ));
+            }
+            let (bytes, remaining) = rest
+                .split_at_checked(size as usize)
+                .ok_or_else(|| invalid_err("exported RSA private key blob is truncated"))?;
+            rest = remaining;
+            Ok(bytes.to_vec())
+        };
+        let public_exponent = take_component(cb_e)?;
+        let modulus = take_component(cb_n)?;
+        let prime1 = take_component(cb_p)?;
+        let prime2 = take_component(cb_q)?;
+        let _exponent1 = take_component(cb_p)?;
+        let _exponent2 = take_component(cb_q)?;
+        let _coefficient = take_component(cb_p)?;
+        let private_exponent = take_component(cb_n)?;
+        if !rest.is_empty() {
+            return Err(invalid_err(
+                "exported RSA private key blob has trailing bytes",
+            ));
+        }
+        Ok(super::RsaPrivateKeyComponents {
+            modulus,
+            public_exponent,
+            private_exponent,
+            prime1,
+            prime2,
+        })
     }
 
     pub fn oaep_decrypt(

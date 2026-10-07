@@ -32,11 +32,27 @@ impl RsaKeyPairInner {
         Ok(Self(pkey))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0
             .private_key_to_pkcs8()
             .map_err(|e| err(e, "encoding the private key as PKCS#8 DER"))
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        let rsa = self
+            .0
+            .rsa()
+            .map_err(|e| err(e, "accessing the RSA private key"))?;
+
+        Ok(super::RsaPrivateKeyComponents {
+            modulus: rsa.n().to_vec(),
+            public_exponent: rsa.e().to_vec(),
+            private_exponent: rsa.d().to_vec(),
+            prime1: rsa.p().unwrap().to_vec(),
+            prime2: rsa.q().unwrap().to_vec(),
+        })
     }
 
     pub fn oaep_decrypt(
