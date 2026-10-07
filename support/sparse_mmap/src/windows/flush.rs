@@ -17,6 +17,9 @@ fn flush_file_range(
     len: usize,
     flush: impl Fn(usize, usize) -> io::Result<()> + Sync,
 ) -> io::Result<()> {
+    // Splitting relies on page alignment to flush each page exactly once with
+    // at most `MAX_FLUSH_WORKERS` flushes in flight.
+    assert!(offset.is_multiple_of(PAGE_SIZE) && len.is_multiple_of(PAGE_SIZE));
     if len == 0 {
         return Ok(());
     }
@@ -50,6 +53,12 @@ fn flush_file_range(
 
 impl SparseMapping {
     /// Flushes modified shared file pages in a populated local view.
+    ///
+    /// `offset` and `len` must be multiples of [`Self::page_size`], and the
+    /// range must lie within the mapping; otherwise, this fails with
+    /// [`io::ErrorKind::InvalidInput`]. An empty range is a no-op. Flushing a
+    /// view mapped into another process fails with
+    /// [`io::ErrorKind::Unsupported`].
     pub fn flush(&self, offset: usize, len: usize) -> Result<(), Error> {
         let _ = self.validate_offset_len(offset, len)?;
         if self.process.is_some() {
