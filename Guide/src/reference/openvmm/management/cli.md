@@ -671,5 +671,7 @@ configure the disk's kernel. Scalable mode alone does not enable `SSADE`.
 OpenVMM inspection exposes the SRTP-latched `translation_table_mode` (0 for
 legacy, 1 for scalable), rather than just the pending RTADDR value.
 
-See the [`intel_vtd` crate documentation](https://openvmm.dev/rustdoc/intel_vtd/)
-for implementation details.
+See the [`intel_vtd` crate documentation][intel-vtd-rustdoc] for implementation
+details.
+
+[intel-vtd-rustdoc]: https://openvmm.dev/rustdoc/linux/intel_vtd/index.html
