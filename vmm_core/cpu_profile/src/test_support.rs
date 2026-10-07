@@ -14,6 +14,7 @@ use crate::fingerprint::ToolIdentity;
 use crate::host::HostCpu;
 use crate::host::HostIdentity;
 use crate::host::HostOs;
+use crate::hv_banks::HvFeatures;
 use crate::signature::decode_signature;
 
 /// Returns the pinned profile `id`.
@@ -55,14 +56,16 @@ pub(crate) fn fingerprint_with(
 /// Returns the fingerprint of a host whose `backend` reports `cpuid`, of the
 /// CPU whose vendor, signature, and brand `cpuid` reports.
 pub(crate) fn host_fingerprint(backend: &str, cpuid: Vec<CpuidEntry>) -> CpuFingerprint {
-    let leaf = |leaf| crate::cpuid::lookup(&cpuid, leaf, 0).unwrap_or_default();
+    backend_host_fingerprint(BackendFingerprint::new(backend, "test", cpuid))
+}
+
+/// Returns the fingerprint of a host whose backend reports `backend`, of the
+/// CPU whose vendor, signature, and brand the backend's CPUID reports.
+fn backend_host_fingerprint(backend: BackendFingerprint) -> CpuFingerprint {
+    let leaf = |leaf| crate::cpuid::lookup(&backend.cpuid, leaf, 0).unwrap_or_default();
     let [_, ebx, ecx, edx] = leaf(0);
     let host = host_identity(&crate::signature::vendor_bytes(ebx, edx, ecx), &leaf);
-    CpuFingerprint::new(
-        tool(),
-        host,
-        BackendFingerprint::new(backend, "test", cpuid),
-    )
+    CpuFingerprint::new(tool(), host, backend)
 }
 
 fn tool() -> ToolIdentity {
@@ -318,6 +321,125 @@ pub(crate) const GENOA_KVM_CPUID: [(u32, Option<u32>, [u32; 4]); 71] = [
 /// Returns [`GENOA_KVM_CPUID`] as fingerprint entries.
 pub(crate) fn genoa_kvm_entries() -> Vec<CpuidEntry> {
     entries(&GENOA_KVM_CPUID)
+}
+
+/// The CPUID of an AMD EPYC 9V74 (Genoa: family 0x19, model 0x11,
+/// stepping 1) as MSHV presents it in an Azure VM with nested
+/// virtualization, which `--cpu-fingerprint` recorded: each leaf, subleaf,
+/// and the registers of a probe partition that enables every processor and
+/// XSAVE feature of the host partition ([`GENOA_MSHV_HOST`]). That MSHV
+/// offers AVX-512 and CET's XSAVE states, enumerates the basic leaves only up
+/// to 0xD, and presents nothing in `0x80000021`: neither `LFENCE`
+/// serialization nor the TSA immunities that the Genoa runner's Azure host
+/// presents to KVM ([`GENOA_KVM_CPUID`]).
+pub(crate) const GENOA_MSHV_CPUID: [(u32, Option<u32>, [u32; 4]); 61] = [
+    (0x0, None, [0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65]),
+    (0x1, None, [0x00a1_0f11, 0x800, 0x76fa_3203, 0x078b_fbff]),
+    (0x2, None, [0; 4]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0, 0, 0x1, 0]),
+    (0x7, Some(0), [0x1, 0xf1bf_07a9, 0x0040_5fc6, 0x10]),
+    (0x7, Some(1), [0x20, 0, 0, 0]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0xe7, 0x980, 0x980, 0]),
+    (0xd, Some(1), [0xf, 0x9a8, 0x1800, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(5), [0x40, 0x340, 0, 0]),
+    (0xd, Some(6), [0x200, 0x380, 0, 0]),
+    (0xd, Some(7), [0x400, 0x580, 0, 0]),
+    (0xd, Some(0xb), [0x10, 0, 0x1, 0]),
+    (0xd, Some(0xc), [0x18, 0, 0x1, 0]),
+    (0x4000_0000, None, [0; 4]),
+    (
+        0x8000_0000,
+        None,
+        [0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+    ),
+    (
+        0x8000_0001,
+        None,
+        [0x00a1_0f11, 0x4000_0000, 0x0040_03f3, 0x2fd3_fbff],
+    ),
+    (
+        0x8000_0002,
+        None,
+        [0x2044_4d41, 0x4359_5045, 0x3756_3920, 0x3038_2034],
+    ),
+    (
+        0x8000_0003,
+        None,
+        [0x726f_432d, 0x7250_2065, 0x7365_636f, 0x2072_6f73],
+    ),
+    (
+        0x8000_0004,
+        None,
+        [0x2020_2020, 0x2020_2020, 0x2020_2020, 0x0020_2020],
+    ),
+    (
+        0x8000_0005,
+        None,
+        [0xff48_ff40, 0xff48_ff40, 0x2008_0140, 0x2008_0140],
+    ),
+    (
+        0x8000_0006,
+        None,
+        [0x5c00_2200, 0x6c00_4200, 0x0400_6140, 0x0a00_9140],
+    ),
+    (0x8000_0007, None, [0; 4]),
+    (0x8000_0008, None, [0x3030, 0x3000_0015, 0, 0x0001_0000]),
+    (0x8000_0009, None, [0; 4]),
+    (0x8000_000a, None, [0; 4]),
+    (0x8000_000b, None, [0; 4]),
+    (0x8000_000c, None, [0; 4]),
+    (0x8000_000d, None, [0; 4]),
+    (0x8000_000e, None, [0; 4]),
+    (0x8000_000f, None, [0; 4]),
+    (0x8000_0010, None, [0; 4]),
+    (0x8000_0011, None, [0; 4]),
+    (0x8000_0012, None, [0; 4]),
+    (0x8000_0013, None, [0; 4]),
+    (0x8000_0014, None, [0; 4]),
+    (0x8000_0015, None, [0; 4]),
+    (0x8000_0016, None, [0; 4]),
+    (0x8000_0017, None, [0; 4]),
+    (0x8000_0018, None, [0; 4]),
+    (0x8000_0019, None, [0; 4]),
+    (0x8000_001a, None, [0x2, 0, 0, 0]),
+    (0x8000_001b, None, [0; 4]),
+    (0x8000_001c, None, [0; 4]),
+    (0x8000_001d, Some(0), [0x121, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(1), [0x122, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(2), [0x143, 0x01c0_003f, 0x7ff, 0x2]),
+    (0x8000_001d, Some(3), [0x163, 0x03c0_003f, 0x7fff, 0x1]),
+    (0x8000_001d, Some(4), [0; 4]),
+    (0x8000_001e, None, [0; 4]),
+    (0x8000_001f, None, [0; 4]),
+    (0x8000_0020, None, [0; 4]),
+    (0x8000_0021, None, [0; 4]),
+];
+
+/// The processor features that the host partition of [`GENOA_MSHV_CPUID`]'s
+/// host offers its child partitions: none of the TSA immunities.
+pub(crate) const GENOA_MSHV_HOST: HvFeatures = HvFeatures {
+    banks: [0x0602_0fcb_67f7_9fbf, 0x0000_0050_e000_01ed],
+    xsave: 0xff_ffdf,
+};
+
+/// Returns the fingerprint of the MSHV host of [`GENOA_MSHV_CPUID`], with
+/// its processor features.
+pub(crate) fn genoa_mshv_fingerprint() -> CpuFingerprint {
+    let mut backend = BackendFingerprint::new("mshv", "test", entries(&GENOA_MSHV_CPUID));
+    let [bank0, bank1] = GENOA_MSHV_HOST.banks;
+    backend.set_feature_bank("mshv.host.ProcessorFeatures0", bank0);
+    backend.set_feature_bank("mshv.host.ProcessorFeatures1", bank1);
+    backend.set_feature_bank("mshv.host.ProcessorXsaveFeatures", GENOA_MSHV_HOST.xsave);
+    backend_host_fingerprint(backend)
 }
 
 /// The CPUID of an AMD EPYC 9V45 (Turin: family 0x1a, model 2, stepping 1)

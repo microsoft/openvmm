@@ -320,10 +320,14 @@ generation: family 6, model 85, steppings 0 to 4), `intel.icelake-sp.v1`
 (Xeon Scalable, third generation: 6/106), `intel.emeraldrapids.v1` (Xeon
 Scalable, fifth generation: 6/207), `intel.alderlake.v1` (Core, twelfth
 generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
-25/1), `amd.genoa.v1` (AMD EPYC, fourth generation: 25/17), and
-`amd.turin.v1` (AMD EPYC, fifth generation: 26/2). `--cpu-profile <ID>`
-selects one; the default, `auto`, selects the profile of the host's
-generation. An Intel or AMD host without one boots on a host profile
+25/1), `amd.genoa.v1` and `amd.genoa.v2` (AMD EPYC, fourth generation:
+25/17), and `amd.turin.v1` (AMD EPYC, fifth generation: 26/2).
+`amd.genoa.v2` drops what `amd.genoa.v1` presents in `0x80000021`, `LFENCE`
+serialization and the TSA immunities, which not every Genoa host's
+hypervisor presents. `--cpu-profile <ID>` selects one; the default,
+`auto`, selects the latest revision of the host's generation's profile. An
+earlier revision stays pinned, so its snapshots still restore. An Intel or
+AMD host that no pinned profile serves boots on a host profile
 instead: `auto` falls back to the profile that `--cpu-profile host`
 selects, for which OpenVMM fingerprints the backend on this host, as
 `--cpu-fingerprint` does, and applies the pinned profiles' derivation policy
