@@ -683,7 +683,6 @@ message VMConfig {
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
     // Enable the guest watchdog device. Disabled by default.
-    // The guest configures and pets the timer.
     bool guest_watchdog = 20;
 }
 
