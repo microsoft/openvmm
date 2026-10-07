@@ -1280,12 +1280,13 @@ pub(crate) mod test_cpuid {
     use vm_topology::processor::x86::X2ApicState;
 
     /// Pinned CPU profiles of each vendor.
-    pub const PROFILES: [&str; 6] = [
+    pub const PROFILES: [&str; 7] = [
         "intel.skylake-sp.v1",
         "intel.icelake-sp.v1",
         "intel.emeraldrapids.v1",
         "amd.milan.v1",
         "amd.genoa.v1",
+        "amd.genoa.v2",
         "amd.turin.v1",
     ];
 
