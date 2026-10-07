@@ -100,6 +100,9 @@ const HOST_ADDRESS_MASK: u64 = (1 << HAW_BITS) - 1;
 /// SAGAW bitmask: supported address widths (39-bit + 48-bit).
 const SAGAW_MASK: u8 = (1 << AddressWidth::AW_39BIT.0) | (1 << AddressWidth::AW_48BIT.0);
 
+/// Largest advertised AGAW, which bounds DMA fault information (§11.4.7.6).
+const MAX_AGAW_BITS: u32 = 30 + 9 * SAGAW_MASK.ilog2();
+
 /// Number of fault recording registers.
 const NUM_FAULT_RECORDS: u8 = 1;
 
@@ -509,7 +512,7 @@ impl VtdSharedState {
         }
 
         // Write fault recording register.
-        let frcd_lo = FrcdLo::new().with_fi(fault_addr >> 12);
+        let frcd_lo = FrcdLo::new().with_fi((fault_addr & ((1 << MAX_AGAW_BITS) - 1)) >> 12);
         let frcd_hi = FrcdHi::new()
             .with_sid(source_id)
             .with_fr(fault_reason.0)
@@ -619,7 +622,10 @@ impl VtdSharedState {
         let domain_id = entry.hi.did();
         match TranslationType(entry.lo.tt()) {
             TranslationType::PASS_THROUGH if ecap.pt() => {
-                if aw != AddressWidth::AW_48BIT {
+                // §9.3 requires the largest supported AW. For compatibility,
+                // tolerate any supported AW, but not invalid encodings.
+                // Identity addresses still use HAW (§3.9), not paging AGAW.
+                if Self::supported_levels(aw).is_none() {
                     return Err(context.fault(FaultReason::INVALID_CONTEXT_ENTRY));
                 }
                 Ok(TranslationDescriptor::PassThrough { context, domain_id })
@@ -827,14 +833,19 @@ impl VtdSharedState {
         let mut can_read = true;
         let mut can_write = true;
         for level in (1..=levels).rev() {
-            let reason = context.reason(
-                FaultReason::SL_PTE_ACCESS_ERROR,
-                if level == levels {
-                    FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR
-                } else {
-                    FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR
-                },
-            );
+            // Table 26 distinguishes SSPTPTR access (LCT.4.3/SSS.4) from
+            // access through a preceding paging entry's ADDR (LSS.1/SSS.1).
+            let reason = if level == levels {
+                context.reason(
+                    FaultReason::INVALID_CONTEXT_ENTRY,
+                    FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR,
+                )
+            } else {
+                context.reason(
+                    FaultReason::SL_PTE_ACCESS_ERROR,
+                    FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR,
+                )
+            };
             let pte: SlPte = self.read_translation_entry(
                 table_addr,
                 SlPte::iova_index(iova, level) as u64,

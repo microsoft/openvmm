@@ -149,6 +149,27 @@ impl Fixture {
         self.assert_fault_with_capabilities(iova, write, reason, suppressed, final_ecap());
     }
 
+    fn translate_legacy(&self, iova: u64, write: bool) -> u64 {
+        self.dev
+            .shared
+            .translator()
+            .translate(self.rid, iova, write, |gpa| {
+                assert!(self.dev.shared.state.try_write().is_none());
+                gpa
+            })
+            .unwrap()
+    }
+
+    fn assert_legacy_fault(&mut self, iova: u64, write: bool, reason: u8, suppressed: bool) {
+        self.assert_fault_with_capabilities(
+            iova,
+            write,
+            reason,
+            suppressed,
+            EcapReg::from(ECAP_VALUE),
+        );
+    }
+
     fn assert_fault_with_capabilities(
         &mut self,
         iova: u64,
@@ -178,9 +199,10 @@ impl Fixture {
             assert_eq!(raw, previous);
             assert_eq!(read32(&mut self.dev, 0x034) & 3, 0);
         } else {
-            // FI retains the original request at architectural 4KB granularity.
+            // FI retains the original request at 4KB granularity, with bits
+            // above the largest advertised AGAW reserved (§11.4.7.6).
             // PP/PASID/PRIV/EXE stay zero: RID_PASID is not an explicit tag.
-            assert_eq!(raw.0, iova & !0xfff);
+            assert_eq!(raw.0, iova & 0x0000_ffff_ffff_f000);
             assert_eq!(
                 raw.1,
                 (1 << 63)
@@ -897,6 +919,309 @@ fn legacy_supported_aw_pass_through_ignored_pointer_and_context_bits() {
     assert_eq!(f.translate(IOVA, false).unwrap(), IOVA);
     f.assert_fault(1 << 48, true, 4, false);
     f.assert_fault(0xfee0_0123, true, 0x0e, false);
+}
+
+#[test]
+fn legacy_pass_through_supported_widths_are_identity_without_a_walk() {
+    for aw in [1, 2] {
+        for pointer in [0, SL_ROOT, UNMAPPED, 0xffff_ffff_ffff_f000] {
+            for fpd in [0, 1] {
+                let mut f = Fixture::new(0xabcd, 0, 0);
+                f.legacy(4);
+                assert_eq!((read64(&mut f.dev, 0x008) >> 8) & 0x1f, 0b00110);
+                let context = LOWER + 0xcd * 16;
+                // AW=1, lo=9 is deliberately tolerated, not the §9.3
+                // requirement to program the largest supported AW (2).
+                put(
+                    &f.gm,
+                    context,
+                    &[pointer | 0x9 | (fpd << 1), aw | (0xbeef << 8)],
+                );
+                // If the ignored pointer is followed, this is not identity.
+                walk(&f.gm, 4, 1, GPA, 0x90000);
+                let mut before = vec![0; UNMAPPED as usize];
+                f.gm.read_at(0, &mut before).unwrap();
+                for offset in [0, 1, 0xabc, 0xfff] {
+                    for write in [false, true] {
+                        assert_eq!(f.translate_legacy(GPA | offset, write), GPA | offset);
+                    }
+                }
+                let mut after = vec![0; UNMAPPED as usize];
+                f.gm.read_at(0, &mut after).unwrap();
+                assert!(before == after, "pass-through changed guest memory");
+                assert_eq!(read32(&mut f.dev, 0x034) & 3, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_pass_through_dma_reads_and_writes_only_identity_memory() {
+    for aw in [1, 2] {
+        let mut f = Fixture::new(0xabcd, 0, 0);
+        f.legacy(4);
+        put(
+            &f.gm,
+            LOWER + 0xcd * 16,
+            &[UNMAPPED | 0x9, aw | (0xbeef << 8)],
+        );
+        let offsets = [0, 1, 0xabc, 0xfff];
+        for offset in offsets {
+            f.gm.write_at(GPA | offset, &[0xa5]).unwrap();
+        }
+        let mut expected = vec![0; UNMAPPED as usize];
+        f.gm.read_at(0, &mut expected).unwrap();
+        let translator = f.dev.shared.translator();
+        for offset in offsets {
+            let iova = GPA | offset;
+            let value = translator
+                .translate(f.rid, iova, false, |gpa| {
+                    assert_eq!(gpa, iova);
+                    assert!(f.dev.shared.state.try_write().is_none());
+                    f.gm.read_plain::<u8>(gpa).unwrap()
+                })
+                .unwrap();
+            assert_eq!(value, 0xa5);
+            translator
+                .translate(f.rid, iova, true, |gpa| {
+                    assert_eq!(gpa, iova);
+                    assert!(f.dev.shared.state.try_write().is_none());
+                    f.gm.write_at(gpa, &[0x5a]).unwrap();
+                })
+                .unwrap();
+            expected[iova as usize] = 0x5a;
+        }
+        let mut actual = vec![0; UNMAPPED as usize];
+        f.gm.read_at(0, &mut actual).unwrap();
+        assert!(actual == expected, "DMA changed memory outside its payload");
+        assert_eq!(read32(&mut f.dev, 0x034) & 3, 0);
+    }
+}
+
+#[test]
+fn legacy_pass_through_preserves_host_and_interrupt_address_bounds() {
+    for aw in [1, 2] {
+        for fpd in [0, 1] {
+            let mut f = Fixture::new(0xffff, 0, 0);
+            f.legacy(4);
+            put(
+                &f.gm,
+                LOWER + 255 * 16,
+                &[0x9 | (fpd << 1), aw | (0xbeef << 8) | 0x78],
+            );
+            for write in [false, true] {
+                // §3.9 and Table 26 LGN.1.3 check HAW, not AW=39 paging bounds.
+                for iova in [
+                    0,
+                    (1 << 39) - 1,
+                    1 << 39,
+                    (1 << 39) | 0xabc,
+                    (1 << 48) - 1,
+                    0xfedf_ffff,
+                    0xfef0_0000,
+                    0x1_fee0_0000,
+                ] {
+                    assert_eq!(f.translate_legacy(iova, write), iova);
+                }
+                for iova in [1 << 48, (1 << 48) | 0xabc, (1 << 63) | 0xabc, u64::MAX] {
+                    f.assert_legacy_fault(iova, write, 0x04, fpd != 0);
+                }
+                for iova in [0xfee0_0000, 0xfee0_0123, 0xfeef_ffff] {
+                    f.assert_legacy_fault(iova, write, 0x0e, fpd != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_unsupported_widths_and_reserved_translation_type_fault() {
+    for tt in [0, 2, 3] {
+        for aw in 0..8 {
+            if tt != 3 && matches!(aw, 1 | 2) {
+                continue;
+            }
+            for fpd in [0, 1] {
+                let mut f = Fixture::new(0x12ff, 0, 0);
+                f.legacy(4);
+                put(
+                    &f.gm,
+                    LOWER + 255 * 16,
+                    &[SL_ROOT | 1 | (tt << 2) | (fpd << 1), aw | (0xbeef << 8)],
+                );
+                for write in [false, true] {
+                    f.assert_legacy_fault(0x12_3456_7abc, write, 0x03, fpd != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_present_root_reserved_fields_fault_before_context_fpd() {
+    for fpd in [0, 1] {
+        let mut f = Fixture::new(0xabcd, 0, 0);
+        f.legacy(4);
+        put(&f.gm, LOWER + 0xcd * 16, &[0x9 | (fpd << 1), 2]);
+        let root = ROOT + 0xab * 16;
+        // §9.1: low bits 11:1 and 63:HAW, and the entire upper word.
+        for bit in (1..12).chain(48..128) {
+            let words = if bit < 64 {
+                [LOWER | 1 | (1 << bit), 0]
+            } else {
+                [LOWER | 1, 1 << (bit - 64)]
+            };
+            put(&f.gm, root, &words);
+            for write in [false, true] {
+                // Table 26 LRT.3 is unqualified; the context isn't consumed.
+                f.assert_legacy_fault(IOVA, write, 0x0a, false);
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_present_context_reserved_fields_honor_fpd() {
+    for tt in [0, 2] {
+        for fpd in [0, 1] {
+            let mut f = Fixture::new(0xabcd, 0, 0);
+            f.legacy(4);
+            let context = LOWER + 0xcd * 16;
+            let lo = SL_ROOT | 1 | (tt << 2) | (fpd << 1);
+            let hi = 2 | (0xbeef << 8) | 0x78;
+            // §9.3: bits 11:4, 71 and 127:88. Bits 70:67 are ignored.
+            for bit in (4..12).chain([71]).chain(88..128) {
+                let words = if bit < 64 {
+                    [lo | (1 << bit), hi]
+                } else {
+                    [lo, hi | (1 << (bit - 64))]
+                };
+                put(&f.gm, context, &words);
+                for write in [false, true] {
+                    // Table 26 LCT.3 is qualified, even for pass-through.
+                    f.assert_legacy_fault(IOVA, write, 0x0b, fpd != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_ssptptr_above_haw_is_reserved_not_an_access_error() {
+    for aw in [1, 2] {
+        for fpd in [0, 1] {
+            let mut f = Fixture::new(0xabcd, 0, 0);
+            f.legacy(4);
+            for bit in 48..64 {
+                put(
+                    &f.gm,
+                    LOWER + 0xcd * 16,
+                    &[SL_ROOT | 1 | (fpd << 1) | (1 << bit), aw | (0xbeef << 8)],
+                );
+                for write in [false, true] {
+                    // §9.3 reserves SSPTPTR[63:HAW] for translated contexts.
+                    f.assert_legacy_fault(0x12_3456_7abc, write, 0x0b, fpd != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_lookup_access_errors_cannot_use_unread_context_fpd() {
+    for fpd in [0, 1] {
+        for stage in [0, 1] {
+            let mut f = Fixture::new(0xabcd, 0, 0);
+            f.legacy(4);
+            put(&f.gm, LOWER + 0xcd * 16, &[0x9 | (fpd << 1), 2]);
+            for pointer in [UNMAPPED, (1 << 48) - 4096] {
+                if stage == 0 {
+                    write64(&mut f.dev, 0x020, pointer);
+                    write32(&mut f.dev, 0x018, (1 << 30) | (1 << 31));
+                } else {
+                    put(&f.gm, ROOT + 0xab * 16, &[pointer | 1, 0]);
+                }
+                for write in [false, true] {
+                    // Table 26 LRT.1/LCT.1 are unqualified, unlike LCT.3.
+                    f.assert_legacy_fault(IOVA, write, if stage == 0 { 8 } else { 9 }, false);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_sl_access_errors_distinguish_ssptptr_from_later_tables() {
+    for levels in [3, 4] {
+        for failing_level in 1..=levels {
+            for fpd in [0, 1] {
+                let mut f = Fixture::new(0xabcd, 0, 0);
+                f.legacy(levels);
+                let iova = 0x12_3456_7abc;
+                let addresses = walk(&f.gm, levels, 1, iova, GPA);
+                let context = LOWER + 0xcd * 16;
+                put(&f.gm, context, &[SL_ROOT | 1 | (fpd << 1)]);
+                if failing_level == levels {
+                    put(&f.gm, context, &[UNMAPPED | 1 | (fpd << 1)]);
+                } else {
+                    let parent = addresses[usize::from(levels - failing_level - 1)];
+                    put(&f.gm, parent, &[UNMAPPED | 3]);
+                }
+                // Table 26: LCT.4.3 (SSPTPTR) is 03h; LSS.1 (ADDR) is 07h.
+                for write in [false, true] {
+                    f.assert_legacy_fault(
+                        iova,
+                        write,
+                        if failing_level == levels { 3 } else { 7 },
+                        fpd != 0,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_walk_input_width_does_not_limit_host_output_width() {
+    for (levels, width) in [(3, 39), (4, 48)] {
+        for fpd in [0, 1] {
+            let mut f = Fixture::new(0xabcd, 0, 0);
+            f.legacy(levels);
+            put(&f.gm, LOWER + 0xcd * 16, &[SL_ROOT | 1 | (fpd << 1)]);
+            let limit = 1u64 << width;
+            walk(&f.gm, levels, 1, limit - 1, (1 << 48) - 4096);
+            for write in [false, true] {
+                assert_eq!(f.translate_legacy(limit - 1, write), (1 << 48) - 1);
+                for iova in [limit, limit | 0xabc, (1 << 63) | 0xabc, u64::MAX] {
+                    f.assert_legacy_fault(iova, write, 0x04, fpd != 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_second_stage_addresses_above_haw_honor_fpd() {
+    for levels in [3, 4] {
+        for fpd in [0, 1] {
+            let mut f = Fixture::new(0xabcd, 0, 0);
+            f.legacy(levels);
+            put(&f.gm, LOWER + 0xcd * 16, &[SL_ROOT | 1 | (fpd << 1)]);
+            let iova = 0x12_3456_7abc;
+            let addresses = walk(&f.gm, levels, 1, iova, GPA);
+            for address in addresses {
+                let original = f.word(address);
+                // §9.8 reserves ADDR[51:HAW] at both table and leaf entries.
+                for bit in 48..52 {
+                    put(&f.gm, address, &[original | (1 << bit)]);
+                    for write in [false, true] {
+                        f.assert_legacy_fault(iova, write, 0x0c, fpd != 0);
+                    }
+                }
+                put(&f.gm, address, &[original]);
+            }
+        }
+    }
 }
 
 #[test]
