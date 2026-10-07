@@ -1802,6 +1802,7 @@ mod tests {
     use guestmem::GuestMemory;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
 
     const TEST_MMIO_BASE: u64 = 0xFED9_0000;
 
@@ -1889,6 +1890,20 @@ mod tests {
         assert!(ecap_reg.eim());
         assert_eq!(ecap_reg.iro(), 0x10); // 0x100
         assert_eq!(ecap_reg.mhmv(), 0xF);
+        // Format definitions must not advertise the later stack's capabilities.
+        assert!(!ecap_reg.smts());
+        assert!(!ecap_reg.ssts());
+        assert!(!ecap_reg.ssads());
+        assert!(!ecap_reg.smpwcs());
+        assert!(!ecap_reg.rps());
+        assert!(!ecap_reg.flts());
+        assert!(!ecap_reg.eafs());
+        assert!(!ecap_reg.nest());
+        assert!(!ecap_reg.pasid());
+        assert!(!ecap_reg.dt());
+        assert!(!ecap_reg.prs());
+        assert!(!ecap_reg.srs());
+        assert_eq!(ecap, 0x0000_0000_00f0_10db);
     }
 
     #[test]
@@ -3112,6 +3127,53 @@ mod tests {
 
         let frcd_lo = state.frcd_lo;
         assert_eq!(frcd_lo.fault_address(), 0x1000);
+    }
+
+    #[test]
+    fn test_frcd_raw_mmio_reason_position() {
+        let mut dev = create_test_device();
+        for reason in 0..=u8::MAX {
+            for is_read in [false, true] {
+                {
+                    let mut state = dev.shared.state.write();
+                    dev.shared.record_fault_locked(
+                        &mut state,
+                        0xabcd,
+                        FaultReason(reason),
+                        0x1234_5678_abcd,
+                        is_read,
+                        false,
+                    );
+                }
+                // §11.4.7.6: FR is full-register bits 103:96, hence the
+                // low byte of DWORD 3, not bits 23:16 of that DWORD.
+                let dw3 = 0x8000_0000 | ((is_read as u32) << 30) | u32::from(reason);
+                assert_eq!(read32(&mut dev, 0x120), 0x5678_a000);
+                assert_eq!(read32(&mut dev, 0x124), 0x1234);
+                assert_eq!(read32(&mut dev, 0x128), 0xabcd);
+                assert_eq!(read32(&mut dev, 0x12c), dw3);
+                assert_eq!(read64(&mut dev, 0x128), (u64::from(dw3) << 32) | 0xabcd);
+                // RW1C clears F without changing the reason or request metadata.
+                write32(&mut dev, 0x12c, 1 << 31);
+                assert_eq!(read32(&mut dev, 0x12c), dw3 & !(1 << 31));
+            }
+        }
+    }
+
+    #[test]
+    fn test_iqa_raw_mmio_layout() {
+        let mut dev = create_test_device();
+        for qs in 0..=7 {
+            for dw in [0, 1] {
+                let raw = 0x1234_5678_9000 | (dw << 11) | qs;
+                write64(&mut dev, 0x090, raw);
+                assert_eq!(read64(&mut dev, 0x090), raw);
+                let state = dev.shared.state.read();
+                assert_eq!(state.iqa.dw(), dw != 0);
+                assert_eq!(state.iqa.qs(), qs as u8);
+                assert_eq!(state.iqa.queue_size_bytes(), 4096 << qs);
+            }
+        }
     }
 
     #[test]

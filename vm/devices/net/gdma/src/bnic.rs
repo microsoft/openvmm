@@ -50,6 +50,7 @@ use net_backend::RxBufferSegment;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxSegment;
@@ -569,16 +570,12 @@ impl TxRxTask {
                 (net_backend::ETHERNET_HEADER_LEN, None)
             };
 
+        let lso = sqe.header.params.client_oob_in_sgl();
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
-            flags: net_backend::TxFlags::new()
-                .with_offload_ip_header_checksum(oob.s_oob.comp_iphdr_csum())
-                .with_offload_tcp_checksum(oob.s_oob.comp_tcp_csum())
-                .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
-                .with_is_ipv4(oob.s_oob.is_outer_ipv4())
-                .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
+            flags: tx_flags(&oob.s_oob, lso),
             l2_len: l2_len as u8,
             l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
@@ -587,12 +584,11 @@ impl TxRxTask {
             vlan,
         };
 
-        if sqe.header.params.client_oob_in_sgl() {
+        if lso {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
             meta.max_segment_size = sqe.header.params.gd_client_unit_data();
-            meta.flags.set_offload_tcp_segmentation(true);
         }
 
         // With LSO, the first SGE is the header and the rest are the payload.
@@ -717,6 +713,22 @@ impl TxRxTask {
     }
 }
 
+/// Builds the backend transmit flags for a send WQE.
+///
+/// An LSO send implies TCP and IPv4 header checksum offload, whatever
+/// per-packet checksum bits the guest set, because the NIC writes both
+/// checksums into every segment it produces.
+fn tx_flags(s_oob: &ManaTxShortOob, lso: bool) -> TxFlags {
+    let is_ipv4 = s_oob.is_outer_ipv4();
+    TxFlags::new()
+        .with_offload_ip_header_checksum(s_oob.comp_iphdr_csum() || (lso && is_ipv4))
+        .with_offload_tcp_checksum(s_oob.comp_tcp_csum() || lso)
+        .with_offload_udp_checksum(s_oob.comp_udp_csum())
+        .with_offload_tcp_segmentation(lso)
+        .with_is_ipv4(is_ipv4)
+        .with_is_ipv6(s_oob.is_outer_ipv6() && !is_ipv4)
+}
+
 struct TxRxState;
 
 impl AsyncRun<TxRxTask> for TxRxState {
@@ -731,5 +743,49 @@ impl AsyncRun<TxRxTask> for TxRxState {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lso_ipv4_offloads_header_checksums_the_guest_did_not_request() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv4(true);
+        let flags = tx_flags(&s_oob, true);
+        assert!(flags.offload_tcp_segmentation());
+        assert!(flags.offload_ip_header_checksum());
+        assert!(flags.offload_tcp_checksum());
+        assert!(!flags.offload_udp_checksum());
+        assert!(flags.is_ipv4());
+        assert!(!flags.is_ipv6());
+    }
+
+    #[test]
+    fn lso_ipv6_has_no_ip_header_checksum() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv6(true);
+        let flags = tx_flags(&s_oob, true);
+        assert!(flags.offload_tcp_segmentation());
+        assert!(!flags.offload_ip_header_checksum());
+        assert!(flags.offload_tcp_checksum());
+        assert!(flags.is_ipv6());
+        assert!(!flags.is_ipv4());
+    }
+
+    #[test]
+    fn non_lso_send_offloads_only_what_the_guest_requested() {
+        let s_oob = ManaTxShortOob::new().with_is_outer_ipv4(true);
+        assert_eq!(
+            tx_flags(&s_oob, false).into_bits(),
+            TxFlags::new().with_is_ipv4(true).into_bits()
+        );
+
+        let s_oob = s_oob.with_comp_iphdr_csum(true).with_comp_udp_csum(true);
+        let flags = tx_flags(&s_oob, false);
+        assert!(flags.offload_ip_header_checksum());
+        assert!(flags.offload_udp_checksum());
+        assert!(!flags.offload_tcp_checksum());
+        assert!(!flags.offload_tcp_segmentation());
     }
 }
