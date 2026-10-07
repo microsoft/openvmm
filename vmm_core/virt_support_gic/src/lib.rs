@@ -638,9 +638,6 @@ mod gicd {
             if gicr.irq_pending(group1) {
                 return true;
             }
-            if gicr.index != 0 {
-                return false;
-            }
 
             for word in 1..state.pending.len() {
                 let group = group_mask(state.group_status[word], group1);
@@ -682,9 +679,6 @@ mod gicd {
 
             if let Some(intid) = gicr.ack(group1) {
                 return intid;
-            }
-            if gicr.index != 0 {
-                return 1023;
             }
             let mut state = self.state.lock();
             for word in 1..state.pending.len() {
@@ -777,9 +771,6 @@ mod gicd {
         fn eoi(&self, gicr: &mut Redistributor, group1: bool, intid: u32) {
             if intid < 32 {
                 gicr.eoi(group1, intid);
-                return;
-            }
-            if gicr.index != 0 {
                 return;
             }
             let mut state = self.state.lock();
@@ -1280,6 +1271,44 @@ mod gicd {
                 GicdRegister(register.0 + (intid / 32 * 4) as u16),
                 1 << (intid & 31),
             ));
+        }
+
+        #[test]
+        fn spi_iar_and_eoir_work_for_nonzero_target_vp() {
+            let mut distributor = empty_test_distributor();
+            let gicr0 = distributor.add_redistributor(0, false);
+            let mut gicr1 = distributor.add_redistributor(1, true);
+            let vp1 = VpIndex::new(1);
+            let mask = 1 << (TEST_SPI & 31);
+            let group_register = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let active_register = GicdRegister(GicdRegister::ISACTIVER0.0 + 4);
+            let route_register = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
+
+            set_group_enables(&distributor, false, true);
+            assert!(distributor.write32(group_register, mask));
+            assert!(distributor.write32(enable_register, mask));
+            assert!(distributor.write64(route_register, 1));
+
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp1]);
+            assert!(!distributor.irq_pending(&gicr0, true));
+            assert!(distributor.irq_pending(&gicr1, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr1, SystemReg::ICC_IAR1_EL1),
+                Some(u64::from(TEST_SPI))
+            );
+            assert_ne!(distributor.read32(active_register).unwrap() & mask, 0);
+            assert!(!distributor.irq_pending(&gicr1, true));
+
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            assert!(distributor.write_sysreg(
+                &mut gicr1,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(TEST_SPI),
+                |_| {},
+            ));
+            assert_eq!(distributor.read32(active_register).unwrap() & mask, 0);
+            assert!(!distributor.irq_pending(&gicr1, true));
         }
 
         #[test]
