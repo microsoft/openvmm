@@ -39,7 +39,7 @@ impl RsaKeyPairInner {
         Ok(Self(parsed))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         use pkcs8::EncodePrivateKey;
         Ok(self
@@ -48,6 +48,25 @@ impl RsaKeyPairInner {
             .map_err(|e| RsaError(e.into(), "encoding the private key as PKCS#8 DER"))?
             .as_bytes()
             .to_vec())
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        use rsa::traits::PrivateKeyParts;
+
+        let [p, q] = self.0.primes() else {
+            return Err(RsaError(
+                rsa::Error::InvalidArguments,
+                "exporting a two-prime RSA private key",
+            ));
+        };
+        Ok(super::RsaPrivateKeyComponents {
+            modulus: self.0.n().to_be_bytes_trimmed_vartime().into_vec(),
+            public_exponent: self.0.e().to_be_bytes_trimmed_vartime().into_vec(),
+            private_exponent: self.0.d().to_be_bytes_trimmed_vartime().into_vec(),
+            prime1: p.to_be_bytes_trimmed_vartime().into_vec(),
+            prime2: q.to_be_bytes_trimmed_vartime().into_vec(),
+        })
     }
 
     pub fn oaep_decrypt(

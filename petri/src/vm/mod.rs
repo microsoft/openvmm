@@ -2613,7 +2613,7 @@ pub enum EfiDiagnosticsLogLevel {
 pub enum OpenvmmLogConfig {
     /// Use the default log levels used by petri tests. This will forward
     /// `OPENVMM_LOG` and `OPENVMM_SHOW_SPANS` from the environment if they are
-    /// set, otherwise it will use `debug` and `true` respectively
+    /// set, otherwise it will use `debug` and `false` respectively
     TestDefault,
     /// Use the built-in default log levels of OpenHCL/OpenVMM (e.g. don't pass
     /// OPENVMM_LOG or OPENVMM_SHOW_SPANS)
@@ -2676,7 +2676,7 @@ impl OpenHclConfig {
                     let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
                         format!("OPENVMM_SHOW_SPANS={x}")
                     } else {
-                        "OPENVMM_SHOW_SPANS=true".to_owned()
+                        "OPENVMM_SHOW_SPANS=false".to_owned()
                     };
                     format!("{openhcl_tracing} {openhcl_show_spans}")
                 };

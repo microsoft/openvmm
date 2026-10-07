@@ -281,7 +281,7 @@ pub struct EcapReg {
     pub pasid: bool,
     /// Device-TLB Invalidation Throttle (not used).
     pub dit: bool,
-    /// Page-walk Coherency for Nested Translation (not used).
+    /// Page-request Drain Support (not implemented).
     pub pds: bool,
     /// Scalable Mode Translation support (not implemented).
     pub smts: bool,
@@ -531,7 +531,7 @@ impl FeaddrReg {
 pub struct IqhReg {
     #[bits(4)]
     _reserved1: u64,
-    /// Queue head offset (bits 18:4), 16-byte aligned.
+    /// Queue head in 16-byte units (bits 18:4); bit 4 is zero for IQA.DW=1.
     #[bits(15)]
     pub qh: u32,
     #[bits(45)]
@@ -554,7 +554,7 @@ impl IqhReg {
 pub struct IqtReg {
     #[bits(4)]
     _reserved1: u64,
-    /// Queue tail offset (bits 18:4), 16-byte aligned.
+    /// Queue tail in 16-byte units (bits 18:4); bit 4 is reserved for IQA.DW=1.
     #[bits(15)]
     pub qt: u32,
     #[bits(45)]

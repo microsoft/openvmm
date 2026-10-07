@@ -92,7 +92,7 @@ impl PetriVmConfigOpenVmm {
                 // Quiet down `hyper_util`'s connection-pool debug spam that
                 // `disk_blob` triggers on every HTTP range request.
                 ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
-                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "false".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
             Some(OpenvmmLogConfig::Custom(levels)) => levels
