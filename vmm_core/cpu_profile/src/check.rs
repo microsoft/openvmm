@@ -141,6 +141,7 @@ mod tests {
     use crate::cpuid::CpuidEntry;
     use crate::test_support::fingerprint;
     use crate::test_support::fingerprint_with;
+    use crate::test_support::genoa_whp_fingerprint;
     use crate::test_support::host_fingerprint;
     use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
@@ -366,6 +367,56 @@ mod tests {
             check.summary_line(&fingerprint).starts_with(
                 "NVX-CPU-PROFILE: status=pass backend=whp generation=milan \
                  profile=amd.milan.v1 profile_digest=sha256:463ee036"
+            ),
+            "{}",
+            check.summary_line(&fingerprint)
+        );
+    }
+
+    /// The Genoa host of microsoft/nvx#928, an AMD EPYC 9V74 that WHP serves
+    /// on an Azure VM, does not support `amd.genoa.v1` but supports
+    /// `amd.genoa.v2`, which `auto` selects. Its probe partition presents
+    /// CET's XSAVE components, which a partition configured from the profile
+    /// does not, as on the Milan host.
+    #[test]
+    fn the_genoa_whp_host_supports_the_second_genoa_profile() {
+        let fingerprint = genoa_whp_fingerprint();
+        // The check that the host reported on amd.genoa.v1, which auto
+        // selected before amd.genoa.v2.
+        let surface = HostCpuSurface::from_fingerprint(&fingerprint.backend);
+        let error = verify_support(profile("amd.genoa.v1"), &surface).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert_eq!(
+            error.message,
+            "the backend does not support CPU profile amd.genoa.v1: CPUID 0x0 EAX[31:0] \
+             is 0x1c, above the supported 0xd; CPUID 0x80000021 EAX bits 2, 9 are not \
+             supported; CPUID 0x80000021 ECX bits 1, 2 are not supported; CPUID 0xd.11 \
+             is outside the profile and reads EAX 0x10, EBX 0x0, ECX 0x1, EDX 0x0; \
+             CPUID 0xd.12 is outside the profile and reads EAX 0x18, EBX 0x0, ECX 0x1, \
+             EDX 0x0"
+        );
+
+        let error = check_fingerprint(&fingerprint).result.unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuUnlisted);
+        assert!(
+            error.message.starts_with(
+                "the backend presents CPUID entries outside CPU profile amd.genoa.v2: \
+                 CPUID 0xd.11 is outside the profile"
+            ),
+            "{error}"
+        );
+        let check = check_fingerprint_with(&fingerprint, |profile| {
+            assert_eq!(profile.id(), "amd.genoa.v2");
+            Ok(Some(vec![
+                CpuidEntry::new(0xd, Some(11), [0; 4]),
+                CpuidEntry::new(0xd, Some(12), [0; 4]),
+            ]))
+        });
+        check.result.as_ref().unwrap();
+        assert!(
+            check.summary_line(&fingerprint).starts_with(
+                "NVX-CPU-PROFILE: status=pass backend=whp generation=genoa \
+                 profile=amd.genoa.v2 profile_digest=sha256:8ee00e9e"
             ),
             "{}",
             check.summary_line(&fingerprint)
