@@ -47,6 +47,7 @@ use firmware_uefi_resources::UefiDeviceHandle;
 use firmware_uefi_resources::UefiVarsDeltaJson;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
+use serial_16550_resources::ComPort;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_debugcon_resources::SerialDebugconDeviceHandle;
@@ -216,38 +217,22 @@ fn serial_16550_devices(
     wait_for_rts: bool,
     debugger_mode: [bool; 4],
     backends: [Option<Resource<SerialBackendHandle>>; 4],
-) -> [Serial16550DeviceHandle; 4] {
-    let [d0, d1, d2, d3] = Serial16550DeviceHandle::com_ports(
-        backends.map(|r| r.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource())),
-    );
-    [
-        Serial16550DeviceHandle {
+) -> [Option<Serial16550DeviceHandle>; 4] {
+    let ports = [ComPort::Com1, ComPort::Com2, ComPort::Com3, ComPort::Com4];
+    let mut backends = backends;
+    std::array::from_fn(|index| {
+        backends[index].take().map(|io| Serial16550DeviceHandle {
             wait_for_rts,
-            debugger_mode: debugger_mode[0],
-            ..d0
-        },
-        Serial16550DeviceHandle {
-            wait_for_rts,
-            debugger_mode: debugger_mode[1],
-            ..d1
-        },
-        Serial16550DeviceHandle {
-            wait_for_rts,
-            debugger_mode: debugger_mode[2],
-            ..d2
-        },
-        Serial16550DeviceHandle {
-            wait_for_rts,
-            debugger_mode: debugger_mode[3],
-            ..d3
-        },
-    ]
+            debugger_mode: debugger_mode[index],
+            ..Serial16550DeviceHandle::com_port(ports[index], io)
+        })
+    })
 }
 
 fn serial_pl011_devices(
     debugger_mode: [bool; 4],
     backends: [Option<Resource<SerialBackendHandle>>; 4],
-) -> Result<[SerialPl011DeviceHandle; 2], ErrorInner> {
+) -> Result<[Option<SerialPl011DeviceHandle>; 2], ErrorInner> {
     const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
     const PL011_SERIAL0_IRQ: u32 = 1;
     const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
@@ -259,18 +244,18 @@ fn serial_pl011_devices(
     }
 
     Ok([
-        SerialPl011DeviceHandle {
+        backend0.map(|io| SerialPl011DeviceHandle {
             base: PL011_SERIAL0_BASE,
             irq: PL011_SERIAL0_IRQ,
-            io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            io,
             debugger_mode: debugger_mode[0],
-        },
-        SerialPl011DeviceHandle {
+        }),
+        backend1.map(|io| SerialPl011DeviceHandle {
             base: PL011_SERIAL1_BASE,
             irq: PL011_SERIAL1_IRQ,
-            io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+            io,
             debugger_mode: debugger_mode[1],
-        },
+        }),
     ])
 }
 
@@ -301,9 +286,9 @@ impl VmManifestBuilder {
     /// Enable serial ports (of a type determined by the chipset type), backed
     /// by the given serial backends.
     ///
-    /// For Hyper-V generation 1 VMs, serial ports are always present but are
-    /// disconnected unless this method is called. For other VMs, this method
-    /// must be called to add serial ports.
+    /// For Hyper-V generation 1 VMs, all four serial ports are always present,
+    /// and entries without a backend remain disconnected. For other VMs, only
+    /// entries with a backend add a serial port.
     ///
     /// For ARM64 VMs, only two serial ports are supported.
     pub fn with_serial(mut self, serial: [Option<Resource<SerialBackendHandle>>; 4]) -> Self {
@@ -467,11 +452,20 @@ impl VmManifestBuilder {
                 result.attach_piix4_pci_usb_uhci_stub();
                 result.attach_piix4_pci_isa_bridge();
                 result.attach_i440bx_host_pci_bridge();
-                // This chipset always has a serial port even if not requested.
+                // This chipset always has all four serial ports even if not requested.
+                let serial = self
+                    .serial
+                    .unwrap_or_else(|| [(); 4].map(|_| None))
+                    .map(|backend| {
+                        Some(
+                            backend
+                                .unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
+                        )
+                    });
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
                     self.serial_debugger_mode,
-                    self.serial.unwrap_or_else(|| [(); 4].map(|_| None)),
+                    serial,
                 );
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
@@ -861,9 +855,13 @@ impl VmChipsetResult {
         serial: Option<[Option<Resource<SerialBackendHandle>>; 4]>,
     ) -> Result<&mut Self, ErrorInner> {
         if let Some(serial) = serial {
+            let missing_serial_ports = serial.each_ref().map(Option::is_none);
             match arch {
                 MachineArch::X86_64 => {
                     self.attach_serial_16550(wait_for_rts, debugger_mode, serial);
+                    if register_missing {
+                        self.attach_missing_serial_16550_ports(missing_serial_ports);
+                    }
                 }
                 MachineArch::Aarch64 => {
                     if wait_for_rts {
@@ -873,15 +871,7 @@ impl VmChipsetResult {
                 }
             }
         } else if register_missing && arch == MachineArch::X86_64 {
-            self.chipset_devices.push(ChipsetDeviceHandle {
-                name: "missing-serial".to_owned(),
-                resource: MissingDevHandle::new()
-                    .claim_pio("com1", 0x3f8..=0x3ff)
-                    .claim_pio("com2", 0x2f8..=0x2ff)
-                    .claim_pio("com3", 0x3e8..=0x3ef)
-                    .claim_pio("com4", 0x2e8..=0x2ef)
-                    .into_resource(),
-            });
+            self.attach_missing_serial_16550_ports([true; 4]);
         }
         Ok(self)
     }
@@ -907,9 +897,11 @@ impl VmChipsetResult {
                 ["serial-com1", "serial-com2", "serial-com3", "serial-com4"],
                 devices,
             )
-            .map(|(name, device)| ChipsetDeviceHandle {
-                name: name.to_string(),
-                resource: device.into_resource(),
+            .filter_map(|(name, device)| {
+                device.map(|device| ChipsetDeviceHandle {
+                    name: name.to_string(),
+                    resource: device.into_resource(),
+                })
             }),
         );
         self
@@ -920,18 +912,38 @@ impl VmChipsetResult {
         debugger_mode: [bool; 4],
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> Result<&mut Self, ErrorInner> {
-        let [serial0, serial1] = serial_pl011_devices(debugger_mode, backends)?;
-        self.chipset_devices.extend([
-            ChipsetDeviceHandle {
-                name: "com1".to_string(),
-                resource: serial0.into_resource(),
-            },
-            ChipsetDeviceHandle {
-                name: "com2".to_string(),
-                resource: serial1.into_resource(),
-            },
-        ]);
+        let devices = serial_pl011_devices(debugger_mode, backends)?;
+        self.chipset_devices
+            .extend(zip(["com1", "com2"], devices).filter_map(|(name, device)| {
+                device.map(|device| ChipsetDeviceHandle {
+                    name: name.to_string(),
+                    resource: device.into_resource(),
+                })
+            }));
         Ok(self)
+    }
+
+    fn attach_missing_serial_16550_ports(&mut self, missing: [bool; 4]) -> &mut Self {
+        if !missing.iter().any(|missing| *missing) {
+            return self;
+        }
+
+        let ports = [
+            ("com1", 0x3f8, 0x3ff),
+            ("com2", 0x2f8, 0x2ff),
+            ("com3", 0x3e8, 0x3ef),
+            ("com4", 0x2e8, 0x2ef),
+        ];
+        let missing_device = zip(missing, ports).filter(|(missing, _)| *missing).fold(
+            MissingDevHandle::new(),
+            |device, (_, (name, start, end))| device.claim_pio(name, start..=end),
+        );
+
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "missing-serial".to_owned(),
+            resource: missing_device.into_resource(),
+        });
+        self
     }
 
     fn attach_missing_arch_ports(&mut self, arch: MachineArch, pcat_missing: bool) -> &mut Self {
@@ -1028,8 +1040,17 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
-    fn no_serial_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
-        [(); 4].map(|_| None)
+    fn serial_16550_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
+        [(); 4].map(|_| Some(DisconnectedSerialBackendHandle.into_resource()))
+    }
+
+    fn serial_pl011_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
+        [
+            Some(DisconnectedSerialBackendHandle.into_resource()),
+            Some(DisconnectedSerialBackendHandle.into_resource()),
+            None,
+            None,
+        ]
     }
 
     #[test]
@@ -1043,35 +1064,50 @@ mod tests {
 
     #[test]
     fn serial_debugger_mode_defaults_false_on_generated_handles() {
-        let serial_16550 = serial_16550_devices(false, [false; 4], no_serial_backends());
-        assert!(serial_16550.iter().all(|handle| !handle.debugger_mode));
+        let serial_16550 = serial_16550_devices(false, [false; 4], serial_16550_backends());
+        assert!(
+            serial_16550
+                .iter()
+                .flatten()
+                .all(|handle| !handle.debugger_mode)
+        );
 
-        let serial_pl011 = serial_pl011_devices([false; 4], no_serial_backends()).unwrap();
-        assert!(serial_pl011.iter().all(|handle| !handle.debugger_mode));
+        let serial_pl011 = serial_pl011_devices([false; 4], serial_pl011_backends()).unwrap();
+        assert!(
+            serial_pl011
+                .iter()
+                .flatten()
+                .all(|handle| !handle.debugger_mode)
+        );
     }
 
     #[test]
     fn serial_debugger_mode_is_independent_per_port() {
         // One COM port in debugger mode, the rest normal.
         let serial_16550 =
-            serial_16550_devices(true, [false, true, false, false], no_serial_backends());
-        assert!(serial_16550.iter().all(|handle| handle.wait_for_rts));
+            serial_16550_devices(true, [false, true, false, false], serial_16550_backends());
+        assert!(
+            serial_16550
+                .iter()
+                .flatten()
+                .all(|handle| handle.wait_for_rts)
+        );
         assert_eq!(
-            serial_16550.map(|handle| handle.debugger_mode),
+            serial_16550.map(|handle| handle.unwrap().debugger_mode),
             [false, true, false, false]
         );
 
         // PL011 uses the first two entries independently.
         let serial_pl011 =
-            serial_pl011_devices([true, false, false, false], no_serial_backends()).unwrap();
+            serial_pl011_devices([true, false, false, false], serial_pl011_backends()).unwrap();
         assert_eq!(
-            serial_pl011.map(|handle| handle.debugger_mode),
+            serial_pl011.map(|handle| handle.unwrap().debugger_mode),
             [true, false]
         );
     }
 
     #[test]
-    fn null_backend_adds_serial_ports_to_optional_serial_chipset() {
+    fn none_backends_are_omitted_from_non_pcat_x86_chipset() {
         let without_serial = VmManifestBuilder::new(
             BaseChipsetType::UnenlightenedLinuxDirect,
             MachineArch::X86_64,
@@ -1101,5 +1137,75 @@ mod tests {
                 .iter()
                 .any(|device| device.name == "serial-com1")
         );
+        assert!(with_null.chipset_devices.iter().all(|device| !matches!(
+            device.name.as_str(),
+            "serial-com2" | "serial-com3" | "serial-com4"
+        )));
+        assert!(
+            with_null
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "missing-serial")
+        );
+    }
+
+    #[test]
+    fn none_backends_are_omitted_from_non_pcat_arm_chipset() {
+        let with_null = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::Aarch64)
+            .with_serial([
+                Some(serial_core::resources::NullSerialBackendHandle.into_resource()),
+                None,
+                None,
+                None,
+            ])
+            .build()
+            .unwrap();
+
+        assert!(
+            with_null
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "com1")
+        );
+        assert!(
+            with_null
+                .chipset_devices
+                .iter()
+                .all(|device| device.name != "com2")
+        );
+    }
+
+    #[test]
+    fn pcat_serial_ports_remain_present_without_backends() {
+        let pcat = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .build()
+            .unwrap();
+
+        assert_all_pcat_serial_ports_present(&pcat);
+    }
+
+    #[test]
+    fn pcat_serial_ports_remain_present_with_partial_backends() {
+        let pcat = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .with_serial([
+                Some(serial_core::resources::NullSerialBackendHandle.into_resource()),
+                None,
+                None,
+                None,
+            ])
+            .build()
+            .unwrap();
+
+        assert_all_pcat_serial_ports_present(&pcat);
+    }
+
+    fn assert_all_pcat_serial_ports_present(pcat: &VmChipsetResult) {
+        for name in ["serial-com1", "serial-com2", "serial-com3", "serial-com4"] {
+            assert!(
+                pcat.chipset_devices
+                    .iter()
+                    .any(|device| device.name == name)
+            );
+        }
     }
 }
