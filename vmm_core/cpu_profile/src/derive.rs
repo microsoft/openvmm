@@ -994,6 +994,7 @@ mod tests {
     use crate::test_support::fingerprint;
     use crate::test_support::fingerprint_with;
     use crate::test_support::genoa_kvm_entries;
+    use crate::test_support::genoa_mshv_fingerprint;
     use crate::test_support::host_fingerprint;
     use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
@@ -1040,9 +1041,14 @@ mod tests {
     fn rederiving_a_pinned_profile_reproduces_it() {
         for pinned in crate::pinned_profiles() {
             let known = generation(&pinned.generation().name);
+            let revision = pinned
+                .id()
+                .rsplit_once(".v")
+                .and_then(|(_, revision)| revision.parse().ok())
+                .unwrap();
             let derived = derive_profile(
                 known,
-                1,
+                revision,
                 &[fingerprint(pinned, "kvm"), fingerprint(pinned, "whp")],
             )
             .unwrap();
@@ -1417,6 +1423,81 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    /// `amd.genoa.v2` is the policy's profile of the KVM host that
+    /// `amd.genoa.v1` derives from and of an Azure VM with the same CPU whose
+    /// MSHV enumerates the basic leaves only up to 0xD and presents nothing
+    /// in `0x80000021` (`test_support::GENOA_MSHV_CPUID`): v1 without
+    /// `LFENCE` serialization, the TSA immunities, and the zero basic leaves
+    /// above 0xD. Both hosts support it, and the MSHV host does not support
+    /// v1.
+    #[test]
+    fn the_second_genoa_profile_serves_the_kvm_and_mshv_hosts() {
+        let pinned = profile("amd.genoa.v2");
+        let first = profile("amd.genoa.v1");
+        let kvm = host_fingerprint("kvm", genoa_kvm_entries());
+        let mshv = genoa_mshv_fingerprint();
+        let derived = derive_profile(generation("genoa"), 2, &[kvm.clone(), mshv.clone()]).unwrap();
+        assert_eq!(derived.id(), pinned.id());
+        assert_eq!(derived.description(), pinned.description());
+        assert_eq!(derived.generation(), pinned.generation());
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+        assert_eq!(derived.xcr0(), pinned.xcr0());
+        assert_eq!(derived.xss(), pinned.xss());
+        assert_eq!(derived.xsave_components(), pinned.xsave_components());
+        assert_eq!(
+            derived.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        assert_eq!(derived.msrs(), pinned.msrs());
+
+        // v1 but for the maximum basic leaf and 0x80000021.
+        assert_eq!((first.lookup(0, 0)[0], pinned.lookup(0, 0)[0]), (0x1c, 0xd));
+        assert_eq!(first.lookup(0x8000_0021, 0), [0x204, 0, 0x6, 0]);
+        assert_eq!(pinned.lookup(0x8000_0021, 0), [0; 4]);
+        for entry in first.cpuid() {
+            let (leaf, subleaf) = entry.key();
+            match pinned
+                .cpuid()
+                .iter()
+                .find(|pinned| pinned.key() == (leaf, subleaf))
+            {
+                Some(_) if leaf == 0 || leaf == 0x8000_0021 => {}
+                Some(pinned) => assert_eq!(pinned, entry),
+                None => {
+                    assert!((0xe..=0x1c).contains(&leaf), "{leaf:#x}");
+                    assert_eq!(entry.values(), [0; 4], "{leaf:#x}");
+                }
+            }
+        }
+
+        // The hosts disagree on AMD's INVLPGB and RDPRU limits, which take
+        // their minimum, as other limits do, rather than tie.
+        let limits = |fingerprint: &CpuFingerprint| {
+            cpuid::lookup(&fingerprint.backend.cpuid, 0x8000_0008, 0).unwrap()[3]
+        };
+        assert_eq!((limits(&kvm), limits(&mshv)), (0, 0x1_0000));
+        assert_eq!(pinned.lookup(0x8000_0008, 0)[3], 0);
+
+        for host in [&kvm, &mshv] {
+            let surface = crate::HostCpuSurface::from_fingerprint(&host.backend);
+            assert_eq!(
+                crate::support_violations(pinned, &surface),
+                Vec::<String>::new(),
+                "{}",
+                host.backend.name
+            );
+        }
+        let surface = crate::HostCpuSurface::from_fingerprint(&mshv.backend);
+        assert_eq!(
+            crate::support_violations(first, &surface),
+            [
+                "CPUID 0x0 EAX[31:0] is 0x1c, above the supported 0xd",
+                "CPUID 0x80000021 EAX bits 2, 9 are not supported",
+                "CPUID 0x80000021 ECX bits 1, 2 are not supported",
+            ]
+        );
     }
 
     /// KVM enumerates Intel's speculation controls and

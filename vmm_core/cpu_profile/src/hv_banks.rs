@@ -1280,4 +1280,28 @@ mod tests {
             "intel_prefetch_support"
         ));
     }
+
+    /// The MSHV host of `test_support::GENOA_MSHV_CPUID` offers neither TSA
+    /// immunity, so it cannot present `amd.genoa.v1`, which pins both, and
+    /// presents `amd.genoa.v2`, which clears them.
+    #[test]
+    fn the_genoa_mshv_host_presents_the_second_genoa_profile() {
+        let host = crate::test_support::GENOA_MSHV_HOST;
+        let error = profile_features(profile("amd.genoa.v1"), host).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert!(
+            error
+                .message
+                .ends_with("they lack tsa_l1_no_support, tsa_sq_no_support"),
+            "{error}"
+        );
+
+        let features = profile_features(profile("amd.genoa.v2"), host).unwrap();
+        for word in HvFeatureWord::ALL {
+            assert_eq!(features.word(word) & !host.word(word), 0, "{}", word.name());
+        }
+        for name in ["tsa_l1_no_support", "tsa_sq_no_support"] {
+            assert!(!has(&features, HvFeatureWord::Bank1, name), "{name}");
+        }
+    }
 }
