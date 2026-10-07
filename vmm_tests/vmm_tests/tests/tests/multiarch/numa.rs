@@ -95,15 +95,66 @@ async fn guest_node_distances(agent: &PipetteClient, node: u32) -> anyhow::Resul
 }
 
 fn check_acpi_header<'a>(table: &'a [u8], signature: &[u8; 4]) -> anyhow::Result<&'a [u8]> {
-    anyhow::ensure!(table.len() >= 36, "truncated ACPI header");
-    anyhow::ensure!(&table[..4] == signature, "unexpected ACPI signature");
+    anyhow::ensure!(
+        table.len() >= 36,
+        "truncated ACPI header: expected at least 36 bytes, actual {}",
+        table.len()
+    );
+    anyhow::ensure!(
+        &table[..4] == signature,
+        "unexpected ACPI signature: expected {:?}, actual {:?}",
+        String::from_utf8_lossy(signature),
+        String::from_utf8_lossy(&table[..4])
+    );
     let length = u32::from_le_bytes(table[4..8].try_into()?) as usize;
-    anyhow::ensure!(length == table.len(), "incorrect ACPI length");
+    anyhow::ensure!(
+        length == table.len(),
+        "incorrect ACPI length: declared {length} bytes, actual {}",
+        table.len()
+    );
     anyhow::ensure!(
         table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)) == 0,
         "invalid ACPI checksum"
     );
     Ok(&table[36..])
+}
+
+petri::test_sync!(acpi_header_diagnostics, |_| Some(()));
+
+fn acpi_header_diagnostics(_: petri::PetriTestParams<'_>, _: ()) -> anyhow::Result<()> {
+    let mut table = [0u8; 36];
+    table[..4].copy_from_slice(b"SLIT");
+    table[4..8].copy_from_slice(&36u32.to_le_bytes());
+    table[9] = 0u8.wrapping_sub(table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)));
+    assert!(check_acpi_header(&table, b"SLIT")?.is_empty());
+    for length in [0, 35] {
+        assert_eq!(
+            check_acpi_header(&table[..length], b"SLIT")
+                .unwrap_err()
+                .to_string(),
+            format!("truncated ACPI header: expected at least 36 bytes, actual {length}")
+        );
+    }
+    assert_eq!(
+        check_acpi_header(&table, b"SRAT").unwrap_err().to_string(),
+        "unexpected ACPI signature: expected \"SRAT\", actual \"SLIT\""
+    );
+    for length in [0u32, 35, 37] {
+        let mut invalid = table;
+        invalid[4..8].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            check_acpi_header(&invalid, b"SLIT")
+                .unwrap_err()
+                .to_string(),
+            format!("incorrect ACPI length: declared {length} bytes, actual 36")
+        );
+    }
+    table[9] = table[9].wrapping_add(1);
+    assert_eq!(
+        check_acpi_header(&table, b"SLIT").unwrap_err().to_string(),
+        "invalid ACPI checksum"
+    );
+    Ok(())
 }
 
 /// Checks the guest's two-locality SLIT, SRAT domain and memory coverage, and

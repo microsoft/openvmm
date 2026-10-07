@@ -93,10 +93,13 @@ pub enum Error {
 /// An error validating SLIT generation inputs.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SlitValidationError {
-    /// The locality count is zero or cannot form an ACPI table.
+    /// The locality count is zero or exceeds the supported range.
     #[error("invalid SLIT locality count {0}")]
     Localities(usize),
-    /// The generated table exceeds the caller's size limit.
+    /// The generated table length cannot be represented as `usize`.
+    #[error("SLIT length calculation overflows for {0} localities")]
+    SizeOverflow(usize),
+    /// The generated table exceeds the caller's or ACPI's size limit.
     #[error("SLIT length {actual} exceeds limit {limit}")]
     TooLarge {
         /// The required table length.
@@ -310,9 +313,8 @@ struct LoadLinuxParams<'a> {
 /// allocating the generated SLIT matrix.
 fn validate_slit_info(info: &SlitInfo, max_table_size: usize) -> Result<(), SlitValidationError> {
     let n = info.num_nodes;
-    let invalid_count = || SlitValidationError::Localities(n);
     if n == 0 || u32::try_from(n).is_err() {
-        return Err(invalid_count());
+        return Err(SlitValidationError::Localities(n));
     }
 
     let table_size = n
@@ -322,14 +324,12 @@ fn validate_slit_info(info: &SlitInfo, max_table_size: usize) -> Result<(), Slit
                 size_of::<acpi_spec::Header>() + size_of::<acpi_spec::slit::SlitHeader>(),
             )
         })
-        .ok_or_else(invalid_count)?;
-    if u32::try_from(table_size).is_err() {
-        return Err(invalid_count());
-    }
-    if table_size > max_table_size {
+        .ok_or(SlitValidationError::SizeOverflow(n))?;
+    let limit = max_table_size.min(u32::MAX as usize);
+    if table_size > limit {
         return Err(SlitValidationError::TooLarge {
             actual: table_size,
-            limit: max_table_size,
+            limit,
         });
     }
 
@@ -1423,19 +1423,43 @@ mod tests {
         }
     }
 
-    /// Checks locality overflow and the exact generated-table size limit.
+    /// Checks invalid counts, encoded length overflow, and exact size limits.
     #[test]
     fn rejects_invalid_slit_sizes_before_allocation() {
-        for num_nodes in [0, 65536, u32::MAX as usize, usize::MAX] {
+        for num_nodes in [0, usize::MAX] {
             let info = SlitInfo {
                 num_nodes,
                 distances: vec![],
             };
-            assert!(matches!(
-                validate_slit_info(&info, usize::MAX),
-                Err(SlitValidationError::Localities(_))
-            ));
+            let expected = if num_nodes == 0 || u32::try_from(num_nodes).is_err() {
+                SlitValidationError::Localities(num_nodes)
+            } else {
+                SlitValidationError::SizeOverflow(num_nodes)
+            };
+            assert_eq!(validate_slit_info(&info, usize::MAX), Err(expected));
         }
+        for (num_nodes, table_size) in [
+            (65536, 4_294_967_340u64),
+            (u32::MAX as usize, u64::from(u32::MAX).pow(2) + 44),
+        ] {
+            let info = SlitInfo {
+                num_nodes,
+                distances: vec![],
+            };
+            let expected = match usize::try_from(table_size) {
+                Ok(actual) => SlitValidationError::TooLarge {
+                    actual,
+                    limit: u32::MAX as usize,
+                },
+                Err(_) => SlitValidationError::SizeOverflow(num_nodes),
+            };
+            assert_eq!(validate_slit_info(&info, usize::MAX), Err(expected));
+        }
+        let info = SlitInfo {
+            num_nodes: 65535,
+            distances: vec![],
+        };
+        assert_eq!(validate_slit_info(&info, u32::MAX as usize), Ok(()));
         let info = SlitInfo {
             num_nodes: 2,
             distances: vec![],
@@ -1448,5 +1472,6 @@ mod tests {
             })
         );
         assert_eq!(validate_slit_info(&info, 48), Ok(()));
+        assert_eq!(validate_slit_info(&info, usize::MAX), Ok(()));
     }
 }
