@@ -636,6 +636,7 @@ message VMConfig {
         // The guest triple faulted. Defaults to HALT.
         GuestPowerAction crash = 3;
         // The guest's watchdog timer expired. Defaults to RESTART.
+        // A non-default action requires VMConfig.guest_watchdog.
         GuestPowerAction watchdog = 4;
     }
 
@@ -681,6 +682,9 @@ message VMConfig {
     bool disable_hv = 17;
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
+    // Enable the guest watchdog device. Disabled by default.
+    // The guest configures and pets the timer.
+    bool guest_watchdog = 20;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

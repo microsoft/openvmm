@@ -10943,6 +10943,7 @@ dependencies = [
  "hyperv_ic_resources",
  "initrd_cpio",
  "inspect",
+ "inspect_proto",
  "jiff",
  "kmsg",
  "memory_range",

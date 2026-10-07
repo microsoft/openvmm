@@ -621,6 +621,13 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
             )),
         "disabling Hyper-V enlightenments for UEFI boot is not supported on x86_64"
     );
+    anyhow::ensure!(
+        config.guest_watchdog
+            || config.guest_power_actions.as_ref().is_none_or(|actions| {
+                actions.watchdog == vmservice::vm_config::GuestPowerAction::Default as i32
+            }),
+        "guest_power_actions.watchdog requires guest_watchdog"
+    );
     if config.disable_vmbus {
         anyhow::ensure!(
             config.hvsocket_config.is_none(),
@@ -1055,6 +1062,9 @@ impl VmService {
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
+        }
+        if req_config.guest_watchdog {
+            chipset_builder = chipset_builder.with_guest_watchdog();
         }
         if let Some((base_template, secure_boot_enabled)) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
@@ -2592,6 +2602,32 @@ mod tests {
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());
+    }
+
+    #[test]
+    fn platform_config_watchdog_action_requires_device() {
+        use vmservice::vm_config::GuestPowerAction;
+
+        for guest_watchdog in [false, true] {
+            for action in [
+                GuestPowerAction::Default,
+                GuestPowerAction::Restart,
+                GuestPowerAction::Halt,
+            ] {
+                let config = vmservice::VmConfig {
+                    guest_watchdog,
+                    guest_power_actions: Some(vmservice::vm_config::GuestPowerActions {
+                        watchdog: action as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    validate_platform_config(&config).is_ok(),
+                    guest_watchdog || action == GuestPowerAction::Default
+                );
+            }
+        }
     }
 
     #[test]
