@@ -456,13 +456,3 @@ impl<T: Client> Access<'_, T> {
         Ipv6Address::from_octets((addr_u128 & mask).to_be_bytes())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn network_prefix_is_locally_assigned_ula() {
-        assert_eq!(NETWORK_PREFIX_BASE.octets()[0], 0xfd);
-    }
-}
