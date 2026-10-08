@@ -1023,6 +1023,16 @@ pub mod artifacts {
         impl IsVmgsTool for VMGSTOOL_DEV_LINUX_AARCH64 {}
         impl IsVmgsTool for VMGSTOOL_DEV_MACOS_AARCH64 {}
     }
+
+    /// Artifacts for testing x64 CVM OpenHCL boot from VMGS.
+    pub mod vmfw_dll {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// An x64 CVM OpenHCL resource DLL
+            LATEST_CVM_X64("vmfirmwareigvm-cvm-x64.dll", X64),
+        }
+    }
 }
 
 /// Artifact tag trait declarations
