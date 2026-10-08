@@ -813,6 +813,10 @@ impl ResolvedArtifactSelections {
         use petri_artifacts_vmm_test::artifacts::*;
 
         match id {
+            vmfw_dll::LATEST_CVM_X64::GLOBAL_UNIQUE_ID => {
+                self.build.vmfirmwareigvm_cvm_x64 = true;
+                self.build.openhcl_cvm_x64 = true;
+            }
             _ if self.build.resolve_artifact(id) => {}
             _ if self.prebuilt_artifacts.resolve_artifact(id) => {}
             _ if let Some(image) = vmm_test_image_from_id(id) => {
@@ -901,4 +905,44 @@ pub(crate) fn resolve_incubator(
                 .into(),
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use petri_artifacts_vmm_test::artifacts::openhcl_igvm;
+    use petri_artifacts_vmm_test::artifacts::vmfw_dll;
+    use test_with_tracing::test;
+
+    #[test]
+    fn cvm_dll_selects_cvm_igvm_and_dll() {
+        let mut selections = ResolvedArtifactSelections::new(
+            CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
+            false,
+            false,
+        )
+        .unwrap();
+        selections
+            .resolve_artifact(vmfw_dll::LATEST_CVM_X64::GLOBAL_UNIQUE_ID)
+            .unwrap();
+
+        assert!(selections.build.vmfirmwareigvm_cvm_x64);
+        assert!(selections.build.openhcl_cvm_x64);
+    }
+
+    #[test]
+    fn cvm_igvm_does_not_select_dll() {
+        let mut selections = ResolvedArtifactSelections::new(
+            CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
+            false,
+            false,
+        )
+        .unwrap();
+        selections
+            .resolve_artifact(openhcl_igvm::LATEST_CVM_X64::GLOBAL_UNIQUE_ID)
+            .unwrap();
+
+        assert!(selections.build.openhcl_cvm_x64);
+        assert!(!selections.build.vmfirmwareigvm_cvm_x64);
+    }
 }
