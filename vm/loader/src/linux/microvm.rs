@@ -93,6 +93,53 @@ fn overlaps_fixed_boot_data(range: &MemoryRange) -> bool {
     .any(|(start, end)| overlaps_range(range, start, end))
 }
 
+/// Returns the pages that hold `size` bytes starting at `gpa`, or `None` if
+/// the range is empty or not representable. Images, such as an initrd, need
+/// not end on a page boundary.
+fn covering_page_range(gpa: u64, size: u64) -> Option<MemoryRange> {
+    if size == 0 {
+        return None;
+    }
+    let end = gpa
+        .checked_add(size)?
+        .checked_next_multiple_of(HV_PAGE_SIZE)?;
+    MemoryRange::try_new(gpa & !(HV_PAGE_SIZE - 1)..end).ok()
+}
+
+fn validate_loaded_ranges(
+    load_info: &LoadInfo,
+    mem_layout: &MemoryLayout,
+) -> Result<(MemoryRange, Option<MemoryRange>), Error> {
+    let kernel = &load_info.kernel;
+    let kernel_range =
+        covering_page_range(kernel.gpa, kernel.size).ok_or(Error::InvalidMpTableMemoryLayout)?;
+    if !range_is_in_ram(mem_layout, kernel_range)
+        || overlaps_fixed_boot_data(&kernel_range)
+        || kernel_range.end() > MPTABLE_MMIO_GAP_END
+        || !(kernel.gpa..kernel.gpa + kernel.size).contains(&kernel.entrypoint)
+    {
+        return Err(Error::InvalidMpTableMemoryLayout);
+    }
+
+    let initrd_range = load_info
+        .initrd
+        .as_ref()
+        .map(|info| {
+            let range = covering_page_range(info.gpa, info.size)
+                .ok_or(Error::InvalidMpTableMemoryLayout)?;
+            if !range_is_in_ram(mem_layout, range)
+                || overlaps_fixed_boot_data(&range)
+                || range.overlaps(&kernel_range)
+            {
+                return Err(Error::InvalidMpTableMemoryLayout);
+            }
+            Ok(range)
+        })
+        .transpose()?;
+
+    Ok((kernel_range, initrd_range))
+}
+
 fn build_mptable_e820(
     mem_layout: &MemoryLayout,
     reserved_memory_ranges: &[MemoryRange],
@@ -382,24 +429,10 @@ fn import_mptable_config(
     if raw_cmdline.len() as u64 > slot_size {
         return Err(Error::CommandLineTooLong(raw_cmdline.len(), slot_size));
     }
-    let kernel_end = load_info
-        .kernel
-        .gpa
-        .checked_add(load_info.kernel.size)
-        .ok_or(Error::InvalidMpTableMemoryLayout)?;
-    let initrd_range = load_info
-        .initrd
-        .as_ref()
-        .map(|info| {
-            info.gpa
-                .checked_add(info.size)
-                .map(|end| (info.gpa, end))
-                .ok_or(Error::InvalidMpTableMemoryLayout)
-        })
-        .transpose()?;
+    let (kernel_range, initrd_range) = validate_loaded_ranges(load_info, mem_layout)?;
     if let Some(range) = reserved_memory_ranges.iter().find(|range| {
-        overlaps_range(range, load_info.kernel.gpa, kernel_end)
-            || initrd_range.is_some_and(|(start, end)| overlaps_range(range, start, end))
+        range.overlaps(&kernel_range)
+            || initrd_range.is_some_and(|initrd_range| range.overlaps(&initrd_range))
     }) {
         return Err(Error::InvalidReservedMemoryRange {
             start: range.start(),
@@ -918,6 +951,103 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::InvalidReservedMemoryRange { .. }));
         assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn mptable_config_accepts_unaligned_image_sizes() {
+        let initrd_base = KERNEL_BASE + 2 * MB;
+        let initrd_size = 0x1234;
+        let load_info = LoadInfo {
+            kernel: KernelInfo {
+                gpa: KERNEL_BASE,
+                size: 0x1801,
+                entrypoint: KERNEL_BASE + 0x1800,
+            },
+            initrd: Some(InitrdInfo {
+                gpa: initrd_base,
+                size: initrd_size,
+            }),
+            ..Default::default()
+        };
+        let mut importer = RecordingImporter::default();
+        import_mptable_config(
+            &mut importer,
+            &load_info,
+            &CString::new("").unwrap(),
+            &make_mptable_layout(256 * MB),
+            &mptable_config(&[0]),
+            &[],
+        )
+        .unwrap();
+
+        let boot_params = imported_zero_page(&importer);
+        assert_eq!(u32::from(boot_params.hdr.ramdisk_image), initrd_base as u32);
+        assert_eq!(u32::from(boot_params.hdr.ramdisk_size), initrd_size as u32);
+    }
+
+    #[test]
+    fn mptable_config_rejects_unbootable_loaded_ranges() {
+        let invalid_load_info = [
+            LoadInfo {
+                kernel: KernelInfo {
+                    gpa: KERNEL_BASE,
+                    size: HV_PAGE_SIZE,
+                    entrypoint: MPTABLE_MMIO_GAP_END,
+                },
+                ..Default::default()
+            },
+            LoadInfo {
+                kernel: KernelInfo {
+                    gpa: KERNEL_BASE,
+                    size: HV_PAGE_SIZE,
+                    entrypoint: KERNEL_BASE,
+                },
+                initrd: Some(InitrdInfo {
+                    gpa: MPTABLE_CMDLINE_BASE,
+                    size: HV_PAGE_SIZE,
+                }),
+                ..Default::default()
+            },
+            LoadInfo {
+                kernel: KernelInfo {
+                    gpa: KERNEL_BASE,
+                    size: HV_PAGE_SIZE,
+                    entrypoint: KERNEL_BASE,
+                },
+                initrd: Some(InitrdInfo {
+                    gpa: MPTABLE_MMIO_GAP_BASE,
+                    size: HV_PAGE_SIZE,
+                }),
+                ..Default::default()
+            },
+            LoadInfo {
+                kernel: KernelInfo {
+                    gpa: KERNEL_BASE,
+                    size: HV_PAGE_SIZE,
+                    entrypoint: KERNEL_BASE,
+                },
+                initrd: Some(InitrdInfo {
+                    gpa: KERNEL_BASE,
+                    size: HV_PAGE_SIZE,
+                }),
+                ..Default::default()
+            },
+        ];
+
+        for load_info in invalid_load_info {
+            let mut importer = RecordingImporter::default();
+            let error = import_mptable_config(
+                &mut importer,
+                &load_info,
+                &CString::new("").unwrap(),
+                &make_mptable_layout(256 * MB),
+                &mptable_config(&[0]),
+                &[MemoryRange::new(0x3_0000..0x3_1000)],
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::InvalidMpTableMemoryLayout));
+            assert!(importer.imports.is_empty());
+        }
     }
 
     #[test]
