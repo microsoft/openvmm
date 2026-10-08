@@ -531,8 +531,10 @@ pub struct MicrovmCli {
     pub microvm_control_auth_timeout_ms: u64,
 
     /// microVM CPU profile: a pinned profile ID, `auto` (the default) to
-    /// select the host's profile, or `host` to derive a development profile
-    /// from this host; a restore must name the snapshot's profile
+    /// select the host's profile, falling back with a warning to a development
+    /// profile derived from this host where no pinned profile serves its CPU,
+    /// or `host` to derive that development profile; a restore must name the
+    /// snapshot's profile
     #[clap(long = "cpu-profile", value_name = "ID", hide = true)]
     pub cpu_profile: Option<String>,
 

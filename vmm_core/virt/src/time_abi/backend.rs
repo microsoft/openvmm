@@ -269,6 +269,7 @@ mod tests {
         downtime_add_s: 0,
         utc_offset_ms: 0,
         sample_delay_us: 0,
+        host_cpu_unknown: false,
     };
 
     #[test]
