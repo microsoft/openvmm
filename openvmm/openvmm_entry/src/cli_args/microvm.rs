@@ -741,6 +741,11 @@ impl Options {
                     .microvm
                     .snapshot_tier
                     .context("--snapshot-scratch-restore-mode requires --snapshot-tier")?;
+                #[cfg(not(target_os = "linux"))]
+                anyhow::ensure!(
+                    mode != SnapshotScratchRestoreModeCli::CopyOnWrite,
+                    "--snapshot-scratch-restore-mode copy-on-write is unsupported on this platform"
+                );
                 anyhow::ensure!(
                     tier.requires_paired_scratch(),
                     "--snapshot-scratch-restore-mode requires a paired-scratch snapshot tier"
@@ -1536,7 +1541,16 @@ mod tests {
             "scratch:mem:1M",
         ])
         .unwrap();
+        #[cfg(target_os = "linux")]
         generation.validate_microvm_options().unwrap();
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            generation
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string()
+                .contains("copy-on-write is unsupported on this platform")
+        );
 
         let missing_generation = Options::try_parse_from([
             "openvmm",
