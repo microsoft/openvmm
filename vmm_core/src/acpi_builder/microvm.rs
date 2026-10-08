@@ -14,11 +14,22 @@ use zerocopy::IntoBytes;
 pub(super) fn extend_madt_level_triggered_irqs(arch: &AcpiArchConfig, madt_extra: &mut Vec<u8>) {
     if let AcpiArchConfig::X86 {
         level_triggered_irqs,
+        acpi_irq,
+        with_pit,
         ..
     } = *arch
     {
+        let mut seen = 0u16;
         for &irq in level_triggered_irqs {
             assert!(irq < 16, "legacy IRQ should be in range");
+            assert_ne!(irq, acpi_irq, "level-triggered IRQ duplicates ACPI IRQ");
+            assert!(
+                !with_pit || irq != 0,
+                "level-triggered IRQ conflicts with PIT override"
+            );
+            let bit = 1u16 << irq;
+            assert_eq!(seen & bit, 0, "level-triggered IRQ should be unique");
+            seen |= bit;
             madt_extra.extend_from_slice(
                 acpi_spec::madt::MadtInterruptSourceOverride::new(
                     irq.try_into().expect("legacy IRQ should be in range"),
