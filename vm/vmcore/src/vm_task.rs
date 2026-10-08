@@ -659,15 +659,8 @@ pub mod thread {
         use std::sync::mpsc;
         use std::task::Context;
         use std::task::Poll;
-        use std::time::Duration;
 
         const POOL_NAME: &str = "test-vp-pool";
-
-        /// How long to wait for a signal from the pool thread. The tests wait on
-        /// channels, not on the clock, so a passing run continues as soon as the
-        /// signal arrives; this only bounds how long a regression takes to fail
-        /// instead of hanging.
-        const REGRESSION_TIMEOUT: Duration = Duration::from_secs(60);
 
         thread_local! {
             static EXIT_SIGNAL: RefCell<Option<SignalOnDrop>> = const { RefCell::new(None) };
@@ -705,12 +698,12 @@ pub mod thread {
             (driver, exited)
         }
 
+        /// Blocks until the dedicated pool thread exits. If a regression keeps the
+        /// pool alive, this never returns and the test runner's timeout fails it.
         fn assert_thread_exits(exited: &mpsc::Receiver<()>) {
-            exited.recv_timeout(REGRESSION_TIMEOUT).expect(
-                "dedicated pool thread did not exit after its driver was dropped; \
-                 something still holds the pool's driver, leaking the thread and its \
-                 IO backend fds",
-            );
+            exited
+                .recv()
+                .expect("the exit signal was dropped without being sent");
         }
 
         /// What code running on the pool thread sees of `CURRENT_DRIVER`.
@@ -773,8 +766,8 @@ pub mod thread {
         /// that the pool's driver was still reachable there.
         fn assert_dedicated_driver(views: &mpsc::Receiver<DriverView>, path: &str) {
             let view = views
-                .recv_timeout(REGRESSION_TIMEOUT)
-                .unwrap_or_else(|_| panic!("{path}: no report from the pool thread"));
+                .recv()
+                .unwrap_or_else(|_| panic!("{path}: the probe was dropped without reporting"));
             assert_eq!(
                 view,
                 DriverView {
