@@ -175,9 +175,9 @@ fn temp_env_vars(
     platform: FlowPlatformKind,
     windows_via_wsl2: bool,
 ) -> &'static [&'static str] {
-    // Native local runs must not inherit the checkout's potentially long path:
-    // temporary Unix socket names have a much smaller limit than file paths.
-    // CI still needs its scratch disk, and Windows-via-WSL needs Windows paths.
+    // Native local runs inherit the caller's temp settings instead of forcing
+    // sockets under the potentially long test-content path. CI still needs its
+    // scratch disk, and Windows-via-WSL needs Windows paths.
     if matches!(backend, FlowBackend::Local) && !windows_via_wsl2 {
         &[]
     } else if matches!(platform, FlowPlatformKind::Windows) || windows_via_wsl2 {
