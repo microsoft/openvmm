@@ -352,14 +352,16 @@ pub fn derive_profile(
 }
 
 /// Returns whether host profiles serve the CPU `host`, so that
-/// `--cpu-profile host` can boot on it: [`derive_host_profile`] derives them
-/// for the CPUs of every vendor that profiles serve, Intel's and AMD's.
+/// `--cpu-profile host`, and `auto` on a CPU that no pinned profile serves,
+/// can boot on it: [`derive_host_profile`] derives them for the CPUs of every
+/// vendor that profiles serve, Intel's and AMD's.
 pub fn supports_host_profiles(host: &HostCpuSignature) -> bool {
     CpuVendor::from_cpuid_vendor(&host.vendor()).is_some()
 }
 
 /// Derives the host profile of the host and backend that `fingerprint`
-/// describes, for `--cpu-profile host`: the profile that the derivation
+/// describes, for `--cpu-profile host` and for `auto`'s fallback on a CPU
+/// that no pinned profile serves: the profile that the derivation
 /// policy gives for this one fingerprint, with the ID
 /// `<vendor>.host.v1`, the generation [`HOST_GENERATION`] limited to the
 /// host's family, model, and stepping, and a generic brand string of the
