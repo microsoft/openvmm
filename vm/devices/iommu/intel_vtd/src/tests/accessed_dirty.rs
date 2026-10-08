@@ -1,7 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::scalable_fixture::DIRECTORY;
+use super::scalable_fixture::Fixture;
+use super::scalable_fixture::GPA;
+use super::scalable_fixture::IOVA;
+use super::scalable_fixture::LOWER;
+use super::scalable_fixture::PASID_TABLE;
+use super::scalable_fixture::ROOT;
+use super::scalable_fixture::SL_ROOT;
+use super::scalable_fixture::UNMAPPED;
+use super::scalable_fixture::UPPER;
+use super::scalable_fixture::final_ecap;
+use super::scalable_fixture::put;
+use super::scalable_fixture::walk;
+use super::scalable_fixture::walk_at;
 use super::*;
+use iommu_common::IommuTranslator;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
