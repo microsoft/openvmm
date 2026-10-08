@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn mptable_config_rejects_table_overlap_before_import() {
+    fn mptable_config_rejects_unrepresentable_ioapic_id_before_import() {
         let apic_ids = (0..200).collect::<Vec<_>>();
         let mut importer = RecordingImporter::default();
         let error = import_mptable_config(
@@ -933,7 +933,10 @@ mod tests {
             &[MemoryRange::new(0x3_0000..0x3_1000)],
         )
         .unwrap_err();
-        assert!(matches!(error, Error::MpTableOverlap { .. }));
+        assert!(matches!(
+            error,
+            Error::MpTable(mptable::Error::NoIoApicId { .. })
+        ));
         assert!(importer.imports.is_empty());
     }
 }
