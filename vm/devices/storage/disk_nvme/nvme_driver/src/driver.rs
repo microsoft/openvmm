@@ -21,6 +21,7 @@ use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
+use crate::registers::ready_timeout;
 use crate::save_restore::NvmeDriverSavedState;
 use anyhow::Context as _;
 use futures::StreamExt;
@@ -31,6 +32,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::Instant;
 use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
 use std::collections::HashMap;
@@ -453,6 +455,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         );
 
         // Wait for the controller to be ready.
+        let deadline = Instant::now().saturating_add(ready_timeout(worker.registers.cap));
         let mut backoff = Backoff::new(&self.driver);
         loop {
             let csts = worker.registers.bar0.csts();
@@ -475,6 +478,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             }
             if csts.rdy() {
                 break;
+            }
+            // Give up if the controller never reports ready within CAP.TO.
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "timed out waiting for controller ready, csts: {:#x}",
+                    csts_val
+                );
             }
             backoff.back_off().await;
         }
