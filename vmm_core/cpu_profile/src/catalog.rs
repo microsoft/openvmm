@@ -28,9 +28,12 @@ pub const AUTO: &str = "auto";
 /// The `--cpu-profile` value that selects a host profile: a profile that the
 /// VM worker derives from the backend's fingerprint of this host
 /// ([`derive_host_profile`](crate::derive::derive_host_profile)) and that
-/// only its partition holds ([`PartitionProfile::host`]). It is opt-in, for
-/// development hosts that no pinned profile serves: [`AUTO`] never selects
-/// it.
+/// only its partition holds ([`PartitionProfile::host`]). It is for
+/// development hosts that no pinned profile serves. [`select`] never selects
+/// it, but the VM worker falls back to it from [`AUTO`] on a CPU that no
+/// pinned profile serves ([`pinned_profile_serves`]) and that host profiles
+/// serve ([`supports_host_profiles`](crate::derive::supports_host_profiles)),
+/// and warns.
 pub const HOST: &str = "host";
 
 /// Each pinned profile, built from its static data on first use, so that a
@@ -230,6 +233,17 @@ pub fn generation_of(host: &HostCpuSignature) -> Option<&'static str> {
         .map(|profile| profile.generation().name.as_str())
 }
 
+/// Returns whether a pinned profile serves the host CPU: whether the
+/// generation of any pinned profile covers it. Unlike [`generation_of`], it
+/// holds for a CPU that profiles of more than one generation cover, which
+/// [`select_auto`] rejects as a catalog defect. The VM worker falls back from
+/// [`AUTO`] to a host profile only on a CPU that no pinned profile serves.
+/// Unlike [`select_auto`], which builds the profiles that cover the host, it
+/// builds no profile: it reads only the pinned entries' generations.
+pub fn pinned_profile_serves(host: &HostCpuSignature) -> bool {
+    PINNED.iter().any(|pinned| covers(pinned.generation, host))
+}
+
 /// Selects the profile of the host CPU's generation: its latest pinned
 /// revision. Only the profiles whose generation covers the host are built.
 ///
@@ -303,8 +317,9 @@ fn select_auto_in<'a>(
 
 /// Selects the pinned profile for `--cpu-profile spec`, [`AUTO`] or a pinned
 /// ID, and checks that the host CPU is in its generation. A host profile has
-/// no ID to select it by: the VM worker derives it for [`HOST`], or takes a
-/// restored snapshot's ([`PartitionProfile::host`]).
+/// no ID to select it by: the VM worker derives it for [`HOST`], and for
+/// [`AUTO`] on a CPU that no pinned profile serves, or takes a restored
+/// snapshot's ([`PartitionProfile::host`]).
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN` for an ID that is
 /// not pinned, or `E_CPU_GENERATION`.
@@ -557,6 +572,7 @@ mod tests {
             assert_eq!(select_auto(&host).unwrap().id(), id);
             assert_eq!(select(AUTO, &host).unwrap().id(), id);
             assert_eq!(generation_of(&host), Some(generation));
+            assert!(pinned_profile_serves(&host), "{host}");
         }
         for host in [
             intel(CASCADE_LAKE),
@@ -572,6 +588,7 @@ mod tests {
                 ProfileErrorCode::ProfileHostUnknown
             );
             assert_eq!(generation_of(&host), None);
+            assert!(!pinned_profile_serves(&host), "{host}");
         }
         let error = select_auto(&intel(CASCADE_LAKE)).unwrap_err();
         assert!(
