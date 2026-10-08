@@ -439,9 +439,11 @@ describes the source definitions.
   artifacts supplied at restore.
 * `--snapshot-scratch-restore-mode <MODE>`: Record `private-copy`,
   `copy-on-write`, or `direct-claimed` for paired scratch. Private copy is the
-  default and may fall back to sparse copying. Copy-on-write is valid only for
-  workload-start clones and fails if the destination filesystem cannot
-  reflink. Direct-claimed is valid only for single-use instance checkpoints.
+  default and may fall back to sparse copying. Copy-on-write is available only
+  on Linux, is valid only for workload-start clones, and fails if the
+  destination filesystem cannot reflink. Direct-claimed is valid only for
+  single-use instance checkpoints and requires the snapshot filesystem to
+  support exact-file hard links; it does not fall back to copying.
 
 A committed snapshot contains `manifest.bin`, `state.bin`, `memory.bin`, and
 optionally the manifest-declared `scratch.img`. Restore rejects unknown files,
