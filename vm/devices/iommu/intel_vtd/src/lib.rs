@@ -2363,7 +2363,9 @@ impl InspectMut for IntelVtdDevice {
 
 #[cfg(test)]
 mod tests {
+    mod accessed_dirty;
     mod queued_invalidation;
+    mod scalable_fixture;
     mod scalable_translation;
 
     use super::*;
