@@ -64,17 +64,44 @@ fn test_madt_level_triggered_irq_override() {
 #[test]
 #[should_panic(expected = "legacy IRQ should be in range")]
 fn test_madt_rejects_non_legacy_irq_override() {
+    build_madt_with_level_triggered_irqs(&[16], false);
+}
+
+#[test]
+#[should_panic(expected = "level-triggered IRQ should be unique")]
+fn test_madt_rejects_duplicate_irq_override() {
+    build_madt_with_level_triggered_irqs(&[5, 5], false);
+}
+
+#[test]
+#[should_panic(expected = "level-triggered IRQ duplicates ACPI IRQ")]
+fn test_madt_rejects_duplicate_acpi_irq_override() {
+    build_madt_with_level_triggered_irqs(&[2], false);
+}
+
+#[test]
+#[should_panic(expected = "level-triggered IRQ conflicts with PIT override")]
+fn test_madt_rejects_conflicting_pit_irq_override() {
+    build_madt_with_level_triggered_irqs(&[0], true);
+}
+
+fn build_madt_with_level_triggered_irqs(
+    level_triggered_irqs: &'static [u32],
+    enable_pit: bool,
+) {
     let mem = new_mem();
     let topology = TopologyBuilder::new_x86().build(1).unwrap();
     let pcie = vec![];
     let mut builder = new_builder(&mem, &topology, &pcie);
     let AcpiArchConfig::X86 {
-        level_triggered_irqs,
+        level_triggered_irqs: configured_irqs,
+        with_pit,
         ..
     } = &mut builder.arch
     else {
         unreachable!()
     };
-    *level_triggered_irqs = &[16];
+    *configured_irqs = level_triggered_irqs;
+    *with_pit = enable_pit;
     builder.build_madt();
 }
