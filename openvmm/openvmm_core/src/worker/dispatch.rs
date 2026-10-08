@@ -365,17 +365,26 @@ impl Worker for VmWorker {
             .shared_memory
             .map(|fd| restore_params.shared_memory_backing(fd));
 
-        // A cold boot whose built-in CPU profile this host cannot boot names
-        // the host profile where one could boot instead.
+        // A cold boot whose CPU profile this host cannot boot names the host
+        // profile where one could boot instead, or says that `auto` fell back
+        // to one.
         #[cfg(guest_arch = "x86_64")]
         let hint = {
             let requested = manifest
                 .microvm
                 .time_abi
                 .as_ref()
-                .map(|time_abi| time_abi.cpu_profile.clone());
+                .map(|time_abi| (time_abi.cpu_profile.clone(), time_abi.hooks.clone()));
             let restoring = parameters.saved_state.is_some();
-            move |err| time_abi::hint_cold_boot(err, requested.as_deref(), restoring)
+            move |err| {
+                time_abi::hint_cold_boot(
+                    err,
+                    requested
+                        .as_ref()
+                        .map(|(cpu_profile, hooks)| (cpu_profile.as_str(), hooks)),
+                    restoring,
+                )
+            }
         };
         #[cfg(not(guest_arch = "x86_64"))]
         let hint = |err: anyhow::Error| err;
@@ -1294,6 +1303,7 @@ impl InitializedVm {
                     &parameters.cpu_profile,
                     &cfg.microvm.hypervisor_id,
                     cfg.microvm.restored_host_profile.as_ref(),
+                    &parameters.hooks,
                 )?;
                 let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(
                     &profile,

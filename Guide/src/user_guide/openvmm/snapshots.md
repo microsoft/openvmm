@@ -279,20 +279,27 @@ Scalable, fifth generation: 6/207), `intel.alderlake.v1` (Core, twelfth
 generation: 6/151 and 6/154), `amd.milan.v1` (AMD EPYC, third generation:
 25/1), `amd.genoa.v1` (AMD EPYC, fourth generation: 25/17), and
 `amd.turin.v1` (AMD EPYC, fifth generation: 26/2). `--cpu-profile <ID>`
-selects one; the default,
-`auto`, selects the profile of the host's generation, and a host without one
-fails (`E_PROFILE_HOST_UNKNOWN`). On an Intel or AMD development host without
-one, `--cpu-profile host` boots on a host profile instead: OpenVMM
-fingerprints the backend on this host, as `--cpu-fingerprint` does, and
-applies the pinned profiles' derivation policy to it. A host profile,
+selects one; the default, `auto`, selects the profile of the host's
+generation. An Intel or AMD host without one boots on a host profile
+instead: `auto` falls back to the profile that `--cpu-profile host`
+selects, for which OpenVMM fingerprints the backend on this host, as
+`--cpu-fingerprint` does, and applies the pinned profiles' derivation policy
+to it. Every cold boot that falls back logs a warning at the default log
+level that starts with `NVX-CPU-PROFILE-FALLBACK:`, names the CPU and the
+host profile with its digest, says what that cold boot's fingerprint took,
+and asks for the CPU's fingerprint so that a
+pinned profile can serve it. A host of another vendor without a profile
+fails (`E_PROFILE_HOST_UNKNOWN`). A host profile,
 `intel.host.v1` or `amd.host.v1`, serves only the host's CPU model and
-stepping, is not pinned, and can change with the host's microcode, firmware,
-or hypervisor. Every boot checks that the backend
+stepping, is not pinned, can change with the host's microcode, firmware,
+or hypervisor, and costs a fingerprint of the backend at every cold boot.
+Every boot checks that the backend
 supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
-effective CPUID (`E_CPU_SURFACE`). On an Intel or AMD host, `auto`'s errors
-name `--cpu-profile host` both where no pinned profile serves the host and
-where the backend does not support the one that does, because a host profile
-derives from what the backend supports. A snapshot records the profile and the
+effective CPUID (`E_CPU_SURFACE`); where `auto` fell back, such a failure
+says so. On an Intel or AMD host, `auto`'s error names `--cpu-profile host`
+where the backend does not support the pinned profile of the host's
+generation, because a host profile derives from what the backend supports.
+A snapshot records the profile and the
 effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
 the same digest, or, for a host profile, the snapshot's own copy of it, which
 must match the recorded digest; a host of the profile's generation; and an
@@ -472,7 +479,8 @@ immediately with a clear error if any active device does not support it.
   supported.
 - MicroVM restore requires the backend, CPU generation, and CPU profile of
   the capture, and an OpenVMM build that computes the same effective CPUID.
-  A host profile's snapshot restores only on a host of the capture host's CPU
-  model and stepping.
+  A host profile's snapshot, including one of a cold boot whose `auto` fell
+  back to a host profile, restores only on a host of the capture host's CPU
+  model and stepping whose backend supports the profile.
   Snapshots from manifest versions before 6, or from a build that computes a
   different effective CPUID, must be recaptured.

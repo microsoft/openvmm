@@ -414,12 +414,19 @@ describes the source definitions.
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
   (the default) for the profile of the host's CPU generation, or `host` to
-  derive a development profile from this host's backend fingerprint for a
-  host that no pinned profile serves. `auto` never selects a host profile. A
-  host without a profile, or a profile of another generation, fails before the
-  partition is created. On an Intel or AMD host, `auto`'s errors name
-  `--cpu-profile host` when no pinned profile serves the host and when the
-  backend does not support the pinned profile (`E_PROFILE_UNSUPPORTED`). A
+  derive a development profile from this host's backend fingerprint. Where no
+  pinned profile serves an Intel or AMD host's CPU, `auto` falls back to that
+  host profile and logs a warning at the default log level at every such cold
+  boot. The warning starts with `NVX-CPU-PROFILE-FALLBACK:`, names the CPU and
+  the host profile with its digest, says what that cold boot's fingerprint
+  took, and asks for the CPU's fingerprint
+  (`--cpu-fingerprint`) so that a pinned profile can serve it. A CPU of
+  another vendor that no pinned profile serves (`E_PROFILE_HOST_UNKNOWN`), or
+  a profile of another generation (`E_CPU_GENERATION`), fails before the
+  partition is created. On an Intel or AMD host, `auto`'s error names
+  `--cpu-profile host` when the backend does not support the pinned profile
+  of the host's generation (`E_PROFILE_UNSUPPORTED`), and says that `auto`
+  fell back when the host cannot boot the host profile instead. A
   restore uses the snapshot's profile and rejects any
   other; `host` also names a host profile that the snapshot recorded. See
   [Time and CPU compatibility](../../../user_guide/openvmm/snapshots.md#time-and-cpu-compatibility).
@@ -551,8 +558,9 @@ guest state and protect the directory with host access controls.
   `digest` covers the whole document.
 
   OpenVMM then checks the fingerprint against the pinned CPU profile of the
-  host's generation (the profile that `--cpu-profile auto` would select) and
-  prints one line to standard error, for example:
+  host's generation (the pinned profile that `--cpu-profile auto` selects;
+  the check never falls back to a host profile) and prints one line to
+  standard error, for example:
 
   ```text
   NVX-CPU-PROFILE: status=pass backend=kvm generation=icelake-sp profile=intel.icelake-sp.v1 profile_digest=sha256:… surface_digest=sha256:… host_invariant_tsc=yes
@@ -574,7 +582,8 @@ guest state and protect the directory with host access controls.
   installs the profile as the guest's whole CPUID table and answers every
   other entry from it (zero, or the architecture's out-of-range and topology
   results), so the check does not apply. The fingerprint is still written, so
-  hosts of new generations can be fingerprinted to derive their profiles.
+  hosts of new generations can be fingerprinted to derive their profiles: the
+  warning of `--cpu-profile auto`'s fallback asks for it.
 
   ```bash
   openvmm --hypervisor kvm --cpu-fingerprint host.json
