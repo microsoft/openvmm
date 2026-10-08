@@ -76,30 +76,13 @@ impl<T> Clone for WeakIoDriver<T> {
 impl<T> WeakIoDriver<T> {
     /// Attempts to upgrade to a strong [`IoDriver`].
     ///
-    /// Returns `None` once the last strong `IoDriver` has been dropped. That is
-    /// when shutdown is *requested*, not when it is complete: [`IoPool::run`]
-    /// drops the pool's scheduler on entry, so the scheduler half of this
-    /// reference dies as soon as the last driver goes, while the pool is still
-    /// running. Use [`is_backend_alive`](Self::is_backend_alive) to observe the
-    /// pool actually finishing.
+    /// Returns `None` once the last strong `IoDriver` has been dropped and no
+    /// task on the pool is still alive.
     pub fn upgrade(&self) -> Option<IoDriver<T>> {
         Some(IoDriver {
             inner: self.inner.upgrade()?,
             scheduler: self.scheduler.upgrade()?,
         })
-    }
-
-    /// Returns `true` while the pool's IO backend is still alive.
-    ///
-    /// [`IoPool::run`] drops the pool's scheduler on entry but holds the IO
-    /// backend until it returns, so this stays `true` for the whole of `run`,
-    /// outliving [`upgrade`](Self::upgrade). It therefore reports whether the
-    /// backend and the file descriptors it owns have been released, rather than
-    /// whether shutdown has been requested. A strong [`IoDriver`] keeps the
-    /// backend alive too, so this only describes the pool once the last one has
-    /// been dropped.
-    pub fn is_backend_alive(&self) -> bool {
-        self.inner.strong_count() > 0
     }
 }
 
