@@ -255,6 +255,11 @@ pub struct TimeAbiTestHooks {
     /// microseconds.
     #[mesh(6)]
     pub sample_delay_us: u32,
+    /// On a cold boot with `--cpu-profile auto`, treat the host CPU as one
+    /// that no pinned CPU profile serves, so that `auto` falls back to a host
+    /// profile on a host that a pinned profile serves.
+    #[mesh(7)]
+    pub host_cpu_unknown: bool,
 }
 
 /// The largest accepted `dest-rate-offset-ppm` magnitude.
@@ -306,11 +311,14 @@ impl TimeAbiTestHooks {
             }
             seen.push(name);
             match name {
-                "force-utc-downtime" | "boot-id-mismatch" if argument.is_some() => {
+                "force-utc-downtime" | "boot-id-mismatch" | "host-cpu-unknown"
+                    if argument.is_some() =>
+                {
                     return Err(invalid(value, "the hook takes no value"));
                 }
                 "force-utc-downtime" => hooks.force_utc_downtime = true,
                 "boot-id-mismatch" => hooks.boot_id_mismatch = true,
+                "host-cpu-unknown" => hooks.host_cpu_unknown = true,
                 "dest-rate-offset-ppm" => {
                     hooks.dest_rate_offset_ppm = number(
                         value,
@@ -561,6 +569,7 @@ mod tests {
             "downtime-add-s=2592001",
             "utc-offset-ms=-5000",
             "sample-delay-us=3000",
+            "host-cpu-unknown",
         ])
         .unwrap();
         assert_eq!(
@@ -572,10 +581,15 @@ mod tests {
                 downtime_add_s: 2_592_001,
                 utc_offset_ms: -5000,
                 sample_delay_us: 3000,
+                host_cpu_unknown: true,
             }
         );
         assert!(hooks.active());
         assert!(!TimeAbiTestHooks::parse::<&str>(&[]).unwrap().active());
+        // The CPU profile hook alone is a test hook too.
+        let host_cpu_unknown = TimeAbiTestHooks::parse(&["host-cpu-unknown"]).unwrap();
+        assert!(host_cpu_unknown.host_cpu_unknown);
+        assert!(host_cpu_unknown.active());
     }
 
     #[test]
@@ -583,6 +597,8 @@ mod tests {
         for value in [
             "unknown",
             "force-utc-downtime=1",
+            "host-cpu-unknown=1",
+            "host-cpu-unknown=",
             "dest-rate-offset-ppm",
             "dest-rate-offset-ppm=",
             "dest-rate-offset-ppm=x",
