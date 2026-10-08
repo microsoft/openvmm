@@ -158,15 +158,15 @@ fn runtime_archive_info(
     }
 }
 
-pub(crate) fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
     let mut file = fs_err::File::open(path)
-        .with_context(|| format!("failed to open VMM.Perf artifact {}", path.display()))?;
+        .with_context(|| format!("failed to open VMM.Perf runtime {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     loop {
         let bytes_read = file
             .read(&mut buffer)
-            .with_context(|| format!("failed to read VMM.Perf artifact {}", path.display()))?;
+            .with_context(|| format!("failed to read VMM.Perf runtime {}", path.display()))?;
         if bytes_read == 0 {
             break;
         }
@@ -179,7 +179,7 @@ pub(crate) fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
         .collect::<String>();
     anyhow::ensure!(
         actual == expected,
-        "VMM.Perf artifact SHA-256 mismatch for {}: expected {expected}, found {actual}",
+        "VMM.Perf runtime SHA-256 mismatch for {}: expected {expected}, found {actual}",
         path.display()
     );
     Ok(())
