@@ -14,15 +14,15 @@ use std::path::Path;
 
 // Update the version and all hashes together when refreshing the archives
 // published to the public VMM.Perf runtime source below.
-const VMM_PERF_RUNTIME_VERSION: &str = "20261007.1";
+const VMM_PERF_RUNTIME_VERSION: &str = "20261008.1";
 const VMM_PERF_RUNTIME_LINUX_X64_SHA256: &str =
-    "d7bf8dbf8d4bd75127392bed28b8ab378e36f117dd6407e1493e0b33ed88a3e3";
+    "7a1b7d45f23c595a157d74ad152e25769241737a370c0dd16e03813da9eebf8b";
 const VMM_PERF_RUNTIME_LINUX_ARM64_SHA256: &str =
-    "db63c1dd81e23594ee0fb84fef404bd926e83d27f35b201346161736ca63f5af";
+    "f3471f563d437a257a9a6f7b58be396ad4f280d6d5c4ebf23bfcdc8e7e9d0697";
 const VMM_PERF_RUNTIME_WINDOWS_X64_SHA256: &str =
-    "1cdb2aab58f0ba160d5e70d304c7c340e8c9cd9865ba54f2156e35de9850ebc7";
+    "7a54f2210c51d2a471c72fbc2e98c9d4438a6e74b405a2f7ec76dbb6242da555";
 const VMM_PERF_RUNTIME_WINDOWS_ARM64_SHA256: &str =
-    "9da6a1b1f6c9b4eccbed44312f70750172bb4f2c18f25890f98c8cec5ef9f4d7";
+    "2def83be1b1c5da5f6cd7dffb0a454859136187241c670261e6bccc4a104a517";
 
 flowey_request! {
     pub enum Request {
