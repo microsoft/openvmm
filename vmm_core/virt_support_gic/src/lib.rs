@@ -6,12 +6,202 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
+
 pub use gicd::Distributor;
 pub use gicr::Redistributor;
 
+#[derive(Clone, Copy, Debug)]
+pub struct PendingInterrupt {
+    pub intid: u32,
+    pub priority: u8,
+    pub group1: bool,
+    pub level_triggered: bool,
+}
+
+/// The returned execution state of a virtual interrupt represented by a list
+/// register. Configuration remains in the software GIC model; this only
+/// describes the transient pending/active state owned by the list register.
+#[derive(Clone, Copy, Debug)]
+pub struct ListRegisterInterrupt {
+    pub intid: u32,
+    pub pending: bool,
+    pub active: bool,
+}
+
+fn group_mask(group1_bits: u32, group1: bool) -> u32 {
+    if group1 { group1_bits } else { !group1_bits }
+}
+
+fn enabled_group_mask(group1_bits: u32, enable_group0: bool, enable_group1: bool) -> u32 {
+    (if enable_group0 { !group1_bits } else { 0 }) | (if enable_group1 { group1_bits } else { 0 })
+}
+
+use aarch64defs::SystemReg;
+use memory_range::MemoryRange;
+use parking_lot::Mutex;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::VpIndex;
+use vm_topology::processor::aarch64::Aarch64Topology;
+use vm_topology::processor::aarch64::GicVersion;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GicV3ModelError {
+    #[error("software GIC requires GICv3")]
+    UnsupportedGicVersion,
+    #[error("GIC redistributor range overflowed")]
+    RedistributorRangeOverflow,
+    #[error("GIC distributor range overflowed")]
+    DistributorRangeOverflow,
+}
+
+/// Software model of a GICv3 distributor and its per-VP redistributors.
+pub struct GicV3Model {
+    /// Shared distributor state and interrupt-routing logic.
+    distributor: Distributor,
+    /// Redistributor register interfaces indexed by VP index.
+    redistributors: Vec<Mutex<Redistributor>>,
+    /// Distributor MMIO address range.
+    distributor_range: MemoryRange,
+    /// Contiguous MMIO address range containing all redistributor frames.
+    redistributor_range: MemoryRange,
+}
+
+impl GicV3Model {
+    pub fn new(topology: &ProcessorTopology<Aarch64Topology>) -> Result<Self, GicV3ModelError> {
+        let redistributors_base = match topology.gic_version() {
+            GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            GicVersion::V2 { .. } => return Err(GicV3ModelError::UnsupportedGicVersion),
+        };
+        let redistributors_size = aarch64defs::GIC_REDISTRIBUTOR_SIZE
+            .checked_mul(u64::from(topology.vp_count()))
+            .ok_or(GicV3ModelError::RedistributorRangeOverflow)?;
+        let redistributors_end = redistributors_base
+            .checked_add(redistributors_size)
+            .ok_or(GicV3ModelError::RedistributorRangeOverflow)?;
+        let redistributor_range = MemoryRange::new(redistributors_base..redistributors_end);
+        let distributor_base = topology.gic_distributor_base();
+        let distributor_end = distributor_base
+            .checked_add(aarch64defs::GIC_DISTRIBUTOR_SIZE)
+            .ok_or(GicV3ModelError::DistributorRangeOverflow)?;
+        let distributor_range = MemoryRange::new(distributor_base..distributor_end);
+
+        let mut distributor = Distributor::new(
+            distributor_base,
+            redistributor_range,
+            topology.gic_nr_irqs(),
+        );
+
+        let mut redistributors: Vec<Mutex<Redistributor>> = vec![];
+        let vp_count = topology.vp_count() as usize;
+        for (index, vp) in topology.vps_arch().enumerate() {
+            let gicr = distributor.add_redistributor(vp.mpidr.into(), index + 1 == vp_count);
+            redistributors.push(Mutex::new(gicr));
+        }
+
+        Ok(Self {
+            distributor,
+            redistributors,
+            distributor_range,
+            redistributor_range,
+        })
+    }
+
+    pub fn contains(&self, address: u64) -> bool {
+        self.distributor_range.contains_addr(address)
+            || self.redistributor_range.contains_addr(address)
+    }
+
+    pub fn read(&self, address: u64, data: &mut [u8]) -> bool {
+        self.distributor.read(address, data)
+    }
+
+    pub fn write(&self, address: u64, data: &[u8]) -> bool {
+        self.distributor.write(address, data)
+    }
+
+    pub fn set_spi_irq(&self, intid: u32, high: bool) -> Vec<VpIndex> {
+        self.distributor.set_spi_irq(intid, high)
+    }
+
+    pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32) {
+        self.distributor.cancel_spi_reservation(vp, intid);
+    }
+
+    /// Reconcile returned list registers with the durable interrupt model.
+    ///
+    /// List registers are an execution cache. Pending latches raised while a
+    /// VP was running are retained, while returned pending and active state is
+    /// folded into the model before the registers are repacked.
+    pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
+        self.distributor.fold_list_registers(vp, lrs);
+    }
+
+    pub fn write_sysreg(
+        &self,
+        vp: VpIndex,
+        reg: SystemReg,
+        value: u64,
+        wake: impl FnMut(usize),
+    ) -> bool {
+        let Some(gicr) = self.redistributors.get(vp.index() as usize) else {
+            return false;
+        };
+        let mut gicr = gicr.lock();
+        self.distributor.write_sysreg(&mut gicr, reg, value, wake)
+    }
+
+    pub fn next_pending_private_interrupts(
+        &self,
+        vp: VpIndex,
+        running_priority: u8,
+    ) -> Option<HashMap<u64, PendingInterrupt>> {
+        self.distributor
+            .next_private_interrupts(vp, running_priority)
+    }
+
+    pub fn reserve_pending_spi_interrupts(
+        &self,
+        vp: VpIndex,
+        running_priority: u8,
+    ) -> Option<HashMap<u64, PendingInterrupt>> {
+        self.distributor
+            .reserve_pending_spi_interrupts(vp, running_priority)
+    }
+
+    /// Sets the software pending latch for a private interrupt.
+    ///
+    /// Returns whether the latch changed from clear to set.
+    pub fn raise_ppi(&self, vp: VpIndex, intid: u32) -> bool {
+        self.distributor.raise_ppi(vp, intid)
+    }
+
+    pub fn mark_private_injected(&self, vp: VpIndex, intid: u32) {
+        self.distributor.mark_private_injected(vp, intid);
+    }
+
+    /// Updates the input line of a level-triggered PPI.
+    ///
+    /// This does not set the software pending latch. The live input level and
+    /// software-generated pending state are independent interrupt sources.
+    /// Returns true only when a valid PPI transitions from low to high.
+    pub fn set_ppi_irq(&self, vp: VpIndex, intid: u32, asserted: bool) -> bool {
+        match self.redistributors.get(vp.index() as usize) {
+            Some(gicr) => gicr.lock().shared.set_ppi_irq(intid, asserted),
+            None => false,
+        }
+    }
+}
+
 mod gicd {
+    use super::ListRegisterInterrupt;
+    use super::PendingInterrupt;
     use super::Redistributor;
+    use super::enabled_group_mask;
     use super::gicr::SharedState;
+    use super::group_mask;
     use aarch64defs::MpidrEl1;
     use aarch64defs::SystemReg;
     use aarch64defs::gic::GicdCtlr;
@@ -22,12 +212,13 @@ mod gicd {
     use inspect::Inspect;
     use memory_range::MemoryRange;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use vm_topology::processor::VpIndex;
 
     #[derive(Debug, Inspect)]
     pub struct Distributor {
-        state: Mutex<DistributorState>,
+        state: Arc<Mutex<DistributorState>>,
         max_spi_intid: u32,
         #[inspect(skip)]
         gicr: Vec<Arc<SharedState>>,
@@ -36,13 +227,26 @@ mod gicd {
     }
 
     #[derive(Debug, Inspect)]
-    struct DistributorState {
+    pub struct DistributorState {
+        /// Level-triggered SPI input lines currently asserted by devices.
+        #[inspect(iter_by_index)]
+        asserted: Vec<u32>,
         #[inspect(iter_by_index)]
         pending: Vec<u32>,
+        /// Bitmap of 32-INTID words that contain pending or asserted SPIs.
+        pending_word_summary: u32,
+        /// SPIs reserved for injection or represented in the CCA virtual
+        /// active/pending list, indexed by INTID. Some entries in that list can
+        /// live outside the implemented hardware list registers.
+        #[inspect(iter_by_index)]
+        in_flight: Vec<Option<u32>>,
+        /// Reserved or in-flight SPI INTIDs owned by each VP.
+        #[inspect(skip)]
+        in_flight_by_vp: Vec<Vec<u32>>,
         #[inspect(iter_by_index)]
         active: Vec<u32>,
         #[inspect(iter_by_index)]
-        group: Vec<u32>,
+        group_status: Vec<u32>,
         #[inspect(iter_by_index)]
         enable: Vec<u32>,
         #[inspect(iter_by_index)]
@@ -51,26 +255,31 @@ mod gicd {
         priority: Vec<u32>,
         #[inspect(iter_by_index)]
         route: Vec<u64>,
-        enable_grp0: bool,
-        enable_grp1: bool,
+        pub enable_grp0: bool,
+        pub enable_grp1: bool,
     }
 
     impl Distributor {
-        pub fn new(gicd_base: u64, gicr_range: MemoryRange, max_spis: u32) -> Self {
-            let n = (max_spis as usize + 1) / 32;
+        pub fn new(gicd_base: u64, gicr_range: MemoryRange, interrupt_count: u32) -> Self {
+            let n = interrupt_count.div_ceil(32) as usize;
+            assert!(n <= u32::BITS as usize);
             Self {
-                state: Mutex::new(DistributorState {
+                state: Arc::new(Mutex::new(DistributorState {
+                    asserted: vec![0; n],
                     pending: vec![0; n],
+                    pending_word_summary: 0,
+                    in_flight: vec![None; n * 32],
+                    in_flight_by_vp: Vec::new(),
                     active: vec![0; n],
-                    group: vec![0; n],
+                    group_status: vec![0; n],
                     enable: vec![0; n],
                     cfg: vec![0; n * 2],
                     priority: vec![0; n * 8],
                     route: vec![0; n * 64],
                     enable_grp0: false,
                     enable_grp1: false,
-                }),
-                max_spi_intid: 32 + max_spis - 1,
+                })),
+                max_spi_intid: interrupt_count.saturating_sub(1),
                 gicr: Default::default(),
                 gicd_range: MemoryRange::new(
                     gicd_base..gicd_base + aarch64defs::GIC_DISTRIBUTOR_SIZE,
@@ -83,6 +292,10 @@ mod gicd {
             let mpidr = mpidr & u64::from(MpidrEl1::AFFINITY_MASK);
             let (gicr, state) = Redistributor::new(self.gicr.len(), mpidr, last);
             self.gicr.push(state);
+            self.state
+                .lock()
+                .in_flight_by_vp
+                .push(Vec::with_capacity(16));
             assert!(
                 (self.gicr.len() as u64)
                     <= self.gicr_range.len() / aarch64defs::GIC_REDISTRIBUTOR_SIZE
@@ -98,62 +311,406 @@ mod gicd {
             }
         }
 
-        pub fn set_pending(&self, intid: u32, pending: bool) -> Option<u32> {
-            let v = &mut self.state.lock().pending[intid as usize / 32];
-            let mask = 1 << (intid & 31);
-            if (*v & mask != 0) != pending {
-                tracing::debug!(intid, pending, "set pending");
-            }
-            if pending {
-                *v |= mask;
-                Some(0)
-            } else {
-                *v &= !mask;
-                None
+        pub fn mark_private_injected(&self, vp: VpIndex, intid: u32) {
+            if intid < 32 {
+                if let Some(gicr) = self.gicr.get(vp.index() as usize) {
+                    gicr.mark_injected(intid);
+                }
             }
         }
 
-        pub fn irq_pending(&self, gicr: &Redistributor) -> bool {
-            if gicr.irq_pending() {
+        pub fn set_spi_irq(&self, intid: u32, high: bool) -> Vec<VpIndex> {
+            if intid < 32 || intid > self.max_spi_intid {
+                tracelimit::warn_ratelimited!(intid, high, "invalid GIC SPI assertion");
+                return Vec::new();
+            }
+
+            let mut state = self.state.lock();
+            let changed = Self::set_bit(&mut state.asserted, intid, high);
+            Self::update_pending_word_summary(&mut state, intid as usize / 32);
+            if changed && high && Self::edge_triggered(&state, intid) {
+                Self::set_pending_locked(&mut state, intid, true);
+            }
+            if !changed || !high {
+                return Vec::new();
+            }
+
+            self.target_vps_for_spi(&state, intid)
+        }
+
+        #[cfg(test)]
+        pub fn mark_spi_injected(&self, vp: VpIndex, intid: u32) {
+            let mut state = self.state.lock();
+            Self::set_pending_locked(&mut state, intid, false);
+            Self::set_in_flight_locked(&mut state, vp, intid);
+        }
+
+        #[cfg(test)]
+        pub fn retain_in_flight_spis(
+            &self,
+            vp: VpIndex,
+            mut is_in_flight: impl FnMut(u32) -> bool,
+        ) {
+            let mut state = self.state.lock();
+            let vp_index = vp.index() as usize;
+            let Some(owned) = state.in_flight_by_vp.get(vp_index).cloned() else {
+                return;
+            };
+            for intid in owned {
+                if !is_in_flight(intid) {
+                    state.in_flight[intid as usize] = None;
+                    state.in_flight_by_vp[vp_index].retain(|owned_intid| *owned_intid != intid);
+                }
+            }
+        }
+
+        pub fn cancel_spi_reservation(&self, vp: VpIndex, intid: u32) {
+            if intid < 32 || intid > self.max_spi_intid {
+                tracelimit::warn_ratelimited!(intid, "invalid GIC SPI reservation cancellation");
+                return;
+            }
+
+            let mut state = self.state.lock();
+            if state.in_flight[intid as usize] == Some(vp.index()) {
+                state.in_flight[intid as usize] = None;
+                if let Some(owned) = state.in_flight_by_vp.get_mut(vp.index() as usize) {
+                    owned.retain(|owned_intid| *owned_intid != intid);
+                }
+            }
+        }
+
+        pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
+            let mut state = self.state.lock();
+            let vp_index = vp.index() as usize;
+            let Some(owned) = state.in_flight_by_vp.get(vp_index).cloned() else {
+                return;
+            };
+
+            for intid in owned {
+                let returned = lrs.iter().find(|lr| lr.intid == intid);
+                let keep = returned.is_some();
+                if let Some(lr) = returned {
+                    Self::set_bit(&mut state.active, intid, lr.active);
+                    if lr.pending {
+                        Self::set_pending_locked(&mut state, intid, true);
+                    }
+                } else {
+                    Self::set_bit(&mut state.active, intid, false);
+                    state.in_flight[intid as usize] = None;
+                }
+                if !keep {
+                    state.in_flight_by_vp[vp_index].retain(|owned_intid| *owned_intid != intid);
+                }
+            }
+
+            drop(state);
+            if let Some(gicr) = self.gicr.get(vp_index) {
+                gicr.fold_list_registers(lrs);
+            }
+        }
+
+        pub fn reserve_pending_spi_interrupts(
+            &self,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let mut state = self.state.lock();
+            let interrupts = self.next_spi_interrupts_locked(&state, vp, running_priority)?;
+            // Reserve while still holding the selection lock so another VP
+            // cannot select the same IRM-routed SPIs.
+            for (&intid, _) in &interrupts {
+                Self::set_pending_locked(&mut state, intid as u32, false);
+                Self::set_in_flight_locked(&mut state, vp, intid as u32);
+            }
+            Some(interrupts)
+        }
+
+        pub fn next_private_interrupts(
+            &self,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let (enable_grp0, enable_grp1) = {
+                let state = self.state.lock();
+                (state.enable_grp0, state.enable_grp1)
+            };
+            if !enable_grp0 && !enable_grp1 {
+                return None;
+            }
+
+            self.gicr.get(vp.index() as usize)?.next_private_interrupts(
+                running_priority,
+                enable_grp0,
+                enable_grp1,
+            )
+        }
+
+        pub fn clear_pending(&self, vp_index: usize, intid: u32) {
+            if intid < 32 {
+                if let Some(gicr) = self.gicr.get(vp_index) {
+                    gicr.clear_pending(intid);
+                }
+            } else {
+                let mut state = self.state.lock();
+                Self::set_pending_locked(&mut state, intid, false);
+            }
+        }
+
+        fn next_spi_interrupts_locked(
+            &self,
+            state: &DistributorState,
+            vp: VpIndex,
+            running_priority: u8,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            if !state.enable_grp0 && !state.enable_grp1 {
+                return None;
+            }
+
+            let mut interrupts = HashMap::new();
+            let mut ready_words = state.pending_word_summary & !1;
+            while ready_words != 0 {
+                let word = ready_words.trailing_zeros() as usize;
+                ready_words &= ready_words - 1;
+
+                let group = enabled_group_mask(
+                    state.group_status[word],
+                    state.enable_grp0,
+                    state.enable_grp1,
+                );
+
+                let mut candidates =
+                    (state.pending[word] | state.asserted[word]) & state.enable[word] & group;
+
+                while candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    candidates &= candidates - 1;
+
+                    let intid = word as u32 * 32 + bit;
+                    let mask = 1 << bit;
+                    let pending = state.pending[word] & mask != 0;
+                    let level_asserted =
+                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
+                    let group1 = state.group_status[word] & mask != 0;
+                    if !pending && !level_asserted {
+                        continue;
+                    }
+                    let owned_by_vp = state.in_flight[intid as usize] == Some(vp.index());
+                    if !pending && owned_by_vp {
+                        continue;
+                    }
+                    if intid > self.max_spi_intid
+                        || (state.in_flight[intid as usize].is_some() && !owned_by_vp)
+                        || (state.active[word] & mask != 0 && !owned_by_vp)
+                        || !self.spi_targets_vp(&state, intid, vp)
+                    {
+                        continue;
+                    }
+
+                    let priority = Self::priority(&state.priority, intid);
+                    if priority >= running_priority {
+                        continue;
+                    }
+
+                    let interrupt = PendingInterrupt {
+                        intid,
+                        priority,
+                        group1,
+                        level_triggered: !Self::edge_triggered(&state, intid),
+                    };
+
+                    interrupts.insert(intid as u64, interrupt);
+                }
+            }
+
+            if interrupts.is_empty() {
+                return None;
+            }
+
+            Some(interrupts)
+        }
+
+        fn set_pending_locked(state: &mut DistributorState, intid: u32, pending: bool) -> bool {
+            let changed = Self::set_bit(&mut state.pending, intid, pending);
+            if changed {
+                Self::update_pending_word_summary(state, intid as usize / 32);
+                tracing::debug!(intid, pending, "set pending");
+            }
+            changed
+        }
+
+        fn update_pending_word_summary(state: &mut DistributorState, word: usize) {
+            let mask = 1 << word;
+            if state.pending[word] | state.asserted[word] != 0 {
+                state.pending_word_summary |= mask;
+            } else {
+                state.pending_word_summary &= !mask;
+            }
+        }
+
+        fn set_in_flight_locked(state: &mut DistributorState, vp: VpIndex, intid: u32) {
+            let vp_index = vp.index() as usize;
+            if state.in_flight[intid as usize] == Some(vp.index()) {
+                return;
+            }
+
+            if let Some(previous_vp) = state.in_flight[intid as usize] {
+                if let Some(owned) = state.in_flight_by_vp.get_mut(previous_vp as usize) {
+                    owned.retain(|owned_intid| *owned_intid != intid);
+                }
+            }
+            state.in_flight[intid as usize] = Some(vp.index());
+            state.in_flight_by_vp[vp_index].push(intid);
+        }
+
+        fn set_bit(bits: &mut [u32], intid: u32, value: bool) -> bool {
+            let Some(word) = bits.get_mut(intid as usize / 32) else {
+                return false;
+            };
+
+            let mask = 1 << (intid & 31);
+            let changed = (*word & mask != 0) != value;
+            if value {
+                *word |= mask;
+            } else {
+                *word &= !mask;
+            }
+            changed
+        }
+
+        /// Returns whether `intid` is configured as edge-triggered in GICD_ICFGR.
+        /// Each INTID uses two bits: bit 1 selects edge (1) or level (0), while bit 0 is RES0.
+        /// 31 30 | 29 28 | ... | 5 4 | 3 2 | 1 0
+        /// ------|-------|-----|-----|-----|------
+        ///  IRQ15| IRQ14 | ... | IRQ2| IRQ1| IRQ0
+        /// trigger bit = 0 → level-triggered
+        /// trigger bit = 1 → edge-triggered
+        /// each word describes 16 interrupts
+        fn edge_triggered(state: &DistributorState, intid: u32) -> bool {
+            let word = state.cfg.get(intid as usize / 16).copied().unwrap_or(0);
+            let shift = (intid % 16) * 2 + 1;
+            word & (1 << shift) != 0
+        }
+
+        fn priority(priority: &[u32], intid: u32) -> u8 {
+            let word = priority.get(intid as usize / 4).copied().unwrap_or(0);
+            let shift = (intid % 4) * 8;
+            ((word >> shift) & 0xff) as u8
+        }
+
+        fn target_vps_for_spi(&self, state: &DistributorState, intid: u32) -> Vec<VpIndex> {
+            self.gicr
+                .iter()
+                .enumerate()
+                .filter_map(|(index, _)| {
+                    let vp = VpIndex::new(index as u32);
+                    self.spi_targets_vp(state, intid, vp).then_some(vp)
+                })
+                .collect()
+        }
+
+        fn spi_targets_vp(&self, state: &DistributorState, intid: u32, vp: VpIndex) -> bool {
+            let Some(gicr) = self.gicr.get(vp.index() as usize) else {
+                return false;
+            };
+            let route = state.route.get(intid as usize).copied().unwrap_or(0);
+            if route & (1 << 31) != 0 {
                 return true;
             }
-            if gicr.index != 0 {
+
+            let mpidr = gicr.mpidr;
+            u64::from(mpidr.aff0()) == (route & 0xff)
+                && u64::from(mpidr.aff1()) == ((route >> 8) & 0xff)
+                && u64::from(mpidr.aff2()) == ((route >> 16) & 0xff)
+                && u64::from(mpidr.aff3()) == ((route >> 32) & 0xff)
+        }
+
+        pub fn irq_pending(&self, gicr: &Redistributor, group1: bool) -> bool {
+            let state = self.state.lock();
+            let group_enabled = if group1 {
+                state.enable_grp1
+            } else {
+                state.enable_grp0
+            };
+            if !group_enabled {
                 return false;
             }
-            let state = self.state.lock();
-            state
-                .pending
-                .iter()
-                .zip(&state.active)
-                .zip(&state.enable)
-                .any(|((&p, &a), e)| p & !a & e != 0)
+
+            if gicr.irq_pending(group1) {
+                return true;
+            }
+
+            for word in 1..state.pending.len() {
+                let group = group_mask(state.group_status[word], group1);
+                let mut candidates = (state.pending[word] | state.asserted[word])
+                    & !state.active[word]
+                    & state.enable[word]
+                    & group;
+                while candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    let mask = 1 << bit;
+                    candidates &= !mask;
+                    let intid = word as u32 * 32 + bit;
+                    let pending = state.pending[word] & mask != 0;
+                    let level_asserted =
+                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
+                    if intid <= self.max_spi_intid
+                        && (pending || level_asserted)
+                        && self.spi_targets_vp(&state, intid, VpIndex::new(gicr.index as u32))
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
         }
 
         pub fn ack(&self, gicr: &mut Redistributor, group1: bool) -> u32 {
+            let group_enabled = {
+                let state = self.state.lock();
+                if group1 {
+                    state.enable_grp1
+                } else {
+                    state.enable_grp0
+                }
+            };
+            if !group_enabled {
+                return 1023;
+            }
+
             if let Some(intid) = gicr.ack(group1) {
                 return intid;
             }
-            if gicr.index != 0 {
-                return 1023;
-            }
             let mut state = self.state.lock();
-            let state = &mut *state;
-            if let Some((i, (p, a))) = state
-                .pending
-                .iter_mut()
-                .zip(&mut state.active)
-                .enumerate()
-                .find(|(_, (p, a))| **p & !**a != 0)
-            {
-                let v = 31 - (*p & !*a).leading_zeros();
-                *p &= !(1 << v);
-                *a |= 1 << v;
-                let intid = i as u32 * 32 + v;
-                tracing::debug!(intid, "gicd ack");
-                intid
-            } else {
-                1023
+            for word in 1..state.pending.len() {
+                let group = group_mask(state.group_status[word], group1);
+                let mut candidates = (state.pending[word] | state.asserted[word])
+                    & !state.active[word]
+                    & state.enable[word]
+                    & group;
+
+                while candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    let mask = 1 << bit;
+                    candidates &= !mask;
+                    let intid = word as u32 * 32 + bit;
+                    let pending = state.pending[word] & mask != 0;
+                    let level_asserted =
+                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
+                    if intid > self.max_spi_intid
+                        || (!pending && !level_asserted)
+                        || !self.spi_targets_vp(&state, intid, VpIndex::new(gicr.index as u32))
+                    {
+                        continue;
+                    }
+
+                    state.pending[word] &= !mask;
+                    state.active[word] |= mask;
+                    Self::update_pending_word_summary(&mut state, word);
+                    tracing::debug!(intid, "gicd ack");
+                    return intid;
+                }
             }
+            1023
         }
 
         pub fn write_sysreg(
@@ -166,8 +723,10 @@ mod gicd {
             match reg {
                 SystemReg::ICC_EOIR0_EL1 => self.eoi(gicr, false, value as u32),
                 SystemReg::ICC_EOIR1_EL1 => self.eoi(gicr, true, value as u32),
-                SystemReg::ICC_SGI0R_EL1 => self.sgi(gicr, false, value, wake),
-                SystemReg::ICC_SGI1R_EL1 => self.sgi(gicr, true, value, wake),
+                SystemReg::ICC_SGI0R_EL1 | SystemReg::ICC_ASGI1R_EL1 => {
+                    self.sgi(gicr, true, value, wake)
+                }
+                SystemReg::ICC_SGI1R_EL1 => self.sgi(gicr, false, value, wake),
                 _ => return false,
             }
             true
@@ -176,7 +735,7 @@ mod gicd {
         fn sgi(
             &self,
             this: &mut Redistributor,
-            _group1: bool,
+            group0_only: bool,
             value: u64,
             mut wake: impl FnMut(usize),
         ) {
@@ -187,9 +746,13 @@ mod gicd {
                         && gicr.mpidr.aff3() == value.aff3()
                         && gicr.mpidr.aff2() == value.aff2()
                         && gicr.mpidr.aff1() == value.aff1()
-                        && (1 << gicr.mpidr.aff0()) & value.target_list() != 0)
+                        && (gicr.mpidr.aff0() >> 4) == value.rs()
+                        && (value.target_list() & (1 << (gicr.mpidr.aff0() & 0xf)) != 0))
                 {
-                    if gicr.raise(value.intid()) {
+                    // With DS set, Non-secure SGI0R and ASGI1R writes can
+                    // target Group 0 only. SGI1R can target either group,
+                    // according to the target SGI's IGROUPR bit.
+                    if gicr.raise_sgi(value.intid(), group0_only) {
                         wake(index);
                     }
                 }
@@ -210,12 +773,53 @@ mod gicd {
                 gicr.eoi(group1, intid);
                 return;
             }
-            if gicr.index != 0 {
-                return;
+            let mut state = self.state.lock();
+            let word = intid as usize / 32;
+            let mask = 1 << (intid & 31);
+            if state
+                .group_status
+                .get(word)
+                .is_some_and(|group| (*group & mask != 0) == group1)
+            {
+                tracing::debug!(intid, "gicd eoi");
+                if let Some(active) = state.active.get_mut(word) {
+                    *active &= !mask;
+                }
             }
-            tracing::debug!(intid, "gicd eoi");
-            let v = &mut self.state.lock().active[intid as usize / 32];
-            *v &= !(1 << (intid & 31));
+        }
+
+        fn write8(&self, address: GicdRegister, value: u8) -> bool {
+            let j = address.0 % 4;
+            match address {
+                r if GicdRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x3ff) / 4;
+                    if n >= 8 {
+                        if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
+                            *priority &= !(0xff << (j * 8));
+                            *priority |= u32::from(value) << (j * 8);
+                        }
+                    }
+                }
+                _ => return false,
+            };
+
+            true
+        }
+
+        fn read8(&self, address: GicdRegister) -> Option<u8> {
+            let j = address.0 % 4;
+            match address {
+                r if GicdRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x3ff) / 4;
+                    if n >= 8 {
+                        if let Some(priority) = self.state.lock().priority.get(n as usize) {
+                            return Some(((*priority >> (j * 8)) & 0xff) as u8);
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
         }
 
         fn write32(&self, address: GicdRegister, value: u32) -> bool {
@@ -226,13 +830,15 @@ mod gicd {
                     let mut state = self.state.lock();
                     let state = &mut *state;
                     state.enable_grp0 = ctlr.enable_grp0();
-                    state.enable_grp1 = ctlr.enable_grp1();
+                    state.enable_grp1 = ctlr.enable_grp1_non_secure();
                 }
                 r if GicdRegister::IGROUPR.contains(&r.0) => {
                     let n = (r.0 & 0x7f) / 4;
                     if n != 0 {
-                        if let Some(group) = self.state.lock().group.get_mut(n as usize) {
-                            *group = value;
+                        if let Some(group_status) =
+                            self.state.lock().group_status.get_mut(n as usize)
+                        {
+                            *group_status = value;
                         }
                     }
                 }
@@ -252,6 +858,26 @@ mod gicd {
                         }
                     }
                 }
+                r if GicdRegister::ISPENDR.contains(&r.0) => {
+                    let n = (r.0 & 0x7f) / 4;
+                    if n != 0 {
+                        let mut state = self.state.lock();
+                        if let Some(pending) = state.pending.get_mut(n as usize) {
+                            *pending |= value;
+                            Self::update_pending_word_summary(&mut state, n as usize);
+                        }
+                    }
+                }
+                r if GicdRegister::ICPENDR.contains(&r.0) => {
+                    let n = (r.0 & 0x7f) / 4;
+                    if n != 0 {
+                        let mut state = self.state.lock();
+                        if let Some(pending) = state.pending.get_mut(n as usize) {
+                            *pending &= !value;
+                            Self::update_pending_word_summary(&mut state, n as usize);
+                        }
+                    }
+                }
                 r if GicdRegister::ICFGR.contains(&r.0) => {
                     let n = (r.0 & 0xff) / 4;
                     if n >= 2 {
@@ -264,8 +890,8 @@ mod gicd {
                 r if GicdRegister::IPRIORITYR.contains(&r.0) => {
                     let n = (r.0 & 0x3ff) / 4;
                     if n >= 8 {
-                        if let Some(cfg) = self.state.lock().cfg.get_mut(n as usize) {
-                            *cfg = value;
+                        if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
+                            *priority = value;
                         }
                     }
                 }
@@ -285,6 +911,9 @@ mod gicd {
                         }
                     }
                 }
+                r if GicdRegister::IGRPMODR.contains(&r.0) => {
+                    // DS is fixed to one, so the group modifier registers are RES0.
+                }
                 _ => return false,
             }
             true
@@ -297,17 +926,24 @@ mod gicd {
                     // GICv3
                     3 << 4
                 }
-                GicdRegister::TYPER => GicdTyper::new()
-                    .with_it_lines_number(31)
-                    .with_id_bits(5)
-                    .into(),
+                GicdRegister::TYPER => {
+                    let it_lines_number = ((self.max_spi_intid + 1).div_ceil(32) - 1) as u8;
+                    let id_bits = (32 - self.max_spi_intid.leading_zeros()) as u8;
+                    GicdTyper::new()
+                        .with_it_lines_number(it_lines_number)
+                        .with_id_bits(id_bits)
+                        // IROUTER matching includes Aff3, so advertise that
+                        // Aff3 routing is implemented.
+                        .with_a3v(true)
+                        .into()
+                }
                 GicdRegister::IIDR => 0,
                 GicdRegister::TYPER2 => GicdTyper2::new().into(),
                 GicdRegister::CTLR => {
                     let state = self.state.lock();
                     GicdCtlr::new()
                         .with_enable_grp0(state.enable_grp0)
-                        .with_enable_grp1(state.enable_grp1)
+                        .with_enable_grp1_non_secure(state.enable_grp1)
                         .with_ds(true)
                         .with_are(true)
                         .into()
@@ -316,7 +952,7 @@ mod gicd {
                     let n = (r.0 & 0x7f) / 4;
                     self.state
                         .lock()
-                        .group
+                        .group_status
                         .get(n as usize)
                         .copied()
                         .unwrap_or(0)
@@ -367,6 +1003,7 @@ mod gicd {
                         .copied()
                         .unwrap_or(0)
                 }
+                r if GicdRegister::IGRPMODR.contains(&r.0) => 0,
                 _ => return None,
             };
             Some(v)
@@ -434,6 +1071,14 @@ mod gicd {
             }
             let address = GicdRegister(address as u16);
             let handled = match data.len() {
+                1 => {
+                    if let Some(v) = self.read8(address) {
+                        data[0] = v;
+                        true
+                    } else {
+                        false
+                    }
+                }
                 4 => {
                     if let Some(v) = self.read32(address) {
                         data.copy_from_slice(&v.to_ne_bytes());
@@ -485,6 +1130,7 @@ mod gicd {
             }
             let address = GicdRegister(address as u16);
             let handled = match data.len() {
+                1 => self.write8(address, u8::from_ne_bytes(data.try_into().unwrap())),
                 4 => self.write32(address, u32::from_ne_bytes(data.try_into().unwrap())),
                 8 => self.write64(address, u64::from_ne_bytes(data.try_into().unwrap())),
                 _ => false,
@@ -494,9 +1140,946 @@ mod gicd {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use aarch64defs::gic::GicdCtlr;
+        use aarch64defs::gic::GicdTyper;
+        use aarch64defs::gic::GicrSgi;
+        use aarch64defs::gic::GicrSgiRegister;
+
+        const TEST_PPI: u32 = 20;
+        const TEST_SPI: u32 = 32;
+
+        fn empty_test_distributor() -> Distributor {
+            Distributor::new(
+                0,
+                MemoryRange::new(
+                    aarch64defs::GIC_DISTRIBUTOR_SIZE
+                        ..aarch64defs::GIC_DISTRIBUTOR_SIZE
+                            + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                ),
+                64,
+            )
+        }
+
+        fn test_distributor() -> Distributor {
+            let mut distributor = empty_test_distributor();
+            distributor.add_redistributor(0, true);
+
+            let mut state = distributor.state.lock();
+            state.enable_grp1 = true;
+            state.enable[1] |= 1;
+            state.group_status[1] |= 1;
+            drop(state);
+
+            distributor
+        }
+
+        #[test]
+        fn typer_matches_the_implemented_interrupts_and_routing_model() {
+            const INTERRUPT_COUNT: u32 = 256;
+            let mut distributor = Distributor::new(
+                0,
+                MemoryRange::new(
+                    aarch64defs::GIC_DISTRIBUTOR_SIZE
+                        ..aarch64defs::GIC_DISTRIBUTOR_SIZE
+                            + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                ),
+                INTERRUPT_COUNT,
+            );
+            distributor.add_redistributor(0, false);
+            distributor.add_redistributor(1 << 32, true);
+
+            let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
+            assert_eq!(typer.it_lines_number(), 7);
+            assert_eq!(typer.id_bits(), 8);
+            assert!(typer.a3v());
+
+            // Registers describing INTIDs 256 and above are RAZ/WI because
+            // this distributor implements only INTIDs 0 through 255.
+            let unimplemented_enable = GicdRegister(GicdRegister::ISENABLER0.0 + 8 * 4);
+            assert_eq!(distributor.read32(unimplemented_enable), Some(0));
+            assert!(distributor.write32(unimplemented_enable, u32::MAX));
+            assert_eq!(distributor.read32(unimplemented_enable), Some(0));
+
+            // Aff3 selects the second redistributor rather than the
+            // Aff3 == 0 redistributor for a deliverable Group 1 SPI.
+            {
+                let mut state = distributor.state.lock();
+                state.enable_grp1 = true;
+                state.enable[TEST_SPI as usize / 32] |= 1 << (TEST_SPI & 31);
+                state.group_status[TEST_SPI as usize / 32] |= 1 << (TEST_SPI & 31);
+                state.route[TEST_SPI as usize] = 1 << 32;
+            }
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [VpIndex::new(1)]);
+            assert_eq!(
+                reserve_pending_spi(&distributor, VpIndex::new(1)).map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
+        }
+
+        fn write_gicr_sgi_for_vp(
+            distributor: &Distributor,
+            vp: VpIndex,
+            register: u16,
+            value: u32,
+        ) {
+            let address = aarch64defs::GIC_DISTRIBUTOR_SIZE
+                + u64::from(vp.index()) * aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                + aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE
+                + u64::from(register);
+            assert!(distributor.write(address, &value.to_ne_bytes()));
+        }
+
+        fn write_gicr_sgi(distributor: &Distributor, register: u16, value: u32) {
+            write_gicr_sgi_for_vp(distributor, VpIndex::new(0), register, value);
+        }
+
+        fn read_gicr_sgi_for_vp(distributor: &Distributor, vp: VpIndex, register: u16) -> u32 {
+            let address = aarch64defs::GIC_DISTRIBUTOR_SIZE
+                + u64::from(vp.index()) * aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                + aarch64defs::GIC_REDISTRIBUTOR_FRAME_SIZE
+                + u64::from(register);
+            let mut data = [0; size_of::<u32>()];
+            assert!(distributor.read(address, &mut data));
+            u32::from_ne_bytes(data)
+        }
+
+        fn read_gicr_sgi(distributor: &Distributor, register: u16) -> u32 {
+            read_gicr_sgi_for_vp(distributor, VpIndex::new(0), register)
+        }
+
+        fn set_group_enables(distributor: &Distributor, group0: bool, group1: bool) {
+            distributor.write32(
+                GicdRegister::CTLR,
+                GicdCtlr::new()
+                    .with_enable_grp0(group0)
+                    .with_enable_grp1_non_secure(group1)
+                    .into(),
+            );
+        }
+
+        fn set_software_pending_spi(distributor: &Distributor, intid: u32, pending: bool) {
+            let register = if pending {
+                GicdRegister::ISPENDR0
+            } else {
+                GicdRegister::ICPENDR0
+            };
+            assert!(distributor.write32(
+                GicdRegister(register.0 + (intid / 32 * 4) as u16),
+                1 << (intid & 31),
+            ));
+        }
+
+        #[test]
+        fn spi_iar_and_eoir_work_for_nonzero_target_vp() {
+            let mut distributor = empty_test_distributor();
+            let gicr0 = distributor.add_redistributor(0, false);
+            let mut gicr1 = distributor.add_redistributor(1, true);
+            let vp1 = VpIndex::new(1);
+            let mask = 1 << (TEST_SPI & 31);
+            let group_register = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let active_register = GicdRegister(GicdRegister::ISACTIVER0.0 + 4);
+            let route_register = GicdRegister(GicdRegister::IROUTER0.0 + (TEST_SPI * 8) as u16);
+
+            set_group_enables(&distributor, false, true);
+            assert!(distributor.write32(group_register, mask));
+            assert!(distributor.write32(enable_register, mask));
+            assert!(distributor.write64(route_register, 1));
+
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp1]);
+            assert!(!distributor.irq_pending(&gicr0, true));
+            assert!(distributor.irq_pending(&gicr1, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr1, SystemReg::ICC_IAR1_EL1),
+                Some(u64::from(TEST_SPI))
+            );
+            assert_ne!(distributor.read32(active_register).unwrap() & mask, 0);
+            assert!(!distributor.irq_pending(&gicr1, true));
+
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            assert!(distributor.write_sysreg(
+                &mut gicr1,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(TEST_SPI),
+                |_| {},
+            ));
+            assert_eq!(distributor.read32(active_register).unwrap() & mask, 0);
+            assert!(!distributor.irq_pending(&gicr1, true));
+        }
+
+        #[test]
+        fn single_security_state_group_registers_are_coherent() {
+            let distributor = test_distributor();
+
+            assert!(
+                distributor.write32(
+                    GicdRegister::CTLR,
+                    GicdCtlr::new()
+                        .with_enable_grp0(true)
+                        .with_enable_grp1_non_secure(true)
+                        .with_enable_grp1_secure(true)
+                        .into(),
+                )
+            );
+            let ctlr = GicdCtlr::from(distributor.read32(GicdRegister::CTLR).unwrap());
+            assert!(ctlr.enable_grp0());
+            assert!(ctlr.enable_grp1_non_secure());
+            assert!(!ctlr.enable_grp1_secure());
+            assert!(ctlr.ds());
+            assert!(ctlr.are());
+
+            let gicd_igrpmodr1 = GicdRegister(GicdRegister::IGRPMODR0.0 + 4);
+            assert!(distributor.write32(gicd_igrpmodr1, u32::MAX));
+            assert_eq!(distributor.read32(gicd_igrpmodr1), Some(0));
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGRPMODR0.0, u32::MAX);
+            assert_eq!(read_gicr_sgi(&distributor, GicrSgiRegister::IGRPMODR0.0), 0);
+        }
+
+        #[test]
+        fn private_interrupt_selection_respects_group_enables() {
+            const GROUP0_INTID: u32 = 20;
+            const GROUP1_INTID: u32 = 21;
+
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            let both = (1 << GROUP0_INTID) | (1 << GROUP1_INTID);
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, 1 << GROUP1_INTID);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISENABLER0.0, both);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, both);
+
+            set_group_enables(&distributor, false, false);
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
+
+            set_group_enables(&distributor, true, false);
+            let interrupts = distributor.next_private_interrupts(vp, u8::MAX).unwrap();
+            assert_eq!(interrupts.len(), 1);
+            assert!(!interrupts[&u64::from(GROUP0_INTID)].group1);
+
+            set_group_enables(&distributor, false, true);
+            let interrupts = distributor.next_private_interrupts(vp, u8::MAX).unwrap();
+            assert_eq!(interrupts.len(), 1);
+            assert!(interrupts[&u64::from(GROUP1_INTID)].group1);
+
+            set_group_enables(&distributor, true, true);
+            let interrupts = distributor.next_private_interrupts(vp, u8::MAX).unwrap();
+            assert_eq!(interrupts.len(), 2);
+            assert!(!interrupts[&u64::from(GROUP0_INTID)].group1);
+            assert!(interrupts[&u64::from(GROUP1_INTID)].group1);
+        }
+
+        #[test]
+        fn asserted_level_lines_are_group_scoped() {
+            const GROUP0_PPI: u32 = 20;
+            const GROUP1_PPI: u32 = 21;
+            const GROUP0_SPI: u32 = 32;
+            const GROUP1_SPI: u32 = 33;
+
+            let mut distributor = empty_test_distributor();
+            let gicr = distributor.add_redistributor(0, true);
+            let vp = VpIndex::new(0);
+            set_group_enables(&distributor, true, true);
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, 1 << GROUP1_PPI);
+            write_gicr_sgi(
+                &distributor,
+                GicrSgiRegister::ISENABLER0.0,
+                (1 << GROUP0_PPI) | (1 << GROUP1_PPI),
+            );
+            assert!(gicr.shared.set_ppi_irq(GROUP0_PPI, true));
+            assert!(gicr.shared.set_ppi_irq(GROUP1_PPI, true));
+            assert!(distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+            assert!(!gicr.shared.set_ppi_irq(GROUP0_PPI, false));
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+            assert!(!gicr.shared.set_ppi_irq(GROUP1_PPI, false));
+
+            assert!(distributor.write32(
+                GicdRegister(GicdRegister::IGROUPR0.0 + 4),
+                1 << (GROUP1_SPI & 31),
+            ));
+            assert!(distributor.write32(GicdRegister(GicdRegister::ISENABLER0.0 + 4), 0b11));
+            assert_eq!(distributor.set_spi_irq(GROUP0_SPI, true), [vp]);
+            assert_eq!(distributor.set_spi_irq(GROUP1_SPI, true), [vp]);
+            assert!(distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+            assert!(distributor.set_spi_irq(GROUP0_SPI, false).is_empty());
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+        }
+
+        #[test]
+        fn spi_selection_respects_group_enables() {
+            const GROUP0_INTID: u32 = 32;
+            const GROUP1_INTID: u32 = 33;
+
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            let group_register = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let pending_register = GicdRegister(GicdRegister::ISPENDR0.0 + 4);
+            assert!(distributor.write32(group_register, 1 << (GROUP1_INTID & 31)));
+            assert!(distributor.write32(enable_register, 0b11));
+            assert!(distributor.write32(pending_register, 0b11));
+
+            let select = || {
+                let state = distributor.state.lock();
+                distributor
+                    .next_spi_interrupts_locked(&state, vp, u8::MAX)
+                    .unwrap_or_default()
+            };
+
+            set_group_enables(&distributor, false, false);
+            assert!(select().is_empty());
+
+            set_group_enables(&distributor, true, false);
+            let interrupts = select();
+            assert_eq!(interrupts.len(), 1);
+            assert!(!interrupts[&u64::from(GROUP0_INTID)].group1);
+
+            set_group_enables(&distributor, false, true);
+            let interrupts = select();
+            assert_eq!(interrupts.len(), 1);
+            assert!(interrupts[&u64::from(GROUP1_INTID)].group1);
+
+            set_group_enables(&distributor, true, true);
+            let interrupts = select();
+            assert_eq!(interrupts.len(), 2);
+            assert!(!interrupts[&u64::from(GROUP0_INTID)].group1);
+            assert!(interrupts[&u64::from(GROUP1_INTID)].group1);
+        }
+
+        #[test]
+        fn sgi_generation_respects_the_target_group() {
+            const TEST_SGI: u32 = 5;
+
+            let mut distributor = empty_test_distributor();
+            let mut sender = distributor.add_redistributor(0, false);
+            distributor.add_redistributor(1, true);
+            let target = VpIndex::new(1);
+            let mask = 1 << TEST_SGI;
+            let value = u64::from(
+                GicrSgi::new()
+                    .with_target_list(1 << target.index())
+                    .with_intid(TEST_SGI),
+            );
+            set_group_enables(&distributor, true, true);
+            write_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::ISENABLER0.0, mask);
+
+            write_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::IGROUPR0.0, 0);
+            for reg in [
+                SystemReg::ICC_SGI0R_EL1,
+                SystemReg::ICC_ASGI1R_EL1,
+                SystemReg::ICC_SGI1R_EL1,
+            ] {
+                let mut woken = Vec::new();
+                assert!(distributor.write_sysreg(&mut sender, reg, value, |vp| woken.push(vp)));
+                assert_eq!(woken, [target.index() as usize]);
+                assert_ne!(
+                    read_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::ISPENDR0.0,) & mask,
+                    0
+                );
+                let interrupts = distributor
+                    .next_private_interrupts(target, u8::MAX)
+                    .unwrap();
+                assert!(!interrupts[&u64::from(TEST_SGI)].group1);
+                write_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::ICPENDR0.0, mask);
+            }
+
+            write_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::IGROUPR0.0, mask);
+            for (reg, generated) in [
+                (SystemReg::ICC_SGI0R_EL1, false),
+                (SystemReg::ICC_ASGI1R_EL1, false),
+                (SystemReg::ICC_SGI1R_EL1, true),
+            ] {
+                let mut woken = Vec::new();
+                assert!(distributor.write_sysreg(&mut sender, reg, value, |vp| woken.push(vp)));
+                assert_eq!(woken.is_empty(), !generated);
+                assert_eq!(
+                    read_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::ISPENDR0.0,) & mask
+                        != 0,
+                    generated
+                );
+                if generated {
+                    let interrupts = distributor
+                        .next_private_interrupts(target, u8::MAX)
+                        .unwrap();
+                    assert!(interrupts[&u64::from(TEST_SGI)].group1);
+                    write_gicr_sgi_for_vp(&distributor, target, GicrSgiRegister::ICPENDR0.0, mask);
+                }
+            }
+        }
+
+        #[test]
+        fn private_iar_and_eoir_are_group_scoped() {
+            const GROUP0_INTID: u32 = 5;
+            const GROUP1_INTID: u32 = 6;
+
+            let mut distributor = empty_test_distributor();
+            let mut gicr = distributor.add_redistributor(0, true);
+            let both = (1 << GROUP0_INTID) | (1 << GROUP1_INTID);
+            set_group_enables(&distributor, true, true);
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, 1 << GROUP1_INTID);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISENABLER0.0, both);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, both);
+
+            set_group_enables(&distributor, false, true);
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(1023)
+            );
+            set_group_enables(&distributor, true, false);
+            assert!(distributor.irq_pending(&gicr, false));
+            assert!(!distributor.irq_pending(&gicr, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR1_EL1),
+                Some(1023)
+            );
+            set_group_enables(&distributor, true, true);
+
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(u64::from(GROUP0_INTID))
+            );
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(1023)
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(GROUP0_INTID),
+                |_| {},
+            ));
+            assert_ne!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISACTIVER0.0) & (1 << GROUP0_INTID),
+                0
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR0_EL1,
+                u64::from(GROUP0_INTID),
+                |_| {},
+            ));
+            assert_eq!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISACTIVER0.0) & (1 << GROUP0_INTID),
+                0
+            );
+
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR1_EL1),
+                Some(u64::from(GROUP1_INTID))
+            );
+            assert!(!distributor.irq_pending(&gicr, true));
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR0_EL1,
+                u64::from(GROUP1_INTID),
+                |_| {},
+            ));
+            assert_ne!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISACTIVER0.0) & (1 << GROUP1_INTID),
+                0
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(GROUP1_INTID),
+                |_| {},
+            ));
+            assert_eq!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISACTIVER0.0) & (1 << GROUP1_INTID),
+                0
+            );
+        }
+
+        #[test]
+        fn spi_iar_and_eoir_are_group_scoped() {
+            const GROUP0_INTID: u32 = 32;
+            const GROUP1_INTID: u32 = 33;
+
+            let mut distributor = empty_test_distributor();
+            let mut gicr = distributor.add_redistributor(0, true);
+            let group_register = GicdRegister(GicdRegister::IGROUPR0.0 + 4);
+            let enable_register = GicdRegister(GicdRegister::ISENABLER0.0 + 4);
+            let pending_register = GicdRegister(GicdRegister::ISPENDR0.0 + 4);
+            let active_register = GicdRegister(GicdRegister::ISACTIVER0.0 + 4);
+            assert!(distributor.write32(group_register, 0b10));
+            assert!(distributor.write32(enable_register, 0b11));
+            assert!(distributor.write32(pending_register, 0b11));
+
+            set_group_enables(&distributor, false, true);
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert!(distributor.irq_pending(&gicr, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(1023)
+            );
+            set_group_enables(&distributor, true, false);
+            assert!(distributor.irq_pending(&gicr, false));
+            assert!(!distributor.irq_pending(&gicr, true));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR1_EL1),
+                Some(1023)
+            );
+            set_group_enables(&distributor, true, true);
+
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(u64::from(GROUP0_INTID))
+            );
+            assert!(!distributor.irq_pending(&gicr, false));
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR0_EL1),
+                Some(1023)
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(GROUP0_INTID),
+                |_| {},
+            ));
+            assert_ne!(
+                distributor.read32(active_register).unwrap() & (1 << (GROUP0_INTID & 31)),
+                0
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR0_EL1,
+                u64::from(GROUP0_INTID),
+                |_| {},
+            ));
+            assert_eq!(
+                distributor.read32(active_register).unwrap() & (1 << (GROUP0_INTID & 31)),
+                0
+            );
+
+            assert_eq!(
+                distributor.read_sysreg(&mut gicr, SystemReg::ICC_IAR1_EL1),
+                Some(u64::from(GROUP1_INTID))
+            );
+            assert!(!distributor.irq_pending(&gicr, true));
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR0_EL1,
+                u64::from(GROUP1_INTID),
+                |_| {},
+            ));
+            assert_ne!(
+                distributor.read32(active_register).unwrap() & (1 << (GROUP1_INTID & 31)),
+                0
+            );
+            assert!(distributor.write_sysreg(
+                &mut gicr,
+                SystemReg::ICC_EOIR1_EL1,
+                u64::from(GROUP1_INTID),
+                |_| {},
+            ));
+            assert_eq!(
+                distributor.read32(active_register).unwrap() & (1 << (GROUP1_INTID & 31)),
+                0
+            );
+        }
+
+        fn enable_private_interrupt(distributor: &Distributor, intid: u32) {
+            let mask = 1 << intid;
+            write_gicr_sgi(distributor, GicrSgiRegister::IGROUPR0.0, mask);
+            write_gicr_sgi(distributor, GicrSgiRegister::ISENABLER0.0, mask);
+        }
+
+        fn private_interrupt_is_pending(distributor: &Distributor, intid: u32) -> bool {
+            distributor
+                .next_private_interrupts(VpIndex::new(0), u8::MAX)
+                .is_some_and(|interrupts| interrupts.contains_key(&u64::from(intid)))
+        }
+
+        fn set_private_priority(distributor: &Distributor, intid: u32, priority: u8) {
+            let register = GicrSgiRegister::IPRIORITYR0.0 + (intid / 4 * 4) as u16;
+            let value = u32::from(priority) << ((intid % 4) * 8);
+            write_gicr_sgi(distributor, register, value);
+        }
+
+        fn reserve_pending_spi(distributor: &Distributor, vp: VpIndex) -> Option<PendingInterrupt> {
+            distributor
+                .reserve_pending_spi_interrupts(vp, u8::MAX)?
+                .remove(&u64::from(TEST_SPI))
+        }
+
+        #[test]
+        fn level_spi_is_redelivered_until_deasserted() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+
+            // A newly asserted level-sensitive line wakes its target VP and
+            // makes the SPI eligible for injection.
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp]);
+            let interrupt = reserve_pending_spi(&distributor, vp).unwrap();
+            assert_eq!(interrupt.intid, TEST_SPI);
+            assert!(interrupt.level_triggered);
+
+            // Once the SPI is represented in an LR, do not select it again
+            // while that delivery remains in flight.
+            distributor.mark_spi_injected(vp, TEST_SPI);
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+
+            // Reporting the INTID as still present in an LR preserves its
+            // in-flight state and continues to suppress duplicate injection.
+            distributor.retain_in_flight_spis(vp, |intid| intid == TEST_SPI);
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+
+            // Simulate guest EOI followed by LR retirement. The device line
+            // is still asserted, so the level-sensitive SPI is eligible again.
+            distributor.retain_in_flight_spis(vp, |_| false);
+            assert_eq!(
+                reserve_pending_spi(&distributor, vp).map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
+
+            // After the second injection, the device deasserts its line. Once
+            // that LR retires, the SPI must not be delivered again.
+            distributor.mark_spi_injected(vp, TEST_SPI);
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            distributor.retain_in_flight_spis(vp, |_| false);
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+        }
+
+        #[test]
+        fn deasserting_line_does_not_clear_software_pending_spi() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+
+            set_software_pending_spi(&distributor, TEST_SPI, true);
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            assert_eq!(
+                reserve_pending_spi(&distributor, vp).map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
+        }
+
+        #[test]
+        fn pending_word_summary_tracks_pending_and_asserted_spis() {
+            let distributor = test_distributor();
+            let word_mask = 1 << (TEST_SPI / 32);
+
+            assert_eq!(distributor.state.lock().pending_word_summary & word_mask, 0);
+            set_software_pending_spi(&distributor, TEST_SPI, true);
+            assert_ne!(distributor.state.lock().pending_word_summary & word_mask, 0);
+            set_software_pending_spi(&distributor, TEST_SPI, false);
+            assert_eq!(distributor.state.lock().pending_word_summary & word_mask, 0);
+
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [VpIndex::new(0)]);
+            assert_ne!(distributor.state.lock().pending_word_summary & word_mask, 0);
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            assert_eq!(distributor.state.lock().pending_word_summary & word_mask, 0);
+        }
+
+        #[test]
+        fn edge_spi_is_latched_until_injected() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            distributor.state.lock().cfg[2] |= 1 << 1;
+
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp]);
+            assert!(distributor.set_spi_irq(TEST_SPI, false).is_empty());
+            let interrupt = reserve_pending_spi(&distributor, vp).unwrap();
+            assert_eq!(interrupt.intid, TEST_SPI);
+            assert!(!interrupt.level_triggered);
+
+            distributor.mark_spi_injected(vp, TEST_SPI);
+            distributor.retain_in_flight_spis(vp, |_| false);
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+        }
+
+        #[test]
+        fn irm_spi_reservation_is_exclusive_and_can_be_cancelled() {
+            let mut distributor = test_distributor();
+            let vp0 = VpIndex::new(0);
+            let vp1 = VpIndex::new(1);
+            distributor.add_redistributor(1, true);
+            distributor.state.lock().route[TEST_SPI as usize] = 1 << 31;
+
+            assert_eq!(distributor.set_spi_irq(TEST_SPI, true), [vp0, vp1]);
+            assert_eq!(
+                reserve_pending_spi(&distributor, vp0).map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
+            assert_eq!(distributor.state.lock().in_flight_by_vp[0], [TEST_SPI]);
+            assert!(reserve_pending_spi(&distributor, vp1).is_none());
+
+            distributor.cancel_spi_reservation(vp0, TEST_SPI);
+            assert!(distributor.state.lock().in_flight_by_vp[0].is_empty());
+            assert_eq!(
+                reserve_pending_spi(&distributor, vp1).map(|interrupt| interrupt.intid),
+                Some(TEST_SPI)
+            );
+        }
+
+        #[test]
+        fn returned_spi_state_updates_active_and_releases_ownership() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+
+            set_software_pending_spi(&distributor, TEST_SPI, true);
+            assert!(reserve_pending_spi(&distributor, vp).is_some());
+            distributor.fold_list_registers(
+                vp,
+                &[ListRegisterInterrupt {
+                    intid: TEST_SPI,
+                    pending: false,
+                    active: true,
+                }],
+            );
+            assert_ne!(distributor.state.lock().active[1] & 1, 0);
+
+            set_software_pending_spi(&distributor, TEST_SPI, true);
+            distributor.fold_list_registers(vp, &[]);
+            let state = distributor.state.lock();
+            assert_eq!(state.active[1] & 1, 0);
+            assert!(state.in_flight_by_vp[0].is_empty());
+            drop(state);
+            assert_eq!(
+                reserve_pending_spi(&distributor, vp).map(|irq| irq.intid),
+                Some(TEST_SPI)
+            );
+        }
+
+        #[test]
+        fn ppis_are_fixed_level_triggered() {
+            let distributor = test_distributor();
+            enable_private_interrupt(&distributor, TEST_PPI);
+            let gicr = &distributor.gicr[0];
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ICFGR1.0, u32::MAX);
+            assert_eq!(read_gicr_sgi(&distributor, GicrSgiRegister::ICFGR1.0), 0);
+
+            assert!(gicr.set_ppi_irq(TEST_PPI, true));
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+            assert!(!gicr.set_ppi_irq(TEST_PPI, false));
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            assert!(!gicr.set_ppi_irq(15, true));
+            assert!(!gicr.set_ppi_irq(32, true));
+        }
+
+        #[test]
+        fn level_ppi_line_and_software_latch_are_independent() {
+            let distributor = test_distributor();
+            enable_private_interrupt(&distributor, TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            let mask = 1 << TEST_PPI;
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, mask);
+            assert_ne!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0) & mask,
+                0
+            );
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            gicr.set_ppi_irq(TEST_PPI, false);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ICPENDR0.0, mask);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, mask);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ICPENDR0.0, mask);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            gicr.set_ppi_irq(TEST_PPI, false);
+            assert_eq!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0) & mask,
+                0
+            );
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+        }
+
+        #[test]
+        fn private_lr_pending_preserves_only_latched_sources() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            enable_private_interrupt(&distributor, TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            let mask = 1 << TEST_PPI;
+            let pending_lr = [ListRegisterInterrupt {
+                intid: TEST_PPI,
+                pending: true,
+                active: false,
+            }];
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, mask);
+            distributor.mark_private_injected(vp, TEST_PPI);
+            assert_ne!(
+                read_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0) & mask,
+                0
+            );
+
+            distributor.fold_list_registers(vp, &pending_lr);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+            distributor.mark_private_injected(vp, TEST_PPI);
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ICPENDR0.0, mask);
+            distributor.fold_list_registers(vp, &pending_lr);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+            distributor.fold_list_registers(vp, &[]);
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            distributor.mark_private_injected(vp, TEST_PPI);
+            gicr.set_ppi_irq(TEST_PPI, false);
+            distributor.fold_list_registers(vp, &pending_lr);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+        }
+
+        #[test]
+        fn active_level_ppi_retriggers_only_after_deactivation() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            enable_private_interrupt(&distributor, TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            let active_lr = [ListRegisterInterrupt {
+                intid: TEST_PPI,
+                pending: false,
+                active: true,
+            }];
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+            distributor.mark_private_injected(vp, TEST_PPI);
+            distributor.fold_list_registers(vp, &active_lr);
+
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+            gicr.set_ppi_irq(TEST_PPI, false);
+            distributor.fold_list_registers(vp, &[]);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            distributor.mark_private_injected(vp, TEST_PPI);
+            distributor.fold_list_registers(vp, &active_lr);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            distributor.fold_list_registers(vp, &[]);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+        }
+
+        #[test]
+        fn software_latch_can_repend_an_active_ppi() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            enable_private_interrupt(&distributor, TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            let mask = 1 << TEST_PPI;
+            let active_lr = [ListRegisterInterrupt {
+                intid: TEST_PPI,
+                pending: false,
+                active: true,
+            }];
+
+            gicr.set_ppi_irq(TEST_PPI, true);
+            distributor.mark_private_injected(vp, TEST_PPI);
+            distributor.fold_list_registers(vp, &active_lr);
+            assert!(!private_interrupt_is_pending(&distributor, TEST_PPI));
+
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISPENDR0.0, mask);
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+            distributor.mark_private_injected(vp, TEST_PPI);
+            gicr.set_ppi_irq(TEST_PPI, false);
+            distributor.fold_list_registers(
+                vp,
+                &[ListRegisterInterrupt {
+                    intid: TEST_PPI,
+                    pending: true,
+                    active: true,
+                }],
+            );
+
+            assert!(private_interrupt_is_pending(&distributor, TEST_PPI));
+        }
+        #[test]
+        fn returned_private_state_updates_active_and_releases_ownership() {
+            const TEST_PPI: u32 = 27;
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, 1 << TEST_PPI);
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISENABLER0.0, 1 << TEST_PPI);
+            let gicr = &distributor.gicr[0];
+
+            assert!(gicr.raise(TEST_PPI));
+            distributor.mark_private_injected(vp, TEST_PPI);
+            distributor.fold_list_registers(
+                vp,
+                &[ListRegisterInterrupt {
+                    intid: TEST_PPI,
+                    pending: false,
+                    active: true,
+                }],
+            );
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
+
+            assert!(gicr.raise(TEST_PPI));
+            distributor.fold_list_registers(vp, &[]);
+            let interrupts = distributor.next_private_interrupts(vp, u8::MAX).unwrap();
+            assert_eq!(
+                interrupts.get(&u64::from(TEST_PPI)).map(|irq| irq.intid),
+                Some(TEST_PPI)
+            );
+        }
+
+        #[test]
+        fn private_interrupts_obey_enable_and_priority() {
+            const TEST_SGI: u32 = 5;
+            const TEST_PPI: u32 = 20;
+
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            let both_pending = (1 << TEST_SGI) | (1 << TEST_PPI);
+            let gicr = &distributor.gicr[0];
+            assert!(gicr.raise(TEST_SGI));
+            assert!(gicr.raise(TEST_PPI));
+
+            // Pending private interrupts are not deliverable until their
+            // redistributor enable and Group 1 bits are both set.
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
+            write_gicr_sgi(&distributor, GicrSgiRegister::IGROUPR0.0, both_pending);
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
+            write_gicr_sgi(&distributor, GicrSgiRegister::ISENABLER0.0, both_pending);
+
+            set_private_priority(&distributor, TEST_SGI, 0x40);
+            set_private_priority(&distributor, TEST_PPI, 0x80);
+
+            assert!(distributor.next_private_interrupts(vp, 0x40).is_none());
+            let interrupts = distributor.next_private_interrupts(vp, 0x41).unwrap();
+            let interrupt = interrupts.get(&u64::from(TEST_SGI)).unwrap();
+            assert_eq!((interrupt.intid, interrupt.priority), (TEST_SGI, 0x40));
+            assert!(!interrupt.level_triggered);
+            assert_eq!(interrupts.len(), 1);
+
+            distributor.clear_pending(vp.index() as usize, TEST_SGI);
+            assert!(distributor.next_private_interrupts(vp, 0x80).is_none());
+            let interrupts = distributor.next_private_interrupts(vp, 0x81).unwrap();
+            let interrupt = interrupts.get(&u64::from(TEST_PPI)).unwrap();
+            assert_eq!((interrupt.intid, interrupt.priority), (TEST_PPI, 0x80));
+            assert!(interrupt.level_triggered);
+            assert_eq!(interrupts.len(), 1);
+
+            distributor.state.lock().enable_grp1 = false;
+            assert!(distributor.next_private_interrupts(vp, u8::MAX).is_none());
+        }
+    }
 }
 
 mod gicr {
+    use super::ListRegisterInterrupt;
+    use super::PendingInterrupt;
+    use super::enabled_group_mask;
+    use super::group_mask;
     use aarch64defs::MpidrEl1;
     use aarch64defs::gic::GicrCtlr;
     use aarch64defs::gic::GicrRdRegister;
@@ -505,6 +2088,7 @@ mod gicr {
     use aarch64defs::gic::GicrWaker;
     use inspect::Inspect;
     use parking_lot::Mutex;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
@@ -518,7 +2102,7 @@ mod gicr {
 
     #[derive(Debug, Inspect)]
     pub(crate) struct SharedState {
-        pub(super) pending: AtomicU32,
+        pub(super) in_flight: AtomicU32,
         #[inspect(with = "|&x| u64::from(x)")]
         pub(super) mpidr: MpidrEl1,
         last: bool,
@@ -528,22 +2112,164 @@ mod gicr {
     #[derive(Debug, Inspect)]
     struct SharedMutState {
         #[inspect(hex)]
+        pending_latch: u32,
+        #[inspect(hex)]
+        ppi_level_line: u32,
+        #[inspect(hex)]
+        lr_pending_latch: u32,
+        #[inspect(hex)]
         active: u32,
         #[inspect(hex)]
-        group: u32,
+        group_status: u32,
         #[inspect(hex)]
         enable: u32,
-        #[inspect(hex)]
-        ppi_cfg: u32,
         #[inspect(iter_by_index)]
         priority: [u32; 8],
         sleep: bool,
     }
 
     impl SharedState {
+        pub(crate) fn next_private_interrupts(
+            &self,
+            running_priority: u8,
+            enable_grp0: bool,
+            enable_grp1: bool,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let state = self.mutable.lock();
+            self.select_private_interrupts(&state, running_priority, enable_grp0, enable_grp1)
+        }
+
+        fn select_private_interrupts(
+            &self,
+            state: &SharedMutState,
+            running_priority: u8,
+            enable_grp0: bool,
+            enable_grp1: bool,
+        ) -> Option<HashMap<u64, PendingInterrupt>> {
+            let latched_pending = state.pending_latch | state.lr_pending_latch;
+            let pending = latched_pending | state.ppi_level_line;
+            let in_flight = self.in_flight.load(Ordering::Relaxed);
+            let group = enabled_group_mask(state.group_status, enable_grp0, enable_grp1);
+
+            // A live level input is sampled again only after deactivation. A
+            // latched request can become pending while its previous instance
+            // remains active in a logical LR.
+            let inactive_pending = pending & !state.active;
+            let active_latched = latched_pending & state.active & in_flight;
+            let deliverable = (inactive_pending | active_latched) & state.enable & group;
+
+            let mut interrupts: HashMap<u64, PendingInterrupt> = HashMap::new();
+            for intid in 0..32 {
+                let group1 = state.group_status & (1 << intid) != 0;
+                if deliverable & (1 << intid) == 0 {
+                    continue;
+                }
+
+                /*
+                intid 0..3   -> priority[0]
+                intid 4..7   -> priority[1]
+                intid 8..11  -> priority[2]
+                */
+                let word = state.priority[(intid / 4) as usize];
+                let priority = ((word >> ((intid % 4) * 8)) & 0xff) as u8;
+                if priority >= running_priority {
+                    continue;
+                }
+
+                interrupts.insert(
+                    intid as u64,
+                    PendingInterrupt {
+                        intid,
+                        priority,
+                        group1,
+                        level_triggered: intid >= 16,
+                    },
+                );
+            }
+
+            if interrupts.is_empty() {
+                None
+            } else {
+                Some(interrupts)
+            }
+        }
+
+        fn effective_pending(state: &SharedMutState) -> u32 {
+            state.pending_latch | state.lr_pending_latch | state.ppi_level_line
+        }
+
         pub fn raise(&self, intid: u32) -> bool {
             let mask = 1 << intid;
-            self.pending.fetch_or(mask, Ordering::Relaxed) & mask == 0
+            let mut state = self.mutable.lock();
+            let newly_pending = state.pending_latch & mask == 0;
+            state.pending_latch |= mask;
+            newly_pending
+        }
+
+        pub(super) fn raise_sgi(&self, intid: u32, group0_only: bool) -> bool {
+            debug_assert!(intid < 16);
+            let mask = 1 << intid;
+            let mut state = self.mutable.lock();
+            if group0_only && state.group_status & mask != 0 {
+                return false;
+            }
+
+            let newly_pending = state.pending_latch & mask == 0;
+            state.pending_latch |= mask;
+            newly_pending
+        }
+
+        pub fn set_ppi_irq(&self, intid: u32, asserted: bool) -> bool {
+            if !(16..32).contains(&intid) {
+                tracelimit::warn_ratelimited!(intid, asserted, "invalid GIC PPI assertion");
+                return false;
+            }
+
+            let mask = 1 << intid;
+            let mut state = self.mutable.lock();
+            let newly_asserted = asserted && state.ppi_level_line & mask == 0;
+            if asserted {
+                state.ppi_level_line |= mask;
+            } else {
+                state.ppi_level_line &= !mask;
+            }
+            newly_asserted
+        }
+
+        pub fn mark_injected(&self, intid: u32) {
+            let mask = 1 << intid;
+            let mut state = self.mutable.lock();
+            if state.pending_latch & mask != 0 {
+                state.pending_latch &= !mask;
+                state.lr_pending_latch |= mask;
+            }
+            self.in_flight.fetch_or(mask, Ordering::Relaxed);
+        }
+
+        pub fn fold_list_registers(&self, lrs: &[ListRegisterInterrupt]) {
+            let mut state = self.mutable.lock();
+            let mut in_flight = self.in_flight.load(Ordering::Relaxed);
+            while in_flight != 0 {
+                let intid = in_flight.trailing_zeros();
+                let mask = 1 << intid;
+                in_flight &= !mask;
+                let latch_backed = state.lr_pending_latch & mask != 0;
+                state.lr_pending_latch &= !mask;
+
+                if let Some(lr) = lrs.iter().find(|lr| lr.intid == intid) {
+                    if lr.active {
+                        state.active |= mask;
+                    } else {
+                        state.active &= !mask;
+                    }
+                    if lr.pending && latch_backed {
+                        state.pending_latch |= mask;
+                    }
+                } else {
+                    state.active &= !mask;
+                    self.in_flight.fetch_and(!mask, Ordering::Relaxed);
+                }
+            }
         }
 
         pub fn read(&self, address: u64, data: &mut [u8]) {
@@ -581,6 +2307,14 @@ mod gicr {
             } else {
                 let address = GicrSgiRegister(address as u16);
                 let handled = match data.len() {
+                    1 => {
+                        if let Some(v) = self.sgi_read8(address) {
+                            data[0] = v;
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     4 => {
                         if let Some(v) = self.sgi_read32(address) {
                             data.copy_from_slice(&v.to_ne_bytes());
@@ -631,6 +2365,10 @@ mod gicr {
             } else {
                 let address = GicrSgiRegister(address as u16);
                 let handled = match data.len() {
+                    1 => {
+                        let data = u8::from_ne_bytes(data.try_into().unwrap());
+                        self.sgi_write8(address, data)
+                    }
                     4 => {
                         let data = u32::from_ne_bytes(data.try_into().unwrap());
                         self.sgi_write32(address, data)
@@ -698,9 +2436,34 @@ mod gicr {
             false
         }
 
+        fn sgi_read8(&self, address: GicrSgiRegister) -> Option<u8> {
+            let j = address.0 % 4;
+            match address {
+                r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x1f) / 4;
+                    Some((self.mutable.lock().priority[n as usize] >> (j * 8) & 0xff) as u8)
+                }
+                _ => None,
+            }
+        }
+
+        fn sgi_write8(&self, address: GicrSgiRegister, data: u8) -> bool {
+            let j = address.0 % 4;
+            match address {
+                r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
+                    let n = (r.0 & 0x1f) / 4;
+                    let mut state = self.mutable.lock();
+                    let priority = &mut state.priority[n as usize];
+                    *priority = (*priority & !(0xff << (j * 8))) | (u32::from(data) << (j * 8));
+                    true
+                }
+                _ => false,
+            }
+        }
+
         fn sgi_read32(&self, address: GicrSgiRegister) -> Option<u32> {
             let v = match address {
-                GicrSgiRegister::IGROUPR0 => self.mutable.lock().group,
+                GicrSgiRegister::IGROUPR0 => self.mutable.lock().group_status,
                 GicrSgiRegister::ICACTIVER0 | GicrSgiRegister::ISACTIVER0 => {
                     self.mutable.lock().active
                 }
@@ -708,17 +2471,20 @@ mod gicr {
                     self.mutable.lock().enable
                 }
                 GicrSgiRegister::ICPENDR0 | GicrSgiRegister::ISPENDR0 => {
-                    self.pending.load(Ordering::Relaxed)
+                    let state = self.mutable.lock();
+                    Self::effective_pending(&state)
                 }
                 GicrSgiRegister::ICFGR0 => {
                     // SGIs are always edge triggered.
                     0xaaaaaaaa
                 }
-                GicrSgiRegister::ICFGR1 => self.mutable.lock().ppi_cfg,
+                // PPIs are fixed level-triggered in this model.
+                GicrSgiRegister::ICFGR1 => 0,
                 r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
                     let n = (r.0 & 0x1f) / 4;
                     self.mutable.lock().priority[n as usize]
                 }
+                GicrSgiRegister::IGRPMODR0 => 0,
                 _ => return None,
             };
             tracing::debug!(?address, v, "gicr sgi read32");
@@ -727,37 +2493,59 @@ mod gicr {
 
         fn sgi_write32(&self, address: GicrSgiRegister, data: u32) -> bool {
             match address {
-                GicrSgiRegister::IGROUPR0 => self.mutable.lock().group = data,
+                GicrSgiRegister::IGROUPR0 => self.mutable.lock().group_status = data,
                 GicrSgiRegister::ISACTIVER0 => self.mutable.lock().active |= data,
                 GicrSgiRegister::ICACTIVER0 => self.mutable.lock().active &= !data,
                 GicrSgiRegister::ISENABLER0 => self.mutable.lock().enable |= data,
                 GicrSgiRegister::ICENABLER0 => self.mutable.lock().enable &= !data,
+                GicrSgiRegister::ICPENDR0 => self.clear_pending_bits(data),
+                GicrSgiRegister::ISPENDR0 => {
+                    self.mutable.lock().pending_latch |= data;
+                }
                 GicrSgiRegister::ICFGR0 => {
                     // Cannot change trigger mode for SGIs.
                 }
-                GicrSgiRegister::ICFGR1 => self.mutable.lock().ppi_cfg = data,
+                GicrSgiRegister::ICFGR1 => {
+                    // PPIs are fixed level-triggered.
+                }
                 r if GicrSgiRegister::IPRIORITYR.contains(&r.0) => {
                     let n = (r.0 & 0x1f) / 4;
                     self.mutable.lock().priority[n as usize] = data;
+                }
+                GicrSgiRegister::IGRPMODR0 => {
+                    // DS is fixed to one, so the group modifier register is RES0.
                 }
                 _ => return false,
             }
             tracing::debug!(?address, data, "gicr sgi write32");
             true
         }
+
+        pub fn clear_pending(&self, intid: u32) {
+            debug_assert!(intid < 32);
+            self.clear_pending_bits(1 << intid);
+        }
+
+        fn clear_pending_bits(&self, mask: u32) {
+            let mut state = self.mutable.lock();
+            state.lr_pending_latch &= !mask;
+            state.pending_latch &= !mask;
+        }
     }
 
     impl Redistributor {
         pub(crate) fn new(index: usize, mpidr: u64, last: bool) -> (Self, Arc<SharedState>) {
             let shared = Arc::new(SharedState {
-                pending: AtomicU32::new(0),
+                in_flight: AtomicU32::new(0),
                 mpidr: mpidr.into(),
                 last,
                 mutable: Mutex::new(SharedMutState {
+                    pending_latch: 0,
+                    ppi_level_line: 0,
+                    lr_pending_latch: 0,
                     active: 0,
-                    group: 0,
+                    group_status: 0,
                     enable: 0,
-                    ppi_cfg: 0,
                     priority: [0; 8],
                     sleep: false,
                 }),
@@ -772,43 +2560,47 @@ mod gicr {
         }
 
         pub fn raise(&mut self, intid: u32) {
-            self.shared.pending.fetch_or(1 << intid, Ordering::Relaxed);
+            self.shared.raise(intid);
         }
 
-        pub(crate) fn irq_pending(&self) -> bool {
-            let pending = self.shared.pending.load(Ordering::Relaxed);
-            if pending == 0 {
-                return false;
-            }
+        pub(crate) fn irq_pending(&self, group1: bool) -> bool {
             let state = self.shared.mutable.lock();
-            (pending & !state.active & state.enable & state.group) != 0
+            let pending = SharedState::effective_pending(&state);
+            pending & !state.active & state.enable & group_mask(state.group_status, group1) != 0
         }
 
         pub fn is_pending_or_active(&self, intid: u32) -> bool {
             let state = self.shared.mutable.lock();
-            (self.shared.pending.load(Ordering::Relaxed) | state.active) & (1 << intid) != 0
+            (SharedState::effective_pending(&state) | state.active) & (1 << intid) != 0
         }
 
-        pub(crate) fn ack(&mut self, _group1: bool) -> Option<u32> {
-            let pending = self.shared.pending.load(Ordering::Relaxed);
-            if pending == 0 {
+        pub(crate) fn ack(&mut self, group1: bool) -> Option<u32> {
+            let mut state = self.shared.mutable.lock();
+            let deliverable = SharedState::effective_pending(&state)
+                & !state.active
+                & state.enable
+                & group_mask(state.group_status, group1);
+            if deliverable == 0 {
                 None
             } else {
-                let mut state = self.shared.mutable.lock();
-                let intid = 31 - (pending & !state.active).leading_zeros();
+                let intid = 31 - deliverable.leading_zeros();
+                let mask = 1 << intid;
                 tracing::trace!(intid, "ack");
-                self.shared
-                    .pending
-                    .fetch_and(!(1 << intid), Ordering::Relaxed);
-                state.active |= 1 << intid;
+                state.pending_latch &= !mask;
+                state.lr_pending_latch &= !mask;
+                state.active |= mask;
                 Some(intid)
             }
         }
 
-        pub(crate) fn eoi(&mut self, _group1: bool, intid: u32) {
+        pub(crate) fn eoi(&mut self, group1: bool, intid: u32) {
             assert!(intid < 32);
-            tracing::trace!(intid, "eoi");
-            self.shared.mutable.lock().active &= !(1 << intid);
+            let mask = 1 << intid;
+            let mut state = self.shared.mutable.lock();
+            if (state.group_status & mask != 0) == group1 {
+                tracing::trace!(intid, "eoi");
+                state.active &= !mask;
+            }
         }
     }
 }

@@ -9,6 +9,8 @@
     reason = "global_asm! required for AArch64 trampoline code"
 )]
 
+mod irq;
+
 use crate::prelude::*;
 use tmk_protocol as _;
 

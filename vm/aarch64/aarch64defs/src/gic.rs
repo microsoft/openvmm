@@ -7,6 +7,78 @@ use bitfield_struct::bitfield;
 use core::ops::Range;
 use open_enum::open_enum;
 
+#[bitfield(u64)]
+pub struct IchHcrEl2 {
+    pub en: bool,
+    pub uie: bool,
+    pub lrenpie: bool,
+    pub npie: bool,
+    #[bits(10)]
+    _reserved_4_13: u16,
+    pub tdir: bool,
+    #[bits(12)]
+    _reserved_15_26: u16,
+    #[bits(5)]
+    pub eoi_count: u8,
+    _reserved_32_63: u32,
+}
+
+#[bitfield(u64)]
+pub struct IchVmcrEl2 {
+    pub veng0: bool,
+    pub veng1: bool,
+    #[bits(7)]
+    _reserved_2_8: u8,
+    pub veoim: bool,
+    #[bits(54)]
+    _reserved_10_63: u64,
+}
+
+#[bitfield(u64)]
+pub struct IchVtrEl2 {
+    #[bits(5)]
+    pub list_regs: u8,
+    #[bits(59)]
+    _reserved_5_63: u64,
+}
+
+open_enum! {
+    pub enum IchLrState: u8 {
+        INVALID = 0b00,
+        PENDING = 0b01,
+        ACTIVE = 0b10,
+        PENDING_AND_ACTIVE = 0b11,
+    }
+}
+
+impl IchLrState {
+    const fn into_bits(self) -> u64 {
+        self.0 as u64
+    }
+
+    const fn from_bits(bits: u64) -> Self {
+        Self(bits as u8)
+    }
+}
+
+#[bitfield(u64)]
+pub struct IchLrEl2 {
+    pub vintid: u32,
+    #[bits(9)]
+    _reserved_32_40: u16,
+    pub eoi: bool,
+    /// Requests EOI maintenance for a software LR (HW is clear).
+    #[bits(6)]
+    _reserved_42_47: u8,
+    pub priority: u8,
+    #[bits(4)]
+    _reserved_56_59: u8,
+    pub group1: bool,
+    pub hw: bool,
+    #[bits(2)]
+    pub state: IchLrState,
+}
+
 open_enum! {
     /// Registers in an ARM GIC v2m MSI frame (ARM IHI 0048B).
     pub enum GicV2mRegister: u16 {
@@ -61,6 +133,7 @@ impl GicdRegister {
     pub const ICPENDR: Range<u16> = Self::ICPENDR0.0..Self::ICPENDR0.0 + 0x80;
     pub const ISACTIVER: Range<u16> = Self::ISACTIVER0.0..Self::ISACTIVER0.0 + 0x80;
     pub const ICACTIVER: Range<u16> = Self::ICACTIVER0.0..Self::ICACTIVER0.0 + 0x80;
+    pub const IGRPMODR: Range<u16> = Self::IGRPMODR0.0..Self::IGRPMODR0.0 + 0x100;
     pub const ICFGR: Range<u16> = Self::ICFGR0.0..Self::ICFGR0.0 + 0x100;
     pub const IPRIORITYR: Range<u16> = Self::IPRIORITYR0.0..Self::IPRIORITYR0.0 + 0x400;
     pub const IROUTER: Range<u16> = Self::IROUTER0.0..Self::IROUTER0.0 + 0x2000;
@@ -104,9 +177,9 @@ pub struct GicdTyper2 {
 #[bitfield(u32)]
 pub struct GicdCtlr {
     pub enable_grp0: bool,
-    pub enable_grp1: bool,
-    #[bits(2)]
-    _res_2_3: u8,
+    pub enable_grp1_non_secure: bool,
+    pub enable_grp1_secure: bool,
+    _res_3: bool,
     pub are: bool,
     _res_5: bool,
     pub ds: bool,
@@ -222,4 +295,27 @@ pub struct GicrSgi {
     pub rs: u8,
     pub aff3: u8,
     _res_56_63: u8,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IchLrEl2;
+    use super::IchVmcrEl2;
+
+    #[test]
+    fn ich_lr_eoi_is_bit_41() {
+        let encoded = u64::from(IchLrEl2::new().with_eoi(true));
+
+        assert_eq!(encoded, 1_u64 << 41);
+        assert!(IchLrEl2::from(1_u64 << 41).eoi());
+    }
+
+    #[test]
+    fn ich_vmcr_group_enables_are_bits_zero_and_one() {
+        let encoded = u64::from(IchVmcrEl2::new().with_veng0(true).with_veng1(true));
+
+        assert_eq!(encoded, 0b11);
+        assert!(IchVmcrEl2::from(1).veng0());
+        assert!(IchVmcrEl2::from(2).veng1());
+    }
 }
