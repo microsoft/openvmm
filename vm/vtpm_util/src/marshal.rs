@@ -4,7 +4,6 @@
 //! Marshal selected TPM structures used by `vtpm_util`.
 //! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf are a good source.
 
-use std::io;
 use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
 use zerocopy::IntoBytes;
@@ -23,7 +22,7 @@ pub struct TpmtSensitive {
 }
 
 /// Marshals the `TpmtSensitive` structure into a buffer.
-pub fn tpmt_sensitive_marshal(source: &TpmtSensitive) -> Result<Vec<u8>, io::Error> {
+pub fn tpmt_sensitive_marshal(source: &TpmtSensitive) -> Vec<u8> {
     let mut buffer = Vec::new();
 
     buffer.extend_from_slice(source.sensitive_type.as_bytes());
@@ -31,7 +30,7 @@ pub fn tpmt_sensitive_marshal(source: &TpmtSensitive) -> Result<Vec<u8>, io::Err
     buffer.extend_from_slice(&source.seed_value.serialize());
     buffer.extend_from_slice(&source.sensitive.serialize());
 
-    Ok(buffer)
+    buffer
 }
 
 #[cfg(test)]
@@ -52,7 +51,7 @@ mod tests {
         };
 
         assert_eq!(
-            tpmt_sensitive_marshal(&sensitive).unwrap(),
+            tpmt_sensitive_marshal(&sensitive),
             [0, 1, 0, 0, 0, 0, 0, 3, 1, 2, 3]
         );
     }

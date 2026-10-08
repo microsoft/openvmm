@@ -13,11 +13,11 @@ use crate::vtpm_helper::TpmEngineHelper;
 use crate::vtpm_helper::create_tpm_engine_helper;
 use anyhow::Context;
 use base64::Engine;
+use crypto::sha_256::sha_256;
 use parking_lot::Mutex;
-use sha2::Digest;
-use sha2::Sha256;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
@@ -28,6 +28,21 @@ use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmtPublic;
+
+fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(path)?;
+    file.write_all(contents)
+}
 
 /// Creates a vTPM blob and writes it to `path`.
 pub fn create_vtpm_blob_file(path: &str) -> anyhow::Result<()> {
@@ -40,7 +55,7 @@ pub fn create_vtpm_blob_file(path: &str) -> anyhow::Result<()> {
     let state = create_vtpm_blob(tpm_engine_helper, nv_blob_accessor)?;
     tracing::info!("vTPM blob size: {}", state.len());
 
-    fs::write(path, state).context("failed to write vTPM state to blob file")?;
+    write_sensitive_file(path, &state).context("failed to create vTPM state blob file")?;
     tracing::info!("vTPM blob created and saved to file: {}", path);
     Ok(())
 }
@@ -99,9 +114,7 @@ fn create_vtpm_blob(
     let response = tpm_engine_helper
         .read_public(TPM_RSA_SRK_HANDLE)
         .context("failed to read persisted SRK")?;
-    let mut hasher = Sha256::new();
-    hasher.update(response.out_public.public_area.serialize());
-    let public_area_hash = hasher.finalize();
+    let public_area_hash = sha_256(&response.out_public.public_area.serialize());
     tracing::trace!(
         "SRK public area SHA256 hash: {}",
         hex::encode(public_area_hash)
@@ -159,9 +172,7 @@ fn export_vtpm_srk_pub(
         .context("failed to write SRK output file")?;
 
     // Calculate and print the SRK name (algorithm ID + hash)
-    let mut hasher = Sha256::new();
-    hasher.update(response.out_public.public_area.serialize());
-    let public_area_hash = hasher.finalize();
+    let public_area_hash = sha_256(&response.out_public.public_area.serialize());
     tracing::trace!(
         "SRK public area SHA256 hash: {}",
         hex::encode(public_area_hash)
@@ -179,9 +190,7 @@ fn export_vtpm_srk_pub(
     tracing::info!("SRK name: {}", srk_name_hex);
 
     // Compute SHA256 hash of the public area
-    let mut hasher = Sha256::new();
-    hasher.update(response.out_public.public_area.serialize());
-    let public_area_hash = hasher.finalize();
+    let public_area_hash = sha_256(&response.out_public.public_area.serialize());
     tracing::trace!(
         "SRK public area SHA256 hash: {} is written to file {}",
         hex::encode(public_area_hash),
@@ -193,7 +202,7 @@ fn export_vtpm_srk_pub(
 /// Print the SRK public key name.
 /// Prints the TPM key name of an SRK public key file.
 pub fn print_key_name(srkpub_path: &str) {
-    let mut srk_pub_file = fs::OpenOptions::new()
+    let mut srk_pub_file = OpenOptions::new()
         .write(false)
         .read(true)
         .open(srkpub_path)
@@ -209,9 +218,7 @@ pub fn print_key_name(srkpub_path: &str) {
         Tpm2bPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
     let public_area: TpmtPublic = public_key.public_area;
     // Compute SHA256 hash of the public area
-    let mut hasher = Sha256::new();
-    hasher.update(public_area.serialize());
-    let public_area_hash = hasher.finalize();
+    let public_area_hash = sha_256(&public_area.serialize());
 
     // Compute the key name
     let rsa_key = public_area.unique;
@@ -247,12 +254,40 @@ pub fn print_key_name(srkpub_path: &str) {
 
 /// Print SHA256 hash of the data.
 pub(crate) fn print_sha256_hash(data: &[u8]) {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let hash = hasher.finalize();
+    let hash = sha_256(data);
     let mut hash_str = String::new();
     for i in 0..hash.len() {
         hash_str.push_str(&format!("{:02X}", hash[i]));
     }
     tracing::trace!("SHA256 hash: {}\n", hash_str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_sensitive_file;
+    use std::fs;
+    use test_with_tracing::test;
+
+    #[test]
+    fn sensitive_file_does_not_overwrite_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sensitive");
+        fs::write(&path, b"existing").unwrap();
+
+        assert!(write_sensitive_file(path.to_str().unwrap(), b"replacement").is_err());
+        assert_eq!(fs::read(path).unwrap(), b"existing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sensitive");
+
+        write_sensitive_file(path.to_str().unwrap(), b"secret").unwrap();
+
+        assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
 }

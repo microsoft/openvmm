@@ -84,14 +84,11 @@ fn main() -> anyhow::Result<()> {
             algorithm,
             public_key_file,
             private_key_tpm2b_file,
-        } => {
-            match algorithm {
-                KeyAlgorithm::Rsa => vtpm_util::create_random_rsa_key_in_tpm2_import_blob_format(
-                    &public_key_file,
-                    &private_key_tpm2b_file,
-                ),
-            }
-            Ok(())
-        }
+        } => match algorithm {
+            KeyAlgorithm::Rsa => vtpm_util::create_random_rsa_key_in_tpm2_import_blob_format(
+                &public_key_file,
+                &private_key_tpm2b_file,
+            ),
+        },
     }
 }

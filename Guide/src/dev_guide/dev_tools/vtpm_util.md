@@ -14,6 +14,11 @@ protected by TPM authorization until another provisioning component imports
 it into a TPM.
 ```
 
+The tool refuses to overwrite existing vTPM blobs and TPM import blobs. On
+Unix, these files are created with mode `0600`, independent of the process
+umask. On Windows, newly created files inherit the destination directory's
+access control list, so use a directory restricted to the intended user.
+
 ## Building
 
 Build the tool from the repository root:

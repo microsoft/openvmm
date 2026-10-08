@@ -10,13 +10,13 @@ rust-version.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, features = ["export_private", "native", "vendored"] }
+der = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
-ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
-# TPM import blobs require an RSA private prime, which `crypto` does not expose.
-openssl = { workspace = true, features = ["vendored"] }
+ms-tpm-20-ref = { workspace = true, features = ["openssl", "vendored"] }
 parking_lot.workspace = true
-sha2.workspace = true
+pkcs1.workspace = true
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
 tracing.workspace = true
@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [lints]
