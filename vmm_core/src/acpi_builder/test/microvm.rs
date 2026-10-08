@@ -60,3 +60,21 @@ fn test_madt_level_triggered_irq_override() {
             .any(|bytes| bytes == expected.as_bytes())
     );
 }
+
+#[test]
+#[should_panic(expected = "legacy IRQ should be in range")]
+fn test_madt_rejects_non_legacy_irq_override() {
+    let mem = new_mem();
+    let topology = TopologyBuilder::new_x86().build(1).unwrap();
+    let pcie = vec![];
+    let mut builder = new_builder(&mem, &topology, &pcie);
+    let AcpiArchConfig::X86 {
+        level_triggered_irqs,
+        ..
+    } = &mut builder.arch
+    else {
+        unreachable!()
+    };
+    *level_triggered_irqs = &[16];
+    builder.build_madt();
+}

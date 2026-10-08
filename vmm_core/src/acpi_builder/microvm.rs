@@ -18,6 +18,7 @@ pub(super) fn extend_madt_level_triggered_irqs(arch: &AcpiArchConfig, madt_extra
     } = *arch
     {
         for &irq in level_triggered_irqs {
+            assert!(irq < 16, "legacy IRQ should be in range");
             madt_extra.extend_from_slice(
                 acpi_spec::madt::MadtInterruptSourceOverride::new(
                     irq.try_into().expect("legacy IRQ should be in range"),
