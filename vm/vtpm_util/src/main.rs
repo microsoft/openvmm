@@ -3,6 +3,9 @@
 
 //! Supported command-line interface for creating and inspecting vTPM artifacts.
 
+#[cfg(not(test))]
+crypto::ensure_single_backend!();
+
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
