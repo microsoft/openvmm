@@ -60,6 +60,12 @@ pub enum Error {
     /// The entry count or table length cannot be represented.
     #[error("MP table has too many processor or interrupt entries")]
     TooManyEntries,
+    /// The I/O APIC ID register exposes only four ID bits.
+    #[error("MP topology has {processor_count} processors, leaving no representable I/O APIC ID")]
+    NoIoApicId {
+        /// Number of processor APIC IDs already in use.
+        processor_count: usize,
+    },
     /// ISA IRQs are limited to 0 through 15.
     #[error("MP table IRQ {0} is outside the ISA range")]
     InvalidIrq(u32),
@@ -140,7 +146,14 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
         MP_CONFIG_HEADER_SIZE + MP_PROCESSOR_SIZE * config.apic_ids.len()
     );
 
-    let ioapic_id = u8::try_from(config.apic_ids.len()).map_err(|_| Error::TooManyEntries)?;
+    let ioapic_id = u8::try_from(config.apic_ids.len()).map_err(|_| Error::NoIoApicId {
+        processor_count: config.apic_ids.len(),
+    })?;
+    if ioapic_id > 0xf {
+        return Err(Error::NoIoApicId {
+            processor_count: config.apic_ids.len(),
+        });
+    }
     table.extend_from_slice(&[1, 0]);
     table.extend_from_slice(b"ISA   ");
     table.extend_from_slice(&[2, ioapic_id, 0x11, 1]);
@@ -180,7 +193,7 @@ mod tests {
 
     #[test]
     fn builds_valid_checksums_and_processor_entries() {
-        for processor_count in [1usize, 2, 4, 8] {
+        for processor_count in [1usize, 2, 4, 8, 15] {
             let apic_ids = (0..processor_count as u32).collect::<Vec<_>>();
             let tables = build(&MpTableConfig {
                 apic_ids: &apic_ids,
@@ -258,13 +271,15 @@ mod tests {
             }),
             Err(Error::InvalidIrq(16))
         );
-        let apic_ids = (0..256).collect::<Vec<_>>();
+        let apic_ids = (0..16).collect::<Vec<_>>();
         assert_eq!(
             build(&MpTableConfig {
                 apic_ids: &apic_ids,
                 level_triggered_irqs: &[],
             }),
-            Err(Error::TooManyEntries)
+            Err(Error::NoIoApicId {
+                processor_count: 16
+            })
         );
         let apic_ids = (0..=256).collect::<Vec<_>>();
         assert!(matches!(
