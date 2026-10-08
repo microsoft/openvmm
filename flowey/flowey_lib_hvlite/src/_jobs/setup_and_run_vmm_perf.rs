@@ -106,7 +106,6 @@ impl SimpleFlowNode for Node {
                 runtime_archive: v,
             }),
         };
-        let parameters_json = parameters_json.map(ReadVar::from_static);
         let job_root = match ctx.backend() {
             FlowBackend::Local => root_dir
                 .ok_or_else(|| anyhow::anyhow!("local VMM.Perf runs require a root directory"))?,
