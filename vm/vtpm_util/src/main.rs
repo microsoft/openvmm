@@ -76,10 +76,7 @@ fn main() -> anyhow::Result<()> {
             vtpm_blob_path,
             srk_out_path,
         } => vtpm_util::write_srk(&vtpm_blob_path, &srk_out_path),
-        Command::PrintKeyName { srk_pub_path } => {
-            vtpm_util::print_key_name(&srk_pub_path);
-            Ok(())
-        }
+        Command::PrintKeyName { srk_pub_path } => vtpm_util::print_key_name(&srk_pub_path),
         Command::CreateRandomKeyInTpm2ImportBlobFormat {
             algorithm,
             public_key_file,

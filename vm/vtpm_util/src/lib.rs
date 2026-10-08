@@ -18,7 +18,6 @@ use parking_lot::Mutex;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
 use std::vec;
@@ -201,21 +200,12 @@ fn export_vtpm_srk_pub(
 
 /// Print the SRK public key name.
 /// Prints the TPM key name of an SRK public key file.
-pub fn print_key_name(srkpub_path: &str) {
-    let mut srk_pub_file = OpenOptions::new()
-        .write(false)
-        .read(true)
-        .open(srkpub_path)
-        .expect("failed to open file");
-
-    let mut srkpub_content_buf = Vec::new();
-    srk_pub_file
-        .read_to_end(&mut srkpub_content_buf)
-        .expect("failed to read file");
+pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
+    let srkpub_content_buf = fs::read(srkpub_path).context("failed to read SRK public key file")?;
 
     // Deserialize the srkpub to a public area.
-    let public_key =
-        Tpm2bPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
+    let public_key = Tpm2bPublic::deserialize(&srkpub_content_buf)
+        .context("failed to deserialize SRK public key")?;
     let public_area: TpmtPublic = public_key.public_area;
     // Compute SHA256 hash of the public area
     let public_area_hash = sha_256(&public_area.serialize());
@@ -250,6 +240,7 @@ pub fn print_key_name(srkpub_path: &str) {
     }
     tracing::trace!("RSA key bytes: {}", rsa_pub_str);
     tracing::info!("\nOperation completed successfully.\n");
+    Ok(())
 }
 
 /// Print SHA256 hash of the data.
@@ -264,6 +255,7 @@ pub(crate) fn print_sha256_hash(data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use super::print_key_name;
     use super::write_sensitive_file;
     use std::fs;
     use test_with_tracing::test;
@@ -278,6 +270,27 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), b"existing");
     }
 
+    #[test]
+    fn print_key_name_rejects_missing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing");
+
+        let error = print_key_name(path.to_str().unwrap()).unwrap_err();
+
+        assert_eq!(error.to_string(), "failed to read SRK public key file");
+    }
+
+    #[test]
+    fn print_key_name_rejects_malformed_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("malformed");
+        fs::write(&path, b"not a TPM2B_PUBLIC").unwrap();
+
+        let error = print_key_name(path.to_str().unwrap()).unwrap_err();
+
+        assert_eq!(error.to_string(), "failed to deserialize SRK public key");
+    }
+
     #[cfg(unix)]
     #[test]
     fn sensitive_file_is_owner_only() {
@@ -288,6 +301,9 @@ mod tests {
 
         write_sensitive_file(path.to_str().unwrap(), b"secret").unwrap();
 
-        assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
