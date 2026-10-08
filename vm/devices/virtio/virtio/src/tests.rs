@@ -5468,12 +5468,12 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
 
     let mut used_idx = 0;
 
-    // Complete the last descriptor first: nothing may be published yet.
-    in_order.complete(&mut queue, w2.into_completion(), 22);
-    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
-
-    // Complete descriptor 0: it publishes, but descriptor 2 must wait for 1.
-    in_order.complete(&mut queue, w0.into_completion(), 10);
+    // Complete descriptors 2 and 0 in one out-of-order batch. Descriptor 0
+    // publishes, but descriptor 2 must remain buffered behind descriptor 1.
+    in_order.complete_batch(
+        &mut queue,
+        [(w2.into_completion(), 22), (w0.into_completion(), 10)],
+    );
     assert_eq!(
         read_used(&mem, used_addr, size, &mut used_idx),
         Some((0, 10))
@@ -5490,6 +5490,65 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
         read_used(&mem, used_addr, size, &mut used_idx),
         Some((2, 22))
     );
+}
+
+async fn verify_batch_completion_interrupt_inner(mut guest: VirtioTestGuest) {
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let pending = Arc::new(Mutex::new(Vec::new()));
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        let pending = pending.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |queue, work| {
+                let mut pending = pending.lock();
+                pending.push((work.into_completion(), 123));
+                if pending.len() == 3 {
+                    queue.complete_prepared_batch(&mut pending);
+                    pending.clear();
+                }
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Request an interrupt for the middle descriptor. A batch spanning the
+    // event index must generate one interrupt, not one per used entry.
+    guest.enable_interrupt(0, Some(1));
+    for _ in 0..3 {
+        guest.add_to_avail_queue(0);
+    }
+    event.signal();
+
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    for _ in 0..3 {
+        assert_eq!(guest.get_next_completed(0).unwrap().1, 123);
+    }
+    assert!(guest.get_next_completed(0).is_none());
+
+    queues[0].stop().await;
+}
+
+#[async_test]
+async fn split_batch_completion_interrupts_once(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_batch_completion_interrupt_inner(VirtioTestGuest::new_split(
+        &driver, &test_mem, 1, 4, true,
+    ))
+    .await;
+}
+
+#[async_test]
+async fn packed_batch_completion_interrupts_once(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_batch_completion_interrupt_inner(VirtioTestGuest::new_packed(
+        &driver, &test_mem, 1, 4, true,
+    ))
+    .await;
 }
 
 /// Completing the same descriptor twice while it is still outstanding is an

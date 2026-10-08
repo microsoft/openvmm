@@ -480,6 +480,8 @@ impl InspectTaskMut<Worker> for NetQueue {
 struct ProcessingData {
     #[inspect(with = "Vec::len")]
     tx_segments: Vec<TxSegment>,
+    #[inspect(with = "Vec::len")]
+    rx_completions: Vec<(QueueCompletion, u32)>,
     #[inspect(skip)]
     tx_done: Box<[TxId]>,
     #[inspect(skip)]
@@ -490,6 +492,7 @@ impl ProcessingData {
     fn new(rx_queue_size: u16, tx_queue_size: u16) -> Self {
         Self {
             tx_segments: Vec::new(),
+            rx_completions: Vec::with_capacity(rx_queue_size as usize),
             tx_done: vec![TxId(0); tx_queue_size as usize].into(),
             rx_ready: vec![RxId(0); rx_queue_size as usize].into(),
         }
@@ -1345,6 +1348,7 @@ impl Worker {
             return Ok(false);
         }
 
+        state.data.rx_completions.clear();
         for ready_id in state.data.rx_ready[..n].iter() {
             let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
             if dropped {
@@ -1352,12 +1356,15 @@ impl Worker {
             } else {
                 state.stats.rx_packets.increment();
             }
-            self.virtio_state.rx_in_order.complete(
-                &mut self.virtio_state.rx_queue,
-                work.into_completion(),
-                bytes,
-            );
+            state
+                .data
+                .rx_completions
+                .push((work.into_completion(), bytes));
         }
+        self.virtio_state.rx_in_order.complete_batch(
+            &mut self.virtio_state.rx_queue,
+            state.data.rx_completions.drain(..),
+        );
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
         Ok(true)
