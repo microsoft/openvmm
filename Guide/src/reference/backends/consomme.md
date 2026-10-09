@@ -56,11 +56,11 @@ NAT does not expose arbitrary guest listeners.
 
 The generic egress rule form accepts destination IPv4 addresses or CIDRs,
 optionally restricted to TCP, UDP, or ICMP, and for TCP or UDP optionally to
-one destination port. Deny rules take precedence over allow
-rules, and the explicit directional default handles traffic that matches
-neither list. Filtering and malformed-packet rejection occur before Consomme
-creates a host socket. Port-specific policies reject IPv4 fragments rather
-than allowing later fragments to bypass transport checks.
+one destination port or to an inclusive range of them. Deny rules take
+precedence over allow rules, and the explicit directional default handles
+traffic that matches neither list. Filtering and malformed-packet rejection
+occur before Consomme creates a host socket. Port-specific policies reject IPv4
+fragments rather than allowing later fragments to bypass transport checks.
 
 The portable profile does not provide generic bidirectional host-loopback
 connectivity. Explicit `--host-loopback allow` without any

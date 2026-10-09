@@ -147,10 +147,14 @@ describes the source definitions.
 
   `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
   the generic L3/L4 policy form. A rule is `IPv4[/PREFIX]`, which matches
-  every IPv4 protocol; `IPv4[/PREFIX]:tcp`, `IPv4[/PREFIX]:udp`, or
-  `IPv4[/PREFIX]:icmp`, which match one protocol on every destination port; or
-  `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`, which match one TCP or
-  UDP destination port. ICMP rules take no port. These flags require an
+  every IPv4 protocol; `IPv4[/PREFIX]:tcp` or `IPv4[/PREFIX]:udp`, which match
+  every destination port of one protocol; `IPv4[/PREFIX]:icmp`, which matches
+  every ICMP message; `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`,
+  which match one TCP or UDP destination port; or
+  `IPv4[/PREFIX]:tcp:FIRST-LAST` / `IPv4[/PREFIX]:udp:FIRST-LAST`, which match
+  the inclusive range of TCP or UDP destination ports from `FIRST` through
+  `LAST`. Ports are `1` through `65535`, and a range whose `LAST` is below its
+  `FIRST` is rejected. ICMP rules take no port. These flags require an
   explicit `--network-egress` default, accept at most 256 rules in each list,
   and cannot be mixed with the legacy `--allow-host`, `--block-host`, or
   `--allow-endpoint` forms. Deny rules are evaluated before allow rules.
