@@ -29,6 +29,7 @@ pub mod null {
 /// Consomme backend.
 pub mod consomme {
     pub mod static_ipv4;
+    pub mod static_ipv6;
 
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
@@ -113,6 +114,8 @@ pub mod consomme {
         pub recv: Option<mesh::Receiver<ConsommeRequest>>,
         /// Optional exact static identity, mutually exclusive with `cidr`.
         pub static_ipv4: Option<static_ipv4::StaticIpv4Config>,
+        /// Optional exact static IPv6 identity, which requires `static_ipv4`.
+        pub static_ipv6: Option<static_ipv6::StaticIpv6Config>,
         /// Override guest access to host-local destination addresses.
         pub allow_host_local_access: Option<bool>,
         /// Override translation of the guest gateway onto host loopback.

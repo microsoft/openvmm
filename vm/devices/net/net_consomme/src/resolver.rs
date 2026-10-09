@@ -33,8 +33,12 @@ pub enum ResolveConsommeError {
     InvalidCidr(consomme::InvalidCidr),
     #[error(transparent)]
     InvalidStaticIpv4(consomme::static_ipv4::InvalidStaticIpv4),
+    #[error(transparent)]
+    InvalidStaticIpv6(consomme::static_ipv6::InvalidStaticIpv6),
     #[error("Consomme CIDR and exact static IPv4 configuration are mutually exclusive")]
     ConflictingIpv4Configuration,
+    #[error("Consomme exact static IPv6 configuration requires exact static IPv4 configuration")]
+    StaticIpv6WithoutStaticIpv4,
     #[error("failed to create socket for port forward ({details})")]
     SocketCreation {
         #[source]

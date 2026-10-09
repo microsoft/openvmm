@@ -218,6 +218,16 @@ pub struct SnapshotMicrovmNetwork {
     /// Version of the canonical egress-policy digest encoding.
     #[mesh(10)]
     pub egress_policy_encoding_version: u32,
+    /// Guest IPv6 address of a dual-stack NIC, empty for a network that
+    /// predates IPv6.
+    #[mesh(11)]
+    pub guest_ipv6: Vec<u8>,
+    /// IPv6 subnet prefix length of a dual-stack NIC, or zero.
+    #[mesh(12)]
+    pub ipv6_prefix_length: u32,
+    /// Derived gateway IPv6 address of a dual-stack NIC, or empty.
+    #[mesh(13)]
+    pub gateway_ipv6: Vec<u8>,
 }
 
 /// Canonical guest-visible policy of the microVM filesystem.
@@ -358,6 +368,7 @@ impl SnapshotMicrovmNetwork {
         config: &openvmm_defs::microvm::MicrovmNetworkConfig,
         egress_policy: &net_backend_resources::egress::EgressPolicy,
     ) -> Self {
+        let (guest_ipv6, ipv6_prefix_length, gateway_ipv6) = snapshot_ipv6_identity(config);
         Self {
             profile: config.profile.as_str().to_owned(),
             guest_ipv4: u32::from(config.guest_ipv4),
@@ -368,10 +379,63 @@ impl SnapshotMicrovmNetwork {
             egress_policy_mode: egress_policy.mode_name().to_owned(),
             egress_policy_sha256: sha2::Sha256::digest(egress_policy.canonical_bytes()).to_vec(),
             egress_policy_required: egress_policy.is_active(),
-            egress_policy_encoding_version:
-                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
+            egress_policy_encoding_version: egress_policy.encoding_version(),
+            guest_ipv6,
+            ipv6_prefix_length,
+            gateway_ipv6,
         }
     }
+}
+
+/// Returns the snapshot fields that record the IPv6 identity of `config`: the
+/// guest address, the prefix length, and the gateway address, which are
+/// empty and zero without IPv6.
+fn snapshot_ipv6_identity(
+    config: &openvmm_defs::microvm::MicrovmNetworkConfig,
+) -> (Vec<u8>, u32, Vec<u8>) {
+    config.ipv6.map_or_else(
+        || (Vec::new(), 0, Vec::new()),
+        |ipv6| {
+            (
+                ipv6.guest_ipv6.octets().to_vec(),
+                u32::from(ipv6.prefix_length),
+                ipv6.derived_gateway_ipv6.octets().to_vec(),
+            )
+        },
+    )
+}
+
+/// Returns the canonical network identity that a snapshot records: the
+/// identity that its IPv4 address and prefix derive, without IPv6 when the
+/// snapshot predates IPv6.
+pub fn microvm_network_config_from_snapshot(
+    saved: &SnapshotMicrovmNetwork,
+) -> anyhow::Result<openvmm_defs::microvm::MicrovmNetworkConfig> {
+    let prefix_length =
+        u8::try_from(saved.prefix_length).context("snapshot network prefix does not fit in u8")?;
+    let mut config = format!(
+        "{}/{}",
+        std::net::Ipv4Addr::from(saved.guest_ipv4),
+        prefix_length
+    )
+    .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+    .context("snapshot static network identity is invalid")?;
+    let saved_ipv6 = (
+        saved.guest_ipv6.clone(),
+        saved.ipv6_prefix_length,
+        saved.gateway_ipv6.clone(),
+    );
+    if saved_ipv6 == (Vec::new(), 0, Vec::new()) {
+        config = config.without_ipv6();
+    }
+    anyhow::ensure!(
+        saved.gateway_ipv4 == u32::from(config.derived_gateway_ipv4)
+            && saved.guest_mac == config.guest_mac.to_bytes()
+            && saved.gateway_mac == config.gateway_mac.to_bytes()
+            && saved_ipv6 == snapshot_ipv6_identity(&config),
+        "snapshot static network identity is not canonical"
+    );
+    Ok(config)
 }
 
 /// Validates a restore-time policy against the snapshot's canonical contract.
@@ -386,7 +450,13 @@ pub fn validate_microvm_network_policy(
     let canonical = policy
         .canonical_bytes_for_version(encoding_version)
         .with_context(|| {
-            format!("snapshot egress policy encoding version {encoding_version} is unsupported")
+            if encoding_version < net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION {
+                format!(
+                    "restore-time egress policy has IPv6, which snapshot egress policy encoding version {encoding_version} predates"
+                )
+            } else {
+                format!("snapshot egress policy encoding version {encoding_version} is unsupported")
+            }
         })?;
     let digest = sha2::Sha256::digest(canonical);
     anyhow::ensure!(
@@ -1525,21 +1595,7 @@ pub(super) fn validate_machine_contract_shape(
             "snapshot microVM network profile '{}' is unsupported",
             network.profile
         );
-        let prefix_length = u8::try_from(network.prefix_length)
-            .context("snapshot network prefix does not fit in u8")?;
-        let parsed = format!(
-            "{}/{}",
-            std::net::Ipv4Addr::from(network.guest_ipv4),
-            prefix_length
-        )
-        .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
-        .context("snapshot static network identity is invalid")?;
-        anyhow::ensure!(
-            network.gateway_ipv4 == u32::from(parsed.derived_gateway_ipv4)
-                && network.guest_mac == parsed.guest_mac.to_bytes()
-                && network.gateway_mac == parsed.gateway_mac.to_bytes(),
-            "snapshot static network identity is not canonical"
-        );
+        microvm_network_config_from_snapshot(network)?;
         let valid_policy_requirement = match network.egress_policy_mode.as_str() {
             "allow-all" => !network.egress_policy_required,
             "deny-all" | "allow-list" | "block-list" | "endpoint" => network.egress_policy_required,
@@ -1551,10 +1607,8 @@ pub(super) fn validate_machine_contract_shape(
             "snapshot egress policy requirement is invalid"
         );
         anyhow::ensure!(
-            matches!(
-                network.egress_policy_encoding_version,
-                0 | 1 | 2 | net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
-            ),
+            network.egress_policy_encoding_version
+                <= net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
             "snapshot egress policy encoding version {} is unsupported",
             network.egress_policy_encoding_version
         );
@@ -2068,6 +2122,8 @@ fn platform_command_line_token_is_invariant(token: &str) -> bool {
             "virtnet_mask=",
             "virtnet_gw=",
             "virtnet_dns=",
+            "virtnet_ip6=",
+            "virtnet_gw6=",
         ]
         .iter()
         .any(|prefix| token.starts_with(prefix))
@@ -2340,25 +2396,26 @@ mod tests {
         mode: net_backend_resources::egress::EgressPolicyMode,
     ) -> SnapshotMachineContract {
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
-        let egress_policy = net_backend_resources::egress::EgressPolicy::bind(
-            network.guest_ipv4,
-            network.prefix_length,
-            network.guest_mac,
-            network.derived_gateway_ipv4,
-            mode,
-        )
-        .unwrap();
+        generated_network_contract_for(source_hypervisor, &network, mode)
+    }
+
+    fn generated_network_contract_for(
+        source_hypervisor: &str,
+        network: &openvmm_defs::microvm::MicrovmNetworkConfig,
+        mode: net_backend_resources::egress::EgressPolicyMode,
+    ) -> SnapshotMachineContract {
+        let egress_policy = network.bind_egress_policy(mode).unwrap();
         let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
         let command_line = format!(
             "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0000000:{irq} {}",
-            network.command_line_fragment_with_dns(egress_policy.allows_gateway_dns())
+            network.command_line_fragment_with_dns(egress_policy.gateway_dns_server())
         );
         microvm_machine_contract(
             source_hypervisor,
             MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             Some((
-                &network,
+                network,
                 &egress_policy,
                 microvm_network_attachment(source_hypervisor),
             )),
@@ -3048,6 +3105,26 @@ mod tests {
             );
             assert_eq!(network.guest_mac, [0x52, 0x54, 0, 0, 0, 2]);
             assert_eq!(network.gateway_mac, [0x52, 0x54, 0, 0, 0, 1]);
+            assert_eq!(
+                network.guest_ipv6,
+                "fd00::a00:2"
+                    .parse::<std::net::Ipv6Addr>()
+                    .unwrap()
+                    .octets()
+            );
+            assert_eq!(network.ipv6_prefix_length, 120);
+            assert_eq!(
+                network.gateway_ipv6,
+                "fd00::a00:1"
+                    .parse::<std::net::Ipv6Addr>()
+                    .unwrap()
+                    .octets()
+            );
+            assert!(
+                contract
+                    .effective_command_line
+                    .contains("virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1")
+            );
             assert_eq!(network.egress_policy_mode, "allow-list");
             assert_eq!(network.egress_policy_sha256.len(), 32);
             assert!(network.egress_policy_required);
@@ -3055,6 +3132,55 @@ mod tests {
                 network.egress_policy_encoding_version,
                 net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
             );
+        }
+    }
+
+    #[test]
+    fn snapshot_network_predating_ipv6_restores_without_ipv6() {
+        let network = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap()
+            .without_ipv6();
+        let contract = generated_network_contract_for(
+            "kvm",
+            &network,
+            net_backend_resources::egress::EgressPolicyMode::AllowList(vec![
+                "192.0.2.0/24".parse().unwrap(),
+            ]),
+        );
+        validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+        let saved = contract.microvm_network.as_ref().unwrap();
+        assert!(saved.guest_ipv6.is_empty() && saved.gateway_ipv6.is_empty());
+        assert_eq!(saved.ipv6_prefix_length, 0);
+        // A policy without IPv6 keeps the digest encoding that predates IPv6.
+        assert_eq!(saved.egress_policy_encoding_version, 3);
+        assert!(!contract.effective_command_line.contains("virtnet_ip6="));
+        assert_eq!(
+            microvm_network_config_from_snapshot(saved).unwrap(),
+            network
+        );
+    }
+
+    #[test]
+    fn snapshot_network_ipv6_identity_must_be_canonical() {
+        let contract = generated_network_contract("whp");
+        validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+        let saved = contract.microvm_network.as_ref().unwrap();
+        assert_eq!(
+            microvm_network_config_from_snapshot(saved).unwrap(),
+            "10.0.0.2/24".parse().unwrap()
+        );
+        let mutations: [fn(&mut SnapshotMicrovmNetwork); 5] = [
+            |network| network.guest_ipv6[15] ^= 1,
+            |network| network.gateway_ipv6[0] ^= 1,
+            |network| network.ipv6_prefix_length = 64,
+            |network| network.gateway_ipv6.clear(),
+            |network| network.guest_ipv6.truncate(4),
+        ];
+        for mutate in mutations {
+            let mut contract = contract.clone();
+            mutate(contract.microvm_network.as_mut().unwrap());
+            assert!(validate_machine_contract_shape(&contract, 1024, 1).is_err());
         }
     }
 
@@ -3074,18 +3200,18 @@ mod tests {
 
     #[test]
     fn legacy_network_policy_digest_remains_valid() {
-        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
-        let policy = net_backend_resources::egress::EgressPolicy::bind(
-            network.guest_ipv4,
-            network.prefix_length,
-            network.guest_mac,
-            network.derived_gateway_ipv4,
-            net_backend_resources::egress::EgressPolicyMode::TcpEndpoints(vec![
-                "10.0.0.9:443".parse().unwrap(),
-                "192.0.2.7:443".parse().unwrap(),
-            ]),
-        )
-        .unwrap();
+        let network = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap()
+            .without_ipv6();
+        let policy = network
+            .bind_egress_policy(
+                net_backend_resources::egress::EgressPolicyMode::TcpEndpoints(vec![
+                    "10.0.0.9:443".parse().unwrap(),
+                    "192.0.2.7:443".parse().unwrap(),
+                ]),
+            )
+            .unwrap();
         let mut saved = SnapshotMicrovmNetwork::new(&network, &policy);
         saved.egress_policy_encoding_version = 0;
         saved.egress_policy_sha256 =
@@ -3094,6 +3220,18 @@ mod tests {
         validate_microvm_network_policy(&saved, &policy).unwrap();
         saved.egress_policy_encoding_version = u32::MAX;
         assert!(validate_microvm_network_policy(&saved, &policy).is_err());
+
+        // A restore-time policy with IPv6 cannot match a digest that predates IPv6.
+        saved.egress_policy_encoding_version = 3;
+        let ipv6_rules = network
+            .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::Rules {
+                default_action: net_backend_resources::egress::EgressAction::Deny,
+                allow: vec!["2001:db8::/32:tcp:443".parse().unwrap()],
+                deny: Vec::new(),
+            })
+            .unwrap();
+        let error = validate_microvm_network_policy(&saved, &ipv6_rules).unwrap_err();
+        assert!(error.to_string().contains("predates"), "{error:#}");
     }
 
     #[test]
@@ -3834,6 +3972,36 @@ mod tests {
                 .effective_command_line
                 .replace("nvx_config=0xd0010000,65536", "nvx_config=tenant-data"),
         );
+        assert!(
+            validate_manifest_contents(&manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("contains tenant or unsupported configuration")
+        );
+    }
+
+    #[test]
+    fn platform_snapshot_accepts_the_dual_stack_network_command_line() {
+        let scratch = vec![0x5a; 512];
+        let mut manifest = paired_scratch_manifest(&scratch);
+        make_platform_snapshot(&mut manifest);
+        let network = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap();
+        // The portable profile's bootstrap tokens, its IPv6 identity included,
+        // are platform configuration rather than tenant configuration.
+        let fragment = network.command_line_fragment_with_dns(Some("fd00::a00:1".parse().unwrap()));
+        assert!(fragment.contains("virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"));
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract
+            .set_effective_command_line(format!("{} {fragment}", contract.effective_command_line));
+        validate_manifest_contents(&manifest).unwrap();
+
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        contract.set_effective_command_line(format!(
+            "{} virtnet_probe=10.0.0.1",
+            contract.effective_command_line
+        ));
         assert!(
             validate_manifest_contents(&manifest)
                 .unwrap_err()

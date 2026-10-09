@@ -1,16 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Canonical microVM IPv4 egress policy and packet validation.
+//! Canonical microVM egress policy and packet validation.
+//!
+//! A policy is bound to one static link: an IPv4 identity and, on a
+//! dual-stack link, an IPv6 identity. Rules name IPv4 or IPv6 destinations,
+//! and each rule matches only packets of its own address family.
+
+mod ipv6;
+
+pub use ipv6::EgressIpv6Link;
+pub use ipv6::Ipv6Cidr;
+pub use ipv6::ParseIpv6CidrError;
 
 use crate::mac_address::MacAddress;
 use mesh::MeshPayload;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Current encoding version used for snapshot egress-policy digests.
-pub const EGRESS_POLICY_ENCODING_VERSION: u32 = 3;
+/// Current encoding version used for snapshot egress-policy digests, which a
+/// policy with an IPv6 identity or IPv6 rules requires.
+pub const EGRESS_POLICY_ENCODING_VERSION: u32 = 4;
+/// Encoding version of policies without IPv6, which keep their digests.
+const IPV4_EGRESS_POLICY_ENCODING_VERSION: u32 = 3;
 const PREVIOUS_EGRESS_POLICY_ENCODING_VERSION: u32 = 2;
 const LEGACY_EGRESS_POLICY_ENCODING_VERSION: u32 = 1;
 const ETHERNET_BROADCAST: [u8; 6] = [0xff; 6];
@@ -157,7 +172,7 @@ pub enum EgressAction {
 /// Optional transport restriction for an egress rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
 pub enum EgressTransport {
-    /// Match every IPv4 protocol and port.
+    /// Match every protocol and port.
     Any,
     /// Match TCP on one destination port, on an inclusive range of them, or
     /// on every port.
@@ -165,23 +180,63 @@ pub enum EgressTransport {
     /// Match UDP on one destination port, on an inclusive range of them, or
     /// on every port.
     Udp,
-    /// Match every ICMP message.
+    /// Match every ICMP message, which for an IPv6 destination is every
+    /// ICMPv6 message.
     Icmp,
 }
 
-/// A canonical IPv4 destination rule with an optional protocol and TCP or UDP
-/// destination port or inclusive range of destination ports.
+/// A canonical destination network of an egress rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
+pub enum EgressDestination {
+    /// An IPv4 network, which matches only IPv4 packets.
+    Ipv4(Ipv4Cidr),
+    /// An IPv6 network, which matches only IPv6 packets.
+    Ipv6(Ipv6Cidr),
+}
+
+impl EgressDestination {
+    /// Returns whether `address` belongs to this network. An address of the
+    /// other family never does.
+    pub fn contains(self, address: IpAddr) -> bool {
+        match (self, address) {
+            (Self::Ipv4(network), IpAddr::V4(address)) => network.contains(address),
+            (Self::Ipv6(network), IpAddr::V6(address)) => network.contains(address),
+            _ => false,
+        }
+    }
+
+    /// Returns whether this is an IPv6 network.
+    pub fn is_ipv6(self) -> bool {
+        matches!(self, Self::Ipv6(_))
+    }
+}
+
+impl FromStr for EgressDestination {
+    type Err = ParseEgressRuleError;
+
+    /// Parses an IPv4 or IPv6 address with an optional prefix length.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(if value.contains(':') {
+            Self::Ipv6(value.parse()?)
+        } else {
+            Self::Ipv4(value.parse()?)
+        })
+    }
+}
+
+/// A canonical IPv4 or IPv6 destination rule with an optional protocol and
+/// TCP or UDP destination port or inclusive range of destination ports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
 pub struct EgressRule {
-    destination: Ipv4Cidr,
+    destination: EgressDestination,
     transport: EgressTransport,
     port: u16,
     end_port: u16,
 }
 
 impl EgressRule {
-    /// Returns the destination prefix.
-    pub fn destination(self) -> Ipv4Cidr {
+    /// Returns the destination network.
+    pub fn destination(self) -> EgressDestination {
         self.destination
     }
 
@@ -216,7 +271,7 @@ impl EgressRule {
         }
     }
 
-    fn matches(self, destination: Ipv4Addr, packet: Option<PacketTransport>) -> bool {
+    fn matches(self, destination: IpAddr, packet: Option<PacketTransport>) -> bool {
         if !self.destination.contains(destination) {
             return false;
         }
@@ -233,7 +288,7 @@ impl EgressRule {
     }
 }
 
-/// The transport of one IPv4 packet, as far as rule evaluation can classify it.
+/// The transport of one packet, as far as rule evaluation can classify it.
 #[derive(Clone, Copy)]
 struct PacketTransport {
     /// TCP, UDP, or ICMP, and never `Any`, which only rules use.
@@ -247,12 +302,15 @@ struct PacketTransport {
 pub enum ParseEgressRuleError {
     /// The rule did not use a supported address, protocol, or port form.
     #[error(
-        "expected <IPv4[/PREFIX]>, <IPv4[/PREFIX]>:<tcp|udp|icmp>, or <IPv4[/PREFIX]>:<tcp|udp>:<PORT|FIRST-LAST>"
+        "expected <CIDR>, <CIDR>:<tcp|udp|icmp>, or <CIDR>:<tcp|udp>:<PORT|FIRST-LAST>, where CIDR is an IPv4 or IPv6 address with an optional /PREFIX"
     )]
     InvalidFormat,
-    /// The destination prefix is invalid.
+    /// The IPv4 destination prefix is invalid.
     #[error(transparent)]
     InvalidDestination(#[from] ParseIpv4CidrError),
+    /// The IPv6 destination prefix is invalid.
+    #[error(transparent)]
+    InvalidIpv6Destination(#[from] ParseIpv6CidrError),
     /// The transport is not TCP, UDP, or ICMP.
     #[error("invalid egress transport '{0}'; expected tcp, udp, or icmp")]
     InvalidTransport(String),
@@ -282,12 +340,14 @@ impl FromStr for EgressRule {
     type Err = ParseEgressRuleError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let fields = value.split(':').collect::<Vec<_>>();
-        let (destination, protocol, ports) = match fields.as_slice() {
-            [destination] => (*destination, None, None),
-            [destination, protocol] => (*destination, Some(*protocol), None),
-            [destination, protocol, ports] => (*destination, Some(*protocol), Some(*ports)),
-            _ => return Err(ParseEgressRuleError::InvalidFormat),
+        let (destination, selector) = split_egress_rule(value);
+        let (protocol, ports) = match selector {
+            None => (None, None),
+            Some(selector) => match selector.split(':').collect::<Vec<_>>().as_slice() {
+                [protocol] => (Some(*protocol), None),
+                [protocol, ports] => (Some(*protocol), Some(*ports)),
+                _ => return Err(ParseEgressRuleError::InvalidFormat),
+            },
         };
         let transport = match protocol {
             None => EgressTransport::Any,
@@ -340,7 +400,38 @@ fn parse_port_range(value: &str) -> Result<(u16, u16), ParseEgressRuleError> {
     Ok((first, last))
 }
 
+/// Splits an egress rule into its destination and its optional protocol and
+/// port selector.
+///
+/// An IPv4 address contains no `:`, so its first `:` starts the selector. An
+/// IPv6 network with a prefix ends at the first `:` after its `/`. Without a
+/// prefix, the selector follows the last `:` that leaves an IPv6 address
+/// before it: protocol names are not hexadecimal, so they never belong to
+/// the address.
+fn split_egress_rule(value: &str) -> (&str, Option<&str>) {
+    let split_at = |index: usize| (&value[..index], Some(&value[index + 1..]));
+    if let Some(slash) = value.find('/') {
+        return match value[slash..].find(':') {
+            Some(colon) => split_at(slash + colon),
+            None => (value, None),
+        };
+    }
+    match value.find(':') {
+        None => (value, None),
+        Some(colon) if value[..colon].contains('.') => split_at(colon),
+        Some(_) if value.parse::<Ipv6Addr>().is_ok() => (value, None),
+        Some(_) => value
+            .rmatch_indices(':')
+            .map(|(index, _)| index)
+            .find(|&index| value[..index].parse::<Ipv6Addr>().is_ok())
+            .map_or((value, None), split_at),
+    }
+}
+
 /// Run-scoped egress policy mode.
+///
+/// Only [`EgressPolicyMode::Rules`] can name IPv6 destinations. The other
+/// modes are IPv4 policies that deny every IPv6 frame.
 #[derive(Clone, Debug, PartialEq, Eq, MeshPayload)]
 pub enum EgressPolicyMode {
     /// No packet filtering.
@@ -353,7 +444,9 @@ pub enum EgressPolicyMode {
     TcpEndpoints(Vec<TcpEndpoint>),
     /// Deny every guest-originated frame.
     DenyAll,
-    /// Apply canonical allow and deny rules with deny precedence.
+    /// Apply canonical allow and deny rules with deny precedence. The default
+    /// action applies to both address families, and each rule matches only
+    /// packets of its own family.
     Rules {
         /// Action for traffic that matches no rule.
         default_action: EgressAction,
@@ -456,6 +549,29 @@ pub enum InvalidEgressPolicy {
         /// Required guest-visible address.
         expected: Ipv4Addr,
     },
+    /// The IPv6 prefix cannot describe a microVM subnet.
+    #[error("IPv6 prefix /{0} is outside the supported range /1 through /126")]
+    Ipv6PrefixOutOfRange(u8),
+    /// The guest IPv6 address cannot identify the guest on the link.
+    #[error(
+        "guest IPv6 address {0} is not a unicast address outside the loopback, link-local, and IPv4-mapped ranges"
+    )]
+    InvalidGuestIpv6(Ipv6Addr),
+    /// The guest IPv6 address is the subnet network address.
+    #[error("guest IPv6 address {0} is the subnet network address")]
+    GuestIpv6NetworkAddress(Ipv6Addr),
+    /// The guest IPv6 address collides with the canonical gateway.
+    #[error("guest IPv6 address {0} collides with the canonical gateway")]
+    GuestIpv6GatewayCollision(Ipv6Addr),
+    /// The IPv6 gateway is not the first address after the subnet network
+    /// address.
+    #[error("gateway IPv6 address {actual} does not match canonical gateway {expected}")]
+    Ipv6GatewayMismatch {
+        /// Supplied gateway address.
+        actual: Ipv6Addr,
+        /// Canonical first address after the subnet network address.
+        expected: Ipv6Addr,
+    },
 }
 
 /// Egress policy bound to one static microVM link.
@@ -469,6 +585,7 @@ pub struct EgressPolicy {
     mode: EgressPolicyMode,
     host_loopback: EgressAction,
     proxy_endpoint: Option<TcpEndpoint>,
+    ipv6: Option<EgressIpv6Link>,
 }
 
 impl EgressPolicy {
@@ -574,7 +691,9 @@ impl EgressPolicy {
                 allow,
                 ..
             } => {
-                if *default_action == EgressAction::Deny && allow.is_empty() {
+                if *default_action == EgressAction::Deny
+                    && allow.iter().all(|rule| rule.destination.is_ipv6())
+                {
                     Vec::new()
                 } else {
                     vec![gateway_ipv4]
@@ -591,7 +710,25 @@ impl EgressPolicy {
             mode,
             host_loopback: EgressAction::Allow,
             proxy_endpoint: None,
+            ipv6: None,
         })
+    }
+
+    /// Binds the policy to the IPv6 identity of a dual-stack link.
+    ///
+    /// A policy without an IPv6 identity denies every IPv6 frame.
+    pub fn with_ipv6(
+        mut self,
+        guest_ipv6: Ipv6Addr,
+        prefix_length: u8,
+        gateway_ipv6: Ipv6Addr,
+    ) -> Result<Self, InvalidEgressPolicy> {
+        self.ipv6 = Some(EgressIpv6Link::new(
+            guest_ipv6,
+            prefix_length,
+            gateway_ipv6,
+        )?);
+        Ok(self)
     }
 
     /// Applies the host-loopback posture and optional exact proxy exception.
@@ -620,14 +757,17 @@ impl EgressPolicy {
 
     /// Revalidates canonical fields after a serialized policy crosses a boundary.
     pub fn validate(&self) -> Result<(), InvalidEgressPolicy> {
-        let rebound = Self::bind(
+        let mut rebound = Self::bind(
             self.guest_ipv4,
             self.prefix_length,
             self.guest_mac,
             self.gateway_ipv4,
             self.mode.clone(),
-        )?
-        .with_host_loopback(self.host_loopback, self.proxy_endpoint)?;
+        )?;
+        if let Some(link) = self.ipv6 {
+            rebound = rebound.with_ipv6(link.guest(), link.prefix_length(), link.gateway())?;
+        }
+        let rebound = rebound.with_host_loopback(self.host_loopback, self.proxy_endpoint)?;
         if rebound.mode != self.mode {
             return Err(InvalidEgressPolicy::NonCanonicalRules);
         }
@@ -640,6 +780,11 @@ impl EgressPolicy {
     /// Returns the canonical policy mode.
     pub fn mode(&self) -> &EgressPolicyMode {
         &self.mode
+    }
+
+    /// Returns the IPv6 identity of a dual-stack link.
+    pub fn ipv6_link(&self) -> Option<EgressIpv6Link> {
+        self.ipv6
     }
 
     /// Returns the stable manifest name of this policy mode.
@@ -682,7 +827,8 @@ impl EgressPolicy {
         }
     }
 
-    /// Returns whether the gateway DNS proxy is reachable under this policy.
+    /// Returns whether the guest may reach the IPv4 gateway's DNS service
+    /// under this policy.
     pub fn allows_gateway_dns(&self) -> bool {
         match &self.mode {
             EgressPolicyMode::AllowAll => true,
@@ -698,7 +844,7 @@ impl EgressPolicy {
                 .into_iter()
                 .any(|transport| {
                     self.rules_allow_destination(
-                        self.gateway_ipv4,
+                        IpAddr::V4(self.gateway_ipv4),
                         Some(PacketTransport {
                             transport,
                             port: Some(53),
@@ -706,6 +852,32 @@ impl EgressPolicy {
                     )
                 }),
         }
+    }
+
+    /// Returns the gateway address whose DNS service the guest should use:
+    /// the IPv4 gateway when the guest may reach its DNS service, and
+    /// otherwise the IPv6 gateway when the guest may reach that one's. A
+    /// policy that permits DNS over IPv6 alone thus still yields a resolver.
+    pub fn gateway_dns_server(&self) -> Option<IpAddr> {
+        if self.allows_gateway_dns() {
+            return Some(IpAddr::V4(self.gateway_ipv4));
+        }
+        let gateway = IpAddr::V6(self.ipv6?.gateway());
+        let EgressPolicyMode::Rules { .. } = &self.mode else {
+            return None;
+        };
+        [EgressTransport::Tcp, EgressTransport::Udp]
+            .into_iter()
+            .any(|transport| {
+                self.rules_allow_destination(
+                    gateway,
+                    Some(PacketTransport {
+                        transport,
+                        port: Some(53),
+                    }),
+                )
+            })
+            .then_some(gateway)
     }
 
     /// Returns canonical rule counts without exposing destinations.
@@ -721,7 +893,7 @@ impl EgressPolicy {
 
     fn rules_allow_destination(
         &self,
-        destination: Ipv4Addr,
+        destination: IpAddr,
         packet: Option<PacketTransport>,
     ) -> bool {
         let EgressPolicyMode::Rules {
@@ -741,7 +913,11 @@ impl EgressPolicy {
         *default_action == EgressAction::Allow
     }
 
-    fn rules_allow_arp(&self, target: Ipv4Addr) -> bool {
+    /// Returns whether the rules let the guest resolve the link-layer address
+    /// of `target`: the gateway when the rules may permit traffic of the
+    /// target's family, and another neighbor as a destination of every
+    /// protocol.
+    fn rules_allow_neighbor(&self, target: IpAddr, gateway: IpAddr) -> bool {
         let EgressPolicyMode::Rules {
             default_action,
             allow,
@@ -750,8 +926,11 @@ impl EgressPolicy {
         else {
             return false;
         };
-        if target == self.gateway_ipv4 {
-            return *default_action == EgressAction::Allow || !allow.is_empty();
+        if target == gateway {
+            return *default_action == EgressAction::Allow
+                || allow
+                    .iter()
+                    .any(|rule| rule.destination.is_ipv6() == target.is_ipv6());
         }
         if deny
             .iter()
@@ -765,25 +944,57 @@ impl EgressPolicy {
         *default_action == EgressAction::Allow
     }
 
-    fn rules_have_port_restrictions(&self) -> bool {
+    /// Returns whether an IPv4 rule names a port, which IPv4 fragments after
+    /// the first cannot be checked against.
+    fn rules_have_ipv4_port_restrictions(&self) -> bool {
         matches!(
             &self.mode,
             EgressPolicyMode::Rules { allow, deny, .. }
-                if allow.iter().chain(deny).any(|rule| rule.port != 0)
+                if allow
+                    .iter()
+                    .chain(deny)
+                    .any(|rule| rule.port != 0 && !rule.destination.is_ipv6())
         )
     }
 
-    /// Returns stable bytes suitable for a policy digest.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        self.canonical_bytes_v3()
+    /// Returns whether the policy has an IPv6 identity or an IPv6 rule.
+    fn has_ipv6(&self) -> bool {
+        self.ipv6.is_some()
+            || matches!(
+                &self.mode,
+                EgressPolicyMode::Rules { allow, deny, .. }
+                    if allow.iter().chain(deny).any(|rule| rule.destination.is_ipv6())
+            )
     }
 
-    /// Returns canonical bytes for a supported snapshot encoding version.
+    /// Returns the encoding version of [`Self::canonical_bytes`]: the current
+    /// version for a policy with IPv6, and otherwise the previous one, so that
+    /// IPv4 policies keep their digests.
+    pub fn encoding_version(&self) -> u32 {
+        if self.has_ipv6() {
+            EGRESS_POLICY_ENCODING_VERSION
+        } else {
+            IPV4_EGRESS_POLICY_ENCODING_VERSION
+        }
+    }
+
+    /// Returns stable bytes suitable for a policy digest, in the encoding of
+    /// [`Self::encoding_version`].
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.canonical_bytes_for_version(self.encoding_version())
+            .expect("a policy's encoding version represents it")
+    }
+
+    /// Returns canonical bytes for a supported snapshot encoding version, or
+    /// `None` when that version cannot represent the policy's IPv6 identity
+    /// or rules.
     pub fn canonical_bytes_for_version(&self, version: u32) -> Option<Vec<u8>> {
         match version {
+            EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v4()),
+            _ if self.has_ipv6() => None,
             LEGACY_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v1()),
             PREVIOUS_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v2()),
-            EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v3()),
+            IPV4_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v3()),
             _ => None,
         }
     }
@@ -793,18 +1004,20 @@ impl EgressPolicy {
         bytes.push(LEGACY_EGRESS_POLICY_ENCODING_VERSION as u8);
         bytes.extend_from_slice(&self.guest_ipv4.octets());
         bytes.extend_from_slice(&self.gateway_ipv4.octets());
-        append_policy_mode(&mut bytes, &self.mode);
+        append_policy_mode(&mut bytes, &self.mode, false);
         bytes
     }
 
     fn canonical_bytes_v2(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.push(EGRESS_POLICY_ENCODING_VERSION as u8);
+        // Version 2 bytes begin with the version 3 marker, as version 3 bytes
+        // do.
+        bytes.push(IPV4_EGRESS_POLICY_ENCODING_VERSION as u8);
         bytes.extend_from_slice(&self.guest_ipv4.octets());
         bytes.push(self.prefix_length);
         bytes.extend_from_slice(&self.guest_mac.to_bytes());
         bytes.extend_from_slice(&self.gateway_ipv4.octets());
-        append_policy_mode(&mut bytes, &self.mode);
+        append_policy_mode(&mut bytes, &self.mode, false);
         bytes.push(0xff);
         bytes.extend_from_slice(&(self.next_hops.len() as u64).to_be_bytes());
         for next_hop in &self.next_hops {
@@ -815,7 +1028,38 @@ impl EgressPolicy {
 
     fn canonical_bytes_v3(&self) -> Vec<u8> {
         let mut bytes = self.canonical_bytes_v2();
-        bytes[0] = EGRESS_POLICY_ENCODING_VERSION as u8;
+        self.append_host_loopback(&mut bytes);
+        bytes
+    }
+
+    /// Encodes the version 3 fields with every rule tagged by its address
+    /// family, followed by the IPv6 identity.
+    fn canonical_bytes_v4(&self) -> Vec<u8> {
+        let mut bytes = vec![EGRESS_POLICY_ENCODING_VERSION as u8];
+        bytes.extend_from_slice(&self.guest_ipv4.octets());
+        bytes.push(self.prefix_length);
+        bytes.extend_from_slice(&self.guest_mac.to_bytes());
+        bytes.extend_from_slice(&self.gateway_ipv4.octets());
+        append_policy_mode(&mut bytes, &self.mode, true);
+        bytes.push(0xff);
+        bytes.extend_from_slice(&(self.next_hops.len() as u64).to_be_bytes());
+        for next_hop in &self.next_hops {
+            bytes.extend_from_slice(&next_hop.octets());
+        }
+        self.append_host_loopback(&mut bytes);
+        match self.ipv6 {
+            Some(link) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&link.guest().octets());
+                bytes.push(link.prefix_length());
+                bytes.extend_from_slice(&link.gateway().octets());
+            }
+            None => bytes.push(0),
+        }
+        bytes
+    }
+
+    fn append_host_loopback(&self, bytes: &mut Vec<u8>) {
         bytes.push(match self.host_loopback {
             EgressAction::Allow => 0,
             EgressAction::Deny => 1,
@@ -827,7 +1071,6 @@ impl EgressPolicy {
         } else {
             bytes.push(0);
         }
-        bytes
     }
 
     /// Validates and authorizes an Ethernet frame before backend submission.
@@ -864,6 +1107,7 @@ impl EgressPolicy {
         match ether_type {
             0x0806 => self.authorize_arp(frame_prefix, frame_length, l3_offset),
             0x0800 => self.authorize_ipv4(frame_prefix, frame_length, l3_offset),
+            ipv6::ETHER_TYPE_IPV6 => self.authorize_ipv6(frame_prefix, frame_length, l3_offset),
             other => Err(EgressDenied::UnsupportedEtherType(other)),
         }
     }
@@ -896,7 +1140,9 @@ impl EgressPolicy {
         if sender_hardware != self.guest_mac.to_bytes()
             || sender != self.guest_ipv4
             || !(match &self.mode {
-                EgressPolicyMode::Rules { .. } => self.rules_allow_arp(target),
+                EgressPolicyMode::Rules { .. } => {
+                    self.rules_allow_neighbor(IpAddr::V4(target), IpAddr::V4(self.gateway_ipv4))
+                }
                 _ => self.next_hops.contains(&target),
             })
             || (!broadcast_request && !unicast_refresh)
@@ -1019,9 +1265,9 @@ impl EgressPolicy {
                     header_length,
                     total_length,
                     fragments,
-                    self.rules_have_port_restrictions(),
+                    self.rules_have_ipv4_port_restrictions(),
                 )?;
-                if self.rules_allow_destination(destination, packet) {
+                if self.rules_allow_destination(IpAddr::V4(destination), packet) {
                     Ok(())
                 } else {
                     Err(EgressDenied::DestinationDenied)
@@ -1052,15 +1298,15 @@ pub enum EgressDenied {
     /// ARP was not a canonical request for an authorized next hop.
     #[error("ARP request does not resolve an authorized next hop")]
     ArpDenied,
-    /// The packet tried to spoof another source IPv4 address.
-    #[error("IPv4 source does not match the configured guest")]
+    /// The packet tried to spoof another source address.
+    #[error("IP source does not match the configured guest")]
     SourceAddressDenied,
     /// IPv4 options are not supported because source routing can change the
     /// effective destination after policy evaluation.
     #[error("IPv4 options are denied by policy")]
     Ipv4OptionsDenied,
-    /// An allow-list or block-list denied the destination.
-    #[error("IPv4 destination is denied")]
+    /// An allow-list, block-list, or rule denied the destination.
+    #[error("IP destination is denied")]
     DestinationDenied,
     /// Exact endpoint mode denied the protocol, address, or TCP port.
     #[error("traffic does not match an allowed TCP endpoint")]
@@ -1068,6 +1314,19 @@ pub enum EgressDenied {
     /// Port-specific rules cannot safely authorize fragmented transport headers.
     #[error("IPv4 fragments are denied by port-specific egress policy")]
     FragmentDenied,
+    /// IPv6 extension headers are not supported because they can hide the
+    /// transport header, fragment the packet, or, as a routing header, change
+    /// the effective destination after policy evaluation.
+    #[error("IPv6 extension headers are denied by policy")]
+    Ipv6ExtensionHeaderDenied,
+    /// An IPv4-mapped IPv6 destination would reach an IPv4 host outside the
+    /// IPv4 rules.
+    #[error("IPv4-mapped IPv6 destinations are denied by policy")]
+    Ipv4MappedDestinationDenied,
+    /// Neighbor Discovery was not a canonical solicitation of an authorized
+    /// neighbor.
+    #[error("Neighbor Discovery does not resolve an authorized neighbor")]
+    NeighborDiscoveryDenied,
 }
 
 fn prefix_mask(prefix_length: u8) -> u32 {
@@ -1114,7 +1373,10 @@ fn invalid_special_endpoint_address(
     }
 }
 
-fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode) {
+/// Appends the canonical encoding of `mode`. With `tagged_rules`, each rule
+/// begins with its address family, which encodings that predate IPv6 rules
+/// omit.
+fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode, tagged_rules: bool) {
     match mode {
         EgressPolicyMode::AllowAll => bytes.push(0),
         EgressPolicyMode::DenyAll => bytes.push(4),
@@ -1146,8 +1408,8 @@ fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode) {
                 EgressAction::Allow => 0,
                 EgressAction::Deny => 1,
             });
-            append_rules(bytes, allow);
-            append_rules(bytes, deny);
+            append_rules(bytes, allow, tagged_rules);
+            append_rules(bytes, deny, tagged_rules);
         }
     }
 }
@@ -1162,14 +1424,27 @@ fn append_cidrs(bytes: &mut Vec<u8>, rules: &[Ipv4Cidr]) {
     }
 }
 
-fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule]) {
+fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule], tagged: bool) {
     let mut rules = rules.to_vec();
     rules.sort_unstable();
     rules.dedup();
     bytes.extend_from_slice(&(rules.len() as u64).to_be_bytes());
     for rule in rules {
-        bytes.extend_from_slice(&rule.destination.network.octets());
-        bytes.push(rule.destination.prefix_length);
+        match rule.destination {
+            EgressDestination::Ipv4(network) => {
+                if tagged {
+                    bytes.push(4);
+                }
+                bytes.extend_from_slice(&network.network.octets());
+                bytes.push(network.prefix_length);
+            }
+            EgressDestination::Ipv6(network) => {
+                assert!(tagged, "only tagged encodings represent IPv6 rules");
+                bytes.push(6);
+                bytes.extend_from_slice(&network.network().octets());
+                bytes.push(network.prefix_length());
+            }
+        }
         // A range of TCP or UDP ports encodes as transport 4 or 5 and appends
         // its last port, so it differs from every other rule while their
         // encodings stay unchanged.
