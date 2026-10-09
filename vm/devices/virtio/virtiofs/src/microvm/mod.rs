@@ -3,6 +3,8 @@
 
 //! microVM-specific virtio-fs profile, policy, persistence, and device support.
 
+#[cfg(test)]
+mod aggregate_fs_tests;
 pub(crate) mod device;
 pub(crate) mod file;
 pub(crate) mod fs;
