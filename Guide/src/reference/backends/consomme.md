@@ -47,6 +47,18 @@ and Windows/WHP. It provides gateway DNS over UDP and TCP, ICMP echo, and
 outbound TCP/UDP subject to the microVM egress policy. IPv4 fragments are
 rejected deterministically. `--net-tap` is incompatible.
 
+The NIC is dual-stack. Its static IPv6 identity embeds the IPv4 identity in
+`fd00::/96`, so `--net 10.0.0.2/24` gives the guest `fd00::a00:2/120` and the
+gateway `fd00::a00:1`, which shares the IPv4 gateway's MAC address. The
+gateway answers Neighbor Discovery for its subnet and echo requests to its
+address, serves DNS at its address, and maps to host IPv6 loopback like the
+IPv4 gateway maps to host IPv4 loopback. Consomme handles the static IPv6
+identity whether or not the host has a routable IPv6 address, so other IPv6
+destinations need IPv6 connectivity on the host. ICMPv6 other than Neighbor
+Discovery and echo requests to the gateway is not relayed, and IPv6 packets
+to IPv4-mapped destinations are rejected because a dual-stack host socket
+would reach the embedded IPv4 host.
+
 The portable profile accepts directional network defaults through
 `--network-egress <allow|deny>` and `--network-ingress <allow|deny>`. It
 supports both egress actions and ingress `deny`. Stateful replies to an
@@ -54,13 +66,17 @@ allowed guest-initiated flow are not treated as new inbound connections.
 Ingress `allow` is rejected before VM resources are opened because portable
 NAT does not expose arbitrary guest listeners.
 
-The generic egress rule form accepts destination IPv4 addresses or CIDRs,
-optionally restricted to TCP, UDP, or ICMP, and for TCP or UDP optionally to
-one destination port or to an inclusive range of them. Deny rules take
-precedence over allow rules, and the explicit directional default handles
-traffic that matches neither list. Filtering and malformed-packet rejection
-occur before Consomme creates a host socket. Port-specific policies reject IPv4
-fragments rather than allowing later fragments to bypass transport checks.
+The generic egress rule form accepts destination IPv4 or IPv6 addresses or
+CIDRs, optionally restricted to TCP, UDP, or ICMP, and for TCP or UDP
+optionally to one destination port or to an inclusive range of them. Each rule
+matches only its own address family, and the directional default applies to
+both. Deny rules take precedence over allow rules, and the explicit directional
+default handles traffic that matches neither list. Filtering and
+malformed-packet rejection occur before Consomme creates a host socket.
+Port-specific policies reject IPv4 fragments rather than allowing later
+fragments to bypass transport checks, and rule policies reject IPv6 extension
+headers, including fragments. The legacy `--allow-host`, `--block-host`, and
+`--allow-endpoint` forms are IPv4 policies that deny all IPv6.
 
 The portable profile does not provide generic bidirectional host-loopback
 connectivity. Explicit `--host-loopback allow` without any

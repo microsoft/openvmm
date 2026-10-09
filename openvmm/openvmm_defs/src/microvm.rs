@@ -289,6 +289,49 @@ pub struct MicrovmNetworkConfig {
     pub derived_gateway_ipv4: std::net::Ipv4Addr,
     pub guest_mac: MacAddress,
     pub gateway_mac: MacAddress,
+    /// IPv6 identity of the dual-stack NIC, derived from the IPv4 identity.
+    /// A snapshot whose network predates IPv6 restores without one.
+    pub ipv6: Option<MicrovmIpv6Config>,
+}
+
+/// Unique local prefix that embeds a microVM's IPv4 identity in its IPv6
+/// identity: the IPv4 address forms the last 32 bits of the IPv6 address.
+pub const MICROVM_IPV6_PREFIX: std::net::Ipv6Addr =
+    std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0);
+
+/// Length of [`MICROVM_IPV6_PREFIX`].
+pub const MICROVM_IPV6_PREFIX_LENGTH: u8 = 96;
+
+/// IPv6 identity of a dual-stack microVM NIC.
+///
+/// The guest and gateway addresses embed their IPv4 addresses in
+/// [`MICROVM_IPV6_PREFIX`], and the subnet is the IPv4 subnet in the same
+/// prefix, so `10.0.0.2/24` with gateway `10.0.0.1` becomes `fd00::a00:2/120`
+/// with gateway `fd00::a00:1`.
+#[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MicrovmIpv6Config {
+    pub guest_ipv6: std::net::Ipv6Addr,
+    pub prefix_length: u8,
+    pub derived_gateway_ipv6: std::net::Ipv6Addr,
+}
+
+impl MicrovmIpv6Config {
+    fn embedding(
+        guest_ipv4: std::net::Ipv4Addr,
+        prefix_length: u8,
+        gateway_ipv4: std::net::Ipv4Addr,
+    ) -> Self {
+        let embed = |address: std::net::Ipv4Addr| {
+            std::net::Ipv6Addr::from(
+                u128::from(MICROVM_IPV6_PREFIX) | u128::from(address.to_bits()),
+            )
+        };
+        Self {
+            guest_ipv6: embed(guest_ipv4),
+            prefix_length: MICROVM_IPV6_PREFIX_LENGTH + prefix_length,
+            derived_gateway_ipv6: embed(gateway_ipv4),
+        }
+    }
 }
 
 /// Required host-network implementation contract for a microVM NIC.
@@ -679,24 +722,71 @@ impl MicrovmNetworkConfig {
         std::net::Ipv4Addr::from(u32::MAX << (32 - self.prefix_length))
     }
 
-    /// Returns the pinned NVX guest-bootstrap command-line tokens.
-    pub fn command_line_fragment(&self) -> String {
-        self.command_line_fragment_with_dns(false)
+    /// Returns whether `address` is one of this identity's gateway addresses.
+    pub fn is_gateway(&self, address: std::net::IpAddr) -> bool {
+        match address {
+            std::net::IpAddr::V4(address) => address == self.derived_gateway_ipv4,
+            std::net::IpAddr::V6(address) => self
+                .ipv6
+                .is_some_and(|ipv6| address == ipv6.derived_gateway_ipv6),
+        }
     }
 
-    /// Returns the pinned bootstrap tokens, optionally including gateway DNS.
-    pub fn command_line_fragment_with_dns(&self, gateway_dns: bool) -> String {
-        let dns = if gateway_dns {
-            format!(" virtnet_dns={}", self.derived_gateway_ipv4)
-        } else {
-            String::new()
-        };
+    /// Returns this identity without its IPv6 identity, as a snapshot whose
+    /// network predates IPv6 records it.
+    pub fn without_ipv6(mut self) -> Self {
+        self.ipv6 = None;
+        self
+    }
+
+    /// Binds `mode` to this identity: the IPv4 identity and, on a dual-stack
+    /// NIC, the IPv6 identity.
+    pub fn bind_egress_policy(
+        &self,
+        mode: net_backend_resources::egress::EgressPolicyMode,
+    ) -> Result<
+        net_backend_resources::egress::EgressPolicy,
+        net_backend_resources::egress::InvalidEgressPolicy,
+    > {
+        let policy = net_backend_resources::egress::EgressPolicy::bind(
+            self.guest_ipv4,
+            self.prefix_length,
+            self.guest_mac,
+            self.derived_gateway_ipv4,
+            mode,
+        )?;
+        match self.ipv6 {
+            Some(ipv6) => policy.with_ipv6(
+                ipv6.guest_ipv6,
+                ipv6.prefix_length,
+                ipv6.derived_gateway_ipv6,
+            ),
+            None => Ok(policy),
+        }
+    }
+
+    /// Returns the pinned NVX guest-bootstrap command-line tokens.
+    pub fn command_line_fragment(&self) -> String {
+        self.command_line_fragment_with_dns(None)
+    }
+
+    /// Returns the pinned bootstrap tokens, naming `gateway_dns`, one of this
+    /// identity's gateway addresses, as the guest's DNS server.
+    pub fn command_line_fragment_with_dns(&self, gateway_dns: Option<std::net::IpAddr>) -> String {
+        let dns = gateway_dns.map_or_else(String::new, |server| format!(" virtnet_dns={server}"));
+        let ipv6 = self.ipv6.map_or_else(String::new, |ipv6| {
+            format!(
+                " virtnet_ip6={}/{} virtnet_gw6={}",
+                ipv6.guest_ipv6, ipv6.prefix_length, ipv6.derived_gateway_ipv6
+            )
+        });
         format!(
-            "virtnet_ip={} virtnet_mask={} virtnet_gw={}{}",
+            "virtnet_ip={} virtnet_mask={} virtnet_gw={}{}{}",
             self.guest_ipv4,
             self.netmask(),
             self.derived_gateway_ipv4,
             dns,
+            ipv6,
         )
     }
 
@@ -766,6 +856,11 @@ impl std::str::FromStr for MicrovmNetworkConfig {
             derived_gateway_ipv4,
             guest_mac: Self::derive_mac(guest_ipv4),
             gateway_mac: Self::derive_mac(derived_gateway_ipv4),
+            ipv6: Some(MicrovmIpv6Config::embedding(
+                guest_ipv4,
+                prefix_length,
+                derived_gateway_ipv4,
+            )),
         })
     }
 }
@@ -896,10 +991,12 @@ pub fn microvm_filesystem_slot_count(first_slot: bool, attached: usize) -> anyho
 ///
 /// `filesystem_slot` reserves the first virtio-fs slot, and `filesystems`
 /// occupy the virtio-fs slots in order. A virtio-fs slot after the first is
-/// discovered only with a filesystem attached.
+/// discovered only with a filesystem attached. `network` carries the NIC's
+/// identity, its interrupt, and the gateway address, if any, that the guest
+/// names as its DNS server.
 pub fn append_microvm_virtio_discovery(
     cmdline: &mut String,
-    network: Option<(&MicrovmNetworkConfig, u32, bool)>,
+    network: Option<(&MicrovmNetworkConfig, u32, Option<std::net::IpAddr>)>,
     filesystem_slot: bool,
     filesystems: &[MicrovmFilesystemConfig],
     has_console: bool,
@@ -1017,6 +1114,36 @@ fn validate_microvm_filesystem_devices(config: &Config) -> anyhow::Result<usize>
     Ok(filesystem_count)
 }
 
+/// Returns the DNS server that the command line's `virtnet_dns=` token names,
+/// which must be one of `network`'s gateway addresses, spelled canonically.
+fn microvm_command_line_dns_server(
+    network: Option<&MicrovmNetworkConfig>,
+    tokens: &[&str],
+) -> anyhow::Result<Option<std::net::IpAddr>> {
+    let dns_tokens = tokens
+        .iter()
+        .filter_map(|token| token.strip_prefix("virtnet_dns="))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        dns_tokens.len() <= 1,
+        "microVM command line has an invalid number of virtnet_dns= tokens"
+    );
+    let Some(dns) = dns_tokens.first() else {
+        return Ok(None);
+    };
+    let network =
+        network.ok_or_else(|| anyhow::anyhow!("microVM DNS bootstrap requires virtio-net"))?;
+    let server = dns
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|server| network.is_gateway(*server) && server.to_string() == *dns);
+    anyhow::ensure!(
+        server.is_some(),
+        "microVM DNS bootstrap does not match the portable gateway"
+    );
+    Ok(server)
+}
+
 fn validate_microvm_command_line(
     config: &Config,
     hypervisor_id: Option<&str>,
@@ -1095,6 +1222,8 @@ fn validate_microvm_command_line(
         "virtnet_ip=",
         "virtnet_mask=",
         "virtnet_gw=",
+        "virtnet_ip6=",
+        "virtnet_gw6=",
         "virtfs_dir=",
         "virtfs_tag=",
         "virtfs_mode=",
@@ -1113,6 +1242,13 @@ fn validate_microvm_command_line(
         let expected = match prefix {
             "virtio_mmio.device=" => config.virtio_devices.len(),
             "virtnet_ip=" | "virtnet_mask=" | "virtnet_gw=" => usize::from(has_network),
+            "virtnet_ip6=" | "virtnet_gw6=" => usize::from(
+                config
+                    .microvm
+                    .network
+                    .as_ref()
+                    .is_some_and(|network| network.ipv6.is_some()),
+            ),
             "virtfs_dir=" | "virtfs_tag=" | "virtfs_mode=" => {
                 if config.microvm.filesystem_bootstrap {
                     config.microvm.filesystems.len()
@@ -1127,26 +1263,7 @@ fn validate_microvm_command_line(
             "microVM command line has an invalid number of {prefix} tokens"
         );
     }
-    let dns_tokens = tokens
-        .iter()
-        .filter(|token| token.starts_with("virtnet_dns="))
-        .copied()
-        .collect::<Vec<_>>();
-    anyhow::ensure!(
-        dns_tokens.len() <= 1,
-        "microVM command line has an invalid number of virtnet_dns= tokens"
-    );
-    if let Some(dns) = dns_tokens.first() {
-        let network = config
-            .microvm
-            .network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("microVM DNS bootstrap requires virtio-net"))?;
-        anyhow::ensure!(
-            **dns == format!("virtnet_dns={}", network.derived_gateway_ipv4),
-            "microVM DNS bootstrap does not match the portable gateway"
-        );
-    }
+    let dns_server = microvm_command_line_dns_server(config.microvm.network.as_ref(), &tokens)?;
     let mut expected_discovery = Vec::new();
     if has_network {
         let irq = microvm_virtio_net_irq(hypervisor_id)?;
@@ -1185,7 +1302,7 @@ fn validate_microvm_command_line(
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
             network
-                .command_line_fragment_with_dns(!dns_tokens.is_empty())
+                .command_line_fragment_with_dns(dns_server)
                 .split_ascii_whitespace()
                 .map(str::to_owned),
         );
@@ -1343,6 +1460,8 @@ fn build_microvm_command_line_inner(
                 "virtnet_mask=",
                 "virtnet_gw=",
                 "virtnet_dns=",
+                "virtnet_ip6=",
+                "virtnet_gw6=",
                 "virtfs_dir=",
                 "virtfs_tag=",
                 "virtfs_mode=",
@@ -1889,6 +2008,122 @@ mod tests {
     }
 
     #[test]
+    fn microvm_network_identity_embeds_ipv4_in_its_ipv6_identity() {
+        for (spec, guest, prefix_length, gateway) in [
+            ("10.0.0.2/24", "fd00::a00:2", 120, "fd00::a00:1"),
+            ("192.168.5.37/28", "fd00::c0a8:525", 124, "fd00::c0a8:521"),
+            ("172.16.0.9/12", "fd00::ac10:9", 108, "fd00::ac10:1"),
+        ] {
+            let network: MicrovmNetworkConfig = spec.parse().unwrap();
+            assert_eq!(
+                network.ipv6,
+                Some(MicrovmIpv6Config {
+                    guest_ipv6: guest.parse().unwrap(),
+                    prefix_length,
+                    derived_gateway_ipv6: gateway.parse().unwrap(),
+                }),
+                "{spec}"
+            );
+            assert!(
+                network.command_line_fragment().ends_with(&format!(
+                    " virtnet_ip6={guest}/{prefix_length} virtnet_gw6={gateway}"
+                )),
+                "{spec}"
+            );
+            let policy = network
+                .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::AllowAll)
+                .unwrap();
+            let link = policy.ipv6_link().unwrap();
+            assert_eq!(
+                (link.guest(), link.prefix_length(), link.gateway()),
+                (
+                    guest.parse().unwrap(),
+                    prefix_length,
+                    gateway.parse().unwrap()
+                )
+            );
+
+            let ipv4_only = network.without_ipv6();
+            assert_eq!(ipv4_only.ipv6, None);
+            assert!(!ipv4_only.command_line_fragment().contains("virtnet_ip6="));
+            assert!(
+                ipv4_only
+                    .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::AllowAll)
+                    .unwrap()
+                    .ipv6_link()
+                    .is_none()
+            );
+        }
+        for reserved in ["virtnet_ip6=fd00::2/120", "virtnet_gw6=fd00::1"] {
+            assert!(build_microvm_command_line(&[reserved.to_owned()], false).is_err());
+        }
+    }
+
+    #[test]
+    fn microvm_dns_bootstrap_names_either_gateway_canonically() {
+        use net_backend_resources::egress::EgressAction;
+        use net_backend_resources::egress::EgressPolicyMode;
+
+        let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let ipv4: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        let ipv6: std::net::IpAddr = "fd00::a00:1".parse().unwrap();
+        assert!(network.is_gateway(ipv4) && network.is_gateway(ipv6));
+        assert!(!network.is_gateway("10.0.0.2".parse().unwrap()));
+        assert!(!network.is_gateway("fd00::a00:2".parse().unwrap()));
+
+        // A policy that permits DNS over IPv6 alone names the IPv6 gateway.
+        let policy = |allow: &str| {
+            network
+                .bind_egress_policy(EgressPolicyMode::Rules {
+                    default_action: EgressAction::Deny,
+                    allow: vec![allow.parse().unwrap()],
+                    deny: Vec::new(),
+                })
+                .unwrap()
+                .gateway_dns_server()
+        };
+        assert_eq!(policy("10.0.0.1:udp:53"), Some(ipv4));
+        assert_eq!(policy("fd00::a00:1:udp:53"), Some(ipv6));
+        assert_eq!(policy("fd00::a00:1:tcp:443"), None);
+
+        for (server, dns) in [
+            (ipv4, "virtnet_dns=10.0.0.1"),
+            (ipv6, "virtnet_dns=fd00::a00:1"),
+        ] {
+            let fragment = network.command_line_fragment_with_dns(Some(server));
+            let tokens = fragment.split_ascii_whitespace().collect::<Vec<_>>();
+            assert!(tokens.contains(&dns), "{fragment}");
+            assert_eq!(
+                microvm_command_line_dns_server(Some(&network), &tokens).unwrap(),
+                Some(server)
+            );
+        }
+        assert_eq!(
+            microvm_command_line_dns_server(Some(&network), &[]).unwrap(),
+            None
+        );
+
+        let ipv4_only = network.clone().without_ipv6();
+        for (network, tokens) in [
+            (Some(&network), &["virtnet_dns=fd00::a00:2"][..]),
+            (Some(&network), &["virtnet_dns=fd00:0::a00:1"]),
+            (Some(&network), &["virtnet_dns=010.0.0.1"]),
+            (Some(&network), &["virtnet_dns=10.0.0.1,fd00::a00:1"]),
+            (Some(&ipv4_only), &["virtnet_dns=fd00::a00:1"]),
+            (
+                Some(&network),
+                &["virtnet_dns=10.0.0.1", "virtnet_dns=fd00::a00:1"],
+            ),
+            (None, &["virtnet_dns=10.0.0.1"]),
+        ] {
+            assert!(
+                microvm_command_line_dns_server(network, tokens).is_err(),
+                "{tokens:?}"
+            );
+        }
+    }
+
+    #[test]
     fn microvm_sandbox_block_slots_are_stable() {
         let blocks = [
             MicrovmSandboxBlockConfig {
@@ -2221,7 +2456,7 @@ mod tests {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
         append_microvm_virtio_discovery(
             &mut cmdline,
-            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, false)),
+            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None)),
             true,
             &filesystems,
             true,
@@ -2240,6 +2475,7 @@ mod tests {
                  {MICROVM_CONTROL_TTY_COMMAND_LINE} \
                  virtio_mmio.device=0x1000@0xd0008000:13 \
                  virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 \
+                 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1 \
                  virtfs_dir=/workspace virtfs_tag=microvm virtfs_mode=rw \
                  virtfs_dir=/opt/hostedtoolcache virtfs_tag=microvm1 virtfs_mode=ro"
             )

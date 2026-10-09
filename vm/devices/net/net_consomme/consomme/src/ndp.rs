@@ -332,16 +332,24 @@ impl<T: Client> Access<'_, T> {
 
         // For any addresses in the subnet given to the guest, provide the gateway MAC address.
         // This is the standard mechanism to indicate all traffic flows through the gateway, even
-        // local subnet traffic.
-        if !is_same_ipv6_subnet(
-            self.inner.state.params.gateway_link_local_ipv6,
-            target_addr,
-            self.inner.state.params.prefix_len_ipv6,
-        ) {
+        // local subnet traffic. A static IPv6 identity's subnet is on link, as is the gateway's
+        // link-local address.
+        let params = &self.inner.state.params;
+        let on_link = if params.gateway_ipv6.is_some() {
+            target_addr == params.gateway_link_local_ipv6
+                || crate::static_ipv6::is_static_ipv6_neighbor(params, target_addr)
+        } else {
+            is_same_ipv6_subnet(
+                params.gateway_link_local_ipv6,
+                target_addr,
+                params.prefix_len_ipv6,
+            )
+        };
+        if !on_link {
             tracing::debug!(
                 target_addr = %target_addr,
-                gateway = %self.inner.state.params.gateway_link_local_ipv6,
-                prefix_len = %self.inner.state.params.prefix_len_ipv6,
+                gateway = %params.gateway_link_local_ipv6,
+                prefix_len = %params.prefix_len_ipv6,
                 "NS target is not local, ignoring"
             );
             return Ok(());

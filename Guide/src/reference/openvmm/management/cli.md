@@ -99,6 +99,15 @@ describes the source definitions.
   requires the only supported capability profile, `--network-profile portable`;
   omitting it rejects the command before OpenVMM opens host resources.
 
+  The NIC is dual-stack. Its IPv6 identity embeds the IPv4 identity in the
+  unique local prefix `fd00::/96`: `10.0.0.2/24` gives the guest
+  `fd00::a00:2/120` and the gateway `fd00::a00:1`. The guest receives it as
+  `virtnet_ip6=` and `virtnet_gw6=` beside the IPv4 `virtnet_*` tokens, and
+  configures it statically without router discovery. The guest names the IPv4
+  gateway as its DNS server through `virtnet_dns=` when the egress policy
+  permits DNS to it over TCP or UDP, and otherwise the IPv6 gateway when the
+  policy permits DNS to that one.
+
   ```bash
   openvmm --machine microvm --hypervisor whp \
     --kernel vmlinux --initrd initramfs.cpio.gz \
@@ -109,9 +118,13 @@ describes the source definitions.
   and Windows/WHP. It needs no TAP, root access, driver, or host network
   configuration. `--net-tap` is incompatible and is rejected before any
   endpoint or host resource is created. The gateway provides DNS over UDP and
-  TCP, ICMP echo, and outbound TCP/UDP through ordinary host sockets. Consomme
-  rejects IPv4 fragments deterministically; policy filtering remains before
-  host socket creation. Its per-connection TCP buffers start at 16 KiB and
+  TCP, ICMP echo, and outbound TCP/UDP through ordinary host sockets, over IPv4
+  and IPv6. The IPv6 gateway answers Neighbor Discovery and echo requests
+  itself; ICMPv6 to other destinations is not relayed, and IPv6 destinations
+  other than the gateway need IPv6 connectivity on the host. Consomme rejects
+  IPv4 fragments deterministically and never relays IPv4-mapped IPv6
+  destinations; policy filtering remains before host socket creation. Its
+  per-connection TCP buffers start at 16 KiB and
   are bounded at 4 MiB; UDP bindings expire after five minutes; and at most
   256 DNS requests are pending at once. At most 128 TCP, 256 UDP, and 16 ICMP
   guest flows are active at once; excess flows are deterministically rejected
@@ -120,7 +133,8 @@ describes the source definitions.
   `--allow-host <IPv4[/PREFIX]>`, `--block-host <IPv4[/PREFIX]>`, and
   `--allow-endpoint <IPv4:TCP-PORT>` are repeatable, mutually exclusive
   egress modes. Filtering runs before host socket creation. Active policy
-  fails closed for malformed packets, non-IPv4 traffic, and IPv4 options.
+  fails closed for malformed packets, non-IPv4 traffic, including all IPv6,
+  and IPv4 options.
   Exact endpoint mode also rejects UDP, ICMP, VLAN, fragments, and every TCP
   destination not listed. Endpoint addresses must be usable unicast identities;
   unspecified, current-network, loopback, link-local, multicast, reserved,
@@ -135,9 +149,10 @@ describes the source definitions.
   directional network default actions onto the portable profile. Egress defaults
   to `allow`; ingress defaults to `deny`, preserving the profile's existing
   behavior when neither option is present. Egress `deny` without allow rules
-  blocks every guest-originated frame before Consomme opens a host socket.
-  Responses belonging to a guest-initiated flow remain permitted when ingress
-  is denied; unsolicited connections toward the guest remain unavailable.
+  blocks every guest-originated IPv4 and IPv6 frame before Consomme opens a
+  host socket. Responses belonging to a guest-initiated flow remain permitted
+  when ingress is denied; unsolicited connections toward the guest remain
+  unavailable.
 
   The portable profile cannot truthfully provide unrestricted inbound
   connectivity, so `--network-ingress allow` is rejected before VM resources
@@ -146,22 +161,31 @@ describes the source definitions.
   rule combinations are rejected at the same validation boundary.
 
   `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
-  the generic L3/L4 policy form. A rule is `IPv4[/PREFIX]`, which matches
-  every IPv4 protocol; `IPv4[/PREFIX]:tcp` or `IPv4[/PREFIX]:udp`, which match
-  every destination port of one protocol; `IPv4[/PREFIX]:icmp`, which matches
-  every ICMP message; `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`,
-  which match one TCP or UDP destination port; or
-  `IPv4[/PREFIX]:tcp:FIRST-LAST` / `IPv4[/PREFIX]:udp:FIRST-LAST`, which match
-  the inclusive range of TCP or UDP destination ports from `FIRST` through
-  `LAST`. Ports are `1` through `65535`, and a range whose `LAST` is below its
-  `FIRST` is rejected. ICMP rules take no port. These flags require an
-  explicit `--network-egress` default, accept at most 256 rules in each list,
+  the generic L3/L4 policy form. A rule names a `CIDR`, an IPv4 or IPv6
+  address with an optional `/PREFIX`, such as `192.0.2.0/24`,
+  `2001:db8:1::/64`, or the wildcards `0.0.0.0/0` and `::/0`. A rule is
+  `CIDR`, which matches every protocol; `CIDR:tcp` or `CIDR:udp`, which match
+  every destination port of one protocol; `CIDR:icmp`, which matches every
+  ICMP message, or for an IPv6 network every ICMPv6 message;
+  `CIDR:tcp:PORT` / `CIDR:udp:PORT`, which match one TCP or UDP destination
+  port, as in `2001:db8:1::/64:tcp:443`; or `CIDR:tcp:FIRST-LAST` /
+  `CIDR:udp:FIRST-LAST`, which match the inclusive range of TCP or UDP
+  destination ports from `FIRST` through `LAST`. Ports are `1` through
+  `65535`, and a range whose `LAST` is below its `FIRST` is rejected. ICMP
+  rules take no port. Each rule matches only packets of its own address
+  family, while the `--network-egress` default applies to both. These flags
+  require an explicit `--network-egress` default, accept at most 256 rules in
+  each list,
   and cannot be mixed with the legacy `--allow-host`, `--block-host`, or
   `--allow-endpoint` forms. Deny rules are evaluated before allow rules.
-  Address-only rules apply to every IPv4 protocol, and protocol rules apply to
-  every fragment of their protocol; policies with a port-specific rule reject
-  fragmented IPv4 traffic because later fragments do not carry a verifiable
-  transport header. Parsing, canonicalization, and contradictory option checks
+  Address-only rules apply to every protocol, and IPv4 protocol rules apply to
+  every fragment of their protocol; policies with a port-specific IPv4 rule
+  reject fragmented IPv4 traffic because later fragments do not carry a
+  verifiable transport header. IPv6 packets with extension headers, including
+  fragments, and IPv6 packets to IPv4-mapped destinations are rejected. The
+  guest may resolve the IPv6 gateway with Neighbor Discovery when the policy
+  may permit IPv6, and other on-link neighbors as the rules permit them, as for
+  ARP. Parsing, canonicalization, and contradictory option checks
   complete before VM resources are opened.
 
   `--host-loopback <allow|deny>` controls host-local access. The portable
@@ -170,15 +194,16 @@ describes the source definitions.
   resources are opened. With deliberate forwards, `allow` preserves
   guest-to-host access subject to egress policy and publishes only the named
   host-to-guest ports. Omitting the option preserves the existing
-  guest-gateway-to-host-loopback mapping without publishing guest ports.
-  `deny` blocks general gateway and host-local destinations and rejects every
-  `--host-loopback-forward`.
+  guest-gateway-to-host-loopback mapping, from the IPv4 gateway to host IPv4
+  loopback and from the IPv6 gateway to host IPv6 loopback, without publishing
+  guest ports. `deny` blocks general gateway and host-local destinations and
+  rejects every `--host-loopback-forward`.
 
   `--network-proxy <IPv4:TCP-PORT>` preserves one exact proxy endpoint when
   host loopback is denied. The guest-visible address must equal the derived
-  gateway, and only that TCP port is translated to host loopback. UDP on the
-  same port is not exempt, even with ordinary egress allowed. The exception is
-  included in the snapshot policy digest.
+  IPv4 gateway, and only that TCP port is translated to host loopback. UDP on
+  the same port and the IPv6 gateway are not exempt, even with ordinary egress
+  allowed. The exception is included in the snapshot policy digest.
 
   `--host-loopback-forward <tcp|udp:HOST-PORT:GUEST-PORT>` binds one localhost
   port and forwards it into the guest. It requires explicit
@@ -193,8 +218,10 @@ describes the source definitions.
   descriptors, and recreate a fresh Consomme endpoint generation on restore.
   Restore of a networked snapshot requires `--network-profile portable` and
   the same active egress policy rules. The policy digest binds the saved static
-  identity and its derived ARP next hops, which are reconstructed before vCPUs
-  start. Native sockets and NAT flow tables are not serialized. The capture
+  identity, including the IPv6 identity, and its derived ARP next hops, which
+  are reconstructed before vCPUs start. A snapshot whose network predates IPv6
+  restores IPv4-only, with its original digest. Native sockets and NAT flow
+  tables are not serialized. The capture
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach

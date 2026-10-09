@@ -170,5 +170,6 @@ is limited to a single queue pair.
 The microVM `portable` network profile always selects Consomme on Linux/KVM,
 Linux/MSHV, and Windows/WHP. It is explicitly required with
 `--network-profile portable` whenever a microVM uses `--net`; `--net-tap` is
-not part of this profile. Snapshot restore recreates a new endpoint generation
-instead of serializing host sockets or protocol flows.
+not part of this profile. Its NIC is dual-stack, with a static IPv6 identity
+derived from the IPv4 one. Snapshot restore recreates a new endpoint
+generation instead of serializing host sockets or protocol flows.
