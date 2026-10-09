@@ -2695,6 +2695,78 @@ mod tests {
         );
     }
 
+    /// Writes issued while one is running wait for it and then run in arrival
+    /// order, whichever store each one targets.
+    #[async_test]
+    async fn queued_store_writes_run_in_arrival_order() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
+        let ppi_write = |tpm: &mut Tpm, operation: u32| {
+            assert!(matches!(
+                tpm.io_write(
+                    port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+                    &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes()
+                ),
+                IoResult::Ok
+            ));
+            match tpm.io_write(
+                port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+                &operation.to_le_bytes(),
+            ) {
+                IoResult::Defer(token) => token,
+                _ => panic!("a PPI write must defer its I/O"),
+            }
+        };
+        let pending =
+            |token: &mut DeferredToken| token.poll_write(&mut Context::from_waker(Waker::noop()));
+
+        let mut first = ppi_write(&mut tpm, 7);
+        *tpm.pending_nvram.lock() = vec![7, 8, 9];
+        let mut second = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
+            IoResult::Defer(token) => token,
+            _ => panic!("committing NVRAM must defer its I/O"),
+        };
+        let mut third = ppi_write(&mut tpm, 9);
+
+        // The NVRAM store is free to go, but its write must wait behind the
+        // running PPI write.
+        nvram_permits.send(());
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(pending(&mut first).is_pending());
+        assert!(pending(&mut second).is_pending());
+        assert!(pending(&mut third).is_pending());
+
+        // Finishing the PPI write runs the NVRAM write next, which completes
+        // with the permit it already has, and only then the second PPI write.
+        ppi_permits.send(());
+        complete(&mut tpm, &mut first).await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            pending(&mut second).is_ready(),
+            "the NVRAM write runs second"
+        );
+        assert!(pending(&mut third).is_pending());
+
+        ppi_permits.send(());
+        complete(&mut tpm, &mut third).await;
+        let stores = tpm.idle_stores();
+        assert_eq!(stores.nvram.restore().await.unwrap(), Some(vec![7, 8, 9]));
+        let stored = stores.ppi.restore().await.unwrap().unwrap();
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(stored)
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(9)
+        );
+    }
+
     /// Stopping the device finishes a running store write.
     #[async_test]
     async fn stop_finishes_a_running_store_write() {
