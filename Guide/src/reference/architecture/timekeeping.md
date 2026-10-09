@@ -219,14 +219,11 @@ have different stop/start anchors.
 | Snapshot restore | Restores stopped software time and the state supported by each backend/device. A time-state setter must not implicitly thaw a supporting backend. |
 | VTL scrub | May reset and freeze a backing VTL clock. The partition unit thaws it before restarting VPs; this is not a freeze of every VTL. |
 
-The x86 `virt` saved-state model treats reference time, reference-page
-configuration, TSC, and APIC state as separate elements. Reference time
-is included only when Hyper-V enlightenments are enabled; lifecycle
-freezing cannot therefore be hidden in its setter. The
-`can_freeze_time` capability also governs whether advancing TSC/APIC
-and reference-time state can be compared during state validation. A
-reference-clock-only implementation is not sufficient to claim that
-capability.
+The x86 `virt` model separates reference time/page, TSC, APIC, and TSC deadline.
+Deadline state requires guest/backend support and restores after APIC/TSC:
+zero disarms; absent state is not restored. Native MSHV/WHP and KVM support
+it, unlike software APICs. Reference time is independent of Hyper-V on KVM.
+Lifecycle freeze is separate; `can_freeze_time` gates exact state comparison.
 
 Arm state coverage differs: the generic `virt` partition-state schema is
 empty and its VP schema does not currently include architectural
@@ -243,13 +240,13 @@ Guest-visible Hyper-V facilities require the relevant enlightenments.
 | MSHV, x86 or Arm | Hyper-V partition `ReferenceTime` property | Yes, through `TimeFreeze`. |
 | WHP, offloaded Hyper-V | Native WHP reference time | Yes, separately for each backing partition. |
 | WHP, emulated Hyper-V on x86 | Software `VmTime` | Yes for native WHP time; `VmTime` stops separately. |
-| KVM, x86 | KVM clock, converted from ns to 100 ns | No; stopping software VM time does not freeze KVM time. |
+| KVM, non-isolated x86 with stable TSC and offset access | KVM clock, converted from ns to 100 ns | Yes, through software clock rebasing and LAPIC timer staging. |
+| KVM, other x86 configurations | KVM clock, converted from ns to 100 ns | No. |
 | KVM, Arm | No Hyper-V reference-time source exposed | No; architectural timers remain KVM-owned. |
 | HVF, Arm | Software `VmTime` | No architectural-counter freeze; software time still stops. |
 
-MSHV and WHP reference-time sources return no correlated UTC timestamp.
-KVM x86 returns one when `KVM_GET_CLOCK` supplies `KVM_CLOCK_REALTIME`.
-HVF and WHP's software source return only the VM-time count.
+Only running KVM x86 returns correlated UTC, when `KVM_GET_CLOCK` supplies
+`KVM_CLOCK_REALTIME`. Frozen KVM, MSHV, WHP, and HVF sources do not.
 
 ### MSHV and WHP
 
@@ -284,28 +281,50 @@ coverage from the presence of the freeze interface.
 
 ### KVM
 
-On x86, KVM owns the virtual TSC, LAPIC timers, and enabled Hyper-V
-synthetic timers. OpenVMM reads the KVM clock for its reference-time
-source. Saving reference time rounds the nanosecond clock upward to
-100 ns so conversion does not move it backward on restore. Setting
-reference time uses `KVM_SET_CLOCK` with flags zero; it does not request
-KVM's optional UTC-based addition of elapsed downtime.
+Non-isolated x86 supports software freeze without requiring a stable TSC.
+Clocks start cached at zero. With stable clock correlation and
+`KVM_VCPU_TSC_OFFSET`, capture uses a common host-TSC anchor and thaw rebases
+reference time and TSC together, preserving per-VP differences. This
+optimization assumes identity TSC scaling, not different-frequency migration.
+Otherwise, freeze captures each VP's TSC through KVM and thaw reinstalls the
+cached values. Explicit offset writes remain preferred: the fallback samples
+the current guest TSC and adjusts its offset by the difference to the saved
+value, without requiring a known frequency or a userspace host-TSC anchor.
+Capture and restoration are sequential, so this path has per-VP sampling skew.
+On older kernels without offset access, restore first writes a distant
+temporary TSC with VPs stopped and LAPIC timers disarmed, then the saved value.
+This avoids KVM's legacy nearby-write synchronization heuristic retaining a
+short pause. A saved zero is restored as one tick because a zero MSR write
+unconditionally requests synchronization. Frozen state still reads as zero.
+SEV-isolated partitions do not expose software freeze.
 
-That setter rebases the KVM clock; it does not freeze it, rewind raw
-guest TSC, or undo a LAPIC timer expiration. KVM can record timer work
-while userspace has stopped running VPs. The backend currently exposes
-no `PartitionTimeControl`, and its x86 `can_freeze_time` is false.
-Rebasing reference time alone would not implement full counter and
-timer freeze semantics.
+`--hypervisor kvm:force_tsc_fallback` forces per-VP capture/restore for testing
+on stable hosts; it does not make the host TSC unstable. The option is carried
+by the KVM hypervisor resource handle. Backend contract tests register this
+configuration separately as `kvm_tsc_fallback`.
+Reference time is saved/reset without Hyper-V too, rounded up to 100 ns for
+snapshots. `KVM_SET_CLOCK` flags zero exclude UTC downtime.
 
-KVM's synthetic-timer snapshot path saves config/count MSRs, but cannot
-preserve timer adjustment or undelivered expiration-message state.
+Freeze caches deadlines privately and disarms LAPIC timers. Thaw merges
+countdowns into live APIC state, preserving IRQs, then restores the deadline
+MSR. Injection is serialized and irqfds briefly detached. UAPI limitations:
 
-On Arm, KVM manages architectural counters/timers and the in-kernel
-interrupt controller. OpenVMM configures the virtual timer PPI from the
-topology; the physical timer PPI required by KVM is not advertised to
-the guest. There is no Hyper-V reference-time source or SynIC support
-in this backend, and no software pause compensation for the counters.
+- Clock/timer capture is not atomic; countdown skew delays expiration.
+- Zero remaining countdown cannot distinguish pending from delivered
+  one-shots. Rearming nonzero initial count makes it immediately due,
+  preferring a possible duplicate over a lost wakeup.
+- Periodic pending ticks can coalesce; zero count restarts a full period.
+- TSC-deadline mode is distinguishable: KVM clears the deadline on delivery.
+- Ordinary pause leaves synthetic timers' private state intact; KVM rechecks
+  deadlines after clock updates. Snapshot config/count writes wait for thaw,
+  but cannot restore private periodic phase or undelivered messages.
+- Older snapshots lack LAPIC TSC deadlines and unenlightened reference time.
+
+Thus `can_freeze_time` remains false despite lifecycle freeze support.
+
+On Arm, KVM owns counters/timers and the interrupt controller. OpenVMM sets
+the topology's virtual timer PPI; KVM's required physical PPI is not exposed.
+There is no Hyper-V time/SynIC support or software pause compensation.
 
 ### HVF
 

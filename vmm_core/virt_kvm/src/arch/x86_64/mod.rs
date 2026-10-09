@@ -8,6 +8,7 @@
 mod extint;
 mod regs;
 pub(crate) mod snp;
+pub(crate) mod time;
 mod vm_state;
 mod vp_state;
 
@@ -108,6 +109,7 @@ const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x1
 #[derive(Debug)]
 pub struct Kvm {
     kvm: kvm::Kvm,
+    force_tsc_fallback: bool,
 }
 
 impl Kvm {
@@ -115,13 +117,23 @@ impl Kvm {
     pub fn new() -> Result<Self, KvmError> {
         Ok(Self {
             kvm: kvm::Kvm::new()?,
+            force_tsc_fallback: false,
         })
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
-        Ok(Self { kvm })
+        Ok(Self {
+            kvm,
+            force_tsc_fallback: false,
+        })
+    }
+
+    /// Forces per-VP TSC capture/restore instead of the common-clock
+    /// optimization, for testing. Does not change the host's TSC stability.
+    pub fn force_tsc_fallback(&mut self, force: bool) {
+        self.force_tsc_fallback = force;
     }
 }
 
@@ -445,6 +457,7 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
             nested_virt,
             supported_mce_cap,
+            force_tsc_fallback: self.force_tsc_fallback,
         })
     }
 }
@@ -460,6 +473,7 @@ pub struct KvmProtoPartition<'a> {
     /// MCE capability bits (`IA32_MCG_CAP`) the host allows setting, from
     /// `KVM_X86_GET_MCE_CAP_SUPPORTED`.
     supported_mce_cap: u64,
+    force_tsc_fallback: bool,
 }
 
 impl ProtoPartition for KvmProtoPartition<'_> {
@@ -514,6 +528,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         .map_err(KvmError::Capabilities)?;
 
         caps.can_freeze_time = false;
+        caps.reference_time = true;
         caps.nested_virt = self.nested_virt;
 
         // Create all VCPUs now so that they are assigned dense, sequential
@@ -527,6 +542,14 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         for vp_info in self.config.processor_topology.vps_arch() {
             self.vm.add_vp(vp_info.apic_id)?;
         }
+
+        let time = time::PartitionTime::new(
+            &self.vm,
+            bsp_apic_id,
+            self.config.processor_topology.vps().len(),
+            self.sev.is_some(),
+            self.force_tsc_fallback,
+        )?;
 
         let mut gsi_routing = GsiRouting::new();
 
@@ -597,6 +620,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             gsi_routing: Mutex::new(gsi_routing),
             caps,
+            time: Mutex::new(time),
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
@@ -775,6 +799,10 @@ impl Partition for KvmPartition {
         self.inner.sev.is_none().then_some(self)
     }
 
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        self.inner.time.lock().is_supported().then_some(self)
+    }
+
     fn supports_initial_page_acceptance(
         &self,
     ) -> Option<&dyn virt::AcceptInitialPages<Error = <Self as Hv1>::Error>> {
@@ -875,7 +903,9 @@ impl GetReferenceTime for KvmPartitionInner {
         // clock for the reference time counter within KVM.
         //
         // This also gives us the system time, in some configurations.
-        let clock = self.kvm.get_clock_ns().unwrap();
+        let clock = self
+            .read_reference_time()
+            .expect("failed to read partition time");
         ReferenceTimeResult {
             ref_time: clock.clock / 100,
             system_time: (clock.flags & kvm::KVM_CLOCK_REALTIME != 0)
@@ -1272,6 +1302,7 @@ impl KvmMsi {
 
 impl KvmPartitionInner {
     fn request_msi(&self, request: MsiRequest) {
+        let _routing = self.gsi_routing.lock();
         let Some(KvmMsi {
             address_lo,
             address_hi,
@@ -1366,6 +1397,7 @@ impl IoApicRouting for KvmPartitionInner {
     }
 
     fn assert_irq(&self, irq: u8) {
+        let _routing = self.gsi_routing.lock();
         if let Err(err) = self.kvm.irq_line(irq as u32, true) {
             tracing::error!(
                 irq,
@@ -2020,6 +2052,7 @@ impl GuestEventPort for KvmGuestEventPort {
                 match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
                     Ok(Ok(_)) => {
                         drop(siefp);
+                        let _routing = partition.gsi_routing.lock();
                         partition
                             .kvm
                             .irq_line(VMBUS_BASE_GSI + vp_index.index(), true)

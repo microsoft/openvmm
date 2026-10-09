@@ -35,6 +35,9 @@ pub struct KvmHandle {
     /// An open `/dev/kvm` file descriptor, open with read and write
     /// permissions.
     pub kvm: std::fs::File,
+    /// Force per-VP TSC capture/restore instead of the common-clock
+    /// optimization, for testing. Only supported for x86_64 guests.
+    pub force_tsc_fallback: bool,
 }
 
 impl ResourceId<HypervisorKind> for KvmHandle {

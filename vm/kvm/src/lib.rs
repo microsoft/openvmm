@@ -28,6 +28,8 @@ mod ioctl {
     use kvm_bindings::*;
     #[cfg(target_arch = "x86_64")]
     use nix::errno::Errno;
+    #[cfg(target_arch = "x86_64")]
+    use nix::ioctl_none_bad;
     use nix::ioctl_read;
     use nix::ioctl_readwrite;
     use nix::ioctl_readwrite_bad;
@@ -99,6 +101,8 @@ mod ioctl {
     ioctl_write_ptr!(kvm_set_debugregs, KVMIO, 0xa2, kvm_debugregs);
     ioctl_write_ptr!(kvm_enable_cap, KVMIO, 0xa3, kvm_enable_cap);
     #[cfg(target_arch = "x86_64")]
+    ioctl_none_bad!(kvm_get_tsc_khz, request_code_none!(KVMIO, 0xa3));
+    #[cfg(target_arch = "x86_64")]
     ioctl_read!(kvm_get_xsave, KVMIO, 0xa4, kvm_xsave);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_xsave, KVMIO, 0xa5, kvm_xsave);
@@ -129,6 +133,8 @@ mod ioctl {
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_has_device_attr, KVMIO, 0xe3, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -370,6 +376,12 @@ pub enum Error {
     SetDeviceAttr(#[source] nix::Error),
     #[error("GetDeviceAttr")]
     GetDeviceAttr(#[source] nix::Error),
+    #[error("HasDeviceAttr")]
+    HasDeviceAttr(#[source] nix::Error),
+    #[error("GetTscKhz")]
+    GetTscKhz(#[source] nix::Error),
+    #[error("KVM returned an invalid TSC frequency: {0} kHz")]
+    InvalidTscKhz(libc::c_int),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
     #[error("GetClock")]
@@ -1749,6 +1761,66 @@ impl<'a> Processor<'a> {
                 },
             )
         }
+    }
+
+    /// Returns the guest TSC frequency in kHz, including guest TSC scaling.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_khz(&self) -> Result<u32> {
+        // SAFETY: This ioctl has no payload and returns the frequency directly.
+        let khz = unsafe { ioctl::kvm_get_tsc_khz(self.get().vcpu.as_raw_fd()) }
+            .map_err(Error::GetTscKhz)?;
+        if khz <= 0 {
+            return Err(Error::InvalidTscKhz(khz));
+        }
+        Ok(khz as u32)
+    }
+
+    /// Tests whether the vCPU supports explicit TSC-offset access.
+    ///
+    /// Support for this attribute does not imply that an isolated guest's TSC
+    /// can be changed. Callers must also check the guest's isolation mode.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supports_tsc_offset(&self) -> Result<bool> {
+        let attr = kvm_device_attr {
+            group: KVM_VCPU_TSC_CTRL,
+            attr: KVM_VCPU_TSC_OFFSET as u64,
+            ..Default::default()
+        };
+        // SAFETY: HAS_DEVICE_ATTR only reads the descriptor, not its addr field.
+        match unsafe { ioctl::kvm_has_device_attr(self.get().vcpu.as_raw_fd(), &attr) } {
+            Ok(_) => Ok(true),
+            Err(nix::errno::Errno::ENXIO | nix::errno::Errno::ENOTTY) => Ok(false),
+            Err(err) => Err(Error::HasDeviceAttr(err)),
+        }
+    }
+
+    /// Reads the offset added to the scaled host TSC to obtain the guest TSC.
+    #[cfg(target_arch = "x86_64")]
+    pub fn tsc_offset(&self) -> Result<u64> {
+        let mut offset = 0u64;
+        let attr = kvm_device_attr {
+            group: KVM_VCPU_TSC_CTRL,
+            attr: KVM_VCPU_TSC_OFFSET as u64,
+            addr: std::ptr::from_mut(&mut offset) as u64,
+            flags: 0,
+        };
+        // SAFETY: The attribute writes a u64 to addr, which points to offset.
+        unsafe { ioctl::kvm_get_device_attr(self.get().vcpu.as_raw_fd(), &attr) }
+            .map_err(Error::GetDeviceAttr)?;
+        Ok(offset)
+    }
+
+    /// Writes the offset added to the scaled host TSC to obtain the guest TSC.
+    ///
+    /// Unlike writing IA32_TSC, this bypasses KVM's zero-value and near-value
+    /// synchronization heuristics. Equal offsets on equal-frequency vCPUs
+    /// preserve KVM's recognition that their TSCs are synchronized.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_tsc_offset(&self, offset: u64) -> Result<()> {
+        // SAFETY: This attribute takes a u64, which remains live for the ioctl.
+        unsafe { self.set_device_attr(KVM_VCPU_TSC_CTRL, KVM_VCPU_TSC_OFFSET, &offset, 0) }
+            .map_err(Error::SetDeviceAttr)?;
+        Ok(())
     }
 
     pub fn runner(&self) -> VpRunner<'a> {

@@ -79,6 +79,8 @@ stores:
 - The guest entry point.
 - An `expected_failure` flag.
 - A `linux_only` flag.
+- A `time_control` flag requiring native partition clock/timer control.
+- A `tsc_deadline` flag requiring access to the x86 TSC-deadline state.
 
 `tmk_vmm --list` parses and relocates this metadata without entering the guest.
 When running a test, the loader maps the ELF, prepares page tables and initial
@@ -92,6 +94,30 @@ The host reserves MMIO address `0xffff0000`. The guest writes a pointer to a
 - Log a UTF-8 string held in guest memory.
 - Report a panic with message, file, and line.
 - Complete explicitly with a success value.
+- Request a host-controlled timekeeping rendezvous and receive clock samples.
+
+The executor thaws supporting partitions only after binding the VP and setting
+its initial state. For a timekeeping rendezvous, the MMIO callback requests a
+stop; freezing, saving, restoring, and thawing happen after the VP run loop has
+returned. A calibration rendezvous instead keeps partition time advancing.
+Snapshots serialize VM and VP state and copy guest RAM. Restore tests either
+reset the existing partition first or create a new partition and VP, so private
+backend caches cannot substitute for serialized state.
+For fresh-partition restore, the executor joins the old VP thread and destroys
+the old partition before creating the replacement and mapping the retained guest
+RAM. Only the serialized VM/VP state, RAM, and test-runner context survive;
+backend partition objects do not.
+
+The host executes the requested operations and returns clock samples; the guest
+checks their architectural effects. Construction, reset-value, and host
+state-accessor assertions belong to separate
+[backend contract tests](./vmm.md#backend-contract-tests-no-guest), not to the
+TMK executor.
+
+Each host VP execution thread running a timekeeping test has a 60-second
+host-clock watchdog, independent of the guest's clocks and interrupts.
+Unsupported timekeeping configurations are reported as skipped tests; failures
+during checkpoint handling fail the test rather than silently continuing.
 
 If the VP halts or faults before completion, `tmk_vmm` reports the halt reason
 and available register state. A normal failure makes the process exit nonzero.

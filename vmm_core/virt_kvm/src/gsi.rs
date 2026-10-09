@@ -7,6 +7,7 @@ use crate::KvmPartitionInner;
 use anyhow::Context;
 use pal_event::Event;
 use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::os::unix::prelude::*;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -20,6 +21,7 @@ const NUM_GSIS: usize = 2048;
 #[derive(Debug)]
 pub struct GsiRouting {
     states: Box<[GsiState; NUM_GSIS]>,
+    irqfds: BTreeMap<u32, RawFd>,
 }
 
 impl GsiRouting {
@@ -27,6 +29,7 @@ impl GsiRouting {
     pub fn new() -> Self {
         Self {
             states: Box::new([GsiState::Unallocated; NUM_GSIS]),
+            irqfds: BTreeMap::new(),
         }
     }
 
@@ -78,6 +81,21 @@ impl GsiRouting {
             .collect();
 
         kvm.set_gsi_routes(&routing).expect("should not fail");
+    }
+
+    /// The routing lock also serializes userspace interrupt injection. Removing
+    /// irqfds drains their kernel work; signals arriving while detached remain
+    /// in the eventfd and are consumed when the irqfd is reattached.
+    #[cfg(guest_arch = "x86_64")]
+    pub fn with_irqfds_suspended<T>(&self, kvm: &kvm::Partition, f: impl FnOnce() -> T) -> T {
+        for (&gsi, &fd) in &self.irqfds {
+            kvm.irqfd(gsi, fd, false).expect("failed to suspend irqfd");
+        }
+        let result = f();
+        for (&gsi, &fd) in &self.irqfds {
+            kvm.irqfd(gsi, fd, true).expect("failed to resume irqfd");
+        }
+        result
     }
 }
 
@@ -144,13 +162,17 @@ impl GsiRouteInner {
     /// Enables the route and associated irqfd.
     pub fn enable(&self, partition: &KvmPartitionInner, entry: kvm::RoutingEntry) {
         let _lock = self.enable_mutex.lock();
-        self.set_entry(partition, Some(entry));
+        let mut routing = partition.gsi_routing.lock();
+        if routing.set(self.gsi, Some(entry)) {
+            routing.update_routes(&partition.kvm);
+        }
         if !self.enabled.load(Ordering::Relaxed) {
             if let Some(event) = &self.irqfd_event {
                 partition
                     .kvm
                     .irqfd(self.gsi, event.as_fd().as_raw_fd(), true)
                     .expect("should not fail");
+                routing.irqfds.insert(self.gsi, event.as_fd().as_raw_fd());
             }
             self.enabled.store(true, Ordering::Relaxed);
         }
@@ -162,12 +184,14 @@ impl GsiRouteInner {
     /// clears the `enabled` flag.
     pub fn disable(&self, partition: &KvmPartitionInner) {
         let _lock = self.enable_mutex.lock();
+        let mut routing = partition.gsi_routing.lock();
         if self.enabled.load(Ordering::Relaxed) {
             if let Some(irqfd_event) = &self.irqfd_event {
                 partition
                     .kvm
                     .irqfd(self.gsi, irqfd_event.as_fd().as_raw_fd(), false)
                     .expect("should not fail");
+                routing.irqfds.remove(&self.gsi);
             }
             self.enabled.store(false, Ordering::Relaxed);
         }
