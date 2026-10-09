@@ -376,19 +376,20 @@ pub struct MicrovmCli {
     #[clap(long, value_enum, value_name = "ACTION")]
     pub network_ingress: Option<MicrovmNetworkActionCli>,
 
-    /// Permit matching IPv4 destinations, optionally restricted to TCP, UDP,
-    /// or ICMP, and for TCP or UDP optionally to one destination port or to
-    /// an inclusive range of them.
+    /// Permit matching IPv4 or IPv6 destinations, optionally restricted to
+    /// TCP, UDP, or ICMP, and for TCP or UDP optionally to one destination
+    /// port or to an inclusive range of them. A rule matches only its own
+    /// address family.
     #[clap(
         long = "network-egress-allow",
-        value_name = "IPv4[/PREFIX][:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
+        value_name = "CIDR[:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
     )]
     pub network_egress_allow: Vec<net_backend_resources::egress::EgressRule>,
 
-    /// Deny matching IPv4 destinations before evaluating allow rules.
+    /// Deny matching IPv4 or IPv6 destinations before evaluating allow rules.
     #[clap(
         long = "network-egress-deny",
-        value_name = "IPv4[/PREFIX][:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
+        value_name = "CIDR[:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
     )]
     pub network_egress_deny: Vec<net_backend_resources::egress::EgressRule>,
 
@@ -1247,14 +1248,7 @@ impl Options {
         } else {
             EgressPolicyMode::AllowAll
         };
-        net_backend_resources::egress::EgressPolicy::bind(
-            network.guest_ipv4,
-            network.prefix_length,
-            network.guest_mac,
-            network.derived_gateway_ipv4,
-            mode,
-        )
-        .and_then(|policy| {
+        network.bind_egress_policy(mode).and_then(|policy| {
             policy.with_host_loopback(
                 self.microvm
                     .host_loopback
@@ -1772,7 +1766,7 @@ mod tests {
             Some((
                 &network,
                 openvmm_defs::microvm::MICROVM_VIRTIO_NET_KVM_IRQ,
-                false,
+                None,
             )),
             false,
             &[],
@@ -1784,25 +1778,33 @@ mod tests {
         assert_eq!(
             with_network,
             format!(
-                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:10 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1"
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:10 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
             )
         );
-        let mut with_whp_network = build_microvm_command_line(&[], false).unwrap();
-        append_microvm_virtio_discovery(
-            &mut with_whp_network,
-            Some((
-                &network,
-                openvmm_defs::microvm::MICROVM_VIRTIO_NET_WHP_IRQ,
-                true,
-            )),
-            false,
-            &[],
-            false,
-            false,
-            &[],
-        )
-        .unwrap();
-        assert!(with_whp_network.ends_with("virtnet_dns=10.0.0.1"));
+        // The guest names either gateway as its DNS server.
+        for (server, dns) in [("10.0.0.1", "10.0.0.1"), ("fd00::a00:1", "fd00::a00:1")] {
+            let mut with_whp_network = build_microvm_command_line(&[], false).unwrap();
+            append_microvm_virtio_discovery(
+                &mut with_whp_network,
+                Some((
+                    &network,
+                    openvmm_defs::microvm::MICROVM_VIRTIO_NET_WHP_IRQ,
+                    Some(server.parse().unwrap()),
+                )),
+                false,
+                &[],
+                false,
+                false,
+                &[],
+            )
+            .unwrap();
+            assert!(
+                with_whp_network.ends_with(&format!(
+                    "virtnet_dns={dns} virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
+                )),
+                "{with_whp_network}"
+            );
+        }
 
         let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
             "/mnt/share".to_owned(),
@@ -2463,6 +2465,94 @@ mod tests {
                         .into_iter()
                         .chain(["--network-egress-deny", rule])
                 )
+                .is_err(),
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_microvm_ipv6_egress_rules_bind_to_the_dual_stack_identity() {
+        use net_backend_resources::egress::EgressDestination;
+
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+            "--network-egress",
+            "deny",
+            "--network-egress-allow",
+            "2001:db8:1::/64:tcp:443",
+            "--network-egress-allow",
+            "2001:db8:2::/48:udp:5000-5010",
+            "--network-egress-allow",
+            "0.0.0.0/0:udp:53",
+            "--network-egress-deny",
+            "2001:db8:1::123/128",
+            "--network-egress-deny",
+            "::/0:icmp",
+        ])
+        .unwrap();
+        options.validate_microvm_options().unwrap();
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let policy = options.microvm_egress_policy(&network).unwrap();
+        let net_backend_resources::egress::EgressPolicyMode::Rules { allow, deny, .. } =
+            policy.mode()
+        else {
+            panic!("expected rule-based egress policy")
+        };
+        let families = |rules: &[net_backend_resources::egress::EgressRule]| {
+            rules
+                .iter()
+                .map(|rule| rule.destination().is_ipv6())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(families(allow), [false, true, true]);
+        assert_eq!(families(deny), [true, true]);
+        assert!(
+            allow.iter().any(|rule| rule.destination().is_ipv6()
+                && (rule.port(), rule.end_port()) == (5000, 5010))
+        );
+        assert!(deny.iter().any(|rule| rule.destination()
+            == EgressDestination::Ipv6("2001:db8:1::123/128".parse().unwrap())));
+        let link = policy.ipv6_link().unwrap();
+        assert_eq!(
+            (link.guest(), link.prefix_length(), link.gateway()),
+            (
+                "fd00::a00:2".parse().unwrap(),
+                120,
+                "fd00::a00:1".parse().unwrap()
+            )
+        );
+        assert_eq!(
+            policy.encoding_version(),
+            net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
+        );
+
+        for rule in [
+            "2001:db8::/64:sctp:443",
+            "2001:db8::/129",
+            "2001:db8::zz",
+            "2001:db8::/64:tcp:443-80",
+        ] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--net",
+                    "10.0.0.2/24",
+                    "--network-profile",
+                    "portable",
+                    "--network-egress",
+                    "deny",
+                    "--network-egress-allow",
+                    rule,
+                ])
                 .is_err(),
                 "{rule}"
             );

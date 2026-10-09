@@ -7,7 +7,9 @@
 //! addresses with an exact guest and gateway identity and enables the
 //! translation of guest traffic to the gateway onto host loopback, which
 //! [`ConsommeParams::map_gateway_to_host_loopback`] and
-//! [`ConsommeParams::gateway_loopback_proxy_port`] control.
+//! [`ConsommeParams::gateway_loopback_proxy_port`] control. The routable IPv6
+//! gateway of a static IPv6 identity translates onto host IPv6 loopback under
+//! the general mapping.
 
 use crate::ConsommeParams;
 use crate::ConsommeState;
@@ -15,8 +17,10 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use thiserror::Error;
 
 /// An error indicating that a static IPv4 identity is internally inconsistent.
@@ -60,8 +64,10 @@ impl ConsommeState {
     ///
     /// Guest traffic to the IPv4 gateway is translated onto host loopback when
     /// the gateway mapping or the gateway proxy port allows it and is rejected
-    /// (`None`) otherwise. Other destinations are resolved as virtual mapped
-    /// addresses.
+    /// (`None`) otherwise. Guest traffic to the routable IPv6 gateway is
+    /// translated onto host IPv6 loopback when the gateway mapping allows it
+    /// and is rejected otherwise; the proxy port is an IPv4 exception. Other
+    /// destinations are resolved as virtual mapped addresses.
     pub(crate) fn resolve_flow_destination(
         &self,
         addr: &SocketAddr,
@@ -74,6 +80,13 @@ impl ConsommeState {
                 || (protocol == IpProtocol::Tcp
                     && self.params.gateway_loopback_proxy_port == Some(address.port())))
             .then(|| SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, address.port())));
+        }
+        if let SocketAddr::V6(address) = addr
+            && self.params.gateway_ipv6 == Some(*address.ip())
+        {
+            return self.params.map_gateway_to_host_loopback.then(|| {
+                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, address.port(), 0, 0))
+            });
         }
         Some(self.resolve_destination(addr))
     }

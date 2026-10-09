@@ -441,7 +441,7 @@ impl<T: Client> Access<'_, T> {
                 }
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
-                if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
+                if self.inner.state.params.is_gateway_ipv6(addrs.dst_addr)
                     || addrs.dst_addr == DHCPV6_ALL_AGENTS_MULTICAST
                 {
                     if self.handle_gateway_udp_v6(frame, addrs, &udp_packet)? {

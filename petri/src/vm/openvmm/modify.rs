@@ -126,6 +126,7 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             static_ipv4: None,
+            static_ipv6: None,
             ports: Vec::new(),
             recv: None,
             allow_host_local_access: None,
@@ -195,6 +196,7 @@ impl PetriVmConfigOpenVmm {
                 endpoint: net_backend_resources::consomme::ConsommeHandle {
                     cidr: None,
                     static_ipv4: None,
+                    static_ipv6: None,
                     ports: Vec::new(),
                     recv: None,
                     allow_host_local_access: None,
@@ -229,6 +231,7 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             static_ipv4: None,
+            static_ipv6: None,
             ports: Vec::new(),
             recv: None,
             allow_host_local_access: None,
@@ -286,6 +289,7 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             static_ipv4: None,
+            static_ipv6: None,
             ports: Vec::new(),
             recv: None,
             allow_host_local_access: None,
@@ -325,6 +329,7 @@ impl PetriVmConfigOpenVmm {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
             static_ipv4: None,
+            static_ipv6: None,
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
