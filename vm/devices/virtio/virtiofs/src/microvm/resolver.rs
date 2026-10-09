@@ -3,6 +3,7 @@
 
 //! microVM resource-profile resolution.
 
+use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmOwnerMode;
 use super::profile::microvm_mount_tag;
 use crate::virtio::VirtioFsDevice;
@@ -21,6 +22,14 @@ fn validate_tag(resource: &VirtioFsHandle, stable_id: &str) -> anyhow::Result<()
         "microVM virtio-fs tag for '{stable_id}' must be '{tag}'"
     );
     Ok(())
+}
+
+fn owner_mode(caller_identity: bool) -> MicroVmOwnerMode {
+    if caller_identity {
+        MicroVmOwnerMode::Caller
+    } else {
+        MicroVmOwnerMode::Vmm
+    }
 }
 
 pub(crate) fn resolve(
@@ -66,12 +75,54 @@ pub(crate) fn resolve(
                 denied_paths.clone(),
                 allowed_paths.clone(),
                 writable_paths.clone(),
-                if *caller_identity {
-                    MicroVmOwnerMode::Caller
-                } else {
-                    MicroVmOwnerMode::Vmm
-                },
+                owner_mode(*caller_identity),
                 root_path,
+                None,
+            )?
+        }
+        VirtioFsProfile::MicrovmAggregate {
+            stable_id,
+            children,
+            caller_identity,
+        } => {
+            validate_tag(resource, stable_id)?;
+            let VirtioFsBackend::Aggregate { children: roots } = &resource.fs else {
+                anyhow::bail!("microVM aggregate virtio-fs requires an Aggregate backend");
+            };
+            anyhow::ensure!(
+                roots.len() == children.len()
+                    && roots
+                        .iter()
+                        .zip(children)
+                        .all(|(root, child)| root.name == child.name),
+                "microVM aggregate virtio-fs backend children do not match its profile"
+            );
+            anyhow::ensure!(
+                roots.iter().all(|root| root.mount_options.is_empty()),
+                "microVM aggregate virtio-fs does not accept HostFs mount options"
+            );
+            let children = children
+                .iter()
+                .map(|child| {
+                    MicroVmAggregateChild::new(
+                        child.name.clone(),
+                        child.root_identity.clone(),
+                        child.read_only,
+                        child.denied_paths.clone(),
+                        child.allowed_paths.clone(),
+                        child.writable_paths.clone(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            VirtioFsDevice::new_microvm_aggregate(
+                driver_source,
+                stable_id.clone(),
+                children,
+                owner_mode(*caller_identity),
+                &roots
+                    .iter()
+                    .map(|root| root.root_path.as_str())
+                    .collect::<Vec<_>>(),
                 None,
             )?
         }
@@ -147,11 +198,17 @@ mod tests {
     #[async_test]
     async fn microvm_profile_requires_the_tag_of_its_slot(driver: DefaultDriver) {
         let root = tempfile::tempdir().unwrap();
-        resolve_slot(driver.clone(), "fs:microvm1", "microvm1", host_fs(&root)).unwrap();
+        resolve_slot(
+            driver.clone(),
+            MICROVM_ATTACHMENT_ID,
+            MICROVM_MOUNT_TAG,
+            host_fs(&root),
+        )
+        .unwrap();
         for (stable_id, tag) in [
+            ("fs:microvm1", "microvm1"),
             ("fs:microvm1", MICROVM_MOUNT_TAG),
             (MICROVM_ATTACHMENT_ID, "microvm1"),
-            ("fs:microvm2", "microvm2"),
         ] {
             assert!(resolve_slot(driver.clone(), stable_id, tag, host_fs(&root)).is_err());
         }
@@ -171,8 +228,92 @@ mod tests {
                 },
             )
         };
-        dormant("fs:microvm1", "microvm1").unwrap();
-        assert!(dormant("fs:microvm1", MICROVM_MOUNT_TAG).is_err());
+        dormant(MICROVM_ATTACHMENT_ID, MICROVM_MOUNT_TAG).unwrap();
+        assert!(dormant("fs:microvm1", "microvm1").is_err());
+    }
+
+    fn resolve_aggregate(
+        driver: DefaultDriver,
+        profile_names: &[&str],
+        fs: VirtioFsBackend,
+        roots: &[&tempfile::TempDir],
+    ) -> anyhow::Result<ResolvedVirtioDevice> {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        VirtioFsResolver.resolve(
+            VirtioFsHandle {
+                tag: MICROVM_MOUNT_TAG.to_owned(),
+                fs,
+                profile: VirtioFsProfile::MicrovmAggregate {
+                    stable_id: MICROVM_ATTACHMENT_ID.to_owned(),
+                    children: profile_names
+                        .iter()
+                        .zip(roots)
+                        .map(
+                            |(name, root)| virtio_resources::fs::microvm::MicrovmAggregateChild {
+                                name: (*name).to_owned(),
+                                root_identity: microvm_root_identity(root.path()).unwrap(),
+                                read_only: true,
+                                denied_paths: Vec::new(),
+                                allowed_paths: Vec::new(),
+                                writable_paths: Vec::new(),
+                            },
+                        )
+                        .collect(),
+                    caller_identity: false,
+                },
+            },
+            VirtioResolveInput {
+                driver_source: &driver_source,
+            },
+        )
+    }
+
+    fn aggregate_fs(
+        children: &[(&str, &tempfile::TempDir)],
+        mount_options: &str,
+    ) -> VirtioFsBackend {
+        VirtioFsBackend::Aggregate {
+            children: children
+                .iter()
+                .map(|(name, root)| VirtioFsAggregateChild {
+                    name: (*name).to_owned(),
+                    root_path: root.path().to_string_lossy().into_owned(),
+                    mount_options: mount_options.to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[async_test]
+    async fn microvm_aggregate_profile_requires_matching_children(driver: DefaultDriver) {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let roots = [&first, &second];
+        resolve_aggregate(
+            driver.clone(),
+            &["a", "b"],
+            aggregate_fs(&[("a", &first), ("b", &second)], ""),
+            &roots,
+        )
+        .unwrap();
+        for fs in [
+            aggregate_fs(&[("b", &second), ("a", &first)], ""),
+            aggregate_fs(&[("a", &first)], ""),
+            aggregate_fs(&[("a", &first), ("b", &second)], "ro"),
+            host_fs(&first),
+        ] {
+            assert!(resolve_aggregate(driver.clone(), &["a", "b"], fs, &roots).is_err());
+        }
+        // Each child root must match its identity.
+        assert!(
+            resolve_aggregate(
+                driver,
+                &["a", "b"],
+                aggregate_fs(&[("a", &second), ("b", &first)], ""),
+                &roots,
+            )
+            .is_err()
+        );
     }
 
     #[async_test]
