@@ -5,6 +5,7 @@
 
 use super::MAX_FUSE_REQUEST_BYTES;
 use super::owner::CallerIdentity;
+use super::policy::SubtreePolicy;
 use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
 use super::saved_state::MAX_ALIAS_BYTES;
@@ -39,6 +40,7 @@ use crate::InodeMap;
 use crate::VirtioFs;
 use crate::VirtioFsInner;
 use crate::VirtioFsMode;
+use crate::aggregate::AggregateState;
 use crate::file::VirtioFsFile;
 use crate::inode::VirtioFsInode;
 use crate::inode::VirtioFsVolume;
@@ -132,6 +134,53 @@ pub(crate) fn validate_file_insert(
     Ok(())
 }
 
+/// Opens the strict, policy-enforcing volume of a microVM share or aggregate
+/// child at `root_path`, as volume `volume_id`, and returns it with its root
+/// inode and the root's attributes. The caller validates the root's identity.
+fn open_microvm_volume(
+    root_path: &Path,
+    read_only: bool,
+    policy: &SubtreePolicy,
+    volume_id: u32,
+) -> anyhow::Result<(Arc<VirtioFsVolume>, VirtioFsInode, lx::Stat)> {
+    let mut mount_options = LxVolumeOptions::new();
+    mount_options
+        .readonly(read_only)
+        .sandbox(true)
+        .confine_paths(true);
+    let volume = mount_options.new_volume(root_path)?;
+    let mut pinned_identities = HashMap::new();
+    for (path, reachable_at) in policy.pinned_paths() {
+        let stat = volume.lstat(&path)?;
+        if reachable_at.is_some() && stat.mode & lx::S_IFMT != lx::S_IFDIR {
+            anyhow::bail!(
+                "microVM virtio-fs path {} leads to an allowed path but is not a directory",
+                path.display()
+            );
+        }
+        // An object pinned at two paths, such as through a bind mount, is
+        // reachable at neither.
+        pinned_identities
+            .entry((stat.device_nr, stat.inode_nr))
+            .and_modify(|pinned: &mut Option<PathBuf>| {
+                if *pinned != reachable_at {
+                    *pinned = None;
+                }
+            })
+            .or_insert(reachable_at);
+    }
+    let volume = Arc::new(VirtioFsVolume::new_with_strict_paths(
+        volume,
+        volume_id,
+        read_only,
+        true,
+        policy.clone(),
+        pinned_identities,
+    ));
+    let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
+    Ok((volume, root_inode, root_stat))
+}
+
 impl VirtioFs {
     /// Creates a filesystem attachment for the fixed microVM profile.
     ///
@@ -142,43 +191,17 @@ impl VirtioFs {
         profile: MicroVmVirtioFsProfile,
     ) -> anyhow::Result<Self> {
         let root_path = root_path.as_ref();
+        anyhow::ensure!(
+            !profile.is_aggregate(),
+            "microVM aggregate virtio-fs requires one host root per child"
+        );
         profile.validate_root_path(root_path)?;
-        let mut mount_options = LxVolumeOptions::new();
-        mount_options
-            .readonly(profile.is_readonly())
-            .sandbox(true)
-            .confine_paths(true);
-        let volume = mount_options.new_volume(root_path)?;
-        let mut pinned_identities = HashMap::new();
-        for (path, reachable_at) in profile.subtree_policy().pinned_paths() {
-            let stat = volume.lstat(&path)?;
-            if reachable_at.is_some() && stat.mode & lx::S_IFMT != lx::S_IFDIR {
-                anyhow::bail!(
-                    "microVM virtio-fs path {} leads to an allowed path but is not a directory",
-                    path.display()
-                );
-            }
-            // An object pinned at two paths, such as through a bind mount, is
-            // reachable at neither.
-            pinned_identities
-                .entry((stat.device_nr, stat.inode_nr))
-                .and_modify(|pinned: &mut Option<PathBuf>| {
-                    if *pinned != reachable_at {
-                        *pinned = None;
-                    }
-                })
-                .or_insert(reachable_at);
-        }
-        let mut inodes = InodeMap::new(false);
-        let volume = Arc::new(VirtioFsVolume::new_with_strict_paths(
-            volume,
-            0,
+        let (_, root_inode, root_stat) = open_microvm_volume(
+            root_path,
             profile.is_readonly(),
-            true,
-            profile.subtree_policy().clone(),
-            pinned_identities,
-        ));
-        let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
+            profile.subtree_policy(),
+            0,
+        )?;
         profile.validate_opened_root(root_path, &root_stat)?;
         let caller_identity = match profile.owner_mode() {
             MicroVmOwnerMode::Vmm => None,
@@ -187,6 +210,7 @@ impl VirtioFs {
                 root_stat.gid,
             )?),
         };
+        let mut inodes = InodeMap::new(false);
         if inodes.insert(root_inode)?.1 != FUSE_ROOT_ID {
             anyhow::bail!("microVM virtio-fs root received an invalid node ID");
         }
@@ -195,6 +219,72 @@ impl VirtioFs {
                 inodes: RwLock::new(inodes),
                 files: RwLock::new(HandleMap::new()),
                 mode: VirtioFsMode::Direct,
+                microvm_profile: Some(profile),
+                caller_identity,
+                negotiation: RwLock::new(FuseNegotiation::default()),
+            }),
+        })
+    }
+
+    /// Creates an aggregate filesystem attachment for the fixed microVM
+    /// profile. Node 1 is a synthetic, read-only directory that only the
+    /// guest's root may enter, and each of `root_paths`, in the order of the
+    /// profile's children, is the child of that name, with the child's own
+    /// access policy.
+    ///
+    /// Like [`Self::new_microvm`], the paths are consumed only while opening
+    /// the attachment.
+    pub fn new_microvm_aggregate(
+        root_paths: &[impl AsRef<Path>],
+        profile: MicroVmVirtioFsProfile,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            profile.is_aggregate(),
+            "microVM virtio-fs with one host root is not an aggregate"
+        );
+        anyhow::ensure!(
+            root_paths.len() == profile.children().len(),
+            "microVM aggregate virtio-fs requires one host root per child"
+        );
+        let mut children = Vec::with_capacity(root_paths.len());
+        let mut root_owner = None;
+        for (index, (child, root_path)) in profile.children().iter().zip(root_paths).enumerate() {
+            let root_path = root_path.as_ref();
+            child
+                .validate_root_path(root_path)
+                .with_context(|| format!("microVM aggregate child '{}'", child.name()))?;
+            let volume_id = u32::try_from(index + 1).context("too many aggregate children")?;
+            let (volume, _, root_stat) = open_microvm_volume(
+                root_path,
+                child.is_readonly(),
+                child.subtree_policy(),
+                volume_id,
+            )?;
+            child
+                .validate_opened_root(root_path, &root_stat)
+                .with_context(|| format!("microVM aggregate child '{}'", child.name()))?;
+            // Caller ownership squashes guest root to one host identity, so
+            // every child root must have the same owner.
+            let owner = (root_stat.uid, root_stat.gid);
+            anyhow::ensure!(
+                profile.owner_mode() == MicroVmOwnerMode::Vmm
+                    || root_owner.is_none_or(|root_owner| root_owner == owner),
+                "microVM aggregate caller ownership requires every child root to have the same owner"
+            );
+            root_owner = Some(owner);
+            children.push((child.name().to_owned(), volume));
+        }
+        let caller_identity = match (profile.owner_mode(), root_owner) {
+            (MicroVmOwnerMode::Caller, Some((uid, gid))) => {
+                Some(CallerIdentity::for_export_root_owner(uid, gid)?)
+            }
+            _ => None,
+        };
+        Ok(Self {
+            inner: Arc::new(VirtioFsInner {
+                inodes: RwLock::new(InodeMap::new(true)),
+                files: RwLock::new(HandleMap::new()),
+                mode: VirtioFsMode::Aggregate(AggregateState::with_children(children)),
                 microvm_profile: Some(profile),
                 caller_identity,
                 negotiation: RwLock::new(FuseNegotiation::default()),
@@ -292,7 +382,7 @@ impl VirtioFs {
         );
         anyhow::ensure!(
             self.inner.aggregate().is_none(),
-            "aggregate virtio-fs is not part of the microVM ABI"
+            "microVM aggregate virtio-fs does not support snapshots"
         );
 
         let (inodes, node_ids, next_node_id) = {
@@ -462,6 +552,10 @@ impl VirtioFs {
         anyhow::ensure!(
             self.microvm_profile() == Some(profile),
             "virtio-fs attachment does not match the microVM profile"
+        );
+        anyhow::ensure!(
+            !profile.is_aggregate(),
+            "microVM aggregate virtio-fs does not support snapshots"
         );
         validate_microvm_state(&state, profile)?;
         let session_state = session_state_from_saved(&state.negotiation)?;

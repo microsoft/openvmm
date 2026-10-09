@@ -22,10 +22,10 @@ rules. It does not support snapshot and restore.
 
 ## microVM
 
-The microVM profile defines two fixed virtio-fs slots. A cold boot always
-exposes the first slot; without `--mount`, it is guest-discoverable but
-dormant and has no HostFs backend or filesystem policy. Configure an active
-attachment with:
+The microVM profile defines one fixed virtio-fs slot. A cold boot always
+exposes it; without `--mount` or `--mount-aggregate`, it is guest-discoverable
+but dormant and has no HostFs backend or filesystem policy. Configure an
+active attachment with:
 
 ```bash
 openvmm --machine microvm \
@@ -35,16 +35,16 @@ openvmm --machine microvm \
 ```
 
 The format is `GUEST_TARGET,HOST_PATH[,ro|rw]`. The default mode is `ro`;
-read-write access must be explicit. The profile fixes the remaining
-guest-visible configuration:
+read-write access must be explicit. `--mount` may appear once. The profile
+fixes the remaining guest-visible configuration:
 
 | Property | Value |
 |---|---|
-| Stable IDs | `fs:microvm0`, `fs:microvm1` |
-| Tags | `microvm`, `microvm1` |
-| Transport | virtio-mmio at `0xd0001000`, `0xd0008000` |
-| Interrupts | IRQ 6, IRQ 13 |
-| Queues | One high-priority and one request queue per slot |
+| Stable ID | `fs:microvm0` |
+| Tag | `microvm` |
+| Transport | virtio-mmio at `0xd0001000` |
+| Interrupt | IRQ 6 |
+| Queues | One high-priority and one request queue |
 | Features | Indirect descriptors, event index, version 1, access-platform |
 | DAX window | None |
 | Cache policy | Zero entry and attribute lifetimes |
@@ -52,50 +52,65 @@ guest-visible configuration:
 | Maximum write | 1 MiB payload plus protocol headers |
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
 
-### Several shares
+### Several host directories
 
-Repeat `--mount` to attach a second host directory with its own guest target,
-tag, and access mode. Attachments fill the slots in command-line order, so
-the first uses `fs:microvm0` and tag `microvm`, and the second uses
-`fs:microvm1` and tag `microvm1`:
+To share several host directories, attach them to the slot as one aggregate
+instead of `--mount`. `--mount-aggregate GUEST_TARGET` sets where the guest
+mounts the aggregate's root, and each `--mount-child NAME,HOST_PATH[,ro|rw]`
+adds a host directory as the root's child directory `NAME`, with its own
+access mode:
 
 ```bash
 openvmm --machine microvm \
-  --mount /workspace,path/to/workspace,rw \
-  --mount /opt/hostedtoolcache,path/to/toolcache,ro \
+  --mount-aggregate /run/shares \
+  --mount-child workspace,path/to/workspace,rw \
+  --mount-child toolcache,path/to/toolcache,ro \
   --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
 ```
 
-The second slot exists only while a directory is attached to it, so machines
-with one or no share keep their device inventory and command line. Each slot
-is a separate HostFs server, and it enforces its own access mode and denied
-paths, so a guest cannot write to a read-only share through any mount of
-either tag. OpenVMM rejects more than two attachments, guest targets that
-equal or contain one another, and host directories that equal, contain, or
-are contained in one another (compared after canonicalization and by root
-object identity), because one share could otherwise reach files that the
-other share denies or exposes with a different access mode. On Linux,
-OpenVMM also compares the filesystem sources that each directory reaches,
-from `/proc/self/mountinfo`, including the mounts below it, so a bind mount
-or nested mount can't expose part of one share as, or inside, the other.
-With several attachments, each `--mount-deny`, `--mount-allow`, and
-`--mount-write` must be an absolute host path, and it applies to the share
-whose directory contains it. `--mount-owner` applies to every share.
+The guest sees the children in command-line order. A name is 1 to 64 ASCII
+letters, digits, `.`, `_`, or `-`, and must be unique; an aggregate has 1 to
+256 children. The mode follows the last comma, so a host path may contain
+commas when the mode is given.
+
+The aggregate's root is synthetic. It is read-only, it belongs to the guest's
+root user, and its mode is `0500`, so only that user can enter it; the guest
+is expected to bind-mount each child where its workloads need it. Every
+modification of the root fails with `EROFS`. Each child is a separate HostFs
+volume that enforces its own access mode and policy, so a guest cannot write
+to a read-only child through any path. A rename between two children fails
+with `EXDEV`, as one across mounts does. A hard link between two children
+fails with `EROFS` when its destination is read-only, as Linux reports a
+read-only destination first, and with `EXDEV` otherwise. Inode numbers are
+namespaced per child, which makes a collision between children unlikely but
+not impossible.
+
+OpenVMM rejects host directories that equal, contain, or are contained in one
+another (compared after canonicalization and by root object identity),
+because one child could otherwise reach files that another child denies or
+exposes with a different access mode. On Linux, OpenVMM also compares the
+filesystem sources that each directory reaches, from `/proc/self/mountinfo`,
+including the mounts below it, so a bind mount or nested mount can't expose
+part of one child as, or inside, another. Each `--mount-deny`,
+`--mount-allow`, and `--mount-write` path must be absolute, and it applies to
+the child whose directory contains it. `--mount-owner` applies to every
+child; with `caller`, every child directory must have the same owner.
 
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
-`virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line,
-one triplet per share in slot order. The first slot is always discoverable,
-and the second slot's `virtio_mmio.device=` token follows the control
-console's. Active attachment policies and their canonical absolute host paths
-become snapshot-authoritative.
+`virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line.
+For an aggregate, `virtfs_mode` is `rw` when any child is read-write, so the
+guest's mount can carry the read-write children, and the profile adds
+`virtfs_aggregate=1`, so the guest can tell the aggregate's root from a
+single shared directory. Active attachment policies and their canonical
+absolute host paths become snapshot-authoritative.
 
 ### Access policy
 
 Three repeatable options refine what the guest can see and modify inside a
 share. Each names an existing host file or directory. A relative path is
-relative to the host directory of the only `--mount`; with several shares,
-the path must be absolute, and it applies to the share whose directory
-contains it.
+relative to the host directory of `--mount`; with `--mount-aggregate`, the
+path must be absolute, and it applies to the child whose directory contains
+it.
 
 - `--mount-deny <HOST_PATH>` hides the path and everything below it.
 - `--mount-allow <HOST_PATH>` exposes the path and everything below it again,
@@ -218,8 +233,8 @@ host users might execute guest-created files. Grant OpenVMM only
 identity.
 ```
 
-`SectionFs`, aggregate roots, alternate tags, PCI transport, DAX, and extra
-queues are not part of the microVM profile.
+`SectionFs`, alternate tags, PCI transport, DAX, and extra queues are not part
+of the microVM profile.
 
 ## Snapshot attachments
 
@@ -233,15 +248,15 @@ later host additions do not appear midway through that enumeration. New
 lookups and newly opened directories still observe the live host tree.
 
 Restoring a snapshot captured with an active attachment requires a fresh
-`--mount` argument for every captured share, in the same order, with the exact
-same denied, allowed, and writable paths, canonical host path, guest target,
-mode, and `--mount-owner` mode. Identity validation remains independent: before any vCPU
+`--mount` argument with the exact same denied, allowed, and writable paths,
+canonical host path, guest target, mode, and `--mount-owner` mode. Identity
+validation remains independent: before any vCPU
 starts, OpenVMM pins the supplied root and validates its saved root and object
 identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
 without being followed, and an alias whose ancestor has become a link fails
 restore. A handle that the guest held open for writing must still be on a
-writable path.
+writable path. A microVM with an aggregate cannot capture a snapshot.
 
 The device state of an attachment with allowed or writable paths records its
 complete access policy, and a restore must supply the same one. OpenVMM
@@ -257,11 +272,10 @@ access, such as a handle open for writing on a file that a guest caller owns.
 OpenVMM releases that predate `--mount-owner` reject the device state of a
 `caller` attachment rather than restore it as `vmm`.
 
-A snapshot captured without `--mount` records the first slot as dormant. It
-may restore without an attachment, or bind one new `--mount` attachment to
-that slot; the second slot did not exist at capture, so it cannot be added on
-restore. Because execution resumes after the cold-boot mount hook, the guest
-must mount the newly attached backend explicitly:
+A snapshot captured without `--mount` records the slot as dormant. It may
+restore without an attachment, or bind one new `--mount` attachment to the
+slot, but not an aggregate. Because execution resumes after the cold-boot
+mount hook, the guest must mount the newly attached backend explicitly:
 
 ```bash
 mkdir -p /mnt/share
@@ -269,7 +283,9 @@ mount -t virtiofs microvm /mnt/share
 ```
 
 Snapshots created before the dormant-slot capability cannot add a restore-time
-attachment and fail with a compatibility error.
+attachment and fail with a compatibility error. Snapshots that an earlier
+OpenVMM captured with a second virtio-fs slot, `fs:microvm1`, cannot be
+restored.
 
 ```admonish warning
 An ordinary host directory is live external state. Host changes after capture

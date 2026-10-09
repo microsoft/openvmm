@@ -18,12 +18,12 @@ use chipset_resources::microvm_time::RestorePacketBase;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use net_backend_resources::egress::EgressPolicy;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_helpers::snapshot::SnapshotManifest;
+use openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use openvmm_helpers::snapshot::microvm::SnapshotMachineContract;
 use openvmm_helpers::snapshot::microvm::SnapshotMemoryExpansionRange;
@@ -388,8 +388,8 @@ pub(crate) fn prepare_restore(
 }
 
 /// The machine contract a microVM snapshot must match to be restored: the
-/// hypervisor, effective command line, network, filesystems in virtio-fs slot
-/// order, boot and control console attachments, and sandbox blocks.
+/// hypervisor, effective command line, network, filesystem, boot and control
+/// console attachments, and sandbox blocks.
 pub(crate) type ExpectedRestoreContract<'a> = (
     &'a str,
     &'a str,
@@ -398,11 +398,7 @@ pub(crate) type ExpectedRestoreContract<'a> = (
         &'a EgressPolicy,
         &'a SnapshotAttachment,
     )>,
-    Vec<(
-        &'a MicrovmFilesystemConfig,
-        &'a Path,
-        &'a SnapshotAttachment,
-    )>,
+    Option<MicrovmFilesystemSource<'a>>,
     Option<&'a SnapshotAttachment>,
     Option<&'a SnapshotAttachment>,
     Vec<SnapshotMicrovmSandboxBlock>,
@@ -471,7 +467,7 @@ pub(crate) fn validate_restore_contract(
         expected_hypervisor,
         effective_command_line,
         network,
-        filesystems,
+        filesystem,
         console_attachment,
         control_console_attachment,
         sandbox_blocks,
@@ -490,21 +486,14 @@ pub(crate) fn validate_restore_contract(
     let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
     // A dormant-slot snapshot captured no filesystem, so a filesystem that the
     // restore attaches to the slot is not part of the snapshot's contract.
-    let filesystems = if saved_contract.microvm_filesystem.is_some() {
-        filesystems
-            .into_iter()
-            .map(|(config, root_path, attachment)| (config, root_path, attachment.clone()))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let filesystem = filesystem.filter(|_| saved_contract.microvm_filesystem.is_some());
     let mut expected_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
         expected_hypervisor,
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
         network,
         filesystem_slot,
-        filesystems,
+        filesystem,
         console_attachment.cloned(),
         control_console_attachment.cloned(),
         sandbox_blocks,

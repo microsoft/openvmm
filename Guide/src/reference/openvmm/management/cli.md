@@ -48,8 +48,8 @@ describes the source definitions.
   `console=`, `virtio_mmio.device=`, `virtnet_*=`, or `virtfs_*=`.
 
   One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
-  dormant when `--mount` is omitted; `--mount` binds HostFs to it, and a
-  second `--mount` adds a second slot at MMIO `0xd0008000`, IRQ 13;
+  dormant when neither `--mount` nor `--mount-aggregate` is given; either one
+  binds HostFs to it;
   one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
   IRQ 7 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
   exposes fixed distro, runtime, custom, and scratch slots starting at MMIO
@@ -226,23 +226,14 @@ describes the source definitions.
   software must establish new host-side flows.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
   one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 6, with tag `microvm`.
-  Repeat it once to attach a second device at MMIO `0xd0008000`, IRQ 13, with
-  tag `microvm1`; each share has its own guest target, access mode, and
-  denied paths. The default mode is read-only; `rw` must be explicit. The
-  guest target must be an absolute, non-root Linux path without dot, parent,
-  empty, whitespace, backslash, or `=` components. Guest targets and host
-  directories of different shares must not equal or contain one another; on
-  Linux, a bind mount or nested mount that reaches the files of another share
-  counts as containing it.
+  `--mount` may appear once. The default mode is read-only; `rw` must be
+  explicit. The guest target must be an absolute, non-root Linux path without
+  dot, parent, empty, whitespace, backslash, or `=` components.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
     --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz \
     --mount /mnt/share,path/to/share,ro
-  openvmm --machine microvm --hypervisor kvm \
-    --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz \
-    --mount /workspace,path/to/workspace,rw \
-    --mount /opt/hostedtoolcache,path/to/toolcache,ro
   ```
 
   The device has one high-priority queue, one request queue, direct-I/O file
@@ -254,10 +245,33 @@ describes the source definitions.
   host; a read-only attachment rejects them with `EROFS`. On Windows, the
   links are WSL-style reparse points.
 
+  `--mount-aggregate <GUEST_TARGET>` attaches several host directories to the
+  same device instead, and each repeatable
+  `--mount-child <NAME,HOST_PATH[,ro|rw]>` adds one, with its own access mode
+  and policy, as the directory `NAME` of the aggregate's read-only root. Only
+  the guest's root user may enter that root. A name is 1 to 64 ASCII letters,
+  digits, `.`, `_`, or `-`; the mode follows the last comma, so a host path
+  may contain commas when the mode is given. Host directories must not equal
+  or contain one another; on Linux, a bind mount or nested mount that reaches
+  the files of another child counts as containing it. A rename between
+  children fails with `EXDEV`, and so does a hard link, unless its
+  destination is read-only, which fails with `EROFS` first. The bootstrap
+  tokens add `virtfs_aggregate=1`, and `virtfs_mode` is `rw` when any child
+  is. `--mount-aggregate` conflicts with `--mount`.
+
+  ```bash
+  openvmm --machine microvm --hypervisor kvm \
+    --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz \
+    --mount-aggregate /run/shares \
+    --mount-child workspace,path/to/workspace,rw \
+    --mount-child toolcache,path/to/toolcache,ro
+  ```
+
   `--mount-deny <HOST_PATH>` is repeatable and hides an existing file or
   directory inside an exported root. Paths are canonicalized to
-  host-relative policy entries before resources are opened. With two shares,
-  each path must be absolute and applies to the share whose root contains it.
+  host-relative policy entries before resources are opened. A relative path
+  is relative to the `--mount` root; with `--mount-aggregate`, each path must
+  be absolute and applies to the child whose root contains it.
   The complete root,
   paths outside the roots, duplicates, overlaps, symlink/reparse components,
   and nested-mount crossings are rejected. The virtio-fs server blocks the
@@ -290,17 +304,17 @@ describes the source definitions.
   requires `CAP_SETUID` and `CAP_SETGID` unless every caller has OpenVMM's
   own UID and GID and OpenVMM has no other supplementary groups; an
   operation that cannot run as its caller fails with `EPERM`. The mode applies
-  to every `--mount`.
+  to every `--mount-child`, whose roots must then have the same owner.
   See [virtio-fs](../../devices/virtio/virtio-fs.md#host-identity-of-guest-operations).
 
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
-  directory contents or native handles. An active snapshot requires
-  `--mount` again for every captured share, in capture order, with the exact
-  canonical host path, guest target, access mode, denied, allowed, and
-  writable paths, and `--mount-owner` mode; the live roots and every saved
-  object identity are
-  also revalidated before vCPUs start. A snapshot captured without `--mount`
-  may remain dormant or bind one new attachment to the first slot. The resumed
+  directory contents or native handles. An active snapshot requires the
+  captured `--mount` again, with the exact canonical host path, guest target,
+  access mode, denied, allowed, and writable paths, and `--mount-owner` mode;
+  the live root and every saved object identity are also revalidated before
+  vCPUs start. A microVM with `--mount-aggregate` cannot capture a snapshot.
+  A snapshot captured without a filesystem may remain dormant or bind one new
+  `--mount` to the slot. The resumed
   guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
   because its cold-boot mount hook has already completed.
   See [virtio-fs](../../devices/virtio/virtio-fs.md).
@@ -389,12 +403,12 @@ describes the source definitions.
   A listener peer may connect after restore; guest transmit descriptors remain
   pending while no peer is connected.
 
-  When the snapshot contains active virtio-fs attachments, restore requires
-  a fresh `--mount` for each, in capture order. Each argument must reproduce
-  the manifest's exact canonical host path, guest target, and `ro`/`rw` mode
-  while also supplying a live root with the same saved identity. A snapshot
-  advertising the dormant slot may instead accept one new attachment;
-  snapshots without that capability reject additive attachment.
+  When the snapshot contains an active virtio-fs attachment, restore requires
+  a fresh `--mount`. It must reproduce the manifest's exact canonical host
+  path, guest target, and `ro`/`rw` mode while also supplying a live root with
+  the same saved identity. A snapshot advertising the dormant slot may instead
+  accept one new `--mount`; snapshots without that capability reject additive
+  attachment.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress

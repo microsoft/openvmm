@@ -360,25 +360,26 @@ post-restore acknowledgement boundary. Teardown still depends on the affected
 backends responding; it does not provide a bounded shutdown deadline.
 
 For microVM virtio-fs, the manifest always records the fixed,
-guest-discoverable first slot. A dormant slot has no host attachment or
+guest-discoverable slot. A dormant slot has no host attachment or
 filesystem policy and carries explicit dormant device-private state. An active
 slot also records the stable attachment ID, exact canonical host path, pinned
 root identity, guest mount target, access mode, denied, allowed, and writable
 paths, ownership mode, no-DAX queue
-policy, and `live-revalidate` restore mode. A second slot is recorded only
-when a second share was attached, with the same fields for that share.
+policy, and `live-revalidate` restore mode.
 Its device-private payload records FUSE negotiation, namespace IDs and aliases,
 lookup counts, reopenable handles, bounded directory-entry snapshots and
 cookies, and queue progress. Native file descriptors and Windows handles are
-never serialized.
+never serialized. A microVM with an aggregate filesystem
+(`--mount-aggregate`) cannot capture a snapshot, and a snapshot that an
+earlier OpenVMM captured with a second virtio-fs slot cannot be restored.
 
-Restoring active slots requires a fresh
-`--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment for each, in capture
-order, with the same canonical host path, target, and mode, the same
+Restoring an active slot requires a fresh
+`--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment with the same canonical
+host path, target, and mode, the same
 `--mount-deny`, `--mount-allow`, and `--mount-write` paths, and the same
-`--mount-owner` mode. OpenVMM independently validates the roots and every
+`--mount-owner` mode. OpenVMM independently validates the root and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
-restore without an attachment or bind one new attachment to the first slot.
+restore without an attachment or bind one new `--mount` to the slot.
 For a new attachment, the resumed guest explicitly mounts tag `microvm`; the
 cold-boot mount hook does not run again.
 

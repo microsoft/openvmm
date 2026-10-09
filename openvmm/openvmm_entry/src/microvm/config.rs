@@ -13,7 +13,8 @@ use super::console::microvm_console_socket_cleanup;
 use super::console::microvm_control_broker_config;
 use super::console::validate_microvm_console_attachment_namespace;
 use super::filesystem::EffectiveMicrovmFilesystem;
-use super::filesystem::effective_microvm_filesystems;
+use super::filesystem::MicrovmFilesystemRequest;
+use super::filesystem::effective_microvm_filesystem;
 use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
@@ -69,7 +70,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     active: bool,
     network: Option<EffectiveMicrovmNetwork>,
     filesystem_slot: bool,
-    filesystems: Vec<EffectiveMicrovmFilesystem>,
+    filesystem: Option<EffectiveMicrovmFilesystem>,
     gateway_dns: Option<std::net::IpAddr>,
     console: Option<ConsoleEndpoint>,
     control_console: Option<ConsoleEndpoint>,
@@ -102,9 +103,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
         } else {
             false
         };
-        let filesystems = if active {
-            effective_microvm_filesystems(
-                &opt.microvm.microvm_mount,
+        let filesystem = if active {
+            effective_microvm_filesystem(
+                MicrovmFilesystemRequest::from_options(opt),
                 super::filesystem::MicrovmFilesystemPolicyPaths {
                     denied: &opt.microvm.microvm_mount_deny,
                     allowed: &opt.microvm.microvm_mount_allow,
@@ -117,16 +118,16 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 restore_machine_contract,
             )?
         } else {
-            Vec::new()
+            None
         };
-        if opt.microvm.snapshot_destination.is_some() {
-            for filesystem in &filesystems {
-                tracing::warn!(
-                    stable_id = filesystem.attachment.stable_id,
-                    access_mode = filesystem.config.access.as_str(),
-                    "microVM snapshot excludes live host filesystem contents; restore revalidates the external directory and may fail after host changes"
-                );
-            }
+        if opt.microvm.snapshot_destination.is_some()
+            && let Some(filesystem) = &filesystem
+        {
+            tracing::warn!(
+                stable_id = filesystem.attachment.stable_id,
+                access_mode = filesystem.config.access.as_str(),
+                "microVM snapshot excludes live host filesystem contents; restore revalidates the external directory and may fail after host changes"
+            );
         }
         let gateway_dns = network
             .as_ref()
@@ -200,14 +201,19 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
             egress_policy: network.as_ref().map(|network| network.policy.clone()),
-            filesystem_attachments: filesystems
-                .iter()
-                .map(|filesystem| filesystem.attachment.clone())
-                .collect(),
-            filesystem_root_paths: filesystems
-                .iter()
-                .map(|filesystem| PathBuf::from(&filesystem.root_path))
-                .collect(),
+            filesystem: filesystem
+                .as_ref()
+                .map(|filesystem| super::MicrovmFilesystemHost {
+                    attachment: filesystem.attachment.clone(),
+                    root_path: PathBuf::from(&filesystem.root_path),
+                    children: filesystem
+                        .children
+                        .iter()
+                        .map(|(root_path, attachment)| {
+                            (PathBuf::from(root_path), attachment.clone())
+                        })
+                        .collect(),
+                }),
             ..Default::default()
         };
 
@@ -217,7 +223,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             active,
             network,
             filesystem_slot,
-            filesystems,
+            filesystem,
             gateway_dns,
             console,
             control_console,
@@ -553,15 +559,51 @@ impl<'a> MicrovmConfigBuilder<'a> {
 
         let slot_count = openvmm_defs::microvm::microvm_filesystem_slot_count(
             self.filesystem_slot,
-            self.filesystems.len(),
+            usize::from(self.filesystem.is_some()),
         )?;
-        for (index, slot) in openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
+        for slot in openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
             .iter()
             .take(slot_count)
-            .enumerate()
         {
-            let (fs, profile) = if let Some(filesystem) = self.filesystems.get(index) {
-                (
+            let (fs, profile) = match &self.filesystem {
+                Some(filesystem) if filesystem.config.is_aggregate() => (
+                    virtio_resources::fs::VirtioFsBackend::Aggregate {
+                        children: filesystem
+                            .config
+                            .children
+                            .iter()
+                            .zip(&filesystem.children)
+                            .map(|(child, (root_path, _))| {
+                                virtio_resources::fs::VirtioFsAggregateChild {
+                                    name: child.name.clone(),
+                                    root_path: root_path.clone(),
+                                    mount_options: String::new(),
+                                }
+                            })
+                            .collect(),
+                    },
+                    virtio_resources::fs::microvm::VirtioFsProfile::MicrovmAggregate {
+                        stable_id: slot.stable_id.to_owned(),
+                        children: filesystem
+                            .config
+                            .children
+                            .iter()
+                            .zip(&filesystem.children)
+                            .map(|(child, (_, attachment))| {
+                                virtio_resources::fs::microvm::MicrovmAggregateChild {
+                                    name: child.name.clone(),
+                                    root_identity: attachment.identity.clone(),
+                                    read_only: child.access.is_read_only(),
+                                    denied_paths: child.denied_paths.clone(),
+                                    allowed_paths: child.allowed_paths.clone(),
+                                    writable_paths: child.writable_paths.clone(),
+                                }
+                            })
+                            .collect(),
+                        caller_identity: filesystem.config.owner.is_caller(),
+                    },
+                ),
+                Some(filesystem) => (
                     virtio_resources::fs::VirtioFsBackend::HostFs {
                         root_path: filesystem.root_path.clone(),
                         mount_options: String::new(),
@@ -575,14 +617,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         writable_paths: filesystem.config.writable_paths.clone(),
                         caller_identity: filesystem.config.owner.is_caller(),
                     },
-                )
-            } else {
-                (
+                ),
+                None => (
                     virtio_resources::fs::VirtioFsBackend::Dormant,
                     virtio_resources::fs::microvm::VirtioFsProfile::MicrovmDormant {
                         stable_id: slot.stable_id.to_owned(),
                     },
-                )
+                ),
             };
             add_virtio_device(
                 VirtioBusCli::Mmio,
@@ -668,7 +709,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
         cfg.microvm.network = self.network.as_ref().map(|network| network.config.clone());
         let microvm_filesystems = self
-            .filesystems
+            .filesystem
             .iter()
             .map(|filesystem| filesystem.config.clone())
             .collect::<Vec<_>>();
