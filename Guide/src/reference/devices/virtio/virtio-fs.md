@@ -154,10 +154,28 @@ link across mounts does. An object with several names is writable only if
 every name that the guest has used for it is writable.
 
 OpenVMM canonicalizes each policy path relative to its export and rejects
-paths that do not exist, paths outside the roots, a root itself, duplicates,
+paths that do not exist, paths outside the roots, a root as an allowed or
+writable path, duplicates,
 redundant or contradictory combinations, symlink/reparse components, and
 nested-mount crossings before opening the device. HostFs also requires every
 traverse-only path to be a directory when it attaches the share.
+
+`--mount-deny` may name the root of the `--mount` or of a `--mount-child`
+when `--mount-allow` paths expose parts of it. The root is then
+traverse-only: the guest sees only the allowed paths and the directories that
+lead to them, and it can modify nothing in the root itself. HostFs pins the
+root object to the root, so it hides that object at any other name, and other
+denied paths are allowed only inside allowed paths. This exposes chosen files
+of a directory without the rest of it:
+
+```bash
+openvmm --machine microvm \
+  --mount-aggregate /run/shares \
+  --mount-child 0,path/to/tools,ro \
+  --mount-deny path/to/tools \
+  --mount-allow path/to/tools/config.json \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
 
 ```admonish warning
 The policy applies to names inside the export. A host hard link or bind

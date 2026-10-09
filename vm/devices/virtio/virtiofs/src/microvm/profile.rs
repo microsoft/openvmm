@@ -248,24 +248,38 @@ fn subtree_policy(
     read_only: bool,
 ) -> Result<SubtreePolicy, MicroVmProfileError> {
     SubtreePolicy::new(
-        parse_policy_paths(denied_paths, MicroVmProfileError::InvalidDeniedPaths)?,
-        parse_policy_paths(allowed_paths, MicroVmProfileError::InvalidAllowedPaths)?,
-        parse_policy_paths(writable_paths, MicroVmProfileError::InvalidWritablePaths)?,
+        parse_policy_paths(denied_paths, MicroVmProfileError::InvalidDeniedPaths, true)?,
+        parse_policy_paths(
+            allowed_paths,
+            MicroVmProfileError::InvalidAllowedPaths,
+            false,
+        )?,
+        parse_policy_paths(
+            writable_paths,
+            MicroVmProfileError::InvalidWritablePaths,
+            false,
+        )?,
         read_only,
     )
 }
 
 /// Parses unique, canonical share-relative paths in lexical order, which is
-/// the order that the snapshot contract records.
+/// the order that the snapshot contract records. With `allow_root`, the empty
+/// path names the share's root.
 fn parse_policy_paths(
     paths: Vec<String>,
     error: MicroVmProfileError,
+    allow_root: bool,
 ) -> Result<Vec<PathBuf>, MicroVmProfileError> {
     if paths.len() > 128 || paths.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(error);
     }
     let mut parsed = Vec::with_capacity(paths.len());
     for path in paths {
+        if path.is_empty() && allow_root {
+            parsed.push(PathBuf::new());
+            continue;
+        }
         if path.is_empty()
             || path.len() > 4096
             || path.starts_with('/')

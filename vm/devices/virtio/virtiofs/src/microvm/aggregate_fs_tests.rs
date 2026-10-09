@@ -568,3 +568,73 @@ fn aggregate_state_rejects_changed_children() {
     let error = validate_microvm_state(&writable, &profile(&children)).unwrap_err();
     assert!(error.to_string().contains("writable handle"), "{error:#}");
 }
+
+#[test]
+fn a_hidden_child_root_exposes_only_its_allowed_paths() {
+    let roots = Roots::new();
+    std::fs::write(roots.tools.join("config.json"), b"config").unwrap();
+    std::fs::write(roots.tools.join("notes.txt"), b"notes").unwrap();
+    std::fs::create_dir_all(roots.tools.join("bin")).unwrap();
+    std::fs::write(roots.tools.join("bin").join("tool"), b"tool").unwrap();
+    std::fs::create_dir(roots.tools.join("private")).unwrap();
+    let fs = aggregate(&[
+        Child::new("work", &roots.work, false),
+        Child {
+            denied: &[""],
+            allowed: &["bin/tool", "config.json", "notes.txt"],
+            writable: &["notes.txt"],
+            ..Child::new("tools", &roots.tools, false)
+        },
+    ]);
+
+    let tools = lookup(&fs, "tools").unwrap();
+    assert_eq!(list(&fs, FUSE_ROOT_ID), ["tools", "work"]);
+    assert_eq!(list(&fs, tools), ["bin", "config.json", "notes.txt"]);
+    assert_eq!(list(&fs, lookup(&fs, "tools/bin").unwrap()), ["tool"]);
+    for hidden in [
+        "tools/file",
+        "tools/private",
+        "tools/missing",
+        "tools/bin/other",
+    ] {
+        assert_eq!(error(lookup(&fs, hidden)), lx::Error::EACCES, "{hidden}");
+    }
+    let config = lookup(&fs, "tools/config.json").unwrap();
+    assert_eq!(read_node(&fs, config), b"config");
+    assert_eq!(
+        read_node(&fs, lookup(&fs, "tools/bin/tool").unwrap()),
+        b"tool"
+    );
+
+    // Neither the traverse-only root nor its read-only entries can change.
+    assert_eq!(error(create(&fs, tools, "new")), lx::Error::EROFS);
+    assert_eq!(error(mkdir(&fs, tools, "new")), lx::Error::EROFS);
+    assert_eq!(
+        error(fs.unlink(&request(tools), name("config.json"))),
+        lx::Error::EROFS
+    );
+    assert_eq!(
+        error(fs.set_attr(
+            &request(tools),
+            &setattr(FATTR_MODE, |arg| arg.mode = 0o777)
+        )),
+        lx::Error::EROFS
+    );
+    assert_eq!(error(open(&fs, config, lx::O_RDWR)), lx::Error::EROFS);
+    // A writable allowed path can.
+    let notes = lookup(&fs, "tools/notes.txt").unwrap();
+    let fh = open(&fs, notes, lx::O_RDWR).unwrap();
+    write(&fs, notes, fh, b"guest").unwrap();
+    release(&fs, notes, fh);
+
+    assert_eq!(
+        std::fs::read(roots.tools.join("notes.txt")).unwrap(),
+        b"guest"
+    );
+    assert_eq!(
+        Roots::entries(&roots.tools),
+        ["bin", "config.json", "file", "notes.txt", "private"]
+    );
+    // The other child is unaffected.
+    assert_eq!(list(&fs, lookup(&fs, "work").unwrap()), ["file"]);
+}
