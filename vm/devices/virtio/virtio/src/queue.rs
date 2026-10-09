@@ -589,20 +589,23 @@ impl QueueCoreCompleteWork {
         }
     }
 
-    pub fn complete_descriptor(
+    pub fn complete_descriptors<'a>(
         &mut self,
-        completion: &QueueCompletion,
-        bytes_written: u32,
+        completions: impl ExactSizeIterator<Item = (&'a QueueCompletion, u32)> + Clone,
     ) -> Result<bool, QueueError> {
         match &mut self.inner {
             QueueCompleteWorkInner::Split(split) => {
-                split.complete_descriptor(completion.descriptor_index, bytes_written)
+                split.complete_descriptors(completions.map(|(completion, bytes_written)| {
+                    (completion.descriptor_index, bytes_written)
+                }))
             }
             QueueCompleteWorkInner::Packed(packed) => {
-                let QueueCompletionContext::Packed(context) = &completion.context else {
-                    panic!("mismatched queue completion context for packed queue");
-                };
-                packed.complete_descriptor(context, bytes_written)
+                packed.complete_descriptors(completions.map(|(completion, bytes_written)| {
+                    let QueueCompletionContext::Packed(context) = &completion.context else {
+                        panic!("mismatched queue completion context for packed queue");
+                    };
+                    (context, bytes_written)
+                }))
             }
         }
     }

@@ -9,7 +9,10 @@ use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxChecksumOffload;
 use net_backend::RxChecksumState;
+use net_backend::RxGso;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxError;
@@ -114,7 +117,7 @@ struct MockQueue {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
@@ -162,8 +165,13 @@ impl net_backend::Queue for MockQueue {
         let mut ready = self.rx_ready.lock();
         let n = ready.len().min(packets.len());
         for packet in packets.iter_mut().take(n) {
-            let (rx_id, data, metadata) = ready.pop_front().unwrap();
-            pool.write_packet(rx_id, &metadata, &data);
+            let (rx_id, data, metadata, header_first) = ready.pop_front().unwrap();
+            if header_first {
+                pool.write_header(rx_id, &metadata);
+                pool.write_data(rx_id, &data);
+            } else {
+                pool.write_packet(rx_id, &metadata, &data);
+            }
             *packet = rx_id;
         }
         Ok(n)
@@ -228,7 +236,7 @@ struct MockQueueHandle {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Receiver<()>,
     tx_avail_notify: mesh::Receiver<()>,
@@ -272,7 +280,28 @@ impl MockQueueHandle {
             .expect("no pending RX buffer available");
         self.rx_ready
             .lock()
-            .push_back((rx_id, data.to_vec(), *metadata));
+            .push_back((rx_id, data.to_vec(), *metadata, false));
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    fn inject_rx_packet_header_first(&self, data: &[u8]) {
+        let rx_id = self
+            .rx_pending
+            .lock()
+            .pop_front()
+            .expect("no pending RX buffer available");
+        self.rx_ready.lock().push_back((
+            rx_id,
+            data.to_vec(),
+            RxMetadata {
+                offset: 0,
+                len: data.len(),
+                ..Default::default()
+            },
+            true,
+        ));
         if let Some(waker) = self.ready_waker.lock().take() {
             waker.wake();
         }
@@ -297,6 +326,7 @@ impl MockQueueHandle {
                 len: data.len(),
                 ..Default::default()
             },
+            false,
         ));
         if let Some(waker) = self.ready_waker.lock().take() {
             waker.wake();
@@ -995,6 +1025,38 @@ async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
     let (id2, len2) = harness.wait_for_rx_used().await;
     assert_eq!(id2, 2);
     assert_eq!(len2, NET_HEADER_SIZE + b"pkt-two".len() as u32);
+}
+
+/// A backend packet larger than the posted receive buffer is dropped without
+/// publishing a partially written packet to the guest.
+#[async_test]
+async fn rx_oversized_packet_is_dropped(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + 64);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet(&[0xaa; 128]);
+
+    let (id, len) = harness.wait_for_rx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0, "oversized packet must not be published");
+}
+
+/// A backend that writes the header before a failing payload write must not
+/// publish the header's packet length as a successful receive.
+#[async_test]
+async fn rx_header_first_payload_failure_is_dropped(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + 64);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_header_first(&[0xaa; 128]);
+
+    let (id, len) = harness.wait_for_rx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0, "failed payload write must not be published");
 }
 
 /// Post 3 TX packets one at a time, each completing synchronously.
@@ -1870,6 +1932,51 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
     );
 }
 
+/// RX TCP GSO metadata is reproduced in the guest virtio-net header.
+#[async_test]
+async fn rx_offload_tcp_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let buffer_size: u32 = 65535;
+    let desc_index: u16 = 0;
+    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
+    handle.wait_for_rx_pending().await;
+
+    let payload = b"tcp-gso-packet";
+    let metadata = RxMetadata {
+        offset: 0,
+        len: payload.len(),
+        checksum_offload: Some(RxChecksumOffload {
+            start: 34,
+            offset: 16,
+        }),
+        gso: Some(RxGso {
+            protocol: RxGsoProtocol::TcpV4,
+            header_len: 54,
+            max_segment_size: 1460,
+            ecn: true,
+        }),
+        ..Default::default()
+    };
+    handle.inject_rx_packet_with_metadata(payload, &metadata);
+
+    let (used_id, _) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, desc_index);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(gso.protocol(), VirtioNetHeaderGsoProtocol::TCPV4);
+    assert!(gso.ecn());
+    assert_eq!(hdr.hdr_len, 54);
+    assert_eq!(hdr.gso_size, 1460);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+}
+
 // --- Feature Negotiation Tests ---
 
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
@@ -1901,6 +2008,8 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         "CSUM should be set when tcp+udp offloads supported"
     );
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
     assert!(
         bank0.host_tso4(),
         "HOST_TSO4 should be set when tso+tcp+ipv4_header supported"
@@ -1973,6 +2082,8 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac());
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),
