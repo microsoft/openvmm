@@ -2516,6 +2516,7 @@ fn parse_endpoint(
                 cidr: cidr.clone(),
                 params: Default::default(),
                 static_ipv4: None,
+                static_ipv6: None,
                 ports,
                 internal_dns: true,
                 recv,
