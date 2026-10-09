@@ -85,10 +85,7 @@ fn test_madt_rejects_conflicting_pit_irq_override() {
     build_madt_with_level_triggered_irqs(&[0], true);
 }
 
-fn build_madt_with_level_triggered_irqs(
-    level_triggered_irqs: &'static [u32],
-    enable_pit: bool,
-) {
+fn build_madt_with_level_triggered_irqs(level_triggered_irqs: &'static [u32], enable_pit: bool) {
     let mem = new_mem();
     let topology = TopologyBuilder::new_x86().build(1).unwrap();
     let pcie = vec![];
