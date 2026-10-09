@@ -107,3 +107,18 @@ grep -r "crate_name" Guide/src/
 # Find placeholder topics (empty links) in SUMMARY.md
 grep '()\s*$' Guide/src/SUMMARY.md
 ```
+
+---
+
+## Attestation Documentation
+
+| Code path | Guide page |
+| --- | --- |
+| `openhcl/underhill_attestation/` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/tee_call/` | `reference/architecture/openhcl/attestation.md` |
+| `openhcl/underhill_core/src/hardware_reseal.rs` | `reference/architecture/openhcl/attestation.md` |
+
+## What to Flag
+
+- Changes to OpenHCL attestation, VMGS hardware recovery, or runtime TCB policy
+   must update `reference/architecture/openhcl/attestation.md`.

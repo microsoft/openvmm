@@ -11,6 +11,9 @@ use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
+#[cfg(all(test, feature = "encryption"))]
+mod tests;
+
 /// An error returned by a VMGS broker operation.
 #[derive(Protobuf, Error, Debug)]
 pub enum VmgsBrokerError {
@@ -20,6 +23,9 @@ pub enum VmgsBrokerError {
     /// Another VMGS error.
     #[error(transparent)]
     Other(RemoteError),
+    /// The active key changed before the conditional write.
+    #[error("active encryption key changed")]
+    ActiveKeyMismatch,
 }
 
 impl From<vmgs::Error> for VmgsBrokerError {
@@ -56,6 +62,13 @@ pub enum VmgsBrokerRpc {
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
     DeleteFile(Rpc<BrokerFileId, Result<(), VmgsBrokerError>>),
+    // These payloads contain sensitive keys. Do not derive Debug or Inspect.
+    #[cfg(feature = "encryption")]
+    ActiveEncryptionKey(Rpc<(), Result<Vec<u8>, VmgsBrokerError>>),
+    #[cfg(feature = "encryption")]
+    WriteFileIfActiveKeyMatches(
+        Rpc<(BrokerFileId, Vec<u8>, [u8; 32]), Result<(), VmgsBrokerError>>,
+    ),
 }
 
 pub struct VmgsBrokerTask {
@@ -113,6 +126,30 @@ impl VmgsBrokerTask {
                 .await
             }
             VmgsBrokerRpc::Save(rpc) => rpc.handle_sync(|()| self.vmgs.save()),
+            #[cfg(feature = "encryption")]
+            VmgsBrokerRpc::ActiveEncryptionKey(rpc) => rpc.handle_sync(|()| {
+                self.vmgs
+                    .active_encryption_key()
+                    .map(|key| key.to_vec())
+                    .map_err(Into::into)
+            }),
+            #[cfg(feature = "encryption")]
+            VmgsBrokerRpc::WriteFileIfActiveKeyMatches(rpc) => {
+                rpc.handle(async |(file_id, buf, expected_key)| {
+                    // Keep the comparison, write, and final flush in this one
+                    // serially processed request: no intervening broker RPC
+                    // may change the active key after the comparison.
+                    let active_key = self.vmgs.active_encryption_key()?;
+                    if !constant_time_eq::constant_time_eq_32(active_key, &expected_key) {
+                        return Err(VmgsBrokerError::ActiveKeyMismatch);
+                    }
+
+                    self.vmgs.write_file(file_id.into(), &buf).await?;
+                    self.vmgs.flush().await?;
+                    Ok(())
+                })
+                .await
+            }
             VmgsBrokerRpc::DeleteFile(rpc) => {
                 rpc.handle(async |file_id| {
                     self.vmgs
