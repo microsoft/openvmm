@@ -57,7 +57,34 @@ use chipset_resources::microvm::MicrovmSnapshotBoundaryRequest;
 use net_backend_resources::egress::EgressPolicy;
 use openvmm_helpers::snapshot::microvm::SnapshotAttachment;
 use output::MicrovmOutputDrain;
+use std::path::Path;
 use std::path::PathBuf;
+
+/// The live host side of the microVM filesystem.
+#[derive(Clone, Debug)]
+pub(crate) struct MicrovmFilesystemHost {
+    /// Snapshot identity of the filesystem's attachment.
+    pub(crate) attachment: SnapshotAttachment,
+    /// Canonical host root of a single directory; empty for an aggregate.
+    pub(crate) root_path: PathBuf,
+    /// Canonical host roots and live root attachments of an aggregate's
+    /// children, in child order.
+    pub(crate) children: Vec<(PathBuf, SnapshotAttachment)>,
+}
+
+impl MicrovmFilesystemHost {
+    /// Returns every live host root of the filesystem.
+    pub(crate) fn root_paths(&self) -> Vec<&Path> {
+        if self.children.is_empty() {
+            vec![self.root_path.as_path()]
+        } else {
+            self.children
+                .iter()
+                .map(|(root_path, _)| root_path.as_path())
+                .collect()
+        }
+    }
+}
 
 /// Host-side microVM resources produced while building the VM configuration
 /// and consumed by the snapshot, restore, and teardown paths.
@@ -81,12 +108,8 @@ pub(crate) struct MicrovmResources {
     pub(crate) network_attachment: Option<SnapshotAttachment>,
     /// The bound run-scoped egress policy.
     pub(crate) egress_policy: Option<EgressPolicy>,
-    /// Snapshot identities of the live filesystem roots, in virtio-fs slot
-    /// order.
-    pub(crate) filesystem_attachments: Vec<SnapshotAttachment>,
-    /// Canonical host paths of the live filesystem roots, in virtio-fs slot
-    /// order.
-    pub(crate) filesystem_root_paths: Vec<PathBuf>,
+    /// The live host side of the attached filesystem.
+    pub(crate) filesystem: Option<MicrovmFilesystemHost>,
     /// Under the time ABI, seals the time fields of the restore packet; the
     /// restoring worker takes it.
     pub(crate) restore_time_record:
