@@ -3238,7 +3238,7 @@ fn is_gateway_dns_tcp(
     }
     match ft.dst.ip() {
         IpAddr::V4(ip) => params.gateway_ip == ip,
-        IpAddr::V6(ip) => params.gateway_link_local_ipv6 == ip,
+        IpAddr::V6(ip) => params.is_gateway_ipv6(ip),
     }
 }
 

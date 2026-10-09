@@ -26,6 +26,7 @@ pub mod limits;
 mod local_addr_map;
 mod ndp;
 pub mod static_ipv4;
+pub mod static_ipv6;
 mod tcp;
 mod udp;
 
@@ -179,6 +180,12 @@ pub struct ConsommeParams {
     /// This field is learned from incoming IPv6 traffic from the guest.
     #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
+    /// Routable IPv6 address of the gateway on a link with a static IPv6
+    /// identity (see [`ConsommeParams::set_static_ipv6`]). The gateway answers
+    /// Neighbor Discovery, echo requests, and DNS at this address as at its
+    /// link-local address.
+    #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
+    pub gateway_ipv6: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
     pub udp_timeout: Duration,
     /// Inactivity timeout for TCP connections waiting for a close handshake
@@ -258,6 +265,7 @@ impl ConsommeParams {
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
             client_ip_ipv6_routable: None,
+            gateway_ipv6: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             // Defaults to 2*MSL per RFC 9293 for the `TimeWait` case.
@@ -398,6 +406,13 @@ impl ConsommeParams {
                         .is_some_and(|ip| v6.ip() == &ip)
             }
         }
+    }
+
+    /// Returns whether `address` is one of the gateway's IPv6 addresses: its
+    /// link-local address, or its routable address on a link with a static
+    /// IPv6 identity.
+    fn is_gateway_ipv6(&self, address: Ipv6Address) -> bool {
+        address == self.gateway_link_local_ipv6 || self.gateway_ipv6 == Some(address)
     }
 }
 
@@ -1085,12 +1100,15 @@ impl<T: Client> Access<'_, T> {
         // may not reflect the actual buffer size. Skip the length validation
         // and use the full buffer.
         let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
-        if !segmentation_offload {
+        let payload_end = if segmentation_offload {
+            payload.len()
+        } else {
             let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
             if payload.len() < required_len {
                 return Err(DropReason::MalformedPacket);
             }
-        }
+            required_len
+        };
 
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access
@@ -1099,9 +1117,16 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::DestinationNotAllowed);
         }
 
+        // An IPv4-mapped destination is not an IPv6 destination on the wire:
+        // a dual-stack host socket would reach the IPv4 host it embeds,
+        // outside the IPv4 host-local checks.
+        if ipv6.dst_addr().to_ipv4_mapped().is_some() {
+            return Err(DropReason::DestinationNotAllowed);
+        }
+
         let next_header = ipv6.next_header();
         let src_addr = ipv6.src_addr();
-        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
+        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..payload_end];
         let addresses = Ipv6Addresses {
             src_addr,
             dst_addr: ipv6.dst_addr(),
@@ -1145,11 +1170,15 @@ impl<T: Client> Access<'_, T> {
             IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V6(addresses), inner, checksum)?,
             IpProtocol::Icmpv6 => {
                 // Check if this is an NDP packet
-                let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
+                let icmpv6_packet = Icmpv6Packet::new_checked(inner)?;
                 let msg_type = icmpv6_packet.msg_type();
 
                 if msg_type.is_ndisc() {
                     self.handle_ndp(frame, inner, ipv6.src_addr())?;
+                } else if msg_type == Icmpv6Message::EchoRequest
+                    && self.inner.state.params.gateway_ipv6 == Some(addresses.dst_addr)
+                {
+                    self.handle_icmpv6_gateway_echo(frame, &addresses, inner)?;
                 } else {
                     tracing::trace!(
                         icmpv6_type = %msg_type,
