@@ -189,6 +189,12 @@ impl TaskQueue {
     /// Returns when the associated scheduler has been dropped.
     pub async fn run(&mut self) {
         while let Ok(task) = self.tasks.recv().await {
+            // Hold the scheduler for the whole of `run`. When a task completes
+            // or is cancelled, `run` drops its future, then a detached task's
+            // output, then wakes the task's awaiter. Each of those can run code
+            // that looks the scheduler up through a weak reference, and the
+            // future may have held the last strong one.
+            let _scheduler = task.metadata().scheduler.upgrade();
             task.run();
         }
     }

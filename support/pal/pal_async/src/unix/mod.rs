@@ -21,11 +21,13 @@ cfg_if! {
 
         pub use epoll::EpollDriver as DefaultDriver;
         pub use epoll::EpollPool as DefaultPool;
+        pub use epoll::WeakEpollDriver as WeakDefaultDriver;
     } else if #[cfg(target_os = "macos")] {
         pub mod kqueue;
 
         pub use kqueue::KqueueDriver as DefaultDriver;
         pub use kqueue::KqueuePool as DefaultPool;
+        pub use kqueue::WeakKqueueDriver as WeakDefaultDriver;
     }
 }
 
