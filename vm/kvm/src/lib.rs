@@ -1241,6 +1241,22 @@ impl Partition {
         })
     }
 
+    /// Returns the partition's default timestamp counter rate, in kHz.
+    ///
+    /// The rate a vcpu starts with unless userspace sets its own: the host's, as KVM
+    /// recorded it when the vm was created. A vcpu reporting this same rate runs its
+    /// counter unscaled. Rejected the same way [`Processor::tsc_khz`] rejects a rate that
+    /// is not strictly positive.
+    #[cfg(target_arch = "x86_64")]
+    pub fn default_tsc_khz(&self) -> Result<u32> {
+        // SAFETY: the request carries no payload; the rate comes back as the result.
+        let khz = unsafe { ioctl::kvm_get_tsc_khz(self.vm.as_raw_fd()).map_err(Error::GetTscKhz)? };
+        if khz <= 0 {
+            return Err(Error::ImplausibleTscKhz(khz));
+        }
+        Ok(khz as u32)
+    }
+
     /// Sets the current kvmclock value.
     pub fn set_clock_ns(&self, clock_ns: u64) -> Result<()> {
         let clock = kvm_clock_data {
