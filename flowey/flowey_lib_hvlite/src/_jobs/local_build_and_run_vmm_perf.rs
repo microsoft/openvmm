@@ -55,7 +55,7 @@ impl SimpleFlowNode for Node {
             openvmm: v,
         });
         let runner = ctx.reqv(|v| crate::build_vmm_perf::Request {
-            target,
+            target: target.clone(),
             profile,
             vmm_perf: v,
         });
@@ -68,6 +68,7 @@ impl SimpleFlowNode for Node {
         } else {
             ctx.req(crate::_jobs::setup_and_run_vmm_perf::Params {
                 label: "vmm-perf".into(),
+                target,
                 runner,
                 openvmm,
                 profiles,
