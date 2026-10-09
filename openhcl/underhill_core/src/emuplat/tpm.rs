@@ -9,6 +9,8 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
+use tpm_resources::AkCertRequest;
+use tpm_resources::AkCertResponse;
 use tpm_resources::RequestAkCert;
 use tpm_resources::TpmLogEvent;
 use tpm_resources::TpmLogger;
@@ -59,7 +61,25 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
         is_attestation_report: bool,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        existing_cert: Option<&[u8]>,
+    ) -> Result<AkCertRequest, Box<dyn std::error::Error + Send + Sync>> {
+        let metadata = if !is_attestation_report {
+            existing_cert.and_then(|cert| {
+                match underhill_attestation::parse_ak_cert_metadata(cert) {
+                    Ok(metadata) => Some(metadata),
+                    Err(error) => {
+                        tracelimit::warn_ratelimited!(
+                            error = &error as &dyn std::error::Error,
+                            "Failed to parse existing AK certificate; requesting a replacement"
+                        );
+                        None
+                    }
+                }
+            })
+        } else {
+            None
+        };
+        let has_cert = metadata.is_some();
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
@@ -76,6 +96,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
                 ek_pub_modulus,
                 &self.attestation_vm_config,
                 guest_input,
+                metadata,
             );
 
         let attestation_report = if let Some(tee_call) = &self.tee_call {
@@ -100,23 +121,31 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
-        Ok(request)
+        Ok(AkCertRequest {
+            data: request,
+            has_cert,
+        })
     }
 
     async fn request_ak_cert(
         &self,
         request: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    ) -> Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let agent_data = self.attestation_agent_data.clone().unwrap_or_default();
         let result = self
             .get_client
             .igvm_attest(agent_data, request, AK_CERT_RESPONSE_BUFFER_SIZE)
             .await?;
         let payload = if !result.response.is_empty() {
-            underhill_attestation::parse_ak_cert_response(&result.response)?
+            match underhill_attestation::parse_ak_cert_response(&result.response)? {
+                underhill_attestation::AkCertResponse::Certificate(cert) => {
+                    AkCertResponse::Certificate(cert)
+                }
+                underhill_attestation::AkCertResponse::NoRenewal => AkCertResponse::NoRenewal,
+            }
         } else {
             // Let the caller to handle the empty response.
-            vec![]
+            AkCertResponse::Certificate(vec![])
         };
 
         Ok(payload)

@@ -5,8 +5,79 @@
 //! response.
 use crate::igvm_attest::Error as CommonError;
 use crate::igvm_attest::parse_response_header;
-
+use der::Decode;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata;
 use thiserror::Error;
+use x509_cert::Certificate;
+use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+use x509_cert::time::Time;
+use zerocopy::FromBytes;
+
+/// The certificate or renewal decision returned by the host.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AkCertResponse {
+    /// Certificate bytes, possibly empty if the service is unavailable.
+    Certificate(Vec<u8>),
+    /// Keep the existing certificate.
+    NoRenewal,
+}
+
+/// An error extracting renewal metadata from a certificate.
+#[derive(Debug, Error)]
+pub enum AkCertMetadataError {
+    #[error("invalid AK certificate metadata")]
+    Decode(#[from] der::Error),
+    #[error("AK certificate has no {0} common name")]
+    MissingCommonName(&'static str),
+}
+
+/// Extract renewal hints, not a certificate trust decision.
+///
+/// TPM NV storage can contain padding or stale bytes after the DER certificate.
+pub fn parse_metadata(data: &[u8]) -> Result<AkCertMetadata, AkCertMetadataError> {
+    let (cert, _) = Certificate::from_der_partial(data)?;
+    let tbs = cert.tbs_certificate();
+    let issuer = tbs
+        .issuer()
+        .common_name()?
+        .ok_or(AkCertMetadataError::MissingCommonName("issuer"))?
+        .value()
+        .into_owned();
+    let subject = tbs
+        .subject()
+        .common_name()?
+        .ok_or(AkCertMetadataError::MissingCommonName("subject"))?
+        .value()
+        .into_owned();
+    let authority = tbs
+        .get_extension::<AuthorityKeyIdentifier>()?
+        .and_then(|(_, aki)| aki.key_identifier)
+        .map(|key| hex::encode_upper(key.as_bytes()))
+        .unwrap_or_default();
+    Ok(AkCertMetadata {
+        issuer,
+        subject,
+        not_before: time_content(tbs.validity().not_before),
+        not_after: time_content(tbs.validity().not_after),
+        authority,
+    })
+}
+
+fn time_content(time: Time) -> String {
+    let date = time.to_date_time();
+    let year = match time {
+        Time::UtcTime(_) => format!("{:02}", date.year() % 100),
+        Time::GeneralTime(_) => format!("{:04}", date.year()),
+    };
+    format!(
+        "{year}{:02}{:02}{:02}{:02}{:02}Z",
+        date.month(),
+        date.day(),
+        date.hour(),
+        date.minutes(),
+        date.seconds()
+    )
+}
 
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
@@ -29,10 +100,8 @@ pub enum AkCertError {
     InvalidResponseVersion(u32),
 }
 
-/// Parse a `AK_CERT_REQUEST` response and return the payload (i.e., the AK cert).
-///
-/// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
-pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
+/// Parse an `AK_CERT_REQUEST` response, including V2 renewal decisions.
+pub fn parse_response(response: &[u8]) -> Result<AkCertResponse, AkCertError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
@@ -54,7 +123,20 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
         });
     }
 
-    Ok(response[header_size..data_size].to_vec())
+    if header.version == IgvmAttestResponseVersion::VERSION_2 {
+        let (header, _) = IgvmAttestAkCertResponseHeader::read_from_prefix(&response[..data_size])
+            .map_err(|_| AkCertError::SizeTooSmall {
+                size: data_size,
+                minimum_size: header_size,
+            })?;
+        if header.error_info.igvm_signal.no_renew_cert() {
+            return Ok(AkCertResponse::NoRenewal);
+        }
+    }
+
+    Ok(AkCertResponse::Certificate(
+        response[header_size..data_size].to_vec(),
+    ))
 }
 
 #[cfg(test)]
@@ -62,7 +144,145 @@ mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
+    use test_with_tracing::test;
     use zerocopy::FromBytes;
+    use zerocopy::IntoBytes;
+
+    // Self-signed synthetic certificate. The private key was discarded.
+    // Includes a quoted CN, UTCTime notBefore, GeneralizedTime notAfter, and AKI.
+    const TEST_CERT: &[u8] = include_bytes!("../../test_data/test_ak_cert.der");
+
+    #[test]
+    fn test_certificate_metadata() {
+        let metadata = parse_metadata(TEST_CERT).unwrap();
+        assert_eq!(metadata.issuer, "Test \"AK\" issuer");
+        assert_eq!(metadata.subject, "Test \"AK\" issuer");
+        assert_eq!(metadata.not_before, "261009180232Z");
+        assert_eq!(metadata.not_after, "20561120180232Z");
+        assert_eq!(
+            metadata.authority,
+            "9FF3935C2C83D84F1DB5242A0E7D3C9B1D191D3B"
+        );
+
+        let mut padded = TEST_CERT.to_vec();
+        padded.resize(4096, 0);
+        assert_eq!(parse_metadata(&padded).unwrap(), metadata);
+        padded[TEST_CERT.len()..].fill(0xa5);
+        assert_eq!(parse_metadata(&padded).unwrap(), metadata);
+    }
+
+    #[test]
+    fn test_certificate_without_authority_key_identifier() {
+        // Changing the extension OID leaves valid DER, but no AKI extension.
+        let mut cert = TEST_CERT.to_vec();
+        let offset = cert
+            .windows(3)
+            .position(|w| w == [0x55, 0x1d, 0x23])
+            .unwrap();
+        cert[offset + 2] = 0x24;
+        assert_eq!(parse_metadata(&cert).unwrap().authority, "");
+    }
+
+    #[test]
+    fn test_certificate_missing_common_name() {
+        for name_index in [0, 1] {
+            let mut cert = TEST_CERT.to_vec();
+            let offset = cert
+                .windows(3)
+                .enumerate()
+                .filter(|(_, w)| *w == [0x55, 0x04, 0x03])
+                .nth(name_index)
+                .unwrap()
+                .0;
+            cert[offset + 2] = 0x0a;
+            assert!(matches!(
+                parse_metadata(&cert),
+                Err(AkCertMetadataError::MissingCommonName(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn test_invalid_certificate_metadata() {
+        for size in 0..TEST_CERT.len() {
+            assert!(parse_metadata(&TEST_CERT[..size]).is_err());
+        }
+        assert!(parse_metadata(&[0; 4096]).is_err());
+        let mut cert = TEST_CERT.to_vec();
+        let offset = cert
+            .windows(4)
+            .position(|w| w == [0x30, 0x16, 0x80, 0x14])
+            .unwrap();
+        cert[offset + 3] = 0x15;
+        assert!(parse_metadata(&cert).is_err());
+    }
+
+    fn v2_response(signal: IgvmSignal, payload: &[u8]) -> Vec<u8> {
+        let header = IgvmAttestAkCertResponseHeader {
+            data_size: (size_of::<IgvmAttestAkCertResponseHeader>() + payload.len()) as u32,
+            version: IgvmAttestResponseVersion::VERSION_2,
+            error_info: openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo {
+                igvm_signal: signal,
+                ..Default::default()
+            },
+        };
+        let mut response = header.as_bytes().to_vec();
+        response.extend_from_slice(payload);
+        response
+    }
+
+    #[test]
+    fn test_v2_certificate_and_no_renewal() {
+        for payload in [b"".as_slice(), b"certificate"] {
+            assert_eq!(
+                parse_response(&v2_response(IgvmSignal::new(), payload)).unwrap(),
+                AkCertResponse::Certificate(payload.to_vec())
+            );
+            // The signal takes precedence over any payload, as in the legacy agent ABI.
+            let signal = IgvmSignal::new().with_no_renew_cert(true);
+            assert_eq!(signal.as_bytes(), &32u32.to_le_bytes());
+            assert_eq!(
+                parse_response(&v2_response(signal, payload)).unwrap(),
+                AkCertResponse::NoRenewal
+            );
+        }
+        for bit in [0, 1, 2, 3, 4, 6, 31] {
+            let signal = IgvmSignal::from(1u32 << bit);
+            assert_eq!(
+                parse_response(&v2_response(signal, b"cert")).unwrap(),
+                AkCertResponse::Certificate(b"cert".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_renewal_does_not_override_errors_or_bad_sizes() {
+        let response = v2_response(IgvmSignal::new().with_no_renew_cert(true), &[]);
+        for size in 0..response.len() {
+            assert!(parse_response(&response[..size]).is_err());
+            // Bytes present outside the declared size must not supply the signal.
+            let mut invalid = response.clone();
+            invalid[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            assert!(parse_response(&invalid).is_err());
+        }
+        let mut invalid = response.clone();
+        invalid[..4].copy_from_slice(&((response.len() + 1) as u32).to_le_bytes());
+        assert!(parse_response(&invalid).is_err());
+
+        let mut error = response.clone();
+        error[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            parse_response(&error),
+            Err(AkCertError::ParseHeader(CommonError::Attestation { .. }))
+        ));
+        for version in [0u32, 3, u32::MAX] {
+            let mut invalid = response.clone();
+            invalid[4..8].copy_from_slice(&version.to_le_bytes());
+            assert!(parse_response(&invalid).is_err());
+        }
+    }
 
     #[test]
     fn test_undersized_response() {
@@ -117,7 +337,9 @@ mod tests {
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());
 
-        let payload = result.unwrap();
+        let AkCertResponse::Certificate(payload) = result.unwrap() else {
+            panic!("expected a certificate");
+        };
         let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
         assert_eq!(payload.len(), data_size - HEADER_SIZE);
         assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
@@ -151,7 +373,9 @@ mod tests {
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());
 
-        let payload = result.unwrap();
+        let AkCertResponse::Certificate(payload) = result.unwrap() else {
+            panic!("expected a certificate");
+        };
         let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
         assert_eq!(payload.len(), data_size - HEADER_SIZE);
         assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);

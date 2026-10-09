@@ -27,6 +27,7 @@ inspect.workspace = true
 initrd_cpio.workspace = true
 
 get_resources.workspace = true
+test_igvm_agent_lib.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true

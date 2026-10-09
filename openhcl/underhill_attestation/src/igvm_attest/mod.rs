@@ -151,6 +151,9 @@ impl IgvmAttestRequestHelper {
         ek_pub_modulus: &[u8],
         attestation_vm_config: &AttestationVmConfig,
         guest_input: &[u8],
+        akcert: Option<
+            openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata,
+        >,
     ) -> Self {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
@@ -160,7 +163,7 @@ impl IgvmAttestRequestHelper {
             None => ReportType::Tvm,
         };
 
-        let runtime_claims =
+        let mut runtime_claims =
             openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims::ak_cert_runtime_claims(
                 ak_pub_exponent,
                 ak_pub_modulus,
@@ -169,6 +172,7 @@ impl IgvmAttestRequestHelper {
                 attestation_vm_config,
                 guest_input,
             );
+        runtime_claims.akcert = akcert;
 
         let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
 
@@ -229,6 +233,12 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
             size: response.len(),
             specified_size: header.data_size as usize,
         })?
+    }
+    let response = &response[..header.data_size as usize];
+    if response.len() < size_of::<IgvmAttestCommonResponseHeader>() {
+        return Err(Error::ResponseSizeTooSmall {
+            response_size: response.len(),
+        });
     }
     if header.version > IGVM_ATTEST_RESPONSE_CURRENT_VERSION {
         Err(Error::InvalidResponseHeaderVersion {
@@ -366,6 +376,95 @@ mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_ak_cert_metadata_claims_are_measured() {
+        use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
+
+        let config = AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            ipmi_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V185,
+            tpm_persisted: true,
+            hardware_sealing_policy: HardwareSealingPolicy::Signer,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        };
+        let mut metadata =
+            ak_cert::parse_metadata(include_bytes!("../../test_data/test_ak_cert.der")).unwrap();
+        metadata.subject = "AK \"subject\"\\\n".to_owned();
+        for tee in [
+            Some(TeeType::Snp),
+            Some(TeeType::Tdx),
+            Some(TeeType::Cca),
+            Some(TeeType::Vbs),
+            None,
+        ] {
+            let with_cert = IgvmAttestRequestHelper::prepare_ak_cert_request(
+                tee,
+                &[1],
+                &[2],
+                &[3],
+                &[4],
+                &config,
+                &[],
+                Some(metadata.clone()),
+            );
+            let claims: serde_json::Value =
+                serde_json::from_slice(&with_cert.runtime_claims).unwrap();
+            assert_eq!(
+                claims["akcert"],
+                serde_json::json!({
+                    "issuer": metadata.issuer,
+                    "subject": metadata.subject,
+                    "not_before": metadata.not_before,
+                    "not_after": metadata.not_after,
+                    "authority": metadata.authority,
+                })
+            );
+            let hash = crypto::sha_256::sha_256(&with_cert.runtime_claims);
+            assert_eq!(&with_cert.get_runtime_claims_hash()[..32], hash.as_ref());
+            assert_eq!(&with_cert.get_runtime_claims_hash()[32..], &[0; 32]);
+
+            let without_cert = IgvmAttestRequestHelper::prepare_ak_cert_request(
+                None,
+                &[1],
+                &[2],
+                &[3],
+                &[4],
+                &config,
+                &[],
+                None,
+            );
+            let claims: serde_json::Value =
+                serde_json::from_slice(&without_cert.runtime_claims).unwrap();
+            assert!(claims.get("akcert").is_none());
+            let decoded: RuntimeClaims =
+                serde_json::from_slice(&without_cert.runtime_claims).unwrap();
+            assert!(decoded.akcert.is_none());
+            assert_ne!(
+                with_cert.get_runtime_claims_hash(),
+                without_cert.get_runtime_claims_hash()
+            );
+
+            let legacy =
+                RuntimeClaims::ak_cert_runtime_claims(&[1], &[2], &[3], &[4], &config, &[]);
+            assert_eq!(
+                without_cert.runtime_claims,
+                serde_json::to_vec(&legacy).unwrap()
+            );
+        }
+        let key_release = RuntimeClaims::key_release_request_runtime_claims(&[1], &[2], &config);
+        let claims = serde_json::to_value(key_release).unwrap();
+        assert!(claims.get("akcert").is_none());
+    }
 
     #[test]
     fn test_create_request() {
