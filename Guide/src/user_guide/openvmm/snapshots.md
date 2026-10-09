@@ -369,15 +369,18 @@ policy, and `live-revalidate` restore mode.
 Its device-private payload records FUSE negotiation, namespace IDs and aliases,
 lookup counts, reopenable handles, bounded directory-entry snapshots and
 cookies, and queue progress. Native file descriptors and Windows handles are
-never serialized. A microVM with an aggregate filesystem
-(`--mount-aggregate`) cannot capture a snapshot, and a snapshot that an
-earlier OpenVMM captured with a second virtio-fs slot cannot be restored.
+never serialized. For an aggregate filesystem (`--mount-aggregate`), the
+manifest records each child's name, canonical host path, root identity, access
+mode, and denied, allowed, and writable paths, and the device-private payload
+records the children and the inodes of each. A snapshot that an earlier
+OpenVMM captured with a second virtio-fs slot cannot be restored.
 
 Restoring an active slot requires a fresh
-`--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment with the same canonical
-host path, target, and mode, the same
+`--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment, or `--mount-aggregate`
+and its `--mount-child` options in the same order, with the same canonical
+host paths, target, and modes, the same
 `--mount-deny`, `--mount-allow`, and `--mount-write` paths, and the same
-`--mount-owner` mode. OpenVMM independently validates the root and every
+`--mount-owner` mode. OpenVMM independently validates the roots and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
 restore without an attachment or bind one new `--mount` to the slot.
 For a new attachment, the resumed guest explicitly mounts tag `microvm`; the

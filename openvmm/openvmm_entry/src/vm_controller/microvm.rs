@@ -295,6 +295,11 @@ impl VmController {
                         config,
                         canonical_host_path: &host.root_path,
                         attachment: host.attachment.clone(),
+                        children: host
+                            .children
+                            .iter()
+                            .map(|(root_path, attachment)| (root_path.as_path(), attachment))
+                            .collect(),
                     }
                 });
             let mut blocks = crate::storage_builder::microvm::capture_snapshot_block_contract(

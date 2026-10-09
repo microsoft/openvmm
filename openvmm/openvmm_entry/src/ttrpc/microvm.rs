@@ -376,6 +376,15 @@ impl CreateVm {
         }
 
         self.restored_filesystem = if let Some(restore) = &self.authoritative_restore {
+            // The management API describes only a single directory.
+            anyhow::ensure!(
+                restore
+                    .machine_contract
+                    .microvm_filesystem
+                    .as_ref()
+                    .is_none_or(|filesystem| filesystem.children.is_empty()),
+                "ttrpc restore does not expose an aggregate microVM filesystem"
+            );
             let first_slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
             let saved_policy = restore.machine_contract.microvm_filesystem.as_ref();
             let saved_attachment = restore
@@ -492,6 +501,7 @@ impl CreateVm {
                                 config: &filesystem.config,
                                 canonical_host_path: Path::new(&filesystem.root_path),
                                 attachment: filesystem.attachment.clone(),
+                                children: Vec::new(),
                             }
                         }),
                         restore
