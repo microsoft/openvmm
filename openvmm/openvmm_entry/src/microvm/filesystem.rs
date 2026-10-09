@@ -1921,6 +1921,39 @@ mod tests {
     }
 
     #[test]
+    fn policy_paths_may_contain_spaces() {
+        let root = policy_share();
+        let tool = root.path().join("Program Files").join("My Tool");
+        fs_err::create_dir_all(&tool).unwrap();
+        let program_files = root.path().join("Program Files").display().to_string();
+        let tool = tool.display().to_string();
+        let options = policy_options(
+            root.path(),
+            "rw",
+            &[
+                "--mount-deny",
+                &program_files,
+                "--mount-allow",
+                &tool,
+                "--mount-write",
+                &tool,
+            ],
+        );
+        let config = options_filesystem(&options, None).unwrap().config;
+        assert_eq!(config.denied_paths, ["Program Files"]);
+        assert_eq!(config.allowed_paths, ["Program Files/My Tool"]);
+        assert_eq!(config.writable_paths, ["Program Files/My Tool"]);
+
+        // A name that begins or ends with a space is not canonical.
+        let spaced = root.path().join(" spaced ");
+        fs_err::create_dir(&spaced).unwrap();
+        let spaced = spaced.display().to_string();
+        let options = policy_options(root.path(), "rw", &["--mount-deny", &spaced]);
+        let error = format!("{:#}", options_filesystem(&options, None).unwrap_err());
+        assert!(error.contains("invalid denied path"), "{error}");
+    }
+
+    #[test]
     fn mount_deny_hides_a_root_that_has_allowed_paths() {
         let root = policy_share();
         let root_path = root.path().display().to_string();
