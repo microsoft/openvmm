@@ -377,17 +377,18 @@ pub struct MicrovmCli {
     pub network_ingress: Option<MicrovmNetworkActionCli>,
 
     /// Permit matching IPv4 destinations, optionally restricted to TCP, UDP,
-    /// or ICMP, and for TCP or UDP optionally to one destination port.
+    /// or ICMP, and for TCP or UDP optionally to one destination port or to
+    /// an inclusive range of them.
     #[clap(
         long = "network-egress-allow",
-        value_name = "IPv4[/PREFIX][:tcp[:PORT]|:udp[:PORT]|:icmp]"
+        value_name = "IPv4[/PREFIX][:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
     )]
     pub network_egress_allow: Vec<net_backend_resources::egress::EgressRule>,
 
     /// Deny matching IPv4 destinations before evaluating allow rules.
     #[clap(
         long = "network-egress-deny",
-        value_name = "IPv4[/PREFIX][:tcp[:PORT]|:udp[:PORT]|:icmp]"
+        value_name = "IPv4[/PREFIX][:tcp[:PORT[-PORT]]|:udp[:PORT[-PORT]]|:icmp]"
     )]
     pub network_egress_deny: Vec<net_backend_resources::egress::EgressRule>,
 
@@ -2390,6 +2391,77 @@ mod tests {
                     network_options
                         .into_iter()
                         .chain(["--network-egress-allow", rule])
+                )
+                .is_err(),
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_microvm_egress_port_ranges_parse_before_resources() {
+        use net_backend_resources::egress::EgressRule;
+        use net_backend_resources::egress::EgressTransport;
+
+        let network_options = [
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+            "--network-egress",
+            "deny",
+        ];
+        let options = Options::try_parse_from(network_options.into_iter().chain([
+            "--network-egress-allow",
+            "198.51.100.0/24:udp:5000-5010",
+            "--network-egress-allow",
+            "198.51.100.0/24:tcp:8000-8010",
+            "--network-egress-allow",
+            "198.51.100.0/24:tcp:443-443",
+            "--network-egress-deny",
+            "198.51.100.7:tcp:8005",
+        ]))
+        .unwrap();
+        options.validate_microvm_options().unwrap();
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let policy = options.microvm_egress_policy(&network).unwrap();
+        let net_backend_resources::egress::EgressPolicyMode::Rules { allow, deny, .. } =
+            policy.mode()
+        else {
+            panic!("expected rule-based egress policy")
+        };
+        let selectors = |rules: &[EgressRule]| {
+            rules
+                .iter()
+                .map(|rule| (rule.transport(), rule.port(), rule.end_port()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            selectors(allow),
+            [
+                (EgressTransport::Tcp, 443, 443),
+                (EgressTransport::Tcp, 8000, 8010),
+                (EgressTransport::Udp, 5000, 5010),
+            ]
+        );
+        assert_eq!(selectors(deny), [(EgressTransport::Tcp, 8005, 8005)]);
+
+        for rule in [
+            "192.0.2.1:tcp:8010-8000",
+            "192.0.2.1:tcp:-8010",
+            "192.0.2.1:udp:8000-",
+            "192.0.2.1:tcp:0-8010",
+            "192.0.2.1:udp:8000-65536",
+            "192.0.2.1:icmp:1-2",
+        ] {
+            assert!(
+                Options::try_parse_from(
+                    network_options
+                        .into_iter()
+                        .chain(["--network-egress-deny", rule])
                 )
                 .is_err(),
                 "{rule}"
