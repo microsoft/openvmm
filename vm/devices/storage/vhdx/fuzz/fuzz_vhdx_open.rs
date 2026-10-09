@@ -95,9 +95,22 @@ impl AsyncFile for FuzzFile {
 
 #[derive(Arbitrary, Debug)]
 enum Action {
-    Read { offset: u64, len: u32 },
-    Write { offset: u64, data: Vec<u8> },
+    Read { sector: u64, count: u16 },
+    Write { sector: u64, count: u16 },
     Flush,
+}
+
+/// Maps a fuzzed sector index and count to an aligned, in-bounds byte range.
+fn aligned_range(vhdx: &VhdxFile<FuzzFile>, sector: u64, count: u16) -> Option<(u64, u32)> {
+    let sector_size = u64::from(vhdx.logical_sector_size());
+    let total = vhdx.disk_size() / sector_size;
+    if total == 0 {
+        return None;
+    }
+    let start = sector % total;
+    let max = (total - start).min(256);
+    let n = 1 + u64::from(count) % max;
+    Some((start * sector_size, (n * sector_size) as u32))
 }
 
 #[derive(Arbitrary, Debug)]
@@ -131,16 +144,19 @@ fn do_fuzz(input: FuzzInput) {
 
         for action in input.actions {
             match action {
-                Action::Read { offset, len } => {
+                Action::Read { sector, count } => {
+                    let Some((offset, len)) = aligned_range(&vhdx, sector, count) else {
+                        continue;
+                    };
                     let mut ranges = Vec::new();
                     let _ = vhdx.resolve_read(offset, len, &mut ranges).await;
                 }
-                Action::Write { offset, data } => {
+                Action::Write { sector, count } => {
+                    let Some((offset, len)) = aligned_range(&vhdx, sector, count) else {
+                        continue;
+                    };
                     let mut ranges = Vec::new();
-                    if let Ok(guard) = vhdx
-                        .resolve_write(offset, data.len() as u32, &mut ranges)
-                        .await
-                    {
+                    if let Ok(guard) = vhdx.resolve_write(offset, len, &mut ranges).await {
                         let _ = guard.complete().await;
                     }
                 }
