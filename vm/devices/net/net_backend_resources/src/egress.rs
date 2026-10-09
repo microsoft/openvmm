@@ -159,21 +159,24 @@ pub enum EgressAction {
 pub enum EgressTransport {
     /// Match every IPv4 protocol and port.
     Any,
-    /// Match TCP on one destination port, or on every port.
+    /// Match TCP on one destination port, on an inclusive range of them, or
+    /// on every port.
     Tcp,
-    /// Match UDP on one destination port, or on every port.
+    /// Match UDP on one destination port, on an inclusive range of them, or
+    /// on every port.
     Udp,
     /// Match every ICMP message.
     Icmp,
 }
 
 /// A canonical IPv4 destination rule with an optional protocol and TCP or UDP
-/// port.
+/// destination port or inclusive range of destination ports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, MeshPayload)]
 pub struct EgressRule {
     destination: Ipv4Cidr,
     transport: EgressTransport,
     port: u16,
+    end_port: u16,
 }
 
 impl EgressRule {
@@ -187,11 +190,30 @@ impl EgressRule {
         self.transport
     }
 
-    /// Returns the restricted TCP or UDP destination port, or zero for a rule
-    /// without a port: an address-only rule, a TCP or UDP rule for every
-    /// port, or an ICMP rule.
+    /// Returns the restricted TCP or UDP destination port, which is the first
+    /// port of a range, or zero for a rule without a port: an address-only
+    /// rule, a TCP or UDP rule for every port, or an ICMP rule.
     pub fn port(self) -> u16 {
         self.port
+    }
+
+    /// Returns the last restricted TCP or UDP destination port of the
+    /// inclusive range that starts at [`Self::port`], which equals
+    /// [`Self::port`] for a single port, or zero for a rule without a port.
+    pub fn end_port(self) -> u16 {
+        self.end_port
+    }
+
+    /// Returns whether the rule has a form that parsing produces: only a TCP
+    /// or UDP rule restricts ports, and its range is nonzero and not reversed.
+    fn has_canonical_ports(self) -> bool {
+        match self.transport {
+            EgressTransport::Tcp | EgressTransport::Udp => {
+                (self.port, self.end_port) == (0, 0)
+                    || (self.port != 0 && self.port <= self.end_port)
+            }
+            EgressTransport::Any | EgressTransport::Icmp => (self.port, self.end_port) == (0, 0),
+        }
     }
 
     fn matches(self, destination: Ipv4Addr, packet: Option<PacketTransport>) -> bool {
@@ -201,7 +223,11 @@ impl EgressRule {
         match self.transport {
             EgressTransport::Any => true,
             expected => packet.is_some_and(|packet| {
-                packet.transport == expected && (self.port == 0 || packet.port == Some(self.port))
+                packet.transport == expected
+                    && (self.port == 0
+                        || packet
+                            .port
+                            .is_some_and(|port| (self.port..=self.end_port).contains(&port)))
             }),
         }
     }
@@ -221,7 +247,7 @@ struct PacketTransport {
 pub enum ParseEgressRuleError {
     /// The rule did not use a supported address, protocol, or port form.
     #[error(
-        "expected <IPv4[/PREFIX]>, <IPv4[/PREFIX]>:<tcp|udp|icmp>, or <IPv4[/PREFIX]>:<tcp|udp>:<PORT>"
+        "expected <IPv4[/PREFIX]>, <IPv4[/PREFIX]>:<tcp|udp|icmp>, or <IPv4[/PREFIX]>:<tcp|udp>:<PORT|FIRST-LAST>"
     )]
     InvalidFormat,
     /// The destination prefix is invalid.
@@ -233,12 +259,23 @@ pub enum ParseEgressRuleError {
     /// ICMP has no destination ports to select.
     #[error("ICMP egress rules do not take a port")]
     IcmpPort,
-    /// The port is not a `u16`.
+    /// The port, or a port of a range, is not a `u16`.
     #[error("invalid egress port '{0}'")]
     InvalidPort(String),
     /// Port zero is not a connectable destination.
     #[error("egress rule port must be nonzero")]
     ZeroPort,
+    /// The port range lacks its first or last port, or has more than two.
+    #[error("invalid egress port range '{0}'; expected <FIRST>-<LAST>")]
+    InvalidPortRange(String),
+    /// The port range ends below its first port.
+    #[error("egress port range {first}-{last} ends below its first port")]
+    ReversedPortRange {
+        /// First port of the range.
+        first: u16,
+        /// Last port of the range.
+        last: u16,
+    },
 }
 
 impl FromStr for EgressRule {
@@ -246,10 +283,10 @@ impl FromStr for EgressRule {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let fields = value.split(':').collect::<Vec<_>>();
-        let (destination, protocol, port) = match fields.as_slice() {
+        let (destination, protocol, ports) = match fields.as_slice() {
             [destination] => (*destination, None, None),
             [destination, protocol] => (*destination, Some(*protocol), None),
-            [destination, protocol, port] => (*destination, Some(*protocol), Some(*port)),
+            [destination, protocol, ports] => (*destination, Some(*protocol), Some(*ports)),
             _ => return Err(ParseEgressRuleError::InvalidFormat),
         };
         let transport = match protocol {
@@ -261,27 +298,46 @@ impl FromStr for EgressRule {
                 return Err(ParseEgressRuleError::InvalidTransport(other.to_owned()));
             }
         };
-        let port = match port {
-            None => 0,
+        let (port, end_port) = match ports {
+            None => (0, 0),
             Some(_) if transport == EgressTransport::Icmp => {
                 return Err(ParseEgressRuleError::IcmpPort);
             }
-            Some(port) => {
-                let port = port
-                    .parse::<u16>()
-                    .map_err(|_| ParseEgressRuleError::InvalidPort(port.to_owned()))?;
-                if port == 0 {
-                    return Err(ParseEgressRuleError::ZeroPort);
-                }
-                port
-            }
+            Some(ports) => parse_port_range(ports)?,
         };
         Ok(Self {
             destination: destination.parse()?,
             transport,
             port,
+            end_port,
         })
     }
+}
+
+/// Parses `PORT`, or the inclusive range `FIRST-LAST`, into its first and last
+/// ports. A range of one port is that port.
+fn parse_port_range(value: &str) -> Result<(u16, u16), ParseEgressRuleError> {
+    let parse = |text: &str| {
+        let port = text
+            .parse::<u16>()
+            .map_err(|_| ParseEgressRuleError::InvalidPort(text.to_owned()))?;
+        if port == 0 {
+            return Err(ParseEgressRuleError::ZeroPort);
+        }
+        Ok(port)
+    };
+    let Some((first, last)) = value.split_once('-') else {
+        let port = parse(value)?;
+        return Ok((port, port));
+    };
+    if first.is_empty() || last.is_empty() || last.contains('-') {
+        return Err(ParseEgressRuleError::InvalidPortRange(value.to_owned()));
+    }
+    let (first, last) = (parse(first)?, parse(last)?);
+    if last < first {
+        return Err(ParseEgressRuleError::ReversedPortRange { first, last });
+    }
+    Ok((first, last))
 }
 
 /// Run-scoped egress policy mode.
@@ -385,7 +441,8 @@ pub enum InvalidEgressPolicy {
         /// Reason the address is invalid.
         reason: InvalidEndpointAddress,
     },
-    /// A decoded policy did not preserve canonical rule order and uniqueness.
+    /// A decoded policy did not preserve canonical rule forms, order, and
+    /// uniqueness.
     #[error("egress policy rules are not canonical")]
     NonCanonicalRules,
     /// A decoded policy carried next hops that do not match its bound rules.
@@ -460,6 +517,13 @@ impl EgressPolicy {
                 endpoints.dedup();
             }
             EgressPolicyMode::Rules { allow, deny, .. } => {
+                if !allow
+                    .iter()
+                    .chain(deny.iter())
+                    .all(|rule| rule.has_canonical_ports())
+                {
+                    return Err(InvalidEgressPolicy::NonCanonicalRules);
+                }
                 allow.sort_unstable();
                 allow.dedup();
                 deny.sort_unstable();
@@ -1106,13 +1170,22 @@ fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule]) {
     for rule in rules {
         bytes.extend_from_slice(&rule.destination.network.octets());
         bytes.push(rule.destination.prefix_length);
-        bytes.push(match rule.transport {
-            EgressTransport::Any => 0,
-            EgressTransport::Tcp => 1,
-            EgressTransport::Udp => 2,
-            EgressTransport::Icmp => 3,
-        });
+        // A range of TCP or UDP ports encodes as transport 4 or 5 and appends
+        // its last port, so it differs from every other rule while their
+        // encodings stay unchanged.
+        let (transport, end_port) = match rule.transport {
+            EgressTransport::Any => (0, None),
+            EgressTransport::Tcp if rule.end_port == rule.port => (1, None),
+            EgressTransport::Udp if rule.end_port == rule.port => (2, None),
+            EgressTransport::Icmp => (3, None),
+            EgressTransport::Tcp => (4, Some(rule.end_port)),
+            EgressTransport::Udp => (5, Some(rule.end_port)),
+        };
+        bytes.push(transport);
         bytes.extend_from_slice(&rule.port.to_be_bytes());
+        if let Some(end_port) = end_port {
+            bytes.extend_from_slice(&end_port.to_be_bytes());
+        }
     }
 }
 
@@ -1664,6 +1737,7 @@ mod tests {
                 destination: "192.0.2.0/24".parse().unwrap(),
                 transport: EgressTransport::Tcp,
                 port: 443,
+                end_port: 443,
             }
         );
         assert_eq!(
@@ -1741,6 +1815,7 @@ mod tests {
                     destination: "192.0.2.0/24".parse().unwrap(),
                     transport,
                     port: 0,
+                    end_port: 0,
                 }),
                 "{rule}"
             );
@@ -1976,6 +2051,299 @@ mod tests {
         );
         let icmp = icmp_echo_frame(on_link);
         policy.authorize_frame(&icmp, icmp.len()).unwrap();
+    }
+
+    #[test]
+    fn port_ranges_parse_canonically() {
+        for (rule, transport, port, end_port) in [
+            (
+                "192.0.2.9/24:tcp:8000-8010",
+                EgressTransport::Tcp,
+                8000,
+                8010,
+            ),
+            (
+                "192.0.2.9/24:udp:5000-5010",
+                EgressTransport::Udp,
+                5000,
+                5010,
+            ),
+            ("192.0.2.9/24:tcp:1-65535", EgressTransport::Tcp, 1, 65535),
+            (
+                "192.0.2.9/24:udp:65534-65535",
+                EgressTransport::Udp,
+                65534,
+                65535,
+            ),
+            // A range of one port is that port's rule.
+            (
+                "192.0.2.9/24:tcp:8000-8000",
+                EgressTransport::Tcp,
+                8000,
+                8000,
+            ),
+            ("192.0.2.9/24:tcp:8000", EgressTransport::Tcp, 8000, 8000),
+        ] {
+            assert_eq!(
+                rule.parse::<EgressRule>(),
+                Ok(EgressRule {
+                    destination: "192.0.2.0/24".parse().unwrap(),
+                    transport,
+                    port,
+                    end_port,
+                }),
+                "{rule}"
+            );
+        }
+        for (rule, error) in [
+            (
+                "192.0.2.0/24:tcp:8010-8000",
+                ParseEgressRuleError::ReversedPortRange {
+                    first: 8010,
+                    last: 8000,
+                },
+            ),
+            (
+                "192.0.2.0/24:tcp:-8010",
+                ParseEgressRuleError::InvalidPortRange("-8010".to_owned()),
+            ),
+            (
+                "192.0.2.0/24:udp:8000-",
+                ParseEgressRuleError::InvalidPortRange("8000-".to_owned()),
+            ),
+            (
+                "192.0.2.0/24:tcp:-",
+                ParseEgressRuleError::InvalidPortRange("-".to_owned()),
+            ),
+            (
+                "192.0.2.0/24:tcp:8000-8005-8010",
+                ParseEgressRuleError::InvalidPortRange("8000-8005-8010".to_owned()),
+            ),
+            ("192.0.2.0/24:tcp:0-8010", ParseEgressRuleError::ZeroPort),
+            ("192.0.2.0/24:udp:1-0", ParseEgressRuleError::ZeroPort),
+            (
+                "192.0.2.0/24:udp:8000-65536",
+                ParseEgressRuleError::InvalidPort("65536".to_owned()),
+            ),
+            (
+                "192.0.2.0/24:tcp:http-8010",
+                ParseEgressRuleError::InvalidPort("http".to_owned()),
+            ),
+            ("192.0.2.0/24:icmp:1-2", ParseEgressRuleError::IcmpPort),
+            (
+                "192.0.2.0/24:tcp:8000-8010:extra",
+                ParseEgressRuleError::InvalidFormat,
+            ),
+        ] {
+            assert_eq!(rule.parse::<EgressRule>(), Err(error), "{rule}");
+        }
+    }
+
+    #[test]
+    fn port_ranges_match_their_boundaries_in_allow_and_deny_rules() {
+        let target = Ipv4Addr::new(192, 0, 2, 7);
+        // The range's first and last ports, a port inside it, and the ports
+        // next to it, for TCP and UDP.
+        let probes = [7999, 8000, 8005, 8010, 8011]
+            .into_iter()
+            .flat_map(|port| {
+                [
+                    (("tcp", port), tcp_frame(target, port)),
+                    (("udp", port), udp_frame(target, port)),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let inside = |transport| [(transport, 8000), (transport, 8005), (transport, 8010)];
+        // Each selector lists the probes it matches. NVX lowers protocol `any`
+        // with a port range to the TCP and UDP ranges of the last selector.
+        let selectors: [(&[&str], Vec<(&str, u16)>); 3] = [
+            (&["192.0.2.7:tcp:8000-8010"], inside("tcp").to_vec()),
+            (&["192.0.2.7:udp:8000-8010"], inside("udp").to_vec()),
+            (
+                &["192.0.2.7:tcp:8000-8010", "192.0.2.7:udp:8000-8010"],
+                [inside("tcp"), inside("udp")].concat(),
+            ),
+        ];
+        for (selector, matched) in selectors {
+            let allow = rule_policy(EgressAction::Deny, selector, &[]);
+            // The deny rules must win over an allow rule that covers every probe.
+            let deny = rule_policy(EgressAction::Deny, &["192.0.2.0/24"], selector);
+            assert!(allow.validate().is_ok());
+            assert!(deny.validate().is_ok());
+            for (probe, frame) in &probes {
+                let (allowed, denied) = if matched.contains(probe) {
+                    (Ok(()), Err(EgressDenied::DestinationDenied))
+                } else {
+                    (Err(EgressDenied::DestinationDenied), Ok(()))
+                };
+                assert_eq!(
+                    allow.authorize_frame(frame, frame.len()),
+                    allowed,
+                    "allow {selector:?}: {probe:?}"
+                );
+                assert_eq!(
+                    deny.authorize_frame(frame, frame.len()),
+                    denied,
+                    "deny {selector:?}: {probe:?}"
+                );
+            }
+        }
+
+        // A deny rule for one port inside an allowed range blocks that port alone.
+        let policy = rule_policy(
+            EgressAction::Deny,
+            &["192.0.2.7:tcp:8000-8010"],
+            &["192.0.2.7:tcp:8005"],
+        );
+        for (port, allowed) in [
+            (7999, false),
+            (8000, true),
+            (8004, true),
+            (8005, false),
+            (8006, true),
+            (8010, true),
+            (8011, false),
+        ] {
+            let frame = tcp_frame(target, port);
+            assert_eq!(
+                policy.authorize_frame(&frame, frame.len()).is_ok(),
+                allowed,
+                "{port}"
+            );
+        }
+    }
+
+    #[test]
+    fn port_ranges_preserve_fragment_and_gateway_dns_semantics() {
+        // A range restricts ports, so it cannot classify a fragment of any
+        // protocol.
+        let fragment = fragmented(udp_frame(Ipv4Addr::new(192, 0, 2, 7), 53), 0x2000);
+        let policy = rule_policy(
+            EgressAction::Deny,
+            &["192.0.2.7:udp", "192.0.2.7:tcp:8000-8010"],
+            &[],
+        );
+        assert_eq!(
+            policy.authorize_frame(&fragment, fragment.len()),
+            Err(EgressDenied::FragmentDenied)
+        );
+
+        let cases: [(&[&str], &[&str], bool); 5] = [
+            (&["10.0.0.1:udp:1-1024"], &[], true),
+            (&["10.0.0.1:tcp:53-80"], &[], true),
+            (&["10.0.0.1:tcp:1-52"], &[], false),
+            (&["10.0.0.1:udp:54-1024"], &[], false),
+            (&["10.0.0.1:udp:1-1024"], &["10.0.0.1:udp:53"], false),
+        ];
+        for (allow, deny, allows_dns) in cases {
+            assert_eq!(
+                rule_policy(EgressAction::Deny, allow, deny).allows_gateway_dns(),
+                allows_dns,
+                "allow {allow:?}, deny {deny:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn port_ranges_have_distinct_canonical_encodings() {
+        // A range encodes as its network, prefix length, transport 4 for TCP
+        // or 5 for UDP, and its first and last ports.
+        let encodings = [
+            (
+                "192.0.2.0/24:tcp:8000-8010",
+                vec![192, 0, 2, 0, 24, 4, 0x1f, 0x40, 0x1f, 0x4a],
+            ),
+            (
+                "192.0.2.0/24:udp:8000-8010",
+                vec![192, 0, 2, 0, 24, 5, 0x1f, 0x40, 0x1f, 0x4a],
+            ),
+            (
+                "192.0.2.0/24:tcp:8000-8001",
+                vec![192, 0, 2, 0, 24, 4, 0x1f, 0x40, 0x1f, 0x41],
+            ),
+            (
+                "192.0.2.0/24:tcp:8000",
+                vec![192, 0, 2, 0, 24, 1, 0x1f, 0x40],
+            ),
+            (
+                "192.0.2.0/24:udp:8000",
+                vec![192, 0, 2, 0, 24, 2, 0x1f, 0x40],
+            ),
+            ("192.0.2.0/24:tcp", vec![192, 0, 2, 0, 24, 1, 0, 0]),
+        ]
+        .map(|(rule, record)| {
+            let policy = rule_policy(EgressAction::Deny, &[rule], &[]);
+            assert!(policy.validate().is_ok(), "{rule}");
+            let bytes = policy.canonical_bytes();
+            assert!(
+                bytes.windows(record.len()).any(|window| window == record),
+                "{rule}"
+            );
+            bytes
+        });
+        for (index, encoding) in encodings.iter().enumerate() {
+            assert!(!encodings[index + 1..].contains(encoding));
+        }
+
+        // A range of one port encodes as that port, and a snapshot of either
+        // encoding version cannot be restored with a range in place of its
+        // first port.
+        let canonical = |rule: &str| rule_policy(EgressAction::Deny, &[rule], &[]);
+        assert_eq!(
+            canonical("192.0.2.0/24:tcp:8000-8000").canonical_bytes(),
+            canonical("192.0.2.0/24:tcp:8000").canonical_bytes()
+        );
+        for version in [
+            LEGACY_EGRESS_POLICY_ENCODING_VERSION,
+            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION,
+            EGRESS_POLICY_ENCODING_VERSION,
+        ] {
+            assert_ne!(
+                canonical("192.0.2.0/24:tcp:8000").canonical_bytes_for_version(version),
+                canonical("192.0.2.0/24:tcp:8000-8010").canonical_bytes_for_version(version),
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_policy_must_preserve_canonical_rule_forms() {
+        let destination = "192.0.2.7".parse().unwrap();
+        for (transport, port, end_port) in [
+            (EgressTransport::Tcp, 8010, 8000),
+            (EgressTransport::Udp, 0, 8000),
+            (EgressTransport::Tcp, 8000, 0),
+            (EgressTransport::Icmp, 8, 8),
+            (EgressTransport::Any, 443, 443),
+        ] {
+            let rule = EgressRule {
+                destination,
+                transport,
+                port,
+                end_port,
+            };
+            let mut policy = rule_policy(EgressAction::Deny, &["192.0.2.7:tcp:8000-8010"], &[]);
+            let EgressPolicyMode::Rules { deny, .. } = &mut policy.mode else {
+                panic!("expected rule-based egress policy")
+            };
+            deny.push(rule);
+            assert_eq!(
+                policy.validate(),
+                Err(InvalidEgressPolicy::NonCanonicalRules),
+                "{rule:?}"
+            );
+            assert_eq!(
+                EgressPolicy::bind(
+                    GUEST_IPV4,
+                    PREFIX_LENGTH,
+                    MacAddress::new(GUEST_MAC_BYTES),
+                    GATEWAY_IPV4,
+                    policy.mode.clone(),
+                ),
+                Err(InvalidEgressPolicy::NonCanonicalRules),
+                "{rule:?}"
+            );
+        }
     }
 
     #[test]
