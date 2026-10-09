@@ -30,6 +30,9 @@ use base64::Engine;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -42,6 +45,7 @@ use inspect::InspectMut;
 use ms_tcg_tpm_sys::MsTpm185Platform;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -211,9 +215,100 @@ impl ControlArea {
 #[derive(Inspect)]
 #[inspect(skip)]
 struct TpmRuntime {
-    ppi_store: Box<dyn NonVolatileStore>,
-    nvram_store: Box<dyn NonVolatileStore>,
+    stores: StoreState,
     mem: GuestMemory,
+}
+
+struct TpmStores {
+    ppi: Box<dyn NonVolatileStore>,
+    nvram: Box<dyn NonVolatileStore>,
+}
+
+/// The non-volatile stores, or the write that is currently using them.
+///
+/// Writes are driven from [`PollDevice::poll_device`] with the I/O deferred,
+/// because blocking on the store in the I/O handler holds the device lock and
+/// deadlocks against an inspect on the thread that services the store.
+enum StoreState {
+    Idle(TpmStores),
+    Writing(RunningStoreWrite),
+    /// Only seen while moving between the two states above.
+    Invalid,
+}
+
+type StoreWriteFuture = Pin<Box<dyn Future<Output = TpmStores> + Send>>;
+
+/// A store write in progress, which owns the stores until it completes.
+struct RunningStoreWrite {
+    write: StoreWriteFuture,
+    done: DeferredWrite,
+    /// Writes issued by other VPs while this one runs, in arrival order. A VP
+    /// waits for its own I/O, so this holds at most one entry per VP.
+    queued: VecDeque<QueuedStoreWrite>,
+}
+
+/// A store write waiting for the running one to finish.
+struct QueuedStoreWrite {
+    write: StoreWrite,
+    done: DeferredWrite,
+}
+
+/// What a deferred store write persists.
+enum StoreWrite {
+    /// The serialized PPI state.
+    Ppi(Vec<u8>),
+    /// The NVRAM state the TPM engine has committed and not yet persisted.
+    Nvram,
+}
+
+async fn persist_pending_nvram(
+    store: &mut dyn NonVolatileStore,
+    pending_nvram: &Mutex<Vec<u8>>,
+) -> Result<(), NonVolatileStoreError> {
+    let data = {
+        let mut pending_nvram = pending_nvram.lock();
+        if pending_nvram.is_empty() {
+            return Ok(());
+        }
+        std::mem::take(&mut *pending_nvram)
+    };
+
+    store.persist(data).await
+}
+
+fn run_store_write(
+    mut stores: TpmStores,
+    write: StoreWrite,
+    pending_nvram: Arc<Mutex<Vec<u8>>>,
+) -> StoreWriteFuture {
+    Box::pin(async move {
+        match write {
+            StoreWrite::Ppi(data) => {
+                if let Err(e) = stores.ppi.persist(data).await {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        error = &e as &dyn std::error::Error,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                }
+            }
+            StoreWrite::Nvram => {
+                if let Err(e) = persist_pending_nvram(&mut *stores.nvram, &pending_nvram).await {
+                    tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        error = &e as &dyn std::error::Error,
+                        "could not commit nvram to non-volatile store"
+                    );
+                }
+            }
+        }
+        stores
+    })
 }
 
 #[derive(Copy, Clone, Inspect)]
@@ -565,9 +660,11 @@ impl Tpm {
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
             rt: TpmRuntime {
+                stores: StoreState::Idle(TpmStores {
+                    ppi: ppi_store,
+                    nvram: nvram_store,
+                }),
                 mem,
-                ppi_store,
-                nvram_store,
             },
             ak_cert_type,
             logger,
@@ -599,17 +696,83 @@ impl Tpm {
     }
 
     async fn flush_pending_nvram(&mut self) -> Result<(), NonVolatileStoreError> {
-        let data = {
-            let mut pending_nvram = self.pending_nvram.lock();
-            if pending_nvram.is_empty() {
-                return Ok(());
-            }
-            std::mem::take(&mut *pending_nvram)
+        let StoreState::Idle(stores) = &mut self.rt.stores else {
+            unreachable!("store writes are finished before the stores are used directly")
         };
+        persist_pending_nvram(&mut *stores.nvram, &self.pending_nvram).await
+    }
 
-        (self.rt.nvram_store).persist(data).await?;
+    fn idle_stores(&mut self) -> &mut TpmStores {
+        match &mut self.rt.stores {
+            StoreState::Idle(stores) => stores,
+            StoreState::Writing(_) | StoreState::Invalid => {
+                unreachable!("store writes are finished before the stores are used directly")
+            }
+        }
+    }
 
-        Ok(())
+    /// Starts a deferred store write, or queues it behind the one already
+    /// running.
+    fn start_store_write(&mut self, write: StoreWrite) -> DeferredToken {
+        let (done, token) = defer_write();
+        self.rt.stores = match std::mem::replace(&mut self.rt.stores, StoreState::Invalid) {
+            StoreState::Idle(stores) => {
+                // Ensure poll gets called again.
+                if let Some(waker) = self.waker.take() {
+                    waker.wake();
+                }
+                StoreState::Writing(RunningStoreWrite {
+                    write: run_store_write(stores, write, self.pending_nvram.clone()),
+                    done,
+                    queued: VecDeque::new(),
+                })
+            }
+            StoreState::Writing(mut running) => {
+                running.queued.push_back(QueuedStoreWrite { write, done });
+                StoreState::Writing(running)
+            }
+            StoreState::Invalid => unreachable!(),
+        };
+        token
+    }
+
+    /// Drives the running store write, completing its I/O and starting the
+    /// next queued one when it finishes.
+    fn poll_store_writes(&mut self, cx: &mut std::task::Context<'_>) {
+        while let StoreState::Writing(running) = &mut self.rt.stores {
+            let Poll::Ready(stores) = running.write.as_mut().poll(cx) else {
+                return;
+            };
+            let StoreState::Writing(RunningStoreWrite {
+                write: _,
+                done,
+                mut queued,
+            }) = std::mem::replace(&mut self.rt.stores, StoreState::Invalid)
+            else {
+                unreachable!()
+            };
+            done.complete();
+            self.rt.stores = match queued.pop_front() {
+                Some(QueuedStoreWrite { write, done }) => StoreState::Writing(RunningStoreWrite {
+                    write: run_store_write(stores, write, self.pending_nvram.clone()),
+                    done,
+                    queued,
+                }),
+                None => StoreState::Idle(stores),
+            };
+        }
+    }
+
+    /// Runs every started store write to completion.
+    async fn finish_store_writes(&mut self) {
+        std::future::poll_fn(|cx| {
+            self.poll_store_writes(cx);
+            match self.rt.stores {
+                StoreState::Writing(_) => Poll::Pending,
+                StoreState::Idle(_) | StoreState::Invalid => Poll::Ready(()),
+            }
+        })
+        .await
     }
 
     async fn on_first_boot(
@@ -626,7 +789,7 @@ impl Tpm {
         let quirks = {
             // Check whether or not we need to pave-over the blank TPM with our
             // existing nvmem state.
-            let existing_nvmem_blob = (self.rt.nvram_store)
+            let existing_nvmem_blob = (self.idle_stores().nvram)
                 .restore()
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
@@ -706,7 +869,7 @@ impl Tpm {
 
         // Execute any pending PPI requests set prior to reboot
         {
-            let raw_ppi_state = (self.rt.ppi_store)
+            let raw_ppi_state = (self.idle_stores().ppi)
                 .restore()
                 .await
                 .map_err(TpmErrorKind::ReadPpiState)?;
@@ -727,8 +890,9 @@ impl Tpm {
                 if self.ppi_state.pending_ppi_operation != PpiOperation::NO_OP {
                     self.execute_pending_ppi()?;
 
-                    (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state))
+                    let ppi_state = persist_restore::serialize_ppi_state(self.ppi_state);
+                    (self.idle_stores().ppi)
+                        .persist(ppi_state)
                         .await
                         .map_err(TpmErrorKind::PersistPpiState)?;
                 }
@@ -971,6 +1135,7 @@ impl Tpm {
             return IoResult::Err(IoError::InvalidAccessSize);
         };
 
+        let mut persist_ppi = None;
         if control_port {
             self.current_io_command = Some(TpmIoCommand(val));
         } else {
@@ -1018,21 +1183,7 @@ impl Tpm {
             };
 
             if update_ppi {
-                let res = pal_async::local::block_on(
-                    (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state)),
-                );
-                if let Err(e) = res {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        "could not persist ppi state to non-volatile store"
-                    );
-                    tracing::warn!(
-                        CVM_CONFIDENTIAL,
-                        error = &e as &dyn std::error::Error,
-                        "could not persist ppi state to non-volatile store"
-                    );
-                }
+                persist_ppi = Some(persist_restore::serialize_ppi_state(self.ppi_state));
             }
         };
 
@@ -1042,7 +1193,10 @@ impl Tpm {
             ?self.current_io_command,
             "TPM IO write",
         );
-        IoResult::Ok
+        match persist_ppi {
+            Some(data) => IoResult::Defer(self.start_store_write(StoreWrite::Ppi(data))),
+            None => IoResult::Ok,
+        }
     }
 
     fn execute_pending_ppi(&mut self) -> Result<(), TpmError> {
@@ -1435,9 +1589,12 @@ impl Tpm {
 impl ChangeDeviceState for Tpm {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.finish_store_writes().await;
+    }
 
     async fn reset(&mut self) {
+        self.finish_store_writes().await;
         self.control_area = ControlArea::new();
         self.current_io_command = None;
         self.requested_locality = false;
@@ -1449,7 +1606,8 @@ impl ChangeDeviceState for Tpm {
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .expect("failed to send TPM startup commands");
-        pal_async::local::block_on(self.flush_pending_nvram())
+        self.flush_pending_nvram()
+            .await
             .expect("failed to flush nvram on reset");
     }
 }
@@ -1470,6 +1628,7 @@ impl ChipsetDevice for Tpm {
 
 impl PollDevice for Tpm {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_store_writes(cx);
         self.poll_ak_cert_request(cx)
     }
 }
@@ -1680,17 +1839,10 @@ impl MmioIntercept for Tpm {
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
 
-        let res = pal_async::local::block_on(self.flush_pending_nvram());
-        if let Err(e) = res {
-            tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
-            tracing::warn!(
-                CVM_CONFIDENTIAL,
-                error = &e as &dyn std::error::Error,
-                "could not commit nvram to non-volatile store"
-            );
-        };
-
-        IoResult::Ok
+        if self.pending_nvram.lock().is_empty() {
+            return IoResult::Ok;
+        }
+        IoResult::Defer(self.start_store_write(StoreWrite::Nvram))
     }
 
     fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u64>)] {
@@ -2181,6 +2333,11 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
     use tpm_protocol::tpm20proto::TpmaNvBits;
     use tpm_resources::RequestAkCert;
@@ -2353,5 +2510,215 @@ mod tests {
             guid::guid!("00000000-0000-0000-0000-000000000000"),
         )
         .await
+    }
+
+    /// A store that, once armed, waits for a permit before each write,
+    /// standing in for a backing store that is serviced by another thread.
+    struct GatedStore {
+        inner: Box<dyn NonVolatileStore>,
+        armed: Arc<AtomicBool>,
+        permits: mesh::Receiver<()>,
+    }
+
+    #[async_trait::async_trait]
+    impl NonVolatileStore for GatedStore {
+        async fn persist(&mut self, data: Vec<u8>) -> Result<(), NonVolatileStoreError> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.permits.recv().await.unwrap();
+            }
+            self.inner.persist(data).await
+        }
+
+        async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
+            self.inner.restore().await
+        }
+    }
+
+    struct GatedTpm {
+        tpm: Tpm,
+        armed: Arc<AtomicBool>,
+        ppi_permits: mesh::Sender<()>,
+        nvram_permits: mesh::Sender<()>,
+    }
+
+    async fn new_gated_tpm() -> GatedTpm {
+        let armed = Arc::new(AtomicBool::new(false));
+        let (ppi_permits, ppi_recv) = mesh::channel();
+        let (nvram_permits, nvram_recv) = mesh::channel();
+        let gated = |permits| -> Box<dyn NonVolatileStore> {
+            Box::new(GatedStore {
+                inner: EphemeralNonVolatileStore::new_boxed(),
+                armed: armed.clone(),
+                permits,
+            })
+        };
+
+        let tpm = Tpm::new(
+            TpmVersion::V138,
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            gated(ppi_recv),
+            gated(nvram_recv),
+            None,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            TpmAkCertType::None,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
+        .unwrap();
+
+        // Creating the TPM writes to the stores; gate only what comes after.
+        armed.store(true, Ordering::SeqCst);
+        GatedTpm {
+            tpm,
+            armed,
+            ppi_permits,
+            nvram_permits,
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Drives the TPM until `token` completes.
+    async fn complete(tpm: &mut Tpm, token: &mut DeferredToken) {
+        std::future::poll_fn(|cx| {
+            tpm.poll_device(cx);
+            token.poll_write(cx)
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A PPI write must not wait for the store inside the I/O handler: the
+    /// store can depend on a thread that is itself waiting for this device's
+    /// lock.
+    #[async_test]
+    async fn ppi_write_defers_instead_of_blocking() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits: _nvram_permits,
+        } = new_gated_tpm().await;
+        let waker = Arc::new(CountingWaker::default());
+        tpm.poll_device(&mut Context::from_waker(&waker.clone().into()));
+        let woken_before = waker.0.load(Ordering::SeqCst);
+
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        assert!(matches!(
+            tpm.io_write(
+                port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+                &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes()
+            ),
+            IoResult::Ok
+        ));
+        let mut token =
+            match tpm.io_write(port + TPM_DEVICE_IO_PORT_DATA_OFFSET, &5u32.to_le_bytes()) {
+                IoResult::Defer(token) => token,
+                _ => panic!("a PPI write must defer its I/O"),
+            };
+        assert_eq!(
+            waker.0.load(Ordering::SeqCst),
+            woken_before + 1,
+            "the write must be polled"
+        );
+
+        tpm.poll_device(&mut Context::from_waker(&waker.clone().into()));
+        assert!(
+            token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+
+        ppi_permits.send(());
+        complete(&mut tpm, &mut token).await;
+        let stored = tpm.idle_stores().ppi.restore().await.unwrap().unwrap();
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(stored)
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(5)
+        );
+    }
+
+    /// Committing NVRAM after a register write defers the I/O until the store
+    /// has it, and a write with nothing to commit completes at once.
+    #[async_test]
+    async fn nvram_commit_defers_instead_of_blocking() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits: _ppi_permits,
+            nvram_permits,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
+
+        assert!(matches!(
+            tpm.mmio_write(cancel, &0u32.to_le_bytes()),
+            IoResult::Ok
+        ));
+
+        *tpm.pending_nvram.lock() = vec![1, 2, 3];
+        let mut token = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
+            IoResult::Defer(token) => token,
+            _ => panic!("committing NVRAM must defer its I/O"),
+        };
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+
+        nvram_permits.send(());
+        complete(&mut tpm, &mut token).await;
+        assert_eq!(
+            tpm.idle_stores().nvram.restore().await.unwrap(),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    /// Stopping the device finishes a running store write.
+    #[async_test]
+    async fn stop_finishes_a_running_store_write() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits: _ppi_permits,
+            nvram_permits,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
+
+        *tpm.pending_nvram.lock() = vec![4, 5, 6];
+        let token = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
+            IoResult::Defer(token) => token,
+            _ => panic!("committing NVRAM must defer its I/O"),
+        };
+        nvram_permits.send(());
+        tpm.stop().await;
+
+        token.write_future().await.unwrap();
+        assert_eq!(
+            tpm.idle_stores().nvram.restore().await.unwrap(),
+            Some(vec![4, 5, 6])
+        );
     }
 }
