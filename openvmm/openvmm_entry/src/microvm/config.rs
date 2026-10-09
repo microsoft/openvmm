@@ -70,7 +70,7 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     network: Option<EffectiveMicrovmNetwork>,
     filesystem_slot: bool,
     filesystems: Vec<EffectiveMicrovmFilesystem>,
-    gateway_dns: bool,
+    gateway_dns: Option<std::net::IpAddr>,
     console: Option<ConsoleEndpoint>,
     control_console: Option<ConsoleEndpoint>,
     control_broker_config: Option<VirtioControlConsoleBrokerConfig>,
@@ -130,7 +130,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
         let gateway_dns = network
             .as_ref()
-            .is_some_and(|network| network.policy.allows_gateway_dns());
+            .and_then(|network| network.policy.gateway_dns_server());
 
         if active
             && (opt.com1.is_some()
