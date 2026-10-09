@@ -4,8 +4,9 @@
 //! microVM profile of the virtio-fs resource.
 //!
 //! [`VirtioFsProfile`] selects the standard virtio-fs device or the microVM
-//! device, which serves either an attached host folder or a dormant slot
-//! backed by [`super::VirtioFsBackend::Dormant`].
+//! device, which serves an attached host folder, an aggregate of host folders
+//! backed by [`super::VirtioFsBackend::Aggregate`], or a dormant slot backed
+//! by [`super::VirtioFsBackend::Dormant`].
 
 use mesh::MeshPayload;
 
@@ -30,7 +31,32 @@ pub enum VirtioFsProfile {
         /// the VMM. Linux only.
         caller_identity: bool,
     },
+    /// An aggregate whose synthetic, read-only root lists one directory per
+    /// child. The children of the `Aggregate` backend must have the same
+    /// names, in the same order.
+    MicrovmAggregate {
+        stable_id: String,
+        children: Vec<MicrovmAggregateChild>,
+        /// Perform each guest request as its caller, like
+        /// [`VirtioFsProfile::Microvm`]'s `caller_identity`. Every child root
+        /// must then have the same owner.
+        caller_identity: bool,
+    },
     MicrovmDormant {
         stable_id: String,
     },
+}
+
+/// The identity and access policy of one child of a
+/// [`VirtioFsProfile::MicrovmAggregate`], with the meaning of the
+/// corresponding fields of [`VirtioFsProfile::Microvm`].
+#[derive(MeshPayload)]
+pub struct MicrovmAggregateChild {
+    /// Name of the child's directory under the synthetic root.
+    pub name: String,
+    pub root_identity: Vec<u8>,
+    pub read_only: bool,
+    pub denied_paths: Vec<String>,
+    pub allowed_paths: Vec<String>,
+    pub writable_paths: Vec<String>,
 }
