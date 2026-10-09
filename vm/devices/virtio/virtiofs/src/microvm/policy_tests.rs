@@ -482,6 +482,37 @@ fn a_hidden_share_root_exposes_only_its_allowed_paths() {
 }
 
 #[test]
+fn policy_names_may_contain_spaces() {
+    let share = Share::new();
+    for path in ["Program Files/My Tool/out dir", "Program Files/Other Tool"] {
+        std::fs::create_dir_all(share.path(path)).unwrap();
+    }
+    let fs = share.fs(
+        &["Program Files"],
+        &["Program Files/My Tool"],
+        &["Program Files/My Tool/out dir"],
+    );
+    assert_eq!(
+        list(&fs, lookup(&fs, "Program Files").unwrap()),
+        ["My Tool"]
+    );
+    assert_eq!(
+        error(lookup(&fs, "Program Files/Other Tool")),
+        lx::Error::EACCES
+    );
+    let tool = lookup(&fs, "Program Files/My Tool").unwrap();
+    assert_eq!(error(create(&fs, tool, "new")), lx::Error::EROFS);
+    let out = lookup(&fs, "Program Files/My Tool/out dir").unwrap();
+    let (file, fh) = create(&fs, out, "new file").unwrap();
+    release(&fs, file, fh);
+    assert!(
+        share
+            .path("Program Files/My Tool/out dir/new file")
+            .exists()
+    );
+}
+
+#[test]
 fn allowed_paths_follow_the_write_policy() {
     let share = Share::new();
     let fs = share.fs(&["logs"], &["logs/payloads"], &["out"]);

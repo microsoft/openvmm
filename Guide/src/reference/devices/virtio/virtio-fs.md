@@ -157,7 +157,9 @@ OpenVMM canonicalizes each policy path relative to its export and rejects
 paths that do not exist, paths outside the roots, a root as an allowed or
 writable path, duplicates,
 redundant or contradictory combinations, symlink/reparse components, and
-nested-mount crossings before opening the device. HostFs also requires every
+nested-mount crossings before opening the device. A name in a policy path may
+contain spaces, but it may not begin or end with one, and other whitespace,
+backslashes, and colons are rejected. HostFs also requires every
 traverse-only path to be a directory when it attaches the share.
 
 `--mount-deny` may name the root of the `--mount` or of a `--mount-child`

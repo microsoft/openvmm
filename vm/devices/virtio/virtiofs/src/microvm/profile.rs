@@ -285,14 +285,20 @@ fn parse_policy_paths(
             || path.starts_with('/')
             || path.ends_with('/')
             || path.chars().any(|character| {
-                character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
+                (character.is_whitespace() && character != ' ')
+                    || matches!(character, '\0' | '\\' | ':')
             })
         {
             return Err(error);
         }
         let mut relative = PathBuf::new();
         for component in path.split('/') {
-            if component.is_empty() || matches!(component, "." | "..") {
+            // A name may contain spaces, but not begin or end with one.
+            if component.is_empty()
+                || matches!(component, "." | "..")
+                || component.starts_with(' ')
+                || component.ends_with(' ')
+            {
                 return Err(error);
             }
             relative.push(component);
@@ -883,6 +889,11 @@ mod tests {
             vec!["secrets".to_owned(), "secrets/nested".to_owned()],
             vec!["../outside".to_owned()],
             vec!["alternate:name".to_owned()],
+            vec![" leading".to_owned()],
+            vec!["trailing /name".to_owned()],
+            vec!["tab\tname".to_owned()],
+            vec!["line\nbreak".to_owned()],
+            vec!["no\u{a0}break".to_owned()],
         ] {
             assert!(
                 MicroVmVirtioFsProfile::from_attachment(
@@ -894,6 +905,28 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn profile_accepts_spaces_inside_policy_names() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = microvm_root_identity(root.path()).unwrap();
+        let profile = MicroVmVirtioFsProfile::from_attachment_with_policy(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            identity,
+            false,
+            vec!["Program Files".to_owned()],
+            vec!["Program Files/My Tool".to_owned()],
+            vec!["Program Files/My Tool/out dir".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(profile.denied_paths(), [PathBuf::from("Program Files")]);
+        assert_eq!(
+            profile.writable_paths(),
+            [["Program Files", "My Tool", "out dir"]
+                .iter()
+                .collect::<PathBuf>()]
+        );
     }
 
     #[test]
