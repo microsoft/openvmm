@@ -385,9 +385,15 @@ impl Fuse for VirtioFs {
         }
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
+        // Like Linux's linkat, which reports a read-only destination before a
+        // link across filesystems, check where the link would go first.
         self.check_writable(&inode)?;
         let alias = inode.child_path(name)?;
         self.check_writable_entry(&inode, &alias)?;
+        // A link cannot cross aggregated volume boundaries.
+        if inode.volume_id() != target_inode.volume_id() {
+            return Err(lx::Error::EXDEV);
+        }
         // A new link to an object that the guest may not modify would make it
         // writable through the link, so refuse it as if the object were on
         // another filesystem.

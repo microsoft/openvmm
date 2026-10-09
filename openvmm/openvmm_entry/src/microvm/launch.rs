@@ -22,6 +22,7 @@ use openvmm_defs::microvm::MicrovmFilesystemConfig;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
 use openvmm_defs::worker::SharedMemoryFd;
 use openvmm_helpers::snapshot::SnapshotManifest;
+use openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -74,7 +75,11 @@ impl MicrovmLaunch {
                 std::env::current_dir().unwrap_or_default().join(path)
             }
         });
-        for root_path in &resources.filesystem_root_paths {
+        for root_path in resources
+            .filesystem
+            .iter()
+            .flat_map(super::MicrovmFilesystemHost::root_paths)
+        {
             validate_microvm_filesystem_private_storage(
                 root_path,
                 snapshot_destination.as_deref(),
@@ -264,13 +269,13 @@ impl MicrovmLaunch {
                 .zip(resources.network_attachment.as_ref())
                 .map(|((network, policy), attachment)| (network, policy, attachment)),
             self.filesystems
-                .iter()
-                .zip(&resources.filesystem_root_paths)
-                .zip(&resources.filesystem_attachments)
-                .map(|((filesystem, root_path), attachment)| {
-                    (filesystem, root_path.as_path(), attachment)
-                })
-                .collect(),
+                .first()
+                .zip(resources.filesystem.as_ref())
+                .map(|(config, host)| MicrovmFilesystemSource {
+                    config,
+                    canonical_host_path: &host.root_path,
+                    attachment: host.attachment.clone(),
+                }),
             resources.console_attachment.as_ref(),
             resources.control_console_attachment.as_ref(),
             sandbox_blocks,

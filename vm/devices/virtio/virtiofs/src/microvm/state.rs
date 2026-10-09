@@ -296,6 +296,10 @@ pub(crate) fn validate_microvm_state(
     profile: &MicroVmVirtioFsProfile,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !profile.is_aggregate(),
+        "microVM aggregate virtio-fs does not support snapshots"
+    );
+    anyhow::ensure!(
         matches!(
             state.schema_version,
             PREVIOUS_SCHEMA_VERSION

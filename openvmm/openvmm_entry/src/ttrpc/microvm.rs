@@ -376,14 +376,6 @@ impl CreateVm {
         }
 
         self.restored_filesystem = if let Some(restore) = &self.authoritative_restore {
-            // The management API describes at most one virtio-fs attachment.
-            anyhow::ensure!(
-                restore
-                    .machine_contract
-                    .microvm_additional_filesystems
-                    .is_empty(),
-                "ttrpc restore does not yet expose more than one microVM filesystem"
-            );
             let first_slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
             let saved_policy = restore.machine_contract.microvm_filesystem.as_ref();
             let saved_attachment = restore
@@ -495,16 +487,13 @@ impl CreateVm {
                         &self.source_hypervisor,
                         &restore.machine_contract.effective_command_line,
                         None,
-                        self.restored_filesystem
-                            .iter()
-                            .map(|filesystem| {
-                                (
-                                    &filesystem.config,
-                                    Path::new(&filesystem.root_path),
-                                    &filesystem.attachment,
-                                )
-                            })
-                            .collect(),
+                        self.restored_filesystem.as_ref().map(|filesystem| {
+                            openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource {
+                                config: &filesystem.config,
+                                canonical_host_path: Path::new(&filesystem.root_path),
+                                attachment: filesystem.attachment.clone(),
+                            }
+                        }),
                         restore
                             .machine_contract
                             .attachments
@@ -879,7 +868,7 @@ impl CreateVm {
     /// Adds devices reconstructed from an authoritative snapshot contract.
     pub(super) fn add_restored_devices(&mut self, config: &mut Config) -> anyhow::Result<()> {
         if let Some(filesystem) = self.restored_filesystem.take() {
-            self.resources.filesystem_root_paths = vec![PathBuf::from(&filesystem.root_path)];
+            let root_path = PathBuf::from(&filesystem.root_path);
             config.microvm.filesystems = vec![filesystem.config.clone()];
             config.virtio_devices.push((
                 openvmm_defs::config::VirtioBus::Mmio,
@@ -902,7 +891,11 @@ impl CreateVm {
                 }
                 .into_resource(),
             ));
-            self.resources.filesystem_attachments = vec![filesystem.attachment];
+            self.resources.filesystem = Some(crate::microvm::MicrovmFilesystemHost {
+                attachment: filesystem.attachment,
+                root_path,
+                children: Vec::new(),
+            });
         }
 
         let Some(restore) = &self.authoritative_restore else {
@@ -1041,7 +1034,7 @@ impl CreateVm {
             Path::new(&filesystem.root_path),
             &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0],
         )?;
-        self.resources.filesystem_root_paths = vec![PathBuf::from(&root_path)];
+        let host_root_path = PathBuf::from(&root_path);
         let resource = virtio_resources::fs::VirtioFsHandle {
             tag: "microvm".to_owned(),
             fs: virtio_resources::fs::VirtioFsBackend::HostFs {
@@ -1068,7 +1061,11 @@ impl CreateVm {
         }
         config.microvm.filesystems = vec![filesystem_config];
         config.microvm.filesystem_bootstrap = true;
-        self.resources.filesystem_attachments = vec![attachment];
+        self.resources.filesystem = Some(crate::microvm::MicrovmFilesystemHost {
+            attachment,
+            root_path: host_root_path,
+            children: Vec::new(),
+        });
         config
             .virtio_devices
             .push((openvmm_defs::config::VirtioBus::Mmio, resource));
@@ -1201,7 +1198,12 @@ impl CreateVm {
             _ => None,
         };
         self.filesystems.clone_from(&config.microvm.filesystems);
-        for root_path in &self.resources.filesystem_root_paths {
+        for root_path in self
+            .resources
+            .filesystem
+            .iter()
+            .flat_map(crate::microvm::MicrovmFilesystemHost::root_paths)
+        {
             crate::microvm::validate_microvm_filesystem_private_storage(
                 root_path,
                 self.snapshot_destination.as_deref(),
