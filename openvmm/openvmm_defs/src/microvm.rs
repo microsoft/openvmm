@@ -554,16 +554,21 @@ pub fn validate_microvm_filesystem_policy_paths(
         if path.is_empty() && kind == MicrovmFilesystemPathKind::Denied {
             continue;
         }
+        // A name may contain spaces, but not begin or end with one.
         if path.is_empty()
             || path.len() > 4096
             || path.starts_with('/')
             || path.ends_with('/')
             || path.chars().any(|character| {
-                character.is_whitespace() || matches!(character, '\0' | '\\' | ':')
+                (character.is_whitespace() && character != ' ')
+                    || matches!(character, '\0' | '\\' | ':')
             })
-            || path
-                .split('/')
-                .any(|component| component.is_empty() || matches!(component, "." | ".."))
+            || path.split('/').any(|component| {
+                component.is_empty()
+                    || matches!(component, "." | "..")
+                    || component.starts_with(' ')
+                    || component.ends_with(' ')
+            })
         {
             return Err(InvalidMicrovmFilesystemConfig::InvalidPolicyPath(
                 kind,
@@ -807,7 +812,7 @@ pub enum InvalidMicrovmFilesystemConfig {
     InvalidGuestTarget(String),
     /// A policy path was not a canonical relative path.
     #[error(
-        "invalid {0} path '{1}': expected a relative path without empty, dot, parent, whitespace, backslash, or ':' components"
+        "invalid {0} path '{1}': expected a relative path without empty, dot, or parent components, backslashes, colons, or whitespace other than spaces inside names"
     )]
     InvalidPolicyPath(MicrovmFilesystemPathKind, String),
     /// A policy-path list exceeded its count bound.
@@ -2704,6 +2709,42 @@ mod tests {
                     owned(&writable),
                 ),
                 Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn microvm_filesystem_policy_names_may_contain_spaces() {
+        use MicrovmFilesystemAccess::ReadWrite;
+        use MicrovmFilesystemPathKind::Denied;
+
+        fn owned(paths: &[&str]) -> Vec<String> {
+            paths.iter().map(|path| (*path).to_owned()).collect()
+        }
+        let config = filesystem("/workspace", ReadWrite)
+            .with_access_policy(
+                owned(&["Program Files"]),
+                owned(&["Program Files/My Tool"]),
+                owned(&["Program Files/My Tool/out dir"]),
+            )
+            .unwrap();
+        assert_eq!(config.allowed_paths, ["Program Files/My Tool"]);
+        for path in [
+            " leading",
+            "trailing ",
+            "name/ leading",
+            "name /x",
+            "tab\tname",
+            "line\nbreak",
+            "no\u{a0}break",
+        ] {
+            assert_eq!(
+                validate_microvm_filesystem_policy_paths(Denied, &[path.to_owned()]),
+                Err(InvalidMicrovmFilesystemConfig::InvalidPolicyPath(
+                    Denied,
+                    path.to_owned()
+                )),
+                "{path:?}"
             );
         }
     }
