@@ -242,14 +242,11 @@ fn canonical_microvm_filesystem_policy_paths(
                 path.display()
             )
         })?;
+        // A denied root hides everything but the allowed paths inside it.
         anyhow::ensure!(
-            !relative.as_os_str().is_empty(),
-            "microVM {kind} path cannot {} the complete filesystem export",
-            if kind == openvmm_defs::microvm::MicrovmFilesystemPathKind::Denied {
-                "hide"
-            } else {
-                "be"
-            }
+            !relative.as_os_str().is_empty()
+                || kind == openvmm_defs::microvm::MicrovmFilesystemPathKind::Denied,
+            "microVM {kind} path cannot be the complete filesystem export"
         );
         anyhow::ensure!(
             relative
@@ -1921,6 +1918,36 @@ mod tests {
             error.contains("cannot be the complete filesystem export"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn mount_deny_hides_a_root_that_has_allowed_paths() {
+        let root = policy_share();
+        let root_path = root.path().display().to_string();
+        let log = root.path().join("build.log").display().to_string();
+        let options = policy_options(root.path(), "rw", &["--mount-deny", &root_path]);
+        let error = format!("{:#}", options_filesystem(&options, None).unwrap_err());
+        assert!(error.contains("hide its root only"), "{error}");
+        let options = policy_options(
+            root.path(),
+            "rw",
+            &["--mount-deny", &root_path, "--mount-allow", &log],
+        );
+        let config = options_filesystem(&options, None).unwrap().config;
+        assert_eq!(config.denied_paths, [""]);
+        assert_eq!(config.allowed_paths, ["build.log"]);
+
+        // In an aggregate, the root is the child's.
+        let other = tempfile::tempdir().unwrap();
+        let children = workspace_and_toolcache(other.path(), root.path(), "ro");
+        let options = aggregate_options(
+            &children,
+            &["--mount-deny", &root_path, "--mount-allow", &log],
+        );
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert!(filesystem.config.children[0].denied_paths.is_empty());
+        assert_eq!(filesystem.config.children[1].denied_paths, [""]);
+        assert_eq!(filesystem.config.children[1].allowed_paths, ["build.log"]);
     }
 
     #[cfg(unix)]

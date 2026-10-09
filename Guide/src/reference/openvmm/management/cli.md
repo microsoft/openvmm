@@ -272,7 +272,8 @@ describes the source definitions.
   host-relative policy entries before resources are opened. A relative path
   is relative to the `--mount` root; with `--mount-aggregate`, each path must
   be absolute and applies to the child whose root contains it.
-  The complete root,
+  A root may be denied only when `--mount-allow` paths expose parts of it,
+  which leaves the root traverse-only. Other roots,
   paths outside the roots, duplicates, overlaps, symlink/reparse components,
   and nested-mount crossings are rejected. The virtio-fs server blocks the
   denied subtree and its root object identity, so `..`, a second mount of the
