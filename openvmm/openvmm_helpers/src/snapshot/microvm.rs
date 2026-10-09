@@ -283,6 +283,43 @@ pub struct SnapshotMicrovmFilesystem {
     /// writable, as in snapshots that predate this field.
     #[mesh(15)]
     pub writable_paths: Vec<String>,
+    /// The children of an aggregate filesystem, in the order in which its
+    /// root lists them, which own its policy; none for a single directory.
+    #[mesh(16)]
+    pub children: Vec<SnapshotMicrovmFilesystemChild>,
+}
+
+/// Canonical policy and host root of one child of an aggregate microVM
+/// filesystem.
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "openvmm.snapshot")]
+pub struct SnapshotMicrovmFilesystemChild {
+    /// Name of the child's directory under the aggregate's root.
+    #[mesh(1)]
+    pub name: String,
+    /// Canonical absolute host path of the child's root.
+    #[mesh(2)]
+    pub canonical_host_path: String,
+    /// Kind of the root's identity, as an attachment records it.
+    #[mesh(3)]
+    pub identity_kind: String,
+    /// Identity of the child's root.
+    #[mesh(4)]
+    pub identity: Vec<u8>,
+    /// Snapshot-authoritative `ro` or `rw` access mode.
+    #[mesh(5)]
+    pub access_mode: String,
+    /// Canonical child-relative paths hidden by the virtio-fs server.
+    #[mesh(6)]
+    pub denied_paths: Vec<String>,
+    /// Canonical child-relative paths inside denied paths that the virtio-fs
+    /// server exposes again.
+    #[mesh(7)]
+    pub allowed_paths: Vec<String>,
+    /// Canonical child-relative paths that are the only parts of a
+    /// read-write child that the guest can modify.
+    #[mesh(8)]
+    pub writable_paths: Vec<String>,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -319,10 +356,15 @@ pub struct SnapshotMicrovmSandboxBlock {
 }
 
 impl SnapshotMicrovmFilesystem {
+    /// Builds the snapshot policy of `config` with its live roots: the
+    /// canonical host path of a single directory, or, for an aggregate, the
+    /// canonical host path, identity kind, and identity of each child's root,
+    /// in child order.
     fn new(
         config: &openvmm_defs::microvm::MicrovmFilesystemConfig,
         canonical_host_path: &str,
         slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
+        child_roots: &[(&str, &str, &[u8])],
     ) -> Self {
         Self {
             guest_mount_target: config.guest_mount_target.clone(),
@@ -347,8 +389,82 @@ impl SnapshotMicrovmFilesystem {
             },
             allowed_paths: config.allowed_paths.clone(),
             writable_paths: config.writable_paths.clone(),
+            children: config
+                .children
+                .iter()
+                .zip(child_roots)
+                .map(|(child, (canonical_host_path, identity_kind, identity))| {
+                    SnapshotMicrovmFilesystemChild {
+                        name: child.name.clone(),
+                        canonical_host_path: (*canonical_host_path).to_owned(),
+                        identity_kind: (*identity_kind).to_owned(),
+                        identity: identity.to_vec(),
+                        access_mode: child.access.as_str().to_owned(),
+                        denied_paths: child.denied_paths.clone(),
+                        allowed_paths: child.allowed_paths.clone(),
+                        writable_paths: child.writable_paths.clone(),
+                    }
+                })
+                .collect(),
         }
     }
+}
+
+/// Parses the `ro` or `rw` access mode recorded in a snapshot filesystem
+/// policy.
+fn snapshot_microvm_filesystem_access(
+    access_mode: &str,
+) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemAccess> {
+    match access_mode {
+        "ro" => Ok(openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly),
+        "rw" => Ok(openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite),
+        mode => anyhow::bail!("snapshot filesystem access mode '{mode}' is unsupported"),
+    }
+}
+
+/// Parses the guest-visible configuration that a snapshot filesystem policy
+/// records, whether a single directory or an aggregate.
+pub fn snapshot_microvm_filesystem_config(
+    filesystem: &SnapshotMicrovmFilesystem,
+) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemConfig> {
+    let config = if filesystem.children.is_empty() {
+        openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+            filesystem.guest_mount_target.clone(),
+            snapshot_microvm_filesystem_access(&filesystem.access_mode)?,
+        )
+        .and_then(|config| {
+            config.with_access_policy(
+                filesystem.denied_paths.clone(),
+                filesystem.allowed_paths.clone(),
+                filesystem.writable_paths.clone(),
+            )
+        })
+    } else {
+        let children = filesystem
+            .children
+            .iter()
+            .map(|child| {
+                anyhow::Ok(
+                    openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(
+                        child.name.clone(),
+                        snapshot_microvm_filesystem_access(&child.access_mode)?,
+                    )?
+                    .with_access_policy(
+                        child.denied_paths.clone(),
+                        child.allowed_paths.clone(),
+                        child.writable_paths.clone(),
+                    )?,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .context("snapshot filesystem policy is invalid")?;
+        openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
+            filesystem.guest_mount_target.clone(),
+            children,
+        )
+    }
+    .context("snapshot filesystem policy is invalid")?;
+    Ok(config.with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?))
 }
 
 /// Parses the host identity of guest operations recorded in a snapshot
@@ -571,6 +687,9 @@ pub struct MicrovmFilesystemSource<'a> {
     pub canonical_host_path: &'a Path,
     /// The live attachment of the filesystem's device.
     pub attachment: SnapshotAttachment,
+    /// The canonical host roots and live root attachments of an aggregate's
+    /// children, in child order; none for a single directory.
+    pub children: Vec<(&'a Path, &'a SnapshotAttachment)>,
 }
 
 /// The identity kind of an aggregate filesystem's attachment: the SHA-256
@@ -578,18 +697,15 @@ pub struct MicrovmFilesystemSource<'a> {
 pub const MICROVM_FILESYSTEM_AGGREGATE_IDENTITY_KIND: &str = "aggregate-sha256-v1";
 
 /// Returns the attachment `stable_id` of an aggregate filesystem whose
-/// children, in order, have the given names and live root attachments.
+/// children, in order, have the given names and root identity kinds and
+/// identities.
 pub fn microvm_filesystem_aggregate_attachment<'a>(
     stable_id: &str,
-    children: impl IntoIterator<Item = (&'a str, &'a SnapshotAttachment)>,
+    children: impl IntoIterator<Item = (&'a str, &'a str, &'a [u8])>,
 ) -> SnapshotAttachment {
     let mut digest = sha2::Sha256::new();
-    for (name, root) in children {
-        for field in [
-            name.as_bytes(),
-            root.identity_kind.as_bytes(),
-            root.identity.as_slice(),
-        ] {
+    for (name, identity_kind, identity) in children {
+        for field in [name.as_bytes(), identity_kind.as_bytes(), identity] {
             digest.update((field.len() as u64).to_le_bytes());
             digest.update(field);
         }
@@ -815,6 +931,16 @@ fn microvm_filesystem_device(
     }
 }
 
+/// Returns the identity kind of a filesystem root captured on
+/// `source_hypervisor`'s host.
+fn microvm_filesystem_root_identity_kind(source_hypervisor: &str) -> Option<&'static str> {
+    match source_hypervisor {
+        "kvm" | "mshv" => Some("unix-device-inode-v1"),
+        "whp" => Some("windows-volume-file-id-v1"),
+        _ => None,
+    }
+}
+
 /// Validates the live attachment of `filesystem` in `slot` and returns its
 /// snapshot policy.
 fn microvm_filesystem_policy(
@@ -822,39 +948,83 @@ fn microvm_filesystem_policy(
     slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
     filesystem: &MicrovmFilesystemSource<'_>,
 ) -> anyhow::Result<SnapshotMicrovmFilesystem> {
-    anyhow::ensure!(
-        !filesystem.config.is_aggregate(),
-        "microVM aggregate filesystems do not support snapshots"
-    );
-    let canonical_host_path = filesystem
-        .canonical_host_path
-        .to_str()
-        .context("microVM filesystem canonical host path is not valid UTF-8")?;
-    anyhow::ensure!(
-        !canonical_host_path.is_empty(),
-        "microVM filesystem canonical host path is empty"
-    );
+    let root_identity_kind = microvm_filesystem_root_identity_kind(source_hypervisor);
     let attachment = &filesystem.attachment;
+    let identity_kind = if filesystem.config.is_aggregate() {
+        Some(MICROVM_FILESYSTEM_AGGREGATE_IDENTITY_KIND)
+    } else {
+        root_identity_kind
+    };
     anyhow::ensure!(
         attachment.stable_id == slot.stable_id
             && attachment.kind == "virtio-fs"
             && attachment.required
             && attachment.reconnect_policy == "live-revalidate"
-            && match source_hypervisor {
-                "kvm" | "mshv" => attachment.identity_kind == "unix-device-inode-v1",
-                "whp" => attachment.identity_kind == "windows-volume-file-id-v1",
-                _ => false,
-            }
+            && identity_kind == Some(attachment.identity_kind.as_str())
             && !attachment.identity.is_empty()
             && attachment.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES
             && attachment.length == 0
             && attachment.reconnect_timeout_ms == 0,
         "microVM filesystem attachment has an unsupported live-revalidation policy"
     );
+    if !filesystem.config.is_aggregate() {
+        let canonical_host_path = filesystem
+            .canonical_host_path
+            .to_str()
+            .context("microVM filesystem canonical host path is not valid UTF-8")?;
+        anyhow::ensure!(
+            !canonical_host_path.is_empty() && filesystem.children.is_empty(),
+            "microVM filesystem canonical host path is empty"
+        );
+        return Ok(SnapshotMicrovmFilesystem::new(
+            filesystem.config,
+            canonical_host_path,
+            slot,
+            &[],
+        ));
+    }
+
+    anyhow::ensure!(
+        filesystem.canonical_host_path.as_os_str().is_empty()
+            && filesystem.children.len() == filesystem.config.children.len(),
+        "microVM aggregate filesystem roots do not match its children"
+    );
+    let mut child_roots = Vec::with_capacity(filesystem.children.len());
+    for (child, (root_path, root)) in filesystem.config.children.iter().zip(&filesystem.children) {
+        let root_path = root_path
+            .to_str()
+            .context("microVM aggregate child canonical host path is not valid UTF-8")?;
+        anyhow::ensure!(
+            !root_path.is_empty()
+                && root_identity_kind == Some(root.identity_kind.as_str())
+                && !root.identity.is_empty()
+                && root.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES,
+            "microVM aggregate child '{}' has an unsupported host root",
+            child.name
+        );
+        child_roots.push((
+            root_path,
+            root.identity_kind.as_str(),
+            root.identity.as_slice(),
+        ));
+    }
+    let expected = microvm_filesystem_aggregate_attachment(
+        slot.stable_id,
+        filesystem.config.children.iter().zip(&child_roots).map(
+            |(child, (_, identity_kind, identity))| {
+                (child.name.as_str(), *identity_kind, *identity)
+            },
+        ),
+    );
+    anyhow::ensure!(
+        *attachment == expected,
+        "microVM aggregate filesystem attachment does not match its children"
+    );
     Ok(SnapshotMicrovmFilesystem::new(
         filesystem.config,
-        canonical_host_path,
+        "",
         slot,
+        &child_roots,
     ))
 }
 
@@ -1638,31 +1808,70 @@ pub(super) fn validate_machine_contract_shape(
         slot.stable_id
     );
     if let Some(filesystem) = &contract.microvm_filesystem {
-        anyhow::ensure!(
-            !filesystem.canonical_host_path.is_empty(),
-            "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
-        );
-        let access = match filesystem.access_mode.as_str() {
-            "ro" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
-            "rw" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
-            mode => anyhow::bail!("snapshot filesystem access mode '{mode}' is unsupported"),
-        };
-        let parsed = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
-            filesystem.guest_mount_target.clone(),
-            access,
-        )
-        .and_then(|config| {
-            config.with_access_policy(
-                filesystem.denied_paths.clone(),
-                filesystem.allowed_paths.clone(),
-                filesystem.writable_paths.clone(),
-            )
-        })
-        .context("snapshot filesystem policy is invalid")?
-        .with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?);
+        let parsed = snapshot_microvm_filesystem_config(filesystem)?;
+        if parsed.is_aggregate() {
+            let root_identity_kind =
+                microvm_filesystem_root_identity_kind(&contract.source_hypervisor);
+            anyhow::ensure!(
+                filesystem.canonical_host_path.is_empty(),
+                "snapshot aggregate filesystem has a host path of its own"
+            );
+            for child in &filesystem.children {
+                anyhow::ensure!(
+                    !child.canonical_host_path.is_empty()
+                        && root_identity_kind == Some(child.identity_kind.as_str())
+                        && !child.identity.is_empty()
+                        && child.identity.len() <= MAX_ATTACHMENT_IDENTITY_BYTES,
+                    "snapshot aggregate filesystem child '{}' has an invalid host root",
+                    child.name
+                );
+            }
+            let expected = microvm_filesystem_aggregate_attachment(
+                slot.stable_id,
+                filesystem.children.iter().map(|child| {
+                    (
+                        child.name.as_str(),
+                        child.identity_kind.as_str(),
+                        child.identity.as_slice(),
+                    )
+                }),
+            );
+            anyhow::ensure!(
+                contract
+                    .attachments
+                    .iter()
+                    .filter(|attachment| attachment.stable_id == slot.stable_id)
+                    .all(
+                        |attachment| attachment.identity_kind == expected.identity_kind
+                            && attachment.identity == expected.identity
+                    ),
+                "snapshot aggregate filesystem attachment does not match its children"
+            );
+        } else {
+            anyhow::ensure!(
+                !filesystem.canonical_host_path.is_empty(),
+                "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+            );
+        }
+        let child_roots = filesystem
+            .children
+            .iter()
+            .map(|child| {
+                (
+                    child.canonical_host_path.as_str(),
+                    child.identity_kind.as_str(),
+                    child.identity.as_slice(),
+                )
+            })
+            .collect::<Vec<_>>();
         anyhow::ensure!(
             *filesystem
-                == SnapshotMicrovmFilesystem::new(&parsed, &filesystem.canonical_host_path, slot),
+                == SnapshotMicrovmFilesystem::new(
+                    &parsed,
+                    &filesystem.canonical_host_path,
+                    slot,
+                    &child_roots,
+                ),
             "snapshot filesystem policy is not canonical"
         );
     }
@@ -2611,6 +2820,7 @@ mod tests {
                     "/microvm-share"
                 }),
                 attachment: microvm_filesystem_attachment(source_hypervisor),
+                children: Vec::new(),
             }),
             None,
             None,
@@ -2753,6 +2963,7 @@ mod tests {
             config: filesystem,
             canonical_host_path: microvm_share_path(),
             attachment: microvm_filesystem_attachment("kvm"),
+            children: Vec::new(),
         })
     }
 
@@ -2837,33 +3048,174 @@ mod tests {
         assert!(error.to_string().contains("saved policy"), "{error:#}");
     }
 
-    #[test]
-    fn microvm_contract_builder_rejects_an_aggregate() {
-        let aggregate = openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
+    fn aggregate_filesystem() -> openvmm_defs::microvm::MicrovmFilesystemConfig {
+        use openvmm_defs::microvm::MicrovmFilesystemAccess;
+        use openvmm_defs::microvm::MicrovmFilesystemChildConfig;
+
+        openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
             "/run/nvx/shares".to_owned(),
             vec![
-                openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(
-                    "0".to_owned(),
-                    openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+                MicrovmFilesystemChildConfig::new(
+                    "work".to_owned(),
+                    MicrovmFilesystemAccess::ReadWrite,
+                )
+                .unwrap()
+                .with_access_policy(
+                    vec!["secrets".to_owned()],
+                    Vec::new(),
+                    vec!["out".to_owned()],
+                )
+                .unwrap(),
+                MicrovmFilesystemChildConfig::new(
+                    "tools".to_owned(),
+                    MicrovmFilesystemAccess::ReadOnly,
                 )
                 .unwrap(),
             ],
         )
-        .unwrap();
-        let error = filesystem_contract(
+        .unwrap()
+    }
+
+    fn aggregate_roots(source_hypervisor: &str) -> Vec<(std::path::PathBuf, SnapshotAttachment)> {
+        ["work", "tools"]
+            .iter()
+            .map(|name| {
+                let mut attachment = microvm_filesystem_attachment(source_hypervisor);
+                attachment.identity = format!("root-of-{name}").into_bytes();
+                let path = if cfg!(windows) {
+                    format!(r"C:\{name}")
+                } else {
+                    format!("/{name}")
+                };
+                (std::path::PathBuf::from(path), attachment)
+            })
+            .collect()
+    }
+
+    fn aggregate_source<'a>(
+        config: &'a openvmm_defs::microvm::MicrovmFilesystemConfig,
+        roots: &'a [(std::path::PathBuf, SnapshotAttachment)],
+    ) -> Option<MicrovmFilesystemSource<'a>> {
+        Some(MicrovmFilesystemSource {
+            config,
+            canonical_host_path: Path::new(""),
+            attachment: microvm_filesystem_aggregate_attachment(
+                "fs:microvm0",
+                config.children.iter().zip(roots).map(|(child, (_, root))| {
+                    (
+                        child.name.as_str(),
+                        root.identity_kind.as_str(),
+                        root.identity.as_slice(),
+                    )
+                }),
+            ),
+            children: roots
+                .iter()
+                .map(|(path, root)| (path.as_path(), root))
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn generated_microvm_aggregate_contract_records_its_children() {
+        let config = aggregate_filesystem();
+        for source_hypervisor in ["kvm", "mshv", "whp"] {
+            let roots = aggregate_roots(source_hypervisor);
+            let contract = filesystem_contract(
+                source_hypervisor,
+                filesystem_command_line(&config),
+                true,
+                aggregate_source(&config, &roots),
+            )
+            .unwrap();
+            let filesystem = contract.microvm_filesystem.as_ref().unwrap();
+            assert_eq!(filesystem.guest_mount_target, "/run/nvx/shares");
+            assert_eq!(filesystem.access_mode, "rw");
+            assert_eq!(filesystem.tag, "microvm");
+            assert!(filesystem.canonical_host_path.is_empty());
+            assert!(filesystem.denied_paths.is_empty());
+            assert_eq!(
+                filesystem
+                    .children
+                    .iter()
+                    .map(|child| (child.name.as_str(), child.access_mode.as_str()))
+                    .collect::<Vec<_>>(),
+                [("work", "rw"), ("tools", "ro")]
+            );
+            assert_eq!(filesystem.children[0].denied_paths, ["secrets"]);
+            assert_eq!(filesystem.children[0].writable_paths, ["out"]);
+            assert_eq!(
+                filesystem.children[1].canonical_host_path,
+                roots[1].0.to_str().unwrap()
+            );
+            assert_eq!(filesystem.children[1].identity, b"root-of-tools");
+            assert_eq!(
+                contract.attachments[0].identity_kind,
+                MICROVM_FILESYSTEM_AGGREGATE_IDENTITY_KIND
+            );
+            assert_eq!(
+                snapshot_microvm_filesystem_config(filesystem).unwrap(),
+                config
+            );
+            let mut manifest = test_manifest();
+            manifest.memory_size_bytes = 1024;
+            manifest.vp_count = 1;
+            manifest.machine_contract = Some(contract.clone());
+            validate_microvm_machine_contract(&manifest, &contract).unwrap();
+        }
+    }
+
+    #[test]
+    fn microvm_aggregate_contract_rejects_changed_children() {
+        let config = aggregate_filesystem();
+        let roots = aggregate_roots("kvm");
+        let contract = filesystem_contract(
             "kvm",
-            filesystem_command_line(&aggregate),
+            filesystem_command_line(&config),
             true,
-            Some(MicrovmFilesystemSource {
-                config: &aggregate,
-                canonical_host_path: Path::new(""),
-                attachment: microvm_filesystem_attachment("kvm"),
-            }),
+            aggregate_source(&config, &roots),
         )
-        .unwrap_err();
+        .unwrap();
+        let manifest = |contract: &SnapshotMachineContract| {
+            let mut manifest = test_manifest();
+            manifest.memory_size_bytes = 1024;
+            manifest.vp_count = 1;
+            manifest.machine_contract = Some(contract.clone());
+            manifest
+        };
+        let tampers: [fn(&mut SnapshotMicrovmFilesystem); 6] = [
+            |filesystem| filesystem.children[1].identity = b"another-root".to_vec(),
+            |filesystem| filesystem.children.swap(0, 1),
+            |filesystem| filesystem.children[0].canonical_host_path.clear(),
+            |filesystem| filesystem.canonical_host_path = "/elsewhere".to_owned(),
+            |filesystem| filesystem.children[1].access_mode = "rw".to_owned(),
+            |filesystem| filesystem.children[0].denied_paths.clear(),
+        ];
+        for tamper in tampers {
+            let mut tampered = contract.clone();
+            tamper(tampered.microvm_filesystem.as_mut().unwrap());
+            assert!(validate_microvm_machine_contract(&manifest(&tampered), &contract).is_err());
+        }
+        let mut wrong_attachment = contract.clone();
+        wrong_attachment.attachments[0].identity = vec![0; 32];
+        let error = validate_machine_contract_shape(&wrong_attachment, 1024, 1).unwrap_err();
         assert!(
-            error.to_string().contains("do not support snapshots"),
+            error.to_string().contains("does not match its children"),
             "{error:#}"
+        );
+
+        // The builder checks the attachment against the children's roots.
+        let mut source = aggregate_source(&config, &roots).unwrap();
+        source.attachment.identity = vec![0; 32];
+        assert!(
+            filesystem_contract("kvm", filesystem_command_line(&config), true, Some(source))
+                .is_err()
+        );
+        let mut source = aggregate_source(&config, &roots).unwrap();
+        source.children.pop();
+        assert!(
+            filesystem_contract("kvm", filesystem_command_line(&config), true, Some(source))
+                .is_err()
         );
     }
 

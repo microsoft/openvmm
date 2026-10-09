@@ -100,6 +100,16 @@ impl AggregateState {
             registry: RwLock::new(registry),
         }
     }
+
+    /// Returns the volumes of the children, in child order.
+    pub(crate) fn child_volumes(&self) -> Vec<Arc<VirtioFsVolume>> {
+        self.registry
+            .read()
+            .entries
+            .iter()
+            .map(|entry| Arc::clone(&entry.volume))
+            .collect()
+    }
 }
 
 /// Aggregate-mode operations on [`VirtioFs`]. The crate-root `Fuse`

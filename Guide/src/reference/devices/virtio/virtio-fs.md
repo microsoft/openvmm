@@ -256,12 +256,23 @@ identities. Missing, moved, replaced, ambiguous, or no-longer-reopenable
 objects fail restore. A saved symbolic link is revalidated as the link itself,
 without being followed, and an alias whose ancestor has become a link fails
 restore. A handle that the guest held open for writing must still be on a
-writable path. A microVM with an aggregate cannot capture a snapshot.
+writable path.
+
+A snapshot of an aggregate records each child's name, canonical host path,
+root identity, access mode, and denied, allowed, and writable paths, and the
+attachment's identity is the SHA-256 of the children's names and root
+identities. Restoring it requires `--mount-aggregate` with the same guest
+target and the same `--mount-child` options in the same order: the same names,
+canonical host paths, and modes, with the same policy paths and
+`--mount-owner` mode. OpenVMM revalidates each child's root and saved objects
+as it does a single directory's. The aggregate's root lists the children in
+the same order, so its directory handles and cookies stay valid.
 
 The device state of an attachment with allowed or writable paths records its
 complete access policy, and a restore must supply the same one. OpenVMM
 releases that predate these paths reject that state rather than restore the
-share without them.
+share without them. The device state of an aggregate records its children
+and their policies, and releases that predate aggregates reject it.
 
 `--mount-owner caller` applies only to guest requests. Capture and restore
 still revalidate saved names and reopen saved handles as the OpenVMM process.

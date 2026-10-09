@@ -312,7 +312,9 @@ describes the source definitions.
   captured `--mount` again, with the exact canonical host path, guest target,
   access mode, denied, allowed, and writable paths, and `--mount-owner` mode;
   the live root and every saved object identity are also revalidated before
-  vCPUs start. A microVM with `--mount-aggregate` cannot capture a snapshot.
+  vCPUs start. A snapshot of `--mount-aggregate` requires it again, with the
+  same guest target and the same `--mount-child` options, in the same order,
+  with the same canonical host paths, modes, and policy paths.
   A snapshot captured without a filesystem may remain dormant or bind one new
   `--mount` to the slot. The resumed
   guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
@@ -404,11 +406,12 @@ describes the source definitions.
   pending while no peer is connected.
 
   When the snapshot contains an active virtio-fs attachment, restore requires
-  a fresh `--mount`. It must reproduce the manifest's exact canonical host
-  path, guest target, and `ro`/`rw` mode while also supplying a live root with
-  the same saved identity. A snapshot advertising the dormant slot may instead
-  accept one new `--mount`; snapshots without that capability reject additive
-  attachment.
+  a fresh `--mount`, or `--mount-aggregate` with the same `--mount-child`
+  options in the same order. It must reproduce the manifest's exact canonical
+  host paths, guest target, and `ro`/`rw` modes while also supplying live
+  roots with the same saved identities. A snapshot advertising the dormant
+  slot may instead accept one new `--mount`; snapshots without that
+  capability reject additive attachment.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress

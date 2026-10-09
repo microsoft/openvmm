@@ -21,15 +21,23 @@ use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
+use super::saved_state::AGGREGATE_SCHEMA_VERSION;
+use super::saved_state::SavedHandle;
+use super::saved_state::SavedObjectIdentity;
+use super::state::validate_microvm_state;
 use crate::VirtioFs;
 use fuse::Fuse;
+use fuse::Session;
+use fuse::SessionState;
 use fuse::protocol::FATTR_MODE;
 use fuse::protocol::FUSE_ROOT_ID;
+use fuse::protocol::fuse_read_in;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use test_with_tracing::test;
+use zerocopy::FromZeros;
 
 /// A child of a test aggregate: its name, host root, mode, and policy.
 struct Child<'a> {
@@ -334,4 +342,229 @@ fn aggregate_rejects_a_root_that_is_not_its_child() {
     );
     assert!(VirtioFs::new_microvm_aggregate(&[&roots.work], profile.clone()).is_err());
     assert!(VirtioFs::new_microvm(&roots.work, profile).is_err());
+}
+
+/// Reads a directory from `offset` and returns each entry's name and the
+/// cookie of the entry after it.
+fn read_entries(fs: &VirtioFs, node_id: u64, fh: u64, offset: u64) -> Vec<(String, u64)> {
+    let mut arg = fuse_read_in::new_zeroed();
+    arg.fh = fh;
+    arg.offset = offset;
+    arg.size = 4096;
+    let buffer = fs.read_dir(&request(node_id), &arg).unwrap();
+    let mut entries = Vec::new();
+    let mut position = 0;
+    while position < buffer.len() {
+        // A `fuse_dirent` header is the inode number, the next offset, the
+        // name length, and the type, followed by the padded name.
+        let header = &buffer[position..position + 24];
+        let next = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let length = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
+        let name = &buffer[position + 24..position + 24 + length];
+        entries.push((String::from_utf8(name.to_vec()).unwrap(), next));
+        position += fuse::protocol::fuse_dirent_align(24 + length);
+    }
+    entries
+}
+
+#[test]
+fn aggregate_state_restores_children_handles_and_cookies() {
+    let roots = Roots::new();
+    std::fs::write(roots.work.join("alpha"), b"alpha").unwrap();
+    std::fs::write(roots.work.join("beta"), b"beta").unwrap();
+    let directory = tempdir().unwrap();
+    let cache = directory.path().join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let children = [
+        Child::new("work", &roots.work, false),
+        Child::new("tools", &roots.tools, true),
+        Child::new("cache", &cache, true),
+    ];
+    let profile = profile(&children);
+    let source = aggregate(&children);
+
+    // An open file in a read-only child and an open directory, partly read,
+    // in a read-write child.
+    let tools_file = lookup(&source, "tools/file").unwrap();
+    let tools_handle = open(&source, tools_file, lx::O_RDONLY).unwrap();
+    let work = lookup(&source, "work").unwrap();
+    let work_handle = source
+        .open_dir(&request(work), lx::O_RDONLY as u32)
+        .unwrap()
+        .fh;
+    let work_entries = read_entries(&source, work, work_handle, 0);
+    let work_cookie = work_entries[0].1;
+    let work_continuation = read_entries(&source, work, work_handle, work_cookie);
+    // The synthetic root's directory handle and cookies.
+    let root_handle = source
+        .open_dir(&request(FUSE_ROOT_ID), lx::O_RDONLY as u32)
+        .unwrap()
+        .fh;
+    let root_entries = read_entries(&source, FUSE_ROOT_ID, root_handle, 0);
+    assert_eq!(
+        root_entries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        [".", "..", "work", "tools", "cache"]
+    );
+    let root_cookie = root_entries[2].1;
+
+    let state = source
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    assert_eq!(state.schema_version, AGGREGATE_SCHEMA_VERSION);
+    assert_eq!(
+        state
+            .aggregate_children
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect::<Vec<_>>(),
+        ["work", "tools", "cache"]
+    );
+    assert!(
+        state
+            .inodes
+            .iter()
+            .all(|inode| inode.node_id != FUSE_ROOT_ID)
+    );
+    assert!(state.attachment_root_identity.is_empty());
+
+    std::fs::rename(roots.work.join("beta"), roots.work.join("00-beta")).unwrap();
+    std::fs::write(roots.work.join("later"), b"later").unwrap();
+
+    let destination = aggregate(&children);
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    assert_eq!(read_node(&destination, tools_file), b"host");
+    let mut arg = fuse_read_in::new_zeroed();
+    arg.fh = tools_handle;
+    arg.size = 64;
+    assert_eq!(
+        destination.read(&request(tools_file), &arg).unwrap(),
+        b"host"
+    );
+    assert_eq!(
+        read_entries(&destination, work, work_handle, work_cookie),
+        work_continuation
+    );
+    assert_eq!(
+        read_entries(&destination, FUSE_ROOT_ID, root_handle, root_cookie),
+        root_entries[3..]
+    );
+    // The children keep their own policies after the restore.
+    let tools = lookup(&destination, "tools").unwrap();
+    assert_eq!(error(create(&destination, tools, "new")), lx::Error::EROFS);
+    let (file, fh) = create(&destination, work, "new").unwrap();
+    release(&destination, file, fh);
+}
+
+fn work_profile(root: &Path) -> MicroVmVirtioFsProfile {
+    MicroVmVirtioFsProfile::from_attachment(
+        MICROVM_ATTACHMENT_ID.to_owned(),
+        microvm_root_identity(root).unwrap(),
+        false,
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn aggregate_state_rejects_changed_children() {
+    let roots = Roots::new();
+    let directory = tempdir().unwrap();
+    let other = directory.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::create_dir(roots.work.join("secret")).unwrap();
+    let children = [
+        Child::new("work", &roots.work, false),
+        Child::new("tools", &roots.tools, true),
+    ];
+    let source = aggregate(&children);
+    lookup(&source, "work/file").unwrap();
+    lookup(&source, "tools/file").unwrap();
+    let state = || {
+        source
+            .save_microvm_state(&profile(&children), SessionState::default())
+            .unwrap()
+    };
+
+    for changed in [
+        vec![
+            Child::new("tools", &roots.tools, true),
+            Child::new("work", &roots.work, false),
+        ],
+        vec![
+            Child::new("workspace", &roots.work, false),
+            Child::new("tools", &roots.tools, true),
+        ],
+        vec![
+            Child::new("work", &roots.work, false),
+            Child::new("tools", &roots.tools, false),
+        ],
+        vec![
+            Child {
+                denied: &["secret"],
+                ..Child::new("work", &roots.work, false)
+            },
+            Child::new("tools", &roots.tools, true),
+        ],
+        vec![
+            Child::new("work", &roots.work, false),
+            Child::new("tools", &roots.tools, true),
+            Child::new("other", &other, true),
+        ],
+        vec![
+            Child::new("work", &other, false),
+            Child::new("tools", &roots.tools, true),
+        ],
+    ] {
+        let destination = aggregate(&changed);
+        let session = Session::new(destination.clone());
+        assert!(
+            destination
+                .restore_microvm_state(&profile(&changed), state(), &session)
+                .is_err()
+        );
+    }
+
+    // A single share cannot restore an aggregate's state, nor the reverse.
+    let single = VirtioFs::new_microvm(&roots.work, work_profile(&roots.work)).unwrap();
+    let session = Session::new(single.clone());
+    assert!(
+        single
+            .restore_microvm_state(&work_profile(&roots.work), state(), &session)
+            .is_err()
+    );
+    let single_state = single
+        .save_microvm_state(&work_profile(&roots.work), SessionState::default())
+        .unwrap();
+    assert!(validate_microvm_state(&single_state, &profile(&children)).is_err());
+
+    // A read-only child cannot restore a writable handle.
+    let mut writable = state();
+    let tools_file = writable
+        .inodes
+        .iter()
+        .find(|inode| inode.volume_id == 2 && !inode.relative_aliases[0].is_empty())
+        .unwrap();
+    let handle = SavedHandle {
+        handle_id: writable.next_handle_id,
+        node_id: tools_file.node_id,
+        open_flags: lx::O_RDWR as u32,
+        kind: lx::S_IFREG,
+        object_identity: SavedObjectIdentity {
+            device_id: tools_file.object_identity.device_id,
+            inode_id: tools_file.object_identity.inode_id,
+            kind: lx::S_IFREG,
+        },
+        directory_entries: Vec::new(),
+        directory_snapshot_built: false,
+    };
+    writable.handles.push(handle);
+    writable.next_handle_id += 1;
+    let error = validate_microvm_state(&writable, &profile(&children)).unwrap_err();
+    assert!(error.to_string().contains("writable handle"), "{error:#}");
 }
