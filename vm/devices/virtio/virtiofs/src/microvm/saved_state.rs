@@ -22,6 +22,10 @@ pub(crate) const CALLER_IDENTITY_SCHEMA_VERSION: u32 = 6;
 /// could let the guest write everywhere in the share, so they must reject its
 /// state. The state records the ownership mode in `caller_identity`.
 pub(crate) const SUBTREE_POLICY_SCHEMA_VERSION: u32 = 7;
+/// The schema version of an aggregate attachment, which records its children
+/// in `aggregate_children` and their inodes by volume. Readers that predate
+/// aggregates require every inode to belong to volume 0, so they reject it.
+pub(crate) const AGGREGATE_SCHEMA_VERSION: u32 = 8;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -89,6 +93,31 @@ pub(crate) struct SavedState {
     /// the attachment, recorded only by version
     /// [`SUBTREE_POLICY_SCHEMA_VERSION`] states.
     #[mesh(21)]
+    pub writable_paths: Vec<String>,
+    /// The children of an aggregate attachment, in the order in which the
+    /// synthetic root lists them, recorded only by version
+    /// [`AGGREGATE_SCHEMA_VERSION`] states. Child `index` owns the inodes of
+    /// volume `index + 1`, and the synthetic root's directory cookies are
+    /// positions in this list, so the list restores them.
+    #[mesh(22)]
+    pub aggregate_children: Vec<SavedAggregateChild>,
+}
+
+/// The identity and access policy of one child of an aggregate attachment.
+#[derive(Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "virtio.fs")]
+pub(crate) struct SavedAggregateChild {
+    #[mesh(1)]
+    pub name: String,
+    #[mesh(2)]
+    pub root_identity: Vec<u8>,
+    #[mesh(3)]
+    pub access_mode: u32,
+    #[mesh(4)]
+    pub denied_paths: Vec<String>,
+    #[mesh(5)]
+    pub allowed_paths: Vec<String>,
+    #[mesh(6)]
     pub writable_paths: Vec<String>,
 }
 

@@ -215,7 +215,7 @@ pub(crate) mod tests {
             command_line,
             Some((network, &policy, microvm_network_attachment())),
             false,
-            Vec::new(),
+            None,
             None,
             None,
             Vec::new(),
