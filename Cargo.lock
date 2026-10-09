@@ -3957,8 +3957,8 @@ dependencies = [
 
 [[package]]
 name = "igvm"
-version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
+version = "0.5.0"
+source = "git+https://github.com/microsoft/igvm?rev=568e2719972eef0013144eda95564ee60c42ea6e#568e2719972eef0013144eda95564ee60c42ea6e"
 dependencies = [
  "bitfield-struct 0.13.0",
  "corim",
@@ -3977,8 +3977,8 @@ dependencies = [
 
 [[package]]
 name = "igvm_defs"
-version = "0.4.0"
-source = "git+https://github.com/microsoft/igvm?rev=b7e717d40653f8c2382342eb7097dcd3ec0568de#b7e717d40653f8c2382342eb7097dcd3ec0568de"
+version = "0.5.0"
+source = "git+https://github.com/microsoft/igvm?rev=568e2719972eef0013144eda95564ee60c42ea6e#568e2719972eef0013144eda95564ee60c42ea6e"
 dependencies = [
  "bitfield-struct 0.13.0",
  "open-enum",
@@ -4011,6 +4011,7 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
+ "tempfile",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",

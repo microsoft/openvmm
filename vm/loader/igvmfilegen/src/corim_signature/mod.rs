@@ -20,10 +20,11 @@
 mod envelope;
 
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;
 
 // Re-export signed-CoRIM operations for use by main.rs and other consumers.
 pub use envelope::detach_payload;
+pub(crate) use envelope::verify_corim_signature;
 
 use anyhow::Context;
 use igvm::IgvmFile;
@@ -129,7 +130,7 @@ pub fn patch(
 
         // The issuer certificate is taken from the envelope's protected header
         // (x5chain / x5bag).
-        envelope::verify_corim_signature(corim_signature, existing_doc)
+        verify_corim_signature(corim_signature, existing_doc)
             .context("verifying CoRIM signature against the in-file document")?;
     }
 
