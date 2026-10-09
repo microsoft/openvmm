@@ -795,7 +795,7 @@ impl ResetPartition for KvmPartition {
         // partition's clock. A reset that moves only one of them is what wedges a guest
         // that calibrates one against the other, and the pair is the only reading that
         // distinguishes that from a healthy reset.
-        let reference_time_before = self.inner.now().ref_time;
+        let reference_time_before = self.inner.kvm.get_clock()?.clock_ns / 100;
         this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
         // `reset_all` has just returned the reference clock to zero; put the counter back
@@ -808,7 +808,7 @@ impl ResetPartition for KvmPartition {
         )?;
         tracing::info!(
             reference_time_before,
-            reference_time_after = self.inner.now().ref_time,
+            reference_time_after = self.inner.kvm.get_clock()?.clock_ns / 100,
             guest_tsc_before = tsc.map(|t| t.before),
             guest_tsc_after = tsc.map(|t| t.after),
             tsc_pairing = tsc.map(|t| t.pairing),
@@ -1043,7 +1043,7 @@ fn sample_reference_clock_against_counter(
         bsp.get_msrs(&[x86defs::X86X_MSR_TSC], &mut closing)?;
 
         let bracketed = counter_at_bracket_midpoint(opening[0], closing[0]);
-        let error_ticks = bracket_width_ticks(opening[0], closing[0]) / 2;
+        let error_ticks = bracket_error_ticks(opening[0], closing[0]);
         let pairing =
             pair_guest_tsc_with_reference_clock(clock.host_tsc, tsc_offset, bracketed, error_ticks);
         let sample = match pairing {
@@ -1056,7 +1056,7 @@ fn sample_reference_clock_against_counter(
             CounterPairing::NotReported | CounterPairing::Disagrees(_) => ReferenceClockSample {
                 reference_clock_ns: clock.clock_ns,
                 guest_tsc: bracketed,
-                error_ns: ns_from_guest_tsc_ticks(error_ticks, guest_tsc_khz),
+                error_ns: ns_from_guest_tsc_ticks_rounding_up(error_ticks, guest_tsc_khz),
                 pairing,
             },
         };
@@ -1110,7 +1110,15 @@ fn prime_reference_clock_pairing(vm: &kvm::Partition) -> Result<(), KvmError> {
     if clock.host_tsc.is_some() {
         return Ok(());
     }
-    vm.set_clock_ns(clock.clock_ns)?;
+    // Only the read is fatal, because the sampling that follows needs the same ioctl.
+    // The write is a precision step the bracket can do without.
+    if let Err(err) = vm.set_clock_ns(clock.clock_ns) {
+        tracing::warn!(
+            error = &err as &dyn std::error::Error,
+            "could not prime the reference clock's host counter pairing; \
+             the guest tsc will be aligned by bracketing"
+        );
+    }
     Ok(())
 }
 
@@ -2603,11 +2611,13 @@ fn guest_tsc_ticks_from_ns(ns: u64, guest_tsc_khz: u32) -> u64 {
     (ns as u128 * guest_tsc_khz as u128 / 1_000_000) as u64
 }
 
-/// Converts guest timestamp counter ticks to nanoseconds.
+/// Converts guest timestamp counter ticks to nanoseconds, truncating.
 ///
 /// The inverse of [`guest_tsc_ticks_from_ns`], widened for the same reason: a counter that
 /// has been running a while, times a nanosecond scale, leaves 64 bits long before the
-/// counter itself does.
+/// counter itself does. Only the tests convert a reading this way; the alignment itself
+/// converts nothing but an error bound, which has to round up instead.
+#[cfg(test)]
 fn ns_from_guest_tsc_ticks(ticks: u64, guest_tsc_khz: u32) -> u64 {
     if guest_tsc_khz == 0 {
         // The kernel reports the rate of a vcpu it has already created, so this does not
@@ -2617,6 +2627,21 @@ fn ns_from_guest_tsc_ticks(ticks: u64, guest_tsc_khz: u32) -> u64 {
         return 0;
     }
     (ticks as u128 * 1_000_000 / guest_tsc_khz as u128) as u64
+}
+
+/// Converts an UNCERTAINTY in guest counter ticks to nanoseconds, rounding up.
+///
+/// An error bound has to survive the conversion as a bound. Truncating would turn any
+/// error under one nanosecond into zero - a GHz-scale counter's single tick among them -
+/// and zero is what the caller reads as an exact pairing.
+fn ns_from_guest_tsc_ticks_rounding_up(ticks: u64, guest_tsc_khz: u32) -> u64 {
+    if guest_tsc_khz == 0 {
+        // The wrapper refuses a rate that is not strictly positive, so this does not
+        // happen. Answering zero rather than dividing by it keeps a kernel that surprises
+        // us out of a panic in the middle of building a partition.
+        return 0;
+    }
+    (ticks as u128 * 1_000_000).div_ceil(guest_tsc_khz as u128) as u64
 }
 
 /// The guest counter value that sits at least `lead_ns` ahead of a reference clock
@@ -2785,6 +2810,18 @@ fn counter_at_bracket_midpoint(before: u64, after: u64) -> u64 {
     before.wrapping_add(bracket_width_ticks(before, after) / 2)
 }
 
+/// How far the clock's instant can be from [`counter_at_bracket_midpoint`], in ticks.
+///
+/// The CEILING of half the width, not the floor. The midpoint of an odd-width bracket
+/// rounds toward the opening read, so the closing read sits one tick further from it
+/// than the opening one does, and the clock may have been sampled there. With the floor
+/// a one-tick bracket would claim zero error: a genuine pairing at the closing read is
+/// rejected, and the estimate that replaces it is reported as exact.
+fn bracket_error_ticks(before: u64, after: u64) -> u64 {
+    let width = bracket_width_ticks(before, after);
+    width - width / 2
+}
+
 /// Returns the L1 TSC offset that puts the guest timestamp counter at least `lead_ns`
 /// AHEAD of the partition reference clock.
 ///
@@ -2816,6 +2853,7 @@ mod tests {
     use super::GUEST_TSC_LEAD_FLOOR_NS;
     use super::LeadTolerances;
     use super::LeadVerdict;
+    use super::bracket_error_ticks;
     use super::bracket_width_ticks;
     use super::classify_achieved_lead;
     use super::counter_at_bracket_midpoint;
@@ -2825,6 +2863,7 @@ mod tests {
     use super::guest_tsc_ticks_from_ns;
     use super::lead_measurement_resolution_ns;
     use super::ns_from_guest_tsc_ticks;
+    use super::ns_from_guest_tsc_ticks_rounding_up;
     use super::pair_guest_tsc_with_reference_clock;
     use super::tsc_offset_aligned_to_reference_clock;
 
@@ -3088,6 +3127,56 @@ mod tests {
         assert_eq!(worst(mid), width / 2);
         assert_eq!(worst(before), width);
         assert_eq!(worst(after), width);
+    }
+
+    #[test]
+    fn the_bracket_error_bound_covers_both_ends_of_an_odd_width() {
+        // The clock can be sampled anywhere in the bracket, closing read included, so
+        // the bound has to be the worst distance from the midpoint to EITHER end.
+        let worst = |before: u64, after: u64| {
+            let mid = counter_at_bracket_midpoint(before, after);
+            mid.abs_diff(before).max(mid.abs_diff(after))
+        };
+        for (before, after) in [
+            (1_000, 1_000),
+            (1_000, 1_001),
+            (1_000, 1_100),
+            (1_000, 1_101),
+        ] {
+            assert_eq!(
+                bracket_error_ticks(before, after),
+                worst(before, after),
+                "bracket {before}..{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pairing_at_the_closing_read_of_a_one_tick_bracket_is_accepted() {
+        let offset = 0x0000_0500_0000_0000u64;
+        let host_tsc = 900_000_000_000u64;
+        let exact = host_tsc.wrapping_add(offset);
+        let (before, after) = (exact - 1, exact);
+        assert_eq!(
+            pair_guest_tsc_with_reference_clock(
+                Some(host_tsc),
+                offset,
+                counter_at_bracket_midpoint(before, after),
+                bracket_error_ticks(before, after),
+            ),
+            CounterPairing::Exact(exact),
+        );
+    }
+
+    #[test]
+    fn an_uncertainty_under_one_nanosecond_does_not_round_to_exact() {
+        // One tick of a 2.7 GHz counter is about 0.37 ns. A reading may truncate it
+        // away; an error bound may not, or the caller takes it for an exact pairing.
+        assert_eq!(ns_from_guest_tsc_ticks_rounding_up(1, 2_700_000), 1);
+        assert_eq!(ns_from_guest_tsc_ticks_rounding_up(0, 2_700_000), 0);
+        // A whole number of nanoseconds is not rounded past itself.
+        assert_eq!(ns_from_guest_tsc_ticks_rounding_up(2_700, 2_700_000), 1_000);
+        assert_eq!(ns_from_guest_tsc_ticks_rounding_up(1_000, 0), 0);
     }
 
     #[test]
@@ -3540,12 +3629,15 @@ mod tests {
 
     #[test]
     fn nanoseconds_and_ticks_round_trip_at_a_long_uptime() {
-        // The reverse conversion is on the verification path, where the input is a whole
-        // counter rather than a short duration, so it is the one that meets the big
-        // numbers first.
+        // A whole counter rather than a short duration is what meets the big numbers
+        // first, so both reverse conversions are checked at one.
         let ns = 365 * 24 * 60 * 60 * 1_000_000_000u64;
         assert_eq!(
             ns_from_guest_tsc_ticks(guest_tsc_ticks_from_ns(ns, KHZ), KHZ),
+            ns
+        );
+        assert_eq!(
+            ns_from_guest_tsc_ticks_rounding_up(guest_tsc_ticks_from_ns(ns, KHZ), KHZ),
             ns
         );
         // And a rate the kernel should never report does not divide by zero.
