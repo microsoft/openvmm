@@ -36,7 +36,7 @@ use test_with_tracing::test;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-fn request(node_id: u64) -> Request {
+pub(super) fn request(node_id: u64) -> Request {
     let header = fuse_in_header {
         len: size_of::<fuse_in_header>() as u32,
         opcode: FUSE_LOOKUP,
@@ -50,22 +50,22 @@ fn request(node_id: u64) -> Request {
     Request::new(header.as_bytes()).unwrap()
 }
 
-fn name(value: &str) -> &lx::LxStr {
+pub(super) fn name(value: &str) -> &lx::LxStr {
     lx::LxStr::from_bytes(value.as_bytes())
 }
 
-fn error<T>(result: lx::Result<T>) -> lx::Error {
+pub(super) fn error<T>(result: lx::Result<T>) -> lx::Error {
     match result {
         Ok(_) => panic!("operation unexpectedly succeeded"),
         Err(error) => error,
     }
 }
 
-fn owned(paths: &[&str]) -> Vec<String> {
+pub(super) fn owned(paths: &[&str]) -> Vec<String> {
     paths.iter().map(|path| (*path).to_owned()).collect()
 }
 
-fn setattr(valid: u32, update: impl FnOnce(&mut fuse_setattr_in)) -> fuse_setattr_in {
+pub(super) fn setattr(valid: u32, update: impl FnOnce(&mut fuse_setattr_in)) -> fuse_setattr_in {
     let mut arg = fuse_setattr_in::new_zeroed();
     arg.valid = valid;
     update(&mut arg);
@@ -74,7 +74,7 @@ fn setattr(valid: u32, update: impl FnOnce(&mut fuse_setattr_in)) -> fuse_setatt
 
 /// Looks `path` up one component at a time, as the guest kernel does, and
 /// returns its node ID.
-fn lookup(fs: &VirtioFs, path: &str) -> lx::Result<u64> {
+pub(super) fn lookup(fs: &VirtioFs, path: &str) -> lx::Result<u64> {
     let mut node_id = FUSE_ROOT_ID;
     for component in path.split('/') {
         node_id = fs.lookup(&request(node_id), name(component))?.nodeid;
@@ -82,18 +82,18 @@ fn lookup(fs: &VirtioFs, path: &str) -> lx::Result<u64> {
     Ok(node_id)
 }
 
-fn open(fs: &VirtioFs, node_id: u64, flags: i32) -> lx::Result<u64> {
+pub(super) fn open(fs: &VirtioFs, node_id: u64, flags: i32) -> lx::Result<u64> {
     Ok(fs.open(&request(node_id), flags as u32)?.fh)
 }
 
-fn release(fs: &VirtioFs, node_id: u64, fh: u64) {
+pub(super) fn release(fs: &VirtioFs, node_id: u64, fh: u64) {
     let mut arg = fuse_release_in::new_zeroed();
     arg.fh = fh;
     fs.release(&request(node_id), &arg).unwrap();
 }
 
 /// Creates and opens a file, and returns its node ID and handle.
-fn create(fs: &VirtioFs, parent: u64, file_name: &str) -> lx::Result<(u64, u64)> {
+pub(super) fn create(fs: &VirtioFs, parent: u64, file_name: &str) -> lx::Result<(u64, u64)> {
     let arg = fuse_create_in {
         flags: lx::O_RDWR as u32,
         mode: lx::S_IFREG | 0o644,
@@ -104,7 +104,7 @@ fn create(fs: &VirtioFs, parent: u64, file_name: &str) -> lx::Result<(u64, u64)>
     Ok((created.entry.nodeid, created.open.fh))
 }
 
-fn mkdir(fs: &VirtioFs, parent: u64, directory_name: &str) -> lx::Result<u64> {
+pub(super) fn mkdir(fs: &VirtioFs, parent: u64, directory_name: &str) -> lx::Result<u64> {
     let arg = fuse_mkdir_in {
         mode: 0o755,
         umask: 0,
@@ -114,7 +114,7 @@ fn mkdir(fs: &VirtioFs, parent: u64, directory_name: &str) -> lx::Result<u64> {
         .nodeid)
 }
 
-fn write(fs: &VirtioFs, node_id: u64, fh: u64, data: &[u8]) -> lx::Result<usize> {
+pub(super) fn write(fs: &VirtioFs, node_id: u64, fh: u64, data: &[u8]) -> lx::Result<usize> {
     let mut arg = fuse_write_in::new_zeroed();
     arg.fh = fh;
     arg.size = data.len() as u32;
@@ -122,7 +122,7 @@ fn write(fs: &VirtioFs, node_id: u64, fh: u64, data: &[u8]) -> lx::Result<usize>
 }
 
 /// Returns up to 64 bytes from the start of a file.
-fn read_node(fs: &VirtioFs, node_id: u64) -> Vec<u8> {
+pub(super) fn read_node(fs: &VirtioFs, node_id: u64) -> Vec<u8> {
     let fh = open(fs, node_id, lx::O_RDONLY).unwrap();
     let mut arg = fuse_read_in::new_zeroed();
     arg.fh = fh;
@@ -134,7 +134,7 @@ fn read_node(fs: &VirtioFs, node_id: u64) -> Vec<u8> {
 
 /// Returns the names that the guest lists in a directory, other than `.` and
 /// `..`, sorted.
-fn list(fs: &VirtioFs, node_id: u64) -> Vec<String> {
+pub(super) fn list(fs: &VirtioFs, node_id: u64) -> Vec<String> {
     let fh = fs
         .open_dir(&request(node_id), lx::O_RDONLY as u32)
         .unwrap()

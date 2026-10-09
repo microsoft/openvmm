@@ -81,6 +81,25 @@ impl AggregateState {
             registry: RwLock::new(AggregateRegistry::new()),
         }
     }
+
+    /// Creates the state of an aggregate whose children are fixed when it is
+    /// created, as a microVM aggregate's are. Each volume's ID must be its
+    /// position plus one.
+    pub(crate) fn with_children(children: Vec<(String, Arc<VirtioFsVolume>)>) -> Self {
+        let mut registry = AggregateRegistry::new();
+        for (index, (name, volume)) in children.into_iter().enumerate() {
+            assert_eq!(
+                usize::try_from(volume.id()).ok(),
+                index.checked_add(1),
+                "aggregate child volume IDs must follow child order"
+            );
+            registry.next_volume_id = volume.id().saturating_add(1);
+            registry.entries.push(ChildEntry { name, volume });
+        }
+        Self {
+            registry: RwLock::new(registry),
+        }
+    }
 }
 
 /// Aggregate-mode operations on [`VirtioFs`]. The crate-root `Fuse`
@@ -93,8 +112,9 @@ impl VirtioFs {
     /// shares under one aggregate device may differ.
     ///
     /// Only valid in aggregate mode. Returns:
-    /// - `EINVAL` on a direct-mode file system, or if `name` is empty,
-    ///   reserved (`.`/`..`), or contains `/` or `\0`.
+    /// - `EINVAL` on a direct-mode file system or a microVM aggregate, whose
+    ///   children are fixed, or if `name` is empty, reserved (`.`/`..`), or
+    ///   contains `/` or `\0`.
     /// - `EAGAIN` if the device has begun tearing down (see
     ///   [`Self::begin_teardown`]).
     /// - `EEXIST` if a child with the same name already exists.
@@ -108,6 +128,9 @@ impl VirtioFs {
         let Some(aggregate) = self.inner.aggregate() else {
             return Err(lx::Error::EINVAL);
         };
+        if self.is_microvm() {
+            return Err(lx::Error::EINVAL);
+        }
 
         check_name(name.as_bytes())?;
 
@@ -155,11 +178,15 @@ impl VirtioFs {
     ///
     /// In-flight inodes beneath the child remain valid until the guest forgets
     /// them (each holds its own volume reference); the name simply stops
-    /// appearing in the synthetic root. Returns `ENOENT` if no such child exists.
+    /// appearing in the synthetic root. Returns `ENOENT` if no such child
+    /// exists, and `EINVAL` for a microVM aggregate, whose children are fixed.
     pub fn remove_child(&self, name: &str) -> lx::Result<()> {
         let Some(aggregate) = self.inner.aggregate() else {
             return Err(lx::Error::EINVAL);
         };
+        if self.is_microvm() {
+            return Err(lx::Error::EINVAL);
+        }
 
         let mut children = aggregate.registry.write();
         let before = children.entries.len();
@@ -180,11 +207,20 @@ impl VirtioFs {
         self.is_synthetic_root(node_id) && fh == SYNTHETIC_ROOT_FH
     }
 
+    /// The type and permissions of the synthetic aggregate root directory.
+    ///
+    /// A microVM aggregate's root belongs to the guest's root user, and only
+    /// that user may enter it, so the guest reaches a child only through the
+    /// mounts that it sets up, under the access mode of each.
+    fn synthetic_root_mode(&self) -> u32 {
+        lx::S_IFDIR | if self.is_microvm() { 0o500 } else { 0o555 }
+    }
+
     /// Attributes of the synthetic aggregate root directory.
     pub(crate) fn synthetic_root_attr(&self) -> fuse_attr {
         let mut attr = fuse_attr::new_zeroed();
         attr.ino = FUSE_ROOT_ID;
-        attr.mode = lx::S_IFDIR | 0o555;
+        attr.mode = self.synthetic_root_mode();
         attr.nlink = self.synthetic_root_nlink();
         attr.blksize = 512;
         attr
@@ -200,7 +236,7 @@ impl VirtioFs {
             .with_ino(true)
             .into_bits();
         sx.mask = mask.into_bits() & returned_mask;
-        sx.mode = (lx::S_IFDIR | 0o555) as u16;
+        sx.mode = self.synthetic_root_mode() as u16;
         sx.nlink = self.synthetic_root_nlink();
         sx.ino = FUSE_ROOT_ID;
         sx.blksize = 512;
@@ -302,7 +338,7 @@ impl VirtioFs {
             if !buffer.check_dir_entry_plus(name) {
                 return false;
             }
-            let entry = fuse_entry_out::new_dot(FUSE_ROOT_ID, lx::S_IFDIR | 0o555);
+            let entry = fuse_entry_out::new_dot(FUSE_ROOT_ID, self.synthetic_root_mode());
             buffer.dir_entry_plus(name, next_off, entry)
         } else {
             buffer.dir_entry(name, FUSE_ROOT_ID, next_off, lx::DT_DIR as u32)

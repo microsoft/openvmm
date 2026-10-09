@@ -426,67 +426,85 @@ pub struct MicrovmCli {
     #[clap(long, value_name = "IPv4:TCP-PORT", conflicts_with_all = ["allow_host", "block_host"])]
     pub allow_endpoint: Vec<net_backend_resources::egress::TcpEndpoint>,
 
-    /// attach a host directory to the next fixed microVM virtio-fs slot
+    /// attach a host directory to the fixed microVM virtio-fs slot
     ///
-    /// Repeat once to attach a second directory. The first directory uses the
-    /// `microvm` tag and the second the `microvm1` tag. Guest targets and host
-    /// directories must not overlap. An active snapshot requires the same
-    /// canonical host paths, guest targets, and modes, in the same order. A
-    /// dormant-slot snapshot may bind one new attachment on restore; the
-    /// resumed guest must mount the `microvm` tag explicitly.
+    /// The directory uses the `microvm` tag. An active snapshot requires the
+    /// same canonical host path, guest target, and mode. A dormant-slot
+    /// snapshot may bind one new attachment on restore; the resumed guest
+    /// must mount the `microvm` tag explicitly. To share several host
+    /// directories, use `--mount-aggregate` and `--mount-child` instead.
     #[clap(
         long = "mount",
         value_name = "GUEST_TARGET,HOST_PATH[,ro|rw]",
         conflicts_with_all = ["virtio_fs", "virtio_fs_shmem"]
     )]
-    pub microvm_mount: Vec<MicrovmMountCli>,
+    pub microvm_mount: Option<MicrovmMountCli>,
+
+    /// attach several host directories to the fixed microVM virtio-fs slot as
+    /// one aggregate, mounted at GUEST_TARGET
+    ///
+    /// The aggregate's root is read-only, only the guest's root user may
+    /// enter it, and it lists one directory per `--mount-child`, which has
+    /// its own access mode and policy. The guest mounts the `microvm` tag at
+    /// GUEST_TARGET with `virtfs_aggregate=1` on its command line, and is
+    /// expected to bind-mount each child where it is needed.
+    #[clap(
+        long = "mount-aggregate",
+        value_name = "GUEST_TARGET",
+        conflicts_with_all = ["microvm_mount", "virtio_fs", "virtio_fs_shmem"]
+    )]
+    pub microvm_mount_aggregate: Option<String>,
+
+    /// expose a host directory as a named child of the `--mount-aggregate`
+    /// root
+    ///
+    /// Repeat for each directory; the guest lists the children in this
+    /// order. NAME is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`. The
+    /// optional mode follows the last comma, so HOST_PATH may contain commas
+    /// when the mode is given. Host directories must not overlap, and a
+    /// restore requires the same children, in the same order.
+    #[clap(
+        long = "mount-child",
+        value_name = "NAME,HOST_PATH[,ro|rw]",
+        requires = "microvm_mount_aggregate"
+    )]
+    pub microvm_mount_child: Vec<MicrovmMountChildCli>,
 
     /// Hide an existing host path inside a microVM filesystem export.
     ///
-    /// The path is hidden in the `--mount` whose host directory contains it.
-    /// A relative path is relative to the host directory of the only
-    /// `--mount`; with several, the path must be absolute.
-    #[clap(
-        long = "mount-deny",
-        value_name = "HOST_PATH",
-        requires = "microvm_mount"
-    )]
+    /// A relative path is relative to the host directory of `--mount`. With
+    /// `--mount-aggregate`, the path must be absolute, and it is hidden in
+    /// the `--mount-child` whose host directory contains it.
+    #[clap(long = "mount-deny", value_name = "HOST_PATH")]
     pub microvm_mount_deny: Vec<PathBuf>,
 
     /// Expose an existing host path inside a `--mount-deny` path again
     ///
-    /// The path and everything below it become visible in the `--mount`
-    /// whose host directory contains it, subject to the export's write
-    /// policy. The hidden directories on the way to it become traverse-only:
-    /// the guest can look them up and list the entries that lead to allowed
-    /// paths, but sees nothing else in them and cannot modify them. The
-    /// nearest `--mount-deny` or `--mount-allow` path that contains the path
-    /// must be a `--mount-deny` path, which may itself lie inside another
+    /// The path and everything below it become visible in the export whose
+    /// host directory contains it, subject to the export's write policy. The
+    /// hidden directories on the way to it become traverse-only: the guest
+    /// can look them up and list the entries that lead to allowed paths, but
+    /// sees nothing else in them and cannot modify them. The nearest
+    /// `--mount-deny` or `--mount-allow` path that contains the path must be a
+    /// `--mount-deny` path, which may itself lie inside another
     /// `--mount-allow` path. A relative path is relative to the host
-    /// directory of the only `--mount`; with several, the path must be
+    /// directory of `--mount`; with `--mount-aggregate`, the path must be
     /// absolute.
-    #[clap(
-        long = "mount-allow",
-        value_name = "HOST_PATH",
-        requires = "microvm_mount"
-    )]
+    #[clap(long = "mount-allow", value_name = "HOST_PATH")]
     pub microvm_mount_allow: Vec<PathBuf>,
 
-    /// Limit the guest's writes in a read-write `--mount` to an existing host
+    /// Limit the guest's writes in a read-write export to an existing host
     /// path
     ///
     /// Repeat to declare more writable files or directories. With any, they
-    /// and everything below them are the only parts of the `--mount` whose
-    /// host directory contains them that the guest can modify; the rest of
-    /// it is read-only, and the guest's modifications there fail with EROFS.
-    /// The paths must not overlap or be hidden by `--mount-deny`. A relative
-    /// path is relative to the host directory of the only `--mount`; with
-    /// several, the path must be absolute.
-    #[clap(
-        long = "mount-write",
-        value_name = "HOST_PATH",
-        requires = "microvm_mount"
-    )]
+    /// and everything below them are the only parts of the read-write
+    /// `--mount` or `--mount-child` whose host directory contains them that
+    /// the guest can modify; the rest of it is read-only, and the guest's
+    /// modifications there fail with EROFS. The paths must not overlap or be
+    /// hidden by `--mount-deny`. A relative path is relative to the host
+    /// directory of `--mount`; with `--mount-aggregate`, the path must be
+    /// absolute.
+    #[clap(long = "mount-write", value_name = "HOST_PATH")]
     pub microvm_mount_write: Vec<PathBuf>,
 
     /// Select the host identity of the guest's `--mount` operations
@@ -499,13 +517,9 @@ pub struct MicrovmCli {
     /// CAP_SETGID unless every caller has OpenVMM's own UID and GID and
     /// OpenVMM has no other supplementary groups; an operation that cannot
     /// run as its caller fails with EPERM. The mode applies to every
-    /// `--mount`.
-    #[clap(
-        long = "mount-owner",
-        value_enum,
-        value_name = "OWNER",
-        requires = "microvm_mount"
-    )]
+    /// `--mount-child`, whose host directories must then have the same
+    /// owner.
+    #[clap(long = "mount-owner", value_enum, value_name = "OWNER")]
     pub microvm_mount_owner: Option<MicrovmMountOwnerCli>,
 
     /// dedicated microVM control console backed by a local serial endpoint
@@ -593,6 +607,48 @@ impl FromStr for MicrovmMountCli {
     }
 }
 
+/// A `--mount-child` argument: one host directory of the aggregate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicrovmMountChildCli {
+    /// Name of the child under the aggregate's root.
+    pub name: String,
+    /// Live host directory supplied for this run.
+    pub host_path: PathBuf,
+    /// Snapshot-authoritative access policy.
+    pub access: openvmm_defs::microvm::MicrovmFilesystemAccess,
+}
+
+impl FromStr for MicrovmMountChildCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        const USAGE: &str = "expected <name>,<host-path>[,ro|rw]";
+        let (name, rest) = value.split_once(',').context(USAGE)?;
+        // The mode follows the last comma, so a host path may contain commas.
+        let (host_path, access) = match rest.rsplit_once(',') {
+            Some((host_path, "ro")) => (
+                host_path,
+                openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+            ),
+            Some((host_path, "rw")) => (
+                host_path,
+                openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
+            ),
+            _ => (
+                rest,
+                openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+            ),
+        };
+        anyhow::ensure!(!host_path.is_empty(), USAGE);
+        openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(name.to_owned(), access)?;
+        Ok(Self {
+            name: name.to_owned(),
+            host_path: PathBuf::from(host_path),
+            access,
+        })
+    }
+}
+
 /// A fixed-role microVM sandbox block-device CLI argument.
 #[derive(Clone)]
 pub struct MicrovmSandboxBlockCli {
@@ -662,10 +718,13 @@ impl Options {
                     && self.microvm.allow_host.is_empty()
                     && self.microvm.block_host.is_empty()
                     && self.microvm.allow_endpoint.is_empty()
-                    && self.microvm.microvm_mount.is_empty()
+                    && self.microvm.microvm_mount.is_none()
+                    && self.microvm.microvm_mount_aggregate.is_none()
+                    && self.microvm.microvm_mount_child.is_empty()
                     && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_mount_allow.is_empty()
                     && self.microvm.microvm_mount_write.is_empty()
+                    && self.microvm.microvm_mount_owner.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
                     && self.microvm.microvm_lifecycle.is_none()
@@ -678,7 +737,7 @@ impl Options {
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -965,32 +1024,55 @@ impl Options {
             self.microvm.microvm_sandbox_block.len() <= 4,
             "microVM permits at most three read-only layers and one writable scratch device"
         );
+        let has_filesystem =
+            self.microvm.microvm_mount.is_some() || self.microvm.microvm_mount_aggregate.is_some();
         anyhow::ensure!(
-            self.microvm.microvm_mount_deny.len() <= 128,
-            "microVM filesystem permits at most 128 denied paths"
+            has_filesystem
+                || (self.microvm.microvm_mount_deny.is_empty()
+                    && self.microvm.microvm_mount_allow.is_empty()
+                    && self.microvm.microvm_mount_write.is_empty()
+                    && self.microvm.microvm_mount_owner.is_none()),
+            "--mount-deny, --mount-allow, --mount-write, and --mount-owner require --mount or --mount-aggregate"
         );
-        anyhow::ensure!(
-            self.microvm.microvm_mount_allow.len() <= 128,
-            "microVM filesystem permits at most 128 allowed paths"
-        );
-        anyhow::ensure!(
-            self.microvm.microvm_mount_write.len() <= 128,
-            "microVM filesystem permits at most 128 writable paths"
-        );
-        openvmm_defs::microvm::validate_microvm_filesystems(
-            &self
-                .microvm
-                .microvm_mount
-                .iter()
-                .map(|mount| {
-                    openvmm_defs::microvm::MicrovmFilesystemConfig::new(
-                        mount.guest_target.clone(),
-                        mount.access,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-        .context("invalid --mount options")?;
+        // An aggregate's children each have these bounds, which their policy
+        // validation enforces.
+        if self.microvm.microvm_mount_aggregate.is_none() {
+            anyhow::ensure!(
+                self.microvm.microvm_mount_deny.len() <= 128,
+                "microVM filesystem permits at most 128 denied paths"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_mount_allow.len() <= 128,
+                "microVM filesystem permits at most 128 allowed paths"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_mount_write.len() <= 128,
+                "microVM filesystem permits at most 128 writable paths"
+            );
+        }
+        if let Some(mount) = &self.microvm.microvm_mount {
+            openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+                mount.guest_target.clone(),
+                mount.access,
+            )
+            .context("invalid --mount option")?;
+        }
+        if let Some(target) = &self.microvm.microvm_mount_aggregate {
+            openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
+                target.clone(),
+                self.microvm
+                    .microvm_mount_child
+                    .iter()
+                    .map(|child| {
+                        openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(
+                            child.name.clone(),
+                            child.access,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .context("invalid --mount-aggregate or --mount-child options")?;
+        }
         anyhow::ensure!(
             cfg!(target_os = "linux")
                 || self.microvm.microvm_mount_owner != Some(MicrovmMountOwnerCli::Caller),
@@ -2848,50 +2930,69 @@ mod tests {
     }
 
     #[test]
-    fn test_microvm_mount_is_repeatable_up_to_the_slot_count() {
-        let parse = |mounts: &[&str]| {
-            let mut args = vec!["openvmm", "--machine", "microvm"];
-            for mount in mounts {
-                args.extend(["--mount", mount]);
-            }
-            Options::try_parse_from(args).unwrap()
+    fn test_microvm_mount_appears_once_and_aggregates_children() {
+        let parse = |args: &[&str]| {
+            Options::try_parse_from(
+                ["openvmm", "--machine", "microvm"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
         };
-        let options = parse(&["/workspace,work,rw", "/opt/hostedtoolcache,tools"]);
+        let options = parse(&["--mount", "/workspace,work,rw"]).unwrap();
         options.validate_microvm_options().unwrap();
-        let targets = options
+        assert_eq!(
+            options.microvm.microvm_mount.unwrap().access,
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
+        );
+        assert!(
+            parse(&[
+                "--mount",
+                "/workspace,work,rw",
+                "--mount",
+                "/opt/tools,tools"
+            ])
+            .is_err()
+        );
+
+        let options = parse(&[
+            "--mount-aggregate",
+            "/run/nvx/shares",
+            "--mount-child",
+            "work,work,rw",
+            "--mount-child",
+            "tools,tools",
+        ])
+        .unwrap();
+        options.validate_microvm_options().unwrap();
+        let children = options
             .microvm
-            .microvm_mount
+            .microvm_mount_child
             .iter()
-            .map(|mount| (mount.guest_target.as_str(), mount.access))
+            .map(|child| (child.name.as_str(), child.access))
             .collect::<Vec<_>>();
         assert_eq!(
-            targets,
+            children,
             [
                 (
-                    "/workspace",
+                    "work",
                     openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
                 ),
                 (
-                    "/opt/hostedtoolcache",
+                    "tools",
                     openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly
                 ),
             ]
         );
 
-        for (mounts, expected) in [
-            (&["/a,a", "/b,b", "/c,c"][..], "at most 2 filesystems"),
-            (&["/workspace,a,rw", "/workspace,b"][..], "overlap"),
-            (&["/workspace,a,rw", "/workspace/cache,b"][..], "overlap"),
-            (&["/opt/tools/node,a", "/opt,b,rw"][..], "overlap"),
-        ] {
-            let error = parse(mounts).validate_microvm_options().unwrap_err();
-            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        // --mount-deny and --mount-owner still require a filesystem.
+        for args in [&["--mount-deny", "x"][..], &["--mount-owner", "vmm"][..]] {
+            let error = parse(args).unwrap().validate_microvm_options().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("require --mount or --mount-aggregate"),
+                "{error:#}"
+            );
         }
-
-        // --mount-deny and --mount-owner still require a --mount.
-        assert!(
-            Options::try_parse_from(["openvmm", "--machine", "microvm", "--mount-deny", "x"])
-                .is_err()
-        );
     }
 }

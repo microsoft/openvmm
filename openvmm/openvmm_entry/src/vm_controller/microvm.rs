@@ -285,16 +285,18 @@ impl VmController {
                 .zip(self.microvm.resources.egress_policy.as_ref())
                 .zip(self.microvm.resources.network_attachment.clone())
                 .map(|((network, policy), attachment)| (network, policy, attachment));
-            let filesystems = self
+            let filesystem = self
                 .microvm
                 .filesystems
-                .iter()
-                .zip(&self.microvm.resources.filesystem_root_paths)
-                .zip(&self.microvm.resources.filesystem_attachments)
-                .map(|((filesystem, root_path), attachment)| {
-                    (filesystem, root_path.as_path(), attachment.clone())
-                })
-                .collect();
+                .first()
+                .zip(self.microvm.resources.filesystem.as_ref())
+                .map(|(config, host)| {
+                    openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource {
+                        config,
+                        canonical_host_path: &host.root_path,
+                        attachment: host.attachment.clone(),
+                    }
+                });
             let mut blocks = crate::storage_builder::microvm::capture_snapshot_block_contract(
                 &self.microvm.resources.sandbox_block_sources,
                 scratch_policy,
@@ -316,7 +318,7 @@ impl VmController {
                 command_line,
                 network,
                 self.microvm.filesystem_slot,
-                filesystems,
+                filesystem,
                 self.microvm.resources.console_attachment.clone(),
                 self.microvm.resources.control_console_attachment.clone(),
                 blocks,
