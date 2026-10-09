@@ -425,19 +425,7 @@ impl PartitionUnitRunner {
                 // client does not have to deal with multiple halt reasons
                 // due to race conditions.
                 if self.halt_reason.is_none() {
-                    self.halt_reason = Some(reason.clone());
-
-                    // Report the halt to the debugger.
-                    #[cfg(feature = "gdb")]
-                    let reported = self.debugger_state.report_halt_to_debugger(&reason);
-                    #[cfg(not(feature = "gdb"))]
-                    let reported = false;
-
-                    // If the debugger is not attached, then report the halt
-                    // to the client.
-                    if !reported {
-                        self.client_notify_send.send(reason);
-                    }
+                    self.record_halt(reason);
                 } else {
                     // Clear this specific halt.
                     self.vp_set.clear_halt();
@@ -465,6 +453,22 @@ impl PartitionUnitRunner {
                 self.vp_set.clear_halt();
                 self.try_start();
             }
+        }
+    }
+
+    fn record_halt(&mut self, reason: HaltReason) {
+        assert!(self.halt_reason.is_none());
+        self.halt_reason = Some(reason.clone());
+
+        // Report the halt to the debugger.
+        #[cfg(feature = "gdb")]
+        let reported = self.debugger_state.report_halt_to_debugger(&reason);
+        #[cfg(not(feature = "gdb"))]
+        let reported = false;
+
+        // If the debugger is not attached, then report the halt to the client.
+        if !reported {
+            self.client_notify_send.send(reason);
         }
     }
 
@@ -631,7 +635,6 @@ impl StateUnit for PartitionUnitRunner {
     }
 
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError> {
-        // TODO: restore halted state
         self.needs_reset = true;
         self.restore(buffer.parse()?).await?;
         Ok(())
@@ -656,7 +659,8 @@ mod save_restore {
             pub(super) partition: SavedStateBlob,
             #[mesh(2)]
             pub(super) vps: Vec<Vp>,
-            // TODO: save halted state
+            #[mesh(3)]
+            pub(super) halt_reason: Option<Vec<u8>>,
         }
 
         #[derive(Protobuf)]
@@ -680,12 +684,31 @@ mod save_restore {
                     data,
                 })
                 .collect();
+            let halt_reason = self.halt_reason.clone().map(mesh::payload::encode);
 
-            Ok(state::Partition { partition, vps })
+            Ok(state::Partition {
+                partition,
+                vps,
+                halt_reason,
+            })
         }
 
         pub async fn restore(&mut self, state: state::Partition) -> Result<(), RestoreError> {
-            let state::Partition { partition, vps } = state;
+            let state::Partition {
+                partition,
+                vps,
+                halt_reason,
+            } = state;
+            let halt_reason = halt_reason
+                .as_deref()
+                .map(mesh::payload::decode)
+                .transpose()?;
+            if self.halt_reason.is_some() {
+                return Err(RestoreError::Other(anyhow::anyhow!(
+                    "cannot restore over an existing partition halt"
+                )));
+            }
+            self.vp_set.validate_restore_halt()?;
             self.partition.restore(partition)?;
             let vps = vps
                 .into_iter()
@@ -700,7 +723,243 @@ mod save_restore {
                 })
                 .collect::<Result<Vec<_>, RestoreError>>()?;
             self.vp_set.restore(vps).await?;
+            self.vp_set.restore_halt(halt_reason.is_some())?;
+            if let Some(reason) = halt_reason {
+                self.record_halt(reason);
+            }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::state;
+        use crate::partition_unit::Halt;
+        use crate::partition_unit::PartitionUnitRunner;
+        use crate::partition_unit::VmPartition;
+        use crate::partition_unit::VpSet;
+        use async_trait::async_trait;
+        use hvdef::Vtl;
+        use inspect::InspectMut;
+        use pal_async::local::block_on;
+        use state_unit::StateUnit;
+        use std::sync::Arc;
+        use test_with_tracing::test;
+        use virt::InitialPageImport;
+        use virt::InitialVpStateSource;
+        use vm_topology::processor::ProcessorTopology;
+        use vm_topology::processor::TopologyBuilder;
+        use vmcore::save_restore::NoSavedState;
+        use vmcore::save_restore::RestoreError;
+        use vmcore::save_restore::SaveError;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+        use vmm_core_defs::HaltReason;
+
+        /// A partition without state of its own.
+        struct TestPartition;
+
+        impl InspectMut for TestPartition {
+            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+                req.ignore();
+            }
+        }
+
+        impl SaveRestore for TestPartition {
+            type SavedState = NoSavedState;
+
+            fn save(&mut self) -> Result<NoSavedState, SaveError> {
+                Ok(NoSavedState)
+            }
+
+            fn restore(&mut self, NoSavedState: NoSavedState) -> Result<(), RestoreError> {
+                Ok(())
+            }
+        }
+
+        #[async_trait]
+        impl VmPartition for TestPartition {
+            fn initial_vp_state_source(&self) -> InitialVpStateSource {
+                InitialVpStateSource::Registers
+            }
+
+            fn reset(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn scrub_vtl(&mut self, _vtl: Vtl) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            fn accept_initial_pages(
+                &mut self,
+                _pages: Vec<InitialPageImport>,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn test_topology() -> ProcessorTopology {
+            #[cfg(guest_arch = "x86_64")]
+            let builder = TopologyBuilder::new_x86();
+            #[cfg(guest_arch = "aarch64")]
+            let builder = {
+                use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+                use vm_topology::processor::aarch64::GicMsiController;
+                use vm_topology::processor::aarch64::GicVersion;
+
+                TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+                    gic_distributor_base: 0xffff0000,
+                    gic_version: GicVersion::V3 {
+                        redistributors_base: 0xefff0000,
+                    },
+                    gic_msi: GicMsiController::None,
+                    pmu_gsiv: None,
+                    virt_timer_ppi: 20,
+                    gic_nr_irqs: 992,
+                })
+            };
+            builder.build(1).unwrap()
+        }
+
+        /// Returns a stopped runner without VPs, the halt latch of its VPs, and
+        /// the receiver of the halts that it reports to its client.
+        fn test_runner() -> (PartitionUnitRunner, Arc<Halt>, mesh::Receiver<HaltReason>) {
+            let (halt, halt_request_recv) = Halt::new();
+            let halt = Arc::new(halt);
+            let (client_notify_send, client_notify_recv) = mesh::channel();
+            let runner = PartitionUnitRunner {
+                partition: Box::new(TestPartition),
+                vp_set: VpSet::new([None, None, None], halt.clone(), 0),
+                unit_started: false,
+                vp_stop_count: 0,
+                needs_reset: false,
+                halt_reason: None,
+                halt_request_recv: halt_request_recv.0,
+                client_notify_send,
+                req_recv: mesh::channel().1,
+                topology: test_topology(),
+                initial_regs: None,
+                #[cfg(guest_arch = "x86_64")]
+                omit_saved_tsc: false,
+                #[cfg(feature = "gdb")]
+                debugger_state: crate::partition_unit::debug::DebuggerState::new(
+                    guestmem::GuestMemory::empty(),
+                    None,
+                ),
+            };
+            (runner, halt, client_notify_recv)
+        }
+
+        /// Raises `reason` as a VP does and stops `runner`, which records the
+        /// halt and reports it to `client`.
+        fn halt(
+            runner: &mut PartitionUnitRunner,
+            halt: &Halt,
+            client: &mut mesh::Receiver<HaltReason>,
+            reason: HaltReason,
+        ) {
+            halt.halt(reason.clone());
+            block_on(StateUnit::stop(runner));
+            assert_eq!(client.try_recv().unwrap(), reason);
+        }
+
+        fn save(runner: &mut PartitionUnitRunner) -> SavedStateBlob {
+            block_on(StateUnit::save(runner)).unwrap().unwrap()
+        }
+
+        fn encoded_partition(halt_reason: Option<HaltReason>) -> SavedStateBlob {
+            SavedStateBlob::new(state::Partition {
+                partition: SavedStateBlob::new(NoSavedState),
+                vps: Vec::new(),
+                halt_reason: halt_reason.map(mesh::payload::encode),
+            })
+        }
+
+        #[test]
+        fn partition_state_preserves_halt_reason() {
+            let decoded: state::Partition = encoded_partition(Some(HaltReason::PowerOff))
+                .parse()
+                .unwrap();
+
+            assert_eq!(
+                decoded
+                    .halt_reason
+                    .map(|reason| mesh::payload::decode(&reason).unwrap()),
+                Some(HaltReason::PowerOff)
+            );
+        }
+
+        #[test]
+        fn partition_state_without_halt_reason_is_not_halted() {
+            let decoded: state::Partition = encoded_partition(None).parse().unwrap();
+
+            assert!(decoded.halt_reason.is_none());
+        }
+
+        #[test]
+        fn restore_latches_and_reports_a_saved_halt() {
+            let (mut source, source_halt, mut source_client) = test_runner();
+            halt(
+                &mut source,
+                &source_halt,
+                &mut source_client,
+                HaltReason::PowerOff,
+            );
+            let saved = save(&mut source);
+
+            let (mut target, _, mut target_client) = test_runner();
+            block_on(StateUnit::restore(&mut target, saved)).unwrap();
+            assert_eq!(target.halt_reason, Some(HaltReason::PowerOff));
+            assert_eq!(target_client.try_recv().unwrap(), HaltReason::PowerOff);
+            assert!(target.vp_set.validate_restore_halt().is_err());
+
+            // Clearing the halt releases the one VP halt that the restore
+            // latched.
+            assert!(target.clear_halt());
+            target.vp_set.validate_restore_halt().unwrap();
+        }
+
+        #[test]
+        fn restore_without_a_saved_halt_reports_none() {
+            let (mut source, _, _) = test_runner();
+            let saved = save(&mut source);
+
+            let (mut target, _, mut target_client) = test_runner();
+            block_on(StateUnit::restore(&mut target, saved)).unwrap();
+            assert!(target.halt_reason.is_none());
+            assert!(target_client.try_recv().is_err());
+            target.vp_set.validate_restore_halt().unwrap();
+        }
+
+        #[test]
+        fn restore_refuses_a_halted_destination() {
+            let (mut source, source_halt, mut source_client) = test_runner();
+            halt(
+                &mut source,
+                &source_halt,
+                &mut source_client,
+                HaltReason::PowerOff,
+            );
+            let saved = save(&mut source);
+
+            // A VP halt that the runner has not recorded yet refuses the
+            // restore...
+            let (mut target, target_halt, mut target_client) = test_runner();
+            target_halt.halt(HaltReason::Reset);
+            let err = block_on(StateUnit::restore(&mut target, saved.clone())).unwrap_err();
+            assert_eq!(err.to_string(), "cannot restore over an existing VP halt");
+
+            // ...and so does a recorded one, which the restore leaves alone.
+            block_on(StateUnit::stop(&mut target));
+            assert_eq!(target_client.try_recv().unwrap(), HaltReason::Reset);
+            let err = block_on(StateUnit::restore(&mut target, saved)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "cannot restore over an existing partition halt"
+            );
+            assert_eq!(target.halt_reason, Some(HaltReason::Reset));
+            assert!(target_client.try_recv().is_err());
         }
     }
 }
