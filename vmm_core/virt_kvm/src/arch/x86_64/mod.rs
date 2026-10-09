@@ -806,7 +806,7 @@ impl ResetPartition for KvmPartition {
             self.inner.bsp().vp_info.apic_id,
             self.inner.vps.iter().map(|vp| vp.vp_info.apic_id),
         )?;
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             reference_time_before,
             reference_time_after = self.inner.kvm.get_clock()?.clock_ns / 100,
             guest_tsc_before = tsc.map(|t| t.before),
@@ -950,12 +950,15 @@ enum CounterPairing {
     /// moment of the read.
     NotReported,
     /// KVM reported a host counter whose translation does NOT land inside the bracket, by
-    /// this many ticks. Not usable: the guest sees `scale(host tsc) + offset`, so adding
-    /// the offset alone assumes the scale is the identity, which holds only while the
-    /// guest counter runs at the host's own rate. A host that scales it fails here by far
-    /// more than a bracket, which is what makes the bracket a workable check on the
-    /// assumption rather than a formality.
+    /// this many ticks, although the guest counter runs at the host's rate. Not usable,
+    /// and worth a warning: with no scaling in play the two readings should agree.
     Disagrees(u64),
+    /// KVM reported a host counter, but the guest counter does not run at the host's
+    /// rate. The guest sees `scale(host tsc) + offset`, so adding the offset alone is
+    /// off by `(ratio - 1) * host tsc`. That is usually far outside any bracket, but it
+    /// grows from zero with host uptime, so landing inside one would be a coincidence of
+    /// when the host booted, not evidence that the pairing is exact.
+    Scaled,
 }
 
 impl CounterPairing {
@@ -966,6 +969,7 @@ impl CounterPairing {
             CounterPairing::Exact(_) => "kvm_host_tsc",
             CounterPairing::NotReported => "bracket_host_tsc_not_reported",
             CounterPairing::Disagrees(_) => "bracket_host_tsc_disagreed",
+            CounterPairing::Scaled => "bracket_guest_tsc_scaled",
         }
     }
 }
@@ -990,10 +994,14 @@ fn pair_guest_tsc_with_reference_clock(
     tsc_offset: u64,
     bracketed_guest_tsc: u64,
     bracket_error_ticks: u64,
+    counter_unscaled: bool,
 ) -> CounterPairing {
     let Some(host_tsc) = clock_host_tsc else {
         return CounterPairing::NotReported;
     };
+    if !counter_unscaled {
+        return CounterPairing::Scaled;
+    }
     let paired = host_tsc.wrapping_add(tsc_offset);
     // Modular distance: the counter is 64 bits, and either value can be the larger one
     // when the pair straddles a wrap.
@@ -1033,6 +1041,7 @@ fn sample_reference_clock_against_counter(
     bsp: &kvm::Processor<'_>,
     tsc_offset: u64,
     guest_tsc_khz: u32,
+    counter_unscaled: bool,
 ) -> Result<ReferenceClockSample, KvmError> {
     let mut best: Option<ReferenceClockSample> = None;
     for _ in 0..REFERENCE_CLOCK_BRACKET_SAMPLES {
@@ -1044,8 +1053,13 @@ fn sample_reference_clock_against_counter(
 
         let bracketed = counter_at_bracket_midpoint(opening[0], closing[0]);
         let error_ticks = bracket_error_ticks(opening[0], closing[0]);
-        let pairing =
-            pair_guest_tsc_with_reference_clock(clock.host_tsc, tsc_offset, bracketed, error_ticks);
+        let pairing = pair_guest_tsc_with_reference_clock(
+            clock.host_tsc,
+            tsc_offset,
+            bracketed,
+            error_ticks,
+            counter_unscaled,
+        );
         let sample = match pairing {
             CounterPairing::Exact(guest_tsc) => ReferenceClockSample {
                 reference_clock_ns: clock.clock_ns,
@@ -1053,12 +1067,14 @@ fn sample_reference_clock_against_counter(
                 error_ns: 0,
                 pairing,
             },
-            CounterPairing::NotReported | CounterPairing::Disagrees(_) => ReferenceClockSample {
-                reference_clock_ns: clock.clock_ns,
-                guest_tsc: bracketed,
-                error_ns: ns_from_guest_tsc_ticks_rounding_up(error_ticks, guest_tsc_khz),
-                pairing,
-            },
+            CounterPairing::NotReported | CounterPairing::Disagrees(_) | CounterPairing::Scaled => {
+                ReferenceClockSample {
+                    reference_clock_ns: clock.clock_ns,
+                    guest_tsc: bracketed,
+                    error_ns: ns_from_guest_tsc_ticks_rounding_up(error_ticks, guest_tsc_khz),
+                    pairing,
+                }
+            }
         };
         // An exact pairing cannot be improved on, so stop: the remaining brackets exist
         // only to narrow an estimate that is no longer being made.
@@ -1113,7 +1129,7 @@ fn prime_reference_clock_pairing(vm: &kvm::Partition) -> Result<(), KvmError> {
     // Only the read is fatal, because the sampling that follows needs the same ioctl.
     // The write is a precision step the bracket can do without.
     if let Err(err) = vm.set_clock_ns(clock.clock_ns) {
-        tracing::warn!(
+        tracelimit::warn_ratelimited!(
             error = &err as &dyn std::error::Error,
             "could not prime the reference clock's host counter pairing; \
              the guest tsc will be aligned by bracketing"
@@ -1194,7 +1210,7 @@ fn align_guest_tsc_to_reference_clock(
         // The attribute landed in Linux 5.16. Older kernels have no way to express this,
         // and failing outright would be a worse outcome than a counter left on the wrong
         // origin. Say so loudly, so a later guest bugcheck is not unexplained.
-        tracing::warn!(
+        tracelimit::warn_ratelimited!(
             "kernel does not support KVM_VCPU_TSC_OFFSET; \
              the guest tsc will not be aligned to the partition reference clock"
         );
@@ -1216,7 +1232,7 @@ fn align_guest_tsc_to_reference_clock(
     let guest_tsc_khz = match bsp.tsc_khz() {
         Ok(khz) => khz,
         Err(err) => {
-            tracing::warn!(
+            tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 "could not read a usable guest tsc rate; \
                  the guest tsc will not be aligned to the partition reference clock"
@@ -1226,15 +1242,33 @@ fn align_guest_tsc_to_reference_clock(
     };
     let offset = bsp.tsc_offset()?;
 
+    // `host tsc + offset` is the guest's view of the counter only while the guest runs
+    // at the host's rate. KVM scales a vcpu only when its rate falls outside
+    // `tsc_tolerance_ppm` of the host's (`kvm_set_tsc_khz`), so a vcpu reporting the
+    // partition's default rate is unscaled. A rate that cannot be read is treated as
+    // scaled: the bracket is always correct, the exact pairing only sometimes.
+    let counter_unscaled = match vm.default_tsc_khz() {
+        Ok(default_khz) => default_khz == guest_tsc_khz,
+        Err(err) => {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "could not read the partition's default tsc rate; \
+                 the guest tsc will be aligned by bracketing"
+            );
+            false
+        }
+    };
+
     prime_reference_clock_pairing(vm)?;
 
-    let sample = sample_reference_clock_against_counter(vm, &bsp, offset, guest_tsc_khz)?;
+    let sample =
+        sample_reference_clock_against_counter(vm, &bsp, offset, guest_tsc_khz, counter_unscaled)?;
     if let CounterPairing::Disagrees(by_ticks) = sample.pairing {
         // Worth saying out loud rather than silently degrading: the kernel offered a
-        // pairing and the guest's view of it is not where the bracket says the counter
-        // was. On a host that scales the guest counter that is expected and the fallback
-        // is correct; anything else means one of the two readings is not what it claims.
-        tracing::warn!(
+        // pairing, the counter is not scaled, and still the guest's view of it is not
+        // where the bracket says the counter was, so one of the two readings is not what
+        // it claims.
+        tracelimit::warn_ratelimited!(
             by_ticks,
             "kvm reported a host counter for the reference clock that is not the guest's \
              view of it; falling back to bracketing"
@@ -1260,7 +1294,13 @@ fn align_guest_tsc_to_reference_clock(
     // the lead the guest will actually see is the only thing that decides whether its
     // synthetic timers arm past-dated. So the pair is read again, under the offset just
     // written, and the lead it produced is computed from that reading.
-    let verify = sample_reference_clock_against_counter(vm, &bsp, new_offset, guest_tsc_khz)?;
+    let verify = sample_reference_clock_against_counter(
+        vm,
+        &bsp,
+        new_offset,
+        guest_tsc_khz,
+        counter_unscaled,
+    )?;
     let achieved_lead_ns = guest_tsc_lead_from_reference_clock(
         verify.guest_tsc,
         verify.reference_clock_ns,
@@ -1288,21 +1328,21 @@ fn align_guest_tsc_to_reference_clock(
         achieved_lead_ns,
     };
     match classify_achieved_lead(achieved_lead_ns, &tolerances) {
-        LeadVerdict::AsIntended => tracing::info!(
+        LeadVerdict::AsIntended => tracelimit::info_ratelimited!(
             achieved_lead_ns,
             requested_lead_ns,
             tolerance_ns = tolerances.band_ns,
             pairing = alignment.pairing,
             "guest tsc aligned to the partition reference clock"
         ),
-        LeadVerdict::OutsideBand => tracing::warn!(
+        LeadVerdict::OutsideBand => tracelimit::warn_ratelimited!(
             achieved_lead_ns,
             requested_lead_ns,
             tolerance_ns = tolerances.band_ns,
             pairing = alignment.pairing,
             "guest tsc lead landed outside the band its own measurement error allows"
         ),
-        LeadVerdict::BelowFloor => tracing::error!(
+        LeadVerdict::BelowFloor => tracelimit::error_ratelimited!(
             achieved_lead_ns,
             requested_lead_ns,
             floor_ns = GUEST_TSC_LEAD_FLOOR_NS,
@@ -3163,6 +3203,7 @@ mod tests {
                 offset,
                 counter_at_bracket_midpoint(before, after),
                 bracket_error_ticks(before, after),
+                true,
             ),
             CounterPairing::Exact(exact),
         );
@@ -3189,7 +3230,7 @@ mod tests {
         // A bracket whose midpoint is 400 ticks off the truth, half-width 1000: the exact
         // value lies inside it, which is what makes it usable.
         assert_eq!(
-            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, exact - 400, 1_000),
+            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, exact - 400, 1_000, true),
             CounterPairing::Exact(exact),
         );
     }
@@ -3204,8 +3245,27 @@ mod tests {
         let host_tsc = 900_000_000_000u64;
         let bracketed = host_tsc.wrapping_add(offset).wrapping_add(5_000);
         assert_eq!(
-            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, bracketed, 1_000),
+            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, bracketed, 1_000, true),
             CounterPairing::Disagrees(5_000),
+        );
+    }
+
+    #[test]
+    fn a_scaled_counter_is_never_paired_exactly_even_inside_the_bracket() {
+        // The translation lands dead on the bracket midpoint, which is what a scaled
+        // counter does early in a host's uptime. Landing there proves nothing once the
+        // counter runs at a different rate from the host's.
+        let offset = 0x0000_0500_0000_0000u64;
+        let host_tsc = 900_000_000_000u64;
+        let midpoint = host_tsc.wrapping_add(offset);
+        assert_eq!(
+            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, midpoint, 1_000, false),
+            CounterPairing::Scaled,
+        );
+        // Without a reported host counter the reason to bracket is that one.
+        assert_eq!(
+            pair_guest_tsc_with_reference_clock(None, offset, midpoint, 1_000, false),
+            CounterPairing::NotReported,
         );
     }
 
@@ -3215,7 +3275,7 @@ mod tests {
         // not reported, and "not reported" has to be distinguishable from "reported as
         // zero", which is why the input is an option rather than a counter plus a flag.
         assert_eq!(
-            pair_guest_tsc_with_reference_clock(None, 7, 12_345, 1_000),
+            pair_guest_tsc_with_reference_clock(None, 7, 12_345, 1_000, true),
             CounterPairing::NotReported,
         );
     }
@@ -3234,7 +3294,7 @@ mod tests {
         let bracketed = exact.wrapping_sub(150);
         assert!(bracketed > exact, "the pair must straddle the wrap");
         assert_eq!(
-            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, bracketed, 1_000),
+            pair_guest_tsc_with_reference_clock(Some(host_tsc), offset, bracketed, 1_000, true),
             CounterPairing::Exact(exact),
         );
     }
