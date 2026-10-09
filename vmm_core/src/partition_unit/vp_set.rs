@@ -655,6 +655,17 @@ struct HaltState {
     wakers: Slab<Option<Waker>>,
 }
 
+impl HaltState {
+    fn validate_restore_halt(&self) -> Result<(), RestoreError> {
+        if self.halt_count != 0 {
+            return Err(RestoreError::Other(anyhow::anyhow!(
+                "cannot restore over an existing VP halt"
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Halt {
     /// Returns a new halt object, plus a receiver to asynchronously receive the
     /// reason for a halt.
@@ -708,6 +719,20 @@ impl Halt {
             .halt_count
             .checked_sub(1)
             .expect("too many halt clears");
+    }
+
+    /// Fails if a halt is latched, so that a restore never merges its halt
+    /// state with an existing one.
+    fn validate_restore_halt(&self) -> Result<(), RestoreError> {
+        self.state.lock().validate_restore_halt()
+    }
+
+    /// Latches the restored halt, if any, in place of a clear halt state.
+    fn restore_halt(&self, halted: bool) -> Result<(), RestoreError> {
+        let mut state = self.state.lock();
+        state.validate_restore_halt()?;
+        state.halt_count = usize::from(halted);
+        Ok(())
     }
 
     fn is_halted(&self) -> bool {
@@ -960,6 +985,20 @@ impl VpSet {
             .await?;
 
         Ok(())
+    }
+
+    pub(super) fn validate_restore_halt(&self) -> Result<(), RestoreError> {
+        if self.started {
+            return Err(RestoreError::Other(anyhow::anyhow!(
+                "cannot restore halt state while VPs are running"
+            )));
+        }
+        self.inner.halt.validate_restore_halt()
+    }
+
+    pub(super) fn restore_halt(&mut self, halted: bool) -> Result<(), RestoreError> {
+        self.validate_restore_halt()?;
+        self.inner.halt.restore_halt(halted)
     }
 
     /// Tears down the VPs.
@@ -1797,5 +1836,23 @@ mod tests {
     #[test]
     fn explicit_cancellation_stops_pending_run() {
         assert!(run_cancellation(false, true).is_user_cancelled());
+    }
+
+    #[test]
+    fn restores_halt_latch_only_on_a_stopped_clear_destination() {
+        let (halt, _recv) = Halt::new();
+        let halt = Arc::new(halt);
+        let mut vps = VpSet::new([None, None, None], halt.clone(), 0);
+
+        vps.restore_halt(true).unwrap();
+        assert!(halt.is_halted());
+        assert!(vps.restore_halt(false).is_err());
+
+        halt.clear_halt();
+        vps.restore_halt(false).unwrap();
+        assert!(!halt.is_halted());
+
+        vps.started = true;
+        assert!(vps.restore_halt(true).is_err());
     }
 }
