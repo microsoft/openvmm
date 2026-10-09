@@ -228,7 +228,8 @@ omit the attachment or supply a new one; after `ResumeVM`, the guest explicitly
 mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 6, one
 request queue, and no DAX window. The management API binds only a single
 directory: it cannot attach an aggregate of several host directories, as the
-command line's `--mount-aggregate` does.
+command line's `--mount-aggregate` does, and it cannot restore a snapshot of
+one.
 
 The fork retains `VirtioFs.guest_mount_target` at protobuf field 3 and
 `read_write` at field 4 for existing microVM clients. Standard-machine

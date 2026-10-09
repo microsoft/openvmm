@@ -275,6 +275,11 @@ impl MicrovmLaunch {
                     config,
                     canonical_host_path: &host.root_path,
                     attachment: host.attachment.clone(),
+                    children: host
+                        .children
+                        .iter()
+                        .map(|(root_path, attachment)| (root_path.as_path(), attachment))
+                        .collect(),
                 }),
             resources.console_attachment.as_ref(),
             resources.control_console_attachment.as_ref(),

@@ -783,7 +783,13 @@ fn microvm_filesystem_from_request(
                         .children
                         .iter()
                         .zip(&roots)
-                        .map(|(child, (_, attachment))| (child.name.as_str(), attachment)),
+                        .map(|(child, (_, attachment))| {
+                            (
+                                child.name.as_str(),
+                                attachment.identity_kind.as_str(),
+                                attachment.identity.as_slice(),
+                            )
+                        }),
                 );
             Ok(EffectiveMicrovmFilesystem {
                 config,
@@ -873,25 +879,7 @@ pub(crate) fn validate_microvm_filesystem_private_storage(
 pub(crate) fn microvm_filesystem_from_snapshot(
     saved: &openvmm_helpers::snapshot::microvm::SnapshotMicrovmFilesystem,
 ) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemConfig> {
-    let access = match saved.access_mode.as_str() {
-        "ro" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
-        "rw" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
-        mode => anyhow::bail!("snapshot microVM filesystem access mode '{mode}' is unsupported"),
-    };
-    openvmm_defs::microvm::MicrovmFilesystemConfig::new(saved.guest_mount_target.clone(), access)?
-        .with_access_policy(
-            saved.denied_paths.clone(),
-            saved.allowed_paths.clone(),
-            saved.writable_paths.clone(),
-        )
-        .context("snapshot microVM filesystem policy is invalid")
-        .and_then(|config| {
-            Ok(config.with_owner(
-                openvmm_helpers::snapshot::microvm::snapshot_microvm_filesystem_owner(
-                    &saved.owner_mode,
-                )?,
-            ))
-        })
+    openvmm_helpers::snapshot::microvm::snapshot_microvm_filesystem_config(saved)
 }
 
 pub(crate) fn microvm_filesystem_slot_from_snapshot(
@@ -961,14 +949,35 @@ pub(super) fn effective_microvm_filesystem(
     };
     let request =
         request.context("snapshot restore requires a fresh --mount attachment for fs:microvm0")?;
-    let MicrovmFilesystemRequest::Single(mount) = request else {
-        anyhow::bail!("snapshot restore requires the --mount that the snapshot attached");
-    };
     let config = microvm_filesystem_from_snapshot(saved)?;
-    anyhow::ensure!(
-        mount.guest_target == config.guest_mount_target && mount.access == config.access,
-        "restore-time mount target or access mode does not match the snapshot contract"
-    );
+    match (request, config.is_aggregate()) {
+        (MicrovmFilesystemRequest::Single(mount), false) => anyhow::ensure!(
+            mount.guest_target == config.guest_mount_target && mount.access == config.access,
+            "restore-time mount target or access mode does not match the snapshot contract"
+        ),
+        (
+            MicrovmFilesystemRequest::Aggregate {
+                guest_target,
+                children,
+            },
+            true,
+        ) => anyhow::ensure!(
+            guest_target == config.guest_mount_target
+                && children.len() == config.children.len()
+                && children
+                    .iter()
+                    .zip(&config.children)
+                    .all(|(requested, saved)| requested.name == saved.name
+                        && requested.access == saved.access),
+            "restore-time aggregate target, or --mount-child names, order, or access modes, do not match the snapshot contract"
+        ),
+        (_, false) => {
+            anyhow::bail!("snapshot restore requires the --mount that the snapshot attached")
+        }
+        (_, true) => anyhow::bail!(
+            "snapshot restore requires the --mount-aggregate and --mount-child options that the snapshot attached"
+        ),
+    }
     anyhow::ensure!(
         owner == config.owner,
         "restore-time --mount-owner {} does not match the snapshot contract ({})",
@@ -976,14 +985,25 @@ pub(super) fn effective_microvm_filesystem(
         config.owner.as_str()
     );
     let effective = microvm_filesystem_from_request(request, policy, owner)?;
-    anyhow::ensure!(
-        !saved.canonical_host_path.is_empty(),
-        "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
-    );
-    anyhow::ensure!(
-        effective.root_path == saved.canonical_host_path,
-        "restore-time filesystem canonical host path does not match the snapshot contract"
-    );
+    if config.is_aggregate() {
+        anyhow::ensure!(
+            effective
+                .children
+                .iter()
+                .zip(&saved.children)
+                .all(|((root_path, _), saved)| *root_path == saved.canonical_host_path),
+            "restore-time --mount-child canonical host paths do not match the snapshot contract"
+        );
+    } else {
+        anyhow::ensure!(
+            !saved.canonical_host_path.is_empty(),
+            "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+        );
+        anyhow::ensure!(
+            effective.root_path == saved.canonical_host_path,
+            "restore-time filesystem canonical host path does not match the snapshot contract"
+        );
+    }
     anyhow::ensure!(
         restore.attachments.contains(&effective.attachment),
         "restore-time filesystem root identity does not match the snapshot attachment"
@@ -1059,14 +1079,33 @@ mod tests {
     ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
         let slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
         let root = share.map(|(_, root)| microvm_filesystem_attachment(root, slot).unwrap());
+        let effective = share
+            .zip(root)
+            .map(
+                |((config, _), (root_path, attachment))| EffectiveMicrovmFilesystem {
+                    config: config.clone(),
+                    root_path,
+                    attachment,
+                    children: Vec::new(),
+                },
+            );
+        effective_contract(effective.as_ref())
+    }
+
+    /// Builds the contract of a cold-booted machine with `filesystem`
+    /// attached to the virtio-fs slot, or with a dormant slot.
+    fn effective_contract(
+        filesystem: Option<&EffectiveMicrovmFilesystem>,
+    ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
+        let slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
             true,
-            &share
+            &filesystem
                 .iter()
-                .map(|(filesystem, _)| (*filesystem).clone())
+                .map(|filesystem| filesystem.config.clone())
                 .collect::<Vec<_>>(),
             false,
             false,
@@ -1093,15 +1132,18 @@ mod tests {
             command_line,
             None,
             true,
-            share
-                .zip(root.as_ref())
-                .map(|((filesystem, _), (root_path, attachment))| {
-                    openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource {
-                        config: filesystem,
-                        canonical_host_path: Path::new(root_path),
-                        attachment: attachment.clone(),
-                    }
-                }),
+            filesystem.map(|filesystem| {
+                openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource {
+                    config: &filesystem.config,
+                    canonical_host_path: Path::new(&filesystem.root_path),
+                    attachment: filesystem.attachment.clone(),
+                    children: filesystem
+                        .children
+                        .iter()
+                        .map(|(root_path, attachment)| (Path::new(root_path), attachment))
+                        .collect(),
+                }
+            }),
             None,
             None,
             Vec::new(),
@@ -1735,6 +1777,62 @@ mod tests {
             error.to_string().contains("requires the --mount"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn aggregate_restore_requires_the_same_children() {
+        let workspace = policy_share();
+        let toolcache = tempfile::tempdir().unwrap();
+        let children = workspace_and_toolcache(workspace.path(), toolcache.path(), "ro");
+        let deny = workspace.path().join("logs").display().to_string();
+        let policy = ["--mount-deny", deny.as_str()];
+        let captured = options_filesystem(&aggregate_options(&children, &policy), None).unwrap();
+        let contract = effective_contract(Some(&captured));
+        assert_eq!(
+            contract.microvm_filesystem.as_ref().unwrap().children.len(),
+            2
+        );
+        let restore = |children: &[String], policy: &[&str]| {
+            let mut arguments = policy.to_vec();
+            arguments.extend(["--restore-snapshot", "snapshot"]);
+            options_filesystem(&aggregate_options(children, &arguments), Some(&contract))
+        };
+        let restored = restore(&children, &policy).unwrap();
+        assert_eq!(restored.attachment, captured.attachment);
+        assert_eq!(restored.config, captured.config);
+
+        let other = tempfile::tempdir().unwrap();
+        let swapped = vec![children[1].clone(), children[0].clone()];
+        let renamed = vec![
+            children[0].replace("work,", "workspace,"),
+            children[1].clone(),
+        ];
+        let writable = workspace_and_toolcache(workspace.path(), toolcache.path(), "rw");
+        let replaced = workspace_and_toolcache(workspace.path(), other.path(), "ro");
+        for (changed, policy, expected) in [
+            (&swapped, &policy[..], "do not match the snapshot contract"),
+            (&renamed, &policy[..], "do not match the snapshot contract"),
+            (&writable, &policy[..], "do not match the snapshot contract"),
+            (
+                &children[..1].to_vec(),
+                &policy[..],
+                "do not match the snapshot contract",
+            ),
+            (&replaced, &policy[..], "canonical host paths"),
+            (&children, &[][..], "access policy"),
+        ] {
+            let error = restore(changed, policy).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+        let error = options_filesystem(
+            &mount_options(
+                &[format!("/run/nvx/shares,{},rw", workspace.path().display())],
+                &["--restore-snapshot", "snapshot"],
+            ),
+            Some(&contract),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--mount-aggregate"), "{error:#}");
     }
 
     /// Creates a share with a denied `logs` directory that holds an allowed
