@@ -123,6 +123,7 @@ pub mod blk {
     pub struct VirtioBlkHandle {
         pub disk: Resource<DiskHandleKind>,
         pub read_only: bool,
+        pub serial: Option<String>,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioBlkHandle {

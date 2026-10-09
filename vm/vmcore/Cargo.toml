@@ -11,7 +11,7 @@ hvdef.workspace = true
 save_restore_derive.workspace = true
 vm_resource.workspace = true
 
-inspect = { workspace = true, features = ["defer"] }
+inspect = { workspace = true, features = ["defer", "std"] }
 loan_cell.workspace = true
 mesh.workspace = true
 pal_event = { workspace = true, features = ["mesh"] }

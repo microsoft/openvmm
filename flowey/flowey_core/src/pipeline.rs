@@ -131,14 +131,12 @@ impl HostExt for FlowArch {
             panic!("can only use `FlowArch::host` when defining a local-only pipeline");
         }
 
-        // xtask-fmt allow-target-arch oneoff-flowey
-        if cfg!(target_arch = "x86_64") {
-            Self::X86_64
-        // xtask-fmt allow-target-arch oneoff-flowey
-        } else if cfg!(target_arch = "aarch64") {
-            Self::Aarch64
-        } else {
-            panic!("no valid host-arch")
+        cfg_select! {
+            // xtask-fmt allow-target-arch oneoff-flowey
+            target_arch = "x86_64" => Self::X86_64,
+            // xtask-fmt allow-target-arch oneoff-flowey
+            target_arch = "aarch64" => Self::Aarch64,
+            _ => compile_error!("unsupported target architecture"),
         }
     }
 }

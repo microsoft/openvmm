@@ -11,7 +11,7 @@ use super::boot_time::BootProfile;
 use super::platform;
 use crate::report::MetricStats;
 use anyhow::Context as _;
-use std::path::PathBuf;
+use petri::PetriInitrd;
 
 /// Concurrent VM boot sweep test configuration.
 pub struct ScaleBootTest {
@@ -24,7 +24,7 @@ pub struct ScaleBootTest {
     /// Maximum number of concurrent VMs (default: 64).
     pub max_vms: u32,
     /// Pre-built initrd (only used for minimal profiles).
-    initrd: Option<tempfile::TempPath>,
+    initrd: Option<PetriInitrd>,
 }
 
 impl ScaleBootTest {
@@ -44,10 +44,6 @@ impl ScaleBootTest {
             max_vms,
             initrd,
         })
-    }
-
-    fn initrd_path(&self) -> Option<PathBuf> {
-        self.initrd.as_ref().map(|p| p.to_path_buf())
     }
 }
 
@@ -128,7 +124,7 @@ pub async fn run_scale_test(
         tracing::info!(n, "launching {n} VMs concurrently");
 
         let futs: Vec<_> = (0..n)
-            .map(|vm_idx| boot_one_vm(test, test.initrd_path(), resolver, driver, n, vm_idx))
+            .map(|vm_idx| boot_one_vm(test, test.initrd.clone(), resolver, driver, n, vm_idx))
             .collect();
 
         let results = futures::future::join_all(futs).await;
@@ -256,7 +252,7 @@ fn make_builder(
     let log_source = crate::log_source();
     let params = petri::PetriTestParams {
         test_name,
-        logger: &log_source,
+        log_source: &log_source,
         post_test_hooks: &mut post_test_hooks,
     };
 
@@ -277,7 +273,7 @@ fn make_builder(
 /// Boot a single VM and return (vm, agent, boot_time_ms).
 async fn boot_one_vm(
     test: &ScaleBootTest,
-    initrd_path: Option<PathBuf>,
+    initrd: Option<PetriInitrd>,
     resolver: &petri::ArtifactResolver<'_>,
     driver: &pal_async::DefaultDriver,
     n: u32,
@@ -289,8 +285,8 @@ async fn boot_one_vm(
 )> {
     let test_name = format!("scale_boot_{n}_vm_{vm_idx}");
     let mut builder = make_builder(test, &test_name, resolver, driver)?;
-    if let Some(initrd_path) = initrd_path {
-        builder = builder.with_prebuilt_initrd(initrd_path);
+    if let Some(initrd) = initrd {
+        builder = builder.with_prebuilt_initrd(initrd);
     }
 
     let start = std::time::Instant::now();

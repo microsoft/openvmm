@@ -114,7 +114,7 @@ The [Running OpenHCL with OpenVMM](../../../user_guide/openhcl/run/openvmm.md) p
 ```bash
 cargo run -- \
   --hv --vtl2 \
-  --igvm path/to/openhcl.igvm \
+  --igvm firmware=path/to/openhcl.igvm,personality=openhcl \
   --vmbus-redirect \
   --nvme-pci id=nvme0,vpci,vtl2 \
   --openhcl-controller id=relay0,type=scsi \
@@ -190,7 +190,7 @@ The [Running OpenHCL with OpenVMM](../../../user_guide/openhcl/run/openvmm.md) p
 ```bash
 cargo run -- \
   --hv --vtl2 \
-  --igvm path/to/openhcl.igvm \
+  --igvm firmware=path/to/openhcl.igvm,personality=openhcl \
   --vmbus-redirect \
   --vmbus-scsi id=scsi0,vtl2 \
   --openhcl-controller id=relay0,type=scsi \

@@ -235,12 +235,29 @@ impl ps::AsVal for HyperVGuestStateEncryptionPolicy {
 #[bitfield_struct::bitfield(u64)]
 pub struct HyperVManagementVtlFeatureFlags {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    pub _reserved5: bool,
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
+}
+
+impl HyperVManagementVtlFeatureFlags {
+    fn with_tpm_version(self, version: Option<crate::PetriTpmVersion>) -> Self {
+        match version {
+            Some(crate::PetriTpmVersion::V138) => self
+                .with_use_tpm_138_by_default(true)
+                .with_use_tpm_185_by_default(false),
+            Some(crate::PetriTpmVersion::V185) => self
+                .with_use_tpm_138_by_default(false)
+                .with_use_tpm_185_by_default(true),
+            None => self,
+        }
+    }
 }
 
 impl ps::AsVal for HyperVManagementVtlFeatureFlags {
@@ -265,6 +282,8 @@ pub struct HyperVNewCustomVMArgs {
     pub guest_state_path: Option<PathBuf>,
     /// VMBUS message redirection
     pub vmbus_message_redirection: Option<bool>,
+    /// Enable the OpenHCL guest feature set.
+    pub enable_openhcl: bool,
     /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
     /// OpenHCL command line parameters
@@ -343,7 +362,7 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        let is_openhcl = self.firmware_file.is_some();
+        let is_openhcl = self.enable_openhcl;
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
@@ -545,11 +564,13 @@ impl HyperVNewCustomVMArgs {
                     }
                 }),
             management_vtl_feature_flags: properties.is_openhcl.then(|| {
-                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(
-                    vmgs.encryption_policy()
-                        .map(|p| p.is_strict())
-                        .unwrap_or(false),
-                )
+                HyperVManagementVtlFeatureFlags::new()
+                    .with_strict_encryption_policy(
+                        vmgs.encryption_policy()
+                            .map(|p| p.is_strict())
+                            .unwrap_or(false),
+                    )
+                    .with_tpm_version(tpm.as_ref().map(|t| t.version))
             }),
             guest_state_encryption_policy: {
                 // A requested hardware sealing policy takes precedence over the
@@ -619,6 +640,7 @@ impl HyperVNewCustomVMArgs {
             },
             hibernation_enabled: config.hibernation_enabled,
             com_1: true,
+            enable_openhcl: properties.is_openhcl,
 
             // specified after creation
             firmware_file: None,
@@ -801,6 +823,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("GuestStateLifetime", args.guest_state_lifetime)
             .arg_opt("GuestStateFilePath", args.guest_state_path)
             .arg_opt("VMBusMessageRedirection", args.vmbus_message_redirection)
+            .arg("EnableOpenHCL", args.enable_openhcl)
             .arg_opt("FirmwareFile", args.firmware_file)
             .arg_opt("FirmwareParameters", args.firmware_parameters)
             .flag_opt(

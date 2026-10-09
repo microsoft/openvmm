@@ -25,14 +25,14 @@ use std::collections::BTreeSet;
 pub enum LinuxTestKernelVersion {
     Linux6_1,
     Linux6_18,
-    /// The `kvm-cca-dev` kernel (Linux 7.1.0-rc1 at time of writing).
+    /// The `cca-v15` kernel (Linux 7.2.0-rc1 at time of writing).
     ///
     /// Published **aarch64-only**. Beyond the ARM CCA host bits it is built
     /// for, it also enables the P2PDMA / vfio-dmabuf / iommufd config
     /// (`CONFIG_PCI_P2PDMA`, `CONFIG_VFIO_PCI_DMABUF`, `CONFIG_IOMMUFD`,
     /// `CONFIG_ARM_SMMU_V3`) that the incubator's VFIO device-assignment tests
     /// need to exercise device-BAR P2P DMA, which predate the 6.18 test kernel.
-    KvmCcaDev,
+    CcaV15,
 }
 
 impl LinuxTestKernelVersion {
@@ -42,17 +42,17 @@ impl LinuxTestKernelVersion {
         match self {
             Self::Linux6_1 => "6.1",
             Self::Linux6_18 => "6.18",
-            Self::KvmCcaDev => "kvm-cca-dev",
+            Self::CcaV15 => "cca-v15",
         }
     }
 
     /// Whether this kernel version is published for the given architecture.
     ///
-    /// Most versions ship for both architectures; `kvm-cca-dev` is aarch64-only.
+    /// Most versions ship for both architectures; `cca-v15` is aarch64-only.
     pub fn is_available_for(self, arch: CommonArch) -> bool {
         match self {
             Self::Linux6_1 | Self::Linux6_18 => true,
-            Self::KvmCcaDev => matches!(arch, CommonArch::Aarch64),
+            Self::CcaV15 => matches!(arch, CommonArch::Aarch64),
         }
     }
 }
@@ -95,11 +95,11 @@ pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
 /// The Linux test kernel used as the **L1 host image** for the aarch64 QEMU-TCG
 /// incubator. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship the
 /// P2PDMA / vfio-dmabuf / iommufd config
-/// ([`LinuxTestKernelVersion::KvmCcaDev`], Linux 7.1.0-rc1) so incubator VFIO
+/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so incubator VFIO
 /// device-assignment tests can exercise device-BAR peer-to-peer DMA. Aarch64
 /// only (the incubator is aarch64-only).
 pub const INCUBATOR_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
-    LinuxTestKernelVersion::KvmCcaDev;
+    LinuxTestKernelVersion::CcaV15;
 
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.
@@ -216,18 +216,18 @@ impl FlowNodeWithConfig for Node {
         // archive), so dedupe download + extract on `(arch, kver)`.
         let needed_archives: BTreeSet<(CommonArch, LinuxTestKernelVersion)> =
             deps.keys().map(|(_, arch, kver)| (*arch, *kver)).collect();
+        let version = version.context("missing openvmm-test-linux version")?;
 
         let mut archives = BTreeMap::new();
         for (arch, kver) in needed_archives {
-            let version = version.clone().expect("local requests handled above");
             let arch_str = match arch {
                 CommonArch::X86_64 => "x86_64",
                 CommonArch::Aarch64 => "aarch64",
             };
             let kver_str = kver.artifact_tag();
             let archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm-deps".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_DEPS_GITHUB_REPO.into(),
                 needs_auth: false,
                 tag: version.clone(),
                 file_name: format!("openvmm-test-linux-{kver_str}.{arch_str}.{version}.tar.gz"),
@@ -242,7 +242,7 @@ impl FlowNodeWithConfig for Node {
             let persistent_dir = persistent_dir.claim(ctx);
             let archives = archives.claim(ctx);
             let deps = deps.claim(ctx);
-            let version = version.clone().expect("local requests handled above");
+            let version = version.clone();
             move |rt| {
                 let persistent_dir = persistent_dir.map(|d| rt.read(d));
 
@@ -259,7 +259,14 @@ impl FlowNodeWithConfig for Node {
                 }
 
                 for ((file, arch, kver), vars) in deps {
-                    let path = extract_dirs[&(arch, kver)].join(file.filename(arch));
+                    let path = extract_dirs
+                        .get(&(arch, kver))
+                        .with_context(|| {
+                            format!(
+                                "missing extracted openvmm-test-linux archive for {arch:?} {kver:?}"
+                            )
+                        })?
+                        .join(file.filename(arch));
                     rt.write_all(vars, &path)
                 }
 

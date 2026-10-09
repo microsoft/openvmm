@@ -23,6 +23,7 @@ ide_resources.workspace = true
 input_core.workspace = true
 net_backend_resources.workspace = true
 smbios_defs.workspace = true
+tpm_resources.workspace = true
 virt.workspace = true
 vmm_core_defs.workspace = true
 

@@ -8,7 +8,6 @@ use guid::Guid;
 use memory_range::MemoryRange;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
-use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
@@ -22,6 +21,15 @@ use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 use zerocopy::FromBytes;
+
+const FIRST_VTL2_MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
+const SECOND_VTL2_MANA_INSTANCE: Guid = guid::guid!("2ad64873-df8e-4c3d-9e5a-d3078d9c4987");
+const FIRST_VTL2_MANA_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
+    net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x13]);
+const FIRST_VTL2_MANA_SECOND_VPORT_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
+    net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x11]);
+const SECOND_VTL2_MANA_MAC_ADDRESS: net_backend_resources::mac_address::MacAddress =
+    net_backend_resources::mac_address::MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
@@ -51,6 +59,63 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
         .await?;
 
     validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Verifies that vport 0 of the first two-vport VTL2 MANA VF becomes `eth0`,
+/// even though a secondary VF's NetVSP instance GUID sorts first. All three NICs
+/// remain present across OpenHCL servicing, with primary vport 0 still at `eth0`.
+///
+/// Servicing reconstructs the NICs from the same configuration. This test ensures
+/// the guest-visible order, but does not verify the exact `offer_order` values.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_vfs_preserve_nic_order_across_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    async fn validate_primary_vport(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+        let sh = agent.unix_shell();
+        let primary_mac = cmd!(sh, "cat /sys/class/net/eth0/address").read().await?;
+        assert_eq!(primary_mac, "00:15:5d:12:12:13");
+
+        let other_macs = cmd!(
+            sh,
+            "cat /sys/class/net/eth1/address /sys/class/net/eth2/address"
+        )
+        .read()
+        .await?;
+        let mut actual_macs = other_macs.lines().collect::<Vec<_>>();
+        actual_macs.sort_unstable();
+        assert_eq!(actual_macs, ["00:15:5d:12:12:11", "00:15:5d:12:12:12"]);
+        Ok(())
+    }
+
+    let flags = config.default_servicing_flags();
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| {
+            b.with_mana_vf_vports(
+                FIRST_VTL2_MANA_INSTANCE,
+                [
+                    FIRST_VTL2_MANA_MAC_ADDRESS,
+                    FIRST_VTL2_MANA_SECOND_VPORT_MAC_ADDRESS,
+                ],
+            )
+            .with_mana_vf(SECOND_VTL2_MANA_INSTANCE, SECOND_VTL2_MANA_MAC_ADDRESS)
+        })
+        .run()
+        .await?;
+
+    validate_primary_vport(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+    agent.ping().await?;
+
+    validate_primary_vport(&agent).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -102,10 +167,6 @@ async fn many_nvme_devices_servicing_heavy(
         .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
             size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manifest, plus 64MB extra for private pool.
         })
-        .with_host_log_levels(OpenvmmLogConfig::Custom([
-            ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
-            ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
-        ].into()))
         .with_openhcl_command_line(
             "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=30",
         ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.

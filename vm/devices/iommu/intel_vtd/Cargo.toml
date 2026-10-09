@@ -22,5 +22,8 @@ vmcore.workspace = true
 x86defs.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

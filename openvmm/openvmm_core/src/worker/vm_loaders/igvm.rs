@@ -282,6 +282,8 @@ pub fn snp_isolation_config(igvm_file: &IgvmFile) -> Result<virt::SnpConfig, Err
     }
 
     Ok(virt::SnpConfig {
+        // Host data is supplied by the caller, not the IGVM file.
+        host_data: None,
         policy,
         highest_vtl: platform.highest_vtl,
         shared_gpa_boundary: platform.shared_gpa_boundary,

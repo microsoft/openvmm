@@ -18,7 +18,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 pal_event.workspace = true
 pal_async.workspace = true

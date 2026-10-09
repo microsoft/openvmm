@@ -137,6 +137,7 @@ struct WhpPartitionInner {
 struct VtlPartition {
     #[inspect(skip)]
     whp: whp::Partition,
+    time_frozen: Mutex<bool>,
     #[inspect(skip)]
     vplcs: Vec<Vplc>,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.read()).inspect(req))")]
@@ -548,6 +549,20 @@ impl virt::ResetPartition for WhpPartition {
     }
 }
 
+impl virt::PartitionTimeControl for WhpPartition {
+    fn freeze_time(&self) {
+        for (_, vtlp) in self.inner.vtlps() {
+            vtlp.set_time_frozen(true);
+        }
+    }
+
+    fn thaw_time(&self) {
+        for (_, vtlp) in self.inner.vtlps() {
+            vtlp.set_time_frozen(false);
+        }
+    }
+}
+
 impl virt::ScrubVtl for WhpPartition {
     type Error = Error;
 
@@ -558,6 +573,7 @@ impl virt::ScrubVtl for WhpPartition {
         tracing::info!(?vtl, "scrubbing partition");
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
+        vtl2.set_time_frozen(true);
 
         // Preserve VTL2 reference time across the scrub to match hypervisor
         // behavior and so that the guest can determine how much time was lost.
@@ -568,7 +584,7 @@ impl virt::ScrubVtl for WhpPartition {
 
         // NOTE: Mapping state (and therefore VTL protections) is _not_ reset
         // across scrub. Thus only reset WHP state, but not VtlPartition state.
-        vtl2.whp.reset().for_op("reset partition")?;
+        vtl2.reset_whp()?;
         self.inner.vtl2_emulation.as_ref().unwrap().reset(false);
         self.validate_is_reset(Vtl::Vtl2);
 
@@ -613,6 +629,10 @@ impl virt::Partition for WhpPartition {
         } else {
             None
         }
+    }
+
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        Some(self)
     }
 
     fn supports_vtl_scrub(
@@ -1695,6 +1715,7 @@ impl VtlPartition {
             .for_op("set extended vm exits")?;
 
         let whp = whp_config.create().for_op("set up partition")?;
+        whp.suspend_time().for_op("suspend partition time")?;
 
         for vp in config.processor_topology.vps() {
             let index = vp.vp_index.index();
@@ -1759,6 +1780,7 @@ impl VtlPartition {
 
         Ok(Self {
             whp,
+            time_frozen: Mutex::new(true),
             vplcs,
             #[cfg(guest_arch = "x86_64")]
             software_devices: virt::x86::apic_software_device::ApicSoftwareDevices::new(
@@ -1773,9 +1795,35 @@ impl VtlPartition {
 
     /// Reset this partition back into the state before starting VPs.
     fn reset(&self) -> Result<(), Error> {
-        self.whp.reset().for_op("reset partition")?;
+        self.reset_whp()?;
         self.reset_mappings().map_err(Error::ResetMemoryMapping)?;
         Ok(())
+    }
+
+    fn reset_whp(&self) -> Result<(), Error> {
+        let mut time_frozen = self.time_frozen.lock();
+        self.whp.reset().for_op("reset partition")?;
+        // WHP reset freezes time until an explicit resume or the first VP run.
+        *time_frozen = true;
+        Ok(())
+    }
+
+    fn set_time_frozen(&self, frozen: bool) {
+        let mut time_frozen = self.time_frozen.lock();
+        if *time_frozen != frozen {
+            if frozen {
+                self.whp
+                    .suspend_time()
+                    .for_op("suspend partition time")
+                    .expect("failed to freeze WHP partition time");
+            } else {
+                self.whp
+                    .resume_time()
+                    .for_op("resume partition time")
+                    .expect("failed to thaw WHP partition time");
+            }
+            *time_frozen = frozen;
+        }
     }
 }
 

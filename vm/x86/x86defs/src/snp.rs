@@ -659,6 +659,8 @@ open_enum::open_enum! {
         REGISTER_RESPONSE = 0x013,
         PAGE_STATE_CHANGE = 0x014,
         PAGE_STATE_UPDATED = 0x015,
+        UNREGISTER_REQUEST = 0x018,
+        UNREGISTER_RESPONSE = 0x019,
         HYP_FEATURE_REQUEST = 0x080,
         HYP_FEATURE_RESPONSE = 0x081,
         SPECIAL_HYPERCALL = 0xF00,
@@ -668,6 +670,9 @@ open_enum::open_enum! {
         SHUTDOWN_REQUEST = 0x100,
     }
 }
+
+/// GHCB 2.04 feature bitmap bit for unregistering the current GHCB GPA.
+pub const GHCB_HYP_FEATURE_GHCB_UNREGISTER: u64 = 1 << 8;
 
 pub const GHCB_DATA_PAGE_STATE_PRIVATE: u64 = 0x001;
 pub const GHCB_DATA_PAGE_STATE_SHARED: u64 = 0x002;

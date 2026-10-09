@@ -6,6 +6,8 @@
 use super::helpers::*;
 use super::objects::*;
 use super::ops::*;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// An AML Method
 pub struct Method {

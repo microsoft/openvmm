@@ -9,6 +9,13 @@
 //!
 //! It is explicitly specialized for the needs of the OpenVMM project and is
 //! not suitable for general-purpose use.
+//!
+//! # Private key export
+//!
+//! The `export_private` feature allows access to private key material through
+//! export methods. Exported bytes and components contain unencrypted secrets.
+//! Callers are responsible for protecting them and clearing them when no longer
+//! needed. The returned byte vectors are not automatically zeroized.
 
 // UNSAFETY: calling BCrypt APIs on Windows, Security.framework APIs on macOS,
 // and defining/referencing an extern symbol for the backend-selection

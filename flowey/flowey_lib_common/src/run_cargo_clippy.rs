@@ -89,11 +89,7 @@ impl FlowNode for Node {
 
                     let target = target.to_string();
 
-                    let cargo_profile = match &profile {
-                        CargoBuildProfile::Debug => "dev",
-                        CargoBuildProfile::Release => "release",
-                        CargoBuildProfile::Custom(s) => s,
-                    };
+                    let cargo_profile = profile.as_cargo_profile();
 
                     let mut args = Vec::new();
 
@@ -130,7 +126,7 @@ impl FlowNode for Node {
                         }
                     }
 
-                    rt.sh.change_dir(in_folder);
+                    let _dir = rt.sh.push_dir(in_folder);
 
                     let mut cmd = if let Some(rust_toolchain) = &rust_toolchain {
                         flowey::shell_cmd!(rt, "rustup run {rust_toolchain} cargo")

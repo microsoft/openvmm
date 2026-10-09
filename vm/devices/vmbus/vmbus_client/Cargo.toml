@@ -14,7 +14,7 @@ vmbus_core.workspace = true
 vmbus_ring.workspace = true
 vmcore.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true

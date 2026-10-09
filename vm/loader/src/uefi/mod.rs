@@ -4,6 +4,7 @@
 //! UEFI specific loader definitions and implementation.
 
 pub mod config;
+pub mod firmware_version;
 
 #[cfg(guest_arch = "aarch64")]
 use aarch64 as arch;
@@ -14,8 +15,8 @@ pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;
 pub use arch::load;
 
-use guid::Guid;
 use thiserror::Error;
+use uefi_specs::uefi::firmware_volume;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -36,14 +37,9 @@ const fn signature_16(v: &[u8; 2]) -> u16 {
     v[0] as u16 | (v[1] as u16) << 8
 }
 
-const fn signature_32(v: &[u8; 4]) -> u32 {
-    v[0] as u32 | (v[1] as u32) << 8 | (v[2] as u32) << 16 | (v[3] as u32) << 24
-}
-
 const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D; // MZ
 const IMAGE_NT_SIGNATURE: u32 = 0x00004550; // PE00
 const TE_IMAGE_HEADER_SIGNATURE: u16 = signature_16(b"VZ");
-const EFI_FVH_SIGNATURE: u32 = signature_32(b"_FVH");
 
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -177,53 +173,17 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
     }
 }
 
-#[repr(C)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct EFI_FIRMWARE_VOLUME_HEADER {
-    zero_vector: [u8; 16],
-    file_system_guid: Guid,
-    fv_length: u64,
-    signature: u32,
-    attributes: u32,
-    header_length: u16,
-    checksum: u16,
-    ext_header_offset: u16,
-    reserved: u8,
-    revision: u8,
-}
-
-#[repr(C)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct EFI_FFS_FILE_HEADER {
-    name: Guid,
-    integrity_check: u16,
-    typ: u8,
-    attributes: u8,
-    size: [u8; 3],
-    state: u8,
-}
-
-const EFI_FV_FILETYPE_SECURITY_CORE: u8 = 3;
-
-#[repr(C)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct EFI_COMMON_SECTION_HEADER {
-    size: [u8; 3],
-    typ: u8,
-}
-
-const EFI_SECTION_PE32: u8 = 0x10;
-
 /// Get the SEC entry point offset from the firmware base.
 fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     // Skip to SEC volume start.
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
 
     // Expect a firmware volume header for SEC volume.
-    let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(&image[image_offset as usize..])
-        .ok()?
-        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
-    if fvh.signature != EFI_FVH_SIGNATURE {
+    let fvh =
+        firmware_volume::FirmwareVolumeHeader::read_from_prefix(&image[image_offset as usize..])
+            .ok()?
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+    if fvh.signature != firmware_volume::FV_SIGNATURE {
         return None;
     }
 
@@ -239,10 +199,10 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             image_offset += new_volume_offset - volume_offset;
             volume_offset = new_volume_offset;
         }
-        let fh = EFI_FFS_FILE_HEADER::read_from_prefix(&image[image_offset as usize..])
+        let fh = firmware_volume::FfsFileHeader::read_from_prefix(&image[image_offset as usize..])
             .ok()?
             .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
-        if fh.typ == EFI_FV_FILETYPE_SECURITY_CORE {
+        if fh.file_type == firmware_volume::FILETYPE_SECURITY_CORE {
             sec_core_file_header = Some(fh);
             break;
         }
@@ -256,8 +216,8 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     let sec_core_file_size = expand_3byte_integer(sec_core_file_header.size);
 
     // Move past the firmware file header.
-    image_offset += size_of::<EFI_FFS_FILE_HEADER>() as u64;
-    volume_offset += size_of::<EFI_FFS_FILE_HEADER>() as u64;
+    image_offset += size_of::<firmware_volume::FfsFileHeader>() as u64;
+    volume_offset += size_of::<firmware_volume::FfsFileHeader>() as u64;
 
     // Loop through the firmware file sections looking for PE section.
     let mut file_offset = volume_offset;
@@ -271,14 +231,16 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             file_offset += new_file_offset - file_offset;
         }
 
-        let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(&image[image_offset as usize..])
-            .ok()?
-            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
-        if sh.typ == EFI_SECTION_PE32 {
+        let sh =
+            firmware_volume::CommonSectionHeader::read_from_prefix(&image[image_offset as usize..])
+                .ok()?
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
+        if sh.section_type == firmware_volume::SECTION_PE32 {
             let pe_offset = pe_get_entry_point_offset(
-                &image[image_offset as usize + size_of::<EFI_COMMON_SECTION_HEADER>()..],
+                &image[image_offset as usize + size_of::<firmware_volume::CommonSectionHeader>()..],
             )?;
-            image_offset += size_of::<EFI_COMMON_SECTION_HEADER>() as u64 + pe_offset as u64;
+            image_offset +=
+                size_of::<firmware_volume::CommonSectionHeader>() as u64 + pe_offset as u64;
             break;
         }
         image_offset += expand_3byte_integer(sh.size);

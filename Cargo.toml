@@ -61,6 +61,7 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
 ]
@@ -74,7 +75,7 @@ rust-version = "1.95"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -83,6 +84,10 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
+
+# opentmk executor
+opentmk_exec_packet = { path = "opentmk/opentmk_exec_packet" }
+opentmk_decoder = { path = "opentmk/opentmk_decoder" }
 
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
@@ -109,7 +114,6 @@ vhost_user_protocol = { path = "vm/devices/virtio/vhost_user_protocol" }
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
-vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
@@ -248,6 +252,8 @@ cvm_tracing = { path = "vm/cvm_tracing" }
 chipset = { path = "vm/devices/chipset" }
 chipset_legacy = { path = "vm/devices/chipset_legacy" }
 chipset_resources = { path = "vm/devices/chipset_resources" }
+ipmi_kcs = { path = "vm/devices/chipset/ipmi_kcs" }
+ipmi_protocol = { path = "vm/devices/chipset/ipmi_protocol" }
 firmware_pcat = { path = "vm/devices/firmware/firmware_pcat" }
 firmware_uefi = { path = "vm/devices/firmware/firmware_uefi" }
 firmware_uefi_custom_vars = { path = "vm/devices/firmware/firmware_uefi_custom_vars" }
@@ -277,7 +283,9 @@ hyperv_ic_protocol = { path = "vm/devices/hyperv_ic_protocol" }
 hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
-cxl_spec = { path = "vm/devices/cxl" }
+hyperv_keyboard_protocol = { path = "vm/devices/input/hyperv_keyboard_protocol" }
+cxl = { path = "vm/devices/cxl" }
+cxl_spec = { path = "vm/devices/cxl/cxl_spec" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }
@@ -288,6 +296,7 @@ linux_net_bindings = { path = "vm/devices/net/linux_net_bindings" }
 mana_driver = { path = "vm/devices/net/mana_driver" }
 vfio_sys = { path = "vm/devices/user_driver/vfio_sys" }
 net_backend = { path = "vm/devices/net/net_backend" }
+net_backend_core = { path = "vm/devices/net/net_backend_core" }
 net_backend_resources = { path = "vm/devices/net/net_backend_resources" }
 net_consomme = { path = "vm/devices/net/net_consomme" }
 consomme = { path = "vm/devices/net/net_consomme/consomme" }
@@ -296,6 +305,7 @@ net_mana = { path = "vm/devices/net/net_mana" }
 net_tap = { path = "vm/devices/net/net_tap" }
 net_packet_capture = { path = "vm/devices/net/net_packet_capture" }
 netvsp = { path = "vm/devices/net/netvsp" }
+netvsp_protocol = { path = "vm/devices/net/netvsp_protocol" }
 netvsp_resources = { path = "vm/devices/net/netvsp_resources" }
 nvme = { path = "vm/devices/storage/nvme" }
 nvme_common = { path = "vm/devices/storage/nvme_common" }
@@ -372,6 +382,7 @@ tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
+tpm_vmgs = { path = "vm/devices/tpm/tpm_vmgs" }
 pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
@@ -432,6 +443,7 @@ x86emu = { path = "vm/x86/x86emu" }
 # vmcore
 build_rs_guest_arch = { path = "vm/vmcore/build_rs_guest_arch" }
 guestmem = { path = "vm/vmcore/guestmem" }
+guestmem_core = { path = "vm/vmcore/guestmem_core" }
 memory_range = { path = "vm/vmcore/memory_range" }
 save_restore_derive = { path = "vm/vmcore/save_restore_derive" }
 vm_resource = { path = "vm/vmcore/vm_resource" }
@@ -524,6 +536,7 @@ hex = "0.4"
 pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
+postcard = { version = "1.1.3", default-features = false }
 prost = "0.11"
 prost-build = "0.11"
 prost-types = "0.11"
@@ -563,7 +576,7 @@ x509-cert = { version = "0.3.0-rc.4", default-features = false }
 # TPM 1.38
 ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 # TPM 1.85
-ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "fd4eb893a4fa0f68bd5cae3d5e7185161e21d85f", default-features = false }
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "517ae1a64aeb990019d809b963ac2c2726080e24", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }

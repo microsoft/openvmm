@@ -40,7 +40,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
-use cxl_spec::test::CxlTestDeviceHandle;
+use cxl::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -107,6 +107,7 @@ use serial_core::resources::NullSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io;
 #[cfg(unix)]
@@ -231,25 +232,21 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 }
 
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
-    if opt.igvm.is_some() {
-        match opt.igvm_personality {
-            None => BaseChipsetType::HclHost,
-            Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
-            Some(IgvmPersonalityCli::LinuxDirect)
-                if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
-            {
+    if let Some(igvm) = &opt.igvm {
+        match igvm.personality {
+            IgvmPersonalityCli::Openhcl => BaseChipsetType::HclHost,
+            IgvmPersonalityCli::Uefi => BaseChipsetType::HypervGen2Uefi,
+            IgvmPersonalityCli::LinuxDirect if opt.isolation.is_some() => {
                 BaseChipsetType::EnlightenedLinuxDirect
             }
-            Some(IgvmPersonalityCli::LinuxDirect) if opt.hv => {
-                BaseChipsetType::HyperVGen2LinuxDirect
-            }
-            Some(IgvmPersonalityCli::LinuxDirect) => BaseChipsetType::UnenlightenedLinuxDirect,
+            IgvmPersonalityCli::LinuxDirect if opt.hv => BaseChipsetType::HyperVGen2LinuxDirect,
+            IgvmPersonalityCli::LinuxDirect => BaseChipsetType::UnenlightenedLinuxDirect,
         }
     } else if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
         BaseChipsetType::EnlightenedLinuxDirect
     } else if opt.pcat {
         BaseChipsetType::HypervGen1
-    } else if opt.uefi {
+    } else if opt.uefi.is_some() {
         BaseChipsetType::HypervGen2Uefi
     } else if opt.hv {
         BaseChipsetType::HyperVGen2LinuxDirect
@@ -323,6 +320,9 @@ async fn vm_config_from_command_line(
     opt.validate_igvm_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
+    let uefi = opt.effective_uefi()?;
+    let default_uefi = cli_args::UefiCli::default();
+    let uefi_options = uefi.as_ref().unwrap_or(&default_uefi);
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -597,12 +597,16 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref serial,
         ref controller,
         nsid,
         lun,
         ref relay,
     } in &opt.disk
     {
+        if serial.is_some() {
+            anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
         if controller.is_none() && underhill.is_none() && relay.is_none() {
             tracing::warn!(
                 "--disk without `on` is deprecated; \
@@ -701,12 +705,16 @@ async fn vm_config_from_command_line(
         is_dvd,
         underhill,
         ref pcie_port,
+        ref serial,
         controller: _,
         nsid: _,
         lun: _,
         relay: _,
     } in &opt.nvme
     {
+        if serial.is_some() {
+            anyhow::bail!("`serial` is only supported by `--virtio-blk`");
+        }
         let target = if let Some(port) = pcie_port {
             storage_builder::DiskLocation::Named {
                 controller: port.clone(),
@@ -728,6 +736,7 @@ async fn vm_config_from_command_line(
         is_dvd,
         ref underhill,
         ref pcie_port,
+        ref serial,
         controller: _,
         nsid: _,
         lun: _,
@@ -742,7 +751,10 @@ async fn vm_config_from_command_line(
                 vtl,
                 None,
                 None,
-                storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+                storage_builder::DiskLocation::VirtioBlk {
+                    pcie_port: pcie_port.clone(),
+                    serial: serial.clone(),
+                },
                 kind,
                 is_dvd,
                 read_only,
@@ -948,11 +960,9 @@ async fn vm_config_from_command_line(
     );
 
     #[cfg(guest_arch = "x86_64")]
-    let mut amd_iommu_names: std::collections::HashSet<&str> =
-        opt.amd_iommu.iter().map(|s| s.as_str()).collect();
+    let mut amd_iommu_names: HashSet<&str> = opt.amd_iommu.iter().map(|s| s.as_str()).collect();
     #[cfg(guest_arch = "x86_64")]
-    let mut vtd_names: std::collections::HashSet<&str> =
-        opt.intel_vtd.iter().map(|s| s.as_str()).collect();
+    let mut vtd_names: HashSet<&str> = opt.intel_vtd.iter().map(|s| s.as_str()).collect();
 
     // Map each `--smmu` entry to its root complex, rejecting duplicate `rc=`
     // entries up front. Entries are removed as they are matched to a root
@@ -1282,10 +1292,13 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if (opt.uefi && opt.igvm.is_none() && !opt.pcat)
-        || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi))
+    if (uefi.is_some() && opt.igvm.is_none())
+        || opt
+            .igvm
+            .as_ref()
+            .is_some_and(|igvm| igvm.personality == IgvmPersonalityCli::Uefi)
     {
-        let log_level = match opt.efi_diagnostics_log_level.unwrap_or_default() {
+        let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
@@ -1330,19 +1343,44 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
+    let tpm_version = opt.tpm.map(|cli_ver| match cli_ver {
+        TpmVersionCli::V138 => TpmVersion::V138,
+        TpmVersionCli::V185 => TpmVersion::V185,
+    });
+
     if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
         with_hv = true;
-    } else if let Some(path) = &opt.igvm {
-        let file = fs_err::File::open(path)
+    } else if let Some(igvm) = &opt.igvm {
+        let cli_args::UefiCli {
+            firmware,
+            debug: _,
+            enable_memory_protections: _,
+            force_dma_bounce: _,
+            force_firmware_version,
+            disable_frontpage: _,
+            console: _,
+            diagnostics: _,
+            default_boot_always_attempt: _,
+        } = uefi_options;
+
+        anyhow::ensure!(
+            firmware.is_none(),
+            "--uefi firmware is not supported with --igvm"
+        );
+        anyhow::ensure!(
+            !force_firmware_version,
+            "--uefi force_firmware_version is not supported with --igvm"
+        );
+        let file = fs_err::File::open(&igvm.firmware)
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
-        with_hv = match opt.igvm_personality {
-            None | Some(IgvmPersonalityCli::Uefi) => true,
-            Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
+        with_hv = match igvm.personality {
+            IgvmPersonalityCli::Openhcl | IgvmPersonalityCli::Uefi => true,
+            IgvmPersonalityCli::LinuxDirect => opt.hv,
         };
 
         load_mode = LoadMode::Igvm {
@@ -1386,8 +1424,20 @@ async fn vm_config_from_command_line(
             hibernation_enabled: opt.hibernation,
             smbios,
         };
-    } else if opt.uefi {
+    } else if let Some(uefi_options) = &uefi {
         use openvmm_defs::config::UefiConsoleMode;
+
+        let cli_args::UefiCli {
+            firmware,
+            debug,
+            enable_memory_protections,
+            force_dma_bounce,
+            force_firmware_version,
+            disable_frontpage,
+            console,
+            diagnostics: _,
+            default_boot_always_attempt,
+        } = uefi_options;
 
         if opt.no_hv && cfg!(guest_arch = "x86_64") {
             anyhow::bail!("--no-hv is not supported on x86_64");
@@ -1395,9 +1445,11 @@ async fn vm_config_from_command_line(
 
         with_hv = !opt.no_hv;
 
+        let default_firmware = cli_args::default_uefi_firmware();
         let firmware = fs_err::File::open(
-            (opt.uefi_firmware.0)
+            firmware
                 .as_ref()
+                .or(default_firmware.as_ref())
                 .context("must provide uefi firmware when booting with uefi")?,
         )
         .context("failed to open uefi firmware")?;
@@ -1406,25 +1458,26 @@ async fn vm_config_from_command_line(
         //       appears to be a GRUB memory protection fault. Memory protections are therefore only enabled if configured.
         load_mode = LoadMode::Uefi {
             firmware: firmware.into(),
-            enable_debugging: opt.uefi_debug,
-            enable_memory_protections: opt.uefi_enable_memory_protections,
-            disable_frontpage: opt.disable_frontpage,
-            enable_tpm: opt.tpm.is_some(),
+            enable_debugging: *debug,
+            enable_memory_protections: *enable_memory_protections,
+            disable_frontpage: *disable_frontpage,
+            tpm_version,
             enable_battery: opt.battery,
             enable_serial: any_serial_configured,
             enable_vpci_boot: false,
-            uefi_console_mode: opt.uefi_console_mode.map(|m| match m {
+            uefi_console_mode: console.map(|m| match m {
                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
                 UefiConsoleModeCli::Com1 => UefiConsoleMode::Com1,
                 UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
-            default_boot_always_attempt: opt.default_boot_always_attempt,
+            default_boot_always_attempt: *default_boot_always_attempt,
             smbios,
             enable_vmbus: !opt.no_vmbus,
-            force_dma_bounce: opt.uefi_force_dma_bounce,
+            force_dma_bounce: *force_dma_bounce,
             enable_hv: !opt.no_hv,
             hibernation_enabled: opt.hibernation,
+            force_firmware_version: *force_firmware_version,
         };
     } else {
         // Linux Direct
@@ -1552,15 +1605,16 @@ async fn vm_config_from_command_line(
 
                         get_resources::ged::GuestFirmwareConfig::Uefi {
                             enable_vpci_boot: has_vtl0_nvme,
-                            firmware_debug: opt.uefi_debug,
-                            disable_frontpage: opt.disable_frontpage,
-                            console_mode: match opt.uefi_console_mode.unwrap_or(UefiConsoleModeCli::Default) {
+                            firmware_debug: uefi_options.debug,
+                            enable_memory_protections: uefi_options.enable_memory_protections,
+                            disable_frontpage: uefi_options.disable_frontpage,
+                            console_mode: match uefi_options.console.unwrap_or(UefiConsoleModeCli::Default) {
                                 UefiConsoleModeCli::Default => UefiConsoleMode::Default,
                                 UefiConsoleModeCli::Com1 => UefiConsoleMode::COM1,
                                 UefiConsoleModeCli::Com2 => UefiConsoleMode::COM2,
                                 UefiConsoleModeCli::None => UefiConsoleMode::None,
                             },
-                            default_boot_always_attempt: opt.default_boot_always_attempt,
+                            default_boot_always_attempt: uefi_options.default_boot_always_attempt,
                         }
                     },
                     com1: with_vmbus_com1_serial,
@@ -1573,11 +1627,12 @@ async fn vm_config_from_command_line(
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
                     guest_request_recv,
-                    tpm_version: opt.tpm.map(|v| match v {
-                        TpmVersionCli::V138 => get_resources::ged::GedTpmVersion::V138,
-                        TpmVersionCli::V185 => get_resources::ged::GedTpmVersion::V185,
+                    tpm_version: tpm_version.map(|v| match v {
+                        TpmVersion::V138 => get_resources::ged::GedTpmVersion::V138,
+                        TpmVersion::V185 => get_resources::ged::GedTpmVersion::V185,
                     }),
                     firmware_event_send: None,
+                    ipmi_sel_event_send: None,
                     secure_boot_enabled: opt.secure_boot,
                     secure_boot_template: match opt.secure_boot_template {
                         Some(SecureBootTemplateCli::Windows) => {
@@ -1591,18 +1646,19 @@ async fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    enable_ipmi: false,
                     enable_hibernation: opt.hibernation,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
                     efi_diagnostics_log_level: {
-                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                        match uefi_options.diagnostics.unwrap_or_default() {
                             EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
                             EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
-                    force_dma_bounce_enabled: opt.uefi_force_dma_bounce,
+                    force_dma_bounce_enabled: uefi_options.force_dma_bounce,
                     smbios: ged_smbios,
                 }
                 .into_resource(),
@@ -1610,7 +1666,7 @@ async fn vm_config_from_command_line(
         ]);
     }
 
-    if let Some(tpm_version) = opt.tpm
+    if let Some(tpm_version) = tpm_version
         && !opt.vtl2
     {
         let register_layout = if cfg!(guest_arch = "x86_64") {
@@ -1619,15 +1675,10 @@ async fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let tpm_version = match tpm_version {
-            TpmVersionCli::V138 => TpmVersion::V138,
-            TpmVersionCli::V185 => TpmVersion::V185,
-        };
-
         let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(tpm_version.to_nvram_vmgs_file_id(), true).into_resource(),
+                VmgsFileHandle::new(tpm_vmgs::tpm_nvram_file_id(tpm_version), true).into_resource(),
             )
         } else {
             (
@@ -1763,7 +1814,10 @@ async fn vm_config_from_command_line(
 
                 Some(openvmm_defs::config::IsolationType::Vbs)
             }
-            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp),
+            cli_args::IsolationCli::Snp => Some(openvmm_defs::config::IsolationType::Snp {
+                // SNP host data is currently only configurable via TTRPC.
+                host_data: None,
+            }),
         }
     } else {
         None
@@ -1796,32 +1850,35 @@ async fn vm_config_from_command_line(
     }
 
     let mut virtio_devices = Vec::new();
-    let mut add_virtio_device = |bus, resource: Resource<VirtioDeviceHandle>| {
-        let bus = match bus {
+    let mut add_virtio_device =
+        |bus, resource: Resource<VirtioDeviceHandle>, pcie_devices: &mut Vec<_>| match bus {
             VirtioBusCli::Auto => {
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if with_hv && (cfg!(windows) || cfg!(target_os = "macos")) {
-                    None
+                    vpci_devices.push(VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl0,
+                        instance_id: Guid::new_random(),
+                        resource: VirtioPciDeviceHandle(resource).into_resource(),
+                        vnode: None,
+                    });
                 } else {
-                    Some(VirtioBus::Pci)
+                    virtio_devices.push((VirtioBus::Pci, resource));
                 }
             }
-            VirtioBusCli::Mmio => Some(VirtioBus::Mmio),
-            VirtioBusCli::Pci => Some(VirtioBus::Pci),
-            VirtioBusCli::Vpci => None,
-        };
-        if let Some(bus) = bus {
-            virtio_devices.push((bus, resource));
-        } else {
-            vpci_devices.push(VpciDeviceConfig {
+            VirtioBusCli::Mmio => virtio_devices.push((VirtioBus::Mmio, resource)),
+            VirtioBusCli::Pci => virtio_devices.push((VirtioBus::Pci, resource)),
+            VirtioBusCli::Pcie(port_name) => pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            }),
+            VirtioBusCli::Vpci => vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
                 instance_id: Guid::new_random(),
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
                 vnode: None,
-            });
-        }
-    };
+            }),
+        };
 
     for cli_cfg in &opt.virtio_net {
         if cli_cfg.underhill {
@@ -1840,7 +1897,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1859,7 +1916,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_fs_bus, resource);
+            add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1877,7 +1934,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_fs_bus, resource);
+            add_virtio_device(opt.virtio_fs_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1894,7 +1951,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1909,7 +1966,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1922,7 +1979,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(opt.virtio_rng_bus, resource);
+            add_virtio_device(opt.virtio_rng_bus.clone(), resource, &mut pcie_devices);
         }
     }
 
@@ -1935,7 +1992,7 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
@@ -1988,25 +2045,23 @@ async fn vm_config_from_command_line(
                 resource: VirtioPciDeviceHandle(resource).into_resource(),
             });
         } else {
-            add_virtio_device(VirtioBusCli::Auto, resource);
+            add_virtio_device(VirtioBusCli::Auto, resource, &mut pcie_devices);
         }
     }
 
-    let virtio_vsock_bus = opt.virtio_vsock_bus.unwrap_or(VirtioBusCli::Auto);
+    let virtio_vsock_bus = opt.virtio_vsock_bus.clone().unwrap_or(VirtioBusCli::Auto);
 
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
-        add_virtio_device(
-            virtio_vsock_bus,
-            virtio_resources::vsock::VirtioVsockHandle {
-                // The guest CID does not matter since the UDS relay does not use it. It just needs
-                // to be some non-reserved value for the guest to use.
-                guest_cid: 0x3,
-                base_path: vsock_path.clone(),
-                listener,
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::vsock::VirtioVsockHandle {
+            // The guest CID does not matter since the UDS relay does not use it. It just needs
+            // to be some non-reserved value for the guest to use.
+            guest_cid: 0x3,
+            base_path: vsock_path.clone(),
+            listener,
+        }
+        .into_resource();
+        add_virtio_device(virtio_vsock_bus.clone(), resource, &mut pcie_devices);
     }
 
     #[cfg(target_os = "linux")]
@@ -2017,11 +2072,13 @@ async fn vm_config_from_command_line(
             .open("/dev/vhost-vsock")
             .context("failed to open /dev/vhost-vsock")?
             .into();
-        add_virtio_device(
-            virtio_vsock_bus,
-            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource(),
-        );
+        let resource =
+            virtio_resources::vsock::VirtioVsockVhostHandle { vhost, guest_cid }.into_resource();
+        add_virtio_device(virtio_vsock_bus, resource, &mut pcie_devices);
     }
+
+    #[cfg(target_os = "linux")]
+    pcie_devices.extend(vfio_pcie_devices);
 
     let mut cfg = Config {
         chipset,
@@ -2030,11 +2087,7 @@ async fn vm_config_from_command_line(
         pcie_root_complexes,
         pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,
         #[cfg(target_os = "linux")]
-        pcie_devices: {
-            let mut devs = pcie_devices;
-            devs.extend(vfio_pcie_devices);
-            devs
-        },
+        pcie_devices,
         #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
@@ -2168,13 +2221,24 @@ async fn vm_config_from_command_line(
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    let mut pcie_port_names = HashSet::new();
+    for device in &cfg.pcie_devices {
+        anyhow::ensure!(
+            pcie_port_names.insert(&device.port_name),
+            "multiple devices use PCIe port '{}'",
+            device.port_name
+        );
+    }
     resources.serial_driver = Some(serial_driver);
     validate_snp_config(&cfg)?;
     Ok((cfg, resources))
 }
 
 fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
-    if cfg.hypervisor.with_isolation != Some(openvmm_defs::config::IsolationType::Snp) {
+    if !matches!(
+        cfg.hypervisor.with_isolation,
+        Some(openvmm_defs::config::IsolationType::Snp { .. })
+    ) {
         return Ok(());
     }
 
@@ -2183,9 +2247,6 @@ fn validate_snp_config(cfg: &Config) -> anyhow::Result<()> {
         LoadMode::Linux { .. } | LoadMode::Igvm { .. }
     ) {
         anyhow::bail!("SNP isolation currently only supports Linux direct or IGVM boot");
-    }
-    if cfg.hypervisor.with_hv {
-        anyhow::bail!("SNP isolation currently does not support Hyper-V enlightenments");
     }
     if cfg.hypervisor.with_vtl2.is_some() {
         anyhow::bail!("SNP isolation currently does not support VTL2");
@@ -2667,6 +2728,11 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     meshworker::run_vmm_mesh_host()?;
 
     let opt = cli_args::parse_options();
+
+    // Print the version number. This comes after argument parsing to not interfere
+    // with --version and --help.
+    tracing::info!(version = openvmm_build_info::get().version());
+
     if let Some(path) = &opt.write_saved_state_proto {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
@@ -2959,7 +3025,7 @@ async fn run_control_inner(
         ged_rpc: resources.ged_rpc.clone(),
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
-        igvm_path: opt.igvm.clone(),
+        igvm_path: opt.igvm.as_ref().map(|igvm| igvm.firmware.clone()),
         memory_backing_file: opt.memory_backing_file().cloned(),
         memory: opt.memory_size(),
         processors: opt.processors,
@@ -3120,28 +3186,21 @@ impl InspectMut for DiagInspector {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::fs::File;
     use test_with_tracing::test;
 
     #[test]
     fn maps_igvm_personalities_to_chipsets() {
         for (args, expected) in [
             (
-                vec![
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "uefi",
-                ],
+                vec!["openvmm", "--igvm", "firmware=guest.igvm,personality=uefi"],
                 BaseChipsetType::HypervGen2Uefi,
             ),
             (
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                 ],
                 BaseChipsetType::UnenlightenedLinuxDirect,
             ),
@@ -3149,9 +3208,7 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--hv",
                 ],
                 BaseChipsetType::HyperVGen2LinuxDirect,
@@ -3160,24 +3217,291 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--isolation",
                     "snp",
                 ],
                 BaseChipsetType::EnlightenedLinuxDirect,
             ),
             (
-                vec!["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"],
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "firmware=guest.igvm,personality=openhcl",
+                    "--hv",
+                    "--vtl2",
+                ],
                 BaseChipsetType::HclHost,
             ),
         ] {
             let opt = Options::try_parse_from(args).unwrap();
+            opt.validate_igvm_options().unwrap();
             assert!(
                 std::mem::discriminant(&base_chipset_type(&opt))
                     == std::mem::discriminant(&expected)
             );
         }
+    }
+
+    #[test]
+    fn builds_openhcl_igvm_config_without_host_uefi() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let igvm_path = temp_dir.path().join("guest.igvm");
+            File::create(&igvm_path).unwrap();
+            let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            for (extra, expected_alias, expected_policy) in [
+                (vec![], true, Some(LateMapVtl0MemoryPolicy::Halt)),
+                (
+                    vec!["--uefi", "console=com1,disable_frontpage"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--net", "uh:consomme", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--isolation", "vbs", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--no-alias-map", "--late-map-vtl0-policy", "exception"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::InjectException),
+                ),
+                (
+                    vec!["--late-map-vtl0-policy", "log"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Log),
+                ),
+                (
+                    vec!["--igvm-vtl2-relocation-type", "vtl2=filesize"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec![
+                        "--igvm-vtl2-relocation-type",
+                        "vtl2=filesize",
+                        "--late-map-vtl0-policy",
+                        "off",
+                    ],
+                    true,
+                    None,
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    &igvm_options,
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let (config, resources) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .unwrap();
+
+                assert!(matches!(config.load_mode, LoadMode::Igvm { .. }));
+                assert!(config.hypervisor.with_hv);
+                let vtl2 = config.hypervisor.with_vtl2.as_ref().unwrap();
+                assert_eq!(vtl2.vtl0_alias_map, expected_alias);
+                assert_eq!(vtl2.late_map_vtl0_memory, expected_policy);
+                assert!(config.vmbus.is_some());
+                assert!(config.vtl2_vmbus.is_some());
+                assert!(resources.ged_rpc.is_some());
+                for id in ["ged", "gel"] {
+                    assert!(
+                        config.vmbus_devices.iter().any(|(vtl, resource)| {
+                            *vtl == DeviceVtl::Vtl2 && resource.id() == id
+                        })
+                    );
+                }
+                assert!(
+                    config
+                        .chipset_devices
+                        .iter()
+                        .all(|device| { device.resource.id() != "hyperv_firmware_uefi" })
+                );
+            }
+            for (extra, expected_error) in [
+                (
+                    ["--net", "uh:consomme"],
+                    "must specify --no-alias-map to offer NICs to VTL2",
+                ),
+                (
+                    ["--isolation", "vbs"],
+                    "alias map not supported with isolation",
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    &igvm_options,
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let err = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(err.to_string(), expected_error);
+            }
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn maps_virtio_vsock_to_named_pcie_port() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let socket_path = temp_dir.path().join("vsock");
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-vsock-path",
+                socket_path.to_str().unwrap(),
+                "--virtio-vsock-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .unwrap();
+
+            assert_eq!(config.pcie_devices.len(), 1);
+            assert_eq!(config.pcie_devices[0].port_name, "custom");
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn maps_virtio_fs_and_rng_to_named_pcie_ports() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let root_path = temp_dir.path().to_str().unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-fs",
+                &format!("fs,{root_path}"),
+                "--virtio-fs-bus",
+                "pcie:fs",
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:rng",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .unwrap();
+
+            let port_names: Vec<_> = config
+                .pcie_devices
+                .iter()
+                .map(|device| device.port_name.as_str())
+                .collect();
+            assert_eq!(port_names, ["fs", "rng"]);
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn rejects_duplicate_pcie_port_assignments() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let root_path = temp_dir.path().to_str().unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--virtio-fs",
+                &format!("pcie_port=custom:fs,{root_path}"),
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let error = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
+            mesh.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn rejects_duplicate_pcie_port_assignment_from_storage() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let kernel_path = temp_dir.path().join("kernel");
+            File::create(&kernel_path).unwrap();
+            let initrd_path = temp_dir.path().join("initrd");
+            File::create(&initrd_path).unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--kernel",
+                kernel_path.to_str().unwrap(),
+                "--initrd",
+                initrd_path.to_str().unwrap(),
+                "--nvme-pci",
+                "id=nvme0,pcie_port=custom",
+                "--virtio-rng",
+                "--virtio-rng-bus",
+                "pcie:custom",
+                "--single-process",
+            ])
+            .unwrap();
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            let error = vm_config_from_command_line(driver, &mesh, &opt)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
+            mesh.shutdown().await;
+        });
     }
 }

@@ -29,7 +29,6 @@ pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
     use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
-    use get_protocol::dps_json::GetTpmVersion;
     use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
     use get_protocol::dps_json::HardwareSealingPolicy;
@@ -90,6 +89,7 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+        pub ipmi_enabled: bool,
 
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,
@@ -142,8 +142,6 @@ pub mod platform_settings {
         pub force_dma_bounce_enabled: bool,
         #[inspect(debug)]
         pub hardware_sealing_policy: HardwareSealingPolicy,
-        #[inspect(debug)]
-        pub tpm_version: Option<GetTpmVersion>,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

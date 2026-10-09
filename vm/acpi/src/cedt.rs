@@ -3,14 +3,15 @@
 
 //! CXL Early Discovery Table (CEDT) builder.
 
+use alloc::vec::Vec;
 use core::mem::size_of;
-use cxl_spec::spec::CEDT_STRUCTURE_TYPE_CFMWS;
-use cxl_spec::spec::CEDT_STRUCTURE_TYPE_CHBS;
-use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
-use cxl_spec::spec::CXL_HPA_ALIGNMENT;
-use cxl_spec::spec::InterleaveArithmetic;
-use cxl_spec::spec::InterleaveGranularity;
-use cxl_spec::spec::InterleaveWays;
+use cxl_spec::CEDT_STRUCTURE_TYPE_CFMWS;
+use cxl_spec::CEDT_STRUCTURE_TYPE_CHBS;
+use cxl_spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_HPA_ALIGNMENT;
+use cxl_spec::InterleaveArithmetic;
+use cxl_spec::InterleaveGranularity;
+use cxl_spec::InterleaveWays;
 use memory_range::MemoryRange;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -248,7 +249,7 @@ mod tests {
             7,
             MemoryRange::new(0x4000_0000..0x8000_0000),
             MemoryRange::new(0x1000_0000..0x1001_0000),
-            cxl_spec::spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
+            cxl_spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
         )
         .expect("valid CXL host bridge ranges");
         let bytes = cedt.to_bytes().expect("serialize CEDT");
@@ -287,7 +288,7 @@ mod tests {
                 MemoryRange::new(0x4000_0000..0x5000_0000),
                 // 4K-aligned but not 64K-aligned.
                 MemoryRange::new(0x1000_1000..0x1001_1000),
-                cxl_spec::spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
+                cxl_spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
             )
             .expect_err("unaligned CHBCR base should be rejected");
 
@@ -309,7 +310,7 @@ mod tests {
                 // 4K-aligned but not 256MiB-aligned.
                 MemoryRange::new(0x4000_1000..0x5000_1000),
                 MemoryRange::new(0x1000_0000..0x1001_0000),
-                cxl_spec::spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
+                cxl_spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
             )
             .expect_err("unaligned HDM base should be rejected");
 
@@ -331,7 +332,7 @@ mod tests {
                 // Base is 256MiB-aligned, but size is not.
                 MemoryRange::new(0x4000_0000..0x5000_1000),
                 MemoryRange::new(0x1000_0000..0x1001_0000),
-                cxl_spec::spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
+                cxl_spec::CfmwsWindowRestrictions::DEVICE_COHERENT.bits(),
             )
             .expect_err("unaligned HDM size should be rejected");
 

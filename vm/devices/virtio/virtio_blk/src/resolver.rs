@@ -43,6 +43,34 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioBlkHandle> for VirtioBlkReso
             )
             .await?;
 
-        Ok(VirtioBlkDevice::new(input.driver_source, disk.0, resource.read_only).into())
+        let device = VirtioBlkDevice::new(
+            input.driver_source,
+            disk.0,
+            resource.read_only,
+            resource.serial,
+        )?;
+        Ok(device.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse_serial;
+    use test_with_tracing::test;
+
+    #[test]
+    fn serial_is_nul_padded() {
+        assert_eq!(
+            parse_serial("DATA-DISK".into()).unwrap(),
+            *b"DATA-DISK\0\0\0\0\0\0\0\0\0\0\0"
+        );
+        assert!(parse_serial("\u{1f},[]".into()).is_ok());
+    }
+
+    #[test]
+    fn invalid_serial_is_rejected() {
+        assert!(parse_serial(String::new()).is_err());
+        assert!(parse_serial("123456789012345678901".into()).is_err());
+        assert!(parse_serial("non-ascii-\u{e9}".into()).is_err());
     }
 }

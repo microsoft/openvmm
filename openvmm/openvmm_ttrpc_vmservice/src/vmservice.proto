@@ -73,6 +73,40 @@ message DirectBoot {
     string kernel_cmdline = 3;
 }
 
+// Boot from an IGVM file.
+message IgvmBoot {
+    enum Personality {
+        // A personality must be specified.
+        PERSONALITY_UNSPECIFIED = 0;
+        // Linux direct boot with Hyper-V enlightenments.
+        PERSONALITY_LINUX_DIRECT = 1;
+        // Reserved for UEFI IGVM boot.
+        PERSONALITY_UEFI = 2;
+    }
+
+    // Path to the IGVM file on the host.
+    string igvm_path = 1;
+    // Guest boot environment.
+    Personality personality = 2;
+}
+
+// AMD SEV-SNP isolation configuration.
+message SnpIsolationConfig {
+    // Optional 32-byte host data bound to the SNP guest.
+    bytes host_data = 1;
+}
+
+// Confidential-computing isolation configuration.
+message IsolationConfig {
+    // An isolation type must be specified when this configuration is supplied.
+    oneof isolation_type {
+        // No confidential-computing isolation.
+        google.protobuf.Empty none = 1;
+        // AMD SEV-SNP isolation.
+        SnpIsolationConfig snp = 2;
+    }
+}
+
 message UEFI {
     // Variables used to initialize an empty UEFI variable store. These are
     // ignored when the store already contains any variables.
@@ -264,6 +298,8 @@ message VirtioBlk {
     DiskBackend backend = 1;
     // Expose the disk read-only to the guest.
     bool read_only = 2;
+    // Serial returned by VIRTIO_BLK_T_GET_ID.
+    optional string serial = 3;
 }
 
 // virtio-net network device configuration. An absent backend means "none"
@@ -374,6 +410,21 @@ message VfioDevice {
     // BARs whose initial addresses are pinned. Omitted BARs are assigned by
     // the guest normally.
     repeated VfioBarAddress bar_addresses = 2;
+    // Use VFIO cdev + iommufd with the named VMConfig.iommufds context.
+    // Absent => legacy VFIO group/container assignment. A present value must
+    // be non-empty and reference a declared context; invalid references or
+    // unavailable iommufd support are errors, not a fallback to legacy VFIO.
+    // Applies to both boot-time attachment and AddPcieDevice.
+    optional string iommufd_id = 3;
+}
+
+// A host iommufd context for Linux VFIO cdev assignment. This does not
+// configure a guest-visible IOMMU. The server opens /dev/iommu; no client
+// file descriptor or kernel object ID is passed over the protocol.
+message IommufdConfig {
+    // Non-empty identifier, unique within VMConfig.iommufds. Devices using
+    // the same ID share an iommufd context and its DMA address space.
+    string id = 1;
 }
 
 // Initial address configuration for one VFIO device BAR.
@@ -498,6 +549,32 @@ message PcieRootComplex {
     optional uint32 node = 10;
     // Root ports on this complex.
     repeated PciePort root_ports = 11;
+    // Guest-visible IOMMU covering this root complex. Absent => none.
+    PcieIommuConfig iommu = 12;
+}
+
+// Guest-visible IOMMU selection for a PCIe root complex.
+message PcieIommuConfig {
+    oneof kind {
+        // Arm SMMUv3. Only supported for aarch64 guests.
+        SmmuConfig smmu = 1;
+    }
+}
+
+// Arm SMMUv3 configuration, fixed at VM creation.
+message SmmuConfig {
+    // Enable hardware-accelerated nested translation via Linux iommufd.
+    // Requires ACPI and a nesting-capable host SMMUv3. VFIO devices behind
+    // this SMMU must reference a single shared context via iommufd_id.
+    // False => software emulation; VFIO assignment behind the SMMU is then
+    // unsupported. Unsupported acceleration is an error, not a fallback.
+    bool accel = 1;
+    // Fixed output address size in bits.
+    // Absent => CLI oas=auto: initially 48 bits; with acceleration, device
+    // attachment before VM start adopts the physical SMMU's OAS. VM start
+    // freezes the advertised value; later hot-add must be compatible.
+    // A fixed value cannot exceed the physical SMMU's OAS with acceleration.
+    optional uint32 oas_bits = 2;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at
@@ -515,6 +592,9 @@ message PciePort {
     optional uint32 devfn = 4;
     // ACS capability bits exposed by this port. Absent => default capabilities.
     optional uint32 acs_capabilities_supported = 5;
+    // Advertise End-to-End TLP Prefix support for downstream PASID use.
+    // Defaults to false. All downstream ports of a switch must agree.
+    bool pasid = 6;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
@@ -566,6 +646,7 @@ message VMConfig {
     oneof BootConfig {
         DirectBoot direct_boot = 5;
         UEFI uefi = 6;
+        IgvmBoot igvm = 18;
     }
     WindowsOptions windows_options = 7;
     // Field 8 was previously map<string, string> extra_data.
@@ -584,8 +665,22 @@ message VMConfig {
 
     // SMBIOS (DMI) identity overrides. Applied to whichever boot type is
     // selected; note that PCAT boot honors only the system UUID and serial
-    // number.
+    // number. IGVM boot does not support these overrides.
     SMBIOSConfig smbios_config = 13;
+
+    optional string crash_dump_path = 14;
+    // Host iommufd contexts to create with the VM. Linux only; a non-empty
+    // list on other hosts is an error. Contexts remain available until VM
+    // teardown, including when unused or after their last device is removed,
+    // so AddPcieDevice can reference them. No runtime context add/remove.
+    repeated IommufdConfig iommufds = 15;
+    // Run without VMBus. Incompatible with VMBus devices and HVSocket.
+    bool disable_vmbus = 16;
+    // Do not expose Hyper-V (HV#1) enlightenments. Requires disable_vmbus.
+    // Unsupported for x86_64 UEFI boot.
+    bool disable_hv = 17;
+    // Confidential-computing isolation mode.
+    IsolationConfig isolation_config = 19;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
@@ -794,6 +889,7 @@ message PortConfig {
     uint32 guest_port = 2;
     // The protocol to forward.
     IpProtocol protocol = 3;
+    string host_address = 4;
 }
 
 message ConsommeBackend {
@@ -813,6 +909,7 @@ message WindowsPCIDevice {
 message VirtioFs {
     string tag = 1;
     string root_path = 2;
+    bool read_only = 3;
 }
 
 message VirtioConsoleConfig {

@@ -133,6 +133,7 @@ use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use tpm_resources::TpmVersion;
+use tpm_vmgs::tpm_nvram_file_id;
 use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
@@ -374,6 +375,28 @@ pub struct NicConfig {
     pub instance_id: Guid,
     pub subordinate_instance_id: Option<Guid>,
     pub max_sub_channels: Option<u16>,
+}
+
+fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
+    // Some guest behaviors require the NIC interfaces to be enumerated in a
+    // particular order. VMBus channel offers are by default sorted using the
+    // instance id. `offer_order` will override the default sorting.
+    // Incorporate the vport index and MAC address for ease of search.
+    Guid {
+        data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1`
+        data2: vport_index as u16,
+        data3: 1 << 12, // type 1 GUID
+        data4: [
+            0x20,
+            0,
+            mac_address[0],
+            mac_address[1],
+            mac_address[2],
+            mac_address[3],
+            mac_address[4],
+            mac_address[5],
+        ], // variant 2
+    }
 }
 
 impl Worker for UnderhillVmWorker {
@@ -904,19 +927,9 @@ impl UhVmNetworkSettings {
             },
         ) in endpoints.into_iter().enumerate()
         {
-            let vmbus_instance_id = {
-                let m = mac_address.to_bytes();
-                // Some guest behaviors requires the nic interfaces to be enumerated in a
-                // particular order. vmbus channel offers are by default sorted using the
-                // instance id. Leverage that to sort the network offers based on the
-                // vport index.
-                Guid {
-                    data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1` for ease of search.
-                    data2: i as u16,
-                    data3: 1 << 12, // type 1 GUID
-                    data4: [0x20, 0, m[0], m[1], m[2], m[3], m[4], m[5]], // variant 2
-                }
-            };
+            let vmbus_instance_id = netvsp_vmbus_instance_id(i, mac_address.to_bytes());
+            // `adapter_index` is unique across all MANA endpoints and assigned in order.
+            let offer_order = adapter_index.into();
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
@@ -924,6 +937,7 @@ impl UhVmNetworkSettings {
             };
 
             let mut nic_builder = netvsp::Nic::builder()
+                .offer_order(offer_order)
                 .limit_ring_buffer(true)
                 .get_guest_os_id(Box::new(get_guest_os_id))
                 .max_queues(nic_max_sub_channels);
@@ -1465,7 +1479,7 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs, tpm_version: TpmVersion) -> 
             TpmVersion::V185 => tpm_protocol::TPM_V185_VERSION,
         }
         .to_string(),
-        tpm_nvram_size: tpm_device::default_vtpm_size(tpm_version),
+        tpm_nvram_size: tpm_resources::default_vtpm_size(tpm_version),
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",
@@ -1878,15 +1892,19 @@ async fn new_underhill_vm(
         }
     };
 
-    let tpm_hint_version = match dps.general.tpm_version {
-        Some(get_protocol::dps_json::GetTpmVersion::V138) => TpmVersion::V138,
-        Some(get_protocol::dps_json::GetTpmVersion::V185) => TpmVersion::V185,
-        None => TpmVersion::V138,
+    let tpm_hint_version = match (
+        dps.general.management_vtl_features.use_tpm_138_by_default(),
+        dps.general.management_vtl_features.use_tpm_185_by_default(),
+    ) {
+        (true, false) => TpmVersion::V138,
+        (false, true) => TpmVersion::V185,
+        (false, false) => TpmVersion::V138,
+        (true, true) => TpmVersion::V185,
     };
     let tpm_version = if let Some((_, ref vmgs)) = vmgs {
-        if vmgs.check_file_allocated(TpmVersion::V185.to_nvram_vmgs_file_id()) {
+        if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V185)) {
             TpmVersion::V185
-        } else if vmgs.check_file_allocated(TpmVersion::V138.to_nvram_vmgs_file_id()) {
+        } else if vmgs.check_file_allocated(tpm_nvram_file_id(TpmVersion::V138)) {
             TpmVersion::V138
         } else {
             tpm_hint_version
@@ -1895,7 +1913,7 @@ async fn new_underhill_vm(
         tpm_hint_version
     };
 
-    let tpm_nvram_id = tpm_version.to_nvram_vmgs_file_id();
+    let tpm_nvram_id = tpm_nvram_file_id(tpm_version);
     let tpm_size = vmgs
         .as_ref()
         .and_then(|(_, vmgs)| vmgs.get_file_info(tpm_nvram_id).ok())
@@ -2065,6 +2083,36 @@ async fn new_underhill_vm(
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
     }
 
+    // Validate UEFI-only settings before deriving runtime claims and hardware keys.
+    let (firmware_type, mut measured_vtl0_info, load_kind) = {
+        if let Some(firmware_type) = servicing_state.firmware_type {
+            (firmware_type.into(), None, LoadKind::None)
+        } else {
+            let config = MeasuredVtl0Info::read_from_memory(gm.vtl0())
+                .context("failed to read measured vtl0 info")?;
+            let load_kind = if let Some(kind) = env_cfg.force_load_vtl0_image {
+                tracing::info!(CVM_ALLOWED, kind, "overriding dps load type");
+                match kind.as_str() {
+                    "pcat" => LoadKind::Pcat,
+                    "uefi" => LoadKind::Uefi,
+                    "linux" => LoadKind::Linux,
+                    _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
+                }
+            } else if dps.general.firmware_mode_is_pcat {
+                LoadKind::Pcat
+            } else {
+                LoadKind::Uefi
+            };
+
+            let firmware_type: FirmwareType = load_kind.into();
+            (firmware_type, Some(config), load_kind)
+        }
+    };
+
+    if dps.general.ipmi_enabled && !matches!(firmware_type, FirmwareType::Uefi) {
+        anyhow::bail!("IPMI KCS is only supported with UEFI firmware");
+    }
+
     // Get VMGS provenance claims. If the provenance doc can't be read or if it
     // isn't valid, proceed as if it doesn't exist. In that case, OpenHCL will
     // not produce attestation claims for provenance. It's up to the VM owner's
@@ -2147,6 +2195,7 @@ async fn new_underhill_vm(
         root_cert_thumbprint: String::new(),
         console_enabled,
         interactive_console_enabled: interactive_console,
+        ipmi_enabled: dps.general.ipmi_enabled,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_version: match tpm_version {
@@ -2248,6 +2297,9 @@ async fn new_underhill_vm(
     let mut resolver = ResourceResolver::new();
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
+    resolver.add_resolver(
+        guest_emulation_transport::resolver::IpmiSelEventSinkResolver(get_client.clone()),
+    );
 
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
@@ -2270,34 +2322,6 @@ async fn new_underhill_vm(
             },
         ),
     );
-
-    // Read measured config from VTL0 memory. When restoring, it is already gone.
-    let (firmware_type, mut measured_vtl0_info, load_kind) = {
-        if let Some(firmware_type) = servicing_state.firmware_type {
-            (firmware_type.into(), None, LoadKind::None)
-        } else {
-            let config = MeasuredVtl0Info::read_from_memory(gm.vtl0())
-                .context("failed to read measured vtl0 info")?;
-            let load_kind = if let Some(kind) = env_cfg.force_load_vtl0_image {
-                tracing::info!(CVM_ALLOWED, kind, "overriding dps load type");
-                match kind.as_str() {
-                    "pcat" => LoadKind::Pcat,
-                    "uefi" => LoadKind::Uefi,
-                    "linux" => LoadKind::Linux,
-                    _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
-                }
-            } else {
-                if dps.general.firmware_mode_is_pcat {
-                    LoadKind::Pcat
-                } else {
-                    LoadKind::Uefi
-                }
-            };
-
-            let firmware_type: FirmwareType = load_kind.into();
-            (firmware_type, Some(config), load_kind)
-        }
-    };
 
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
@@ -2544,6 +2568,10 @@ async fn new_underhill_vm(
 
     if !isolation.is_hardware_isolated() {
         chipset = chipset.with_platform_pm_timer_assist();
+    }
+
+    if dps.general.ipmi_enabled {
+        chipset = chipset.with_ipmi_kcs();
     }
 
     if with_serial {
@@ -3376,6 +3404,12 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                // Determine if we're doing a mock TDISP flow.
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
                 use vpci_relay::*;
 
                 let mut relay = VpciRelay::new(
@@ -3404,13 +3438,11 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    isolation,
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 
@@ -3913,6 +3945,7 @@ async fn new_underhill_vm(
             &runtime_params,
             load_kind,
             &dps,
+            dps.general.tpm_enabled && tpm_version >= TpmVersion::V185,
             isolation.is_isolated(),
             &chipset_mmio,
         )
@@ -3990,6 +4023,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         // Attested to
         secure_boot_enabled,
         tpm_enabled: _,
+        ipmi_enabled: _,
         com1_enabled: _,
         com1_vmbus_redirector: _,
         com2_enabled: _,
@@ -3998,7 +4032,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         bios_guid: _,
         vpci_boot_enabled: _,
         hardware_sealing_policy: _,
-        tpm_version: _,
 
         // Validated below
         processor_idle_enabled,
@@ -4324,6 +4357,7 @@ async fn load_firmware(
     runtime_params: &RuntimeParameters,
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
+    disable_sha1_pcr: bool,
     isolated: bool,
     chipset_mmio: &ChipsetMmioRanges,
 ) -> Result<(), anyhow::Error> {
@@ -4331,7 +4365,10 @@ async fn load_firmware(
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config { cmdline_append };
+    let loader_config = crate::loader::Config {
+        cmdline_append,
+        disable_sha1_pcr,
+    };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,

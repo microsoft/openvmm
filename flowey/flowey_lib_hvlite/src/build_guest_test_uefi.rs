@@ -6,15 +6,15 @@
 use crate::common::CommonArch;
 use crate::common::CommonProfile;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct GuestTestUefiOutput {
     #[serde(rename = "guest_test_uefi.efi")]
-    pub efi: PathBuf,
+    pub efi: Option<PathBuf>,
     #[serde(rename = "guest_test_uefi.pdb")]
-    pub pdb: PathBuf,
+    pub pdb: Option<PathBuf>,
     #[serde(rename = "guest_test_uefi.img")]
     pub img: PathBuf,
 }
@@ -40,19 +40,11 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut tasks: BTreeMap<_, Vec<_>> = BTreeMap::new();
-
-        for Request {
-            arch,
-            profile,
-            guest_test_uefi,
-        } in requests
-        {
-            tasks
-                .entry((arch, profile))
-                .or_default()
-                .push(guest_test_uefi);
-        }
+        let tasks = group_by(
+            requests
+                .into_iter()
+                .map(|r| ((r.arch, r.profile), r.guest_test_uefi)),
+        );
 
         for ((arch, profile), outvars) in tasks {
             let output = ctx.reqv(|v| {
@@ -106,14 +98,12 @@ impl FlowNode for Node {
                     .run()?;
 
                     let output = GuestTestUefiOutput {
-                        efi,
-                        pdb,
+                        efi: Some(efi),
+                        pdb: Some(pdb),
                         img: img_path.absolute()?,
                     };
 
-                    for var in outvars {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(outvars, &output);
 
                     Ok(())
                 }

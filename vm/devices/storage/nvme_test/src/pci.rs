@@ -14,6 +14,9 @@ use crate::NvmeFaultControllerClient;
 use crate::PAGE_MASK;
 use crate::VENDOR_ID;
 use crate::spec;
+use crate::tdisp::BAR0_RANGE_ID;
+use crate::tdisp::TdispMmioRanges;
+use crate::tdisp::new_tdisp_interface;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
 use chipset_device::ChipsetDevice;
@@ -71,6 +74,10 @@ pub struct NvmeFaultController {
     /// The NVMe fault controller is repurposed for use in TDISP tests.
     #[inspect(skip)]
     tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
+    /// The MMIO ranges TDISP currently allows the guest to reach. Empty, and so
+    /// blocking every range, on a controller that is not a TDISP device.
+    #[inspect(skip)]
+    tdisp_mmio_ranges: TdispMmioRanges,
 }
 
 #[derive(Inspect)]
@@ -127,9 +134,22 @@ impl NvmeFaultController {
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,
-        tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
+        enable_tdisp: bool,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
+
+        // The fault controller is repurposed as an emulated TDISP device. Its
+        // own TDISP interface reports the BARs below and records which of them
+        // the guest has been allowed to reach.
+        let (tdisp_interface, tdisp_mmio_ranges) = if enable_tdisp {
+            let (emulator, ranges) = new_tdisp_interface("fault-controller-test", msix.bar_len());
+            (
+                Some(Box::new(emulator) as Box<dyn TdispHostDeviceTarget>),
+                ranges,
+            )
+        } else {
+            (None, TdispMmioRanges::default())
+        };
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,
@@ -199,6 +219,7 @@ impl NvmeFaultController {
             pci_fault_config,
             fault_active,
             tdisp_interface,
+            tdisp_mmio_ranges,
         }
     }
 
@@ -492,6 +513,7 @@ impl ChangeDeviceState for NvmeFaultController {
             pci_fault_config: _,
             fault_active: _,
             tdisp_interface: _,
+            tdisp_mmio_ranges: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -510,7 +532,7 @@ impl ChipsetDevice for NvmeFaultController {
     }
 
     /// The NVMe fault controller is repurposed for use in TDISP tests.
-    fn supports_tdisp(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
         tracing::debug!(
             supported = self.tdisp_interface.is_some(),
             "fault controller TDISP support in ChipsetDevice"
@@ -523,9 +545,31 @@ impl ChipsetDevice for NvmeFaultController {
     }
 }
 
+impl NvmeFaultController {
+    /// Whether the guest may reach the register BAR right now.
+    ///
+    /// On a TDISP device the register BAR holds TEE memory, so it stays dark
+    /// until the guest has attested the TDI and accepted the range. A
+    /// controller that is not acting as a TDISP device has no such restriction.
+    fn bar0_reachable(&self) -> bool {
+        self.tdisp_interface.is_none() || self.tdisp_mmio_ranges.is_unblocked(BAR0_RANGE_ID)
+    }
+}
+
 impl MmioIntercept for NvmeFaultController {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         match self.cfg_space.find_bar(addr) {
+            Some((0, _)) if !self.bar0_reachable() => {
+                // Read as an undecoded window rather than an error, so the
+                // caller sees the same all-ones a real device gives when
+                // nothing answers.
+                tracelimit::warn_ratelimited!(
+                    addr,
+                    "read of a TDISP register BAR whose range is blocked"
+                );
+                data.fill(!0);
+                IoResult::Ok
+            }
             Some((0, offset)) => self.read_bar0(offset, data),
             Some((4, offset)) => {
                 read_as_u32_chunks(offset, data, |offset| self.msix.read_u32(offset));
@@ -537,6 +581,13 @@ impl MmioIntercept for NvmeFaultController {
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         match self.cfg_space.find_bar(addr) {
+            Some((0, _)) if !self.bar0_reachable() => {
+                tracelimit::warn_ratelimited!(
+                    addr,
+                    "write to a TDISP register BAR whose range is blocked"
+                );
+                IoResult::Ok
+            }
             Some((0, offset)) => self.write_bar0(offset, data),
             Some((4, offset)) => {
                 write_as_u32_chunks(offset, data, |offset, ty| match ty {

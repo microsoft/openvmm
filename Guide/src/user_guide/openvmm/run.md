@@ -46,10 +46,10 @@ When running the `openvmm` binary directly, these environment variables are
 
 > fatal error: must provide uefi firmware when booting with uefi
 
-To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
+To fix this, **explicitly pass the firmware** using the `firmware` option:
 
 ```shell
-openvmm --uefi --uefi-firmware path/to/MSVM.fd \
+openvmm --uefi firmware=path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:path/to/disk.vhdx,on=scsi0
 ```
@@ -180,7 +180,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
 .\openvmm.exe `
     --hv `
     --vtl2 `
-    --igvm openhcl-x64-test-linux-direct.bin `
+    --igvm "firmware=openhcl-x64-test-linux-direct.bin,personality=openhcl" `
     -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `

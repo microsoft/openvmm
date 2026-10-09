@@ -69,6 +69,8 @@ pub enum VmmType {
     OpenVmm,
     /// Microsoft Hyper-V.
     HyperV,
+    /// QEMU.
+    Qemu,
 }
 
 /// Hypervisor backends that OpenVMM can use.

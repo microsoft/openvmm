@@ -16,6 +16,7 @@ ttrpc = []
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
 crypto.workspace = true
+cxl.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
@@ -48,6 +49,7 @@ serial_16550_resources.workspace = true
 serial_socket.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
+tpm_vmgs.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
@@ -64,7 +66,7 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 inspect_proto.workspace = true
 mesh.workspace = true

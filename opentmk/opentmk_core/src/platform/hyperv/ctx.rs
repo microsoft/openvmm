@@ -4,7 +4,7 @@
 //! Hyper-V test context implementation.
 
 // vp_set is only used in x86_64 for now, since aarch support is not complete
-#![cfg_attr(target_arch = "aarch64", expect(dead_code))] // xtask-fmt allow-target-arch sys-crate
+#![cfg_attr(target_arch = "aarch64", expect(dead_code))]
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
@@ -79,7 +79,7 @@ pub(crate) fn vtl_transform(vtl: Vtl) -> HvInputVtl {
         .with_use_target_vtl(true)
 }
 
-#[cfg_attr(target_arch = "aarch64", expect(dead_code))] // xtask-fmt allow-target-arch sys-crate
+#[cfg_attr(target_arch = "aarch64", expect(dead_code))]
 impl HvTestCtx {
     /// Construct an *un-initialised* test context.
     /// Call [`HvTestCtx::init`] before using the value.

@@ -4,11 +4,11 @@
 //! Imports and re-exports architecture-specific implementations.
 
 cfg_if::cfg_if!(
-    if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
+    if #[cfg(target_arch = "x86_64")] {
         mod x86_64;
         pub use x86_64::*;
 
-    } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
+    } else if #[cfg(target_arch = "aarch64")] {
         mod aarch64;
         pub use aarch64::*;
     } else {

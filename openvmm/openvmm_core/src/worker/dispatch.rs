@@ -31,7 +31,7 @@ use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
-use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -109,6 +109,7 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -741,10 +742,107 @@ fn resolve_device_assignment_msi_iova_range(
     }
 }
 
-#[cfg(all(test, guest_arch = "aarch64"))]
+fn resolve_proto_partition_isolation(
+    isolation: virt::IsolationType,
+    load_mode: &LoadMode,
+    igvm_file: Option<&IgvmFile>,
+) -> anyhow::Result<virt::ProtoPartitionIsolation> {
+    Ok(match isolation {
+        virt::IsolationType::None => virt::ProtoPartitionIsolation::None,
+        virt::IsolationType::Vbs => virt::ProtoPartitionIsolation::Vbs,
+        virt::IsolationType::Tdx => virt::ProtoPartitionIsolation::Tdx,
+        virt::IsolationType::Cca => virt::ProtoPartitionIsolation::Cca,
+        virt::IsolationType::Snp => {
+            let config = match load_mode {
+                LoadMode::Linux {
+                    isolation:
+                        openvmm_defs::config::LinuxIsolationConfig::Snp {
+                            restricted_injection,
+                        },
+                    ..
+                } => virt::SnpPartitionConfig::DirectBoot {
+                    restricted_injection: *restricted_injection,
+                },
+                LoadMode::Igvm { .. } => virt::SnpPartitionConfig::Igvm(Box::new(
+                    super::vm_loaders::igvm::snp_isolation_config(
+                        igvm_file.context("missing parsed SNP IGVM file")?,
+                    )
+                    .context("reading IGVM SNP configuration failed")?,
+                )),
+                _ => anyhow::bail!(
+                    "SNP isolation requires SNP Linux direct-boot configuration or an IGVM"
+                ),
+            };
+            virt::ProtoPartitionIsolation::Snp(config)
+        }
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
+    fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
+        LoadMode::Linux {
+            kernel: File::open(std::env::current_exe().unwrap()).unwrap(),
+            initrd: None,
+            cmdline: String::new(),
+            enable_serial: false,
+            isolation,
+            boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+            smbios: Box::default(),
+        }
+    }
+
+    #[test]
+    fn direct_boot_injection_is_available_before_partition_creation() {
+        for restricted_injection in [false, true] {
+            let load_mode = linux_load_mode(openvmm_defs::config::LinuxIsolationConfig::Snp {
+                restricted_injection,
+            });
+            assert_eq!(
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
+                    .unwrap(),
+                virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                    restricted_injection,
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn snp_requires_explicit_boot_configuration() {
+        for load_mode in [
+            LoadMode::None,
+            linux_load_mode(openvmm_defs::config::LinuxIsolationConfig::None),
+        ] {
+            assert!(
+                resolve_proto_partition_isolation(virt::IsolationType::Snp, &load_mode, None)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn non_snp_partition_isolation_does_not_require_snp_configuration() {
+        for (isolation, expected) in [
+            (
+                virt::IsolationType::None,
+                virt::ProtoPartitionIsolation::None,
+            ),
+            (virt::IsolationType::Vbs, virt::ProtoPartitionIsolation::Vbs),
+            (virt::IsolationType::Tdx, virt::ProtoPartitionIsolation::Tdx),
+            (virt::IsolationType::Cca, virt::ProtoPartitionIsolation::Cca),
+        ] {
+            assert_eq!(
+                resolve_proto_partition_isolation(isolation, &LoadMode::None, None).unwrap(),
+                expected,
+            );
+        }
+    }
+
+    #[cfg(guest_arch = "aarch64")]
     #[test]
     fn fixed_device_assignment_msi_iova_range_is_preserved() {
         let range = MemoryRange::new(0x0800_0000..0x0810_0000);
@@ -754,6 +852,7 @@ mod tests {
         );
     }
 
+    #[cfg(guest_arch = "aarch64")]
     #[test]
     fn configurable_device_assignment_msi_iova_range_uses_openvmm_default() {
         assert_eq!(
@@ -762,6 +861,7 @@ mod tests {
         );
     }
 
+    #[cfg(guest_arch = "aarch64")]
     #[test]
     fn unsupported_device_assignment_msi_iova_has_no_range() {
         assert_eq!(
@@ -1042,6 +1142,10 @@ impl InitializedVm {
             .with_isolation
             .map(Into::into)
             .unwrap_or(virt::IsolationType::None);
+        let snp_host_data = match cfg.hypervisor.with_isolation {
+            Some(openvmm_defs::config::IsolationType::Snp { host_data }) => host_data,
+            _ => None,
+        };
         // Pre-parse the IGVM file early so the backend can consume opaque
         // isolation metadata before it creates memory regions or VPs.
         let igvm_file = if let LoadMode::Igvm { file, .. } = &cfg.load_mode {
@@ -1054,17 +1158,16 @@ impl InitializedVm {
         } else {
             None
         };
-        let proto_partition_isolation = match partition_isolation {
-            virt::IsolationType::Snp => virt::ProtoPartitionIsolation::Snp(
-                igvm_file
-                    .as_ref()
-                    .map(super::vm_loaders::igvm::snp_isolation_config)
-                    .transpose()
-                    .context("reading IGVM SNP configuration failed")?
-                    .map(Box::new),
-            ),
-            isolation => isolation.into(),
-        };
+        let mut proto_partition_isolation = resolve_proto_partition_isolation(
+            partition_isolation,
+            &cfg.load_mode,
+            igvm_file.as_ref(),
+        )?;
+        if let virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(config)) =
+            &mut proto_partition_isolation
+        {
+            config.host_data = snp_host_data;
+        }
 
         let hv_config = if cfg.hypervisor.with_hv {
             cfg_if::cfg_if! {
@@ -1267,7 +1370,10 @@ impl InitializedVm {
                 .then_some(1 << (physical_address_size - 1))
         });
 
-        if cfg.hypervisor.with_isolation == Some(openvmm_defs::config::IsolationType::Snp) {
+        if matches!(
+            cfg.hypervisor.with_isolation,
+            Some(openvmm_defs::config::IsolationType::Snp { .. })
+        ) {
             if !matches!(
                 cfg.load_mode,
                 LoadMode::Linux { .. } | LoadMode::Igvm { .. }
@@ -1275,9 +1381,6 @@ impl InitializedVm {
                 anyhow::bail!(
                     "KVM SNP guest_memfd currently only supports direct Linux or IGVM load mode"
                 );
-            }
-            if cfg.hypervisor.with_hv {
-                anyhow::bail!("KVM SNP guest_memfd does not support Hyper-V enlightenments");
             }
             if cfg.hypervisor.with_vtl2.is_some() {
                 anyhow::bail!("KVM SNP guest_memfd does not support VTL2");
@@ -3279,7 +3382,7 @@ impl LoadedVmInner {
                         openvmm_defs::config::LinuxIsolationConfig::Snp {
                             restricted_injection,
                         },
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => super::vm_loaders::linux::KernelIsolationConfig::Snp(
                         super::vm_loaders::linux::SnpKernelConfig {
                             c_bit: self
@@ -3292,7 +3395,7 @@ impl LoadedVmInner {
                     ),
                     (
                         openvmm_defs::config::LinuxIsolationConfig::None,
-                        Some(openvmm_defs::config::IsolationType::Snp),
+                        Some(openvmm_defs::config::IsolationType::Snp { .. }),
                     ) => anyhow::bail!("SNP partition requires SNP Linux loader configuration"),
                     (openvmm_defs::config::LinuxIsolationConfig::Snp { .. }, _) => {
                         anyhow::bail!("SNP Linux loader configuration requires SNP isolation")
@@ -3397,7 +3500,7 @@ impl LoadedVmInner {
                 enable_debugging,
                 enable_memory_protections,
                 disable_frontpage,
-                enable_tpm,
+                tpm_version,
                 enable_battery,
                 enable_serial,
                 enable_vpci_boot,
@@ -3408,6 +3511,7 @@ impl LoadedVmInner {
                 force_dma_bounce,
                 enable_hv,
                 hibernation_enabled,
+                force_firmware_version,
             } => {
                 let acpi_tables = [
                     // MADT
@@ -3434,7 +3538,7 @@ impl LoadedVmInner {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
                     frontpage: !disable_frontpage,
-                    tpm: enable_tpm,
+                    tpm: tpm_version.is_some(),
                     battery: enable_battery,
                     guest_watchdog: self.chipset_capabilities.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
@@ -3446,6 +3550,8 @@ impl LoadedVmInner {
                     force_dma_bounce,
                     hv: enable_hv,
                     hibernation: hibernation_enabled,
+                    disable_sha1_pcr: tpm_version.is_some_and(|v| v >= TpmVersion::V185),
+                    force_firmware_version,
                 };
                 let regs =
                     super::vm_loaders::uefi::load_uefi(&super::vm_loaders::uefi::LoadUefiParams {
@@ -3884,6 +3990,7 @@ impl LoadedVm {
                                 },
                             );
 
+                            let mapper = self.inner.memory_manager.device_memory_mapper();
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
@@ -3897,7 +4004,7 @@ impl LoadedVm {
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
                                                 doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                                                shared_mem_mapper: None,
+                                                shared_mem_mapper: Some(&mapper),
                                             },
                                         )
                                         .await

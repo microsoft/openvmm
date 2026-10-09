@@ -79,6 +79,7 @@ smmu.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
+tpm_resources.workspace = true
 virtio.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true
@@ -88,7 +89,7 @@ watchdog_core.workspace = true
 cache_topology.workspace = true
 debug_ptr.workspace = true
 fdt.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
