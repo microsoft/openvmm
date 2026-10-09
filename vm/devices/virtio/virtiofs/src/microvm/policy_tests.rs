@@ -445,6 +445,43 @@ fn allowed_paths_stay_readable_inside_a_hidden_subtree() {
 }
 
 #[test]
+fn a_hidden_share_root_exposes_only_its_allowed_paths() {
+    let share = Share::new();
+    let fs = share.fs(&[""], &["build.log", "logs/payloads"], &[]);
+    let root = FUSE_ROOT_ID;
+    assert_eq!(list(&fs, root), ["build.log", "logs"]);
+    assert_eq!(list(&fs, lookup(&fs, "logs").unwrap()), ["payloads"]);
+    for hidden in ["marker", "out", "logs/secret", "missing"] {
+        assert_eq!(error(lookup(&fs, hidden)), lx::Error::EACCES, "{hidden}");
+    }
+    assert_eq!(read_node(&fs, lookup(&fs, "build.log").unwrap()), b"log");
+    assert_eq!(error(create(&fs, root, "new")), lx::Error::EROFS);
+    assert_eq!(
+        error(fs.unlink(&request(root), name("build.log"))),
+        lx::Error::EROFS
+    );
+    // The share is read-write, so its allowed paths are writable.
+    let payloads = lookup(&fs, "logs/payloads").unwrap();
+    let (spilled, fh) = create(&fs, payloads, "spilled").unwrap();
+    release(&fs, spilled, fh);
+    std::fs::remove_file(share.path("logs/payloads/spilled")).unwrap();
+    share.assert_protected_paths_unchanged();
+
+    // A hidden root needs allowed paths.
+    assert!(
+        MicroVmVirtioFsProfile::from_attachment_with_policy(
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(&share.root).unwrap(),
+            false,
+            owned(&[""]),
+            Vec::new(),
+            Vec::new(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn allowed_paths_follow_the_write_policy() {
     let share = Share::new();
     let fs = share.fs(&["logs"], &["logs/payloads"], &["out"]);
