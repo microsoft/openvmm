@@ -2432,6 +2432,7 @@ fn parse_endpoint(
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
                 static_ipv4: None,
+                static_ipv6: None,
                 ports,
                 recv,
                 allow_host_local_access: None,

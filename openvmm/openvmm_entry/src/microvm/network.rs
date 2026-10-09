@@ -7,8 +7,8 @@ use crate::Options;
 use crate::VmResources;
 use crate::cli_args;
 use crate::cli_args::EndpointConfigCli;
-use anyhow::Context;
 use net_backend_resources::consomme::static_ipv4::StaticIpv4Config;
+use net_backend_resources::consomme::static_ipv6::StaticIpv6Config;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::NetEndpointHandleKind;
@@ -38,22 +38,7 @@ fn microvm_network_attachment() -> openvmm_helpers::snapshot::microvm::SnapshotA
 fn microvm_network_from_snapshot(
     saved: &openvmm_helpers::snapshot::microvm::SnapshotMicrovmNetwork,
 ) -> anyhow::Result<openvmm_defs::microvm::MicrovmNetworkConfig> {
-    let prefix_length =
-        u8::try_from(saved.prefix_length).context("snapshot network prefix does not fit in u8")?;
-    let config = format!(
-        "{}/{}",
-        std::net::Ipv4Addr::from(saved.guest_ipv4),
-        prefix_length
-    )
-    .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
-    .context("snapshot static network identity is invalid")?;
-    anyhow::ensure!(
-        saved.gateway_ipv4 == u32::from(config.derived_gateway_ipv4)
-            && saved.guest_mac == config.guest_mac.to_bytes()
-            && saved.gateway_mac == config.gateway_mac.to_bytes(),
-        "snapshot static network identity is not canonical"
-    );
-    Ok(config)
+    openvmm_helpers::snapshot::microvm::microvm_network_config_from_snapshot(saved)
 }
 
 pub(super) fn effective_microvm_network(
@@ -172,6 +157,11 @@ pub(super) fn microvm_network_endpoint(
             gateway_ipv4: network.derived_gateway_ipv4,
             gateway_mac: network.gateway_mac,
         }),
+        static_ipv6: network.ipv6.map(|ipv6| StaticIpv6Config {
+            guest_ipv6: ipv6.guest_ipv6,
+            prefix_length: ipv6.prefix_length,
+            gateway_ipv6: ipv6.derived_gateway_ipv6,
+        }),
         ports,
         recv: None,
         allow_host_local_access: Some(allow_host_loopback),
@@ -191,25 +181,27 @@ pub(crate) mod tests {
 
     pub(crate) fn network_contract() -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract
     {
-        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
-        let policy = net_backend_resources::egress::EgressPolicy::bind(
-            network.guest_ipv4,
-            network.prefix_length,
-            network.guest_mac,
-            network.derived_gateway_ipv4,
-            net_backend_resources::egress::EgressPolicyMode::TcpEndpoints(vec![
-                "10.0.0.9:8443".parse().unwrap(),
-                "192.0.2.7:443".parse().unwrap(),
-                "10.0.0.9:443".parse().unwrap(),
-            ]),
-        )
-        .unwrap();
+        network_contract_for(&"10.0.0.2/24".parse().unwrap())
+    }
+
+    fn network_contract_for(
+        network: &openvmm_defs::microvm::MicrovmNetworkConfig,
+    ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
+        let policy = network
+            .bind_egress_policy(
+                net_backend_resources::egress::EgressPolicyMode::TcpEndpoints(vec![
+                    "10.0.0.9:8443".parse().unwrap(),
+                    "192.0.2.7:443".parse().unwrap(),
+                    "10.0.0.9:443".parse().unwrap(),
+                ]),
+            )
+            .unwrap();
         let source_hypervisor = if cfg!(windows) { "whp" } else { "kvm" };
         let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
-            Some((&network, irq, policy.allows_gateway_dns())),
+            Some((network, irq, policy.gateway_dns_server())),
             false,
             &[],
             false,
@@ -221,7 +213,7 @@ pub(crate) mod tests {
             source_hypervisor,
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
-            Some((&network, &policy, microvm_network_attachment())),
+            Some((network, &policy, microvm_network_attachment())),
             false,
             Vec::new(),
             None,
@@ -299,6 +291,50 @@ pub(crate) mod tests {
         ])
         .unwrap();
         assert!(effective_microvm_network(&missing_policy, Some(&contract)).is_err());
+    }
+
+    #[test]
+    fn network_restore_keeps_the_ipv6_identity_that_the_snapshot_records() {
+        let options = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--network-profile",
+            "portable",
+            "--allow-endpoint",
+            "192.0.2.7:443",
+            "--allow-endpoint",
+            "10.0.0.9:443",
+            "--allow-endpoint",
+            "10.0.0.9:8443",
+        ])
+        .unwrap();
+        let dual_stack = effective_microvm_network(&options, Some(&network_contract()))
+            .unwrap()
+            .unwrap();
+        let ipv6 = dual_stack.config.ipv6.unwrap();
+        assert_eq!(
+            ipv6.guest_ipv6,
+            "fd00::a00:2".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+        assert_eq!(
+            dual_stack.policy.ipv6_link().map(|link| link.guest()),
+            Some(ipv6.guest_ipv6)
+        );
+
+        // A snapshot whose network predates IPv6 restores without IPv6.
+        let ipv4_only = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap()
+            .without_ipv6();
+        let restored = effective_microvm_network(&options, Some(&network_contract_for(&ipv4_only)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.config, ipv4_only);
+        assert!(restored.policy.ipv6_link().is_none());
+        assert_eq!(restored.policy.encoding_version(), 3);
     }
 
     #[test]
