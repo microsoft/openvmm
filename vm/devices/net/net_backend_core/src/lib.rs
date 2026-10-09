@@ -58,6 +58,11 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// Partial-checksum information for packets whose checksum must be
+    /// completed by the guest.
+    pub checksum_offload: Option<RxChecksumOffload>,
+    /// Segmentation information for a coalesced receive packet.
+    pub gso: Option<RxGso>,
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
     /// is populated. Only applies when traffic is being received over an L2 connection,
     /// so L3-only or above traffic will not use this option.
@@ -72,9 +77,55 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            checksum_offload: None,
+            gso: None,
             vlan: None,
         }
     }
+}
+
+/// Partial-checksum information for a received packet.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct RxChecksumOffload {
+    /// Offset from the start of the packet to the checksum start.
+    pub start: u16,
+    /// Offset from `start` to the checksum field.
+    pub offset: u16,
+}
+
+/// Segmentation information for a coalesced receive packet.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct RxGso {
+    /// The segmentation protocol.
+    pub protocol: RxGsoProtocol,
+    /// The combined link, network, and transport header length.
+    pub header_len: u16,
+    /// Maximum payload size of each segment.
+    pub max_segment_size: u16,
+    /// Whether ECN was present on the coalesced packet.
+    pub ecn: bool,
+}
+
+/// Receive segmentation protocol.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RxGsoProtocol {
+    TcpV4,
+    TcpV6,
+}
+
+/// Receive offloads that a frontend negotiated with the guest.
+///
+/// Backends must enable only these capabilities on their host transport.
+/// Enabling additional receive offloads can expose packet metadata or
+/// oversized aggregate frames that the frontend cannot safely represent.
+#[derive(Debug, Copy, Clone, Default)]
+pub struct RxOffloadSupport {
+    /// The guest can complete a partial transport checksum.
+    pub checksum: bool,
+    /// The guest can receive TCPv4 GSO packets.
+    pub tcpv4_gso: bool,
+    /// The guest can receive TCPv6 GSO packets.
+    pub tcpv6_gso: bool,
 }
 
 /// The "L4" protocol: the TCP/UDP layer.
