@@ -146,15 +146,19 @@ describes the source definitions.
   rule combinations are rejected at the same validation boundary.
 
   `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
-  the generic L3/L4 policy form. A rule is either `IPv4[/PREFIX]` or
-  `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`. These flags require an
+  the generic L3/L4 policy form. A rule is `IPv4[/PREFIX]`, which matches
+  every IPv4 protocol; `IPv4[/PREFIX]:tcp`, `IPv4[/PREFIX]:udp`, or
+  `IPv4[/PREFIX]:icmp`, which match one protocol on every destination port; or
+  `IPv4[/PREFIX]:tcp:PORT` / `IPv4[/PREFIX]:udp:PORT`, which match one TCP or
+  UDP destination port. ICMP rules take no port. These flags require an
   explicit `--network-egress` default, accept at most 256 rules in each list,
   and cannot be mixed with the legacy `--allow-host`, `--block-host`, or
   `--allow-endpoint` forms. Deny rules are evaluated before allow rules.
-  Address-only rules apply to every IPv4 protocol; port-specific policies
-  reject fragmented IPv4 traffic because later fragments do not carry a
-  verifiable transport header. Parsing, canonicalization, and contradictory
-  option checks complete before VM resources are opened.
+  Address-only rules apply to every IPv4 protocol, and protocol rules apply to
+  every fragment of their protocol; policies with a port-specific rule reject
+  fragmented IPv4 traffic because later fragments do not carry a verifiable
+  transport header. Parsing, canonicalization, and contradictory option checks
+  complete before VM resources are opened.
 
   `--host-loopback <allow|deny>` controls host-local access. The portable
   profile cannot provide generic bidirectional host-loopback connectivity:
