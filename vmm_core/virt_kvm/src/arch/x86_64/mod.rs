@@ -886,6 +886,14 @@ impl ResetPartition for KvmPartition {
 /// afterwards. Making it adaptive means first putting the ftrace pairing above into the arm
 /// path, which is a different change with its own cost.
 ///
+/// So 20 us is one host's number (a 12-core Ivy Bridge Xeon without VMX TSC scaling), not a
+/// property of KVM. On a host whose L tail runs past it, the arms in that tail read as past
+/// again while the achieved lead below still logs as clearing the floor, and nothing in this
+/// process can see it: KVM handles the stimer CONFIG and COUNT writes and `stimer_start` in
+/// the kernel, and only SCONTROL, SIEFP and SIMP exit to userspace (`synic_exit`). Sizing
+/// the floor for such a host takes the ftrace pairing above, and this is the constant to
+/// raise.
+///
 /// The cost of the floor is a synthetic timer delivered up to 20 us late, about 1% of the
 /// 1.978 ms one-shot period this guest arms.
 ///
