@@ -4,6 +4,7 @@
 mod fragments;
 mod limits;
 mod static_ipv4;
+mod static_ipv6;
 
 use super::*;
 use pal_async::DefaultDriver;
