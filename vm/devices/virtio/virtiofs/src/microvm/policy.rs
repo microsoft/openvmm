@@ -21,6 +21,10 @@
 //! guest can look it up and list the entries that lead to allowed paths, but
 //! it can see nothing else in it, and it can modify neither the directory nor
 //! its entries.
+//!
+//! The share's root may itself be a denied path, the empty path, when allowed
+//! paths expose parts of it again. The root is then traverse-only, so the
+//! guest sees only the allowed paths, and the ways to them.
 
 use super::profile::MicroVmProfileError;
 use std::path::Path;
@@ -68,7 +72,9 @@ impl SubtreePolicy {
             writable,
         };
         for denied in &policy.denied {
-            if denied.as_os_str().is_empty() || policy.enclosing_rule(denied) == Some(Rule::Deny) {
+            // Hiding the root makes sense only to expose allowed paths in it.
+            let hidden_root = denied.as_os_str().is_empty() && policy.allowed.is_empty();
+            if hidden_root || policy.enclosing_rule(denied) == Some(Rule::Deny) {
                 return Err(MicroVmProfileError::InvalidDeniedPaths);
             }
         }
@@ -349,6 +355,57 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_root_is_traverse_only() {
+        let hidden = policy(&[""], &["config.json", "tools/bin"], &[]);
+        assert_eq!(visibility(&hidden, ""), PathVisibility::TraverseOnly);
+        assert_eq!(visibility(&hidden, "config.json"), PathVisibility::Visible);
+        assert_eq!(visibility(&hidden, "tools"), PathVisibility::TraverseOnly);
+        assert_eq!(
+            visibility(&hidden, "tools/bin/tool"),
+            PathVisibility::Visible
+        );
+        assert_eq!(visibility(&hidden, "secret"), PathVisibility::Hidden);
+        assert_eq!(
+            visibility(&hidden, "config.json.bak"),
+            PathVisibility::Hidden
+        );
+        assert_eq!(visibility(&hidden, "tools/other"), PathVisibility::Hidden);
+        assert!(!writable(&hidden, ""));
+        assert!(!writable(&hidden, "tools"));
+        assert!(writable(&hidden, "config.json"));
+        assert!(hidden.restricts_writes());
+        // The root is pinned to itself.
+        assert_eq!(
+            hidden.pinned_paths(),
+            [
+                (path(""), Some(path(""))),
+                (path("tools"), Some(path("tools"))),
+            ]
+        );
+
+        let narrowed = policy(&[""], &["read", "write"], &["write"]);
+        assert!(!writable(&narrowed, "read"));
+        assert!(writable(&narrowed, "write"));
+        // A denied path may nest inside an allowed path.
+        policy(&["", "tools/bin/secret"], &["tools/bin"], &[]);
+
+        // The root is hidden only to expose allowed paths, which make any
+        // other denied path outside them redundant.
+        assert!(matches!(
+            invalid(&[""], &[], &[], false),
+            MicroVmProfileError::InvalidDeniedPaths
+        ));
+        assert!(matches!(
+            invalid(&["", "secret"], &["config.json"], &[], false),
+            MicroVmProfileError::InvalidDeniedPaths
+        ));
+        assert!(matches!(
+            invalid(&[""], &["config.json"], &["other"], false),
+            MicroVmProfileError::InvalidWritablePaths
+        ));
+    }
+
+    #[test]
     fn redundant_or_contradictory_policies_are_rejected() {
         // A denied path directly inside another denied path is redundant.
         assert!(matches!(
@@ -382,7 +439,8 @@ mod tests {
                 MicroVmProfileError::InvalidWritablePaths
             ));
         }
-        // The share root itself is not a policy path.
+        // The share root is a denied path only with allowed paths, and never a
+        // writable path.
         assert!(SubtreePolicy::new(vec![PathBuf::new()], Vec::new(), Vec::new(), false).is_err());
         assert!(SubtreePolicy::new(Vec::new(), Vec::new(), vec![PathBuf::new()], false).is_err());
     }
