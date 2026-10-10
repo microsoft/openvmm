@@ -151,10 +151,10 @@ fn open_microvm_volume(
     volume_id: u32,
     file: bool,
 ) -> anyhow::Result<(Arc<VirtioFsVolume>, VirtioFsInode, lx::Stat)> {
-    let (directory, root_entry, policy) = if file {
+    let (directory, exposed_file, policy) = if file {
         anyhow::ensure!(
             *policy == SubtreePolicy::default(),
-            "a microVM virtio-fs file has no access policy of its own"
+            "a microVM virtio-fs file child takes no denied, allowed, or writable paths"
         );
         let (Some(directory), Some(name)) = (root_path.parent(), root_path.file_name()) else {
             anyhow::bail!(
@@ -162,16 +162,16 @@ fn open_microvm_volume(
                 root_path.display()
             );
         };
-        let root_entry = PathBuf::from(name);
+        let exposed_file = PathBuf::from(name);
         let policy = SubtreePolicy::new(
             vec![PathBuf::new()],
-            vec![root_entry.clone()],
+            vec![exposed_file.clone()],
             Vec::new(),
             read_only,
         )?;
-        (directory, root_entry, policy)
+        (directory, Some(exposed_file), policy)
     } else {
-        (root_path, PathBuf::new(), policy.clone())
+        (root_path, None, policy.clone())
     };
     let mut mount_options = LxVolumeOptions::new();
     mount_options
@@ -206,8 +206,9 @@ fn open_microvm_volume(
         true,
         policy,
         pinned_identities,
-        root_entry.clone(),
+        exposed_file,
     ));
+    let root_entry = volume.root_entry().to_owned();
     let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), root_entry)?;
     Ok((volume, root_inode, root_stat))
 }

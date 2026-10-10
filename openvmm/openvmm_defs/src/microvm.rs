@@ -925,7 +925,7 @@ pub enum InvalidMicrovmFilesystemConfig {
     AggregatePolicyPaths,
     /// An aggregate child that exposes a file had policy paths.
     #[error(
-        "microVM aggregate child '{0}' exposes a file, which has no denied, allowed, or writable paths"
+        "microVM aggregate child '{0}' exposes a regular file, which takes no denied, allowed, or writable paths; its access mode applies to the whole file"
     )]
     FileChildPolicyPaths(String),
 }

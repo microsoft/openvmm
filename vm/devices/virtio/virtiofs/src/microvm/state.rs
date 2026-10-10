@@ -26,6 +26,8 @@ use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::saved_state::PREVIOUS_SCHEMA_VERSION;
+use super::saved_state::SAVED_DIRECTORY_CHILD;
+use super::saved_state::SAVED_FILE_CHILD;
 use super::saved_state::SCHEMA_VERSION;
 use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
 use super::saved_state::SavedAggregateChild;
@@ -323,7 +325,11 @@ pub(crate) fn saved_aggregate_children(
                 denied_paths: saved_policy_paths(policy.denied_paths()),
                 allowed_paths: saved_policy_paths(policy.allowed_paths()),
                 writable_paths: saved_policy_paths(policy.writable_paths()),
-                file: child.is_file(),
+                kind: if child.is_file() {
+                    SAVED_FILE_CHILD
+                } else {
+                    SAVED_DIRECTORY_CHILD
+                },
             }
         })
         .collect()

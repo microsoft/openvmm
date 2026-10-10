@@ -9,6 +9,7 @@ use super::profile::microvm_mount_tag;
 use crate::virtio::VirtioFsDevice;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
+use virtio_resources::fs::microvm::MicrovmAggregateChildKind;
 use virtio_resources::fs::microvm::VirtioFsProfile;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -103,28 +104,27 @@ pub(crate) fn resolve(
             );
             let children = children
                 .iter()
-                .map(|child| {
-                    if child.file {
+                .map(|child| match child.kind {
+                    MicrovmAggregateChildKind::Directory => Ok(MicroVmAggregateChild::new(
+                        child.name.clone(),
+                        child.root_identity.clone(),
+                        child.read_only,
+                        child.denied_paths.clone(),
+                        child.allowed_paths.clone(),
+                        child.writable_paths.clone(),
+                    )?),
+                    MicrovmAggregateChildKind::File => {
                         anyhow::ensure!(
                             child.denied_paths.is_empty()
                                 && child.allowed_paths.is_empty()
                                 && child.writable_paths.is_empty(),
-                            "microVM aggregate child '{}' exposes a file, which has no policy paths",
+                            "microVM aggregate child '{}' exposes a regular file, which takes no denied, allowed, or writable paths; its access mode applies to the whole file",
                             child.name
                         );
                         Ok(MicroVmAggregateChild::new_file(
                             child.name.clone(),
                             child.root_identity.clone(),
                             child.read_only,
-                        )?)
-                    } else {
-                        Ok(MicroVmAggregateChild::new(
-                            child.name.clone(),
-                            child.root_identity.clone(),
-                            child.read_only,
-                            child.denied_paths.clone(),
-                            child.allowed_paths.clone(),
-                            child.writable_paths.clone(),
                         )?)
                     }
                 })
@@ -268,7 +268,7 @@ mod tests {
                         .map(
                             |(name, root)| virtio_resources::fs::microvm::MicrovmAggregateChild {
                                 name: (*name).to_owned(),
-                                file: false,
+                                kind: MicrovmAggregateChildKind::Directory,
                                 root_identity: microvm_root_identity(root.path()).unwrap(),
                                 read_only: true,
                                 denied_paths: Vec::new(),
@@ -355,7 +355,7 @@ mod tests {
                         stable_id: MICROVM_ATTACHMENT_ID.to_owned(),
                         children: vec![virtio_resources::fs::microvm::MicrovmAggregateChild {
                             name: "0".to_owned(),
-                            file: true,
+                            kind: MicrovmAggregateChildKind::File,
                             root_identity: identity,
                             read_only: true,
                             denied_paths,
