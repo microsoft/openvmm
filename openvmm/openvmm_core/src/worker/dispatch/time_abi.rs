@@ -898,17 +898,23 @@ pub(super) fn host_monotonic_ns() -> Option<u64> {
         .map(|sample| sample.monotonic_ns)
 }
 
-/// Records how much earlier VM time stopped than the public capture anchor,
-/// on the host monotonic clock that the anchor samples, so that a host
-/// wall-clock step cannot enter the interval.
-pub(super) fn record_vm_time_cut(
-    contract: &mut SnapshotTimeContract,
+fn vm_time_cut_to_anchor_ns(
+    capture_monotonic_ns: u64,
+    stop_monotonic_ns: u64,
+) -> anyhow::Result<u64> {
+    capture_monotonic_ns
+        .checked_sub(stop_monotonic_ns)
+        .context("time ABI capture anchor precedes the saved VM-time cut")
+}
+
+fn read_vm_time_cut(
+    contract: &SnapshotTimeContract,
     saved_state: &SavedState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let unit = saved_state
         .units
         .iter()
-        .find(|unit| unit.name == "vmtime")
+        .find(|unit| unit.name == super::VMTIME_UNIT_NAME)
         .context("snapshot saved state is missing vmtime")?;
     let vmtime: vmcore::vmtime::SavedState = unit
         .state
@@ -917,13 +923,31 @@ pub(super) fn record_vm_time_cut(
     let stop_monotonic_ns = vmtime
         .stop_host_time()
         .context("snapshot vmtime state is missing its stop host-clock sample")?;
-    let cut_to_anchor_ns = contract
-        .capture_monotonic_ns
-        .checked_sub(stop_monotonic_ns)
-        .context("time ABI capture anchor precedes the saved VM-time cut")?;
-    contract.vm_time_cut_to_anchor_ns = Some(cut_to_anchor_ns);
-    contract.vm_time_downtime_ns(0)?;
-    Ok(())
+    let cut_to_anchor_ns =
+        vm_time_cut_to_anchor_ns(contract.capture_monotonic_ns, stop_monotonic_ns)?;
+    let mut candidate = contract.clone();
+    candidate.vm_time_cut_to_anchor_ns = Some(cut_to_anchor_ns);
+    candidate.vm_time_downtime_ns(0)?;
+    Ok(cut_to_anchor_ns)
+}
+
+/// Records how much earlier VM time stopped than the public capture anchor,
+/// on the host monotonic clock that the anchor samples, so that a host
+/// wall-clock step cannot enter the interval.
+///
+/// If the cut cannot be recovered, the snapshot remains usable with the
+/// legacy capture-anchor downtime calculation.
+pub(super) fn record_vm_time_cut(contract: &mut SnapshotTimeContract, saved_state: &SavedState) {
+    contract.vm_time_cut_to_anchor_ns = match read_vm_time_cut(contract, saved_state) {
+        Ok(cut_to_anchor_ns) => Some(cut_to_anchor_ns),
+        Err(error) => {
+            tracing::warn!(
+                error = error.as_ref() as &dyn std::error::Error,
+                "failed to record snapshot VM-time cut; using capture-anchor downtime"
+            );
+            None
+        }
+    };
 }
 
 impl LoadedVm {
@@ -2057,5 +2081,71 @@ mod tests {
                 ProfileErrorCode::CpuGeneration
             );
         }
+    }
+
+    fn test_time_contract() -> SnapshotTimeContract {
+        SnapshotTimeContract {
+            time_abi_version: TIME_ABI_VERSION,
+            tsc_frequency_hz: 2_000_000_000,
+            tsc_tolerance_ppm: 250,
+            apic_frequency_hz: 1_000_000_000,
+            capture_tsc: 1000,
+            capture_utc_ns: 2_000_000_000,
+            capture_monotonic_ns: 2_000_000_000,
+            host_clock: "linux-boottime".to_string(),
+            host_id: vec![0; 16],
+            host_boot_id: vec![0; 16],
+            capture_generation: 1,
+            vm_time_cut_to_anchor_ns: None,
+        }
+    }
+
+    #[test]
+    fn vm_time_cut_is_the_interval_to_the_capture_anchor() {
+        assert_eq!(
+            vm_time_cut_to_anchor_ns(2_000_000_000, 1_500_000_000).unwrap(),
+            500_000_000
+        );
+        assert!(vm_time_cut_to_anchor_ns(2_000_000_000, 3_000_000_000).is_err());
+    }
+
+    #[test]
+    fn missing_vm_time_stop_sample_falls_back_to_the_capture_anchor() {
+        let mut contract = test_time_contract();
+        let vmtime = vmcore::vmtime::SavedState::from_vmtime(vmcore::vmtime::VmTime::from_100ns(0));
+        let saved_state = SavedState {
+            units: vec![state_unit::SavedStateUnit {
+                name: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
+                state: SavedStateBlob::new(vmtime),
+            }],
+            inventory: vec![crate::worker::dispatch::VMTIME_UNIT_NAME.to_string()],
+        };
+        contract.vm_time_cut_to_anchor_ns = Some(1);
+        record_vm_time_cut(&mut contract, &saved_state);
+        assert!(contract.vm_time_cut_to_anchor_ns.is_none());
+    }
+
+    #[pal_async::async_test]
+    async fn vm_time_cut_ignores_a_host_wall_clock_step(driver: pal_async::DefaultDriver) {
+        let mut keeper = vmcore::vmtime::VmTimeKeeper::with_stop_clock(
+            &driver,
+            vmcore::vmtime::VmTime::from_100ns(0),
+            || Some(1_500_000_000),
+        );
+        keeper.start().await;
+        keeper.stop().await;
+        let saved_state = SavedState {
+            units: vec![state_unit::SavedStateUnit {
+                name: crate::worker::dispatch::VMTIME_UNIT_NAME.to_string(),
+                state: SavedStateBlob::new(keeper.save()),
+            }],
+            inventory: vec![crate::worker::dispatch::VMTIME_UNIT_NAME.to_string()],
+        };
+        let mut contract = test_time_contract();
+        // A host wall-clock step between the cut and the anchor moves UTC by
+        // an hour but leaves the monotonic clock alone.
+        contract.capture_utc_ns += 3_600_000_000_000;
+        record_vm_time_cut(&mut contract, &saved_state);
+        assert_eq!(contract.vm_time_cut_to_anchor_ns, Some(500_000_000));
     }
 }
