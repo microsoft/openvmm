@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod limits;
+
 use super::Access;
 use super::BindError;
 use super::Client;
@@ -69,6 +71,7 @@ pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
     listeners: HashMap<PortForwardKey, UdpListener>,
     timeout: Duration,
+    max_connections: usize,
 }
 
 impl Udp {
@@ -77,6 +80,7 @@ impl Udp {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             timeout,
+            max_connections: crate::limits::DEFAULT_MAX_ACTIVE_UDP_FLOWS,
         }
     }
 }
@@ -84,6 +88,8 @@ impl Udp {
 impl InspectMut for Udp {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
+        resp.field("max_connections", self.max_connections)
+            .field("active_connections", self.connections.len());
         for (addr, conn) in &mut self.connections {
             let key = addr.to_string();
             resp.field_mut(&key, conn);
@@ -494,6 +500,7 @@ impl<T: Client> Access<'_, T> {
         guest_addr: SocketAddr,
         guest_mac: Option<EthernetAddress>,
     ) -> Result<&mut UdpConnection, DropReason> {
+        self.inner.udp.check_flow_limit(&guest_addr)?;
         let entry = self.inner.udp.connections.entry(guest_addr);
         match entry {
             hash_map::Entry::Occupied(conn) => Ok(conn.into_mut()),
@@ -803,6 +810,8 @@ fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
 
 #[cfg(all(unix, test))]
 mod tests {
+    mod limits;
+
     use super::*;
     use crate::Consomme;
     use crate::ConsommeParams;
