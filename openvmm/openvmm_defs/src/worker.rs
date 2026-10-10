@@ -7,9 +7,12 @@ use crate::config::Config;
 use crate::rpc::VmRpc;
 use hypervisor_resources::HypervisorKind;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use mesh::payload::message::ProtobufMessage;
 use mesh_worker::WorkerId;
+use state_unit::SavedStateUnit;
 use vm_resource::Resource;
+use vmcore::save_restore::SavedStateRoot;
 use vmm_core_defs::HaltReason;
 
 /// File descriptor (Unix) or handle (Windows) for file-backed guest RAM.
@@ -20,6 +23,17 @@ pub type SharedMemoryFd = std::os::fd::OwnedFd;
 pub type SharedMemoryFd = std::os::windows::io::OwnedHandle;
 
 pub const VM_WORKER: WorkerId<VmWorkerParameters> = WorkerId::new("VmWorker");
+
+/// Complete saved state consumed by the VM worker.
+#[derive(Protobuf, SavedStateRoot)]
+#[mesh(package = "openvmm")]
+pub struct SavedState {
+    #[mesh(1)]
+    pub units: Vec<SavedStateUnit>,
+    /// Complete state-unit inventory, including units with no mutable state.
+    #[mesh(2)]
+    pub inventory: Vec<String>,
+}
 
 /// Launch parameters for the VM worker.
 #[derive(MeshPayload)]
