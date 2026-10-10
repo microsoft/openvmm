@@ -25,9 +25,10 @@ These are stored as three required files and one optional paired file:
 
 MicroVM manifests also record the NVX time ABI contract: the declared TSC and
 LAPIC rates, the capture anchor (VP 0's TSC paired with host UTC and host
-monotonic time), the capture host's identity, and the CPU profile with the
-effective CPUID that the guest observes. Every snapshot, microVM or standard
-machine, is manifest version 6, and restore accepts only version 6
+monotonic time), the interval from the saved VM-time cut to that anchor, the
+capture host's identity, and the CPU profile with the effective CPUID that the
+guest observes. Every snapshot, microVM or standard machine, is manifest
+version 6, and restore accepts only version 6
 (`E_SNAPSHOT_VERSION`); recapture snapshots taken by earlier versions. See
 [Time and CPU compatibility](#time-and-cpu-compatibility).
 
@@ -232,6 +233,11 @@ and resume partition time. Every backend reads each VP's TSC back and rejects
 a restore whose values differ (`E_TSC_SYNC_READBACK`), and one-shot LAPIC
 timers advance by the same downtime. The guest TSC is never scaled, and
 RDTSC is never trapped or emulated.
+VM time and the RTC stop with the state units shortly before the public
+capture anchor. New snapshots record that cut-to-anchor interval, measured on
+the host monotonic clock that the anchor samples, and add it to their VM-time
+and RTC advancement; older snapshots retain the previous anchor-based
+behavior.
 Snapshots without the explicit capture-time `maxcpus` opt-in reject a restore
 target. This is not a post-readiness hotplug API and cannot add VPs absent
 from the saved topology.
