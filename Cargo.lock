@@ -4866,6 +4866,7 @@ dependencies = [
  "memory_range",
  "minimal_rt_build",
  "minimal_rt_reloc",
+ "uart_16550",
  "zerocopy",
 ]
 
@@ -5652,6 +5653,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
+ "uart_16550",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy",
@@ -7908,6 +7910,7 @@ dependencies = [
  "minimal_rt_build",
  "sidecar_defs",
  "spin",
+ "uart_16550",
  "x86defs",
  "zerocopy",
 ]
