@@ -247,12 +247,14 @@ describes the source definitions.
 
   `--mount-aggregate <GUEST_TARGET>` attaches several host directories or
   files to the same device instead, and each repeatable
-  `--mount-child <NAME,HOST_PATH[,ro|rw]>` adds one, with its own access mode
-  and policy, as the entry `NAME` of the aggregate's read-only root: a
-  directory, or, for a regular host file, that file alone, without anything
-  else of its host directory. Only the guest's root user may enter that root.
-  A name is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`; the mode follows
-  the last comma, so a host path may contain commas when the mode is given.
+  `--mount-child <NAME,HOST_PATH[,ro|rw][,file]>` adds one, with its own
+  access mode and policy, as the entry `NAME` of the aggregate's read-only
+  root: a directory, or, with `file`, a regular host file alone, without
+  anything else of its host directory. The host path must be of the kind
+  that the flag requests. Only the guest's root user may enter that root.
+  A name is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`; the mode and
+  the flag follow the last commas, so a host path may contain commas when
+  the mode is given.
   Host paths must not equal or contain one another, so a file must not lie
   inside a directory child; on Linux, a bind mount or nested mount that
   reaches the files of another child counts as containing it. A file child
@@ -269,7 +271,7 @@ describes the source definitions.
     --mount-aggregate /run/shares \
     --mount-child workspace,path/to/workspace,rw \
     --mount-child toolcache,path/to/toolcache,ro \
-    --mount-child settings,path/to/settings.json,ro
+    --mount-child settings,path/to/settings.json,ro,file
   ```
 
   `--mount-deny <HOST_PATH>` is repeatable and hides an existing file or

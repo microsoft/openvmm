@@ -57,9 +57,9 @@ fixes the remaining guest-visible configuration:
 To share several host directories, or single host files, attach them to the
 slot as one aggregate instead of `--mount`. `--mount-aggregate GUEST_TARGET`
 sets where the guest mounts the aggregate's root, and each
-`--mount-child NAME,HOST_PATH[,ro|rw]` adds a host directory as the root's
-child directory `NAME`, or a regular file as the child file `NAME` (see
-[Single files](#single-files)), with its own access mode:
+`--mount-child NAME,HOST_PATH[,ro|rw][,file]` adds a host directory as the
+root's child directory `NAME`, or, with `file`, a regular file as the child
+file `NAME` (see [Single files](#single-files)), with its own access mode:
 
 ```bash
 openvmm --machine microvm \
@@ -71,8 +71,8 @@ openvmm --machine microvm \
 
 The guest sees the children in command-line order. A name is 1 to 64 ASCII
 letters, digits, `.`, `_`, or `-`, and must be unique; an aggregate has 1 to
-256 children. The mode follows the last comma, so a host path may contain
-commas when the mode is given.
+256 children. The mode, and the `file` flag after it, follow the last
+commas, so a host path may contain commas when the mode is given.
 
 The aggregate's root is synthetic. It is read-only, it belongs to the guest's
 root user, and its mode is `0500`, so only that user can enter it; the guest
@@ -100,20 +100,24 @@ owner.
 
 #### Single files
 
-A `--mount-child` may name a regular file instead of a directory. The child
-is then the file itself: the aggregate's root lists it as a regular file,
-which the guest bind-mounts onto a file, and nothing else of the file's host
-directory is exposed, neither its other entries nor the directory's
-attributes. The child's mode applies to the whole file:
+With the `file` flag, a `--mount-child` names a regular file instead of a
+directory. The child is then the file itself: the aggregate's root lists it as
+a regular file, which the guest bind-mounts onto a file, and nothing else of
+the file's host directory is exposed, neither its other entries nor the
+directory's attributes. The child's mode applies to the whole file:
 
 ```bash
 openvmm --machine microvm \
   --mount-aggregate /run/shares \
-  --mount-child settings,path/to/config/settings.json,ro \
-  --mount-child output,path/to/results/output.txt,rw \
+  --mount-child settings,path/to/config/settings.json,ro,file \
+  --mount-child output,path/to/results/output.txt,rw,file \
   --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
 ```
 
+- The flag, not the host object, decides the child's kind: OpenVMM refuses a
+  file child whose host path is not a regular file, and a directory child
+  whose host path is not a directory, so a directory that replaces a shared
+  file is never exported in its place.
 - A read-only file rejects every modification with `EROFS`, whichever guest
   mount reaches it. A read-write file can be written and truncated, but it
   cannot be removed or renamed, because its parent is the aggregate's
