@@ -14,7 +14,7 @@ fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
     println!("{}", panic);
 
     // If the system table is available, use UEFI's standard shutdown mechanism
-    if uefi::table::system_table_raw().is_none() {
+    if uefi::table::system_table_raw().is_some() {
         use uefi::runtime::ResetType;
         uefi::runtime::reset(ResetType::SHUTDOWN, uefi::Status::ABORTED, None);
     }
