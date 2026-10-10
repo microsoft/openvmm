@@ -159,7 +159,7 @@ pub fn ado_yaml(
             let _ = (artifact, publish);
 
             let ado_bootstrap_template = ado_bootstrap_template.as_ref().context(
-                "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`",
+                "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template_fn`",
             )?(platform, arch)
             .with_context(|| {
                 format!(
@@ -169,7 +169,7 @@ pub fn ado_yaml(
 
             if ado_bootstrap_template.is_empty() {
                 anyhow::bail!(
-                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`"
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template_fn`"
                 )
             }
 
