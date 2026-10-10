@@ -3,118 +3,25 @@
 
 //! Serial output for debugging.
 
-use core::arch::asm;
-use core::fmt;
+use uart_16550::BaudRate;
+use uart_16550::Config;
+use uart_16550::Uart16550;
+use uart_16550::backend::PioBackend;
 
-const COM3: u16 = 0x3e8;
+/// The base I/O port of the UART used for debug output.
+pub const COM3: u16 = 0x3e8;
 
-/// Write a byte to a port.
-///
-/// # Safety
-///
-/// The caller must be sure that the given port is safe to write to, and that the
-/// given value is safe for it.
-unsafe fn outb(port: u16, data: u8) {
-    // SAFETY: The caller has assured us this is safe.
-    unsafe {
-        asm! {
-            "out dx, al",
-            in("dx") port,
-            in("al") data,
-        }
-    }
-}
+/// The configuration of the UART used for debug output.
+pub const SERIAL_CONFIG: Config = Config {
+    baud_rate: BaudRate::Baud115200,
+    ..Config::DEFAULT
+};
 
-/// Read a byte from a port.
-///
-/// # Safety
-///
-/// The caller must be sure that the given port is safe to read from.
-unsafe fn inb(port: u16) -> u8 {
-    let mut data;
-    // SAFETY: The caller has assured us this is safe.
-    unsafe {
-        asm! {
-            "in al, dx",
-            in("dx") port,
-            out("al") data,
-        }
-    }
-    data
-}
-
-/// A trait to access io ports used by the serial device.
-pub trait IoAccess {
-    /// Issue an in byte instruction.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be sure that the given port is safe to read from.
-    unsafe fn inb(&self, port: u16) -> u8;
-    /// Issue an out byte instruction.
-    ///
-    /// # Safety
-    ///
-    /// The caller must be sure that the given port is safe to write to, and that the
-    /// given value is safe for it.
-    unsafe fn outb(&self, port: u16, data: u8);
-}
-
-/// A struct to access io ports using in/out instructions.
-pub struct InstrIoAccess;
-
-impl IoAccess for InstrIoAccess {
-    unsafe fn inb(&self, port: u16) -> u8 {
-        // SAFETY: The serial port caller has specified a valid port.
-        unsafe { inb(port) }
-    }
-
-    unsafe fn outb(&self, port: u16, data: u8) {
-        // SAFETY: The serial port caller has specified a valid port and data.
-        unsafe { outb(port, data) }
-    }
-}
-
-/// A writer for the COM3 UART.
-pub struct Serial<T: IoAccess> {
-    io: T,
-}
-
-impl<T: IoAccess> Serial<T> {
-    /// Initialize the serial port.
-    pub fn init(io: T) -> Self {
-        // SAFETY: Writing these values to the serial device is safe.
-        unsafe {
-            io.outb(COM3 + 1, 0x00); // Disable all interrupts
-            io.outb(COM3 + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
-            io.outb(COM3 + 4, 0x0F);
-        }
-
-        Self { io }
-    }
-
-    /// Create an instance without calling init.
-    pub const fn new(io: T) -> Self {
-        Self { io }
-    }
-
-    fn write_byte(&self, b: u8) {
-        // SAFETY: Reading and writing text to the serial device is safe.
-        unsafe {
-            while self.io.inb(COM3 + 5) & 0x20 == 0 {}
-            self.io.outb(COM3, b);
-        }
-    }
-}
-
-impl<T: IoAccess> fmt::Write for Serial<T> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for &b in s.as_bytes() {
-            if b == b'\n' {
-                self.write_byte(b'\r');
-            }
-            self.write_byte(b);
-        }
-        Ok(())
+/// Returns the COM3 UART, without initializing the device.
+pub const fn com3() -> Uart16550<PioBackend> {
+    // SAFETY: COM3 is a valid I/O port, which is used for debug output only.
+    match unsafe { Uart16550::new_port(COM3) } {
+        Ok(uart) => uart,
+        Err(_) => panic!("COM3 should be a valid port"),
     }
 }

@@ -26,6 +26,7 @@ linked_list_allocator.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+uart_16550.workspace = true
 x86_64 = { workspace = true, features = ["instructions"] }
 
 [lints]
