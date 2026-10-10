@@ -341,12 +341,17 @@ impl LoadedVm {
 
         // Time ABI capture steps 1 and 2: the LAPIC timers, then the capture
         // anchor and records. The PIT checks itself when saved.
-        let time = self.capture_time_abi().await.map_err(|error| {
+        #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
+        let mut time = self.capture_time_abi().await.map_err(|error| {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
         })?;
 
         let save_state = openvmm_defs::profile::ProfileSpan::start();
         let saved_state = self.save().await.map_err(|error| {
+            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
+        })?;
+        #[cfg(guest_arch = "x86_64")]
+        super::time_abi::record_vm_time_cut(&mut time.time, &saved_state).map_err(|error| {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
         })?;
         save_state.complete("capture", "save_state", Default::default());

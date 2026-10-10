@@ -580,6 +580,7 @@ pub(crate) mod tests {
             host_id: vec![1; 16],
             host_boot_id: vec![2; 16],
             capture_generation: 0,
+            vm_time_cut_to_anchor_ns: Some(0),
         }
     }
 
@@ -643,6 +644,7 @@ pub(crate) mod tests {
             host_id: vec![1; 16],
             host_boot_id: vec![2; 16],
             capture_generation,
+            vm_time_cut_to_anchor_ns: Some(0),
         });
         contract.cpu_profile = Some(SnapshotCpuProfile {
             id: "intel.skylake-sp.v1".to_owned(),
