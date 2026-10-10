@@ -6,8 +6,13 @@
 use crate::cli::FlowBackendCli;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::SerializedRequest;
+use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::exec_snippet::construct_exec_snippet_cli;
+use crate::cli::identifiers::IdentifierAliases;
+use crate::cli::identifiers::JobIdentifiers;
 use crate::cli::pipeline::CheckMode;
+use crate::flow_resolver::stage1_dag::Stage1DagOutput;
+use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
 use flowey_core::node::FlowArch;
@@ -48,6 +53,49 @@ pub(crate) struct ResolvedFlowSteps {
     pub request_db: BTreeMap<String, Vec<SerializedRequest>>,
     /// The serialized config database, keyed by node module path.
     pub config_db: BTreeMap<String, Vec<SerializedRequest>>,
+}
+
+pub(crate) fn job_identifiers(
+    flow: &Stage1DagOutput,
+    external_read_vars: BTreeSet<String>,
+) -> JobIdentifiers {
+    let mut variable_names = external_read_vars;
+    variable_names.insert("FLOWEY_LOG".into());
+    variable_names.insert(VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR.into());
+    for step in flow
+        .output_graph
+        .node_weights()
+        .filter_map(|(_, entry)| entry.as_ref().map(|entry| &entry.step))
+    {
+        match step {
+            Step::AdoYaml {
+                ado_to_rust,
+                rust_to_ado,
+                condvar,
+                ..
+            } => {
+                variable_names.extend(ado_to_rust.iter().map(|(_, var, _)| var.clone()));
+                variable_names.extend(rust_to_ado.iter().map(|(var, _)| var.clone()));
+                variable_names.extend(condvar.iter().cloned());
+            }
+            Step::GitHubYaml {
+                gh_to_rust,
+                rust_to_gh,
+                condvar,
+                ..
+            } => {
+                variable_names.extend(gh_to_rust.iter().map(|var| var.backing_var.clone()));
+                variable_names.extend(rust_to_gh.iter().map(|var| var.backing_var.clone()));
+                variable_names.extend(condvar.iter().cloned());
+            }
+            _ => {}
+        }
+    }
+
+    JobIdentifiers {
+        nodes: IdentifierAliases::new(flow.request_db.keys().map(|node| node.modpath().into())),
+        variables: IdentifierAliases::new(variable_names),
+    }
 }
 
 #[derive(Debug)]

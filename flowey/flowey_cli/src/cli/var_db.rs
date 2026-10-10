@@ -6,6 +6,7 @@ use super::exec_snippet::VarDbBackendKind;
 use anyhow::Context;
 use clap::ValueEnum;
 use flowey_core::node::RuntimeVarDb;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
@@ -18,6 +19,7 @@ pub struct VarDbRequest<'a> {
     action: RequestAction<'a>,
     is_raw_string: bool,
     condvar: Option<&'a str>,
+    aliases: Option<&'a BTreeMap<String, String>>,
 }
 
 enum RequestAction<'a> {
@@ -35,6 +37,7 @@ enum RequestAction<'a> {
 pub struct VarDbRequestBuilder<'a> {
     flowey_bin: &'a str,
     job_idx: usize,
+    aliases: Option<&'a BTreeMap<String, String>>,
 }
 
 impl<'a> VarDbRequestBuilder<'a> {
@@ -42,11 +45,19 @@ impl<'a> VarDbRequestBuilder<'a> {
         Self {
             flowey_bin,
             job_idx,
+            aliases: None,
         }
     }
 
+    pub fn with_aliases(mut self, aliases: &'a BTreeMap<String, String>) -> Self {
+        self.aliases = Some(aliases);
+        self
+    }
+
     fn req<'b>(&'b self, var_name: &'b str, action: RequestAction<'b>) -> VarDbRequest<'b> {
-        VarDbRequest::new(self.flowey_bin, self.job_idx, var_name, action)
+        let mut request = VarDbRequest::new(self.flowey_bin, self.job_idx, var_name, action);
+        request.aliases = self.aliases;
+        request
     }
 
     pub fn write_to_ado_env<'b>(&'b self, var_name: &'b str, env: &'b str) -> VarDbRequest<'b> {
@@ -112,6 +123,7 @@ impl<'a> VarDbRequest<'a> {
             action,
             is_raw_string: false,
             condvar: None,
+            aliases: None,
         }
     }
 
@@ -136,7 +148,7 @@ impl<'a> VarDbRequest<'a> {
     }
 }
 
-impl std::fmt::Display for VarDbRequest<'_> {
+impl<'a> std::fmt::Display for VarDbRequest<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             flowey_bin,
@@ -145,8 +157,16 @@ impl std::fmt::Display for VarDbRequest<'_> {
             ref action,
             is_raw_string,
             condvar,
+            aliases,
         } = *self;
 
+        let alias = |name: &'a str| {
+            aliases
+                .and_then(|aliases| aliases.get(name))
+                .map(String::as_str)
+                .unwrap_or(name)
+        };
+        let var_name = alias(var_name);
         write!(f, r#"{flowey_bin} v {job_idx} '{var_name}'"#)?;
 
         if is_raw_string {
@@ -154,6 +174,7 @@ impl std::fmt::Display for VarDbRequest<'_> {
         }
 
         if let Some(condvar) = condvar {
+            let condvar = alias(condvar);
             write!(f, " --condvar {condvar}")?;
         }
 
@@ -239,10 +260,21 @@ impl VarDb {
             action,
         } = self;
 
-        let mut runtime_var_db = open_var_db(job_idx)?;
+        let pipeline_static_db = FloweyPipelineStaticDb::load()?;
+        let aliases = pipeline_static_db
+            .job_identifiers
+            .get(&job_idx)
+            .map(|identifiers| &identifiers.variables);
+        let resolve = |name| match aliases {
+            Some(aliases) => aliases.resolve(name),
+            None => Ok(name),
+        };
+        let var_name = resolve(&var_name)?;
+        let condvar = condvar.as_deref().map(resolve).transpose()?;
+        let mut runtime_var_db = open_var_db_with_pipeline(job_idx, &pipeline_static_db)?;
 
         if let Some(condvar) = condvar {
-            let (condvar_data, _) = runtime_var_db.get_var(&condvar);
+            let (condvar_data, _) = runtime_var_db.get_var(condvar);
             let set: bool = serde_json::from_slice(&condvar_data).unwrap();
             if !set {
                 return Ok(());
@@ -264,11 +296,11 @@ impl VarDb {
         match action {
             None => {
                 // Raw get.
-                let (data, _) = get(&mut runtime_var_db, &var_name);
+                let (data, _) = get(&mut runtime_var_db, var_name);
                 std::io::stdout().write_all(&data).unwrap();
             }
             Some(VarDbAction::WriteToEnv { backend, env }) => {
-                let (data, is_secret) = get(&mut runtime_var_db, &var_name);
+                let (data, is_secret) = get(&mut runtime_var_db, var_name);
 
                 if is_secret {
                     // Remember that this environment variable is secret so that
@@ -336,7 +368,7 @@ impl VarDb {
                     }
                     data
                 };
-                runtime_var_db.set_var(&var_name, is_secret, data);
+                runtime_var_db.set_var(var_name, is_secret, data);
             }
         }
 
@@ -352,18 +384,17 @@ impl VarDb {
 /// CONTRACT: Requires a var-backend specific var db file called
 /// `job{job_idx}.<ext>` to be in the same dir as the flowey exe
 pub(crate) fn open_var_db(job_idx: usize) -> anyhow::Result<Box<dyn RuntimeVarDb>> {
+    open_var_db_with_pipeline(job_idx, &FloweyPipelineStaticDb::load()?)
+}
+
+pub(crate) fn open_var_db_with_pipeline(
+    job_idx: usize,
+    pipeline_static_db: &FloweyPipelineStaticDb,
+) -> anyhow::Result<Box<dyn RuntimeVarDb>> {
     let current_exe =
         std::env::current_exe().context("failed to get path to current flowey executable")?;
 
-    let FloweyPipelineStaticDb {
-        var_db_backend_kind,
-        ..
-    } = {
-        let pipeline_static_db = fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
-        serde_json::from_reader(pipeline_static_db)?
-    };
-
-    Ok(match var_db_backend_kind {
+    Ok(match pipeline_static_db.var_db_backend_kind {
         VarDbBackendKind::Json => {
             Box::new(crate::var_db::single_json_file::SingleJsonFileVarDb::new(
                 current_exe.with_file_name(format!("job{job_idx}.json")),

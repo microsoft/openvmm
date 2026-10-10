@@ -10,12 +10,14 @@ use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
+use crate::cli::identifiers::JobIdentifiers;
 use crate::cli::pipeline::CheckMode;
 use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::FloweySource;
 use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
+use crate::pipeline_resolver::common_yaml::job_identifiers;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
@@ -81,6 +83,7 @@ pub fn github_yaml(
         job_command_wrappers: BTreeMap::new(),
         job_platforms: BTreeMap::new(),
         job_archs: BTreeMap::new(),
+        job_identifiers: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -116,11 +119,14 @@ pub fn github_yaml(
         }
 
         let flowey_bin = platform.binary("flowey");
-        let super::common_yaml::ResolvedFlowSteps {
-            steps,
-            request_db: req_db,
-            config_db: cfg_db,
-        } = resolve_flow_as_github_yaml_steps(
+        let (
+            super::common_yaml::ResolvedFlowSteps {
+                steps,
+                request_db: req_db,
+                config_db: cfg_db,
+            },
+            identifiers,
+        ) = resolve_flow_as_github_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
@@ -136,6 +142,11 @@ pub fn github_yaml(
             gh_permissions,
         )
         .context(format!("in job '{label}'"))?;
+
+        let variable_aliases = identifiers.variables.by_name();
+        pipeline_static_db
+            .job_identifiers
+            .insert(job_idx.index(), identifiers);
 
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
@@ -279,7 +290,8 @@ pub fn github_yaml(
             gh_steps.push(map.into());
         }
 
-        let var_db = VarDbRequestBuilder::new(&flowey_bin, job_idx.index());
+        let var_db =
+            VarDbRequestBuilder::new(&flowey_bin, job_idx.index()).with_aliases(&variable_aliases);
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             var_db
@@ -797,36 +809,41 @@ fn resolve_flow_as_github_yaml_steps(
     job_idx: usize,
     flowey_bin: &str,
     gh_permissions: &BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
+) -> anyhow::Result<(super::common_yaml::ResolvedFlowSteps, JobIdentifiers)> {
     let mut output_steps = Vec::new();
 
-    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
-        mut output_graph,
-        request_db,
-        config_db,
-        found_unreachable_nodes,
-    } = crate::flow_resolver::stage1_dag::stage1_dag(
+    let flow = crate::flow_resolver::stage1_dag::stage1_dag(
         FlowBackend::Github,
         platform,
         arch,
         resolved_patches,
         seed_nodes,
         seed_configs,
-        external_read_vars,
+        external_read_vars.clone(),
         // TODO: support GitHub agents with persistent storage
         None,
     )?;
 
-    if found_unreachable_nodes {
+    if flow.found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
+
+    let identifiers = job_identifiers(&flow, external_read_vars);
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes: _,
+    } = flow;
+    let node_aliases = identifiers.nodes.by_name();
+    let variable_aliases = identifiers.variables.by_name();
 
     let mut bash_commands = BashCommands::new_github();
 
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
-    let var_db = VarDbRequestBuilder::new(flowey_bin, job_idx);
+    let var_db = VarDbRequestBuilder::new(flowey_bin, job_idx).with_aliases(&variable_aliases);
 
     for node_idx in output_order.into_iter().rev() {
         let OutputGraphEntry { node_handle, step } = output_graph[node_idx].1.take().unwrap();
@@ -841,11 +858,14 @@ fn resolve_flow_as_github_yaml_steps(
                 can_merge,
                 code: _,
             } => {
+                let node_alias = node_aliases.get(node_modpath).with_context(|| {
+                    format!("missing compact identifier for node '{node_modpath}'")
+                })?;
                 output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
                     flowey_bin,
-                    node_modpath,
+                    node_alias,
                     idx,
                     job_idx,
                 ));
@@ -968,11 +988,14 @@ fn resolve_flow_as_github_yaml_steps(
         })
         .collect();
 
-    Ok(super::common_yaml::ResolvedFlowSteps {
-        steps: output_steps,
-        request_db,
-        config_db,
-    })
+    Ok((
+        super::common_yaml::ResolvedFlowSteps {
+            steps: output_steps,
+            request_db,
+            config_db,
+        },
+        identifiers,
+    ))
 }
 
 // Move all the bash shell specifications to job defaults to save some file size

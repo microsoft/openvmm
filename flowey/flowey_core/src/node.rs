@@ -2096,9 +2096,9 @@ pub mod steps {
             /// - name: Azure Login
             ///   uses: Azure/login@v2
             ///   with:
-            ///     client-id: ${{ env.floweyvar1 }} // Assuming the backend wrote client_id to floweyvar1
-            ///     tenant-id: ${{ env.floweyvar2 }} // Assuming the backend wrote tenant-id to floweyvar2
-            ///     subscription-id: ${{ env.floweyvar3 }} // Assuming the backend wrote subscription-id to floweyvar3
+            ///     client-id: ${{ env.fv1 }} // Assuming the backend wrote client_id to fv1
+            ///     tenant-id: ${{ env.fv2 }} // Assuming the backend wrote tenant-id to fv2
+            ///     subscription-id: ${{ env.fv3 }} // Assuming the backend wrote subscription-id to fv3
             /// ```
             ///
             /// For more information on the yaml syntax for the `with` parameters,

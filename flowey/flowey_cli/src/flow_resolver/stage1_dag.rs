@@ -201,6 +201,7 @@ pub(crate) fn stage1_dag(
     let mut outstanding_vars = BTreeMap::<String, OutstandingVarEntry>::new();
 
     let mut yaml_var_ordinal = 0;
+    let mut yaml_step_ordinal = 0;
     let mut encountered_error = false;
     for node_handle in stage0_order {
         log::debug!("visiting {}", node_handle.modpath());
@@ -250,6 +251,7 @@ pub(crate) fn stage1_dag(
                 persistent_dir_path_var.clone(),
                 &patch_node,
                 &mut yaml_var_ordinal,
+                &mut yaml_step_ordinal,
             );
             let mut ctx = flowey_core::node::new_node_ctx(&mut ctx_backend);
 
@@ -701,8 +703,14 @@ struct EmitFlowCtx<'a> {
     step_idx_tracker: usize,
     var_tracker: usize,
     yaml_var_ordinal: &'a mut usize,
+    yaml_step_ordinal: &'a mut usize,
     persistent_dir_path_var: Option<String>,
     events: Vec<EmitEvent>,
+}
+
+fn next_yaml_var(ordinal: &mut usize) -> String {
+    *ordinal += 1;
+    format!("fv{ordinal}")
 }
 
 impl<'a> EmitFlowCtx<'a> {
@@ -714,6 +722,7 @@ impl<'a> EmitFlowCtx<'a> {
         persistent_dir_path_var: Option<String>,
         patch_node: &'a dyn Fn(NodeHandle) -> NodeHandle,
         yaml_var_ordinal: &'a mut usize,
+        yaml_step_ordinal: &'a mut usize,
     ) -> Self {
         Self {
             current_node,
@@ -724,6 +733,7 @@ impl<'a> EmitFlowCtx<'a> {
             step_idx_tracker: 0,
             var_tracker: 0,
             yaml_var_ordinal,
+            yaml_step_ordinal,
             persistent_dir_path_var,
             events: Vec::new(),
         }
@@ -802,10 +812,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         >,
         condvar: Option<String>,
     ) {
-        let mut fresh_yaml_var = || {
-            *self.yaml_var_ordinal += 1;
-            format!("floweyvar{}", self.yaml_var_ordinal)
-        };
+        let mut fresh_yaml_var = || next_yaml_var(self.yaml_var_ordinal);
         let mut access = flowey_core::node::steps::ado::new_ado_step_services(&mut fresh_yaml_var);
         let raw_yaml = yaml_snippet(&mut access);
         let flowey_core::node::steps::ado::CompletedAdoStepServices {
@@ -845,10 +852,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         mut gh_to_rust: Vec<GhToRust>,
         mut rust_to_gh: Vec<RustToGh>,
     ) {
-        let mut fresh_yaml_var = || {
-            *self.yaml_var_ordinal += 1;
-            format!("floweyvar{}", self.yaml_var_ordinal)
-        };
+        let mut fresh_yaml_var = || next_yaml_var(self.yaml_var_ordinal);
 
         if let Some(condvar) = &condvar {
             self.events.push(EmitEvent::ClaimReadVar {
@@ -856,8 +860,8 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             })
         }
 
-        let node_modpath = self.current_node.modpath().replace("::", "__");
-        let step_id = format!("{node_modpath}__{}", self.step_idx_tracker);
+        let step_id = format!("s{}", self.yaml_step_ordinal);
+        *self.yaml_step_ordinal += 1;
         let with = with
             .into_iter()
             .map(|(k, v)| match v {
