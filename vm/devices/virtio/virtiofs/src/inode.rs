@@ -189,7 +189,7 @@ impl VirtioFsInode {
         let mut old_count = self.lookup_count.load(Ordering::Acquire);
         loop {
             let new_count = if lookup_count > old_count {
-                tracing::warn!(node_id, "Too many forgets for inode");
+                tracelimit::warn_ratelimited!(node_id, "Too many forgets for inode");
                 0
             } else {
                 old_count - lookup_count
