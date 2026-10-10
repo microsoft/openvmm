@@ -592,7 +592,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                             .map(|(child, (_, attachment))| {
                                 virtio_resources::fs::microvm::MicrovmAggregateChild {
                                     name: child.name.clone(),
-                                    file: child.is_file(),
+                                    kind: aggregate_child_kind(child.kind),
                                     root_identity: attachment.identity.clone(),
                                     read_only: child.access.is_read_only(),
                                     denied_paths: child.denied_paths.clone(),
@@ -838,6 +838,18 @@ impl<'a> MicrovmConfigBuilder<'a> {
             ..std::mem::take(&mut self.resources)
         };
         Ok(())
+    }
+}
+
+/// Returns the virtio-fs resource kind of a microVM aggregate child of `kind`.
+fn aggregate_child_kind(
+    kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
+) -> virtio_resources::fs::microvm::MicrovmAggregateChildKind {
+    use openvmm_defs::microvm::MicrovmFilesystemChildKind;
+    use virtio_resources::fs::microvm::MicrovmAggregateChildKind;
+    match kind {
+        MicrovmFilesystemChildKind::Directory => MicrovmAggregateChildKind::Directory,
+        MicrovmFilesystemChildKind::File => MicrovmAggregateChildKind::File,
     }
 }
 

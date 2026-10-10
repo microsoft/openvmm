@@ -27,7 +27,7 @@ impl VirtioFsVolume {
         strict_paths: bool,
         policy: SubtreePolicy,
         pinned_identities: HashMap<(u64, u64), Option<PathBuf>>,
-        root_entry: PathBuf,
+        exposed_file: Option<PathBuf>,
     ) -> Self {
         Self {
             volume: Arc::new(volume),
@@ -36,7 +36,7 @@ impl VirtioFsVolume {
             strict_paths,
             policy,
             pinned_identities,
-            root_entry,
+            exposed_file,
         }
     }
 
@@ -44,18 +44,14 @@ impl VirtioFsVolume {
         self.strict_paths
     }
 
-    /// Returns whether the volume exposes only the regular file at its root
-    /// entry.
-    pub(crate) fn exposes_file(&self) -> bool {
-        !self.root_entry.as_os_str().is_empty()
-    }
-
     /// Rejects a path that the access policy hides from the guest, or, in a
     /// volume that exposes a file, any path but the file's: nothing lies
     /// below the file, and nothing else of its directory is exposed.
     pub(crate) fn ensure_path_allowed(&self, path: &Path) -> lx::Result<()> {
-        if self.exposes_file() && path != self.root_entry {
-            return Err(if path.starts_with(&self.root_entry) {
+        if let Some(file) = self.exposed_file()
+            && path != file
+        {
+            return Err(if path.starts_with(file) {
                 lx::Error::ENOTDIR
             } else {
                 lx::Error::EACCES
@@ -71,8 +67,8 @@ impl VirtioFsVolume {
     /// there: a hidden object pinned when the share was attached, which may
     /// be reachable only at its own path or not at all, anything but a
     /// directory at a traverse-only path, or, in a volume that exposes a
-    /// file, anything but a regular file at its root entry, which the host
-    /// may have replaced since the volume was attached.
+    /// file, anything but that regular file, which the host may have replaced
+    /// since the volume was attached.
     pub(crate) fn ensure_object_allowed(&self, path: &Path, stat: &lx::Stat) -> lx::Result<()> {
         if let Some(reachable_at) = self.pinned_identities.get(&(stat.device_nr, stat.inode_nr)) {
             if reachable_at.as_deref() != Some(path) {
@@ -84,7 +80,8 @@ impl VirtioFsVolume {
         {
             return Err(lx::Error::EACCES);
         }
-        if self.exposes_file() && (path != self.root_entry || stat.mode & lx::S_IFMT != lx::S_IFREG)
+        if let Some(file) = self.exposed_file()
+            && (path != file || stat.mode & lx::S_IFMT != lx::S_IFREG)
         {
             return Err(lx::Error::EACCES);
         }
@@ -212,7 +209,7 @@ impl VirtioFsInode {
                 }
                 // The host may replace the file that a volume exposes, but
                 // the guest reaches nothing else through it.
-                if index + 1 == component_count && self.volume.exposes_file() {
+                if index + 1 == component_count && self.volume.exposed_file().is_some() {
                     self.volume.ensure_object_allowed(&path, &stat)?;
                 }
             }

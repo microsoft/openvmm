@@ -24,6 +24,8 @@ use super::profile::microvm_file_identity;
 use super::profile::microvm_root_identity;
 use super::saved_state::AGGREGATE_SCHEMA_VERSION;
 use super::saved_state::FILE_CHILD_SCHEMA_VERSION;
+use super::saved_state::SAVED_DIRECTORY_CHILD;
+use super::saved_state::SAVED_FILE_CHILD;
 use super::saved_state::SavedHandle;
 use super::saved_state::SavedObjectIdentity;
 use super::state::encode_relative_path;
@@ -885,9 +887,9 @@ fn file_child_state_restores_and_rejects_changes() {
         saved
             .aggregate_children
             .iter()
-            .map(|child| child.file)
+            .map(|child| child.kind)
             .collect::<Vec<_>>(),
-        [true, true, false]
+        [SAVED_FILE_CHILD, SAVED_FILE_CHILD, SAVED_DIRECTORY_CHILD]
     );
 
     let destination = aggregate(&children);
@@ -914,6 +916,11 @@ fn file_child_state_restores_and_rejects_changes() {
         Child::new("work", &files.work, false),
     ];
     assert!(validate_microvm_state(&state(), &profile(&as_directory)).is_err());
+    // A kind that this release does not know is rejected, not taken for one
+    // that it knows.
+    let mut unknown = state();
+    unknown.aggregate_children[0].kind = SAVED_FILE_CHILD + 1;
+    assert!(validate_microvm_state(&unknown, &file_profile).is_err());
 
     // The file's inode reopens only the file: not another name of it in its
     // directory, nor another entry, the directory, or a path below the file.

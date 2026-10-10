@@ -50,11 +50,11 @@ pub(crate) struct VirtioFsVolume {
     /// Host objects of the policy's hidden paths, by device and inode number,
     /// with the only path at which the guest may reach each, if any.
     pub(crate) pinned_identities: HashMap<(u64, u64), Option<PathBuf>>,
-    /// The path of the volume's root object relative to its host directory:
-    /// empty for the directory itself, or the name of the regular file that a
-    /// microVM aggregate's file child exposes, which is then the only object
-    /// that the guest can reach.
-    pub(crate) root_entry: PathBuf,
+    /// The name of the regular file of the volume's host directory that a
+    /// microVM aggregate's file child exposes, which is then the volume's root
+    /// object and the only object that the guest can reach, or `None` when the
+    /// volume's root object is its directory.
+    pub(crate) exposed_file: Option<PathBuf>,
 }
 
 impl VirtioFsVolume {
@@ -66,7 +66,7 @@ impl VirtioFsVolume {
             strict_paths: false,
             policy: SubtreePolicy::default(),
             pinned_identities: HashMap::new(),
-            root_entry: PathBuf::new(),
+            exposed_file: None,
         }
     }
 
@@ -78,10 +78,16 @@ impl VirtioFsVolume {
         self.readonly
     }
 
+    /// Returns the name of the regular file that the volume exposes alone, if
+    /// it exposes one rather than its directory.
+    pub(crate) fn exposed_file(&self) -> Option<&Path> {
+        self.exposed_file.as_deref()
+    }
+
     /// Returns the path of the volume's root object relative to its host
-    /// directory.
+    /// directory: the exposed file's name, or the empty path of the directory.
     pub(crate) fn root_entry(&self) -> &Path {
-        &self.root_entry
+        self.exposed_file().unwrap_or(Path::new(""))
     }
 
     pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::ino_t {

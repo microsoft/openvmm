@@ -27,10 +27,16 @@ pub(crate) const SUBTREE_POLICY_SCHEMA_VERSION: u32 = 7;
 /// aggregates require every inode to belong to volume 0, so they reject it.
 pub(crate) const AGGREGATE_SCHEMA_VERSION: u32 = 8;
 /// The schema version of an aggregate attachment with a child that exposes a
-/// regular file, which `aggregate_children` marks. Readers that predate file
-/// children would take the file's identity for a directory's, so they must
-/// reject its state.
+/// regular file, which `aggregate_children` marks with its kind. Readers that
+/// predate file children would take the file's identity for a directory's, so
+/// they must reject its state.
 pub(crate) const FILE_CHILD_SCHEMA_VERSION: u32 = 9;
+/// The [`SavedAggregateChild::kind`] of a child that exposes a host directory,
+/// which states that predate file children imply.
+pub(crate) const SAVED_DIRECTORY_CHILD: u32 = 0;
+/// The [`SavedAggregateChild::kind`] of a child that exposes a regular host
+/// file.
+pub(crate) const SAVED_FILE_CHILD: u32 = 1;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -125,10 +131,12 @@ pub(crate) struct SavedAggregateChild {
     pub allowed_paths: Vec<String>,
     #[mesh(6)]
     pub writable_paths: Vec<String>,
-    /// Whether the child exposes a regular file, which only version
-    /// [`FILE_CHILD_SCHEMA_VERSION`] states record.
+    /// The kind of host object that the child exposes:
+    /// [`SAVED_DIRECTORY_CHILD`], which states before
+    /// [`FILE_CHILD_SCHEMA_VERSION`] imply, or [`SAVED_FILE_CHILD`]. A restore
+    /// rejects any other value.
     #[mesh(7)]
-    pub file: bool,
+    pub kind: u32,
 }
 
 #[derive(Protobuf)]
