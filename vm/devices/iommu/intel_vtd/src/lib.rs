@@ -10,17 +10,27 @@
 //! Unlike the AMD IOMMU (which is a PCI device), VT-d is a pure MMIO platform
 //! device discovered via the ACPI DMAR table. It has no PCI config space.
 //!
-//! Scalable RID-derived PASID lookup is implemented internally, but remains
-//! gated by the unadvertised SMTS capability. SSADE-enabled second-stage walks
+//! Legacy and scalable second-stage translation support 39/48-bit addresses,
+//! 4KB/2MB/1GB pages, and pass-through. ECAP advertises SMTS, SSTS, SMPWCS,
+//! SSADS and RPS together. Scalable requests use the context's implied RID_PASID;
+//! explicitly PASID-tagged requests, first-stage/nested translation, ATS, PRI,
+//! and supervisor requests are not supported.
+//!
+//! Tracking is optional per PASID entry: SSADE-enabled second-stage walks
 //! atomically set accessed flags and, for accepted writes, the leaf dirty flag
-//! before the DMA operation (§§3.7.2, 9.8). Updates require snooping (§7.1.3).
-//! Explicit PASID and first-stage/nested walks are not supported.
+//! before the DMA operation, even if that operation subsequently fails
+//! (§§3.7.2, 9.8). Updates require PWSNP=1; a required non-snooping update faults
+//! with reason 0x7c, and a failed atomic update faults with 0x7d (§7.1.3).
+//! Legacy translation and pass-through never update A/D flags.
 //!
 //! Walks are uncached, so cleared A/D flags can be set again immediately. This
 //! is an implementation property, not a portable software guarantee: software
 //! must use the invalidation protocol in §6.5.3.3. The state lock drains walks
 //! and DMA operations against invalidation, not guest page-table writes.
-//! Unsynchronized clearing does not provide a race-free dirty snapshot.
+//! Unsynchronized clearing does not provide a race-free dirty snapshot. There
+//! is no migration bitmap API. Interrupt remapping supports MSI and IOAPIC
+//! routes; queued invalidation uses 128/256-bit descriptors in legacy mode and
+//! 256-bit descriptors in scalable mode.
 
 #![forbid(unsafe_code)]
 
@@ -93,7 +103,7 @@ pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
 // Hardcoded Capability Values (1B.3)
 // =============================================================================
 
-/// VT-d version 1.0 (major=1, minor=0).
+/// Implementation version 1.0 (§11.4.1), not a specification revision.
 const VER_VALUE: u32 = VersionReg::new().with_max(1).with_min(0).into_bits();
 
 /// Maximum guest address width in bits.
@@ -142,6 +152,11 @@ const ECAP_VALUE: u64 = EcapReg::new()
     .with_eim(true)
     .with_pt(true)
     .with_sc(true)
+    .with_smts(true)
+    .with_ssts(true)
+    .with_smpwcs(true)
+    .with_ssads(true)
+    .with_rps(true)
     .with_iro(Reg::IVA.0 / 16)
     .with_mhmv(15) // max IM field in interrupt cache invalidation (4-bit max)
     .into_bits();
@@ -558,8 +573,7 @@ impl VtdSharedState {
 
     /// Translate an IOVA to a GPA while holding the read lock.
     ///
-    /// Production callers use ECAP_VALUE; the private policy boundary also
-    /// permits exercising the final second-stage profile before advertising it.
+    /// Production callers use ECAP_VALUE; tests also exercise reduced profiles.
     /// Returns `Ok(gpa)` on success or `Err(VtdFault)` on failure.
     fn translate_locked(
         &self,
@@ -2056,15 +2070,8 @@ impl IntelVtdDevice {
     /// state lock is also a DMA drain point: translators hold it across the
     /// translation and the entire memory operation.
     fn process_invalidation_queue(&mut self) {
-        self.process_invalidation_queue_with_capabilities(
-            CapReg::from(CAP_VALUE),
-            EcapReg::from(ECAP_VALUE),
-        );
-    }
-
-    // Keep policy inputs private so tests can exercise a future advertised
-    // profile without adding a device configuration knob or changing ECAP.
-    fn process_invalidation_queue_with_capabilities(&mut self, cap: CapReg, ecap: EcapReg) {
+        let cap = CapReg::from(CAP_VALUE);
+        let ecap = EcapReg::from(ECAP_VALUE);
         let mut state = self.shared.state.write();
         if !state.gsts.qies() || state.fsts.iqe() || state.fsts.ite() {
             return;
@@ -2338,6 +2345,12 @@ impl InspectMut for IntelVtdDevice {
             .field("translation_enabled", gsts.tes())
             .field("ir_enabled", gsts.ires())
             .field("qi_enabled", gsts.qies())
+            .field("fault_status", self.read_fsts(&state))
+            .field("translation_table_mode", state.latched_rtaddr.ttm())
+            .field(
+                "queue_descriptor_bits",
+                if state.iqa.dw() { 256u16 } else { 128 },
+            )
             .hex("root_table_addr", state.latched_rtaddr.root_table_address())
             .hex("irt_addr", state.latched_irta.irt_base_address())
             .field("state", &*state);
@@ -2350,7 +2363,9 @@ impl InspectMut for IntelVtdDevice {
 
 #[cfg(test)]
 mod tests {
+    mod accessed_dirty;
     mod queued_invalidation;
+    mod scalable_fixture;
     mod scalable_translation;
 
     use super::*;
@@ -2419,6 +2434,25 @@ mod tests {
     }
 
     #[test]
+    fn test_inspect_reports_latched_mode_not_pending_rtaddr() {
+        let mut dev = create_test_device();
+        let mode = |dev: &mut IntelVtdDevice| {
+            inspect::inspect("translation_table_mode", dev)
+                .results()
+                .to_string()
+        };
+        assert_eq!(mode(&mut dev), "0");
+        write64(&mut dev, 0x020, 0x1000 | (1 << 10));
+        assert_eq!(mode(&mut dev), "0");
+        write32(&mut dev, 0x018, 1 << 30);
+        assert_eq!(mode(&mut dev), "1");
+        write64(&mut dev, 0x020, 0x2000);
+        assert_eq!(mode(&mut dev), "1");
+        write32(&mut dev, 0x018, 1 << 30);
+        assert_eq!(mode(&mut dev), "0");
+    }
+
+    #[test]
     fn test_cap_register() {
         let mut dev = create_test_device();
         let cap = read64(&mut dev, 0x008);
@@ -2445,12 +2479,11 @@ mod tests {
         assert!(ecap_reg.eim());
         assert_eq!(ecap_reg.iro(), 0x10); // 0x100
         assert_eq!(ecap_reg.mhmv(), 0xF);
-        // Format definitions must not advertise the later stack's capabilities.
-        assert!(!ecap_reg.smts());
-        assert!(!ecap_reg.ssts());
-        assert!(!ecap_reg.ssads());
-        assert!(!ecap_reg.smpwcs());
-        assert!(!ecap_reg.rps());
+        assert!(ecap_reg.smts());
+        assert!(ecap_reg.ssts());
+        assert!(ecap_reg.ssads());
+        assert!(ecap_reg.smpwcs());
+        assert!(ecap_reg.rps());
         assert!(!ecap_reg.flts());
         assert!(!ecap_reg.eafs());
         assert!(!ecap_reg.nest());
@@ -2458,7 +2491,7 @@ mod tests {
         assert!(!ecap_reg.dt());
         assert!(!ecap_reg.prs());
         assert!(!ecap_reg.srs());
-        assert_eq!(ecap, 0x0000_0000_00f0_10db);
+        assert_eq!(ecap, 0x0003_6800_00f0_10db);
     }
 
     #[test]
@@ -3901,6 +3934,12 @@ mod tests {
     /// 16. Access unmapped IOVA, verify fault recording.
     #[test]
     fn test_end_to_end_linux_init_sequence() {
+        for (scalable, dw) in [(false, false), (false, true), (true, true)] {
+            linux_init_sequence(scalable, dw);
+        }
+    }
+
+    fn linux_init_sequence(scalable: bool, dw: bool) {
         use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
         // -- Recording MSI sink to verify interrupt delivery --
@@ -3951,6 +3990,7 @@ mod tests {
         assert_eq!(cap_reg.nfr(), 0); // 1 fault record
 
         let ecap = read64(&mut dev, 0x010);
+        assert_eq!(ecap, 0x0003_6800_00f0_10db);
         let ecap_reg = EcapReg::from(ecap);
         assert!(ecap_reg.qi()); // Queued invalidation
         assert!(ecap_reg.ir()); // Interrupt remapping
@@ -3995,6 +4035,33 @@ mod tests {
             context_entry.as_bytes(),
         )
         .unwrap();
+        if scalable {
+            // RID_PASID=65 resolves directory entry 1 and PASID-table entry 1.
+            let directory = 0x16_0000u64;
+            let pasid_table = 0x17_0000u64;
+            for (address, words) in [
+                (E2E_CONTEXT_TABLE, vec![directory | 1, 65, 0, 0]),
+                (directory + 8, vec![pasid_table | 1]),
+                (
+                    pasid_table + 64,
+                    vec![
+                        E2E_PT_L4 | 1 | (2 << 2) | (2 << 6) | (1 << 9),
+                        1 | (1 << 23),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+            ] {
+                for (index, word) in words.into_iter().enumerate() {
+                    gm.write_at(address + index as u64 * 8, &word.to_le_bytes())
+                        .unwrap();
+                }
+            }
+        }
 
         // Build 4-level page tables: L4 → L3 → L2 → L1 → TARGET_GPA.
         let pte_l4 = SlPte::new()
@@ -4026,8 +4093,9 @@ mod tests {
             .unwrap();
 
         // Write RTADDR register.
-        write64(&mut dev, 0x020, E2E_ROOT_TABLE);
-        assert_eq!(read64(&mut dev, 0x020), E2E_ROOT_TABLE);
+        let rtaddr = E2E_ROOT_TABLE | (u64::from(scalable) << 10);
+        write64(&mut dev, 0x020, rtaddr);
+        assert_eq!(read64(&mut dev, 0x020), rtaddr);
 
         // GCMD: SRTP (set root table pointer).
         write32(&mut dev, 0x018, GcmdReg::new().with_srtp(true).into_bits());
@@ -4035,29 +4103,35 @@ mod tests {
         assert!(gsts.rtps(), "RTPS must be set after SRTP");
 
         // =====================================================================
-        // Step 5: Register-based invalidation (pre-QI, like Linux early init)
+        // Step 5: Register-based invalidation (legacy only)
         // =====================================================================
 
-        // Context-cache invalidation: global.
-        let ccmd = CcmdReg::new().with_icc(true).with_cirg(1); // global
-        write64(&mut dev, 0x028, ccmd.into_bits());
-        let ccmd_result = CcmdReg::from(read64(&mut dev, 0x028));
-        assert!(!ccmd_result.icc(), "ICC must be cleared after invalidation");
-        assert_eq!(ccmd_result.caig(), 1, "CAIG must echo CIRG");
+        if !scalable {
+            // Context-cache invalidation: global.
+            let ccmd = CcmdReg::new().with_icc(true).with_cirg(1); // global
+            write64(&mut dev, 0x028, ccmd.into_bits());
+            let ccmd_result = CcmdReg::from(read64(&mut dev, 0x028));
+            assert!(!ccmd_result.icc(), "ICC must be cleared after invalidation");
+            assert_eq!(ccmd_result.caig(), 1, "CAIG must echo CIRG");
 
-        // IOTLB invalidation: global.
-        let iotlb_val = IotlbReg::new().with_ivt(true).with_iirg(1).into_bits();
-        write64(&mut dev, Reg::IOTLB.0, iotlb_val);
-        let iotlb_result = IotlbReg::from(read64(&mut dev, Reg::IOTLB.0));
-        assert!(!iotlb_result.ivt(), "IVT must be cleared");
-        assert_eq!(iotlb_result.iaig(), 1, "IAIG must echo IIRG");
+            // IOTLB invalidation: global.
+            let iotlb_val = IotlbReg::new().with_ivt(true).with_iirg(1).into_bits();
+            write64(&mut dev, Reg::IOTLB.0, iotlb_val);
+            let iotlb_result = IotlbReg::from(read64(&mut dev, Reg::IOTLB.0));
+            assert!(!iotlb_result.ivt(), "IVT must be cleared");
+            assert_eq!(iotlb_result.iaig(), 1, "IAIG must echo IIRG");
+        }
 
         // =====================================================================
         // Step 6–7: Enable queued invalidation
         // =====================================================================
 
-        // Write IQA: base address, QS=0 (256 entries, 4096 bytes).
-        let iqa = IqaReg::new().with_qs(0).with_iqa(E2E_IQ_BASE >> 12);
+        // QS=0: 4KB, with 256 narrow or 128 wide descriptors.
+        let stride = if dw { 32 } else { 16 };
+        let iqa = IqaReg::new()
+            .with_qs(0)
+            .with_dw(dw)
+            .with_iqa(E2E_IQ_BASE >> 12);
         write64(&mut dev, 0x090, iqa.into_bits());
         assert_eq!(read64(&mut dev, 0x090), iqa.into_bits());
 
@@ -4108,7 +4182,7 @@ mod tests {
             dw2: 0,
             dw3: 0,
         };
-        gm.write_at(E2E_IQ_BASE + 16, desc1.as_bytes()).unwrap();
+        gm.write_at(E2E_IQ_BASE + stride, desc1.as_bytes()).unwrap();
 
         // Descriptor 2: invalidation-wait with status write (type=0x05).
         let iw_lo = InvalidationWaitDw0Dw1::new()
@@ -4122,20 +4196,19 @@ mod tests {
             dw2: iw_hi.into_bits() as u32,
             dw3: (iw_hi.into_bits() >> 32) as u32,
         };
-        gm.write_at(E2E_IQ_BASE + 32, desc2.as_bytes()).unwrap();
+        gm.write_at(E2E_IQ_BASE + 2 * stride, desc2.as_bytes())
+            .unwrap();
 
         // Clear status location.
         gm.write_at(E2E_IQ_STATUS, &0u32.to_le_bytes()).unwrap();
 
-        // Write IQT: 3 descriptors × 16 bytes = 48 bytes → tail offset 48.
-        let iqt = IqtReg::new().with_qt(3); // 3 * 16 = 48 byte offset
-        write64(&mut dev, 0x088, iqt.into_bits());
+        write64(&mut dev, 0x088, 3 * stride);
 
         // Verify head advanced to tail.
         let iqh = IqhReg::from(read64(&mut dev, 0x080));
         assert_eq!(
             iqh.head_offset(),
-            48,
+            3 * stride,
             "IQH must advance to tail after processing"
         );
 
@@ -4157,10 +4230,17 @@ mod tests {
             E2E_TEST_RID,
             0x0000,
             false, // read
-            |gpa| gpa,
+            |gpa| {
+                assert_eq!(gm.read_plain::<[u8; 2]>(gpa).unwrap(), [0, 0]);
+                gpa
+            },
         )
         .unwrap();
         assert_eq!(gpa, E2E_TARGET_GPA, "IOVA 0x0 must map to target GPA");
+        assert_eq!(
+            u64::from_le(gm.read_plain::<u64>(E2E_PT_L1).unwrap()),
+            pte_l1.into_bits() | if scalable { 1 << 8 } else { 0 },
+        );
 
         // Translate IOVA 0x0 with write.
         let gpa = iommu_common::IommuTranslator::translate(
@@ -4168,10 +4248,35 @@ mod tests {
             E2E_TEST_RID,
             0x0000,
             true, // write
-            |gpa| gpa,
+            |gpa| {
+                gm.write_at(gpa, &[0x5a, 0xa5]).unwrap();
+                gpa
+            },
         )
         .unwrap();
         assert_eq!(gpa, E2E_TARGET_GPA, "IOVA 0x0 write must map to target GPA");
+        let payload =
+            iommu_common::IommuTranslator::translate(&translator, E2E_TEST_RID, 0, false, |gpa| {
+                gm.read_plain::<[u8; 2]>(gpa).unwrap()
+            })
+            .unwrap();
+        assert_eq!(payload, [0x5a, 0xa5]);
+        for (address, original, leaf) in [
+            (E2E_PT_L4, pte_l4, false),
+            (E2E_PT_L3, pte_l3, false),
+            (E2E_PT_L2, pte_l2, false),
+            (E2E_PT_L1, pte_l1, true),
+        ] {
+            assert_eq!(
+                u64::from_le(gm.read_plain::<u64>(address).unwrap()),
+                original.into_bits()
+                    | if scalable {
+                        (1 << 8) | if leaf { 1 << 9 } else { 0 }
+                    } else {
+                        0
+                    },
+            );
+        }
 
         // Translate with page offset.
         let gpa = iommu_common::IommuTranslator::translate(
