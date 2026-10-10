@@ -137,6 +137,11 @@ pub(super) struct MemoryLayoutInput<'a> {
     /// This is used on aarch64 Linux direct boot to avoid the low GPA region
     /// that conflicts with iommufd IOVA reservations.
     pub ram_start_address: u64,
+    /// Size of a low RAM window mapped at GPA 0, below `ram_start_address`.
+    /// This allows aarch64 UEFI to reach DXE while leaving the host MSI IOVA
+    /// reservation unbacked. Must be smaller than `ram_start_address` and node
+    /// 0's RAM size.
+    pub low_ram_window_size: u64,
     /// Size in bytes of the VTL2 framebuffer mapping. When non-zero, a
     /// `PostMmio` allocation is created and the resolved GPA is returned in
     /// `ResolvedMemoryLayout::vtl2_framebuffer_gpa_base`.
@@ -158,6 +163,7 @@ pub(super) fn resolve_memory_layout(
     validate_node_mem_sizes(input.node_mem_sizes)?;
 
     let mut ram_ranges_by_node = vec![Vec::new(); input.node_mem_sizes.len()];
+    let mut low_ram_ranges = Vec::new();
     let mut pcie_root_complex_ranges = input
         .pcie_root_complexes
         .iter()
@@ -179,9 +185,22 @@ pub(super) fn resolve_memory_layout(
     // window; the caller-requested size may extend it lower.
     // Reserve low addresses so RAM starts above `ram_start_address`. This is
     // used on aarch64 Linux direct boot to skip the 128 MiB–129 MiB IOVA
-    // region that iommufd reserves for the host MSI doorbell.
+    // region that iommufd reserves for the host MSI doorbell. When a low RAM
+    // window is requested, reserve only the range above that window.
     if input.ram_start_address > 0 {
-        builder.reserve("low-ram-gap", MemoryRange::new(0..input.ram_start_address));
+        if input.low_ram_window_size >= input.ram_start_address {
+            bail!(
+                "low RAM window {:#x} must be smaller than ram_start_address {:#x}",
+                input.low_ram_window_size,
+                input.ram_start_address
+            );
+        }
+        builder.reserve(
+            "low-ram-gap",
+            MemoryRange::new(input.low_ram_window_size..input.ram_start_address),
+        );
+    } else if input.low_ram_window_size != 0 {
+        bail!("low RAM window requires a nonzero ram_start_address");
     }
 
     let arch_reserved = if cfg!(guest_arch = "x86_64") {
@@ -366,6 +385,24 @@ pub(super) fn resolve_memory_layout(
         }
     }
 
+    // Preserve a small contiguous node-0 window at GPA 0 for aarch64 UEFI.
+    // Its bytes are carved out of node 0's bulk RAM request below.
+    if input.low_ram_window_size > 0 {
+        if input.node_mem_sizes[0] <= input.low_ram_window_size {
+            bail!(
+                "low RAM window {:#x} must be smaller than node 0 RAM size {:#x}",
+                input.low_ram_window_size,
+                input.node_mem_sizes[0]
+            );
+        }
+        builder.ram(
+            "ram0-low",
+            &mut low_ram_ranges,
+            input.low_ram_window_size,
+            TWO_MB,
+        );
+    }
+
     // RAM request order is part of the NUMA compatibility contract: the first
     // request maps to vnode 0, the second to vnode 1, and so on. Memory-less
     // nodes (size 0) are skipped so the layout allocator never sees a
@@ -377,6 +414,11 @@ pub(super) fn resolve_memory_layout(
         .zip(input.node_mem_sizes)
         .enumerate()
     {
+        let ram_size = if vnode == 0 {
+            ram_size - input.low_ram_window_size
+        } else {
+            ram_size
+        };
         if ram_size == 0 {
             continue;
         }
@@ -484,10 +526,14 @@ pub(super) fn resolve_memory_layout(
         .into_iter()
         .enumerate()
         .flat_map(|(vnode, ranges)| {
-            ranges.into_iter().map(move |range| MemoryRangeWithNode {
-                range,
-                vnode: vnode as u32,
-            })
+            let prefix = std::mem::take(&mut low_ram_ranges);
+            prefix
+                .into_iter()
+                .chain(ranges)
+                .map(move |range| MemoryRangeWithNode {
+                    range,
+                    vnode: vnode as u32,
+                })
         })
         .collect::<Vec<_>>();
 
@@ -647,6 +693,7 @@ mod tests {
             pcie_ecam_below_4gb: false,
             vtl2_layout,
             ram_start_address: 0,
+            low_ram_window_size: 0,
             vtl2_framebuffer_size: 0,
             physical_address_size: 46,
         }
@@ -690,6 +737,32 @@ mod tests {
         assert_eq!(actual.ram_size(), 2 * GB);
         // RAM starts at GPA 0 and fills upward.
         assert_eq!(actual.ram()[0].range.start(), 0);
+    }
+
+    #[test]
+    fn low_ram_window_keeps_doorbell_hole_clear() {
+        const WINDOW: u64 = 32 * MB;
+        let mut input = input(&[2 * GB], None);
+        input.ram_start_address = GB;
+        input.low_ram_window_size = WINDOW;
+        let actual = resolve(input);
+
+        assert_eq!(actual.ram_size(), 2 * GB);
+        assert_eq!(actual.ram()[0].range, MemoryRange::new(0..WINDOW));
+        assert_eq!(actual.ram()[1].range.start(), GB);
+        assert_eq!(actual.ram()[1].range.len(), 2 * GB - WINDOW);
+
+        let doorbell = MemoryRange::new(0x800_0000..0x810_0000);
+        for ram in actual.ram() {
+            assert!(!ram.range.overlaps(&doorbell));
+        }
+    }
+
+    #[test]
+    fn low_ram_window_requires_ram_start_address() {
+        let mut input = input(&[2 * GB], None);
+        input.low_ram_window_size = 32 * MB;
+        assert!(resolve_memory_layout(input).is_err());
     }
 
     #[test]
