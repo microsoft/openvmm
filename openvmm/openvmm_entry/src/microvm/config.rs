@@ -592,6 +592,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                             .map(|(child, (_, attachment))| {
                                 virtio_resources::fs::microvm::MicrovmAggregateChild {
                                     name: child.name.clone(),
+                                    file: child.is_file(),
                                     root_identity: attachment.identity.clone(),
                                     read_only: child.access.is_read_only(),
                                     denied_paths: child.denied_paths.clone(),

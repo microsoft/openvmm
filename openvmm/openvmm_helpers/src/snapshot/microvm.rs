@@ -294,10 +294,11 @@ pub struct SnapshotMicrovmFilesystem {
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
 pub struct SnapshotMicrovmFilesystemChild {
-    /// Name of the child's directory under the aggregate's root.
+    /// Name of the child under the aggregate's root.
     #[mesh(1)]
     pub name: String,
-    /// Canonical absolute host path of the child's root.
+    /// Canonical absolute host path of the child's root: the directory or
+    /// regular file that the child exposes.
     #[mesh(2)]
     pub canonical_host_path: String,
     /// Kind of the root's identity, as an attachment records it.
@@ -320,6 +321,10 @@ pub struct SnapshotMicrovmFilesystemChild {
     /// read-write child that the guest can modify.
     #[mesh(8)]
     pub writable_paths: Vec<String>,
+    /// What the child exposes: empty for a host directory, as snapshots that
+    /// predate this field record, or `file` for a regular host file.
+    #[mesh(9)]
+    pub kind: String,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -403,10 +408,22 @@ impl SnapshotMicrovmFilesystem {
                         denied_paths: child.denied_paths.clone(),
                         allowed_paths: child.allowed_paths.clone(),
                         writable_paths: child.writable_paths.clone(),
+                        kind: snapshot_microvm_filesystem_child_kind_str(child.kind).to_owned(),
                     }
                 })
                 .collect(),
         }
+    }
+}
+
+/// Returns the spelling of `kind` that a snapshot records: empty for a
+/// directory, which every child was before files could be children.
+fn snapshot_microvm_filesystem_child_kind_str(
+    kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
+) -> &'static str {
+    match kind {
+        openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory => "",
+        openvmm_defs::microvm::MicrovmFilesystemChildKind::File => "file",
     }
 }
 
@@ -444,17 +461,23 @@ pub fn snapshot_microvm_filesystem_config(
             .children
             .iter()
             .map(|child| {
-                anyhow::Ok(
-                    openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(
-                        child.name.clone(),
-                        snapshot_microvm_filesystem_access(&child.access_mode)?,
-                    )?
-                    .with_access_policy(
-                        child.denied_paths.clone(),
-                        child.allowed_paths.clone(),
-                        child.writable_paths.clone(),
-                    )?,
-                )
+                let name = child.name.clone();
+                let access = snapshot_microvm_filesystem_access(&child.access_mode)?;
+                let config = match child.kind.as_str() {
+                    "" => openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(name, access)?,
+                    "file" => {
+                        openvmm_defs::microvm::MicrovmFilesystemChildConfig::new_file(name, access)?
+                    }
+                    kind => anyhow::bail!(
+                        "snapshot filesystem child '{}' has the unsupported kind '{kind}'",
+                        child.name
+                    ),
+                };
+                anyhow::Ok(config.with_access_policy(
+                    child.denied_paths.clone(),
+                    child.allowed_paths.clone(),
+                    child.writable_paths.clone(),
+                )?)
             })
             .collect::<anyhow::Result<Vec<_>>>()
             .context("snapshot filesystem policy is invalid")?;
@@ -3166,6 +3189,80 @@ mod tests {
     }
 
     #[test]
+    fn microvm_aggregate_contract_records_file_children() {
+        use openvmm_defs::microvm::MicrovmFilesystemAccess;
+        use openvmm_defs::microvm::MicrovmFilesystemChildConfig;
+
+        let config = openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
+            "/run/nvx/shares".to_owned(),
+            vec![
+                MicrovmFilesystemChildConfig::new(
+                    "work".to_owned(),
+                    MicrovmFilesystemAccess::ReadWrite,
+                )
+                .unwrap(),
+                MicrovmFilesystemChildConfig::new_file(
+                    "tools".to_owned(),
+                    MicrovmFilesystemAccess::ReadOnly,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let roots = aggregate_roots("kvm");
+        let contract = filesystem_contract(
+            "kvm",
+            filesystem_command_line(&config),
+            true,
+            aggregate_source(&config, &roots),
+        )
+        .unwrap();
+        let filesystem = contract.microvm_filesystem.as_ref().unwrap();
+        // A directory child records no kind, as snapshots that predate file
+        // children do.
+        assert_eq!(
+            filesystem
+                .children
+                .iter()
+                .map(|child| child.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["", "file"]
+        );
+        assert_eq!(
+            snapshot_microvm_filesystem_config(filesystem).unwrap(),
+            config
+        );
+        let mut manifest = test_manifest();
+        manifest.memory_size_bytes = 1024;
+        manifest.vp_count = 1;
+        manifest.machine_contract = Some(contract.clone());
+        validate_microvm_machine_contract(&manifest, &contract).unwrap();
+
+        for kind in ["", "directory", "socket"] {
+            let mut tampered = filesystem.clone();
+            tampered.children[1].kind = kind.to_owned();
+            if kind.is_empty() {
+                // The child becomes a directory, which the snapshot did not
+                // attach.
+                assert_ne!(
+                    snapshot_microvm_filesystem_config(&tampered).unwrap(),
+                    config
+                );
+            } else {
+                let error = snapshot_microvm_filesystem_config(&tampered).unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("unsupported kind"),
+                    "{error:#}"
+                );
+            }
+        }
+        // A file has no policy paths.
+        let mut tampered = filesystem.clone();
+        tampered.children[1].denied_paths = vec!["x".to_owned()];
+        assert!(snapshot_microvm_filesystem_config(&tampered).is_err());
+    }
+
+    #[test]
     fn microvm_aggregate_contract_rejects_changed_children() {
         let config = aggregate_filesystem();
         let roots = aggregate_roots("kvm");
@@ -3183,13 +3280,14 @@ mod tests {
             manifest.machine_contract = Some(contract.clone());
             manifest
         };
-        let tampers: [fn(&mut SnapshotMicrovmFilesystem); 6] = [
+        let tampers: [fn(&mut SnapshotMicrovmFilesystem); 7] = [
             |filesystem| filesystem.children[1].identity = b"another-root".to_vec(),
             |filesystem| filesystem.children.swap(0, 1),
             |filesystem| filesystem.children[0].canonical_host_path.clear(),
             |filesystem| filesystem.canonical_host_path = "/elsewhere".to_owned(),
             |filesystem| filesystem.children[1].access_mode = "rw".to_owned(),
             |filesystem| filesystem.children[0].denied_paths.clear(),
+            |filesystem| filesystem.children[1].kind = "file".to_owned(),
         ];
         for tamper in tampers {
             let mut tampered = contract.clone();

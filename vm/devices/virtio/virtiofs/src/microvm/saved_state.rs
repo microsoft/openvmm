@@ -26,6 +26,11 @@ pub(crate) const SUBTREE_POLICY_SCHEMA_VERSION: u32 = 7;
 /// in `aggregate_children` and their inodes by volume. Readers that predate
 /// aggregates require every inode to belong to volume 0, so they reject it.
 pub(crate) const AGGREGATE_SCHEMA_VERSION: u32 = 8;
+/// The schema version of an aggregate attachment with a child that exposes a
+/// regular file, which `aggregate_children` marks. Readers that predate file
+/// children would take the file's identity for a directory's, so they must
+/// reject its state.
+pub(crate) const FILE_CHILD_SCHEMA_VERSION: u32 = 9;
 pub(crate) const MAX_INODES: usize = 4096;
 pub(crate) const MAX_HANDLES: usize = 4096;
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
@@ -96,9 +101,10 @@ pub(crate) struct SavedState {
     pub writable_paths: Vec<String>,
     /// The children of an aggregate attachment, in the order in which the
     /// synthetic root lists them, recorded only by version
-    /// [`AGGREGATE_SCHEMA_VERSION`] states. Child `index` owns the inodes of
-    /// volume `index + 1`, and the synthetic root's directory cookies are
-    /// positions in this list, so the list restores them.
+    /// [`AGGREGATE_SCHEMA_VERSION`] and [`FILE_CHILD_SCHEMA_VERSION`] states.
+    /// Child `index` owns the inodes of volume `index + 1`, and the synthetic
+    /// root's directory cookies are positions in this list, so the list
+    /// restores them.
     #[mesh(22)]
     pub aggregate_children: Vec<SavedAggregateChild>,
 }
@@ -119,6 +125,10 @@ pub(crate) struct SavedAggregateChild {
     pub allowed_paths: Vec<String>,
     #[mesh(6)]
     pub writable_paths: Vec<String>,
+    /// Whether the child exposes a regular file, which only version
+    /// [`FILE_CHILD_SCHEMA_VERSION`] states record.
+    #[mesh(7)]
+    pub file: bool,
 }
 
 #[derive(Protobuf)]
