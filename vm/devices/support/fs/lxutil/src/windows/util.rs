@@ -568,8 +568,8 @@ pub fn file_info_to_stat(
         options.default_uid,
         options.default_gid,
         options.umask,
-        options.dmask,
         options.fmask,
+        options.dmask,
     )?;
 
     // The uid, gid and mode options are applied to all files, even if they have metadata.

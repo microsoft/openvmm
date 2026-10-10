@@ -4524,6 +4524,7 @@ dependencies = [
  "parking_lot",
  "static_assertions",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "widestring",
  "windows 0.62.0",
