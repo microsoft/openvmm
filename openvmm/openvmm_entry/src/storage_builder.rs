@@ -803,9 +803,9 @@ impl StorageBuilder {
                     let subsystem_id = deterministic_guid(&name);
                     match ctrl.transport {
                         NvmeControllerTransport::Pcie(port_name) => {
-                            config.pcie_devices.push(PcieDeviceConfig {
+                            config.pcie_devices.push(PcieDeviceConfig::new(
                                 port_name,
-                                resource: NvmeControllerHandle {
+                                NvmeControllerHandle {
                                     subsystem_id,
                                     namespaces: ctrl.namespaces,
                                     max_io_queues: 64,
@@ -813,7 +813,7 @@ impl StorageBuilder {
                                     requests: ctrl.requests,
                                 }
                                 .into_resource(),
-                            });
+                            ));
                         }
                         NvmeControllerTransport::Vpci(instance_id) => {
                             config.vpci_devices.push(VpciDeviceConfig {
@@ -915,10 +915,10 @@ impl StorageBuilder {
         }
 
         for (port_name, vblk) in std::mem::take(&mut self.pcie_virtio_blk_disks) {
-            config.pcie_devices.push(PcieDeviceConfig {
+            config.pcie_devices.push(PcieDeviceConfig::new(
                 port_name,
-                resource: VirtioPciDeviceHandle(vblk.into_resource()).into_resource(),
-            });
+                VirtioPciDeviceHandle(vblk.into_resource()).into_resource(),
+            ));
         }
 
         Ok(())

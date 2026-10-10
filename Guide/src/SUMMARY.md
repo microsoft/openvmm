@@ -33,6 +33,7 @@
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
   - [Cross Compiling for Windows](./dev_guide/getting_started/cross_compile.md)
   - [Running from WSL2](./dev_guide/getting_started/running_from_wsl.md)
+- [GB200 direct UVM on MSHV](./dev_guide/gb200_direct_uvm.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
   - [VMM Tests](./dev_guide/tests/vmm.md)

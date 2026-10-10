@@ -41,12 +41,7 @@ impl ResourceId<PciDeviceHandleKind> for VfioDeviceHandle {
     const ID: &'static str = "vfio";
 }
 
-/// A handle to a VFIO-assigned PCI device (cdev + iommufd path).
-///
-/// The launcher opens the VFIO cdev file descriptor
-/// (e.g., `/dev/vfio/devices/vfio0`) and the iommufd file descriptor
-/// (`/dev/iommu`) and passes them here. The VMM binds the device to the
-/// iommufd instance and attaches an IOAS for DMA mapping.
+/// A VFIO cdev device with its iommufd attachment configuration.
 #[derive(MeshPayload)]
 pub struct VfioCdevDeviceHandle {
     /// PCI BDF address on the host (e.g., "0000:3f:7a.0").
@@ -60,6 +55,12 @@ pub struct VfioCdevDeviceHandle {
     pub iommu_id: String,
     /// Per-BAR pre-programming configuration.
     pub bar_addresses: [BarAddressConfig; 6],
+    /// Use direct vIOMMU/vDEVICE/HWPT attach for this cdev.
+    pub direct_iommu: bool,
+    /// Enable the DIRECT HWPT PASID/SVA path for this device.
+    pub direct_pasid: bool,
+    /// Enable endpoint ATS/ATC on the DIRECT HWPT.
+    pub direct_ats: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for VfioCdevDeviceHandle {

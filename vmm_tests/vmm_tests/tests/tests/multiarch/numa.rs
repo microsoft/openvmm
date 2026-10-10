@@ -356,9 +356,9 @@ async fn pcie_device_numa_affinity(
                 });
 
                 // Attach an NVMe device to the root port.
-                c.pcie_devices.push(PcieDeviceConfig {
-                    port_name: "rp0".to_string(),
-                    resource: nvme_resources::NvmeControllerHandle {
+                c.pcie_devices.push(PcieDeviceConfig::new(
+                    "rp0".to_string(),
+                    nvme_resources::NvmeControllerHandle {
                         subsystem_id: nvme_subsystem_id,
                         max_io_queues: 64,
                         msix_count: 64,
@@ -376,7 +376,7 @@ async fn pcie_device_numa_affinity(
                         requests: None,
                     }
                     .into_resource(),
-                });
+                ));
             })
         })
         .run()
