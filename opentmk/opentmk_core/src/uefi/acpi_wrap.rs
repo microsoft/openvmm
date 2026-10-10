@@ -69,34 +69,17 @@ impl RsdpParser {
 
     // Finds the RSDP pointer from the UEFI system table.
     fn find_rsdp_from_uefi_system_table() -> TmkResult<NonNull<Rsdp>> {
-        let system_table = uefi::table::system_table_raw();
-
-        let Some(system_table) = system_table else {
+        // with_config_table() panics without a system table.
+        if uefi::table::system_table_raw().is_none() {
             return Err(AcpiWrapError::UefiSystemTableNotFound.into());
-        };
-
-        // SAFETY: system_table_raw() returns a pointer that was set during UEFI entry
-        // point initialization by the uefi crate. It points to a valid SystemTable
-        // that remains valid until boot services are exited.
-        let system_table_address = unsafe { system_table.as_ref() };
-
-        let config_count = system_table_address.number_of_configuration_table_entries;
-        let config_table_ptr = system_table_address.configuration_table;
-
-        if config_count == 0 || config_table_ptr.is_null() {
-            return Err(AcpiWrapError::RsdpNotFound.into());
         }
 
-        // SAFETY: The UEFI specification guarantees that configuration_table points to
-        // a contiguous array of exactly number_of_configuration_table_entries valid
-        // ConfigurationTable entries within boot-services memory. We checked above
-        // that config_count > 0 and config_table_ptr is non-null.
-        let config_slice = unsafe { core::slice::from_raw_parts(config_table_ptr, config_count) };
-
-        let rsdp = config_slice
-            .iter()
-            .find(|entry| entry.vendor_guid == ConfigTableEntry::ACPI2_GUID)
-            .map(|entry| entry.vendor_table);
+        let rsdp = uefi::system::with_config_table(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.guid == ConfigTableEntry::ACPI2_GUID)
+                .map(|entry| entry.address.cast_mut())
+        });
 
         if let Some(rsdp) = rsdp {
             Ok(NonNull::new(rsdp.cast::<Rsdp>()).ok_or(AcpiWrapError::InvalidRsdp)?)
