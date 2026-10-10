@@ -884,8 +884,13 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
+///   - Re-enable once the MU team fixes `[Bds] Unable to boot!` and its temporary
+///     suppression is removed: https://microsoft.visualstudio.com/OS/_workitems/edit/64415007
 #[vmm_test_with(
     noagent,
+    ignore(
+        reason = "Expected [Bds] Unable to boot! log is temporarily suppressed pending MU firmware fix (64415007)"
+    ),
     configs(
         hyperv_openhcl_uefi_x64(none),
         hyperv_openhcl_uefi_aarch64(none),
