@@ -3,6 +3,8 @@
 
 //! Linux specific loader definitions and implementation.
 
+pub mod microvm;
+
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
@@ -14,6 +16,7 @@ use crate::importer::BootPageAcceptance;
 use crate::importer::GuestArch;
 use crate::importer::ImageLoad;
 use crate::importer::X86Register;
+use crate::mptable;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
 use aarch64defs::SctlrEl1;
@@ -221,6 +224,16 @@ pub enum Error {
     TooManyMemoryRanges(usize),
     #[error("acpi tables are empty")]
     EmptyAcpiTables,
+    #[error("MP-table Linux direct boot requires an uncompressed ELF kernel")]
+    MpTableRequiresElf,
+    #[error("failed to construct MP tables")]
+    MpTable(#[from] mptable::Error),
+    #[error("MP table ending at {table_end:#x} overlaps the GDT at {gdt_addr:#x}")]
+    MpTableOverlap { table_end: usize, gdt_addr: u64 },
+    #[error("invalid MP-table reserved memory range {start:#x}..{end:#x}")]
+    InvalidReservedMemoryRange { start: u64, end: u64 },
+    #[error("the memory layout cannot represent the fixed MP-table platform ranges")]
+    InvalidMpTableMemoryLayout,
 }
 
 /// ACPI tables to place in guest memory: a one-page RSDP plus the tables it
