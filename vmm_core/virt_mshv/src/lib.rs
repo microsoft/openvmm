@@ -776,6 +776,9 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to get partition property")]
     GetPartitionProperty(#[source] KernelError),
+    #[cfg(guest_arch = "aarch64")]
+    #[error("failed to get host partition property")]
+    GetHostPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
     SetPartitionProperty(#[source] KernelError),
     #[error("register access error")]
