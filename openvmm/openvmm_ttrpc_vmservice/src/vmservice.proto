@@ -27,6 +27,19 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
+    // SaveVM captures the VM's memory, device state, and processor state into
+    // a snapshot directory and returns a unique snapshot ID, which is also
+    // stored in the snapshot manifest. The VM is paused by this call and
+    // remains paused after it completes. Cancelling the call only stops the
+    // caller from waiting; the save may still complete.
+    rpc SaveVM(SaveVMRequest) returns (SaveVmResult);
+
+    // RestoreVM creates a VM from a snapshot directory and the supplied device
+    // configuration. The service must not already contain a VM. The VM stays
+    // paused unless resume is set. The snapshot's memory.bin is used in place,
+    // so a snapshot can be restored only once.
+    rpc RestoreVM(RestoreVMRequest) returns (RestoreVmResult);
+
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
     // via TeardownVM.
     rpc WaitVM(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -153,6 +166,9 @@ message MemoryConfig {
     uint64 low_mmio_gap_in_mb = 7;
     uint64 high_mmio_base_in_mb = 8;
     uint64 high_mmio_gap_in_mb = 9;
+    // Optional host file used to back guest memory. SaveVM requires
+    // file-backed memory. Must not be set for RestoreVM.
+    optional string backing_file_path = 10;
 }
 
 message ProcessorConfig {
@@ -757,6 +773,31 @@ message CreateVMRequest {
     // server/virtstack to make use of this field. Useful for debugging to be able to
     // correlate events in the virtstack for a given vm that the client launched.
     string log_id = 2;
+}
+
+message SaveVMRequest {
+    string destination_dir = 1;
+}
+
+message SaveVmResult {
+    // OpenVMM-generated GUID for the snapshot.
+    string snapshot_id = 1;
+}
+
+message RestoreVMRequest {
+    string source_dir = 1;
+    // Device and boot configuration must be compatible with the snapshot.
+    VMConfig config = 2;
+    // If set, restore fails unless it matches the snapshot ID in the
+    // snapshot manifest.
+    optional string expected_snapshot_id = 3;
+    // Resume the restored VM immediately. Otherwise it remains paused.
+    bool resume = 4;
+}
+
+message RestoreVmResult {
+    // Snapshot ID read from the snapshot manifest.
+    string snapshot_id = 1;
 }
 
 message MemoryStats {
