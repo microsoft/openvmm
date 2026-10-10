@@ -2731,6 +2731,7 @@ async fn new_underhill_vm(
                     with_psp: dps.general.psp_enabled,
                     pm_base: DEFAULT_PM_PIO_BASE,
                     acpi_irq: DEFAULT_ACPI_IRQ,
+                    level_triggered_irqs: &[],
                     iommu: None,
                 },
             };
