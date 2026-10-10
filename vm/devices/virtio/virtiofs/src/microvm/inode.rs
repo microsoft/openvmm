@@ -27,11 +27,13 @@ impl VirtioFsVolume {
         strict_paths: bool,
         policy: SubtreePolicy,
         pinned_identities: HashMap<(u64, u64), Option<PathBuf>>,
+        exposed_file: Option<PathBuf>,
     ) -> Self {
         let mut volume = Self::new(volume, id, readonly);
         volume.strict_paths = strict_paths;
         volume.policy = policy;
         volume.pinned_identities = pinned_identities;
+        volume.exposed_file = exposed_file;
         volume
     }
 
@@ -39,8 +41,19 @@ impl VirtioFsVolume {
         self.strict_paths
     }
 
-    /// Rejects a path that the access policy hides from the guest.
+    /// Rejects a path that the access policy hides from the guest, or, in a
+    /// volume that exposes a file, any path but the file's: nothing lies
+    /// below the file, and nothing else of its directory is exposed.
     pub(crate) fn ensure_path_allowed(&self, path: &Path) -> lx::Result<()> {
+        if let Some(file) = self.exposed_file()
+            && path != file
+        {
+            return Err(if path.starts_with(file) {
+                lx::Error::ENOTDIR
+            } else {
+                lx::Error::EACCES
+            });
+        }
         if self.policy.visibility(path) == PathVisibility::Hidden {
             return Err(lx::Error::EACCES);
         }
@@ -49,8 +62,10 @@ impl VirtioFsVolume {
 
     /// Rejects an object that the guest reached at `path` but must not see
     /// there: a hidden object pinned when the share was attached, which may
-    /// be reachable only at its own path or not at all, or anything but a
-    /// directory at a traverse-only path.
+    /// be reachable only at its own path or not at all, anything but a
+    /// directory at a traverse-only path, or, in a volume that exposes a
+    /// file, anything but that regular file, which the host may have replaced
+    /// since the volume was attached.
     pub(crate) fn ensure_object_allowed(&self, path: &Path, stat: &lx::Stat) -> lx::Result<()> {
         if let Some(reachable_at) = self.pinned_identities.get(&(stat.device_nr, stat.inode_nr)) {
             if reachable_at.as_deref() != Some(path) {
@@ -59,6 +74,11 @@ impl VirtioFsVolume {
         }
         if self.policy.visibility(path) == PathVisibility::TraverseOnly
             && stat.mode & lx::S_IFMT != lx::S_IFDIR
+        {
+            return Err(lx::Error::EACCES);
+        }
+        if let Some(file) = self.exposed_file()
+            && (path != file || stat.mode & lx::S_IFMT != lx::S_IFREG)
         {
             return Err(lx::Error::EACCES);
         }
@@ -183,6 +203,11 @@ impl VirtioFsInode {
                 let final_link = allow_final_link && index + 1 == component_count;
                 if stat.mode & lx::S_IFMT == lx::S_IFLNK && !final_link {
                     return Err(lx::Error::ELOOP);
+                }
+                // The host may replace the file that a volume exposes, but
+                // the guest reaches nothing else through it.
+                if index + 1 == component_count && self.volume.exposed_file().is_some() {
+                    self.volume.ensure_object_allowed(&path, &stat)?;
                 }
             }
         }

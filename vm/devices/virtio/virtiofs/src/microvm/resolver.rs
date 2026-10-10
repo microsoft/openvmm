@@ -9,6 +9,7 @@ use super::profile::microvm_mount_tag;
 use crate::virtio::VirtioFsDevice;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
+use virtio_resources::fs::microvm::MicrovmAggregateChildKind;
 use virtio_resources::fs::microvm::VirtioFsProfile;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -103,17 +104,31 @@ pub(crate) fn resolve(
             );
             let children = children
                 .iter()
-                .map(|child| {
-                    MicroVmAggregateChild::new(
+                .map(|child| match child.kind {
+                    MicrovmAggregateChildKind::Directory => Ok(MicroVmAggregateChild::new(
                         child.name.clone(),
                         child.root_identity.clone(),
                         child.read_only,
                         child.denied_paths.clone(),
                         child.allowed_paths.clone(),
                         child.writable_paths.clone(),
-                    )
+                    )?),
+                    MicrovmAggregateChildKind::File => {
+                        anyhow::ensure!(
+                            child.denied_paths.is_empty()
+                                && child.allowed_paths.is_empty()
+                                && child.writable_paths.is_empty(),
+                            "microVM aggregate child '{}' exposes a regular file, which takes no denied, allowed, or writable paths; its access mode applies to the whole file",
+                            child.name
+                        );
+                        Ok(MicroVmAggregateChild::new_file(
+                            child.name.clone(),
+                            child.root_identity.clone(),
+                            child.read_only,
+                        )?)
+                    }
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<anyhow::Result<Vec<_>>>()?;
             VirtioFsDevice::new_microvm_aggregate(
                 driver_source,
                 stable_id.clone(),
@@ -135,10 +150,12 @@ mod tests {
     use super::*;
     use crate::profile::MICROVM_ATTACHMENT_ID;
     use crate::profile::MICROVM_MOUNT_TAG;
+    use crate::profile::microvm_file_identity;
     use crate::profile::microvm_root_identity;
     use crate::resolver::VirtioFsResolver;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::path::Path;
     use virtio::resolve::ResolvedVirtioDevice;
     use virtio::resolve::VirtioResolveInput;
     use virtio_resources::fs::VirtioFsAggregateChild;
@@ -251,6 +268,7 @@ mod tests {
                         .map(
                             |(name, root)| virtio_resources::fs::microvm::MicrovmAggregateChild {
                                 name: (*name).to_owned(),
+                                kind: MicrovmAggregateChildKind::Directory,
                                 root_identity: microvm_root_identity(root.path()).unwrap(),
                                 read_only: true,
                                 denied_paths: Vec::new(),
@@ -314,6 +332,61 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[async_test]
+    async fn microvm_aggregate_profile_resolves_file_children(driver: DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("settings.json");
+        std::fs::write(&file, b"{}").unwrap();
+        let resolve_file = |identity: Vec<u8>, root_path: &Path, denied_paths: Vec<String>| {
+            let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+            VirtioFsResolver.resolve(
+                VirtioFsHandle {
+                    tag: MICROVM_MOUNT_TAG.to_owned(),
+                    fs: VirtioFsBackend::Aggregate {
+                        children: vec![VirtioFsAggregateChild {
+                            name: "0".to_owned(),
+                            root_path: root_path.to_string_lossy().into_owned(),
+                            mount_options: String::new(),
+                        }],
+                    },
+                    profile: VirtioFsProfile::MicrovmAggregate {
+                        stable_id: MICROVM_ATTACHMENT_ID.to_owned(),
+                        children: vec![virtio_resources::fs::microvm::MicrovmAggregateChild {
+                            name: "0".to_owned(),
+                            kind: MicrovmAggregateChildKind::File,
+                            root_identity: identity,
+                            read_only: true,
+                            denied_paths,
+                            allowed_paths: Vec::new(),
+                            writable_paths: Vec::new(),
+                        }],
+                        caller_identity: false,
+                    },
+                },
+                VirtioResolveInput {
+                    driver_source: &driver_source,
+                },
+            )
+        };
+        let identity = microvm_file_identity(&file).unwrap();
+        resolve_file(identity.clone(), &file, Vec::new()).unwrap();
+        // A file has no policy paths.
+        assert!(resolve_file(identity.clone(), &file, vec!["x".to_owned()]).is_err());
+        // The root must be the file that the identity names, and a regular
+        // file, not its directory.
+        assert!(resolve_file(identity, directory.path(), Vec::new()).is_err());
+        assert!(
+            resolve_file(
+                microvm_root_identity(directory.path()).unwrap(),
+                directory.path(),
+                Vec::new()
+            )
+            .is_err()
+        );
+        assert!(microvm_file_identity(directory.path()).is_err());
+        assert!(microvm_root_identity(&file).is_err());
     }
 
     #[async_test]
