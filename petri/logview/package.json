@@ -30,6 +30,9 @@
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "overrides": {
+    "postcss-selector-parser": "7.1.6"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
