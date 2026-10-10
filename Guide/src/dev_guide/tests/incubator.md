@@ -9,8 +9,7 @@ model.
 Use Incubator for tests that need hardware behavior outside the normal OpenVMM
 host test environment.
 
-Ordinary VMM tests should continue to use `cargo xflowey vmm-tests-run`
-without `--incubator`. QEMU TCG is significantly slower than native execution,
+QEMU TCG is significantly slower than native execution,
 so Incubator is reserved for tests that need its emulated platform.
 
 ## Execution model
@@ -33,28 +32,6 @@ there. OpenVMM then uses the emulated KVM interface to create the test VM.
 
 Incubator is therefore not an OpenVMM backend. It is a Cargo target runner that
 places the existing test executable in a machine capable of running it.
-
-## Running the current Incubator tests
-
-Run the AArch64 TCG test set from a Linux host:
-
-```bash
-cargo xflowey vmm-tests-run \
-  --incubator \
-  --target linux-aarch64-musl \
-  --filter "test(aarch64_tcg)"
-```
-
-`--target` is required with `--incubator`.
-
-To select a profile explicitly, pass either its short name or a path:
-
-```bash
-cargo xflowey vmm-tests-run \
-  --incubator aarch64-tcg-pcie \
-  --target linux-aarch64-musl \
-  --filter "test(aarch64_tcg)"
-```
 
 ## Direct invocation
 

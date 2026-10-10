@@ -22,6 +22,7 @@ use crate::PetriVmRuntime;
 use crate::PetriVmRuntimeConfig;
 use crate::PetriVmmBackend;
 use crate::ShutdownKind;
+use crate::TestChild;
 use crate::VmmQuirks;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::PetriVmProperties;
@@ -67,7 +68,7 @@ pub struct QemuPetriConfig {
 /// Resources needed at runtime for a QEMU Petri VM
 pub struct QemuPetriRuntime {
     driver: DefaultDriver,
-    qemu_process: Arc<Mutex<PolledChild<std::process::Child>>>,
+    qemu_process: Arc<Mutex<TestChild>>,
     host_pipette_port: u16,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     output_dir: PathBuf,
@@ -79,6 +80,7 @@ impl PetriVmmBackend for QemuPetriBackend {
     type VmRuntime = QemuPetriRuntime;
     const SUPPORTS_VMBUS: bool = false;
     const SUPPORTS_CPU_EMULATION: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = true;
 
     fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
         // Our QEMU bachend only supports linux X64 at this time
@@ -107,16 +109,31 @@ impl PetriVmmBackend for QemuPetriBackend {
         Ok(None)
     }
 
-    fn build_custom_init_script(pipette_path: &str) -> Option<String> {
-        Some(format!(
+    fn build_custom_init_script(
+        pipette_path: &str,
+        mount_shares: Vec<(String, String)>,
+    ) -> Option<String> {
+        let mut script = String::from(
             "#!/bin/sh\n\
             ip link set eth0 up\n\
             ip addr add 10.0.2.15/24 dev eth0\n\
             ip route add default via 10.0.2.2\n\
-            echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n\
-            exec '/{}' --transport tcp\n",
+            echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n",
+        );
+
+        for (tag, path) in mount_shares {
+            script.push_str(&format!(
+                "mkdir -p {path}\n\
+                mount -t 9p -o trans=virtio,version=9p2000.L {tag} {path}\n"
+            ));
+        }
+
+        script.push_str(&format!(
+            "exec '/{}' --transport tcp\n",
             pipette_path.replace('\'', "'\\''")
-        ))
+        ));
+
+        Some(script)
     }
 
     fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
@@ -136,7 +153,7 @@ impl PetriVmmBackend for QemuPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        _properties: PetriVmProperties,
+        _properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let PetriVmResources {
             driver,
@@ -197,7 +214,7 @@ impl PetriVmmBackend for QemuPetriBackend {
         Ok((
             QemuPetriRuntime {
                 driver: driver.clone(),
-                qemu_process: Arc::new(Mutex::new(qemu_process)),
+                qemu_process: Arc::new(Mutex::new(TestChild::new(qemu_process))),
                 host_pipette_port,
                 log_tasks,
                 output_dir: log_source.output_dir().to_owned(),
@@ -431,6 +448,61 @@ pub fn build_qemu_command(
     host_pipette_port: u16,
     prebuilt_initrd: &PetriInitrd,
 ) -> anyhow::Result<Command> {
+    let PetriVmConfig {
+        name: _,
+        arch,
+        host_log_levels,
+        firmware,
+        hibernation_enabled,
+        ipmi_enabled,
+        memory:
+            crate::MemoryConfig {
+                startup_bytes,
+                dynamic_memory_range,
+                numa_mem_sizes,
+                private_memory,
+                transparent_hugepages: _, // ignored
+            },
+        proc_topology:
+            crate::ProcessorTopology {
+                vp_count,
+                enable_smt,
+                vps_per_socket,
+                apic_mode,
+            },
+        nested_virt_enabled: _, // this is always enabled currently
+        vmgs,
+        tpm,
+        vmbus_storage_controllers,
+        pcie_nvme_drives,
+        pcie_virtio_blk_drives,
+        physical_nvme_devices,
+        guest_shares,
+    } = config;
+
+    let QemuPetriConfig { share_9p, devices } = qemu_config;
+
+    // make sure we aren't silently ignoring any configurations
+    assert!(matches!(arch, MachineArch::Aarch64));
+    assert!(matches!(
+        host_log_levels,
+        None | Some(crate::OpenvmmLogConfig::TestDefault)
+    ));
+    assert!(!*hibernation_enabled);
+    assert!(!*ipmi_enabled);
+    assert!(dynamic_memory_range.is_none());
+    assert!(numa_mem_sizes.is_none());
+    assert!(private_memory.is_none());
+    assert!(enable_smt.is_none());
+    assert!(vps_per_socket.is_none());
+    assert!(apic_mode.is_none());
+    assert!(matches!(vmgs, crate::PetriVmgsResource::Ephemeral));
+    assert!(tpm.is_none());
+    assert!(vmbus_storage_controllers.is_empty());
+    assert!(pcie_nvme_drives.is_empty());
+    assert!(pcie_virtio_blk_drives.is_empty());
+    assert!(physical_nvme_devices.is_empty());
+
     let mut cmd = Command::new(binary);
 
     cmd.arg("-machine")
@@ -438,15 +510,14 @@ pub fn build_qemu_command(
     cmd.arg("-cpu").arg("max");
     // TODO: more complex memory topologies
     cmd.arg("-m")
-        .arg((config.memory.startup_bytes / (1024 * 1024)).to_string());
+        .arg((startup_bytes / (1024 * 1024)).to_string());
     // TODO: more complex CPU topologies
-    cmd.arg("-smp")
-        .arg(config.proc_topology.vp_count.to_string());
+    cmd.arg("-smp").arg(vp_count.to_string());
     cmd.arg("-nographic");
 
     let PetriInitrd { path, rdinit_param } = prebuilt_initrd;
 
-    match &config.firmware {
+    match firmware {
         Firmware::LinuxDirect { kernel, .. } => {
             cmd.arg("-kernel").arg(kernel);
             cmd.arg("-initrd").arg(path.as_ref());
@@ -458,14 +529,20 @@ pub fn build_qemu_command(
     cmd.arg("-no-reboot");
 
     // 9p: share the host directory into the guest
-    if let Some(share_dir) = qemu_config.share_9p.as_ref() {
+    let mut guest_shares = guest_shares
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_path()))
+        .collect::<Vec<_>>();
+    if let Some(custom_share) = share_9p {
+        guest_shares.push((SHARE_9P_MOUNT_TAG, custom_share.as_path()));
+    }
+    for (i, (tag, path)) in guest_shares.iter().enumerate() {
         cmd.arg("-fsdev").arg(format!(
-            "local,id=fsdev0,path={},security_model=none",
-            share_dir.display()
+            "local,id=fsdev{i},path={},security_model=none",
+            path.to_str().context("share path not utf8")?
         ));
-        cmd.arg("-device").arg(format!(
-            "virtio-9p-pci,fsdev=fsdev0,mount_tag={SHARE_9P_MOUNT_TAG}"
-        ));
+        cmd.arg("-device")
+            .arg(format!("virtio-9p-pci,fsdev=fsdev{i},mount_tag={tag}"));
     }
 
     // User-mode networking with port forwarding for pipette TCP
@@ -483,7 +560,7 @@ pub fn build_qemu_command(
     // Each device gets its own PCIe root port at a known PCI device number
     // (`addr=`), so the VFIO setup code can find the bridge by its devfn
     // in sysfs and enumerate the child behind it.
-    for (i, device) in qemu_config.devices.iter().enumerate() {
+    for (i, device) in devices.iter().enumerate() {
         let rp_id = format!("hosting_rp{i}");
         let addr = EXTRA_DEVICE_ADDR_BASE + i;
         // Each root port needs a unique `slot` within its chassis. QEMU

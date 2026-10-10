@@ -34,7 +34,6 @@ impl SimpleFlowNode for Node {
                     nextest_vmm_tests_archive_linux_x64,
                     nextest_vmm_tests_archive_linux_musl_x64,
                     nextest_vmm_tests_archive_linux_musl_aarch64,
-                    incubator_linux_x64,
                     prep_steps_windows_x64,
                     prep_steps_linux_musl_x64,
                     test_igvm_agent_rpc_server_windows_x64,
@@ -127,7 +126,6 @@ impl SimpleFlowNode for Node {
             "aarch64-linux-musl-vmm-tests-archive"
         );
 
-        download!(incubator_linux_x64, "x64-linux-incubator");
         download!(prep_steps_windows_x64, "x64-windows-prep_steps");
         download!(prep_steps_linux_musl_x64, "x64-linux-musl-prep_steps");
         download!(

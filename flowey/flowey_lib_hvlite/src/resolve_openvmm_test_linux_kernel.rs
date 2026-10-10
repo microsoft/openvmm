@@ -30,7 +30,7 @@ pub enum LinuxTestKernelVersion {
     /// Published **aarch64-only**. Beyond the ARM CCA host bits it is built
     /// for, it also enables the P2PDMA / vfio-dmabuf / iommufd config
     /// (`CONFIG_PCI_P2PDMA`, `CONFIG_VFIO_PCI_DMABUF`, `CONFIG_IOMMUFD`,
-    /// `CONFIG_ARM_SMMU_V3`) that the incubator's VFIO device-assignment tests
+    /// `CONFIG_ARM_SMMU_V3`) that the emulator VFIO device-assignment tests
     /// need to exercise device-BAR P2P DMA, which predate the 6.18 test kernel.
     CcaV15,
 }
@@ -93,13 +93,12 @@ pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
     LinuxTestKernelVersion::Linux6_18;
 
 /// The Linux test kernel used as the **L1 host image** for the aarch64 QEMU-TCG
-/// incubator. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship the
-/// P2PDMA / vfio-dmabuf / iommufd config
-/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so incubator VFIO
+/// emulated tests. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship
+/// the P2PDMA / vfio-dmabuf / iommufd config
+/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so emulated VFIO
 /// device-assignment tests can exercise device-BAR peer-to-peer DMA. Aarch64
-/// only (the incubator is aarch64-only).
-pub const INCUBATOR_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
-    LinuxTestKernelVersion::CcaV15;
+/// only.
+pub const CCA_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion = LinuxTestKernelVersion::CcaV15;
 
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.

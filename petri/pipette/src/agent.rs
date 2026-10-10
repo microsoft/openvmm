@@ -242,6 +242,7 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::ListDir(rpc) => rpc.handle_failable(list_dir).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
         PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
         PipetteRequest::KernelCrash(rpc) => {
@@ -279,6 +280,24 @@ async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::
     .await?;
     tracing::debug!("file write request complete");
     Ok(n)
+}
+
+async fn list_dir(
+    request: pipette_protocol::ListDirRequest,
+) -> anyhow::Result<pipette_protocol::ListDirResponse> {
+    tracing::debug!(path = request.path, "Beginning list dir request");
+    let mut files = Vec::new();
+    for entry in fs_err::read_dir(request.path)? {
+        files.push(
+            entry?
+                .file_name()
+                .to_str()
+                .context("filename not utf8")?
+                .to_string(),
+        );
+    }
+    tracing::debug!("list dir request complete");
+    Ok(pipette_protocol::ListDirResponse { files })
 }
 
 impl DiagnosticSender {

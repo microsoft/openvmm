@@ -9,8 +9,19 @@ use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
+use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
+use petri::qemu::EXTRA_DEVICE_ADDR_BASE;
+use petri::qemu::QemuPetriBackend;
+use petri::qemu::devices::DeviceConfig;
+use petri::qemu::devices::EduDeviceConfig;
+use petri::qemu::devices::IvshmemPlainDeviceConfig;
+use petri::qemu::devices::VirtioBlkDeviceConfig;
+use petri_artifacts_common::tags::IsLoadable;
+use petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL;
+use petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64;
+use std::collections::BTreeMap;
 use std::time::Duration;
 use vfio_assigned_device_resources::BarAddressConfig;
 use vm_resource::IntoResource;
@@ -87,25 +98,27 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 }
 
 /// Boot an aarch64 guest with no VMBus via linux direct boot,
-/// and assign a VFIO device from the incubator into the guest.
+/// and assign a VFIO device from the emulator into the guest.
 ///
-/// This test is intended to run inside a QEMU TCG incubator with KVM.
-/// The incubator profile sets up a virtio-blk device bound to vfio-pci,
+/// This test is intended to run inside a QEMU TCG emulator with KVM.
+/// The emulator sets up a virtio-blk device bound to vfio-pci,
 /// and publishes its BDF under the profile name `test-disk` (see
-/// [`incubator_vfio_bdf`]). The test assigns that device into the L2 guest
+/// [`emulator_vfio_bdf`]). The test assigns that device into the L2 guest
 /// and verifies it appears as a block device, then reads from it to exercise
 /// DMA and interrupts.
-///
-/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
-/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
-#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
-async fn boot_no_vmbus_pcie_aarch64_tcg(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
-    // Look up the assigned device's BDF by its incubator profile name. The
+#[vmm_test_with(
+    openvmm,
+    requires(test_disk),
+    configs(nested(
+        (vm_host_with_disk, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    )),
+)]
+async fn boot_no_vmbus_pcie(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    // Look up the assigned device's BDF by its emulator profile name. The
     // matching `requires(test_disk)` capability ensures it is provisioned
     // before the test runs.
-    let vfio_bdf = incubator_vfio_bdf("test-disk")?;
+    let vfio_bdf = emulator_vfio_bdf("test-disk")?;
 
     tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device to guest");
 
@@ -160,8 +173,8 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         .await?;
 
     // Verify the assigned device appears in the guest as /dev/vda with the
-    // expected size. The incubator provisions a 64 MiB VFIO-backed virtio-blk
-    // disk (the `test-disk` device in the aarch64-tcg-pcie incubator profile).
+    // expected size. The emulator provisions a 64 MiB VFIO-backed virtio-blk
+    // disk (the `test-disk` device defined below in `test_disk`).
     // Checking the sysfs size proves the VFIO-assigned device is the one that
     // showed up, rather than merely that *some* vda exists.
     const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
@@ -196,7 +209,7 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
 /// Assign a VFIO device into an aarch64 guest behind an **accelerated**
 /// (iommufd-nested) SMMU, and exercise the nested stage-1 translation path.
 ///
-/// The same incubator `test-disk` device as [`boot_no_vmbus_pcie_aarch64_tcg`],
+/// The same emulator `test-disk` device as [`boot_no_vmbus_pcie`],
 /// but placed behind an accel-capable SMMU and forced into translating (not
 /// passthrough) stage-1 domains with `iommu.passthrough=0`, so the host nested
 /// HWPT is what the device's DMA actually goes through.
@@ -206,14 +219,18 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
 /// and that a StreamID survives being retired and re-derived — the VMM
 /// destroys the host vDevice and nested HWPT on a function-level reset and
 /// rebuilds both from the routed configuration write that follows.
-///
-/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator
-/// pass: CI selects it via the `test(aarch64_tcg)` nextest filter.
-#[vmm_test_with(openvmm, requires(test_disk), configs(linux_direct_aarch64))]
-async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
+#[vmm_test_with(
+    openvmm,
+    requires(test_disk),
+    configs(nested(
+        (vm_host_with_disk, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    )),
+)]
+async fn boot_no_vmbus_pcie_smmu_accel(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let vfio_bdf = incubator_vfio_bdf("test-disk")?;
+    let vfio_bdf = emulator_vfio_bdf("test-disk")?;
 
     tracing::info!(vfio_bdf = %vfio_bdf, "assigning VFIO device behind an accelerated SMMU");
 
@@ -270,7 +287,7 @@ async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
         .run()
         .await?;
 
-    // The incubator provisions a 64 MiB VFIO-backed virtio-blk disk, so the
+    // The emulator provisions a 64 MiB VFIO-backed virtio-blk disk, so the
     // sysfs size proves the assigned device is the one that showed up rather
     // than merely that *some* vda exists.
     const TEST_DISK_SIZE: u64 = 64 * 1024 * 1024;
@@ -381,7 +398,7 @@ async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
 /// Open the VFIO cdev for an assigned device given its PCI BDF.
 ///
 /// Returns the opened character device file. The device must already be bound
-/// to `vfio-pci` (the incubator does this before running the test).
+/// to `vfio-pci` (the emulator does this before running the test).
 fn open_vfio_cdev(vfio_bdf: &str) -> anyhow::Result<std::fs::File> {
     let sysfs_path = std::path::Path::new("/sys/bus/pci/devices").join(vfio_bdf);
     let vfio_dev_dir = sysfs_path.join("vfio-dev");
@@ -403,28 +420,25 @@ fn open_vfio_cdev(vfio_bdf: &str) -> anyhow::Result<std::fs::File> {
         .context("failed to open VFIO cdev")
 }
 
-/// Look up the PCI BDF of an incubator-provisioned VFIO device by its profile
+/// Look up the PCI BDF of an emulator-provisioned VFIO device by its profile
 /// `name` (e.g. `"edu-initiator"`).
 ///
-/// The incubator publishes each provisioned device's BDF in the environment as
-/// `INCUBATOR_VFIO_BDF_<NAME>` (the name upper-cased with `-` replaced by `_`);
-/// this derivation must match `setup_vfio_devices` in
-/// `petri/incubator/src/qemu.rs`. Gate the test on the matching
+/// The emulator publishes each provisioned device's BDF in the environment as
+/// `PETRI_VFIO_BDF_<NAME>` (the name upper-cased with `-` replaced by `_`);
+/// this derivation must match `setup_vfio_devices` below.
+/// Gate the test on the matching
 /// `requires(...)` capability (the same name with `-` replaced by `_`) so the
 /// device is guaranteed to be provisioned.
-fn incubator_vfio_bdf(name: &str) -> anyhow::Result<String> {
-    let env_name = format!(
-        "INCUBATOR_VFIO_BDF_{}",
-        name.to_uppercase().replace('-', "_")
-    );
+fn emulator_vfio_bdf(name: &str) -> anyhow::Result<String> {
+    let env_name = format!("PETRI_VFIO_BDF_{}", name.to_uppercase().replace('-', "_"));
     std::env::var(&env_name).with_context(|| {
-        format!("{env_name} not set; is device '{name}' provisioned by the incubator?")
+        format!("{env_name} not set; is device '{name}' provisioned by the emulator?")
     })
 }
 
 /// Validate device-BAR peer-to-peer DMA through the vfio-dmabuf import path.
 ///
-/// This test assigns two emulated PCI devices from the incubator into the L2
+/// This test assigns two emulated PCI devices from the emulator into the L2
 /// OpenVMM guest, both under the *same* iommufd IOAS (`iommu0`):
 ///
 /// - `edu` (QEMU's educational device) is the DMA **initiator**: it has a
@@ -444,23 +458,26 @@ fn incubator_vfio_bdf(name: &str) -> anyhow::Result<String> {
 /// IOAS (the Phase 2 vfio-dmabuf P2P path). Without that import the DMA faults
 /// in the SMMU and the sink offset stays at its initialized sentinel, so a
 /// matching read-back proves the dmabuf import engaged.
-///
-/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator pass.
+//
+// TODO: Fix this test so it doesn't need a test disk device.
 #[vmm_test_with(
     openvmm,
     requires(edu_initiator, ivshmem_target),
-    configs(linux_direct_aarch64)
+    configs(nested(
+        (vm_host_with_disk_edu_ivshmem, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    )),
 )]
-async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
+async fn assigned_device_peer_to_peer_dma(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    // BDFs of the two assigned devices, looked up by their incubator profile
+    // BDFs of the two assigned devices, looked up by their emulator profile
     // names. The capability requirements above ensure both are provisioned
     // before the test runs.
-    let edu_bdf = incubator_vfio_bdf("edu-initiator")?;
-    let ivshmem_bdf = incubator_vfio_bdf("ivshmem-target")?;
+    let edu_bdf = emulator_vfio_bdf("edu-initiator")?;
+    let ivshmem_bdf = emulator_vfio_bdf("ivshmem-target")?;
 
     tracing::info!(%edu_bdf, %ivshmem_bdf, "assigning P2P device pair to guest");
 
@@ -667,15 +684,20 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
 /// default domain that nothing ever populates, and any DMA it initiates hits an
 /// unmapped IOVA. The guest programs the DMA itself with `devmem`, so the fault
 /// is produced on demand rather than raced for.
-///
-/// The `_aarch64_tcg` name suffix opts this test into the TCG incubator pass.
-#[vmm_test_with(openvmm, requires(edu_initiator), configs(linux_direct_aarch64))]
-async fn assigned_device_smmu_accel_fault_aarch64_tcg(
+#[vmm_test_with(
+    openvmm,
+    requires(edu_initiator),
+    configs(nested(
+        (vm_host_with_edu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    )),
+)]
+async fn assigned_device_smmu_accel_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    let edu_bdf = incubator_vfio_bdf("edu-initiator")?;
+    let edu_bdf = emulator_vfio_bdf("edu-initiator")?;
 
     tracing::info!(%edu_bdf, "assigning the edu fault generator behind an accelerated SMMU");
 
@@ -858,12 +880,14 @@ async fn assigned_device_smmu_accel_fault_aarch64_tcg(
 ///
 /// 17 VPs is the smallest count that crosses the boundary. SMT cannot reach it
 /// at all — under the SMT encoding `Aff0` is only ever 0 or 1 — so this needs
-/// to be a separate non-SMT configuration from [`smt_topology_aarch64_tcg`].
-///
-/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
-/// TODO: enable this for non-TCG passes (WHP, MSHV) as well, once this is convenient.
-#[openvmm_test(linux_direct_aarch64)]
-async fn mpidr_affinity_rollover_heavy_aarch64_tcg(
+/// to be a separate non-SMT configuration from [`smt_topology`].
+#[openvmm_test(
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    ),
+)]
+async fn mpidr_affinity_rollover_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     const VP_COUNT: u32 = 17;
@@ -971,12 +995,13 @@ async fn mpidr_affinity_rollover_heavy_aarch64_tcg(
 /// The topology assertions cover the PPTT builder. MPIDR is an identity rather
 /// than a topology description, so socket/core/thread have to come from the
 /// configured topology instead of the affinity fields.
-///
-/// The `_aarch64_tcg` name suffix opts this test into the QEMU incubator pass.
-#[openvmm_test(linux_direct_aarch64)]
-async fn smt_topology_aarch64_tcg(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
+#[openvmm_test(
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
+    ),
+)]
+async fn smt_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     const VP_COUNT: u32 = 4;
 
     let (vm, agent) = config
@@ -1072,4 +1097,208 @@ async fn smt_topology_aarch64_tcg(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+async fn vm_host_with_devices(
+    config: PetriVmBuilder<QemuPetriBackend>,
+    custom_kernel: ResolvedArtifact<impl IsLoadable>,
+    devices: Vec<DeviceConfig>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_nested_virt()
+        .modify_backend({
+            let devices = devices.clone();
+            move |b| b.with_devices(devices)
+        })
+        .with_custom_linux_kernel(custom_kernel)
+        .run()
+        .await?;
+
+    let env = setup_vfio_devices(&agent, &devices).await?;
+    vm.run_nested_test(&agent, env).await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+pub(crate) async fn vm_host_emu(
+    config: PetriVmBuilder<QemuPetriBackend>,
+    (custom_kernel,): (ResolvedArtifact<impl IsLoadable>,),
+) -> anyhow::Result<()> {
+    vm_host_with_devices(config, custom_kernel, Vec::new()).await
+}
+
+async fn vm_host_with_disk(
+    config: PetriVmBuilder<QemuPetriBackend>,
+    (custom_kernel,): (ResolvedArtifact<impl IsLoadable>,),
+) -> anyhow::Result<()> {
+    vm_host_with_devices(config, custom_kernel, vec![test_disk()]).await
+}
+
+async fn vm_host_with_edu(
+    config: PetriVmBuilder<QemuPetriBackend>,
+    (custom_kernel,): (ResolvedArtifact<impl IsLoadable>,),
+) -> anyhow::Result<()> {
+    vm_host_with_devices(config, custom_kernel, vec![edu_initiator()]).await
+}
+
+async fn vm_host_with_disk_edu_ivshmem(
+    config: PetriVmBuilder<QemuPetriBackend>,
+    (custom_kernel,): (ResolvedArtifact<impl IsLoadable>,),
+) -> anyhow::Result<()> {
+    vm_host_with_devices(
+        config,
+        custom_kernel,
+        vec![test_disk(), edu_initiator(), ivshmem_target()],
+    )
+    .await
+}
+
+const MEGABYTE: u64 = 1024 * 1024;
+
+fn test_disk() -> DeviceConfig {
+    DeviceConfig::VirtioBlk(VirtioBlkDeviceConfig {
+        name: "test-disk".into(),
+        size: 64 * MEGABYTE, // 64M
+        vfio: true,
+    })
+}
+
+fn edu_initiator() -> DeviceConfig {
+    DeviceConfig::Edu(EduDeviceConfig {
+        name: "edu-initiator".into(),
+        dma_mask: Some(0xffffffffffff),
+        vfio: true,
+    })
+}
+
+fn ivshmem_target() -> DeviceConfig {
+    DeviceConfig::IvshmemPlain(IvshmemPlainDeviceConfig {
+        name: "ivshmem-target".into(),
+        size: 4 * MEGABYTE, // 4M
+        vfio: true,
+    })
+}
+
+/// Set up VFIO devices inside the emulator.
+///
+/// Each extra device in the profile sits behind its own PCIe root port
+/// at a known PCI device number (see [`EXTRA_DEVICE_ADDR_BASE`]). This
+/// function discovers the child device's BDF by finding the bridge at
+/// that slot in sysfs, then unbinds the child from its driver and binds
+/// it to vfio-pci.
+///
+/// Returns a map of environment variables to set for the guest command,
+/// e.g., `PETRI_VFIO_BDF_TEST_DISK=0000:01:00.0`. If any provisioned
+/// device declares a `provides` capability, the returned map also includes
+/// `PETRI_CAPABILITIES` listing those capabilities (comma-separated).
+pub async fn setup_vfio_devices(
+    client: &pipette_client::PipetteClient,
+    devices: &[DeviceConfig],
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+    let mut capabilities = Vec::new();
+
+    // Collect (device_index, device) for devices that need VFIO binding.
+    // VFIO binding is device-type-agnostic: any extra device behind its own
+    // root port can be unbound from its driver and rebound to vfio-pci.
+    let vfio_devices: Vec<_> = devices
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.vfio())
+        .collect();
+
+    if vfio_devices.is_empty() {
+        return Ok(env);
+    }
+
+    tracing::info!("setting up {} VFIO device(s)", vfio_devices.len());
+
+    for (device_index, device) in &vfio_devices {
+        let name = device.name();
+        let addr = EXTRA_DEVICE_ADDR_BASE + device_index;
+
+        // The root port for this device is deterministically at
+        // 0000:00:{addr:02x}.0 (see `build_qemu_command`). Read its
+        // secondary bus number from sysfs; the assigned device sits at
+        // slot 0, function 0 of that bus.
+        let rp_bdf = format!("0000:00:{addr:02x}.0");
+        let secondary_bus_path = format!("/sys/bus/pci/devices/{rp_bdf}/secondary_bus_number");
+        let secondary_bus_raw = client
+            .read_file(&secondary_bus_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to read secondary bus number for device '{name}' (root port {rp_bdf})"
+                )
+            })?;
+        // sysfs reports the secondary bus number in decimal.
+        let secondary_bus_str = String::from_utf8_lossy(&secondary_bus_raw);
+        let secondary_bus: u8 = secondary_bus_str.trim().parse().with_context(|| {
+            format!("unexpected secondary bus number {secondary_bus_str:?} for device '{name}'")
+        })?;
+        let bdf = format!("0000:{secondary_bus:02x}:00.0");
+
+        // Confirm the child device actually exists before trying to rebind it.
+        client
+            .read_file(format!("/sys/bus/pci/devices/{bdf}/vendor"))
+            .await
+            .with_context(|| {
+                format!(
+                    "no device found behind root port {rp_bdf} (expected {bdf}) for device '{name}'"
+                )
+            })?;
+
+        tracing::info!(%name, %bdf, %addr, "binding device to vfio-pci");
+
+        // Unbind from current driver
+        let _ = client
+            .write_file(
+                format!("/sys/bus/pci/devices/{bdf}/driver/unbind"),
+                bdf.as_bytes(),
+            )
+            .await;
+
+        // Set driver override to vfio-pci
+        client
+            .write_file(
+                format!("/sys/bus/pci/devices/{bdf}/driver_override"),
+                b"vfio-pci".as_slice(),
+            )
+            .await
+            .context("failed to set driver_override")?;
+
+        // Bind to vfio-pci
+        client
+            .write_file("/sys/bus/pci/drivers/vfio-pci/bind", bdf.as_bytes())
+            .await
+            .context("failed to bind to vfio-pci")?;
+
+        // Export env var: name "test-disk" → PETRI_VFIO_BDF_TEST_DISK
+        let env_name = format!("PETRI_VFIO_BDF_{}", name.to_uppercase().replace('-', "_"));
+        tracing::info!(%env_name, %bdf, "VFIO device ready");
+        env.insert(env_name, bdf);
+
+        // Advertise the capability this device provides (derived from its
+        // name), now that it has been successfully provisioned. Tests gate on
+        // this via `requires(...)`.
+        capabilities.push(device.capability());
+    }
+
+    // Advertise all provisioned capabilities to the guest command via
+    // PETRI_CAPABILITIES (comma-separated), which petri's requirement
+    // evaluation reads. Augment any capabilities already present in the
+    // emulator's environment rather than overwriting them, so that
+    // host-provided capabilities are preserved.
+    if !capabilities.is_empty() {
+        let mut value = capabilities.join(",");
+        if let Ok(existing) = std::env::var("PETRI_CAPABILITIES") {
+            if !existing.is_empty() {
+                value = format!("{existing},{value}");
+            }
+        }
+        env.insert("PETRI_CAPABILITIES".to_string(), value);
+    }
+
+    Ok(env)
 }

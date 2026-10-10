@@ -10,7 +10,7 @@
 //! names do not match any known pattern.
 //!
 //! **Naming convention** – Hyper-V VM names are capped at 100 characters
-//! (see `petri::vm::make_vm_safe_name`).  The prefix added by the test
+//! (see `make_vm_safe_name`).  The prefix added by the test
 //! macro can consume ~85 characters on the worst-case image name, leaving
 //! only ~15 characters for the test function name.  Keep test function
 //! names short (≤ 15 chars) so the distinctive part is never truncated.

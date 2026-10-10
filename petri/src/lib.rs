@@ -46,6 +46,9 @@ pub use tracing::*;
 pub use vm::*;
 
 use jiff::Timestamp;
+use pal_async::process::PolledChild;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::process::Command;
 use std::process::Stdio;
 use thiserror::Error;
@@ -103,4 +106,56 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     }
 
     Ok(stdout_str.trim().to_owned())
+}
+
+/// Owns a process launched by a test, killing it on drop.
+///
+/// [`std::process::Child`] deliberately does *not* kill the process when it is
+/// dropped. Without this guard, any test that fails or panics before reaching
+/// its `TeardownVM`/`Quit` calls leaves an orphaned process behind.
+pub struct TestChild(PolledChild<std::process::Child>);
+
+impl TestChild {
+    /// Create a new test child that will be killed on drop
+    pub fn new(child: PolledChild<std::process::Child>) -> Self {
+        Self(child)
+    }
+}
+
+impl Deref for TestChild {
+    type Target = PolledChild<std::process::Child>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TestChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for TestChild {
+    fn drop(&mut self) {
+        let child = self.0.get_mut();
+        // `kill` reports success for an already-reaped child, so ask `try_wait`
+        // whether the process is actually gone rather than relying on that.
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        ::tracing::warn!(
+            "killing test child process which was still running at the end of the test"
+        );
+        if let Err(err) = child.kill() {
+            ::tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "failed to kill test child process"
+            );
+            return;
+        }
+        // Reap the process so it doesn't linger as a zombie. It was just
+        // killed, so this returns promptly.
+        let _ = child.wait();
+    }
 }

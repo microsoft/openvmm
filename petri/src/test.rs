@@ -34,6 +34,7 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::RemoteAccess;
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
 use test_macro_support::TESTS;
@@ -142,6 +143,7 @@ impl Test {
                     petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY,
                     RemoteAccess::LocalOnly,
                     false,
+                    None,
                 );
                 Some(Self {
                     module,
@@ -169,8 +171,17 @@ impl Test {
         let artifacts = resolve(&name, self.artifact_requirements.clone())
             .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
-        let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
-            .context("failed to initialize tracing")?;
+        let is_nested_host = self
+            .artifact_requirements
+            .nested_artifacts()
+            .next()
+            .is_some();
+        let logger = try_init_tracing(
+            output_dir,
+            tracing::level_filters::LevelFilter::DEBUG,
+            is_nested_host.then(|| "l1_".into()),
+        )
+        .context("failed to initialize tracing")?;
         // Record the test's identity up front, so that a test which is killed
         // or crashes before reporting a result is still identifiable.
         logger.log_test_start(&name);
@@ -241,7 +252,7 @@ impl Test {
                     let Some(reason) = unstable else {
                         return Err(format!("{err:#}").into());
                     };
-                    if std::env::var("PETRI_IGNORE_UNSTABLE_FAILURES")
+                    if std::env::var(petri_artifacts_core::env::PETRI_IGNORE_UNSTABLE_FAILURES)
                         .ok()
                         .is_some_and(|v| !v.is_empty() && v != "0")
                     {
@@ -568,6 +579,7 @@ pub fn test_main(
         // Collect all artifacts from tests (all tests, or those specified via stdin)
         let mut required_set = BTreeSet::new();
         let mut optional_set = BTreeSet::new();
+        let mut nested_set: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
         // If reading test names from stdin, collect them into a set for exact matching
         let stdin_tests: Option<BTreeSet<String>> = if args.tests_from_stdin {
@@ -603,6 +615,12 @@ pub fn test_main(
                 for artifact in test.artifact_requirements.optional_artifacts() {
                     optional_set.insert(artifact.global_unique_id().to_string());
                 }
+                for (artifact, test) in test.artifact_requirements.nested_artifacts() {
+                    nested_set
+                        .entry(artifact.global_unique_id().to_string())
+                        .or_default()
+                        .push(test.to_string());
+                }
             }
         }
 
@@ -612,6 +630,7 @@ pub fn test_main(
         let output = petri_artifacts_core::ArtifactListOutput {
             required: required_set.into_iter().collect(),
             optional: optional_set.into_iter().collect(),
+            nested: nested_set.into_iter().collect(),
         };
 
         println!(

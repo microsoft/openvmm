@@ -35,6 +35,7 @@ struct LogSourceInner {
     json_log: JsonLog,
     log_files: Mutex<HashMap<String, PetriLogFile>>,
     attachments: Mutex<HashMap<String, u64>>,
+    prefix: Option<String>,
 }
 
 impl PetriLogSource {
@@ -45,11 +46,17 @@ impl PetriLogSource {
     pub fn log_file(&self, name: &str) -> anyhow::Result<PetriLogFile> {
         use std::collections::hash_map::Entry;
 
+        let name = if let Some(prefix) = self.0.prefix.as_ref() {
+            format!("{prefix}{name}")
+        } else {
+            name.to_string()
+        };
+
         let mut log_files = self.0.log_files.lock();
-        let log_file = match log_files.entry(name.to_owned()) {
+        let log_file = match log_files.entry(name.clone()) {
             Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
             Entry::Vacant(vacant_entry) => {
-                let mut path = self.0.root_path.join(name);
+                let mut path = self.0.root_path.join(&name);
                 // Note that .log is preferred to .txt at least partially
                 // because WSL2 and Defender reportedly conspire to make
                 // cross-OS .txt file accesses extremely slow.
@@ -62,7 +69,7 @@ impl PetriLogSource {
                     .insert(PetriLogFile(Arc::new(LogFileInner {
                         file,
                         json_log: self.0.json_log.clone(),
-                        source: name.to_owned(),
+                        source: name.clone(),
                     })))
                     .clone()
             }
@@ -72,8 +79,15 @@ impl PetriLogSource {
 
     fn attachment_path(&self, name: &str) -> PathBuf {
         let mut attachments = self.0.attachments.lock();
-        let next = attachments.entry(name.to_owned()).or_default();
-        let name = Path::new(name);
+
+        let name = if let Some(prefix) = self.0.prefix.as_ref() {
+            format!("{prefix}{name}")
+        } else {
+            name.to_string()
+        };
+
+        let next = attachments.entry(name.clone()).or_default();
+        let name = Path::new(&name);
         let name = if *next == 0 {
             name
         } else {
@@ -309,6 +323,7 @@ macro_rules! log {
 pub fn try_init_tracing(
     root_path: &Path,
     default_level: LevelFilter,
+    prefix: Option<String>,
 ) -> anyhow::Result<PetriLogSource> {
     let targets =
         if let Ok(var) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
@@ -319,12 +334,19 @@ pub fn try_init_tracing(
 
     // Canonicalize so that printed attachment paths are most likely to work.
     let root_path = root_path.fs_err_canonicalize()?;
-    let jsonl = File::create(root_path.join("petri.jsonl"))?;
+    let jsonl_name = "petri.jsonl";
+    let jsonl_name = if let Some(prefix) = prefix.as_ref() {
+        format!("{prefix}{jsonl_name}")
+    } else {
+        jsonl_name.to_string()
+    };
+    let jsonl = File::create(root_path.join(jsonl_name))?;
     let logger = PetriLogSource(Arc::new(LogSourceInner {
         json_log: JsonLog(Arc::new(jsonl)),
         root_path,
         log_files: Default::default(),
         attachments: Default::default(),
+        prefix,
     }));
 
     let petri_log = logger.log_file("petri")?;

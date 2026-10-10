@@ -3,8 +3,6 @@
 
 //! Test entrypoint for CCA emulation tests.
 
-#![forbid(unsafe_code)]
-
 mod artifacts;
 mod resolver;
 

@@ -11,6 +11,7 @@ use petri_artifacts_core::ArtifactId;
 use petri_artifacts_core::ArtifactSource;
 use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::artifacts::*;
+use petri_artifacts_vmm_test::env::*;
 use petri_artifacts_vmm_test::vmm_test_image_from_id;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
@@ -32,16 +33,6 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
     fn resolve(&self, handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
         match handle.global_unique_id() {
             TEST_LOG_DIRECTORY::GLOBAL_UNIQUE_ID => test_log_directory_path(self.0),
-
-            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED::GLOBAL_UNIQUE_ID
-            | test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID => {
-                get_vmm_test_image_path(handle.filename(), handle.global_unique_id())
-            }
-
-            id if let Some(artifact) = vmm_test_image_from_id(id) => {
-                get_vmm_test_image_path(artifact.filename(), artifact.name())
-            }
-
             _ => resolve_artifact(handle),
         }
     }
@@ -64,12 +55,12 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
     }
 }
 
-const VMM_TESTS_CONTENT_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
-const TEST_OUTPUT_PATH_ENV_VAR: &str = "TEST_OUTPUT_PATH";
-const VMM_TEST_IMAGES_ENV_VAR: &str = "VMM_TEST_IMAGES";
-
 /// Get the path to an artifact from its erased artifact handle
 pub fn resolve_artifact(handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
+    if handle.is_image() {
+        return get_vmm_test_image_path(handle.relative_path(), handle.global_unique_id());
+    }
+
     let test_content_dir_path = test_content_dir_artifact_path(handle.relative_path());
 
     if test_content_dir_path.is_ok() {
@@ -152,7 +143,7 @@ pub fn resolve_artifact(handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf>
 
 fn test_content_dir_artifact_path(relative_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
     let test_content_dir =
-        std::env::var(VMM_TESTS_CONTENT_DIR_ENV_VAR).context("test content dir env var not set")?;
+        std::env::var(VMM_TESTS_CONTENT_DIR).context("test content dir env var not set")?;
     let path = PathBuf::from(test_content_dir).join(relative_path.as_ref());
     if !path.exists() {
         anyhow::bail!("{} not found", path.display())
@@ -162,8 +153,10 @@ fn test_content_dir_artifact_path(relative_path: impl AsRef<Path>) -> anyhow::Re
 
 /// Path to the per-test test output directory.
 fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
-    let root = std::env::var_os(TEST_OUTPUT_PATH_ENV_VAR)
+    let root = std::env::var_os(TEST_OUTPUT_PATH)
         .map_or_else(|| get_repo_root().join("vmm_test_results"), PathBuf::from);
+    let test_name =
+        std::env::var(PETRI_NESTED_TEST_PARENT).unwrap_or_else(|_| test_name.to_string());
     // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
     // with filesystems that don't support `::` in filenames.
     let path = root.join(test_name.replace("::", "__"));
@@ -233,10 +226,13 @@ pub fn get_executable_path_artifact(
     Ok(exe_path)
 }
 
-fn get_vmm_test_image_path(filename: &str, name: &str) -> Result<PathBuf, anyhow::Error> {
+fn get_vmm_test_image_path(
+    relative_path: impl AsRef<Path>,
+    name: &str,
+) -> Result<PathBuf, anyhow::Error> {
     let test_images_dir =
-        std::env::var(VMM_TEST_IMAGES_ENV_VAR).context("test images dir env var not set")?;
-    let path = PathBuf::from(test_images_dir).join(filename);
+        std::env::var(VMM_TEST_IMAGES).context("test images dir env var not set")?;
+    let path = PathBuf::from(test_images_dir).join(relative_path.as_ref());
     if !path.exists() {
         anyhow::bail!("missing {} at {}", name, path.display())
     }

@@ -131,6 +131,27 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
+### Nested Tests
+
+Petri supports writing nested tests by defining a function to create the L1 VM host using Petri and annotating the L2 test definition as follows:
+
+```rust,ignore
+#[vmm_test(
+    nested(
+        (my_vm_host, l1_config),
+        (NEXTEST_ARCHIVE_WITH_NESTED_TEST, "test_binary", "test::module::path", l2_config),
+    ),
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+
+async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+
+```
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It

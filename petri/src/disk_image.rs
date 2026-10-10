@@ -17,13 +17,37 @@ use std::io::Seek;
 use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
+use std::path::PathBuf;
+use tempfile::TempPath;
 
 /// The description and artifacts needed to build a pipette disk image for a VM.
 #[derive(Debug)]
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,
-    extras: Vec<(String, ResolvedArtifact)>,
+    extras: Vec<(String, ImageEntry)>,
+    free_space: u64,
+}
+
+#[derive(Debug)]
+/// A file or directory in the agent image
+pub enum ImageEntry {
+    /// Directory
+    Dir,
+    /// Persistent file
+    File(PathBuf),
+    /// Owned temporary file path
+    TempFile(TempPath),
+}
+
+impl<'a> ImageEntry {
+    fn as_content(&'a self) -> ImageEntryContent<'a> {
+        match self {
+            ImageEntry::Dir => ImageEntryContent::Dir,
+            ImageEntry::File(path_buf) => ImageEntryContent::Path(path_buf.as_path()),
+            ImageEntry::TempFile(temp_path) => ImageEntryContent::Path(temp_path.as_ref()),
+        }
+    }
 }
 
 /// Disk image type
@@ -41,6 +65,7 @@ impl AgentImage {
             os_flavor,
             pipette: None,
             extras: Vec::new(),
+            free_space: 0,
         }
     }
 
@@ -85,8 +110,21 @@ impl AgentImage {
     }
 
     /// Adds an extra file to the disk image.
-    pub fn add_file(&mut self, name: &str, artifact: ResolvedArtifact) {
-        self.extras.push((name.to_string(), artifact));
+    pub fn add_file(&mut self, name: &str, file_path: impl AsRef<Path>) {
+        self.extras.push((
+            name.into(),
+            ImageEntry::File(file_path.as_ref().to_path_buf()),
+        ));
+    }
+
+    /// Add collection of image entries
+    pub fn add_extras(&mut self, extras: Vec<(String, ImageEntry)>) {
+        self.extras.extend(extras);
+    }
+
+    /// Allocate some extra free space in the image
+    pub fn allocate_free_space(&mut self, space: u64) {
+        self.free_space = space;
     }
 
     /// Builds a disk image containing pipette and any files needed for the guest VM
@@ -95,34 +133,36 @@ impl AgentImage {
         let mut files = self
             .extras
             .iter()
-            .map(|(name, artifact)| (name.as_str(), PathOrBinary::Path(artifact.as_ref())))
+            .map(|(name, file_path)| (name.as_str(), file_path.as_content()))
             .collect::<Vec<_>>();
         let volume_label = match self.os_flavor {
             OsFlavor::Windows => {
                 // Windows doesn't use cloud-init, so we only need pipette
                 // (which is configured via the IMC hive).
                 if let Some(pipette) = self.pipette.as_ref() {
-                    files.push(("pipette.exe", PathOrBinary::Path(pipette.as_ref())));
+                    files.push(("pipette.exe", ImageEntryContent::Path(pipette.as_ref())));
                 }
                 b"pipette    "
             }
             OsFlavor::Linux => {
                 if let Some(pipette) = self.pipette.as_ref() {
-                    files.push(("pipette", PathOrBinary::Path(pipette.as_ref())));
+                    files.push(("pipette", ImageEntryContent::Path(pipette.as_ref())));
                 }
                 // Linux uses cloud-init, so we need to include the cloud-init
                 // configuration files as well.
                 files.extend([
                     (
                         "meta-data",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
+                        ImageEntryContent::Binary(include_bytes!("../guest-bootstrap/meta-data")),
                     ),
                     (
                         "user-data",
                         if self.pipette.is_some() {
-                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data"))
+                            ImageEntryContent::Binary(include_bytes!(
+                                "../guest-bootstrap/user-data"
+                            ))
                         } else {
-                            PathOrBinary::Binary(include_bytes!(
+                            ImageEntryContent::Binary(include_bytes!(
                                 "../guest-bootstrap/user-data-no-agent"
                             ))
                         },
@@ -131,7 +171,9 @@ impl AgentImage {
                     // TODO: support dynamically configuring the network based on vm configuration
                     (
                         "network-config",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
+                        ImageEntryContent::Binary(include_bytes!(
+                            "../guest-bootstrap/network-config"
+                        )),
                     ),
                 ]);
                 b"cidata     " // cloud-init looks for a volume label of "cidata",
@@ -139,6 +181,21 @@ impl AgentImage {
             // Nothing OS-specific yet for other flavors
             _ => b"cidata     ",
         };
+
+        let total_data_size: u64 = files
+            .iter()
+            .map(|(_, f)| {
+                Ok(match f {
+                    ImageEntryContent::Dir => 0,
+                    ImageEntryContent::Path(path) => fs_err::metadata(path)?.len(),
+                    ImageEntryContent::Binary(data) => data.len() as u64,
+                })
+            })
+            .collect::<Result<Vec<_>, std::io::Error>>()?
+            .into_iter()
+            .sum();
+
+        let total_size = total_data_size + self.free_space;
 
         if files.is_empty() {
             Ok(None)
@@ -150,7 +207,7 @@ impl AgentImage {
 
             image_file
                 .as_file()
-                .set_len(64 * 1024 * 1024)
+                .set_len(total_size.next_multiple_of(64 * 1024 * 1024))
                 .context("failed to set file size")?;
 
             build_fat32_disk_image(&mut image_file, "CIDATA", volume_label, &files)?;
@@ -167,7 +224,8 @@ impl AgentImage {
 
 pub(crate) const SECTOR_SIZE: u64 = 512;
 
-pub(crate) enum PathOrBinary<'a> {
+pub(crate) enum ImageEntryContent<'a> {
+    Dir,
     Path(&'a Path),
     Binary(&'a [u8]),
 }
@@ -176,7 +234,7 @@ pub(crate) fn build_fat32_disk_image(
     file: &mut (impl Read + Write + Seek),
     gpt_name: &str,
     volume_label: &[u8; 11],
-    files: &[(&str, PathOrBinary<'_>)],
+    files: &[(&str, ImageEntryContent<'_>)],
 ) -> anyhow::Result<()> {
     let partition_range =
         build_gpt(file, gpt_name).context("failed to construct partition table")?;
@@ -216,7 +274,7 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
 fn build_fat32(
     file: &mut (impl Read + Write + Seek),
     volume_label: &[u8; 11],
-    files: &[(&str, PathOrBinary<'_>)],
+    files: &[(&str, ImageEntryContent<'_>)],
 ) -> anyhow::Result<()> {
     fatfs::format_volume(
         &mut *file,
@@ -227,18 +285,26 @@ fn build_fat32(
     .context("failed to format volume")?;
     let fs = fatfs::FileSystem::new(file, FsOptions::new()).context("failed to open fs")?;
     for (path, src) in files {
+        if matches!(src, ImageEntryContent::Dir) {
+            fs.root_dir()
+                .create_dir(path)
+                .context("failed to create dir")?;
+            continue;
+        }
+
         let mut dest = fs
             .root_dir()
             .create_file(path)
             .context("failed to create file")?;
         match *src {
-            PathOrBinary::Path(src_path) => {
+            ImageEntryContent::Path(src_path) => {
                 let mut src = fs_err::File::open(src_path)?;
                 std::io::copy(&mut src, &mut dest).context("failed to copy file")?;
             }
-            PathOrBinary::Binary(src_data) => {
+            ImageEntryContent::Binary(src_data) => {
                 dest.write_all(src_data).context("failed to write file")?;
             }
+            ImageEntryContent::Dir => unreachable!(),
         }
         dest.flush().context("failed to flush file")?;
     }

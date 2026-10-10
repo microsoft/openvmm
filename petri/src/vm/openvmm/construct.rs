@@ -113,7 +113,7 @@ impl PetriVmConfigOpenVmm {
         openvmm_path: &ResolvedArtifact,
         petri_vm_config: PetriVmConfig,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<Self> {
         let PetriVmConfig {
             name: _,
@@ -124,17 +124,20 @@ impl PetriVmConfigOpenVmm {
             ipmi_enabled,
             memory,
             proc_topology,
+            nested_virt_enabled,
             vmgs,
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
             pcie_virtio_blk_drives,
             physical_nvme_devices,
+            guest_shares,
         } = petri_vm_config;
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
         }
+        assert!(guest_shares.is_empty());
 
         if matches!(
             firmware.openhcl_firmware(),
@@ -684,7 +687,7 @@ impl PetriVmConfigOpenVmm {
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
-                nested_virt: false,
+                nested_virt: nested_virt_enabled,
             },
             vmbus: if properties.no_vmbus {
                 None
@@ -774,7 +777,7 @@ impl PetriVmConfigOpenVmm {
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vsock_path: vsock_path,
-                properties,
+                properties: properties.clone(),
                 #[cfg(windows)]
                 _switch_ports: Vec::new(),
             },

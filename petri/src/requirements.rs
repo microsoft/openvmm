@@ -309,6 +309,17 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         capabilities.insert(capabilities::WINDOWS_PARTITION_RESET);
     }
 
+    // MSHV doesn't support nested virtualization yet
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (
+            VmmType::OpenVmm,
+            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp)
+        ) | (VmmType::Qemu, _)
+    ) {
+        capabilities.insert(capabilities::NESTED_VIRT);
+    }
+
     match std::env::var("PETRI_CAPABILITIES") {
         Ok(env_capabilities) => {
             for capability in env_capabilities.split(',').map(str::trim) {
