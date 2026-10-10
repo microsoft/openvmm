@@ -1981,6 +1981,12 @@ async fn vm_config_from_command_line(
         }
     }
 
+    if let Some(rtc) = &opt.virtio_rtc {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rtc::VirtioRtcHandle.into_resource();
+        add_virtio_device(rtc.bus.clone(), resource, &mut pcie_devices);
+    }
+
     if let Some(backend) = virtio_console_backend {
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();

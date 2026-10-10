@@ -112,6 +112,19 @@ pub mod rng {
     }
 }
 
+pub mod rtc {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioRtcHandle;
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioRtcHandle {
+        const ID: &'static str = "virtio-rtc";
+    }
+}
+
 pub mod blk {
     use mesh::MeshPayload;
     use vm_resource::Resource;

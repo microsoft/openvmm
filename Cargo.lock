@@ -6254,6 +6254,7 @@ dependencies = [
  "virtio_p9",
  "virtio_pmem",
  "virtio_rng",
+ "virtio_rtc",
  "virtio_vsock",
  "virtiofs",
  "vm_resource",
@@ -10191,6 +10192,26 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "virtio_rtc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "pal_event",
+ "task_control",
+ "test_with_tracing",
+ "tracelimit",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+ "zerocopy",
 ]
 
 [[package]]

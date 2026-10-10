@@ -835,6 +835,16 @@ The openhcl personality requires explicit --hv --vtl2."#
     #[clap(long, value_name = "PORT", requires("virtio_rng"))]
     pub virtio_rng_pcie_port: Option<String>,
 
+    /// add a virtio real-time clock device, optionally configured with
+    /// comma-separated options (bus=auto|mmio|pci|pcie:PORT|vpci)
+    #[clap(
+        long,
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub virtio_rtc: Option<VirtioRtcCli>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
@@ -1586,6 +1596,14 @@ pub struct UefiCli {
     pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
     #[kv(flag)]
     pub default_boot_always_attempt: bool,
+}
+
+/// Options for `--virtio-rtc`.
+#[derive(Clone, Debug, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct VirtioRtcCli {
+    /// Bus to attach the device to (auto | mmio | pci | pcie:PORT | vpci).
+    #[kv(default = VirtioBusCli::Auto)]
+    pub bus: VirtioBusCli,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -6220,6 +6238,33 @@ mod tests {
             Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
                 .unwrap();
         assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
+    }
+
+    #[test]
+    fn test_virtio_rtc_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.virtio_rtc.is_none());
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rtc", "--processors", "2"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Auto
+            })
+        );
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-rtc", "bus=pcie:rp0"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Pcie("rp0".to_string())
+            })
+        );
+
+        for value in ["mmio", "bus", "bus=", "bus=pcie:", "bus=pcie:rp0,bus=mmio"] {
+            assert!(Options::try_parse_from(["openvmm", "--virtio-rtc", value]).is_err());
+        }
     }
 
     #[test]
