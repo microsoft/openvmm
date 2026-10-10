@@ -189,6 +189,7 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
+const VMTIME_UNIT_NAME: &str = "vmtime";
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -1180,6 +1181,20 @@ impl InitializedVm {
             .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
             .collect();
 
+        // A time ABI snapshot records how long before the capture anchor VM
+        // time stopped, measured on the anchor's host monotonic clock.
+        #[cfg(guest_arch = "x86_64")]
+        let vmtime_keeper =
+            if cfg.machine_profile == MachineProfile::Microvm && cfg.microvm.time_abi.is_some() {
+                VmTimeKeeper::with_stop_clock(
+                    &driver_source.simple(),
+                    VmTime::from_100ns(0),
+                    time_abi::host_monotonic_ns,
+                )
+            } else {
+                VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0))
+            };
+        #[cfg(not(guest_arch = "x86_64"))]
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
             .builder()
@@ -1964,7 +1979,7 @@ impl InitializedVm {
         let state_units = StateUnits::new();
 
         let vmtime = state_units
-            .add("vmtime")
+            .add(VMTIME_UNIT_NAME)
             .advances_time()
             .spawn(driver_source.simple(), {
                 |recv| {
