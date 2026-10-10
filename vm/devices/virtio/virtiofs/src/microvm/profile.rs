@@ -136,22 +136,24 @@ pub enum MicroVmProfileError {
     InvalidAggregateChildren,
 }
 
-/// One host directory that a microVM aggregate exposes as a named child of
-/// its synthetic root, with its own access policy.
+/// One host directory or regular file that a microVM aggregate exposes as a
+/// named child of its synthetic root, with its own access policy.
 ///
 /// Like [`MicroVmVirtioFsProfile`], it contains no host path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MicroVmAggregateChild {
     name: String,
+    file: bool,
     root_identity: Vec<u8>,
     access_mode: MicroVmAccessMode,
     policy: SubtreePolicy,
 }
 
 impl MicroVmAggregateChild {
-    /// Builds a child from the fields of its resource: its name under the
-    /// synthetic root, the identity of its host root, and its access policy,
-    /// which [`MicroVmVirtioFsProfile::from_attachment_with_policy`] describes.
+    /// Builds a child that exposes a host directory from the fields of its
+    /// resource: its name under the synthetic root, the identity of its host
+    /// root, and its access policy, which
+    /// [`MicroVmVirtioFsProfile::from_attachment_with_policy`] describes.
     ///
     /// The name must be 1 to [`MICROVM_AGGREGATE_MAX_CHILD_NAME`] ASCII
     /// letters, digits, `.`, `_`, or `-`, other than `.` and `..`.
@@ -175,15 +177,44 @@ impl MicroVmAggregateChild {
         validate_root_identity_size(&root_identity)?;
         Ok(Self {
             name,
+            file: false,
             root_identity,
             access_mode: access_mode(read_only),
             policy: subtree_policy(denied_paths, allowed_paths, writable_paths, read_only)?,
         })
     }
 
+    /// Builds a child, named like one of [`Self::new`], that exposes the
+    /// regular host file identified by `root_identity` as itself. The guest
+    /// reaches nothing else of the file's host directory, and the child's
+    /// access mode applies to the whole file, so it has no policy paths.
+    pub fn new_file(
+        name: String,
+        root_identity: Vec<u8>,
+        read_only: bool,
+    ) -> Result<Self, MicroVmProfileError> {
+        Ok(Self {
+            file: true,
+            ..Self::new(
+                name,
+                root_identity,
+                read_only,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )?
+        })
+    }
+
     /// Returns the child's name under the synthetic root.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns whether the child exposes a regular host file rather than a
+    /// directory.
+    pub fn is_file(&self) -> bool {
+        self.file
     }
 
     /// Returns the opaque, platform-specific identity of the child's host
@@ -212,7 +243,7 @@ impl MicroVmAggregateChild {
         &self,
         root_path: impl AsRef<Path>,
     ) -> Result<(), MicroVmProfileError> {
-        validate_root_path(&self.root_identity, root_path)
+        validate_object_path(&self.root_identity, root_path, self.file)
     }
 
     /// Validates the child's root reached through an already-opened volume and
@@ -222,7 +253,11 @@ impl MicroVmAggregateChild {
         root_path: impl AsRef<Path>,
         stat: &lx::Stat,
     ) -> Result<(), MicroVmProfileError> {
-        validate_opened_root(&self.root_identity, root_path, stat)
+        let kind = if self.file { lx::S_IFREG } else { lx::S_IFDIR };
+        if stat.mode & lx::S_IFMT != kind {
+            return Err(MicroVmProfileError::RootIdentityMismatch);
+        }
+        validate_opened_object(&self.root_identity, root_path, stat, self.file)
     }
 }
 
@@ -313,8 +348,18 @@ fn validate_root_path(
     root_identity: &[u8],
     root_path: impl AsRef<Path>,
 ) -> Result<(), MicroVmProfileError> {
-    match microvm_root_identity(root_path) {
-        Ok(identity) if identity == root_identity => Ok(()),
+    validate_object_path(root_identity, root_path, false)
+}
+
+/// Validates that `path` is the host directory, or with `file` the regular
+/// file, identified by `identity`.
+fn validate_object_path(
+    identity: &[u8],
+    path: impl AsRef<Path>,
+    file: bool,
+) -> Result<(), MicroVmProfileError> {
+    match microvm_object_identity(path, file) {
+        Ok(actual) if actual == identity => Ok(()),
         Ok(_) | Err(_) => Err(MicroVmProfileError::RootIdentityMismatch),
     }
 }
@@ -325,6 +370,18 @@ fn validate_opened_root(
     root_identity: &[u8],
     root_path: impl AsRef<Path>,
     stat: &lx::Stat,
+) -> Result<(), MicroVmProfileError> {
+    validate_opened_object(root_identity, root_path, stat, false)
+}
+
+/// Validates the object reached through an already-opened volume against
+/// `identity`, and confirms that `path` still names it: a directory, or with
+/// `file` a regular file.
+fn validate_opened_object(
+    root_identity: &[u8],
+    root_path: impl AsRef<Path>,
+    stat: &lx::Stat,
+    file: bool,
 ) -> Result<(), MicroVmProfileError> {
     #[cfg(unix)]
     {
@@ -361,7 +418,7 @@ fn validate_opened_root(
         }
     }
 
-    validate_root_path(root_identity, root_path)
+    validate_object_path(root_identity, root_path, file)
 }
 
 /// Immutable profile settings for the microVM virtio-fs device.
@@ -601,16 +658,36 @@ impl MicroVmVirtioFsProfile {
 /// Computes the portable root identity expected in
 /// `VirtioFsProfile::Microvm::root_identity`.
 pub fn microvm_root_identity(root_path: impl AsRef<Path>) -> anyhow::Result<Vec<u8>> {
+    microvm_object_identity(root_path, false)
+}
+
+/// Computes the portable identity of the regular file that a microVM
+/// aggregate child exposes, expected in its `root_identity`. It has the form
+/// of [`microvm_root_identity`]'s.
+pub fn microvm_file_identity(path: impl AsRef<Path>) -> anyhow::Result<Vec<u8>> {
+    microvm_object_identity(path, true)
+}
+
+/// Computes the portable identity of the plain directory, or with `file` the
+/// regular file, that `path` resolves to.
+fn microvm_object_identity(path: impl AsRef<Path>, file: bool) -> anyhow::Result<Vec<u8>> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the attachment identity must resolve the host root's final target"
     )]
-    let canonical = std::fs::canonicalize(root_path)?;
+    let canonical = std::fs::canonicalize(path)?;
     let metadata = std::fs::symlink_metadata(&canonical)?;
-    anyhow::ensure!(
-        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-        "microVM filesystem root is not a plain directory"
-    );
+    if file {
+        anyhow::ensure!(
+            metadata.file_type().is_file(),
+            "microVM filesystem path is not a regular file"
+        );
+    } else {
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "microVM filesystem root is not a plain directory"
+        );
+    }
 
     #[cfg(unix)]
     {
