@@ -841,15 +841,13 @@ fn resolve_flow_as_github_yaml_steps(
                 can_merge,
                 code: _,
             } => {
-                output_steps.extend(bash_commands.push(
+                output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
-                    crate::cli::exec_snippet::construct_exec_snippet_cli(
-                        flowey_bin,
-                        node_modpath,
-                        idx,
-                        job_idx,
-                    ),
+                    flowey_bin,
+                    node_modpath,
+                    idx,
+                    job_idx,
                 ));
             }
             Step::AdoYaml { label, .. } => {
