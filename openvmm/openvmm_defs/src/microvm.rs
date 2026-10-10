@@ -388,8 +388,8 @@ impl MicrovmFilesystemOwner {
 ///
 /// The filesystem is either a single host directory, with its own access
 /// policy, or an aggregate whose synthetic, read-only root lists one named
-/// directory per child, each with its own access policy. An aggregate has no
-/// policy paths of its own, and it is read-write when any child is.
+/// directory or file per child, each with its own access mode. An aggregate
+/// has no policy paths of its own, and it is read-write when any child is.
 #[derive(MeshPayload, Clone, Debug, PartialEq, Eq)]
 pub struct MicrovmFilesystemConfig {
     /// Absolute guest path at which the initramfs mounts the filesystem.
@@ -419,12 +419,35 @@ pub const MICROVM_FILESYSTEM_MAX_CHILD_NAME: usize = 64;
 /// aggregate filesystem, in bytes, which bounds its snapshot contract.
 pub const MICROVM_FILESYSTEM_MAX_AGGREGATE_POLICY_BYTES: usize = 128 * 1024;
 
-/// Guest-visible configuration of one host directory that a microVM aggregate
-/// filesystem exposes as a named child of its synthetic root.
+/// What a child of a microVM aggregate filesystem exposes.
+#[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicrovmFilesystemChildKind {
+    /// A host directory, which the child's directory lists.
+    Directory,
+    /// A regular host file, which is the child itself. Nothing else in the
+    /// file's host directory is exposed.
+    File,
+}
+
+impl MicrovmFilesystemChildKind {
+    /// Returns the spelling of this kind in messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::File => "file",
+        }
+    }
+}
+
+/// Guest-visible configuration of one host directory or regular file that a
+/// microVM aggregate filesystem exposes as a named child of its synthetic
+/// root.
 #[derive(MeshPayload, Clone, Debug, PartialEq, Eq)]
 pub struct MicrovmFilesystemChildConfig {
-    /// Name of the child's directory under the aggregate's root.
+    /// Name of the child under the aggregate's root.
     pub name: String,
+    /// Snapshot-authoritative kind of the child.
+    pub kind: MicrovmFilesystemChildKind,
     /// Snapshot-authoritative access policy of the child.
     pub access: MicrovmFilesystemAccess,
     /// Canonical child-relative paths hidden by the virtio-fs server.
@@ -456,6 +479,7 @@ impl MicrovmFilesystemChildConfig {
         }
         Ok(Self {
             name,
+            kind: MicrovmFilesystemChildKind::Directory,
             access,
             denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
@@ -463,14 +487,40 @@ impl MicrovmFilesystemChildConfig {
         })
     }
 
+    /// Validates and constructs a child named `name`, like [`Self::new`],
+    /// that exposes a regular host file rather than a directory. Its access
+    /// mode applies to the file, which has no policy paths.
+    pub fn new_file(
+        name: String,
+        access: MicrovmFilesystemAccess,
+    ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        Ok(Self {
+            kind: MicrovmFilesystemChildKind::File,
+            ..Self::new(name, access)?
+        })
+    }
+
+    /// Returns whether the child exposes a regular host file.
+    pub fn is_file(&self) -> bool {
+        matches!(self.kind, MicrovmFilesystemChildKind::File)
+    }
+
     /// Adds the complete access policy of the child, with the rules of
-    /// [`MicrovmFilesystemConfig::with_access_policy`].
+    /// [`MicrovmFilesystemConfig::with_access_policy`]. A child that exposes
+    /// a file has none.
     pub fn with_access_policy(
         mut self,
         denied_paths: Vec<String>,
         allowed_paths: Vec<String>,
         writable_paths: Vec<String>,
     ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        if self.is_file()
+            && !(denied_paths.is_empty() && allowed_paths.is_empty() && writable_paths.is_empty())
+        {
+            return Err(InvalidMicrovmFilesystemConfig::FileChildPolicyPaths(
+                self.name,
+            ));
+        }
         validate_microvm_filesystem_access_policy(
             self.access,
             &denied_paths,
@@ -873,6 +923,11 @@ pub enum InvalidMicrovmFilesystemConfig {
     /// An aggregate had policy paths of its own.
     #[error("a microVM aggregate filesystem has no policy paths of its own; its children do")]
     AggregatePolicyPaths,
+    /// An aggregate child that exposes a file had policy paths.
+    #[error(
+        "microVM aggregate child '{0}' exposes a file, which has no denied, allowed, or writable paths"
+    )]
+    FileChildPolicyPaths(String),
 }
 
 impl MicrovmNetworkConfig {
@@ -2502,6 +2557,54 @@ mod tests {
                 vec![child("0", ReadOnly)]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn microvm_aggregate_file_children_have_no_policy_paths() {
+        use MicrovmFilesystemAccess::ReadOnly;
+        use MicrovmFilesystemAccess::ReadWrite;
+
+        let file = MicrovmFilesystemChildConfig::new_file("1".to_owned(), ReadWrite).unwrap();
+        assert!(file.is_file());
+        assert_eq!(file.kind, MicrovmFilesystemChildKind::File);
+        assert!(!child("0", ReadOnly).is_file());
+        // The mode applies to the whole file, which no policy path can narrow.
+        for (denied, allowed, writable) in [
+            (vec!["x".to_owned()], Vec::new(), Vec::new()),
+            (Vec::new(), vec!["x".to_owned()], Vec::new()),
+            (Vec::new(), Vec::new(), vec!["x".to_owned()]),
+        ] {
+            assert_eq!(
+                file.clone().with_access_policy(denied, allowed, writable),
+                Err(InvalidMicrovmFilesystemConfig::FileChildPolicyPaths(
+                    "1".to_owned()
+                ))
+            );
+        }
+        let file = file
+            .with_access_policy(Vec::new(), Vec::new(), Vec::new())
+            .unwrap();
+        assert_eq!(
+            MicrovmFilesystemChildConfig::new_file("a/b".to_owned(), ReadOnly),
+            Err(InvalidMicrovmFilesystemConfig::InvalidChildName(
+                "a/b".to_owned()
+            ))
+        );
+        // Files and directories share an aggregate.
+        let aggregate = MicrovmFilesystemConfig::new_aggregate(
+            "/run/nvx/shares".to_owned(),
+            vec![child("0", ReadOnly), file],
+        )
+        .unwrap();
+        assert_eq!(aggregate.access, ReadWrite);
+        assert_eq!(
+            aggregate
+                .children
+                .iter()
+                .map(|child| child.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["directory", "file"]
         );
     }
 
