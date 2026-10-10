@@ -51,6 +51,7 @@ impl SimpleFlowNode for Node {
             crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                 igvm_files,
                 artifact_openhcl_verify_size_baseline,
+                vmfirmwareigvm_cvm: None,
             },
         );
 
