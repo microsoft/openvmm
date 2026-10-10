@@ -87,6 +87,10 @@ impl RunContext<'_> {
             }?;
         }
 
+        partition
+            .finalize_memory()
+            .context("failed to finalize partition memory")?;
+
         let mut threads = Vec::new();
         let r = self
             .run(
