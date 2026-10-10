@@ -656,6 +656,8 @@ igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
+# XXX: temporary until uart_16550 with custom backends is released
+uart_16550 = { git = "https://github.com/phip1611/uart_16550", rev = "7fb766fd7a71b58a7ba2476ff5bbdaffd7874a02" }
 uefi = "0.35.0"
 vfio-bindings = "0.4.0"
 x86_64 = { version = "0.15.2", default-features = false }
