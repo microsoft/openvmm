@@ -24,6 +24,7 @@ tmk_tests.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 inspect.workspace = true
+inspect_proto.workspace = true
 initrd_cpio.workspace = true
 
 get_resources.workspace = true
