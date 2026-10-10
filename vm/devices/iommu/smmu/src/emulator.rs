@@ -3,6 +3,7 @@
 
 //! SMMUv3 device emulator — register file and MMIO dispatch.
 
+use crate::shared::SmmuCapabilities;
 use crate::shared::SmmuSharedState;
 use crate::shared::TranslationPolicy;
 use crate::spec::commands::CmdCfgiCd;
@@ -41,15 +42,26 @@ use vmcore::save_restore::SaveRestore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmmuOasPolicy {
     /// Advertise `provisional` initially. For non-accel SMMUs this is the final
-    /// advertised OAS. For accel SMMUs, a device attached before VM start
-    /// replaces it with the host SMMU's OAS. VM start freezes the value.
+    /// advertised OAS. For accel SMMUs, a cold-plug device replaces it with
+    /// the host SMMU's OAS. Device start freezes the value.
     Auto {
         /// Initial advertised OAS in bits, used unless an accelerated device
-        /// supplies the host SMMU's OAS before VM start.
+        /// supplies the host SMMU's OAS before device start.
         provisional: u8,
     },
     /// Use a fixed OAS in bits. For accel, this is an upper bound that must
     /// not exceed the host SMMU's OAS (attach fails otherwise).
+    Fixed(u8),
+}
+
+/// Resolution policy for the guest-visible SubstreamID width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmmuSsidPolicy {
+    /// Start at zero; adopt the host width on accelerated cold-plug binding.
+    /// Software-only SMMUs continue to advertise zero.
+    Auto,
+    /// Advertise this width (0..=20), including without acceleration.
+    /// Accelerated attachment requires the host to support at least this width.
     Fixed(u8),
 }
 
@@ -73,6 +85,10 @@ pub struct HostSmmuCaps {
     pub(crate) ttendian: registers::Idr0TtEndian,
     /// Host 4KB translation granule support (IDR5.GRAN4K).
     pub(crate) gran4k: bool,
+    /// Host SMMU PASID/SSID width (IDR1.SSIDSIZE).
+    pub(crate) ssid_bits: u8,
+    /// Host SMMU ATS support (IDR0.ATS).
+    pub(crate) ats: bool,
 }
 
 impl HostSmmuCaps {
@@ -86,6 +102,7 @@ impl HostSmmuCaps {
     /// [`SmmuSharedState::bind_accel_viommu`].
     pub fn from_idr(idr: [u32; 6]) -> Self {
         let idr0 = registers::Idr0::from(idr[0]);
+        let idr1 = registers::Idr1::from(idr[1]);
         let idr5 = registers::Idr5::from(idr[5]);
 
         Self {
@@ -93,7 +110,19 @@ impl HostSmmuCaps {
             ttf: registers::Idr0Ttf::from(idr0.ttf()),
             ttendian: registers::Idr0TtEndian(idr0.ttendian()),
             gran4k: idr5.gran4k(),
+            ssid_bits: idr1.ssidsize(),
+            ats: idr0.ats(),
         }
+    }
+
+    /// Physical SMMU SSID width, not the per-endpoint PASID limit.
+    pub fn ssid_bits(self) -> u8 {
+        self.ssid_bits
+    }
+
+    /// Whether the physical SMMU supports ATS.
+    pub fn ats(self) -> bool {
+        self.ats
     }
 }
 
@@ -106,12 +135,27 @@ pub struct SmmuConfig {
     /// OAS bits: the fixed value for [`SmmuOasPolicy::Fixed`], or the
     /// provisional value for [`SmmuOasPolicy::Auto`].
     pub oas_policy: SmmuOasPolicy,
+    /// How the advertised SSID width is selected. A fixed width must be 0..=20.
+    pub ssid_policy: SmmuSsidPolicy,
     /// Enable HW-accelerated nested S1 translation (iommufd).
     ///
     /// When true, VFIO cdev devices behind this SMMU use hardware-
     /// accelerated translation. The SMMU still emulates registers
     /// and dispatches CMDQ commands to iommufd backends.
     pub accel: bool,
+}
+
+/// Invalid SMMU construction parameters.
+#[derive(Debug, thiserror::Error)]
+pub enum SmmuConfigError {
+    /// The initial output address size has no supported IDR5.OAS encoding.
+    #[error(
+        "OAS {0} is not a valid SMMUv3 output address size (expected one of 32, 36, 40, 42, 44, 48, 52)"
+    )]
+    InvalidOas(u8),
+    /// The configured SubstreamID width exceeds the supported maximum.
+    #[error("SSID width {0} exceeds the maximum of 20")]
+    InvalidSsidSize(u8),
 }
 
 /// Per-queue MSI configuration registers.
@@ -202,12 +246,13 @@ pub struct SmmuDevice {
 }
 
 impl SmmuDevice {
-    fn sanitize_cr0(value: u32) -> registers::Cr0 {
+    fn sanitize_cr0(value: u32, ats_supported: bool) -> registers::Cr0 {
         let requested = registers::Cr0::from(value);
         registers::Cr0::new()
             .with_smmuen(requested.smmuen())
             .with_eventqen(requested.eventqen())
             .with_cmdqen(requested.cmdqen())
+            .with_atschk(requested.atschk() && ats_supported)
     }
 
     fn sanitize_gbpa(value: u32) -> registers::Gbpa {
@@ -221,13 +266,28 @@ impl SmmuDevice {
     /// `guest_memory` is used for reading command/event queues and page tables.
     /// `evtq_irq` and `gerror_irq` are wired SPI interrupt lines for event
     /// queue and global error signaling.
+    ///
+    /// Returns an error for an unsupported initial OAS or fixed SSID width.
     pub fn new(
         mmio_base: u64,
         guest_memory: GuestMemory,
         config: &SmmuConfig,
         evtq_irq: Option<LineInterrupt>,
         gerror_irq: Option<LineInterrupt>,
-    ) -> Self {
+    ) -> Result<Self, SmmuConfigError> {
+        let oas_bits = match config.oas_policy {
+            SmmuOasPolicy::Auto { provisional } => provisional,
+            SmmuOasPolicy::Fixed(bits) => bits,
+        };
+        if !crate::VALID_OAS_BITS.contains(&oas_bits) {
+            return Err(SmmuConfigError::InvalidOas(oas_bits));
+        }
+        let ssid_bits = match config.ssid_policy {
+            SmmuSsidPolicy::Auto => 0,
+            SmmuSsidPolicy::Fixed(bits) if bits <= 20 => bits,
+            SmmuSsidPolicy::Fixed(bits) => return Err(SmmuConfigError::InvalidSsidSize(bits)),
+        };
+
         let idr0 = registers::Idr0::new()
             .with_s1p(true)
             .with_s2p(false)
@@ -246,12 +306,9 @@ impl SmmuDevice {
             // in the nested path).
             .with_st_level(0b00); // Linear stream table only
 
-        // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the accel
-        // path must validate the host SMMU's SSIDSIZE >= the advertised value
-        // in resolve_host_caps.
-        let ssid_bits = 0;
         let idr1 = registers::Idr1::new()
             .with_sidsize(config.sidsize)
+            // Auto is resolved from the host and captured at start.
             .with_ssidsize(ssid_bits)
             .with_cmdqs(8) // 256 entries max
             .with_eventqs(8) // 256 entries max
@@ -274,11 +331,6 @@ impl SmmuDevice {
         // provisional value that may be raised or validated against the host
         // SMMU's OAS at device attach (see `resolve_host_caps`). The concrete
         // value is supplied by the caller in both cases.
-        let oas_bits = match config.oas_policy {
-            SmmuOasPolicy::Auto { provisional } => provisional,
-            SmmuOasPolicy::Fixed(bits) => bits,
-        };
-
         let idr5 = registers::Idr5::new()
             .with_oas(crate::spec::AddrSize::from_addr_bits(oas_bits))
             .with_gran4k(true)
@@ -300,8 +352,8 @@ impl SmmuDevice {
         let shared_state = SmmuSharedState::new(
             guest_memory.clone(),
             oas_bits,
-            ssid_bits,
             config.oas_policy,
+            config.ssid_policy,
             config.accel,
             evtq_irq,
             gerror_irq,
@@ -310,7 +362,7 @@ impl SmmuDevice {
         // register's reset value.
         shared_state.set_gbpa_abort(gbpa.abort());
 
-        SmmuDevice {
+        Ok(SmmuDevice {
             mmio_region: (
                 "smmu",
                 mmio_base..=mmio_base + registers::MMIO_REGION_SIZE - 1,
@@ -350,12 +402,24 @@ impl SmmuDevice {
             gerror_msi: MsiConfig::default(),
             evtq_msi: MsiConfig::default(),
             cmdq_msi: MsiConfig::default(),
-        }
+        })
     }
 
     /// Returns the shared state for creating per-device translation wrappers.
     pub fn shared_state(&self) -> &Arc<SmmuSharedState> {
         &self.shared_state
+    }
+
+    fn freeze_capabilities(&mut self) {
+        let SmmuCapabilities {
+            oas_bits,
+            ssid_bits,
+            ats,
+        } = self.shared_state.freeze_capabilities();
+        self.idr0.set_ats(ats);
+        self.idr1.set_ssidsize(ssid_bits);
+        self.idr5
+            .set_oas(crate::spec::AddrSize::from_addr_bits(oas_bits));
     }
 
     /// Handles a 32-bit MMIO read at the given offset from the device base.
@@ -366,14 +430,7 @@ impl SmmuDevice {
             registers::IDR2 => self.idr2,
             registers::IDR3 => self.idr3,
             registers::IDR4 => self.idr4,
-            registers::IDR5 => {
-                // OAS may be resolved against an accelerated host SMMU before
-                // the device starts; start freezes it. Granule bits are fixed.
-                let oas = self.shared_state.oas_bits();
-                self.idr5
-                    .with_oas(crate::spec::AddrSize::from_addr_bits(oas))
-                    .into()
-            }
+            registers::IDR5 => self.idr5.into(),
             registers::IIDR => self.iidr,
             registers::AIDR => self.aidr,
 
@@ -443,7 +500,7 @@ impl SmmuDevice {
             | registers::IRQ_CTRLACK => {}
 
             registers::CR0 => {
-                let requested = Self::sanitize_cr0(value);
+                let requested = Self::sanitize_cr0(value, self.idr0.ats());
                 let previous = self.cr0;
                 self.cr0 = requested;
 
@@ -995,7 +1052,7 @@ impl ChipsetDevice for SmmuDevice {
 
 impl ChangeDeviceState for SmmuDevice {
     fn start(&mut self) {
-        self.shared_state.freeze_capabilities();
+        self.freeze_capabilities();
     }
 
     async fn stop(&mut self) {}
@@ -1053,13 +1110,20 @@ impl ChangeDeviceState for SmmuDevice {
         let reset_gbpa = registers::Gbpa::new().with_abort(false);
         let reset_strtab_base = 0;
         let reset_strtab_base_cfg = registers::StrtabBaseCfg::new();
-        let TranslationPolicy { oas_mask, .. } = shared_state.translation_policy();
+        let TranslationPolicy {
+            oas_mask,
+            ssid_bits,
+            ats,
+            ..
+        } = shared_state.translation_policy();
         let reset_policy = TranslationPolicy {
             enabled: reset_cr0.smmuen(),
             gbpa_abort: reset_gbpa.abort(),
             strtab_base: registers::StrtabBase::from(reset_strtab_base).addr(),
             strtab_log2size: reset_strtab_base_cfg.log2size(),
             oas_mask,
+            ssid_bits,
+            ats,
         };
         shared_state.transition_translation_policy(reset_policy, "SMMU reset");
 
@@ -1105,7 +1169,7 @@ impl SaveRestore for SmmuDevice {
             guest_memory: _,
             ref shared_state,
 
-            // Identification registers — read-only, not saved.
+            // Identification registers — not saved.
             idr0: _,
             idr1: _,
             idr2: _,
@@ -1168,6 +1232,7 @@ impl SaveRestore for SmmuDevice {
             evtq_cons: queue.evtq_cons,
             gerror: queue.gerror,
             gerrorn: queue.gerrorn,
+            capabilities: Some(state::SavedCapabilities::save(shared_state.capabilities())),
         })
     }
 
@@ -1191,9 +1256,32 @@ impl SaveRestore for SmmuDevice {
             evtq_cons,
             gerror,
             gerrorn,
+            capabilities,
         } = saved;
 
-        let restored_cr0 = Self::sanitize_cr0(cr0);
+        let capabilities = capabilities.map(state::SavedCapabilities::restore);
+        let current = self.shared_state.capabilities();
+        let compatible = match capabilities {
+            Some(saved) => saved == current,
+            // Older snapshots predate host-derived SSID/ATS advertisement.
+            None => current.ssid_bits == 0 && !current.ats,
+        };
+        if !compatible {
+            return Err(RestoreError::Other(
+                SmmuRestoreError::Capabilities {
+                    saved: capabilities,
+                    current,
+                }
+                .into(),
+            ));
+        }
+        if registers::Cr0::from(cr0).atschk() && !current.ats {
+            return Err(RestoreError::InvalidSavedState(
+                SmmuRestoreError::AtsDisabled.into(),
+            ));
+        }
+        self.freeze_capabilities();
+        let restored_cr0 = Self::sanitize_cr0(cr0, self.idr0.ats());
         let restored_cr1 = registers::Cr1::from(cr1);
         let restored_cr2 = registers::Cr2::from(cr2);
         let restored_gbpa = Self::sanitize_gbpa(gbpa);
@@ -1240,6 +1328,17 @@ impl SaveRestore for SmmuDevice {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum SmmuRestoreError {
+    #[error("saved SMMU capabilities {saved:?} do not match configured capabilities {current:?}")]
+    Capabilities {
+        saved: Option<SmmuCapabilities>,
+        current: SmmuCapabilities,
+    },
+    #[error("saved CR0.ATSCHK is set but ATS is not supported")]
+    AtsDisabled,
+}
+
 mod state {
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SavedStateRoot;
@@ -1283,6 +1382,47 @@ mod state {
         pub(super) gerror: u32,
         #[mesh(18)]
         pub(super) gerrorn: u32,
+        #[mesh(19)]
+        pub(super) capabilities: Option<SavedCapabilities>,
+    }
+
+    #[derive(Protobuf)]
+    #[mesh(package = "iommu.smmu")]
+    pub struct SavedCapabilities {
+        #[mesh(1)]
+        oas_bits: u8,
+        #[mesh(2)]
+        ssid_bits: u8,
+        #[mesh(3)]
+        ats: bool,
+    }
+
+    impl SavedCapabilities {
+        pub(super) fn save(capabilities: super::SmmuCapabilities) -> Self {
+            let super::SmmuCapabilities {
+                oas_bits,
+                ssid_bits,
+                ats,
+            } = capabilities;
+            Self {
+                oas_bits,
+                ssid_bits,
+                ats,
+            }
+        }
+
+        pub(super) fn restore(self) -> super::SmmuCapabilities {
+            let Self {
+                oas_bits,
+                ssid_bits,
+                ats,
+            } = self;
+            super::SmmuCapabilities {
+                oas_bits,
+                ssid_bits,
+                ats,
+            }
+        }
     }
 
     #[derive(Protobuf)]
@@ -1388,6 +1528,7 @@ mod tests {
     use super::*;
     use crate::spec::events::EvtEntry;
     use crate::spec::registers::*;
+    use test_with_tracing::test;
     use zerocopy::FromBytes;
     use zerocopy::IntoBytes;
 
@@ -1400,13 +1541,78 @@ mod tests {
         SmmuConfig {
             sidsize: 16,
             oas_policy: SmmuOasPolicy::Fixed(40),
+            ssid_policy: SmmuSsidPolicy::Auto,
             accel: false,
         }
     }
 
     fn make_test_device() -> SmmuDevice {
         let gm = GuestMemory::empty();
-        SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None)
+        SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap()
+    }
+
+    #[test]
+    fn test_constructor_validates_capability_widths() {
+        for accel in [false, true] {
+            for bits in [0, 31, 33, 64, u8::MAX] {
+                for oas_policy in [
+                    SmmuOasPolicy::Fixed(bits),
+                    SmmuOasPolicy::Auto { provisional: bits },
+                ] {
+                    let result = SmmuDevice::new(
+                        TEST_MMIO_BASE,
+                        GuestMemory::empty(),
+                        &SmmuConfig {
+                            oas_policy,
+                            accel,
+                            ..test_config()
+                        },
+                        None,
+                        None,
+                    );
+                    assert!(
+                        matches!(result, Err(SmmuConfigError::InvalidOas(value)) if value == bits)
+                    );
+                }
+            }
+            for bits in [21, 32, u8::MAX] {
+                let result = SmmuDevice::new(
+                    TEST_MMIO_BASE,
+                    GuestMemory::empty(),
+                    &SmmuConfig {
+                        ssid_policy: SmmuSsidPolicy::Fixed(bits),
+                        accel,
+                        ..test_config()
+                    },
+                    None,
+                    None,
+                );
+                assert!(
+                    matches!(result, Err(SmmuConfigError::InvalidSsidSize(value)) if value == bits)
+                );
+            }
+            for bits in crate::VALID_OAS_BITS {
+                let mut dev = SmmuDevice::new(
+                    TEST_MMIO_BASE,
+                    GuestMemory::empty(),
+                    &SmmuConfig {
+                        oas_policy: SmmuOasPolicy::Fixed(bits),
+                        ssid_policy: SmmuSsidPolicy::Fixed(20),
+                        accel,
+                        ..test_config()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+                dev.start();
+                assert_eq!(
+                    Idr5::from(read32(&mut dev, IDR5)).oas().addr_bits(),
+                    Some(bits)
+                );
+                assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 20);
+            }
+        }
     }
 
     /// Helper to read a 32-bit register.
@@ -1842,7 +2048,7 @@ mod tests {
     fn make_cmdq_test_device() -> SmmuDevice {
         // Allocate enough guest memory for CMDQ + MSI target page.
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap();
 
         // Program CMDQ_BASE: address + log2size.
         let cmdq_base = QueueBase::new()
@@ -2010,7 +2216,7 @@ mod tests {
     #[test]
     fn test_cmdq_log2size_clamped_to_idr1() {
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap();
 
         // IDR1.CMDQS = 8, IDR1.EVENTQS = 8. Program a larger value (20).
         let cmdq_base = QueueBase::new()
@@ -2133,7 +2339,7 @@ mod tests {
     fn test_cmdq_disabled() {
         // Create device but do NOT enable CMDQEN.
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap();
 
         let cmdq_base = QueueBase::new()
             .with_log2size(TEST_CMDQ_LOG2SIZE)
@@ -2312,9 +2518,10 @@ mod tests {
         let config = SmmuConfig {
             sidsize: 16,
             oas_policy: SmmuOasPolicy::Fixed(40),
+            ssid_policy: SmmuSsidPolicy::Auto,
             accel: true,
         };
-        SmmuDevice::new(TEST_MMIO_BASE, gm, &config, None, None)
+        SmmuDevice::new(TEST_MMIO_BASE, gm, &config, None, None).unwrap()
     }
 
     /// Host caps compatible with everything the emulator advertises.
@@ -2324,7 +2531,295 @@ mod tests {
             ttf: Idr0Ttf::new().with_aarch64(true),
             ttendian: Idr0TtEndian::LE,
             gran4k: true,
+            ssid_bits: 14,
+            ats: true,
         }
+    }
+
+    #[pal_async::async_test]
+    async fn test_accel_host_caps_are_advertised() {
+        let gm = GuestMemory::allocate(0x1000);
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            gm,
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                ssid_policy: SmmuSsidPolicy::Auto,
+                accel: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+        dev.shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+        dev.start();
+
+        assert!(Idr0::from(read32(&mut dev, IDR0)).ats());
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 14);
+        assert_eq!(
+            Idr5::from(read32(&mut dev, IDR5)).oas(),
+            crate::spec::AddrSize::BITS_48
+        );
+
+        write32(&mut dev, CR0, Cr0::new().with_atschk(true).into());
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).atschk());
+
+        dev.stop().await;
+        let saved = dev.save().unwrap();
+        let mut restored = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::allocate(0x1000),
+            &SmmuConfig {
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                accel: true,
+                ..test_config()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        restored
+            .shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+        restored.restore(saved).unwrap();
+        // Restore must capture all IDRs without waiting for the first start.
+        for reg in [IDR0, IDR1, IDR5, CR0ACK] {
+            assert_eq!(read32(&mut restored, reg), read32(&mut dev, reg));
+        }
+        restored.start();
+        restored.stop().await;
+        for reg in [IDR0, IDR1, IDR5] {
+            assert_eq!(read32(&mut restored, reg), read32(&mut dev, reg));
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn test_configured_ssid_width_survives_binding_reset_and_restore() {
+        for accel in [false, true] {
+            for bits in [0, 1, 14, 20] {
+                let config = SmmuConfig {
+                    ssid_policy: SmmuSsidPolicy::Fixed(bits),
+                    accel,
+                    ..test_config()
+                };
+                let mut dev =
+                    SmmuDevice::new(TEST_MMIO_BASE, GuestMemory::empty(), &config, None, None)
+                        .unwrap();
+                if accel {
+                    let caps = HostSmmuCaps {
+                        ssid_bits: 20,
+                        ..test_host_caps()
+                    };
+                    dev.shared_state
+                        .bind_accel_viommu(caps, &MockViommu::new())
+                        .unwrap();
+                }
+                dev.start();
+                assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), bits);
+                assert_eq!(Idr0::from(read32(&mut dev, IDR0)).ats(), accel);
+                dev.stop().await;
+                let saved = dev.save().unwrap();
+                dev.reset().await;
+                assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), bits);
+                dev.restore(saved).unwrap();
+                assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), bits);
+            }
+        }
+    }
+
+    #[test]
+    fn test_fixed_ssid_width_rejects_narrow_host_without_changing_capabilities() {
+        for started in [false, true] {
+            let mut dev = SmmuDevice::new(
+                TEST_MMIO_BASE,
+                GuestMemory::empty(),
+                &SmmuConfig {
+                    ssid_policy: SmmuSsidPolicy::Fixed(15),
+                    accel: true,
+                    ..test_config()
+                },
+                None,
+                None,
+            )
+            .unwrap();
+            if started {
+                dev.start();
+            }
+            let before = dev.shared_state.capabilities();
+            let error = dev
+                .shared_state
+                .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("SSID width 15 exceeds host SSID width 14")
+            );
+            assert_eq!(dev.shared_state.capabilities(), before);
+            dev.shared_state
+                .bind_accel_viommu(
+                    HostSmmuCaps {
+                        ssid_bits: 15,
+                        ..test_host_caps()
+                    },
+                    &MockViommu::new(),
+                )
+                .unwrap();
+            assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 15);
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn test_capabilities_survive_reset_and_restore() {
+        let (mut dev, _sink) = make_accel_cmdq_test_device();
+        dev.start();
+        let capabilities = dev.shared_state.capabilities();
+        write32(&mut dev, CR0, Cr0::new().with_atschk(true).into());
+        let saved = dev.save().unwrap();
+        dev.reset().await;
+        assert_eq!(dev.shared_state.capabilities(), capabilities);
+        assert!(Idr0::from(read32(&mut dev, IDR0)).ats());
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 14);
+        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).atschk());
+        dev.restore(saved).unwrap();
+        assert_eq!(dev.shared_state.capabilities(), capabilities);
+        assert!(Cr0::from(read32(&mut dev, CR0ACK)).atschk());
+    }
+
+    #[test]
+    fn test_saved_capabilities_protobuf_roundtrip() {
+        let (mut dev, _sink) = make_accel_cmdq_test_device();
+        let expected = dev.shared_state.capabilities();
+        let blob = vmcore::save_restore::SavedStateBlob::new(dev.save().unwrap());
+        let saved = blob.parse::<state::SavedState>().unwrap();
+        assert_eq!(
+            saved.capabilities.map(state::SavedCapabilities::restore),
+            Some(expected)
+        );
+
+        let mut saved = dev.save().unwrap();
+        saved.capabilities = None;
+        let blob = vmcore::save_restore::SavedStateBlob::new(saved);
+        assert!(
+            blob.parse::<state::SavedState>()
+                .unwrap()
+                .capabilities
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_save_uses_resolved_capabilities_before_start() {
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::empty(),
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                ssid_policy: SmmuSsidPolicy::Auto,
+                accel: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        dev.shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+
+        let expected = dev.shared_state.capabilities();
+        assert_eq!(expected.oas_bits, 48);
+        assert_eq!(expected.ssid_bits, 14);
+        assert!(expected.ats);
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 0);
+
+        let saved = dev.save().unwrap();
+        assert_eq!(
+            saved.capabilities.map(state::SavedCapabilities::restore),
+            Some(expected)
+        );
+        let saved = dev.save().unwrap();
+        dev.restore(saved).unwrap();
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 14);
+    }
+
+    #[test]
+    fn test_restore_rejects_changed_capabilities_before_mutation() {
+        let (mut dev, _sink) = make_accel_cmdq_test_device();
+        let current = dev.shared_state.capabilities();
+        for capabilities in [
+            None,
+            Some(SmmuCapabilities {
+                ats: false,
+                ..current
+            }),
+            Some(SmmuCapabilities {
+                ssid_bits: 0,
+                ..current
+            }),
+            Some(SmmuCapabilities {
+                oas_bits: 48,
+                ..current
+            }),
+        ] {
+            let mut saved = dev.save().unwrap();
+            saved.capabilities = capabilities.map(state::SavedCapabilities::save);
+            saved.cr0 = Cr0::new().with_atschk(true).into();
+            let before = dev.cr0;
+            assert!(dev.restore(saved).is_err());
+            assert_eq!(u32::from(dev.cr0), u32::from(before));
+            assert_eq!(dev.shared_state.capabilities(), current);
+        }
+    }
+
+    #[test]
+    fn test_restore_freezes_capabilities_without_start() {
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::empty(),
+            &SmmuConfig {
+                sidsize: 16,
+                oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                ssid_policy: SmmuSsidPolicy::Auto,
+                accel: true,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let saved = dev.save().unwrap();
+        let capabilities = dev.shared_state.capabilities();
+        dev.restore(saved).unwrap();
+
+        dev.shared_state
+            .bind_accel_viommu(test_host_caps(), &MockViommu::new())
+            .unwrap();
+        assert_eq!(dev.shared_state.capabilities(), capabilities);
+        assert!(!Idr0::from(read32(&mut dev, IDR0)).ats());
+        assert_eq!(Idr1::from(read32(&mut dev, IDR1)).ssidsize(), 0);
+        assert_eq!(
+            Idr5::from(read32(&mut dev, IDR5)).oas(),
+            crate::spec::AddrSize::BITS_40
+        );
+    }
+
+    #[test]
+    fn test_restore_legacy_without_ats() {
+        let mut dev = make_test_device();
+        let mut saved = dev.save().unwrap();
+        saved.capabilities = None;
+        dev.restore(saved).unwrap();
+
+        let mut saved = dev.save().unwrap();
+        saved.cr0 = Cr0::new().with_atschk(true).into();
+        assert!(dev.restore(saved).is_err());
+        write32(&mut dev, CR0, Cr0::new().with_atschk(true).into());
+        assert!(!Cr0::from(read32(&mut dev, CR0ACK)).atschk());
     }
 
     #[test]
@@ -2336,11 +2831,13 @@ mod tests {
             &SmmuConfig {
                 sidsize: 16,
                 oas_policy: SmmuOasPolicy::Auto { provisional: 40 },
+                ssid_policy: SmmuSsidPolicy::Auto,
                 accel: true,
             },
             None,
             None,
-        );
+        )
+        .unwrap();
         dev.start();
 
         let caps = HostSmmuCaps {
@@ -3167,11 +3664,12 @@ mod tests {
     }
 
     fn make_accel_cmdq_test_device() -> (SmmuDevice, Arc<MockViommu>) {
-        let dev = make_cmdq_test_device();
+        let mut dev = make_cmdq_test_device();
         let sink = MockViommu::new();
         dev.shared_state
             .bind_accel_viommu(test_host_caps(), &sink)
             .expect("bind host SMMU");
+        dev.start();
         (dev, sink)
     }
 
@@ -3367,8 +3865,19 @@ mod tests {
     /// `CERROR_ILL` instead of being forwarded.
     #[test]
     fn test_cmdq_atc_inv_illegal_when_ats_disabled() {
-        let (mut dev, sink) = make_accel_cmdq_test_device();
-        assert!(!dev.idr0.ats());
+        let mut dev = make_cmdq_test_device();
+        let sink = MockViommu::new();
+        dev.shared_state
+            .bind_accel_viommu(
+                HostSmmuCaps {
+                    ats: false,
+                    ..test_host_caps()
+                },
+                &sink,
+            )
+            .expect("bind ATS-disabled host SMMU");
+        dev.start();
+        assert!(!Idr0::from(read32(&mut dev, IDR0)).ats());
 
         write_cmdq_entry(
             &dev,
@@ -3386,6 +3895,34 @@ mod tests {
         assert_eq!(cons.rd(), 0);
         assert_eq!(cons.err(), CmdqError::CERROR_ILL.0);
         assert!(sink.batches().is_empty());
+    }
+
+    #[test]
+    fn test_cmdq_atc_inv_forwarded_in_order() {
+        let (mut dev, sink) = make_accel_cmdq_test_device();
+        let sid = register_translating_stream(&dev, 1);
+        let atc = CmdEntry {
+            qw0: u64::from(sid) << 32 | u64::from(CmdOpcode::ATC_INV.0),
+            qw1: 0,
+        };
+        let before = tlbi_entry(CmdOpcode::TLBI_NH_ALL, 0);
+        let after = cfgi_cd_entry(CmdOpcode::CFGI_CD, sid, 0);
+        write_cmdq_entry(&dev, 0, &before);
+        write_cmdq_entry(&dev, 1, &atc);
+        write_cmdq_entry(&dev, 2, &after);
+        write_cmdq_entry(&dev, 3, &sync_entry());
+        write32(&mut dev, CMDQ_PROD, 4);
+        let cons = CmdqCons::from(read32(&mut dev, CMDQ_CONS));
+        assert_eq!(cons.rd(), 4);
+        assert_eq!(cons.err(), 0);
+        assert_eq!(
+            sink.batches(),
+            vec![vec![
+                [before.qw0, before.qw1],
+                [atc.qw0, atc.qw1],
+                [after.qw0, after.qw1],
+            ]]
+        );
     }
 
     /// On a partial host failure, `CMDQ_CONS` lands on the offending entry
@@ -3418,7 +3955,7 @@ mod tests {
         // the third fetch cross the boundary and fail.
         const FETCH_ABORT_CMDQ_GPA: u64 = 0x3fe0;
         let gm = GuestMemory::allocate(0x4000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap();
         let cmdq_base = QueueBase::new()
             .with_log2size(TEST_CMDQ_LOG2SIZE)
             .with_addr_bits(FETCH_ABORT_CMDQ_GPA >> 5);
@@ -3466,7 +4003,7 @@ mod tests {
     /// Create a device with EVTQ configured and enabled.
     fn make_evtq_test_device() -> SmmuDevice {
         let gm = GuestMemory::allocate(0x4_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None);
+        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm, &test_config(), None, None).unwrap();
 
         // Program EVTQ_BASE.
         let evtq_base = QueueBase::new()
@@ -3752,7 +4289,8 @@ mod tests {
         // =====================================================================
 
         let gm = GuestMemory::allocate(0x80_0000); // 8 MiB
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
+        let mut dev =
+            SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None).unwrap();
 
         // =====================================================================
         // Step 1: Probe — read IDR registers (arm_smmu_device_hw_probe)
@@ -4202,7 +4740,8 @@ mod tests {
         const STREAM_ID: u32 = (BUS as u32) << 8;
 
         let gm = GuestMemory::allocate(0x80_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
+        let mut dev =
+            SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None).unwrap();
 
         // Set up stream table, CD, and page tables in guest memory.
         let ste = Ste {
@@ -4403,7 +4942,8 @@ mod tests {
     #[test]
     fn test_cmdq_cons_writable_when_disabled() {
         let gm = GuestMemory::allocate(0x40_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
+        let mut dev =
+            SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None).unwrap();
 
         // CMDQEN is 0 at reset — CMDQ_CONS should be writable.
         assert!(!Cr0::from(read32(&mut dev, CR0)).cmdqen());
@@ -4444,7 +4984,8 @@ mod tests {
         use crate::spec::commands::CmdSync;
 
         let gm = GuestMemory::allocate(0x40_0000);
-        let mut dev = SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None);
+        let mut dev =
+            SmmuDevice::new(TEST_MMIO_BASE, gm.clone(), &test_config(), None, None).unwrap();
 
         const CMDQ_GPA: u64 = 0x20_0000;
 
