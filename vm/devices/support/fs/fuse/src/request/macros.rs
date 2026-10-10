@@ -35,7 +35,7 @@ macro_rules! fuse_operations {
                         }
                     },)*
                     _ => {
-                        tracing::error!(opcode, "Invalid opcode");
+                        tracelimit::error_ratelimited!(opcode, "Invalid opcode");
                         return Err(lx::Error::EINVAL)
                     }
                 };
