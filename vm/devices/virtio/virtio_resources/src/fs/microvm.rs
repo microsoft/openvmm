@@ -31,9 +31,9 @@ pub enum VirtioFsProfile {
         /// the VMM. Linux only.
         caller_identity: bool,
     },
-    /// An aggregate whose synthetic, read-only root lists one directory per
-    /// child. The children of the `Aggregate` backend must have the same
-    /// names, in the same order.
+    /// An aggregate whose synthetic, read-only root lists one directory or
+    /// regular file per child. The children of the `Aggregate` backend must
+    /// have the same names, in the same order.
     MicrovmAggregate {
         stable_id: String,
         children: Vec<MicrovmAggregateChild>,
@@ -52,8 +52,11 @@ pub enum VirtioFsProfile {
 /// corresponding fields of [`VirtioFsProfile::Microvm`].
 #[derive(MeshPayload)]
 pub struct MicrovmAggregateChild {
-    /// Name of the child's directory under the synthetic root.
+    /// Name of the child under the synthetic root.
     pub name: String,
+    /// Whether the child exposes the regular file that its root path names,
+    /// rather than a directory. A file child has no policy paths.
+    pub file: bool,
     pub root_identity: Vec<u8>,
     pub read_only: bool,
     pub denied_paths: Vec<String>,

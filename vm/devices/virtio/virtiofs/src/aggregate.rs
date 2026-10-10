@@ -21,7 +21,6 @@ use fuse::protocol::*;
 use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use zerocopy::FromZeros;
 
@@ -284,7 +283,8 @@ impl VirtioFs {
     }
 
     fn insert_child_root_entry(&self, volume: Arc<VirtioFsVolume>) -> lx::Result<fuse_entry_out> {
-        let (inode, stat) = VirtioFsInode::new(volume, PathBuf::new())?;
+        let root_entry = volume.root_entry().to_owned();
+        let (inode, stat) = VirtioFsInode::new(volume, root_entry)?;
         let attr = inode.attr_from_stat(&stat);
         let (_, node_id) = self.insert_inode(inode)?;
         Ok(fuse_entry_out::new(
@@ -373,15 +373,21 @@ impl VirtioFs {
             let entry = self.insert_child_root_entry(volume)?;
             Ok(buffer.dir_entry_plus(name, next_off, entry))
         } else {
-            // Plain readdir: report the directory using the volume root's
-            // guest-visible inode number. If the root cannot be queried, use
+            // Plain readdir: report the child's root using its guest-visible
+            // inode number, as a directory, or as the regular file that a
+            // microVM child may expose. If the root cannot be queried, use
             // the volume id as a stable surrogate.
             let raw = volume
-                .lstat(PathBuf::new())
+                .lstat(volume.root_entry())
                 .map(|s| s.inode_nr)
                 .unwrap_or(volume.id() as lx::ino_t);
             let ino = volume.map_inode(raw);
-            Ok(buffer.dir_entry(name, ino, next_off, lx::DT_DIR as u32))
+            let file_type = if volume.root_entry().as_os_str().is_empty() {
+                lx::DT_DIR
+            } else {
+                lx::DT_REG
+            };
+            Ok(buffer.dir_entry(name, ino, next_off, file_type as u32))
         }
     }
 }

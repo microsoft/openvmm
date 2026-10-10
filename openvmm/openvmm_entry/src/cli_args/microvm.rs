@@ -440,14 +440,14 @@ pub struct MicrovmCli {
     )]
     pub microvm_mount: Option<MicrovmMountCli>,
 
-    /// attach several host directories to the fixed microVM virtio-fs slot as
-    /// one aggregate, mounted at GUEST_TARGET
+    /// attach several host directories or files to the fixed microVM
+    /// virtio-fs slot as one aggregate, mounted at GUEST_TARGET
     ///
     /// The aggregate's root is read-only, only the guest's root user may
-    /// enter it, and it lists one directory per `--mount-child`, which has
-    /// its own access mode and policy. The guest mounts the `microvm` tag at
-    /// GUEST_TARGET with `virtfs_aggregate=1` on its command line, and is
-    /// expected to bind-mount each child where it is needed.
+    /// enter it, and it lists one directory or regular file per
+    /// `--mount-child`, which has its own access mode. The guest mounts the
+    /// `microvm` tag at GUEST_TARGET with `virtfs_aggregate=1` on its command
+    /// line, and is expected to bind-mount each child where it is needed.
     #[clap(
         long = "mount-aggregate",
         value_name = "GUEST_TARGET",
@@ -455,14 +455,17 @@ pub struct MicrovmCli {
     )]
     pub microvm_mount_aggregate: Option<String>,
 
-    /// expose a host directory as a named child of the `--mount-aggregate`
-    /// root
+    /// expose a host directory or regular file as a named child of the
+    /// `--mount-aggregate` root
     ///
-    /// Repeat for each directory; the guest lists the children in this
-    /// order. NAME is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`. The
-    /// optional mode follows the last comma, so HOST_PATH may contain commas
-    /// when the mode is given. Host directories must not overlap, and a
-    /// restore requires the same children, in the same order.
+    /// Repeat for each child; the guest lists the children in this order.
+    /// NAME is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`. The optional
+    /// mode follows the last comma, so HOST_PATH may contain commas when the
+    /// mode is given. A file child is the file itself, without anything else
+    /// of its host directory, and its mode applies to the whole file, which
+    /// no `--mount-deny`, `--mount-allow`, or `--mount-write` path may name.
+    /// Host paths must not overlap: a file must not lie inside a directory
+    /// child. A restore requires the same children, in the same order.
     #[clap(
         long = "mount-child",
         value_name = "NAME,HOST_PATH[,ro|rw]",
@@ -517,8 +520,8 @@ pub struct MicrovmCli {
     /// CAP_SETGID unless every caller has OpenVMM's own UID and GID and
     /// OpenVMM has no other supplementary groups; an operation that cannot
     /// run as its caller fails with EPERM. The mode applies to every
-    /// `--mount-child`, whose host directories must then have the same
-    /// owner.
+    /// `--mount-child`, whose host directories and files must then have the
+    /// same owner.
     #[clap(long = "mount-owner", value_enum, value_name = "OWNER")]
     pub microvm_mount_owner: Option<MicrovmMountOwnerCli>,
 
@@ -607,12 +610,13 @@ impl FromStr for MicrovmMountCli {
     }
 }
 
-/// A `--mount-child` argument: one host directory of the aggregate.
+/// A `--mount-child` argument: one host directory or regular file of the
+/// aggregate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicrovmMountChildCli {
     /// Name of the child under the aggregate's root.
     pub name: String,
-    /// Live host directory supplied for this run.
+    /// Live host directory or regular file supplied for this run.
     pub host_path: PathBuf,
     /// Snapshot-authoritative access policy.
     pub access: openvmm_defs::microvm::MicrovmFilesystemAccess,
