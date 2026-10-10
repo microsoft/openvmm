@@ -382,10 +382,10 @@ impl VirtioFs {
                 .map(|s| s.inode_nr)
                 .unwrap_or(volume.id() as lx::ino_t);
             let ino = volume.map_inode(raw);
-            let file_type = if volume.root_entry().as_os_str().is_empty() {
-                lx::DT_DIR
-            } else {
+            let file_type = if volume.exposed_file().is_some() {
                 lx::DT_REG
+            } else {
+                lx::DT_DIR
             };
             Ok(buffer.dir_entry(name, ino, next_off, file_type as u32))
         }
