@@ -14,6 +14,7 @@ use virt::time_abi::HostTimeSample;
 use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiTestHooks;
+use virt::time_abi::downtime::MAX_DOWNTIME_NS;
 
 /// The manifest's time contract, recorded at the capture anchor.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
@@ -53,6 +54,12 @@ pub struct SnapshotTimeContract {
     /// The generation counter of the captured VM process.
     #[mesh(11)]
     pub capture_generation: u32,
+    /// The host monotonic interval from the saved VM-time cut to the capture
+    /// anchor, on the clock that the anchor samples.
+    ///
+    /// Absent in snapshots captured before this interval was recorded.
+    #[mesh(12)]
+    pub vm_time_cut_to_anchor_ns: Option<u64>,
 }
 
 impl SnapshotTimeContract {
@@ -85,6 +92,24 @@ impl SnapshotTimeContract {
                 })?,
             },
         })
+    }
+
+    /// Returns the interval by which VM time and the RTC must advance from
+    /// their saved cut to the destination restore anchor.
+    pub fn vm_time_downtime_ns(&self, anchor_downtime_ns: u64) -> Result<u64, TimeAbiError> {
+        let cut_to_anchor_ns = self.vm_time_cut_to_anchor_ns.unwrap_or(0);
+        let downtime_ns = anchor_downtime_ns
+            .checked_add(cut_to_anchor_ns)
+            .filter(|value| *value <= MAX_DOWNTIME_NS)
+            .ok_or_else(|| {
+                TimeAbiError::new(
+                    TimeAbiCode::DowntimeExcessive,
+                    format!(
+                        "VM-time downtime {anchor_downtime_ns} + {cut_to_anchor_ns} ns exceeds {MAX_DOWNTIME_NS} ns"
+                    ),
+                )
+            })?;
+        Ok(downtime_ns)
     }
 }
 
