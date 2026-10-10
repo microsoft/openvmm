@@ -106,8 +106,8 @@ pub fn open_vhdx_chain_explicit(
 ///
 /// Parent path resolution order:
 /// 1. `relative_path` — resolved relative to the child's directory
-/// 2. `absolute_win32_path` — absolute path (platform-dependent)
-/// 3. `volume_path` — volume GUID path (Windows-specific)
+/// 2. `volume_path` — volume GUID path (Windows-only)
+/// 3. `absolute_win32_path` — absolute path (Windows-only)
 ///
 /// # Errors
 ///
@@ -183,24 +183,15 @@ pub async fn open_vhdx_chain(
             })?
             .context("differencing disk has no parent locator")?;
 
-        let parent_paths = locator.parent_paths();
-
-        // Parse the parent linkage GUID (if present) to validate against
-        // the parent's data write GUID on the next iteration.
-        expected_linkage = match parent_paths.parent_linkage.as_deref() {
-            Some(s) => Some(s.parse::<Guid>().with_context(|| {
-                format!(
-                    "invalid parent linkage GUID {s:?} in vhdx file: {}",
-                    current_path.display()
-                )
-            })?),
-            None => None,
-        };
+        let parent = locator.vhdx_parent().with_context(|| {
+            format!("invalid VHDX parent locator in {}", current_path.display())
+        })?;
+        expected_linkage = Some(parent.linkage());
 
         let child_dir = current_path.parent().unwrap_or_else(|| Path::new("."));
 
         // Try to resolve the parent path in order of preference.
-        let parent_path = resolve_parent_path(child_dir, &parent_paths).with_context(|| {
+        let parent_path = resolve_parent_path(child_dir, &parent).with_context(|| {
             format!(
                 "could not find parent for vhdx file: {}",
                 current_path.display()
@@ -218,48 +209,13 @@ pub async fn open_vhdx_chain(
 
 /// Try to resolve a parent path from the locator's well-known keys.
 ///
-/// Tries paths in order: relative_path, absolute_win32_path, volume_path.
+/// Tries relative_path, then (on Windows) volume_path and absolute_win32_path.
 /// Returns the first path that exists on disk, or an error if none work.
 fn resolve_parent_path(
     child_dir: &Path,
-    parent_paths: &vhdx::ParentPaths,
+    parent: &vhdx::VhdxParent,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-
-    // 1. Relative path — resolve relative to the child's directory.
-    if let Some(ref rel) = parent_paths.relative_path {
-        // VHDX relative paths use Windows separators (backslash).
-        // Normalize to the platform's separator.
-        let normalized: String = rel
-            .chars()
-            .map(|c| {
-                if c == '\\' {
-                    std::path::MAIN_SEPARATOR
-                } else {
-                    c
-                }
-            })
-            .collect();
-        // Strip leading ".\" or "./" if present.
-        let stripped = normalized
-            .strip_prefix(&format!(".{}", std::path::MAIN_SEPARATOR))
-            .unwrap_or(&normalized);
-        candidates.push(child_dir.join(stripped));
-    }
-
-    // 2. Absolute Win32 path (Windows-specific).
-    if cfg!(windows) {
-        if let Some(ref abs) = parent_paths.absolute_win32_path {
-            candidates.push(std::path::PathBuf::from(abs));
-        }
-    }
-
-    // 3. Volume path (Windows-specific).
-    if cfg!(windows) {
-        if let Some(ref vol) = parent_paths.volume_path {
-            candidates.push(std::path::PathBuf::from(vol));
-        }
-    }
+    let candidates: Vec<_> = parent.candidate_paths(child_dir).collect();
 
     for candidate in &candidates {
         if candidate.exists() {
@@ -268,7 +224,7 @@ fn resolve_parent_path(
     }
 
     if candidates.is_empty() {
-        anyhow::bail!("parent locator contains no path entries");
+        anyhow::bail!("parent locator contains no usable paths on this platform");
     }
 
     // None of the candidates exist. Report all attempted paths.
@@ -279,6 +235,62 @@ fn resolve_parent_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_lookup_ignores_windows_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("parent.vhdx");
+        std::fs::write(&path, []).unwrap();
+        let parent = vhdx::VhdxParent::new(Guid::new_random())
+            .unwrap()
+            .with_volume_path(path.to_str().unwrap())
+            .unwrap()
+            .with_absolute_win32_path(path.to_str().unwrap())
+            .unwrap();
+        assert!(resolve_parent_path(directory.path(), &parent).is_err());
+        let parent = parent.with_relative_path(r".\parent.vhdx").unwrap();
+        assert_eq!(
+            resolve_parent_path(directory.path(), &parent).unwrap(),
+            path
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn auto_walk_relative_parent_checks_linkage() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent_path = directory.path().join("parent.vhdx");
+        let child_path = directory.path().join("child.vhdx");
+        let file = crate::io::BlockingFile::open(&parent_path, false).unwrap();
+        let mut params = vhdx::CreateParams {
+            disk_size: 2 * 1024 * 1024,
+            ..Default::default()
+        };
+        vhdx::create(&file, &mut params).await.unwrap();
+        drop(file);
+
+        for (linkage, valid) in [(params.data_write_guid, true), (Guid::new_random(), false)] {
+            let parent = vhdx::VhdxParent::new(linkage)
+                .unwrap()
+                .with_relative_path(r".\parent.vhdx")
+                .unwrap();
+            let file = crate::io::BlockingFile::open(&child_path, false).unwrap();
+            let mut params = vhdx::CreateParams {
+                disk_size: 1024 * 1024,
+                disk_type: vhdx::DiskType::Differencing(parent),
+                ..Default::default()
+            };
+            vhdx::create(&file, &mut params).await.unwrap();
+            drop(file);
+            let result = open_vhdx_chain(&child_path, true).await;
+            if valid {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                let error = result.unwrap_err();
+                assert!(format!("{error:#}").contains("parent linkage mismatch"));
+            }
+        }
+    }
 
     #[test]
     fn open_single_creates_one_layer() {

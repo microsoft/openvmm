@@ -53,6 +53,11 @@
 //! keys into the parent, so common option sets can be defined once and reused
 //! across several parsers.
 //!
+//! The derive also exposes each key and its field doc comments through
+//! [`KeyValueFields::options`]. Callers can use this metadata to generate help
+//! for nested key-value option strings that an outer argument parser treats as
+//! a single value.
+//!
 //! A single leading positional token (the first comma-separated part, taken
 //! verbatim) can be captured with `#[kv(positional)]` on one field.
 
@@ -75,6 +80,15 @@ pub type Error = anyhow::Error;
 /// Result alias used by generated parsers.
 pub type Result<T> = anyhow::Result<T>;
 
+/// Describes one key accepted by a [`KeyValueFields`] implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyValueOption {
+    /// The option key.
+    pub key: &'static str,
+    /// Help text copied from the field or variant's doc comments.
+    pub help: &'static str,
+}
+
 /// A composable set of `key=value` fields that can be accumulated one token at
 /// a time and finished into a value.
 ///
@@ -88,6 +102,20 @@ pub trait KeyValueFields: Sized {
 
     /// Append the option keys accepted by this type to `keys`.
     fn append_keys(keys: &mut Vec<&'static str>);
+
+    /// Append metadata for the options accepted by this type.
+    fn append_options(options: &mut Vec<KeyValueOption>) {
+        let mut keys = Vec::new();
+        Self::append_keys(&mut keys);
+        options.extend(keys.into_iter().map(|key| KeyValueOption { key, help: "" }));
+    }
+
+    /// Returns metadata for the options accepted by this type.
+    fn options() -> Vec<KeyValueOption> {
+        let mut options = Vec::new();
+        Self::append_options(&mut options);
+        options
+    }
 
     /// Try to consume `key`; returns `Ok(true)` if it belongs to this type,
     /// `Ok(false)` if the key is unknown to it.
