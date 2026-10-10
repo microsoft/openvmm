@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub mod peer;
+
 use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
+use super::security::SecurityDescriptor;
 use super::status_to_error;
 // TODO: Revert this ntapi fallback once windows/windows-sys expose
 // NtCreateNamedPipeFile directly.
@@ -151,6 +154,7 @@ pub fn new_named_pipe(
         },
         true,
         mode == PipeMode::Message,
+        None,
     )
 }
 
@@ -161,6 +165,7 @@ fn create_named_pipe(
     disposition: u32,
     overlapped: bool,
     message_mode: bool,
+    security_descriptor: Option<&SecurityDescriptor>,
 ) -> Result<File, io::Error> {
     unsafe {
         let mut pathu = if root.is_null() {
@@ -174,7 +179,7 @@ fn create_named_pipe(
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
             Attributes: OBJ_CASE_INSENSITIVE,
-            SecurityDescriptor: null_mut(),
+            SecurityDescriptor: peer::security_descriptor_ptr(security_descriptor),
             SecurityQualityOfService: null_mut(),
         };
 
@@ -222,6 +227,7 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
             FILE_CREATE,
             false,
             message_mode,
+            None,
         )?;
 
         let mut empty_name = zeroed();
@@ -255,6 +261,7 @@ pub trait PipeExt {
     fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()>;
     fn get_pipe_select_events(&self) -> io::Result<u32>;
     fn is_pipe_connected(&self) -> io::Result<bool>;
+    fn is_pipe_peer_closed(&self) -> io::Result<bool>;
     fn disconnect_pipe(&self) -> io::Result<()>;
 }
 
@@ -387,6 +394,10 @@ impl PipeExt for File {
             _ => false,
         };
         Ok(connected)
+    }
+
+    fn is_pipe_peer_closed(&self) -> io::Result<bool> {
+        peer::is_peer_closed(self)
     }
 
     fn disconnect_pipe(&self) -> io::Result<()> {
