@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Retries and lock timeouts handle concurrent apt/dpkg activity on CI runners.
+- bash: |
+    set -x
+    i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+    curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain={{RUSTUP_TOOLCHAIN}} -y
+    . "$HOME/.cargo/env"
+    echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
+  condition: eq(variables['Agent.OS'], 'Linux')
+  displayName: rustup (Linux)

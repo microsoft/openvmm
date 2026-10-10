@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# MSVC from Visual Studio Build Tools must already be installed on the runner.
+# The job selects the installer architecture; runner.arch can differ on ARM64.
+- run: |
+    set -x
+    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{{RUSTUP_HOST_ARCH}}
+    ./rustup-init.exe -y --default-toolchain={{RUSTUP_TOOLCHAIN}}
+    echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+  if: runner.os == 'Windows'
+  name: rustup (Windows {{RUNNER_ARCH}})
+  shell: bash

@@ -30,28 +30,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -167,20 +150,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -306,20 +275,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -639,20 +594,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -812,20 +753,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -1039,20 +966,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -1258,28 +1171,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -1478,20 +1374,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -1736,20 +1618,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -2004,27 +1872,10 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -2224,20 +2075,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -2474,20 +2311,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -2746,20 +2569,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -2898,28 +2707,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -4362,20 +4154,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -4607,27 +4385,10 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -5054,28 +4815,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -5207,20 +4951,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -5311,20 +5041,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -5421,20 +5137,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -5684,28 +5386,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -5863,28 +5548,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -6097,28 +5765,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -6278,28 +5929,11 @@ jobs:
     steps:
     - run: |
         set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-    - run: |
-        set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
@@ -6520,20 +6154,6 @@ jobs:
         rustup show
       if: runner.os == 'Linux'
       name: rustup (Linux)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         path: flowey_bootstrap
