@@ -245,26 +245,33 @@ describes the source definitions.
   host; a read-only attachment rejects them with `EROFS`. On Windows, the
   links are WSL-style reparse points.
 
-  `--mount-aggregate <GUEST_TARGET>` attaches several host directories to the
-  same device instead, and each repeatable
-  `--mount-child <NAME,HOST_PATH[,ro|rw]>` adds one, with its own access mode
-  and policy, as the directory `NAME` of the aggregate's read-only root. Only
-  the guest's root user may enter that root. A name is 1 to 64 ASCII letters,
-  digits, `.`, `_`, or `-`; the mode follows the last comma, so a host path
-  may contain commas when the mode is given. Host directories must not equal
-  or contain one another; on Linux, a bind mount or nested mount that reaches
-  the files of another child counts as containing it. A rename between
-  children fails with `EXDEV`, and so does a hard link, unless its
+  `--mount-aggregate <GUEST_TARGET>` attaches several host directories or
+  files to the same device instead, and each repeatable
+  `--mount-child <NAME,HOST_PATH[,ro|rw][,file]>` adds one, with its own
+  access mode and policy, as the entry `NAME` of the aggregate's read-only
+  root: a directory, or, with `file`, a regular host file alone, without
+  anything else of its host directory. The host path must be of the kind
+  that the flag requests. Only the guest's root user may enter that root.
+  A name is 1 to 64 ASCII letters, digits, `.`, `_`, or `-`; the mode and
+  the flag follow the last commas, so a host path may contain commas when
+  the mode is given.
+  Host paths must not equal or contain one another, so a file must not lie
+  inside a directory child; on Linux, a bind mount or nested mount that
+  reaches the files of another child counts as containing it. A file child
+  has no policy paths, and the guest cannot remove or rename it. A rename
+  between children fails with `EXDEV`, and so does a hard link, unless its
   destination is read-only, which fails with `EROFS` first. The bootstrap
   tokens add `virtfs_aggregate=1`, and `virtfs_mode` is `rw` when any child
-  is. `--mount-aggregate` conflicts with `--mount`.
+  is. `--mount-aggregate` conflicts with `--mount`, which shares only a
+  directory.
 
   ```bash
   openvmm --machine microvm --hypervisor kvm \
     --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz \
     --mount-aggregate /run/shares \
     --mount-child workspace,path/to/workspace,rw \
-    --mount-child toolcache,path/to/toolcache,ro
+    --mount-child toolcache,path/to/toolcache,ro \
+    --mount-child settings,path/to/settings.json,ro,file
   ```
 
   `--mount-deny <HOST_PATH>` is repeatable and hides an existing file or
@@ -305,7 +312,8 @@ describes the source definitions.
   requires `CAP_SETUID` and `CAP_SETGID` unless every caller has OpenVMM's
   own UID and GID and OpenVMM has no other supplementary groups; an
   operation that cannot run as its caller fails with `EPERM`. The mode applies
-  to every `--mount-child`, whose roots must then have the same owner.
+  to every `--mount-child`, whose roots, directories or files, must then have
+  the same owner.
   See [virtio-fs](../../devices/virtio/virtio-fs.md#host-identity-of-guest-operations).
 
   Filesystem snapshots contain guest-visible FUSE and queue state, not host
@@ -315,7 +323,7 @@ describes the source definitions.
   the live root and every saved object identity are also revalidated before
   vCPUs start. A snapshot of `--mount-aggregate` requires it again, with the
   same guest target and the same `--mount-child` options, in the same order,
-  with the same canonical host paths, modes, and policy paths.
+  with the same canonical host paths, kinds, modes, and policy paths.
   A snapshot captured without a filesystem may remain dormant or bind one new
   `--mount` to the slot. The resumed
   guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
