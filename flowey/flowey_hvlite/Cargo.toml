@@ -25,6 +25,7 @@ serde_json.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
 
 [dev-dependencies]
+flowey_core.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

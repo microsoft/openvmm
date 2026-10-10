@@ -357,57 +357,32 @@ impl IntoPipeline for CheckinGatesCli {
         // emit shared dependencies jobs
         //
         // In order to ensure we start running VMM tests as soon as possible, we emit
-        // a job for windows and linux building dependencies used by VMM tests on all platforms.
+        // a job for windows and linux building dependencies used by VMM tests on multiple platforms.
         // These jobs build dependencies for all architectures, as these dependencies are typically
         // small and fast to build.
         //
-        // We have to create the per-arch artifacts up front so that we don't try
-        // to mutably borrow `pipeline` while a job builder also holds a mutable borrow.
-        let mut shared_win_pipette_artifacts = Vec::new();
-        for arch in [CommonArch::Aarch64, CommonArch::X86_64] {
-            let arch_tag = match arch {
-                CommonArch::X86_64 => "x64",
-                CommonArch::Aarch64 => "aarch64",
-            };
-            let (pub_pipette_windows, use_pipette_windows) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-windows-pipette"));
-            // filter off artifacts required by the VMM tests job
-            match arch {
-                CommonArch::X86_64 => {
-                    vmm_tests_artifacts_linux_x86.use_pipette_windows_x64 =
-                        Some(use_pipette_windows.clone());
-                    vmm_tests_artifacts_linux_musl_x86.use_pipette_windows_x64 =
-                        Some(use_pipette_windows.clone());
-                    vmm_tests_artifacts_windows_x86.use_pipette_windows_x64 =
-                        Some(use_pipette_windows.clone());
-                }
-                CommonArch::Aarch64 => {
-                    vmm_tests_artifacts_windows_aarch64.use_pipette_windows_aarch64 =
-                        Some(use_pipette_windows.clone());
-                }
-            }
-            shared_win_pipette_artifacts.push((arch, pub_pipette_windows));
-        }
-        let mut shared_win_job = pipeline
+        let (pub_pipette_windows, use_pipette_windows) =
+            pipeline.new_typed_artifact("x64-windows-pipette");
+        vmm_tests_artifacts_linux_x86.use_pipette_windows_x64 = Some(use_pipette_windows.clone());
+        vmm_tests_artifacts_linux_musl_x86.use_pipette_windows_x64 =
+            Some(use_pipette_windows.clone());
+        vmm_tests_artifacts_windows_x86.use_pipette_windows_x64 = Some(use_pipette_windows);
+
+        let shared_win_job = pipeline
             .new_job(
                 FlowPlatform::Windows,
                 FlowArch::X86_64,
                 "build artifacts (shared VMM tests) [windows]",
             )
             .gh_set_pool(gh_pools::default_windows())
-            .ado_set_pool(ado_pools::default_windows());
-        for (arch, pub_pipette_windows) in shared_win_pipette_artifacts {
-            shared_win_job = shared_win_job.publish(pub_pipette_windows, |pipette| {
+            .ado_set_pool(ado_pools::default_windows())
+            .publish(pub_pipette_windows, |pipette| {
                 flowey_lib_hvlite::build_pipette::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
+                    target: CommonTriple::X86_64_WINDOWS_MSVC,
                     profile: CommonProfile::from_release(release),
                     pipette,
                 }
             });
-        }
         all_jobs.push(shared_win_job.finish());
 
         // Now do linux
@@ -415,6 +390,11 @@ impl IntoPipeline for CheckinGatesCli {
         // Create the per-arch artifacts up front so that we don't try to
         // mutably borrow `pipeline` while the job builder also holds a
         // mutable borrow.
+        let (pub_tpm_guest_tests_linux_x64, use_tpm_guest_tests_linux_x64) =
+            pipeline.new_typed_artifact("x64-linux-tpm_guest_tests");
+        vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_linux_x64 =
+            Some(use_tpm_guest_tests_linux_x64);
+
         let mut shared_linux_artifacts = Vec::new();
         for arch in [CommonArch::Aarch64, CommonArch::X86_64] {
             let arch_tag = match arch {
@@ -422,8 +402,6 @@ impl IntoPipeline for CheckinGatesCli {
                 CommonArch::Aarch64 => "aarch64",
             };
 
-            let (pub_tpm_guest_tests, use_tpm_guest_tests) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-linux-tpm_guest_tests"));
             let (pub_guest_test_uefi, use_guest_test_uefi) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-guest_test_uefi"));
             let (pub_pipette_linux_musl, use_pipette_linux_musl) =
@@ -440,8 +418,6 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_tmks_x64 = Some(use_tmks.clone());
                     vmm_tests_artifacts_linux_x86.use_tmks_x64 = Some(use_tmks.clone());
-                    vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_linux_x64 =
-                        Some(use_tpm_guest_tests.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_guest_test_uefi_x64 =
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_linux_musl_x86.use_tmks_x64 = Some(use_tmks.clone());
@@ -482,19 +458,12 @@ impl IntoPipeline for CheckinGatesCli {
 
             shared_linux_artifacts.push((
                 arch,
-                pub_tpm_guest_tests,
                 pub_guest_test_uefi,
                 pub_pipette_linux_musl,
                 pub_tmk_vmm,
                 pub_tmks,
             ));
         }
-
-        // Create incubator artifact handle (for TCG tests).
-        // Must be created before the shared_linux_job builder to avoid
-        // borrowing `pipeline` while the job builder holds a mutable borrow.
-        let (pub_incubator, use_incubator) = pipeline.new_typed_artifact("x64-linux-incubator");
-        vmm_tests_artifacts_linux_aarch64_tcg.use_incubator_linux_x64 = Some(use_incubator);
 
         let mut shared_linux_job = pipeline
             .new_job(
@@ -504,14 +473,8 @@ impl IntoPipeline for CheckinGatesCli {
             )
             .gh_set_pool(gh_pools::linux_intel_v6_1es())
             .ado_set_pool(ado_pools::default_linux());
-        for (
-            arch,
-            pub_tpm_guest_tests,
-            pub_guest_test_uefi,
-            pub_pipette_linux_musl,
-            pub_tmk_vmm,
-            pub_tmks,
-        ) in shared_linux_artifacts
+        for (arch, pub_guest_test_uefi, pub_pipette_linux_musl, pub_tmk_vmm, pub_tmks) in
+            shared_linux_artifacts
         {
             shared_linux_job = shared_linux_job
                 .publish(pub_guest_test_uefi, |guest_test_uefi| {
@@ -525,16 +488,6 @@ impl IntoPipeline for CheckinGatesCli {
                     arch,
                     profile: CommonProfile::from_release(release),
                     tmks,
-                })
-                .publish(pub_tpm_guest_tests, |tpm_guest_tests| {
-                    flowey_lib_hvlite::build_tpm_guest_tests::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        tpm_guest_tests,
-                    }
                 })
                 .publish(pub_pipette_linux_musl, |pipette| {
                     flowey_lib_hvlite::build_pipette::Request {
@@ -558,16 +511,25 @@ impl IntoPipeline for CheckinGatesCli {
                 });
         }
 
-        // Build incubator binary (x86_64 Linux, for running TCG tests on CI hosts)
-        shared_linux_job = shared_linux_job.publish(pub_incubator, |incubator| {
-            flowey_lib_hvlite::build_incubator::Request {
-                target: CommonTriple::X86_64_LINUX_GNU,
-                profile: CommonProfile::from_release(release),
-                incubator,
-            }
-        });
-
         all_jobs.push(shared_linux_job.finish());
+
+        // These Linux guest tools are only used by x64 Windows VMM tests.
+        let windows_guest_job = pipeline
+            .new_job(
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                FlowArch::X86_64,
+                "build guest artifacts (for VMM tests) [x64-windows]",
+            )
+            .gh_set_pool(gh_pools::default_linux())
+            .ado_set_pool(ado_pools::default_linux())
+            .publish(pub_tpm_guest_tests_linux_x64, |tpm_guest_tests| {
+                flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::X86_64_LINUX_GNU,
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests,
+                }
+            });
+        all_jobs.push(windows_guest_job.finish());
 
         // emit windows build machine jobs
         //
@@ -607,6 +569,13 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmm-tests-archive"));
             let (pub_vmm_perf, use_vmm_perf) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmm-perf-runner"));
+            let pub_pipette_windows = if arch == CommonArch::Aarch64 {
+                let (publish, use_pipette) = pipeline.new_typed_artifact("aarch64-windows-pipette");
+                vmm_tests_artifacts_windows_aarch64.use_pipette_windows_aarch64 = Some(use_pipette);
+                Some(publish)
+            } else {
+                None
+            };
 
             // filter off interesting artifacts required by the VMM tests job
             match arch {
@@ -637,8 +606,6 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_vmgstool_windows_aarch64 =
                         Some(use_vmgstool.clone());
-                    vmm_tests_artifacts_windows_aarch64.use_vmgstool_dev_windows_aarch64 =
-                        Some(use_vmgstool_dev.clone());
                     vmm_tests_artifacts_windows_aarch64
                         .use_nextest_vmm_tests_archive_windows_aarch64 =
                         Some(use_vmm_tests_archive.clone());
@@ -646,6 +613,54 @@ impl IntoPipeline for CheckinGatesCli {
                     use_vmm_perf_openvmm_windows_aarch64 = Some(use_openvmm.clone());
                 }
             }
+            let build_prep_steps = |prep_steps| flowey_lib_hvlite::build_prep_steps::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::WindowsMsvc,
+                },
+                profile: CommonProfile::from_release(release),
+                prep_steps,
+            };
+            let build_vmgstool_dev = |vmgstool| flowey_lib_hvlite::build_vmgstool::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::WindowsMsvc,
+                },
+                profile: CommonProfile::from_release(release),
+                with_crypto: true,
+                with_test_helpers: true,
+                vmgstool,
+            };
+            let build_tpm_guest_tests =
+                |tpm_guest_tests| flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests,
+                };
+            let build_test_igvm_agent_rpc_server = |test_igvm_agent_rpc_server| {
+                flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    test_igvm_agent_rpc_server,
+                }
+            };
+            let windows_tools = (
+                pub_prep_steps,
+                pub_vmgstool_dev,
+                pub_tpm_guest_tests,
+                pub_test_igvm_agent_rpc_server,
+            );
+            let (vmm_test_tools, other_tools) = match arch {
+                CommonArch::X86_64 => (Some(windows_tools), None),
+                CommonArch::Aarch64 => (None, Some(windows_tools)),
+            };
+
             // emit a job for artifacts which _are not_ in the VMM tests "hot
             // path"
             // artifacts which _are not_ in the VMM tests "hot path"
@@ -658,7 +673,7 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
                     FlowArch::X86_64,
@@ -720,6 +735,23 @@ impl IntoPipeline for CheckinGatesCli {
                     }
                 });
 
+            if let Some((
+                pub_prep_steps,
+                pub_vmgstool_dev,
+                pub_tpm_guest_tests,
+                pub_test_igvm_agent_rpc_server,
+            )) = other_tools
+            {
+                job = job
+                    .publish(pub_prep_steps, build_prep_steps)
+                    .publish(pub_vmgstool_dev, build_vmgstool_dev)
+                    .publish(pub_tpm_guest_tests, build_tpm_guest_tests)
+                    .publish(
+                        pub_test_igvm_agent_rpc_server,
+                        build_test_igvm_agent_rpc_server,
+                    );
+            }
+
             all_jobs.push(job.finish());
 
             let vmgstool_target = CommonTriple::Common {
@@ -734,7 +766,7 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             // emit a job for artifacts which _are_ in the VMM tests "hot path"
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
                     FlowArch::X86_64,
@@ -766,16 +798,6 @@ impl IntoPipeline for CheckinGatesCli {
                         tmk_vmm,
                     }
                 })
-                .publish(pub_prep_steps, |prep_steps| {
-                    flowey_lib_hvlite::build_prep_steps::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        prep_steps,
-                    }
-                })
                 .publish(pub_vmgstool, |vmgstool| {
                     flowey_lib_hvlite::build_vmgstool::Request {
                         target: vmgstool_target.clone(),
@@ -785,38 +807,6 @@ impl IntoPipeline for CheckinGatesCli {
                         vmgstool,
                     }
                 })
-                .publish(pub_vmgstool_dev, |vmgstool| {
-                    flowey_lib_hvlite::build_vmgstool::Request {
-                        target: vmgstool_target,
-                        profile: CommonProfile::from_release(release),
-                        with_crypto: true,
-                        with_test_helpers: true,
-                        vmgstool,
-                    }
-                })
-                .publish(pub_tpm_guest_tests, |tpm_guest_tests| {
-                    flowey_lib_hvlite::build_tpm_guest_tests::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        tpm_guest_tests,
-                    }
-                })
-                .publish(
-                    pub_test_igvm_agent_rpc_server,
-                    |test_igvm_agent_rpc_server| {
-                        flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::WindowsMsvc,
-                            },
-                            profile: CommonProfile::from_release(release),
-                            test_igvm_agent_rpc_server,
-                        }
-                    },
-                )
                 .publish(pub_vmm_tests_archive, |archive| {
                     flowey_lib_hvlite::build_nextest_vmm_tests::Request {
                         target: CommonTriple::Common {
@@ -829,6 +819,32 @@ impl IntoPipeline for CheckinGatesCli {
                         build_mode: BuildNextestVmmTestsMode::Archive(archive),
                     }
                 });
+
+            if let Some((
+                pub_prep_steps,
+                pub_vmgstool_dev,
+                pub_tpm_guest_tests,
+                pub_test_igvm_agent_rpc_server,
+            )) = vmm_test_tools
+            {
+                job = job
+                    .publish(pub_prep_steps, build_prep_steps)
+                    .publish(pub_vmgstool_dev, build_vmgstool_dev)
+                    .publish(pub_tpm_guest_tests, build_tpm_guest_tests)
+                    .publish(
+                        pub_test_igvm_agent_rpc_server,
+                        build_test_igvm_agent_rpc_server,
+                    );
+            }
+            if let Some(pub_pipette_windows) = pub_pipette_windows {
+                job = job.publish(pub_pipette_windows, |pipette| {
+                    flowey_lib_hvlite::build_pipette::Request {
+                        target: CommonTriple::AARCH64_WINDOWS_MSVC,
+                        profile: CommonProfile::from_release(release),
+                        pipette,
+                    }
+                });
+            }
 
             all_jobs.push(job.finish());
         }
@@ -854,8 +870,7 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool-dev"));
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
-            // Also build openvmm and openvmm_vhost for musl on this job,
-            // alongside pipette and tmk_vmm. This enables running VMM tests
+            // Also build openvmm and openvmm_vhost for musl. This enables running VMM tests
             // on Azure Linux (MSHV) runners which have an older glibc.
             let (pub_openvmm_musl, use_openvmm_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-openvmm"));
@@ -871,6 +886,20 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-perf-runner"));
             let (pub_vmm_perf_musl, use_vmm_perf_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
+            let pub_tpm_guest_tests = if arch == CommonArch::Aarch64 {
+                let (publish, _) =
+                    pipeline.new_typed_artifact(format!("{arch_tag}-linux-tpm_guest_tests"));
+                Some(publish)
+            } else {
+                None
+            };
+            let pub_incubator = if arch == CommonArch::Aarch64 {
+                let (publish, use_incubator) = pipeline.new_typed_artifact("x64-linux-incubator");
+                vmm_tests_artifacts_linux_aarch64_tcg.use_incubator_linux_x64 = Some(use_incubator);
+                Some(publish)
+            } else {
+                None
+            };
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -916,8 +945,72 @@ impl IntoPipeline for CheckinGatesCli {
                 anyhow::bail!("multiple vmgstools for the same target");
             }
 
-            // Emit a job for building dependencies used by just linux vmm tests
-            let job = pipeline
+            let build_openvmm = |openvmm| flowey_lib_hvlite::build_openvmm::Request {
+                params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    // FIXME: this relies on openvmm default features
+                    features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm].into(),
+                },
+                openvmm,
+            };
+            let build_openvmm_vhost =
+                |openvmm_vhost| flowey_lib_hvlite::build_openvmm_vhost::Request {
+                    params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                    },
+                    openvmm_vhost,
+                };
+            let build_vmm_tests_archive =
+                |archive| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    }
+                    .as_triple(),
+                    profile: CommonProfile::from_release(release),
+                    build_mode: BuildNextestVmmTestsMode::Archive(archive),
+                };
+            let build_openvmm_vhost_musl =
+                |openvmm_vhost| flowey_lib_hvlite::build_openvmm_vhost::Request {
+                    params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxMusl,
+                        },
+                        profile: CommonProfile::from_release(release),
+                    },
+                    openvmm_vhost,
+                };
+            let build_prep_steps_musl = |prep_steps| flowey_lib_hvlite::build_prep_steps::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::LinuxMusl,
+                },
+                profile: CommonProfile::from_release(release),
+                prep_steps,
+            };
+            let native_tools = (
+                pub_openvmm,
+                pub_openvmm_vhost,
+                pub_vmm_tests_archive,
+                pub_openvmm_vhost_musl,
+                pub_prep_steps_musl,
+            );
+            let (vmm_test_tools, other_tools) = match arch {
+                CommonArch::X86_64 => (Some(native_tools), None),
+                // ARM64 CI only runs the musl archive under TCG, without vhost or prep steps.
+                CommonArch::Aarch64 => (None, Some(native_tools)),
+            };
+
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
@@ -925,33 +1018,67 @@ impl IntoPipeline for CheckinGatesCli {
                 )
                 .gh_set_pool(gh_pools::default_linux())
                 .ado_set_pool(ado_pools::default_linux())
-                .publish(pub_openvmm, |openvmm| {
+                .publish(pub_openvmm_musl, |openvmm| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
                             target: CommonTriple::Common {
                                 arch,
-                                platform: CommonPlatform::LinuxGnu,
+                                platform: CommonPlatform::LinuxMusl,
                             },
                             profile: CommonProfile::from_release(release),
-                            // FIXME: this relies on openvmm default features
                             features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
                                 .into(),
                         },
                         openvmm,
                     }
                 })
-                .publish(pub_openvmm_vhost, |openvmm_vhost| {
-                    flowey_lib_hvlite::build_openvmm_vhost::Request {
-                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::LinuxGnu,
-                            },
-                            profile: CommonProfile::from_release(release),
-                        },
-                        openvmm_vhost,
+                .publish(pub_vmm_tests_archive_musl, |archive| {
+                    flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxMusl,
+                        }
+                        .as_triple(),
+                        profile: CommonProfile::from_release(release),
+                        build_mode: BuildNextestVmmTestsMode::Archive(archive),
                     }
-                })
+                });
+
+            if let Some((
+                pub_openvmm,
+                pub_openvmm_vhost,
+                pub_vmm_tests_archive,
+                pub_openvmm_vhost_musl,
+                pub_prep_steps_musl,
+            )) = vmm_test_tools
+            {
+                job = job
+                    .publish(pub_openvmm, build_openvmm)
+                    .publish(pub_openvmm_vhost, build_openvmm_vhost)
+                    .publish(pub_vmm_tests_archive, build_vmm_tests_archive)
+                    .publish(pub_openvmm_vhost_musl, build_openvmm_vhost_musl)
+                    .publish(pub_prep_steps_musl, build_prep_steps_musl);
+            }
+            if let Some(pub_incubator) = pub_incubator {
+                job = job.publish(pub_incubator, |incubator| {
+                    flowey_lib_hvlite::build_incubator::Request {
+                        target: CommonTriple::X86_64_LINUX_GNU,
+                        profile: CommonProfile::from_release(release),
+                        incubator,
+                    }
+                });
+            }
+
+            all_jobs.push(job.finish());
+
+            let mut job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("build artifacts (not for VMM tests) [{arch_tag}-linux]"),
+                )
+                .gh_set_pool(gh_pools::default_linux())
+                .ado_set_pool(ado_pools::default_linux())
                 .publish(pub_vmgstool, |vmgstool| {
                     flowey_lib_hvlite::build_vmgstool::Request {
                         target: vmgstool_target.clone(),
@@ -1003,64 +1130,6 @@ impl IntoPipeline for CheckinGatesCli {
                         ohcldiag_dev,
                     }
                 })
-                .publish(pub_openvmm_musl, |openvmm| {
-                    flowey_lib_hvlite::build_openvmm::Request {
-                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::LinuxMusl,
-                            },
-                            profile: CommonProfile::from_release(release),
-                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
-                                .into(),
-                        },
-                        openvmm,
-                    }
-                })
-                .publish(pub_openvmm_vhost_musl, |openvmm_vhost| {
-                    flowey_lib_hvlite::build_openvmm_vhost::Request {
-                        params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
-                            target: CommonTriple::Common {
-                                arch,
-                                platform: CommonPlatform::LinuxMusl,
-                            },
-                            profile: CommonProfile::from_release(release),
-                        },
-                        openvmm_vhost,
-                    }
-                })
-                .publish(pub_prep_steps_musl, |prep_steps| {
-                    flowey_lib_hvlite::build_prep_steps::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        prep_steps,
-                    }
-                })
-                .publish(pub_vmm_tests_archive, |archive| {
-                    flowey_lib_hvlite::build_nextest_vmm_tests::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        }
-                        .as_triple(),
-                        profile: CommonProfile::from_release(release),
-                        build_mode: BuildNextestVmmTestsMode::Archive(archive),
-                    }
-                })
-                .publish(pub_vmm_tests_archive_musl, |archive| {
-                    flowey_lib_hvlite::build_nextest_vmm_tests::Request {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
-                        }
-                        .as_triple(),
-                        profile: CommonProfile::from_release(release),
-                        build_mode: BuildNextestVmmTestsMode::Archive(archive),
-                    }
-                })
                 .publish(pub_vmm_perf_gnu, |vmm_perf| {
                     flowey_lib_hvlite::build_vmm_perf::Request {
                         target: CommonTriple::Common {
@@ -1081,6 +1150,34 @@ impl IntoPipeline for CheckinGatesCli {
                         vmm_perf,
                     }
                 });
+
+            if let Some((
+                pub_openvmm,
+                pub_openvmm_vhost,
+                pub_vmm_tests_archive,
+                pub_openvmm_vhost_musl,
+                pub_prep_steps_musl,
+            )) = other_tools
+            {
+                job = job
+                    .publish(pub_openvmm, build_openvmm)
+                    .publish(pub_openvmm_vhost, build_openvmm_vhost)
+                    .publish(pub_vmm_tests_archive, build_vmm_tests_archive)
+                    .publish(pub_openvmm_vhost_musl, build_openvmm_vhost_musl)
+                    .publish(pub_prep_steps_musl, build_prep_steps_musl);
+            }
+            if let Some(pub_tpm_guest_tests) = pub_tpm_guest_tests {
+                job = job.publish(pub_tpm_guest_tests, |tpm_guest_tests| {
+                    flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        tpm_guest_tests,
+                    }
+                });
+            }
 
             all_jobs.push(job.finish());
         }
@@ -2133,5 +2230,164 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         Ok(pipeline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowey_core::node::NodeHandle;
+    use flowey_core::pipeline::internal::ArtifactMeta;
+    use flowey_core::pipeline::internal::PipelineFinalized;
+    use flowey_core::pipeline::internal::PipelineJobMetadata;
+    use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive;
+    use test_with_tracing::test;
+
+    type TestPlatform = (CommonArch, FlowPlatform);
+
+    fn github_checkin_pipelines() -> impl Iterator<Item = PipelineFinalized> {
+        [
+            PipelineConfig::Pr,
+            PipelineConfig::PrRelease,
+            PipelineConfig::Ci,
+            PipelineConfig::PatinaNightly,
+        ]
+        .into_iter()
+        .map(|config| {
+            let pipeline = CheckinGatesCli {
+                config,
+                local_run_args: None,
+            }
+            .into_pipeline(PipelineBackendHint::Github)
+            .unwrap();
+            PipelineFinalized::from_pipeline(pipeline)
+        })
+    }
+
+    fn vmm_test_platforms(pipeline: &PipelineFinalized) -> BTreeMap<usize, TestPlatform> {
+        let node = NodeHandle::from_type::<consume_and_test_nextest_vmm_tests_archive::Node>();
+        let platforms = pipeline
+            .jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, job)| {
+                let requests = job.root_nodes.get(&node)?;
+                assert_eq!(requests.len(), 1, "{}", job.label);
+                let params: consume_and_test_nextest_vmm_tests_archive::Params =
+                    serde_json::from_slice(&requests[0]).unwrap();
+                // Use the test target, not the worker arch (TCG runs ARM64 tests on x64).
+                let arch = CommonArch::from_architecture(params.target.architecture).unwrap();
+                let os = match params.target.operating_system {
+                    target_lexicon::OperatingSystem::Linux => {
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Unknown)
+                    }
+                    target_lexicon::OperatingSystem::Windows => FlowPlatform::Windows,
+                    os => panic!("unsupported VMM-test OS {os} in {}", job.label),
+                };
+                Some((idx, (arch, os)))
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(!platforms.is_empty());
+        platforms
+    }
+
+    fn artifacts_in_category<'a>(
+        pipeline: &'a PipelineFinalized,
+        category: &str,
+    ) -> Vec<(&'a PipelineJobMetadata, &'a ArtifactMeta)> {
+        let mut artifacts = Vec::new();
+        for (idx, job) in pipeline.jobs.iter().enumerate() {
+            if !job.label.contains(category) {
+                continue;
+            }
+            let before = artifacts.len();
+            artifacts.extend(
+                pipeline
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.published_by_job == Some(idx))
+                    .map(|artifact| (job, artifact)),
+            );
+            assert!(artifacts.len() > before, "{} publishes nothing", job.label);
+        }
+        assert!(!artifacts.is_empty(), "no artifacts in {category}");
+        artifacts
+    }
+
+    fn consumer_platforms(
+        artifact: &ArtifactMeta,
+        platforms: &BTreeMap<usize, TestPlatform>,
+    ) -> BTreeSet<TestPlatform> {
+        artifact
+            .used_by_jobs
+            .iter()
+            .filter_map(|idx| platforms.get(idx).copied())
+            .collect()
+    }
+
+    fn build_test_platform(job: &PipelineJobMetadata) -> TestPlatform {
+        // The label names the consuming test platform, which may differ from the worker.
+        let (_, suffix) = job.label.rsplit_once('[').unwrap();
+        match suffix.strip_suffix(']').unwrap() {
+            "x64-linux" => (
+                CommonArch::X86_64,
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Unknown),
+            ),
+            "aarch64-linux" => (
+                CommonArch::Aarch64,
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Unknown),
+            ),
+            "x64-windows" => (CommonArch::X86_64, FlowPlatform::Windows),
+            "aarch64-windows" => (CommonArch::Aarch64, FlowPlatform::Windows),
+            target => panic!("unsupported test platform {target} in {}", job.label),
+        }
+    }
+
+    #[test]
+    fn shared_vmm_test_artifacts_have_multiple_consumer_platforms() {
+        for pipeline in github_checkin_pipelines() {
+            let platforms = vmm_test_platforms(&pipeline);
+            for (job, artifact) in artifacts_in_category(&pipeline, "(shared VMM tests)") {
+                let consumers = consumer_platforms(artifact, &platforms);
+                assert!(
+                    consumers.len() > 1,
+                    "{} from {} has only these VMM-test consumer platforms: {consumers:?}",
+                    artifact.name,
+                    job.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn platform_vmm_test_artifacts_have_only_same_platform_consumers() {
+        for pipeline in github_checkin_pipelines() {
+            let platforms = vmm_test_platforms(&pipeline);
+            for (job, artifact) in artifacts_in_category(&pipeline, "(for VMM tests)") {
+                let expected = BTreeSet::from([build_test_platform(job)]);
+                let consumers = consumer_platforms(artifact, &platforms);
+                assert_eq!(
+                    consumers, expected,
+                    "{} from {} has missing or wrong-platform VMM-test consumers",
+                    artifact.name, job.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auxiliary_artifacts_have_no_vmm_test_consumers() {
+        for pipeline in github_checkin_pipelines() {
+            let platforms = vmm_test_platforms(&pipeline);
+            for (job, artifact) in artifacts_in_category(&pipeline, "(not for VMM tests)") {
+                let consumers = consumer_platforms(artifact, &platforms);
+                assert!(
+                    consumers.is_empty(),
+                    "{} from {} is consumed by VMM tests on {consumers:?}",
+                    artifact.name,
+                    job.label
+                );
+            }
+        }
     }
 }

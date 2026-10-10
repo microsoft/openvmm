@@ -962,7 +962,6 @@ pub mod vmm_tests_artifact_builders {
             pipette_windows_aarch64 => PipetteOutput,
             tmk_vmm_windows_aarch64 => TmkVmmOutput,
             vmgstool_windows_aarch64 => VmgstoolOutput,
-            vmgstool_dev_windows_aarch64 => VmgstoolOutput,
             // linux build machine
             openhcl_standard_aarch64 => OpenhclIgvmOutput,
             pipette_linux_musl_aarch64 => PipetteOutput,
