@@ -265,6 +265,16 @@ pub enum Runner {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct JobDefaults {
+    pub run: RunDefaults,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RunDefaults {
+    pub shell: String,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Job {
     pub name: String,
@@ -282,6 +292,8 @@ pub struct Job {
     pub r#if: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<JobDefaults>,
     pub steps: Vec<serde_yaml::Value>,
 }
 

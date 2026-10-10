@@ -606,6 +606,8 @@ EOF
             }
         }
 
+        let defaults = hoist_bash_shell(&mut gh_steps);
+
         github_jobs.insert(
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
@@ -646,6 +648,7 @@ EOF
                     .clone()
                     .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
+                defaults,
                 steps: gh_steps,
             },
         );
@@ -971,5 +974,27 @@ fn resolve_flow_as_github_yaml_steps(
         steps: output_steps,
         request_db,
         config_db,
+    })
+}
+
+// Move all the bash shell specifications to job defaults to save some file size
+fn hoist_bash_shell(steps: &mut [serde_yaml::Value]) -> Option<github_yaml_defs::JobDefaults> {
+    let mut uses_bash = false;
+    for step in steps
+        .iter_mut()
+        .filter_map(serde_yaml::Value::as_mapping_mut)
+    {
+        if step.contains_key("run")
+            && step.get("shell").and_then(serde_yaml::Value::as_str) == Some("bash")
+        {
+            step.remove("shell");
+            uses_bash = true;
+        }
+    }
+
+    uses_bash.then(|| github_yaml_defs::JobDefaults {
+        run: github_yaml_defs::RunDefaults {
+            shell: "bash".into(),
+        },
     })
 }

@@ -3,6 +3,7 @@
 
 //! Shared functionality for emitting a pipeline as ADO/GitHub YAML files
 
+use crate::cli::FlowBackendCli;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::SerializedRequest;
 use crate::cli::pipeline::CheckMode;
@@ -17,6 +18,25 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
+
+const GITHUB_WORKFLOW_MAX_BYTES: usize = 500 * 1024;
+
+fn check_generated_yaml_size(
+    yaml: &str,
+    backend: FlowBackendCli,
+    pipeline_file: &Path,
+) -> anyhow::Result<()> {
+    if matches!(backend, FlowBackendCli::Github) && yaml.len() > GITHUB_WORKFLOW_MAX_BYTES {
+        anyhow::bail!(
+            "GitHub workflow '{}' is {} bytes, exceeding the 500 KB ({} byte) limit. Reduce the generated workflow size.",
+            pipeline_file.display(),
+            yaml.len(),
+            GITHUB_WORKFLOW_MAX_BYTES,
+        );
+    }
+
+    Ok(())
+}
 
 /// The output of resolving a flow into a sequence of YAML steps (shared by ADO
 /// and GitHub resolvers).
@@ -190,6 +210,12 @@ where
 {generated_yaml}"#
     );
     let generated_yaml = generated_yaml.trim_start();
+
+    check_generated_yaml_size(
+        generated_yaml,
+        pipeline_static_db.flow_backend,
+        pipeline_file,
+    )?;
 
     let generated_json =
         serde_json::to_string_pretty(pipeline_static_db).context("while emitting pipeline json")?;
