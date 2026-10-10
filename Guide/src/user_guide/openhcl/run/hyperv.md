@@ -94,6 +94,16 @@ Set-VMFirmware -VM $vm -EnableSecureBoot Off # your guest image might need this,
 Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile
 ```
 
+```admonish warning
+The sample firmware path is `openhcl-x64.bin`. An AArch64 release image
+is `openhcl-aarch64.bin` from the `aarch64 --release` recipe. See
+[Building OpenHCL](../../../dev_guide/getting_started/build_openhcl.md).
+That image can panic in VTL2 before userspace starts, with
+`Initramfs unpacking failed: write error` and `No working init found`.
+Raise VTL2 `memory_page_count` before you rebuild. See
+[troubleshooting](../troubleshooting.md#hyper-v-initramfs-unpacking-failed-write-error-no-working-init-found).
+```
+
 #### Create VM as a Trusted Launch VM
 
 Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch) for the VM.
