@@ -1191,6 +1191,20 @@ impl InitializedVm {
             .map(|n| n.mem.as_ref().map_or(0, |m| m.mem_size))
             .collect();
 
+        // A time ABI snapshot records how long before the capture anchor VM
+        // time stopped, measured on the anchor's host monotonic clock.
+        #[cfg(guest_arch = "x86_64")]
+        let vmtime_keeper =
+            if cfg.machine_profile == MachineProfile::Microvm && cfg.microvm.time_abi.is_some() {
+                VmTimeKeeper::with_stop_clock(
+                    &driver_source.simple(),
+                    VmTime::from_100ns(0),
+                    time_abi::host_monotonic_ns,
+                )
+            } else {
+                VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0))
+            };
+        #[cfg(not(guest_arch = "x86_64"))]
         let vmtime_keeper = VmTimeKeeper::new(&driver_source.simple(), VmTime::from_100ns(0));
         let vmtime_source = vmtime_keeper
             .builder()

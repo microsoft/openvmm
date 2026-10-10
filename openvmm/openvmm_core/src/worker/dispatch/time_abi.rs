@@ -28,6 +28,7 @@ use openvmm_defs::time_abi::SnapshotTimeContract;
 use openvmm_defs::time_abi::TimeCapture;
 use openvmm_defs::time_abi::decode_effective_cpuid;
 use openvmm_defs::time_abi::encode_effective_cpuid;
+use openvmm_defs::worker::SavedState;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use std::collections::BTreeMap;
@@ -877,6 +878,7 @@ pub(super) fn capture_records(
             host_id: identity.host_id.to_vec(),
             host_boot_id: identity.boot_id.to_vec(),
             capture_generation: state.generation,
+            vm_time_cut_to_anchor_ns: None,
         },
         cpu_profile: SnapshotCpuProfile {
             id: record.id.to_owned(),
@@ -886,6 +888,42 @@ pub(super) fn capture_records(
             capture_cpu_signature: virt::time_abi::surface::host_cpu_signature().unwrap_or(0),
         },
     })
+}
+
+/// Reads host monotonic time on the clock that the capture anchor samples,
+/// for the VM time keeper to record when VM time stops.
+pub(super) fn host_monotonic_ns() -> Option<u64> {
+    virt::time_abi::host::sample_host_time()
+        .ok()
+        .map(|sample| sample.monotonic_ns)
+}
+
+/// Records how much earlier VM time stopped than the public capture anchor,
+/// on the host monotonic clock that the anchor samples, so that a host
+/// wall-clock step cannot enter the interval.
+pub(super) fn record_vm_time_cut(
+    contract: &mut SnapshotTimeContract,
+    saved_state: &SavedState,
+) -> anyhow::Result<()> {
+    let unit = saved_state
+        .units
+        .iter()
+        .find(|unit| unit.name == "vmtime")
+        .context("snapshot saved state is missing vmtime")?;
+    let vmtime: vmcore::vmtime::SavedState = unit
+        .state
+        .parse()
+        .context("failed to decode vmtime saved state")?;
+    let stop_monotonic_ns = vmtime
+        .stop_host_time()
+        .context("snapshot vmtime state is missing its stop host-clock sample")?;
+    let cut_to_anchor_ns = contract
+        .capture_monotonic_ns
+        .checked_sub(stop_monotonic_ns)
+        .context("time ABI capture anchor precedes the saved VM-time cut")?;
+    contract.vm_time_cut_to_anchor_ns = Some(cut_to_anchor_ns);
+    contract.vm_time_downtime_ns(0)?;
+    Ok(())
 }
 
 impl LoadedVm {
@@ -933,6 +971,7 @@ impl LoadedVm {
             })?;
         let downtime =
             downtime.context("the backend set the TSC without selecting the downtime")?;
+        let vm_time_downtime_ns = input.contract.vm_time_downtime_ns(downtime.nanos)?;
         let tsc_set = started.elapsed();
         if let Some(step_ns) = downtime.host_wall_clock_step_ns {
             tracing::warn!(
@@ -946,8 +985,15 @@ impl LoadedVm {
             target = set.target,
             method = ?set.method,
             vps = set.readback.len(),
+            vm_time_cut_to_anchor_ns = input.contract.vm_time_cut_to_anchor_ns,
+            vm_time_downtime_ns,
             "time ABI synchronized TSC set"
         );
+        if input.contract.vm_time_cut_to_anchor_ns.is_none() {
+            tracing::warn!(
+                "snapshot does not record the VM-time cut; using capture-anchor downtime"
+            );
+        }
 
         // Steps 14 and 15 touch disjoint state, since no backend's LAPIC
         // reads VM time under the time ABI, so they run concurrently. Both
@@ -964,7 +1010,7 @@ impl LoadedVm {
         };
         let vm_time_advance = async move {
             let result = state_units
-                .advance_time(Duration::from_nanos(downtime_ns))
+                .advance_time(Duration::from_nanos(vm_time_downtime_ns))
                 .await;
             (result, started.elapsed())
         };
