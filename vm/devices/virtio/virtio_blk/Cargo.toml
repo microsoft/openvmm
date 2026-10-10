@@ -28,11 +28,15 @@ unicycle.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+disk_layered.workspace = true
 disklayer_ram.workspace = true
+disklayer_vhdx.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true
+tempfile.workspace = true
 test_with_tracing.workspace = true
+vhdx.workspace = true
 
 [lints]
 workspace = true

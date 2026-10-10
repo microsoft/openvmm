@@ -451,6 +451,445 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Create a Rust-VHDX file at `dir/name` with the given geometry and return a
+/// virtio-blk-capable disk resource backed by it. When `read_only` is set the
+/// disk is presented read-only to the guest.
+async fn vhdx_blk_disk_resource(
+    dir: &std::path::Path,
+    name: &str,
+    mut params: vhdx::CreateParams,
+    read_only: bool,
+) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::VhdxDiskLayerHandle;
+    use disklayer_vhdx::io::BlockingFile;
+
+    let path = dir.join(name);
+    {
+        let bf = BlockingFile::open(&path, false).context("create vhdx file")?;
+        vhdx::create(&bf, &mut params)
+            .await
+            .context("write vhdx format")?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .context("open vhdx file")?;
+    Ok(LayeredDiskHandle::single_layer(VhdxDiskLayerHandle { file, read_only }).into_resource())
+}
+
+/// Boot with multiple virtio-blk disks backed by the pure-Rust VHDX engine via
+/// virtio-mmio and exercise guest-visible behavior across geometries: device
+/// discovery, geometry (512/4K/512e), first/last/multi-sector read-write, the
+/// O_DIRECT flush path, DISCARD zero-readback, the GET_ID/serial (Page 83)
+/// identifier, read-only rejection, and data persistence across save/restore.
+///
+/// This is the guest/system counterpart to the `virtio_blk` crate's component
+/// tests: it drives a real Linux guest through
+/// `virtio_blk -> virtqueue -> OpenVMM virtio-blk -> DiskIo -> Rust VHDX`.
+#[openvmm_test(unstable(
+    reason = "virtio-blk over virtio-mmio boot test fails frequently in CI; root cause unknown",
+    linux_direct_x64
+))]
+async fn virtio_blk_device_vhdx(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::blk::VirtioBlkHandle;
+
+    let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
+
+    // Pin vda's Page 83 identifier so the GET_ID/serial check is deterministic.
+    let page83: Guid = "d7e5f3a1-1234-5678-9abc-def012345678"
+        .parse()
+        .context("parse page83 guid")?;
+
+    // Create a set of VHDX-backed disks covering several geometries in a single
+    // boot: vda dynamic 512, vdb fixed, vdc 4K, vdd 512e, vde read-only.
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let disks = vec![
+        (
+            vhdx_blk_disk_resource(
+                dir.path(),
+                "a.vhdx",
+                vhdx::CreateParams {
+                    disk_size,
+                    page_83_data: page83,
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?,
+            false,
+        ),
+        (
+            vhdx_blk_disk_resource(
+                dir.path(),
+                "b.vhdx",
+                vhdx::CreateParams {
+                    disk_size,
+                    is_fully_allocated: true,
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?,
+            false,
+        ),
+        (
+            vhdx_blk_disk_resource(
+                dir.path(),
+                "c.vhdx",
+                vhdx::CreateParams {
+                    disk_size,
+                    logical_sector_size: 4096,
+                    physical_sector_size: 4096,
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?,
+            false,
+        ),
+        (
+            vhdx_blk_disk_resource(
+                dir.path(),
+                "d.vhdx",
+                vhdx::CreateParams {
+                    disk_size,
+                    logical_sector_size: 512,
+                    physical_sector_size: 4096,
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?,
+            false,
+        ),
+        (
+            vhdx_blk_disk_resource(
+                dir.path(),
+                "e.vhdx",
+                vhdx::CreateParams {
+                    disk_size,
+                    ..Default::default()
+                },
+                true,
+            )
+            .await?,
+            true,
+        ),
+    ];
+
+    let (mut vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(move |c| {
+                for (disk, read_only) in disks {
+                    c.virtio_devices.push((
+                        VirtioBus::Mmio,
+                        VirtioBlkHandle {
+                            disk,
+                            read_only,
+                            serial: None,
+                        }
+                        .into_resource(),
+                    ));
+                }
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Verify virtio-blk device appears as /dev/vda with the expected size.
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    assert_eq!(
+        vda_sectors,
+        disk_size / 512,
+        "unexpected disk size in sectors"
+    );
+
+    // Geometry (T-02): guest-reported logical/physical sector size and capacity
+    // must match the VHDX fixture.
+    let ss = cmd!(sh, "blockdev --getss /dev/vda")
+        .read()
+        .await
+        .context("blockdev --getss")?;
+    assert_eq!(ss.trim(), "512", "unexpected logical sector size");
+    let pbsz = cmd!(sh, "cat /sys/block/vda/queue/physical_block_size")
+        .read()
+        .await
+        .context("read physical_block_size")?;
+    assert_eq!(pbsz.trim(), "512", "unexpected physical sector size");
+    let size64 = cmd!(sh, "blockdev --getsize64 /dev/vda")
+        .read()
+        .await
+        .context("blockdev --getsize64")?;
+    assert_eq!(
+        size64.trim(),
+        disk_size.to_string(),
+        "unexpected capacity in bytes"
+    );
+
+    // Write and read back data through the Rust VHDX backend.
+    cmd!(
+        sh,
+        "sh -c 'echo hello_vhdx | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to vhdx virtio-blk device")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 count=1 2>/dev/null | head -c 10'"
+    )
+    .read()
+    .await
+    .context("read from vhdx virtio-blk device")?;
+    assert!(
+        readback.starts_with("hello_vhdx"),
+        "read back data mismatch: {readback}"
+    );
+
+    // Last-sector I/O (T-01): write and read the final addressable sector.
+    // (All of the following use sectors other than 0 so sector 0 keeps
+    // "hello_vhdx" for the save/restore check below.)
+    let last = vda_sectors - 1;
+    let last_write = format!(
+        "printf last_ok | dd of=/dev/vda bs=512 seek={last} count=1 conv=notrunc 2>/dev/null"
+    );
+    cmd!(sh, "sh -c {last_write}")
+        .read()
+        .await
+        .context("write last sector")?;
+    let last_read = format!("dd if=/dev/vda bs=512 skip={last} count=1 2>/dev/null | head -c 7");
+    let last_got = cmd!(sh, "sh -c {last_read}")
+        .read()
+        .await
+        .context("read last sector")?;
+    assert!(
+        last_got.starts_with("last_ok"),
+        "last-sector mismatch: {last_got}"
+    );
+
+    // Multi-sector I/O (T-01): a 2-sector (1024-byte) write spanning sectors.
+    let multi_write =
+        "yes multi | dd of=/dev/vda bs=512 seek=400 count=2 conv=notrunc 2>/dev/null".to_string();
+    cmd!(sh, "sh -c {multi_write}")
+        .read()
+        .await
+        .context("multi-sector write")?;
+    let multi_read = "dd if=/dev/vda bs=512 skip=400 count=2 2>/dev/null | head -c 5".to_string();
+    let multi_got = cmd!(sh, "sh -c {multi_read}")
+        .read()
+        .await
+        .context("multi-sector read")?;
+    assert!(
+        multi_got.starts_with("multi"),
+        "multi-sector mismatch: {multi_got}"
+    );
+
+    // Flush path (T-05): write with O_DIRECT + sync, then read with O_DIRECT so
+    // the data is served from the device, not the guest page cache.
+    let direct_write = "printf '%-512s' flush_ok | dd of=/dev/vda bs=512 seek=500 count=1 oflag=direct conv=notrunc 2>/dev/null && sync".to_string();
+    cmd!(sh, "sh -c {direct_write}")
+        .read()
+        .await
+        .context("direct write + sync")?;
+    let direct_read =
+        "dd if=/dev/vda iflag=direct bs=512 skip=500 count=1 2>/dev/null | head -c 8".to_string();
+    let direct_got = cmd!(sh, "sh -c {direct_read}")
+        .read()
+        .await
+        .context("direct read")?;
+    assert!(
+        direct_got.starts_with("flush_ok"),
+        "flush/direct mismatch: {direct_got}"
+    );
+
+    // DISCARD / UNMAP (T-04): a block-aligned blkdiscard on a non-differencing
+    // VHDX zeroes the discarded range, preserves a neighboring block, and the
+    // range stays writable afterwards (write-after-trim). Operate on block 1
+    // (offset 2 MiB) so sector 0 is untouched. The script fails on any mismatch.
+    let discard = r#"set -e
+# Seed a neighbor marker in block 2 (sector 8192), outside the discard range.
+printf neighbor_ok | dd of=/dev/vda bs=512 seek=8192 count=1 conv=notrunc 2>/dev/null
+# Fill the start of block 1 with non-zero data.
+yes | dd of=/dev/vda bs=512 seek=4096 count=8 conv=notrunc 2>/dev/null
+sync
+# Discard all of block 1 (offset 2 MiB, length 2 MiB => sectors 4096..8192).
+blkdiscard -o 2097152 -l 2097152 /dev/vda
+# Discarded range must read back zero.
+z=$(dd if=/dev/vda iflag=direct bs=512 skip=4096 count=8 2>/dev/null | tr -d '\0' | wc -c)
+[ "$z" -eq 0 ]
+# Neighbor block must be preserved.
+nb=$(dd if=/dev/vda iflag=direct bs=512 skip=8192 count=1 2>/dev/null | head -c 11)
+[ "$nb" = "neighbor_ok" ]
+# Write-after-trim: the discarded range is writable again.
+printf rewrite_ok | dd of=/dev/vda bs=512 seek=4096 count=1 conv=notrunc 2>/dev/null
+sync
+rw=$(dd if=/dev/vda iflag=direct bs=512 skip=4096 count=1 2>/dev/null | head -c 10)
+[ "$rw" = "rewrite_ok" ]"#
+        .to_string();
+    cmd!(sh, "sh -c {discard}")
+        .read()
+        .await
+        .context("discard zero-readback + neighbor + write-after-trim")?;
+
+    // GET_ID / Page 83 (T-03 discovery): the device surfaces the VHDX page-83
+    // identifier via the virtio-blk serial — a 20-char lowercase hex string,
+    // not the generic default.
+    let serial = cmd!(sh, "cat /sys/block/vda/serial")
+        .read()
+        .await
+        .context("read /sys/block/vda/serial")?;
+    let serial = serial.trim();
+    assert_eq!(serial.len(), 20, "unexpected serial length: {serial:?}");
+    assert!(
+        serial.bytes().all(|b| b.is_ascii_hexdigit()),
+        "serial is not hex (page-83 id expected): {serial:?}"
+    );
+
+    // Unwritten hole (T-01): a never-written sector reads back zero.
+    let hole = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 skip=1000 count=1 2>/dev/null | tr -d \"\\0\" | wc -c'"
+    )
+    .read()
+    .await
+    .context("read unwritten hole")?;
+    assert_eq!(hole.trim(), "0", "unwritten sector should read zero");
+
+    // Fixed image vdb (T-01): basic write/read roundtrip.
+    cmd!(
+        sh,
+        "sh -c 'printf fixed_ok | dd of=/dev/vdb bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write fixed vdb")?;
+    let vdb_got = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vdb bs=512 count=1 2>/dev/null | head -c 8'"
+    )
+    .read()
+    .await
+    .context("read fixed vdb")?;
+    assert!(
+        vdb_got.starts_with("fixed_ok"),
+        "fixed-disk mismatch: {vdb_got}"
+    );
+
+    // 4K-sector image vdc (T-02): geometry + 4K-aligned write/read.
+    assert_eq!(
+        cmd!(sh, "blockdev --getss /dev/vdc").read().await?.trim(),
+        "4096",
+        "vdc logical sector size"
+    );
+    assert_eq!(
+        cmd!(sh, "cat /sys/block/vdc/queue/physical_block_size")
+            .read()
+            .await?
+            .trim(),
+        "4096",
+        "vdc physical sector size"
+    );
+    cmd!(
+        sh,
+        "sh -c 'yes fourk | dd of=/dev/vdc bs=4096 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write 4k vdc")?;
+    let vdc_got = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vdc bs=4096 count=1 2>/dev/null | head -c 5'"
+    )
+    .read()
+    .await
+    .context("read 4k vdc")?;
+    assert!(vdc_got.starts_with("fourk"), "4k-disk mismatch: {vdc_got}");
+
+    // 512e image vdd (T-02): logical 512, physical 4096.
+    assert_eq!(
+        cmd!(sh, "blockdev --getss /dev/vdd").read().await?.trim(),
+        "512",
+        "vdd logical sector size"
+    );
+    assert_eq!(
+        cmd!(sh, "cat /sys/block/vdd/queue/physical_block_size")
+            .read()
+            .await?
+            .trim(),
+        "4096",
+        "vdd physical sector size (512e)"
+    );
+    cmd!(
+        sh,
+        "sh -c 'printf e512_ok | dd of=/dev/vdd bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write 512e vdd")?;
+    let vdd_got = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vdd bs=512 count=1 2>/dev/null | head -c 7'"
+    )
+    .read()
+    .await
+    .context("read 512e vdd")?;
+    assert!(
+        vdd_got.starts_with("e512_ok"),
+        "512e-disk mismatch: {vdd_got}"
+    );
+
+    // Read-only disk vde (T-03): the kernel marks it read-only and writes fail.
+    assert_eq!(
+        cmd!(sh, "cat /sys/block/vde/ro").read().await?.trim(),
+        "1",
+        "vde should be read-only"
+    );
+    let rc = cmd!(
+        sh,
+        "sh -c 'echo x | dd of=/dev/vde bs=512 count=1 2>/dev/null; echo $?'"
+    )
+    .read()
+    .await
+    .context("write read-only vde")?;
+    assert_ne!(rc.trim(), "0", "write to read-only disk must fail");
+
+    // Pulse save/restore with the device active and data on disk.
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+
+    let agent = vm.backend().wait_for_agent(false).await?;
+    let sh = agent.unix_shell();
+
+    // Verify the data persisted across save/restore (bypass the page cache).
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda iflag=direct bs=512 count=1 2>/dev/null | head -c 10'"
+    )
+    .read()
+    .await
+    .context("read from vhdx virtio-blk after save/restore")?;
+    assert!(
+        readback.starts_with("hello_vhdx"),
+        "data mismatch after save/restore: {readback}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    // Keep the VHDX file alive until the VM has fully torn down.
+    drop(dir);
+    Ok(())
+}
+
 /// Boot with a virtio-rng device on a PCIe root port and verify the guest can
 /// read entropy.
 #[openvmm_test(linux_direct_x64)]
