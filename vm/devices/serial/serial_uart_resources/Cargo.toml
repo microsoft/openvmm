@@ -2,13 +2,12 @@
 # Licensed under the MIT License.
 
 [package]
-name = "serial_16550_resources"
+name = "serial_uart_resources"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-vm_resource.workspace = true
-x86defs.workspace = true
+serial_16550_resources.workspace = true
 
 mesh.workspace = true
 

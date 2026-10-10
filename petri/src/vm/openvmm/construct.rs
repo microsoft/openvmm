@@ -56,7 +56,7 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
@@ -1114,10 +1114,7 @@ impl PetriVmConfigSetupCore<'_> {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address,
-                    com_serial: Some(SerialInformation {
-                        io_port: ComPort::Com3.io_port(),
-                        irq: ComPort::Com3.irq().into(),
-                    }),
+                    com_serial: self.enable_serial.then_some(UartId::Com(ComPort::Com3)),
                 }
             }
             (a, f) => anyhow::bail!("Unsupported firmware {f:?} for arch {a:?}"),

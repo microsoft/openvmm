@@ -3,6 +3,7 @@
 
 //! Configuration for the VM worker.
 
+pub use serial_uart_resources::UartId;
 pub use smbios_defs::SmbiosBiosOverrides;
 pub use smbios_defs::SmbiosConfig;
 pub use smbios_defs::SmbiosSystemOverrides;
@@ -183,15 +184,9 @@ pub enum LoadMode {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
-        com_serial: Option<SerialInformation>,
+        com_serial: Option<UartId>,
     },
     None,
-}
-
-#[derive(Debug, Clone, Copy, MeshPayload)]
-pub struct SerialInformation {
-    pub io_port: u16,
-    pub irq: u32,
 }
 
 /// Different types to specify the base address for the VTL2 region of the IGVM

@@ -3456,6 +3456,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "test_with_tracing",
  "tracing",
 ]
 
@@ -5936,6 +5937,8 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "serial_pl011_resources",
+ "serial_uart_resources",
  "smmu",
  "sparse_mmap",
  "state_unit",
@@ -5987,6 +5990,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "serial_uart_resources",
  "smbios_defs",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -7699,6 +7703,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+ "x86defs",
 ]
 
 [[package]]
@@ -7787,6 +7792,14 @@ dependencies = [
  "tracing",
  "unix_socket",
  "vm_resource",
+]
+
+[[package]]
+name = "serial_uart_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "serial_16550_resources",
 ]
 
 [[package]]

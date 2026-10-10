@@ -54,17 +54,18 @@ async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), a
 }
 
 /// Boot ARM64 Linux in device-tree mode (full DT, no ACPI).
-// TODO: disabled until we get a kernel that supports DT boot with the
-// current device configuration.
-// #[openvmm_test(linux_direct_aarch64)]
-#[expect(dead_code)]
-async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+#[openvmm_test(linux_direct_aarch64)]
+async fn boot_dt_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
+        .with_no_vmbus()
         .modify_backend(|c| {
-            c.with_custom_config(|c| {
+            c.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
                 if let openvmm_defs::config::LoadMode::Linux { boot_mode, .. } = &mut c.load_mode {
                     *boot_mode = openvmm_defs::config::LinuxDirectBootMode::DeviceTree;
                 }
+                c.hypervisor.with_hv = false;
             })
         })
         .run()
@@ -80,7 +81,46 @@ async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         !output.status.success(),
         "ACPI tables should not exist in DT-only mode"
     );
+    let stdout_path = shell
+        .read_file("/proc/device-tree/chosen/stdout-path")
+        .await?;
+    anyhow::ensure!(
+        stdout_path == "/openvmm/uart@effec000\0",
+        "unexpected native DT console path: {stdout_path:?}"
+    );
+    cmd!(shell, "test -d /proc/device-tree/openvmm/uart@effec000")
+        .run()
+        .await?;
+    cmd!(shell, "test -d /proc/device-tree/openvmm/uart@effeb000")
+        .run()
+        .await?;
 
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot ARM64 Linux through the minimal ACPI discovery DT.
+#[openvmm_test(linux_direct_aarch64)]
+async fn boot_acpi_aarch64_tcg(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .modify_backend(|c| {
+            c.with_pcie_root_topology(1, 1, 1)
+                .with_custom_config(|c| c.hypervisor.with_hv = false)
+        })
+        .run()
+        .await?;
+    let shell = agent.unix_shell();
+    cmd!(shell, "test -f /sys/firmware/acpi/tables/FACP")
+        .run()
+        .await?;
+    cmd!(shell, "test -f /sys/firmware/acpi/tables/MCFG")
+        .run()
+        .await?;
+    cmd!(shell, "test ! -d /proc/device-tree/cpus")
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())

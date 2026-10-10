@@ -11,6 +11,7 @@
 pub mod apic;
 pub mod cpuid;
 pub mod msi;
+pub mod serial;
 pub mod snp;
 pub mod tdx;
 pub mod vmx;

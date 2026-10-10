@@ -153,6 +153,7 @@
     - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
     - [Memory Backing](./reference/architecture/openvmm/memory-backing.md)
     - [NUMA Topology](./reference/architecture/openvmm/numa.md)
+    - [Device Tree](./reference/architecture/openvmm/device-tree.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)

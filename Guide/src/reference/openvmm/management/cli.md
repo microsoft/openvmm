@@ -173,6 +173,9 @@ describes the source definitions.
   explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
   add a host UEFI device. You can pass `--uefi` settings for the firmware
   loaded by OpenHCL.
+
+  On x86, the IGVM device tree describes only some COM ports. See
+  [Device Tree](../../architecture/openvmm/device-tree.md).
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.

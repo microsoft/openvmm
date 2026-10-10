@@ -377,6 +377,7 @@ serial_debugcon_resources = { path = "vm/devices/serial/serial_debugcon_resource
 serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
+serial_uart_resources = { path = "vm/devices/serial/serial_uart_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
