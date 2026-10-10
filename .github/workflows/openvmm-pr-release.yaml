@@ -187,7 +187,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -1110,7 +1110,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -1755,7 +1755,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -2572,7 +2572,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -4250,7 +4250,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -4683,7 +4683,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -5267,7 +5267,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -5764,7 +5764,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -5928,7 +5928,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -6147,7 +6147,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
@@ -6313,7 +6313,7 @@ jobs:
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
         ./rustup-init.exe -y --default-toolchain=1.95.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
+      if: runner.os == 'Windows'
       name: rustup (Windows X64)
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
