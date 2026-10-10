@@ -13,7 +13,7 @@ use acpi_spec::madt::MadtParser;
 use alloc::vec::Vec;
 use spin::Once;
 use thiserror::Error;
-use uefi::table::cfg::ACPI2_GUID;
+use uefi::table::cfg::ConfigTableEntry;
 use zerocopy::FromBytes;
 
 use crate::tmkdefs::TmkError;
@@ -95,7 +95,7 @@ impl RsdpParser {
 
         let rsdp = config_slice
             .iter()
-            .find(|entry| entry.vendor_guid == ACPI2_GUID)
+            .find(|entry| entry.vendor_guid == ConfigTableEntry::ACPI2_GUID)
             .map(|entry| entry.vendor_table);
 
         if let Some(rsdp) = rsdp {

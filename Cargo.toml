@@ -656,7 +656,7 @@ igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
-uefi = "0.35.0"
+uefi = "0.41.0"
 vfio-bindings = "0.4.0"
 x86_64 = { version = "0.15.2", default-features = false }
 
