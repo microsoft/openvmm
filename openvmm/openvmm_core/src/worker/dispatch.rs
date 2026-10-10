@@ -186,6 +186,7 @@ const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const VMTIME_UNIT_NAME: &str = "vmtime";
 
 enum VpciEjectResult {
     Complete(anyhow::Result<()>),
@@ -1994,7 +1995,7 @@ impl InitializedVm {
         let state_units = StateUnits::new();
 
         let vmtime = state_units
-            .add("vmtime")
+            .add(VMTIME_UNIT_NAME)
             .advances_time()
             .spawn(driver_source.simple(), {
                 |recv| {
