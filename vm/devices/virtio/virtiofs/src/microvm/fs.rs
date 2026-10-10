@@ -138,18 +138,47 @@ pub(crate) fn validate_file_insert(
 /// Opens the strict, policy-enforcing volume of a microVM share or aggregate
 /// child at `root_path`, as volume `volume_id`, and returns it with its root
 /// inode and the root's attributes. The caller validates the root's identity.
+///
+/// With `file`, `root_path` names a regular file, which becomes the volume's
+/// root object in place of `policy`'s directory: the volume opens the file's
+/// directory, but the guest receives no node of that directory, and the
+/// volume also hides the directory's root behind the file, so the guest
+/// reaches nothing but the file.
 fn open_microvm_volume(
     root_path: &Path,
     read_only: bool,
     policy: &SubtreePolicy,
     volume_id: u32,
+    file: bool,
 ) -> anyhow::Result<(Arc<VirtioFsVolume>, VirtioFsInode, lx::Stat)> {
+    let (directory, exposed_file, policy) = if file {
+        anyhow::ensure!(
+            *policy == SubtreePolicy::default(),
+            "a microVM virtio-fs file child takes no denied, allowed, or writable paths"
+        );
+        let (Some(directory), Some(name)) = (root_path.parent(), root_path.file_name()) else {
+            anyhow::bail!(
+                "microVM virtio-fs file {} has no host directory",
+                root_path.display()
+            );
+        };
+        let exposed_file = PathBuf::from(name);
+        let policy = SubtreePolicy::new(
+            vec![PathBuf::new()],
+            vec![exposed_file.clone()],
+            Vec::new(),
+            read_only,
+        )?;
+        (directory, Some(exposed_file), policy)
+    } else {
+        (root_path, None, policy.clone())
+    };
     let mut mount_options = LxVolumeOptions::new();
     mount_options
         .readonly(read_only)
         .sandbox(true)
         .confine_paths(true);
-    let volume = mount_options.new_volume(root_path)?;
+    let volume = mount_options.new_volume(directory)?;
     let mut pinned_identities = HashMap::new();
     for (path, reachable_at) in policy.pinned_paths() {
         let stat = volume.lstat(&path)?;
@@ -175,10 +204,12 @@ fn open_microvm_volume(
         volume_id,
         read_only,
         true,
-        policy.clone(),
+        policy,
         pinned_identities,
+        exposed_file,
     ));
-    let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new())?;
+    let root_entry = volume.root_entry().to_owned();
+    let (root_inode, root_stat) = VirtioFsInode::new(Arc::clone(&volume), root_entry)?;
     Ok((volume, root_inode, root_stat))
 }
 
@@ -202,6 +233,7 @@ impl VirtioFs {
             profile.is_readonly(),
             profile.subtree_policy(),
             0,
+            false,
         )?;
         profile.validate_opened_root(root_path, &root_stat)?;
         let caller_identity = match profile.owner_mode() {
@@ -231,7 +263,8 @@ impl VirtioFs {
     /// profile. Node 1 is a synthetic, read-only directory that only the
     /// guest's root may enter, and each of `root_paths`, in the order of the
     /// profile's children, is the child of that name, with the child's own
-    /// access policy.
+    /// access policy: a host directory, or the regular file of a child that
+    /// exposes a file.
     ///
     /// Like [`Self::new_microvm`], the paths are consumed only while opening
     /// the attachment.
@@ -260,6 +293,7 @@ impl VirtioFs {
                 child.is_readonly(),
                 child.subtree_policy(),
                 volume_id,
+                child.is_file(),
             )?;
             child
                 .validate_opened_root(root_path, &root_stat)

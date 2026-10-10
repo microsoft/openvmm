@@ -54,11 +54,12 @@ fixes the remaining guest-visible configuration:
 
 ### Several host directories
 
-To share several host directories, attach them to the slot as one aggregate
-instead of `--mount`. `--mount-aggregate GUEST_TARGET` sets where the guest
-mounts the aggregate's root, and each `--mount-child NAME,HOST_PATH[,ro|rw]`
-adds a host directory as the root's child directory `NAME`, with its own
-access mode:
+To share several host directories, or single host files, attach them to the
+slot as one aggregate instead of `--mount`. `--mount-aggregate GUEST_TARGET`
+sets where the guest mounts the aggregate's root, and each
+`--mount-child NAME,HOST_PATH[,ro|rw][,file]` adds a host directory as the
+root's child directory `NAME`, or, with `file`, a regular file as the child
+file `NAME` (see [Single files](#single-files)), with its own access mode:
 
 ```bash
 openvmm --machine microvm \
@@ -70,8 +71,8 @@ openvmm --machine microvm \
 
 The guest sees the children in command-line order. A name is 1 to 64 ASCII
 letters, digits, `.`, `_`, or `-`, and must be unique; an aggregate has 1 to
-256 children. The mode follows the last comma, so a host path may contain
-commas when the mode is given.
+256 children. The mode, and the `file` flag after it, follow the last
+commas, so a host path may contain commas when the mode is given.
 
 The aggregate's root is synthetic. It is read-only, it belongs to the guest's
 root user, and its mode is `0500`, so only that user can enter it; the guest
@@ -85,16 +86,62 @@ read-only destination first, and with `EXDEV` otherwise. Inode numbers are
 namespaced per child, which makes a collision between children unlikely but
 not impossible.
 
-OpenVMM rejects host directories that equal, contain, or are contained in one
+OpenVMM rejects host paths that equal, contain, or are contained in one
 another (compared after canonicalization and by root object identity),
 because one child could otherwise reach files that another child denies or
 exposes with a different access mode. On Linux, OpenVMM also compares the
-filesystem sources that each directory reaches, from `/proc/self/mountinfo`,
+filesystem sources that each path reaches, from `/proc/self/mountinfo`,
 including the mounts below it, so a bind mount or nested mount can't expose
 part of one child as, or inside, another. Each `--mount-deny`,
 `--mount-allow`, and `--mount-write` path must be absolute, and it applies to
 the child whose directory contains it. `--mount-owner` applies to every
-child; with `caller`, every child directory must have the same owner.
+child; with `caller`, every child directory and file must have the same
+owner.
+
+#### Single files
+
+With the `file` flag, a `--mount-child` names a regular file instead of a
+directory. The child is then the file itself: the aggregate's root lists it as
+a regular file, which the guest bind-mounts onto a file, and nothing else of
+the file's host directory is exposed, neither its other entries nor the
+directory's attributes. The child's mode applies to the whole file:
+
+```bash
+openvmm --machine microvm \
+  --mount-aggregate /run/shares \
+  --mount-child settings,path/to/config/settings.json,ro,file \
+  --mount-child output,path/to/results/output.txt,rw,file \
+  --kernel path/to/vmlinux --initrd path/to/initramfs.cpio.gz
+```
+
+- The flag, not the host object, decides the child's kind: OpenVMM refuses a
+  file child whose host path is not a regular file, and a directory child
+  whose host path is not a directory, so a directory that replaces a shared
+  file is never exported in its place.
+- A read-only file rejects every modification with `EROFS`, whichever guest
+  mount reaches it. A read-write file can be written and truncated, but it
+  cannot be removed or renamed, because its parent is the aggregate's
+  read-only root, so a guest program that saves by renaming a new file over
+  the old one fails.
+- Nothing lies below a file, so a lookup through it fails with `ENOTDIR`, and
+  so does creating an entry through a read-write file; a read-only one
+  rejects the creation with `EROFS` first. A hard link of the file into
+  another child fails like any link between children.
+- A file overlaps only a directory child that contains it, or another child
+  that names the same file, such as through a hard link. Files of one
+  directory may be separate children, with different modes, and a file may
+  be a child next to a directory child, or lie directly in a volume's root.
+- No `--mount-deny`, `--mount-allow`, or `--mount-write` path may name a file
+  child. `--mount` shares only a directory, because the guest mounts the
+  device's root, which is always a directory.
+
+HostFs opens the file's directory and resolves the file by its name for each
+request, as it resolves a path inside a shared directory, but the guest
+receives no node of the directory, and HostFs also hides the directory's
+root behind the file. A host program that replaces the file by renaming
+another file over it therefore replaces what the guest reads. If anything but
+a regular file appears at the file's name, HostFs refuses every request on
+the child with `EACCES`.
 
 For an active cold-boot attachment, the profile adds `virtfs_dir`,
 `virtfs_tag`, and `virtfs_mode` bootstrap tokens to the kernel command line.
