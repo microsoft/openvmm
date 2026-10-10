@@ -10,10 +10,12 @@ use super::profile::MICROVM_FUSE_MAX_WRITE;
 use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MICROVM_REQUEST_QUEUES;
 use super::profile::MicroVmAccessMode;
+use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
 use super::saved_state::AGGREGATE_SCHEMA_VERSION;
 use super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
+use super::saved_state::FILE_CHILD_SCHEMA_VERSION;
 use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
@@ -24,6 +26,8 @@ use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
 use super::saved_state::PREVIOUS_SCHEMA_VERSION;
+use super::saved_state::SAVED_DIRECTORY_CHILD;
+use super::saved_state::SAVED_FILE_CHILD;
 use super::saved_state::SCHEMA_VERSION;
 use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
 use super::saved_state::SavedAggregateChild;
@@ -151,7 +155,13 @@ pub(crate) fn saved_policy_paths(paths: &[PathBuf]) -> Vec<String> {
 /// Returns the oldest schema version that can record the state of `profile`'s
 /// attachment, so that releases that cannot enforce its policy reject it.
 pub(crate) fn schema_version(profile: &MicroVmVirtioFsProfile) -> u32 {
-    if profile.is_aggregate() {
+    if profile
+        .children()
+        .iter()
+        .any(MicroVmAggregateChild::is_file)
+    {
+        FILE_CHILD_SCHEMA_VERSION
+    } else if profile.is_aggregate() {
         AGGREGATE_SCHEMA_VERSION
     } else if profile.subtree_policy().restricts_writes() {
         SUBTREE_POLICY_SCHEMA_VERSION
@@ -315,6 +325,11 @@ pub(crate) fn saved_aggregate_children(
                 denied_paths: saved_policy_paths(policy.denied_paths()),
                 allowed_paths: saved_policy_paths(policy.allowed_paths()),
                 writable_paths: saved_policy_paths(policy.writable_paths()),
+                kind: if child.is_file() {
+                    SAVED_FILE_CHILD
+                } else {
+                    SAVED_DIRECTORY_CHILD
+                },
             }
         })
         .collect()
@@ -350,18 +365,33 @@ pub(crate) fn validate_microvm_state(
                 | CALLER_IDENTITY_SCHEMA_VERSION
                 | SUBTREE_POLICY_SCHEMA_VERSION
                 | AGGREGATE_SCHEMA_VERSION
+                | FILE_CHILD_SCHEMA_VERSION
         ) && !state.dormant,
         "unsupported virtio-fs state schema version {}",
         state.schema_version
     );
+    let aggregate_state = matches!(
+        state.schema_version,
+        AGGREGATE_SCHEMA_VERSION | FILE_CHILD_SCHEMA_VERSION
+    );
     anyhow::ensure!(
-        (state.schema_version == AGGREGATE_SCHEMA_VERSION) == profile.is_aggregate(),
+        aggregate_state == profile.is_aggregate(),
         "saved aggregate layout does not match the restore profile"
+    );
+    anyhow::ensure!(
+        (state.schema_version == FILE_CHILD_SCHEMA_VERSION)
+            == profile
+                .children()
+                .iter()
+                .any(MicroVmAggregateChild::is_file),
+        "saved aggregate file children do not match the restore profile"
     );
     anyhow::ensure!(
         match state.schema_version {
             CALLER_IDENTITY_SCHEMA_VERSION => state.caller_identity,
-            SUBTREE_POLICY_SCHEMA_VERSION | AGGREGATE_SCHEMA_VERSION => true,
+            SUBTREE_POLICY_SCHEMA_VERSION
+            | AGGREGATE_SCHEMA_VERSION
+            | FILE_CHILD_SCHEMA_VERSION => true,
             _ => !state.caller_identity,
         },
         "saved ownership mode does not match the virtio-fs state schema version"
@@ -387,7 +417,7 @@ pub(crate) fn validate_microvm_state(
         &state.allowed_paths,
         &state.writable_paths,
     );
-    if state.schema_version == AGGREGATE_SCHEMA_VERSION {
+    if aggregate_state {
         // Each child records its own policy, and so its own root identity.
         anyhow::ensure!(
             state.denied_paths.is_empty()
