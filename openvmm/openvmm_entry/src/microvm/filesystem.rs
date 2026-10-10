@@ -61,19 +61,14 @@ impl<'a> MicrovmFilesystemRequest<'a> {
     }
 }
 
-/// Resolves the host path of a microVM filesystem root: a plain directory, or
-/// with `accept_file` also a regular file, which an aggregate child may
-/// expose. Returns its canonical path, its kind, and its identity, with the
-/// identity's kind.
+/// Resolves the host path of a microVM filesystem root, which must be of
+/// `kind`: a plain directory, or a regular file that an aggregate child
+/// exposes. Returns its canonical path and its identity, with the identity's
+/// kind.
 fn canonical_microvm_filesystem_root(
     path: &Path,
-    accept_file: bool,
-) -> anyhow::Result<(
-    PathBuf,
-    openvmm_defs::microvm::MicrovmFilesystemChildKind,
-    &'static str,
-    Vec<u8>,
-)> {
+    kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
+) -> anyhow::Result<(PathBuf, &'static str, Vec<u8>)> {
     anyhow::ensure!(
         !path.as_os_str().is_empty(),
         "microVM filesystem host path is empty"
@@ -132,21 +127,20 @@ fn canonical_microvm_filesystem_root(
             canonical.display()
         )
     })?;
-    let kind = if metadata.file_type().is_dir() {
-        openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory
-    } else if accept_file && metadata.file_type().is_file() {
-        openvmm_defs::microvm::MicrovmFilesystemChildKind::File
-    } else if accept_file {
-        anyhow::bail!(
-            "microVM filesystem root is neither a plain directory nor a regular file: {}",
-            canonical.display()
-        )
-    } else {
-        anyhow::bail!(
+    // The requested kind, not the one found, decides what the child exposes,
+    // so a file replaced by a directory is not exported in its place.
+    match kind {
+        openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory => anyhow::ensure!(
+            metadata.file_type().is_dir(),
             "microVM filesystem root is not a plain directory: {}",
             canonical.display()
-        )
-    };
+        ),
+        openvmm_defs::microvm::MicrovmFilesystemChildKind::File => anyhow::ensure!(
+            metadata.file_type().is_file(),
+            "microVM filesystem root is not a regular file: {}",
+            canonical.display()
+        ),
+    }
 
     #[cfg(unix)]
     let (identity_kind, identity) = {
@@ -191,7 +185,7 @@ fn canonical_microvm_filesystem_root(
         "microVM filesystem root identity is empty or exceeds 4096 bytes"
     );
 
-    Ok((canonical, kind, identity_kind, identity))
+    Ok((canonical, identity_kind, identity))
 }
 
 /// Resolves the host paths that one of `--mount-deny`, `--mount-allow`, or
@@ -325,24 +319,25 @@ pub(crate) fn microvm_filesystem_attachment(
     String,
     openvmm_helpers::snapshot::microvm::SnapshotAttachment,
 )> {
-    let (root_path, attachment, _) = microvm_filesystem_object_attachment(host_path, slot, false)?;
-    Ok((root_path, attachment))
+    microvm_filesystem_object_attachment(
+        host_path,
+        slot,
+        openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory,
+    )
 }
 
-/// Returns the canonical host path of `host_path`, a directory or, with
-/// `accept_file`, a regular file, with its kind and its live attachment
-/// identity in the virtio-fs slot `slot`.
+/// Returns the canonical host path of `host_path`, which must be of `kind`, a
+/// directory or a regular file, with its live attachment identity in the
+/// virtio-fs slot `slot`.
 fn microvm_filesystem_object_attachment(
     host_path: &Path,
     slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
-    accept_file: bool,
+    kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
 ) -> anyhow::Result<(
     String,
     openvmm_helpers::snapshot::microvm::SnapshotAttachment,
-    openvmm_defs::microvm::MicrovmFilesystemChildKind,
 )> {
-    let (canonical, kind, identity_kind, identity) =
-        canonical_microvm_filesystem_root(host_path, accept_file)?;
+    let (canonical, identity_kind, identity) = canonical_microvm_filesystem_root(host_path, kind)?;
     let root_path = canonical
         .to_str()
         .context("microVM filesystem host path is not valid UTF-8")?
@@ -359,7 +354,6 @@ fn microvm_filesystem_object_attachment(
             length: 0,
             reconnect_timeout_ms: 0,
         },
-        kind,
     ))
 }
 
@@ -424,14 +418,13 @@ fn microvm_filesystem_from_root(
 }
 
 /// Builds the aggregate child `requested` in its canonical host root, a
-/// directory or, by `kind`, a regular file, with the access policy that
-/// `--mount-deny`, `--mount-allow`, and `--mount-write` attributed to it. A
-/// child that exposes a file takes no policy paths: its mode applies to the
-/// whole file.
+/// directory or, by the request's kind, a regular file, with the access
+/// policy that `--mount-deny`, `--mount-allow`, and `--mount-write`
+/// attributed to it. A child that exposes a file takes no policy paths: its
+/// mode applies to the whole file.
 fn microvm_filesystem_child_from_root(
     requested: &cli_args::microvm::MicrovmMountChildCli,
     root_path: &str,
-    kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
     policy: MicrovmFilesystemPolicyPaths<'_>,
     owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
 ) -> anyhow::Result<openvmm_defs::microvm::MicrovmFilesystemChildConfig> {
@@ -440,7 +433,7 @@ fn microvm_filesystem_child_from_root(
     if owner.is_caller() {
         validate_caller_owned_root(Path::new(root_path))?;
     }
-    if kind == openvmm_defs::microvm::MicrovmFilesystemChildKind::File {
+    if requested.kind == openvmm_defs::microvm::MicrovmFilesystemChildKind::File {
         anyhow::ensure!(
             policy.denied.is_empty() && policy.allowed.is_empty() && policy.writable.is_empty(),
             "--mount-child {} exposes the file {root_path}, which no --mount-deny, --mount-allow, or --mount-write path may name; its mode applies to the whole file",
@@ -763,24 +756,21 @@ fn microvm_filesystem_from_request(
     use openvmm_defs::microvm::MicrovmFilesystemPathKind;
 
     let slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
-    let (aggregate, roots, kinds) = match request {
+    let (aggregate, roots) = match request {
         MicrovmFilesystemRequest::Single(mount) => (
             false,
             vec![microvm_filesystem_attachment(&mount.host_path, slot)?],
-            vec![openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory],
         ),
-        MicrovmFilesystemRequest::Aggregate { children, .. } => {
-            let mut roots = Vec::with_capacity(children.len());
-            let mut kinds = Vec::with_capacity(children.len());
-            for child in children {
-                let (root, attachment, kind) =
-                    microvm_filesystem_object_attachment(&child.host_path, slot, true)
-                        .with_context(|| format!("invalid --mount-child {}", child.name))?;
-                roots.push((root, attachment));
-                kinds.push(kind);
-            }
-            (true, roots, kinds)
-        }
+        MicrovmFilesystemRequest::Aggregate { children, .. } => (
+            true,
+            children
+                .iter()
+                .map(|child| {
+                    microvm_filesystem_object_attachment(&child.host_path, slot, child.kind)
+                        .with_context(|| format!("invalid --mount-child {}", child.name))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
     };
     validate_microvm_filesystem_roots(&roots)?;
     let attribute = |requested, option, kind| {
@@ -823,10 +813,9 @@ fn microvm_filesystem_from_request(
             let child_configs = children
                 .iter()
                 .zip(&roots)
-                .zip(&kinds)
                 .enumerate()
-                .map(|(index, ((child, (root, _)), kind))| {
-                    microvm_filesystem_child_from_root(child, root, *kind, policy(index), owner)
+                .map(|(index, (child, (root, _)))| {
+                    microvm_filesystem_child_from_root(child, root, policy(index), owner)
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let config = openvmm_defs::microvm::MicrovmFilesystemConfig::new_aggregate(
@@ -1398,14 +1387,16 @@ mod tests {
 
     #[test]
     fn filesystem_root_rejects_parent_components() {
+        use openvmm_defs::microvm::MicrovmFilesystemChildKind;
+
         let root = tempfile::tempdir().unwrap();
-        for accept_file in [false, true] {
+        for kind in [
+            MicrovmFilesystemChildKind::Directory,
+            MicrovmFilesystemChildKind::File,
+        ] {
             assert!(
-                canonical_microvm_filesystem_root(
-                    &root.path().join("child").join(".."),
-                    accept_file
-                )
-                .is_err()
+                canonical_microvm_filesystem_root(&root.path().join("child").join(".."), kind)
+                    .is_err()
             );
         }
     }
@@ -1534,10 +1525,13 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let file_link = root.path().join("file-link");
         std::os::unix::fs::symlink(target.join("file"), &file_link).unwrap();
-        for accept_file in [false, true] {
-            assert!(canonical_microvm_filesystem_root(&link, accept_file).is_err());
-            assert!(canonical_microvm_filesystem_root(&link.join("file"), accept_file).is_err());
-            assert!(canonical_microvm_filesystem_root(&file_link, accept_file).is_err());
+        for kind in [
+            openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory,
+            openvmm_defs::microvm::MicrovmFilesystemChildKind::File,
+        ] {
+            assert!(canonical_microvm_filesystem_root(&link, kind).is_err());
+            assert!(canonical_microvm_filesystem_root(&link.join("file"), kind).is_err());
+            assert!(canonical_microvm_filesystem_root(&file_link, kind).is_err());
         }
     }
 
@@ -1664,6 +1658,7 @@ mod tests {
     fn mount_child_names_and_modes_parse() {
         use cli_args::microvm::MicrovmMountChildCli;
         use openvmm_defs::microvm::MicrovmFilesystemAccess;
+        use openvmm_defs::microvm::MicrovmFilesystemChildKind;
         use std::str::FromStr as _;
 
         let child = MicrovmMountChildCli::from_str("work,/srv/a,b,rw").unwrap();
@@ -1675,7 +1670,30 @@ mod tests {
         assert_eq!(child.access, MicrovmFilesystemAccess::ReadOnly);
         let child = MicrovmMountChildCli::from_str("0,/srv/a,ro").unwrap();
         assert_eq!(child.host_path, PathBuf::from("/srv/a"));
-        for invalid in ["", "0", "0,", "0,,rw", "a b,/srv", ".,/srv", "a/b,/srv"] {
+        assert_eq!(child.kind, MicrovmFilesystemChildKind::Directory);
+        // The `file` flag follows the optional mode.
+        let child = MicrovmMountChildCli::from_str("0,/srv/a,b.txt,rw,file").unwrap();
+        assert_eq!(child.host_path, PathBuf::from("/srv/a,b.txt"));
+        assert_eq!(child.access, MicrovmFilesystemAccess::ReadWrite);
+        assert_eq!(child.kind, MicrovmFilesystemChildKind::File);
+        let child = MicrovmMountChildCli::from_str("0,/srv/a.txt,file").unwrap();
+        assert_eq!(child.host_path, PathBuf::from("/srv/a.txt"));
+        assert_eq!(child.access, MicrovmFilesystemAccess::ReadOnly);
+        assert_eq!(child.kind, MicrovmFilesystemChildKind::File);
+        let child = MicrovmMountChildCli::from_str("0,/srv/a.txt,file,rw").unwrap();
+        assert_eq!(child.host_path, PathBuf::from("/srv/a.txt,file"));
+        assert_eq!(child.kind, MicrovmFilesystemChildKind::Directory);
+        for invalid in [
+            "",
+            "0",
+            "0,",
+            "0,,rw",
+            "0,,file",
+            "0,,rw,file",
+            "a b,/srv",
+            ".,/srv",
+            "a/b,/srv",
+        ] {
             assert!(
                 MicrovmMountChildCli::from_str(invalid).is_err(),
                 "{invalid}"
@@ -1844,8 +1862,8 @@ mod tests {
         let options = aggregate_options(
             &[
                 format!("work,{},rw", work.display()),
-                format!("settings,{},ro", settings.display()),
-                format!("output,{},rw", output.display()),
+                format!("settings,{},ro,file", settings.display()),
+                format!("output,{},rw,file", output.display()),
             ],
             &[],
         );
@@ -1873,6 +1891,23 @@ mod tests {
             filesystem.children[2].1.identity
         );
 
+        // The requested kind must match the host object, so a file that a
+        // directory replaced is not exported in its place, and a file needs
+        // its `file` flag.
+        for (child, message) in [
+            (
+                format!("work,{},rw,file", work.display()),
+                "not a regular file",
+            ),
+            (
+                format!("settings,{},ro", settings.display()),
+                "not a plain directory",
+            ),
+        ] {
+            let error = options_filesystem(&aggregate_options(&[child], &[]), None).unwrap_err();
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+        }
+
         // A file inside a directory child overlaps it, and one file reached
         // through two names, such as a hard link, overlaps itself.
         let link = parent.path().join("settings-link.json");
@@ -1880,11 +1915,11 @@ mod tests {
         for children in [
             vec![
                 format!("work,{},rw", parent.path().display()),
-                format!("settings,{},ro", settings.display()),
+                format!("settings,{},ro,file", settings.display()),
             ],
             vec![
-                format!("settings,{},ro", settings.display()),
-                format!("link,{},ro", link.display()),
+                format!("settings,{},ro,file", settings.display()),
+                format!("link,{},ro,file", link.display()),
             ],
         ] {
             let error = options_filesystem(&aggregate_options(&children, &[]), None).unwrap_err();
@@ -1896,7 +1931,7 @@ mod tests {
         for option in ["--mount-deny", "--mount-allow", "--mount-write"] {
             let error = options_filesystem(
                 &aggregate_options(
-                    &[format!("settings,{},rw", settings.display())],
+                    &[format!("settings,{},rw,file", settings.display())],
                     &[option, &settings_path],
                 ),
                 None,
@@ -1922,7 +1957,7 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let settings = parent.path().join("settings.json");
         fs_err::write(&settings, b"{}").unwrap();
-        let children = [format!("settings,{},ro", settings.display())];
+        let children = [format!("settings,{},ro,file", settings.display())];
         let captured = options_filesystem(&aggregate_options(&children, &[]), None).unwrap();
         let contract = effective_contract(Some(&captured));
         assert_eq!(
@@ -1936,6 +1971,21 @@ mod tests {
             )
         };
         assert_eq!(restore().unwrap().config, captured.config);
+
+        // A restore must request the file that the snapshot exposed, not a
+        // directory.
+        let directory = parent.path().join("config");
+        fs_err::create_dir(&directory).unwrap();
+        assert!(
+            options_filesystem(
+                &aggregate_options(
+                    &[format!("settings,{},ro", directory.display())],
+                    &["--restore-snapshot", "snapshot"]
+                ),
+                Some(&contract),
+            )
+            .is_err()
+        );
 
         // A file that replaces the snapshot's at its path is another object.
         let replacement = parent.path().join("settings.new");
