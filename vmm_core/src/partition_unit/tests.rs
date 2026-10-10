@@ -131,7 +131,7 @@ fn time_stays_frozen_across_initial_restore_and_reset() {
         StateUnit::reset(&mut runner).await.unwrap();
         assert!(clock.lock().frozen);
         assert!(clock.lock().transitions.is_empty());
-        StateUnit::start(&mut runner).await;
+        StateUnit::start(&mut runner).await.unwrap();
         assert_eq!(clock.lock().transitions, [false]);
     });
 }
@@ -141,7 +141,7 @@ fn full_stop_freezes_time_until_resume() {
     block_on(async {
         let (mut runner, clock, _) = new_runner();
         for _ in 0..2 {
-            StateUnit::start(&mut runner).await;
+            StateUnit::start(&mut runner).await.unwrap();
             assert!(!clock.lock().frozen);
             StateUnit::stop(&mut runner).await;
             let state = StateUnit::save(&mut runner).await.unwrap().unwrap();
@@ -157,7 +157,7 @@ fn full_stop_freezes_time_until_resume() {
 fn temporary_stops_and_debugger_halts_leave_time_running() {
     block_on(async {
         let (mut runner, clock, halt) = new_runner();
-        StateUnit::start(&mut runner).await;
+        StateUnit::start(&mut runner).await.unwrap();
         runner.stop_vps().await;
         runner.stop_vps().await;
         assert!(!clock.lock().frozen);
@@ -178,14 +178,14 @@ fn temporary_stops_and_debugger_halts_leave_time_running() {
 fn temporary_stop_guards_do_not_override_full_stop() {
     block_on(async {
         let (mut runner, clock, _) = new_runner();
-        StateUnit::start(&mut runner).await;
+        StateUnit::start(&mut runner).await.unwrap();
         runner.stop_vps().await;
         runner.stop_vps().await;
         StateUnit::stop(&mut runner).await;
         runner.resume_vps();
         assert!(clock.lock().frozen);
 
-        StateUnit::start(&mut runner).await;
+        StateUnit::start(&mut runner).await.unwrap();
         assert!(!clock.lock().frozen);
         runner.resume_vps();
         assert_eq!(clock.lock().transitions, [false, true, false]);
@@ -196,7 +196,7 @@ fn temporary_stop_guards_do_not_override_full_stop() {
 fn temporary_scrub_thaws_time_before_restarting_vps() {
     block_on(async {
         let (mut runner, clock, _) = new_runner();
-        StateUnit::start(&mut runner).await;
+        StateUnit::start(&mut runner).await.unwrap();
         runner.stop_vps().await;
         runner.partition.scrub_vtl(Vtl::Vtl2).unwrap();
         assert!(clock.lock().frozen);
