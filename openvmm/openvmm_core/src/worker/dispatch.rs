@@ -2106,7 +2106,7 @@ impl InitializedVm {
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
-                is_restoring: false,
+                is_restoring: saved_state.is_some(),
                 untrusted_dma_memory: gm.clone(),
                 // There is no access to encrypted memory on the host, so this
                 // may be misleading. Presumably in any confidential VM
