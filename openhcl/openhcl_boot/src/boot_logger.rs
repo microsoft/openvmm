@@ -8,10 +8,6 @@
 //! or any guest code is executed, and therefore it can not leak anything
 //! sensitive.
 
-#[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-use crate::arch::snp::SnpIoAccess;
-#[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
@@ -19,22 +15,38 @@ use core::fmt;
 use core::fmt::Write;
 use host_fdt_parser::ComInfo;
 use memory_range::MemoryRange;
-#[cfg(target_arch = "x86_64")]
-use minimal_rt::arch::InstrIoAccess;
+#[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
 use string_page_buf::StringBuffer;
+#[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
+use {
+    crate::arch::snp::SnpSerialBackend, crate::arch::tdx::TdxSerialBackend,
+    uart_16550::backend::PortIoAddress,
+};
+#[cfg(target_arch = "x86_64")]
+use {
+    uart_16550::Uart16550, uart_16550::Uart16550Tty, uart_16550::backend::Backend,
+    uart_16550::backend::PioBackend,
+};
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]
-    Serial(Serial<InstrIoAccess>),
+    Serial(Uart16550Tty<PioBackend>),
     #[cfg(target_arch = "aarch64")]
     #[expect(dead_code)]
     Serial(Serial),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-    TdxSerial(Serial<TdxIoAccess>),
+    TdxSerial(Uart16550Tty<TdxSerialBackend>),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
-    SnpSerial(Serial<SnpIoAccess>),
+    SnpSerial(Uart16550Tty<SnpSerialBackend>),
     None,
+}
+
+/// Initializes the serial device, returning `None` if it isn't present.
+#[cfg(target_arch = "x86_64")]
+fn init_serial<B: Backend>(mut uart: Uart16550<B>) -> Option<Uart16550Tty<B>> {
+    uart.init(minimal_rt::arch::SERIAL_CONFIG).ok()?;
+    Some(Uart16550Tty::from_inner(uart))
 }
 
 impl Logger {
@@ -92,7 +104,7 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
     *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
         (IsolationType::None | IsolationType::Vbs, ComInfo::Ns16550 { .. }) => {
-            Logger::Serial(Serial::init(InstrIoAccess))
+            init_serial(minimal_rt::arch::com3()).map_or(Logger::None, Logger::Serial)
         }
         // TODO: fix the PL011 minimal_rt driver. Currently hangs even if
         // the MMIO address is correctly configured.
@@ -100,11 +112,19 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
         // (IsolationType::None, ComInfo::Pl011 { .. }) => Logger::Serial(Serial::init()),
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
         (IsolationType::Tdx, ComInfo::Ns16550 { .. }) => {
-            Logger::TdxSerial(Serial::init(TdxIoAccess))
+            let backend = TdxSerialBackend(PortIoAddress::new(minimal_rt::arch::COM3));
+            // SAFETY: COM3 is a valid I/O port, which is used for debug output
+            // only.
+            let uart = unsafe { Uart16550::new_with_backend(backend) };
+            init_serial(uart).map_or(Logger::None, Logger::TdxSerial)
         }
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
         (IsolationType::Snp, ComInfo::Ns16550 { .. }) => {
-            Logger::SnpSerial(Serial::init(SnpIoAccess))
+            let backend = SnpSerialBackend(PortIoAddress::new(minimal_rt::arch::COM3));
+            // SAFETY: COM3 is a valid I/O port, which is used for debug output
+            // only.
+            let uart = unsafe { Uart16550::new_with_backend(backend) };
+            init_serial(uart).map_or(Logger::None, Logger::SnpSerial)
         }
         _ => Logger::None,
     };

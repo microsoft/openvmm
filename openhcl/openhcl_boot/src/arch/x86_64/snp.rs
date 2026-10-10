@@ -905,19 +905,29 @@ pub fn set_page_acceptance(
     Ok(())
 }
 
-/// GHCB based io port access.
+/// GHCB based port I/O for a serial device at the given base port.
 #[cfg(feature = "cvm_boot_log")]
-pub struct SnpIoAccess;
+pub struct SnpSerialBackend(pub uart_16550::backend::PortIoAddress);
 
 #[cfg(feature = "cvm_boot_log")]
-impl minimal_rt::arch::IoAccess for SnpIoAccess {
-    unsafe fn inb(&self, port: u16) -> u8 {
-        // Best effort
-        Ghcb::read_io_port(port, IoAccessSize::Byte).unwrap_or(!0) as u8
+impl uart_16550::backend::Backend for SnpSerialBackend {
+    type Address = uart_16550::backend::PortIoAddress;
+
+    fn base(&self) -> Self::Address {
+        self.0
     }
 
-    unsafe fn outb(&self, port: u16, data: u8) {
+    fn stride(&self) -> core::num::NonZeroU8 {
+        core::num::NonZeroU8::MIN
+    }
+
+    unsafe fn read_register(&mut self, address: Self::Address) -> u8 {
         // Best effort
-        let _ = Ghcb::write_io_port(port, IoAccessSize::Byte, data as u32);
+        Ghcb::read_io_port(address.port(), IoAccessSize::Byte).unwrap_or(!0) as u8
+    }
+
+    unsafe fn write_register(&mut self, address: Self::Address, value: u8) {
+        // Best effort
+        let _ = Ghcb::write_io_port(address.port(), IoAccessSize::Byte, value as u32);
     }
 }
