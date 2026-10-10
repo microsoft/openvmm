@@ -345,6 +345,8 @@ pub struct VmTimeKeeper {
     builder: VmTimeSourceBuilder,
     #[inspect(skip)]
     time: TimeState,
+    #[inspect(skip)]
+    stop_host_time: Option<u64>,
 }
 
 // UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
@@ -358,14 +360,33 @@ mod saved_state {
     pub struct SavedState {
         #[mesh(1)]
         pub(super) vmtime: VmTime,
+        #[mesh(2)]
+        pub(super) stop_host_time: Option<u64>,
     }
 
     impl SavedState {
         /// Create a new instance of `SavedState` from an existing `VmTime`.
         pub fn from_vmtime(vmtime: VmTime) -> Self {
-            SavedState { vmtime }
+            SavedState {
+                vmtime,
+                stop_host_time: None,
+            }
+        }
+
+        /// Returns the reading of the keeper's stop clock at the instant VM
+        /// time stopped, if the keeper has a stop clock.
+        pub fn stop_host_time(&self) -> Option<u64> {
+            self.stop_host_time
         }
     }
+}
+
+/// The time at which the keepers stopped.
+#[derive(Debug, MeshPayload, Copy, Clone)]
+struct StoppedTime {
+    vmtime: VmTime,
+    /// The primary keeper's stop clock reading at the stop.
+    host_time: Option<u64>,
 }
 
 #[derive(Debug, MeshPayload, Copy, Clone)]
@@ -446,6 +467,26 @@ impl TimeState {
 impl VmTimeKeeper {
     /// Creates a new time keeper with the specified current guest time.
     pub fn new(driver: &impl SpawnDriver, uptime: VmTime) -> Self {
+        Self::new_inner(driver, uptime, None)
+    }
+
+    /// Creates a new time keeper with the specified current guest time whose
+    /// stops read `stop_clock`, a host clock that returns `None` when it
+    /// cannot be read, at the instant VM time stops, so that saved state
+    /// records when VM time stopped on that clock.
+    pub fn with_stop_clock(
+        driver: &impl SpawnDriver,
+        uptime: VmTime,
+        stop_clock: fn() -> Option<u64>,
+    ) -> Self {
+        Self::new_inner(driver, uptime, Some(stop_clock))
+    }
+
+    fn new_inner(
+        driver: &impl SpawnDriver,
+        uptime: VmTime,
+        stop_clock: Option<fn() -> Option<u64>>,
+    ) -> Self {
         let (new_send, new_recv) = mesh::mpsc_channel();
         let (req_send, req_recv) = mesh::channel();
         let time = TimeState::Stopped(uptime);
@@ -456,11 +497,13 @@ impl VmTimeKeeper {
                 keepers: Vec::new(),
                 next_id: 0,
                 time,
+                stop_clock,
             };
             primary.run().await;
         });
         Self {
             time,
+            stop_host_time: None,
             req_send,
             builder: VmTimeSourceBuilder { new_send },
             _task: task,
@@ -471,12 +514,16 @@ impl VmTimeKeeper {
     pub fn save(&self) -> SavedState {
         SavedState {
             vmtime: self.time.stop_time().expect("should be stopped"),
+            stop_host_time: self.stop_host_time,
         }
     }
 
     /// Restores the time state.
     pub async fn restore(&mut self, state: SavedState) {
-        let SavedState { vmtime } = state;
+        let SavedState {
+            vmtime,
+            stop_host_time: _,
+        } = state;
         self.reset_to(vmtime).await
     }
 
@@ -492,6 +539,7 @@ impl VmTimeKeeper {
 
     async fn reset_to(&mut self, vmtime: VmTime) {
         assert!(!self.time.is_started(), "should be stopped");
+        self.stop_host_time = None;
         self.time = TimeState::Stopped(vmtime);
         self.req_send
             .call(KeeperRequest::Reset, vmtime)
@@ -507,6 +555,7 @@ impl VmTimeKeeper {
     /// Starts the timer, so that the current time will increase.
     pub async fn start(&mut self) {
         let vmtime = self.time.stop_time().expect("should be stopped");
+        self.stop_host_time = None;
         let timestamp = Timestamp::new(vmtime, Instant::now());
         self.time = TimeState::Started(timestamp);
         self.req_send
@@ -519,7 +568,8 @@ impl VmTimeKeeper {
     pub async fn stop(&mut self) {
         assert!(self.time.is_started(), "should be running");
         let stop_time = self.req_send.call(KeeperRequest::Stop, ()).await.unwrap();
-        self.time = TimeState::Stopped(stop_time);
+        self.time = TimeState::Stopped(stop_time.vmtime);
+        self.stop_host_time = stop_time.host_time;
     }
 
     /// Returns a time source builder, which can be used to spawn tasks that
@@ -601,12 +651,14 @@ struct PrimaryKeeper {
     #[inspect(skip)]
     next_id: u64,
     time: TimeState,
+    #[inspect(skip)]
+    stop_clock: Option<fn() -> Option<u64>>,
 }
 
 #[derive(MeshPayload)]
 enum KeeperRequest {
     Start(Rpc<Timestamp, ()>),
-    Stop(Rpc<(), VmTime>),
+    Stop(Rpc<(), StoppedTime>),
     Reset(Rpc<VmTime, ()>),
     Inspect(inspect::Deferred),
 }
@@ -664,6 +716,10 @@ impl PrimaryKeeper {
                                 .await;
 
                                 let start_time = self.time.start_time().expect("should be running");
+                                // Read the stop clock beside the instant that
+                                // stops VM time, so that both describe the
+                                // same cut.
+                                let host_time = self.stop_clock.and_then(|clock| clock());
                                 let now = start_time
                                     .vmtime
                                     .wrapping_add(Instant::now() - start_time.os_time());
@@ -674,6 +730,7 @@ impl PrimaryKeeper {
                                 let stop_time = results
                                     .into_iter()
                                     .filter_map(|r| r.ok())
+                                    .map(|stopped| stopped.vmtime)
                                     .fold(now, |a, b| a.max(b));
 
                                 self.time = TimeState::Stopped(stop_time);
@@ -685,7 +742,10 @@ impl PrimaryKeeper {
                                 }))
                                 .await;
 
-                                stop_time
+                                StoppedTime {
+                                    vmtime: stop_time,
+                                    host_time,
+                                }
                             })
                             .await
                         }
@@ -749,7 +809,10 @@ impl SecondaryKeeper {
                     }),
                     KeeperRequest::Stop(rpc) => rpc.handle_sync(|()| {
                         let mut state = self.state.write();
-                        state.stop(Instant::now())
+                        StoppedTime {
+                            vmtime: state.stop(Instant::now()),
+                            host_time: None,
+                        }
                     }),
                     KeeperRequest::Inspect(deferred) => deferred.inspect(&mut *self),
                 },
@@ -1049,7 +1112,7 @@ mod tests {
 
     #[async_test]
     async fn test_multi_vmtime(driver: DefaultDriver) {
-        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut keeper = VmTimeKeeper::with_stop_clock(&driver, VmTime::from_100ns(0), || Some(7));
         let src1 = keeper.builder().build(&driver).await.unwrap();
         keeper.start().await;
         let src2 = src1.builder().build(&driver).await.unwrap();
@@ -1068,10 +1131,12 @@ mod tests {
         let t2 = acc2.now();
         assert!(!t1.is_before(now));
         assert_eq!(t1, t2);
+        assert_eq!(keeper.save().stop_host_time(), Some(7));
         let zero = VmTime::from_100ns(0);
         // Even on very fast machines, at least _some_ time will have advanced.
         assert_ne!(t1, zero);
         keeper.reset().await;
+        assert_eq!(keeper.save().stop_host_time(), None);
         assert_eq!(acc1.now(), zero);
         assert_eq!(acc2.now(), zero);
     }
