@@ -188,6 +188,8 @@ impl SparseMapping {
 
 #[cfg(test)]
 mod tests {
+    mod flush;
+
     use super::*;
 
     static BUF: [u8; 65536] = [0xcc; 65536];
