@@ -11,8 +11,11 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeType;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
+use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
+use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use petri_artifacts_core::ArtifactId;
 use std::collections::BTreeSet;
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +44,8 @@ flowey_request! {
     pub struct Params {
         pub igvm_files: Vec<(OpenhclIgvmBuildParams, WriteVar<OpenhclIgvmOutput>, WriteVar<OpenhclIgvmExtrasOutput>)>,
         pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclBaselineOutput>>,
+        /// Package the x64 CVM IGVM into a resource DLL.
+        pub vmfirmwareigvm_cvm: Option<WriteVar<VmfirmwareigvmDllOutput>>,
     }
 }
 
@@ -52,6 +57,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::artifact_openvmm_hcl_sizecheck::publish::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<build_and_publish_openvmm_hcl_baseline::Node>();
     }
 
@@ -59,6 +65,7 @@ impl SimpleFlowNode for Node {
         let Params {
             igvm_files,
             artifact_openhcl_verify_size_baseline,
+            mut vmfirmwareigvm_cvm,
         } = request;
 
         // Validate that all custom_target values are equal (or all None)
@@ -93,7 +100,7 @@ impl SimpleFlowNode for Node {
             openhcl_igvm_extras,
         ) in igvm_files
         {
-            ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
+            let built_igvm = ctx.reqv(|v| crate::build_openhcl_igvm_from_recipe::Request {
                 custom_target: custom_target.clone(),
                 build_profile: profile,
                 release_cfg,
@@ -102,9 +109,31 @@ impl SimpleFlowNode for Node {
                 disable_secure_avic: false,
                 uefi_firmware_flavor,
                 confidential_debug,
-                openhcl_igvm,
+                openhcl_igvm: v,
                 openhcl_igvm_extras,
             });
+            built_igvm.clone().write_into(ctx, openhcl_igvm);
+
+            if recipe == OpenhclIgvmRecipe::X64Cvm {
+                if let Some(vmfirmwareigvm_dll) = vmfirmwareigvm_cvm.take() {
+                    ctx.req(crate::build_vmfirmwareigvm_dll::Request {
+                        arch: CommonArch::X86_64,
+                        openhcl_igvm: built_igvm,
+                        resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
+                        dll_version: ReadVar::from_static(
+                            crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                        ),
+                        internal_dll_name:
+                            petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::FILENAME
+                                .into(),
+                        vmfirmwareigvm_dll,
+                    });
+                }
+            }
+        }
+
+        if vmfirmwareigvm_cvm.is_some() {
+            anyhow::bail!("the CVM firmware DLL requires an x64 CVM IGVM");
         }
 
         if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
