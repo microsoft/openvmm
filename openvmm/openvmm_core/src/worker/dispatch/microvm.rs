@@ -351,9 +351,7 @@ impl LoadedVm {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
         })?;
         #[cfg(guest_arch = "x86_64")]
-        super::time_abi::record_vm_time_cut(&mut time.time, &saved_state).map_err(|error| {
-            openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
-        })?;
+        super::time_abi::record_vm_time_cut(&mut time.time, &saved_state);
         save_state.complete("capture", "save_state", Default::default());
         let mapped_memory_flush = openvmm_defs::profile::ProfileSpan::start();
         self.inner
