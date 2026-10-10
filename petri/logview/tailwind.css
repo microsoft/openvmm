@@ -1,9 +1,19 @@
 /* Copyright (c) Microsoft Corporation. */
 /* Licensed under the MIT License. */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Keep Preflight disabled so browser defaults and the site's own styles remain intact. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./src/**/*.{ts,tsx}";
+
+@theme {
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
+}
 
 @layer base {
   body {

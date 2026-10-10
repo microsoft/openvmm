@@ -6,6 +6,12 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 - **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
+- **Browser**: Safari 16.4+, Chrome 111+, or Firefox 128+ (required by Tailwind CSS 4)
+
+Tailwind CSS 4 runs through the `@tailwindcss/vite` plugin in `vite.config.ts`.
+`tailwind.css` imports the theme and utilities without Preflight and retains
+the existing gray palette, preserving browser defaults and the site's custom
+styles. Source scanning is limited to TypeScript files under `src/`.
 
 ## Initial Setup
 
