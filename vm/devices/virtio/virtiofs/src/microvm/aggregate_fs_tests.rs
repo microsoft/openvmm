@@ -20,16 +20,22 @@ use super::policy_tests::write;
 use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmVirtioFsProfile;
+use super::profile::microvm_file_identity;
 use super::profile::microvm_root_identity;
 use super::saved_state::AGGREGATE_SCHEMA_VERSION;
+use super::saved_state::FILE_CHILD_SCHEMA_VERSION;
+use super::saved_state::SAVED_DIRECTORY_CHILD;
+use super::saved_state::SAVED_FILE_CHILD;
 use super::saved_state::SavedHandle;
 use super::saved_state::SavedObjectIdentity;
+use super::state::encode_relative_path;
 use super::state::validate_microvm_state;
 use crate::VirtioFs;
 use fuse::Fuse;
 use fuse::Session;
 use fuse::SessionState;
 use fuse::protocol::FATTR_MODE;
+use fuse::protocol::FATTR_SIZE;
 use fuse::protocol::FUSE_ROOT_ID;
 use fuse::protocol::fuse_read_in;
 use std::path::Path;
@@ -47,6 +53,8 @@ struct Child<'a> {
     denied: &'a [&'a str],
     allowed: &'a [&'a str],
     writable: &'a [&'a str],
+    /// Whether `root` is a regular file that the child exposes.
+    file: bool,
 }
 
 impl<'a> Child<'a> {
@@ -58,10 +66,26 @@ impl<'a> Child<'a> {
             denied: &[],
             allowed: &[],
             writable: &[],
+            file: false,
+        }
+    }
+
+    fn file(name: &'a str, root: &'a Path, read_only: bool) -> Self {
+        Self {
+            file: true,
+            ..Self::new(name, root, read_only)
         }
     }
 
     fn profile(&self) -> MicroVmAggregateChild {
+        if self.file {
+            return MicroVmAggregateChild::new_file(
+                self.name.to_owned(),
+                microvm_file_identity(self.root).unwrap(),
+                self.read_only,
+            )
+            .unwrap();
+        }
         MicroVmAggregateChild::new(
             self.name.to_owned(),
             microvm_root_identity(self.root).unwrap(),
@@ -637,4 +661,291 @@ fn a_hidden_child_root_exposes_only_its_allowed_paths() {
     );
     // The other child is unaffected.
     assert_eq!(list(&fs, lookup(&fs, "work").unwrap()), ["file"]);
+}
+
+/// Returns the names and types that a plain directory read reports, other
+/// than `.` and `..`, sorted by name.
+fn entry_types(fs: &VirtioFs, node_id: u64) -> Vec<(String, u32)> {
+    let fh = fs
+        .open_dir(&request(node_id), lx::O_RDONLY as u32)
+        .unwrap()
+        .fh;
+    let mut arg = fuse_read_in::new_zeroed();
+    arg.fh = fh;
+    arg.size = 4096;
+    let buffer = fs.read_dir(&request(node_id), &arg).unwrap();
+    let mut entries = Vec::new();
+    let mut position = 0;
+    while position < buffer.len() {
+        // A `fuse_dirent` header is the inode number, the next offset, the
+        // name length, and the type, followed by the padded name.
+        let header = &buffer[position..position + 24];
+        let length = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
+        let file_type = u32::from_le_bytes(header[20..24].try_into().unwrap());
+        let name =
+            String::from_utf8(buffer[position + 24..position + 24 + length].to_vec()).unwrap();
+        if name != "." && name != ".." {
+            entries.push((name, file_type));
+        }
+        position += fuse::protocol::fuse_dirent_align(24 + length);
+    }
+    entries.sort();
+    entries
+}
+
+/// A read-only and a read-write host file, each with a sibling that is not
+/// exposed, as microsoft/nvx#282 describes, beside the directory `work`.
+struct Files {
+    _directory: TempDir,
+    config: PathBuf,
+    results: PathBuf,
+    work: PathBuf,
+    settings: PathBuf,
+    output: PathBuf,
+}
+
+impl Files {
+    fn new() -> Self {
+        let directory = tempdir().unwrap();
+        let config = directory.path().join("config");
+        let results = directory.path().join("results");
+        let work = directory.path().join("work");
+        for path in [&config, &results, &work] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let settings = config.join("settings.json");
+        let output = results.join("output.txt");
+        std::fs::write(&settings, b"settings").unwrap();
+        std::fs::write(config.join("secret.json"), b"secret").unwrap();
+        std::fs::write(&output, b"output").unwrap();
+        std::fs::write(results.join("other.txt"), b"other").unwrap();
+        Self {
+            _directory: directory,
+            config,
+            results,
+            work,
+            settings,
+            output,
+        }
+    }
+
+    fn children(&self) -> [Child<'_>; 3] {
+        [
+            Child::file("settings", &self.settings, true),
+            Child::file("output", &self.output, false),
+            Child::new("work", &self.work, false),
+        ]
+    }
+}
+
+#[test]
+fn file_children_expose_only_their_files() {
+    let files = Files::new();
+    let fs = aggregate(&files.children());
+
+    // The synthetic root lists each file child as a regular file.
+    assert_eq!(
+        entry_types(&fs, FUSE_ROOT_ID),
+        [
+            ("output".to_owned(), lx::DT_REG as u32),
+            ("settings".to_owned(), lx::DT_REG as u32),
+            ("work".to_owned(), lx::DT_DIR as u32),
+        ]
+    );
+    let settings = lookup(&fs, "settings").unwrap();
+    let output = lookup(&fs, "output").unwrap();
+    let attr = fs.get_attr(&request(settings), 0, 0).unwrap().attr;
+    assert_eq!(attr.mode & lx::S_IFMT, lx::S_IFREG);
+    assert_eq!(attr.size, 8);
+    assert_eq!(read_node(&fs, settings), b"settings");
+    assert_eq!(read_node(&fs, output), b"output");
+
+    // The read-only file refuses every change.
+    assert_eq!(error(open(&fs, settings, lx::O_RDWR)), lx::Error::EROFS);
+    assert_eq!(
+        error(open(&fs, settings, lx::O_RDONLY | lx::O_TRUNC)),
+        lx::Error::EROFS
+    );
+    for update in [
+        setattr(FATTR_SIZE, |arg| arg.size = 0),
+        setattr(FATTR_MODE, |arg| arg.mode = 0o777),
+    ] {
+        assert_eq!(
+            error(fs.set_attr(&request(settings), &update)),
+            lx::Error::EROFS
+        );
+    }
+    // The read-write file accepts writes and truncation.
+    let fh = open(&fs, output, lx::O_RDWR).unwrap();
+    write(&fs, output, fh, b"OUTPUT").unwrap();
+    release(&fs, output, fh);
+    fs.set_attr(&request(output), &setattr(FATTR_SIZE, |arg| arg.size = 3))
+        .unwrap();
+
+    // Nothing lies below a file, so no name of its directory is reachable
+    // or can be created through it.
+    for node in [settings, output] {
+        for entry in ["secret.json", "other.txt", "settings.json", "output.txt"] {
+            assert_eq!(
+                error(fs.lookup(&request(node), name(entry))),
+                lx::Error::ENOTDIR,
+                "{entry}"
+            );
+        }
+    }
+    assert_eq!(error(create(&fs, settings, "new")), lx::Error::EROFS);
+    assert_eq!(error(create(&fs, output, "new")), lx::Error::ENOTDIR);
+    assert_eq!(error(mkdir(&fs, output, "new")), lx::Error::ENOTDIR);
+    assert_eq!(
+        error(fs.symlink(&request(output), name("link"), name("other.txt"))),
+        lx::Error::ENOTDIR
+    );
+    // The children cannot be removed, renamed, or linked across children.
+    assert_eq!(
+        error(fs.unlink(&request(FUSE_ROOT_ID), name("output"))),
+        lx::Error::EROFS
+    );
+    assert_eq!(
+        error(fs.rename(
+            &request(FUSE_ROOT_ID),
+            name("output"),
+            FUSE_ROOT_ID,
+            name("moved"),
+            0
+        )),
+        lx::Error::EROFS
+    );
+    let work = lookup(&fs, "work").unwrap();
+    assert_eq!(
+        error(fs.link(&request(work), name("link"), settings)),
+        lx::Error::EXDEV
+    );
+    assert_eq!(
+        error(fs.link(&request(output), name("link"), settings)),
+        lx::Error::ENOTDIR
+    );
+
+    assert_eq!(std::fs::read(&files.settings).unwrap(), b"settings");
+    assert_eq!(std::fs::read(&files.output).unwrap(), b"OUT");
+    assert_eq!(
+        Roots::entries(&files.config),
+        ["secret.json", "settings.json"]
+    );
+    assert_eq!(Roots::entries(&files.results), ["other.txt", "output.txt"]);
+    assert!(Roots::entries(&files.work).is_empty());
+}
+
+#[test]
+fn a_file_child_follows_its_name_but_stays_a_file() {
+    let files = Files::new();
+    let fs = aggregate(&files.children());
+    let settings = lookup(&fs, "settings").unwrap();
+
+    // A host editor that saves by renaming a new file over the old one
+    // replaces what the guest reads, as inside a shared directory.
+    let replacement = files.config.join("settings.json.new");
+    std::fs::write(&replacement, b"replaced").unwrap();
+    std::fs::rename(&replacement, &files.settings).unwrap();
+    assert_eq!(read_node(&fs, settings), b"replaced");
+
+    // A directory at the file's name is never exposed, through the node that
+    // the guest holds or through a new lookup.
+    std::fs::remove_file(&files.settings).unwrap();
+    std::fs::create_dir(&files.settings).unwrap();
+    std::fs::write(files.settings.join("inner"), b"inner").unwrap();
+    assert_eq!(
+        error(fs.get_attr(&request(settings), 0, 0)),
+        lx::Error::EACCES
+    );
+    assert_eq!(error(open(&fs, settings, lx::O_RDONLY)), lx::Error::EACCES);
+    assert_eq!(
+        error(fs.lookup(&request(settings), name("inner"))),
+        lx::Error::EACCES
+    );
+    assert_eq!(error(lookup(&fs, "settings")), lx::Error::EACCES);
+    // The other children are unaffected.
+    assert_eq!(read_node(&fs, lookup(&fs, "output").unwrap()), b"output");
+}
+
+#[test]
+fn file_child_state_restores_and_rejects_changes() {
+    let files = Files::new();
+    let children = files.children();
+    let file_profile = profile(&children);
+    let source = aggregate(&children);
+    lookup(&source, "settings").unwrap();
+    let output = lookup(&source, "output").unwrap();
+    let handle = open(&source, output, lx::O_RDWR).unwrap();
+    let state = || {
+        source
+            .save_microvm_state(&file_profile, SessionState::default())
+            .unwrap()
+    };
+    let saved = state();
+    assert_eq!(saved.schema_version, FILE_CHILD_SCHEMA_VERSION);
+    assert_eq!(
+        saved
+            .aggregate_children
+            .iter()
+            .map(|child| child.kind)
+            .collect::<Vec<_>>(),
+        [SAVED_FILE_CHILD, SAVED_FILE_CHILD, SAVED_DIRECTORY_CHILD]
+    );
+
+    let destination = aggregate(&children);
+    let session = Session::new(destination.clone());
+    destination
+        .restore_microvm_state(&file_profile, saved, &session)
+        .unwrap();
+    write(&destination, output, handle, b"OUT").unwrap();
+    assert_eq!(std::fs::read(&files.output).unwrap(), b"OUTput");
+    let settings = lookup(&destination, "settings").unwrap();
+    assert_eq!(
+        error(open(&destination, settings, lx::O_RDWR)),
+        lx::Error::EROFS
+    );
+
+    // A state with file children records them under its own schema version,
+    // and a profile with a directory in place of a file rejects it.
+    let mut downgraded = state();
+    downgraded.schema_version = AGGREGATE_SCHEMA_VERSION;
+    assert!(validate_microvm_state(&downgraded, &file_profile).is_err());
+    let as_directory = [
+        Child::new("settings", &files.config, true),
+        Child::file("output", &files.output, false),
+        Child::new("work", &files.work, false),
+    ];
+    assert!(validate_microvm_state(&state(), &profile(&as_directory)).is_err());
+    // A kind that this release does not know is rejected, not taken for one
+    // that it knows.
+    let mut unknown = state();
+    unknown.aggregate_children[0].kind = SAVED_FILE_CHILD + 1;
+    assert!(validate_microvm_state(&unknown, &file_profile).is_err());
+
+    // The file's inode reopens only the file: not another name of it in its
+    // directory, nor another entry, the directory, or a path below the file.
+    std::fs::hard_link(&files.settings, files.config.join("settings-link.json")).unwrap();
+    for alias in [
+        PathBuf::from("settings-link.json"),
+        PathBuf::from("secret.json"),
+        PathBuf::new(),
+        Path::new("settings.json").join("x"),
+    ] {
+        let mut tampered = state();
+        let inode = tampered
+            .inodes
+            .iter_mut()
+            .find(|inode| inode.volume_id == 1)
+            .unwrap();
+        inode.relative_aliases = vec![encode_relative_path(&alias).unwrap()];
+        let destination = aggregate(&children);
+        let session = Session::new(destination.clone());
+        assert!(
+            destination
+                .restore_microvm_state(&file_profile, tampered, &session)
+                .is_err(),
+            "{}",
+            alias.display()
+        );
+    }
 }
