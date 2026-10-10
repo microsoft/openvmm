@@ -31,9 +31,9 @@ pub enum VirtioFsProfile {
         /// the VMM. Linux only.
         caller_identity: bool,
     },
-    /// An aggregate whose synthetic, read-only root lists one directory per
-    /// child. The children of the `Aggregate` backend must have the same
-    /// names, in the same order.
+    /// An aggregate whose synthetic, read-only root lists one directory or
+    /// regular file per child. The children of the `Aggregate` backend must
+    /// have the same names, in the same order.
     MicrovmAggregate {
         stable_id: String,
         children: Vec<MicrovmAggregateChild>,
@@ -52,11 +52,23 @@ pub enum VirtioFsProfile {
 /// corresponding fields of [`VirtioFsProfile::Microvm`].
 #[derive(MeshPayload)]
 pub struct MicrovmAggregateChild {
-    /// Name of the child's directory under the synthetic root.
+    /// Name of the child under the synthetic root.
     pub name: String,
+    /// The kind of host object that the child's root path names.
+    pub kind: MicrovmAggregateChildKind,
     pub root_identity: Vec<u8>,
     pub read_only: bool,
     pub denied_paths: Vec<String>,
     pub allowed_paths: Vec<String>,
     pub writable_paths: Vec<String>,
+}
+
+/// The kind of host object that a [`MicrovmAggregateChild`] exposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub enum MicrovmAggregateChildKind {
+    /// A host directory, with its own denied, allowed, and writable paths.
+    Directory,
+    /// A regular host file, without its directory. Its access mode applies to
+    /// the whole file, so it takes no denied, allowed, or writable paths.
+    File,
 }
