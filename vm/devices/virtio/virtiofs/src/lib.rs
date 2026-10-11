@@ -824,3 +824,129 @@ impl InodeMap {
         self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use zerocopy::IntoBytes;
+
+    fn getattr_request(node_id: u64) -> Request {
+        let args = fuse_getattr_in {
+            getattr_flags: 0,
+            dummy: 0,
+            fh: 0,
+        };
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of_val(&args)) as u32,
+            opcode: FUSE_GETATTR,
+            unique: 1,
+            nodeid: node_id,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+            padding: 0,
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend_from_slice(args.as_bytes());
+        Request::new(bytes.as_slice()).unwrap()
+    }
+
+    fn check_deleted_directory_attributes(open: bool) {
+        for aggregate in [false, true] {
+            for lookup in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let (fs, root_id) = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), None).unwrap();
+                    let entry = fs
+                        .lookup_synthetic_root(lx::LxStr::from_bytes(b"share"))
+                        .unwrap();
+                    (fs, entry.nodeid)
+                } else {
+                    (VirtioFs::new(root.path(), None).unwrap(), FUSE_ROOT_ID)
+                };
+                let parent = getattr_request(root_id);
+                let name = lx::LxStr::from_bytes(b"deleted");
+                let entry = if lookup {
+                    std::fs::create_dir(root.path().join("deleted")).unwrap();
+                    fs.lookup(&parent, name).unwrap()
+                } else {
+                    fs.mkdir(
+                        &parent,
+                        name,
+                        &fuse_mkdir_in {
+                            mode: 0o755,
+                            umask: 0,
+                        },
+                    )
+                    .unwrap()
+                };
+                let request = getattr_request(entry.nodeid);
+                let handle = open.then(|| {
+                    fs.open_dir(&request, (lx::O_RDONLY | lx::O_DIRECTORY) as u32)
+                        .unwrap()
+                });
+                fs.rmdir(&parent, name).unwrap();
+                assert_eq!(fs.lookup(&parent, name).unwrap_err(), lx::Error::ENOENT);
+
+                for recreate in [false, true] {
+                    if recreate {
+                        let replacement = fs
+                            .mkdir(
+                                &parent,
+                                name,
+                                &fuse_mkdir_in {
+                                    mode: 0o700,
+                                    umask: 0,
+                                },
+                            )
+                            .unwrap();
+                        assert_ne!(replacement.nodeid, entry.nodeid);
+                        fs.forget(replacement.nodeid, 1);
+                    }
+
+                    // Permission revalidation does not supply an fh, even after OPENDIR.
+                    let attr = fs.get_attr(&request, 0, 0).unwrap().attr;
+                    assert_eq!(attr.ino, entry.attr.ino);
+                    assert_eq!(attr.mode, entry.attr.mode);
+                    assert_eq!(attr.nlink, 0);
+                    let statx = fs
+                        .get_statx(&request, 0, 0, StatxFlags::new(), lx::StatExMask::new())
+                        .unwrap()
+                        .statx;
+                    assert_eq!(statx.ino, entry.attr.ino);
+                    assert_eq!(u32::from(statx.mode), entry.attr.mode);
+                    assert_eq!(statx.nlink, 0);
+                }
+
+                if let Some(handle) = handle {
+                    fs.release_dir(
+                        &request,
+                        &fuse_release_in {
+                            fh: handle.fh,
+                            flags: (lx::O_RDONLY | lx::O_DIRECTORY) as u32,
+                            release_flags: 0,
+                            lock_owner: 0,
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(fs.get_attr(&request, 0, 0).unwrap().attr.nlink, 0);
+                }
+                let inode = Arc::downgrade(&fs.get_inode(entry.nodeid).unwrap());
+                fs.forget(entry.nodeid, 1);
+                assert!(inode.upgrade().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn deleted_directory_attributes_without_opendir() {
+        check_deleted_directory_attributes(false);
+    }
+
+    #[test]
+    fn deleted_directory_attributes_with_opendir() {
+        check_deleted_directory_attributes(true);
+    }
+}
