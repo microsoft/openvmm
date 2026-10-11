@@ -1648,6 +1648,151 @@ async fn test_tcp_bind_same_port_different_families(driver: DefaultDriver) {
     );
 }
 
+/// Test that a listener publishing a guest port coexists with an explicit
+/// forward to the same guest port, and that each one unbinds separately.
+#[pal_async::async_test]
+async fn test_tcp_publication_coexists_with_an_explicit_forward(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver);
+    let guest_port = 7803;
+    let mut access = consomme.access(&mut client);
+    for admission in [
+        InboundAdmission::Any,
+        InboundAdmission::PrivateNetwork { host: false },
+    ] {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        access
+            .bind_tcp_port_with_admission(socket, guest_port, admission)
+            .expect("bind should succeed");
+    }
+    access
+        .unbind_published_tcp_port(IpVersion::Ipv4, guest_port)
+        .expect("the publication should unbind");
+    assert!(
+        access
+            .inner
+            .tcp
+            .listeners
+            .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
+        "the explicit forward should remain registered"
+    );
+    assert!(matches!(
+        access.unbind_published_tcp_port(IpVersion::Ipv4, guest_port),
+        Err(BindError::PortNotBound)
+    ));
+    access
+        .unbind_tcp_port(IpVersion::Ipv4, guest_port)
+        .expect("the explicit forward should unbind");
+    assert!(access.inner.tcp.listeners.is_empty());
+}
+
+/// Connects to a listener that publishes `guest_port` to the host's private
+/// networks from host loopback, and returns the client, the guest's SYN if
+/// one arrives, and the number of connections that the listener reset.
+async fn connect_to_published_port(
+    driver: &DefaultDriver,
+    consomme: &mut Consomme,
+    client: &mut TestClient,
+    guest_port: u16,
+    host: bool,
+) -> (std::net::TcpStream, Option<Vec<u8>>, u64) {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+    consomme
+        .access(client)
+        .bind_tcp_port_with_admission(
+            socket,
+            guest_port,
+            InboundAdmission::PrivateNetwork { host },
+        )
+        .expect("bind should succeed");
+
+    let connector = std::net::TcpStream::connect(host_addr).unwrap();
+    let received = client.received_packets.clone();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+        let syn = received
+            .lock()
+            .iter()
+            .find(|packet| {
+                TcpTestHarness::is_tcp_packet(packet)
+                    .is_some_and(|tcp| tcp.control == TcpControl::Syn && tcp.dst_port == guest_port)
+            })
+            .cloned();
+        let refused = consomme.tcp.aggregate_stats.connections_refused.get();
+        if syn.is_some() || refused > 0 {
+            return (connector, syn, refused);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the listener to accept the connection"
+        );
+        pal_async::timer::PolledTimer::new(driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+    }
+}
+
+/// Test that a listener publishing a guest port to the host's private
+/// networks resets the host's own connections unless it admits the host.
+#[pal_async::async_test]
+async fn test_tcp_published_port_resets_unadmitted_host_peers(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver.clone());
+
+    let (mut connector, syn, refused) =
+        connect_to_published_port(&driver, &mut consomme, &mut client, 7801, false).await;
+    assert!(syn.is_none(), "the guest must not see a refused connection");
+    assert_eq!(refused, 1);
+    assert!(consomme.tcp.connections.is_empty());
+    connector
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut buffer = [0; 1];
+    match io::Read::read(&mut connector, &mut buffer) {
+        Ok(0) => {}
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+            ) => {}
+        other => panic!("refused connection returned {other:?}"),
+    }
+}
+
+/// Test that a listener that admits the host forwards the host's connection,
+/// which then counts as a carried flow.
+#[pal_async::async_test]
+async fn test_tcp_published_port_admits_the_host_when_allowed(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    let mut client = TestClient::new(driver.clone());
+
+    let (_connector, syn, refused) =
+        connect_to_published_port(&driver, &mut consomme, &mut client, 7802, true).await;
+    assert_eq!(refused, 0);
+    let syn = syn.expect("the guest should see the admitted connection");
+    let (source, destination, tcp) = parse_tcp_packet(&syn);
+    let guest = SocketAddr::new(destination.into(), tcp.dst_port);
+    let peer = SocketAddr::new(source.into(), tcp.src_port);
+    assert!(consomme.carries_tcp_flow(guest, peer));
+    assert!(!consomme.carries_tcp_flow(peer, guest));
+    assert!(!consomme.carries_tcp_flow(
+        guest,
+        SocketAddr::new(peer.ip(), tcp.src_port.wrapping_add(1))
+    ));
+}
+
 /// Test that deferred ACKs are flushed during poll cycles.
 ///
 /// When the guest sends data, the ACK is deferred (not emitted

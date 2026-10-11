@@ -5101,6 +5101,7 @@ dependencies = [
  "parking_lot",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "vm_resource",
 ]
