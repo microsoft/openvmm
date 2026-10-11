@@ -9,14 +9,18 @@ use super::EgressDenied;
 use super::EgressPolicy;
 use super::EgressPolicyMode;
 use super::EgressTransport;
+use super::Endpoint;
 use super::InvalidEgressPolicy;
 use super::PacketTransport;
 use super::ensure_available;
 use super::read_u16;
+use crate::ingress::IngressTransport;
+use crate::ingress::ReplyCandidate;
 use crate::mac_address::MacAddress;
 use mesh::MeshPayload;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -179,16 +183,22 @@ impl EgressIpv6Link {
 }
 
 impl EgressPolicy {
-    /// Authorizes an IPv6 frame, which only rules on a dual-stack link admit.
+    /// Authorizes an IPv6 frame on a dual-stack link. Rules admit IPv6
+    /// destinations; other modes deny them, except for what ingress admits.
     pub(super) fn authorize_ipv6(
         &self,
         frame: &[u8],
         frame_length: usize,
         offset: usize,
+        endpoint: Option<Endpoint<'_>>,
     ) -> Result<(), EgressDenied> {
-        let (Some(link), EgressPolicyMode::Rules { .. }) = (self.ipv6, &self.mode) else {
+        let Some(link) = self.ipv6 else {
             return Err(EgressDenied::UnsupportedEtherType(ETHER_TYPE_IPV6));
         };
+        let rules = matches!(self.mode, EgressPolicyMode::Rules { .. });
+        if !rules && !self.allows_ingress() {
+            return Err(EgressDenied::UnsupportedEtherType(ETHER_TYPE_IPV6));
+        }
         ensure_available(frame, frame_length, offset + HEADER_LENGTH, "IPv6 header")?;
         if frame[offset] >> 4 != 6 {
             return Err(EgressDenied::Malformed("IPv6 header"));
@@ -259,11 +269,42 @@ impl EgressPolicy {
             }
             _ => None,
         };
-        if self.rules_allow_destination(IpAddr::V6(destination), packet) {
-            Ok(())
+        let rule_destination = match endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.route(IpAddr::V6(destination)))
+        {
+            Some(IpAddr::V6(routed)) if routed.is_loopback() => link.gateway,
+            Some(IpAddr::V6(routed)) => routed,
+            _ => destination,
+        };
+        let denied = if !rules {
+            EgressDenied::UnsupportedEtherType(ETHER_TYPE_IPV6)
+        } else if self.rules_allow_destination(IpAddr::V6(rule_destination), packet) {
+            return Ok(());
         } else {
-            Err(EgressDenied::DestinationDenied)
+            EgressDenied::DestinationDenied
+        };
+        if !self.allows_ingress() {
+            return Err(denied);
         }
+        // The transport header was validated above.
+        let transport = match next_header {
+            NEXT_HEADER_TCP if !super::opens_tcp_connection(frame[payload_offset + 13]) => {
+                IngressTransport::Tcp
+            }
+            NEXT_HEADER_UDP => IngressTransport::Udp,
+            _ => return Err(denied),
+        };
+        let candidate = ReplyCandidate {
+            transport,
+            guest: SocketAddr::from((link.guest, read_u16(frame, payload_offset))),
+            peer: SocketAddr::from((destination, read_u16(frame, payload_offset + 2))),
+        };
+        Self::admit_reply(
+            Some(candidate),
+            endpoint.map(|endpoint| endpoint.carried),
+            denied,
+        )
     }
 
     /// Authorizes Neighbor Discovery, which admits only the guest's Neighbor
@@ -305,11 +346,16 @@ impl EgressPolicy {
                 && ethernet_destination[0] & 1 == 0
                 && ethernet_destination != ETHERNET_UNSPECIFIED
         };
+        // Ingress also lets the guest resolve its on-link neighbors, among
+        // which the gateway presents host peers, such as the host's IPv6
+        // loopback.
+        let resolvable = link.contains(target)
+            && (self.allows_ingress()
+                || self.rules_allow_neighbor(IpAddr::V6(target), IpAddr::V6(link.gateway)));
         if !(source == link.guest || source == link_local_address(self.guest_mac))
             || !addressed
             || target == link.guest
-            || !link.contains(target)
-            || !self.rules_allow_neighbor(IpAddr::V6(target), IpAddr::V6(link.gateway))
+            || !resolvable
         {
             return Err(EgressDenied::NeighborDiscoveryDenied);
         }

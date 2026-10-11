@@ -13,6 +13,7 @@ use super::dhcpv6::DHCPV6_SERVER;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::FourTuple;
+use crate::InboundAdmission;
 use crate::IpAddresses;
 use crate::IpVersion;
 use crate::Ipv4Addresses;
@@ -83,7 +84,24 @@ impl Udp {
             max_connections: crate::limits::DEFAULT_MAX_ACTIVE_UDP_FLOWS,
         }
     }
+
+    /// Returns whether `peer`, by its host-side address, recently exchanged
+    /// datagrams with the guest port of `guest` that a listener publishes.
+    pub(crate) fn carries_flow(&self, guest: SocketAddr, peer: SocketAddr) -> bool {
+        self.listeners
+            .get(&PortForwardKey::from_socket_addr(guest, guest.port()).publication())
+            .is_some_and(|listener| {
+                recent_peer(&listener.peers, &peer, Instant::now(), self.timeout).is_some()
+            })
+    }
 }
+
+/// Largest number of recent peers that a listener publishing a guest port
+/// remembers.
+const MAX_PUBLISHED_PORT_PEERS: usize = 256;
+
+/// Largest number of translated peers that a guest UDP flow remembers.
+const MAX_TRANSLATED_PEERS: usize = 64;
 
 impl InspectMut for Udp {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
@@ -110,6 +128,23 @@ struct UdpListener {
     /// The guest port to forward received packets to.
     guest_port: u16,
     stats: Stats,
+    #[inspect(debug)]
+    admission: InboundAdmission,
+    /// For a listener that publishes a guest port, the peers that recently
+    /// exchanged datagrams with that port, by their host-side addresses
+    /// without an IPv6 flow label or scope, as the guest addresses them.
+    #[inspect(with = "HashMap::len")]
+    peers: HashMap<SocketAddr, PublishedPeer>,
+    #[inspect(skip)]
+    gso_size: Option<u16>,
+}
+
+/// A peer that recently exchanged datagrams with a published guest port.
+struct PublishedPeer {
+    /// The peer's complete host-side address, to which replies go.
+    address: SocketAddr,
+    /// When the peer last exchanged a datagram with the port.
+    seen: Instant,
 }
 
 #[derive(InspectMut)]
@@ -125,6 +160,22 @@ struct UdpConnection {
     #[inspect(debug)]
     last_activity: Instant,
     gso_size: Option<u16>,
+    /// The peers that the guest recently addressed at another address than
+    /// the host address that its datagrams reached, such as the gateway on
+    /// host loopback, by that host address without an IPv6 flow label or
+    /// scope, so that their replies come from the address that the guest
+    /// addressed.
+    #[inspect(with = "HashMap::len")]
+    translated_peers: HashMap<SocketAddr, TranslatedPeer>,
+}
+
+/// A peer that a guest UDP flow addresses at another address than the host
+/// address that its datagrams reach.
+struct TranslatedPeer {
+    /// The peer's address as the guest addresses it.
+    address: SocketAddr,
+    /// When the guest last sent the peer a datagram or the peer last replied.
+    seen: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -133,6 +184,8 @@ struct Stats {
     tx_dropped: Counter,
     tx_errors: Counter,
     rx_packets: Counter,
+    /// Datagrams that a listener dropped because it does not admit the peer.
+    rx_refused: Counter,
 }
 
 impl UdpConnection {
@@ -142,6 +195,7 @@ impl UdpConnection {
         dst_addr: &SocketAddr,
         state: &mut ConsommeState,
         client: &mut impl Client,
+        timeout: Duration,
     ) -> bool {
         if self.recycle {
             return false;
@@ -174,16 +228,27 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    let ft = match ConsommeState::translate_remote_address(
-                        &state.params,
-                        &mut state.local_addr_map,
-                        &src_addr,
-                        dst_addr.port(),
-                    ) {
-                        Some(ft) => ft,
-                        None => FourTuple {
-                            src: src_addr,
+                    let now = Instant::now();
+                    // A peer that the guest addressed at another address, such
+                    // as the gateway on host loopback, replies from that
+                    // address, as a connected guest socket requires. Other
+                    // host-local peers appear at virtual addresses.
+                    let ft = match self.translated_peer(&src_addr, now, timeout) {
+                        Some(peer) => FourTuple {
+                            src: peer,
                             dst: *dst_addr,
+                        },
+                        None => match ConsommeState::translate_remote_address(
+                            &state.params,
+                            &mut state.local_addr_map,
+                            &src_addr,
+                            dst_addr.port(),
+                        ) {
+                            Some(ft) => ft,
+                            None => FourTuple {
+                                src: src_addr,
+                                dst: *dst_addr,
+                            },
                         },
                     };
                     let packet_len = build_udp_packet(
@@ -202,7 +267,7 @@ impl UdpConnection {
                     };
                     client.recv(&eth.as_ref()[..packet_len], &checksum_state);
                     self.stats.rx_packets.increment();
-                    self.last_activity = Instant::now();
+                    self.last_activity = now;
                 }
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
@@ -216,15 +281,159 @@ impl UdpConnection {
             }
         }
     }
+
+    /// Returns the address at which the guest addressed the peer at host
+    /// address `host`, when they exchanged a datagram within `timeout`, and
+    /// refreshes the peer.
+    fn translated_peer(
+        &mut self,
+        host: &SocketAddr,
+        now: Instant,
+        timeout: Duration,
+    ) -> Option<SocketAddr> {
+        let peer = self
+            .translated_peers
+            .get_mut(&unscoped(*host))
+            .filter(|peer| now.duration_since(peer.seen) <= timeout)?;
+        peer.seen = now;
+        Some(peer.address)
+    }
+
+    /// Remembers that the guest sent a datagram to the peer that it addresses
+    /// as `address` at host address `host`, or forgets the peer at `host` when
+    /// the guest addressed `host` itself. Expired peers and then the oldest
+    /// one are forgotten to stay within [`MAX_TRANSLATED_PEERS`].
+    fn remember_translated_peer(
+        &mut self,
+        host: SocketAddr,
+        address: SocketAddr,
+        now: Instant,
+        timeout: Duration,
+    ) {
+        let host = unscoped(host);
+        if address == host {
+            if !self.translated_peers.is_empty() {
+                self.translated_peers.remove(&host);
+            }
+            return;
+        }
+        if let Some(peer) = self.translated_peers.get_mut(&host) {
+            peer.address = address;
+            peer.seen = now;
+            return;
+        }
+        if self.translated_peers.len() >= MAX_TRANSLATED_PEERS {
+            self.translated_peers
+                .retain(|_, peer| now.duration_since(peer.seen) <= timeout);
+            if self.translated_peers.len() >= MAX_TRANSLATED_PEERS
+                && let Some(oldest) = self
+                    .translated_peers
+                    .iter()
+                    .min_by_key(|(_, peer)| peer.seen)
+                    .map(|(host, _)| *host)
+            {
+                self.translated_peers.remove(&oldest);
+            }
+        }
+        self.translated_peers
+            .insert(host, TranslatedPeer { address, seen: now });
+    }
+}
+
+/// Returns `address` without an IPv6 flow label or scope, as the guest
+/// addresses a peer.
+fn unscoped(address: SocketAddr) -> SocketAddr {
+    SocketAddr::new(address.ip(), address.port())
+}
+
+/// Returns the complete host-side address of `peer` when it exchanged
+/// datagrams with a listener within `timeout`.
+fn recent_peer(
+    peers: &HashMap<SocketAddr, PublishedPeer>,
+    peer: &SocketAddr,
+    now: Instant,
+    timeout: Duration,
+) -> Option<SocketAddr> {
+    peers
+        .get(&unscoped(*peer))
+        .filter(|recent| now.duration_since(recent.seen) <= timeout)
+        .map(|recent| recent.address)
+}
+
+/// Remembers that `peer`, by its complete host-side address, exchanged a
+/// datagram with a listener, forgetting expired peers and then the oldest one
+/// to stay within [`MAX_PUBLISHED_PORT_PEERS`].
+fn remember_peer(
+    peers: &mut HashMap<SocketAddr, PublishedPeer>,
+    peer: SocketAddr,
+    now: Instant,
+    timeout: Duration,
+) {
+    let key = unscoped(peer);
+    if !peers.contains_key(&key) && peers.len() >= MAX_PUBLISHED_PORT_PEERS {
+        peers.retain(|_, recent| now.duration_since(recent.seen) <= timeout);
+        if peers.len() >= MAX_PUBLISHED_PORT_PEERS
+            && let Some(oldest) = peers
+                .iter()
+                .min_by_key(|(_, recent)| recent.seen)
+                .map(|(key, _)| *key)
+        {
+            peers.remove(&oldest);
+        }
+    }
+    peers.insert(
+        key,
+        PublishedPeer {
+            address: peer,
+            seen: now,
+        },
+    );
 }
 
 impl UdpListener {
+    /// Sends a guest datagram from the published guest port to `dst`, one of
+    /// its recent peers by complete host-side address, so the peer sees it
+    /// come from the host port that it reached.
+    fn send(
+        &mut self,
+        data: &[u8],
+        dst: &SocketAddr,
+        gso: Option<u16>,
+        timeout: Duration,
+    ) -> Result<(), DropReason> {
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| DropReason::Io(std::io::Error::other("UDP listener has no socket")))?
+            .get();
+        if self.gso_size != gso {
+            platform::set_udp_gso_size(socket, gso.unwrap_or(0)).map_err(DropReason::Io)?;
+            self.gso_size = gso;
+        }
+        match platform::send_to(socket, data, dst, gso) {
+            Ok(_) => {
+                self.stats.tx_packets.increment();
+                remember_peer(&mut self.peers, *dst, Instant::now(), timeout);
+                Ok(())
+            }
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                self.stats.tx_dropped.increment();
+                Err(DropReason::SendBufferFull)
+            }
+            Err(err) => {
+                self.stats.tx_errors.increment();
+                Err(DropReason::Io(err))
+            }
+        }
+    }
+
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
         state: &mut ConsommeState,
         client: &mut impl Client,
         connections: &HashMap<SocketAddr, UdpConnection>,
+        timeout: Duration,
     ) {
         let Some(socket) = self.socket.as_mut() else {
             return;
@@ -245,6 +454,29 @@ impl UdpListener {
                     .recv_from(&mut eth.payload_mut()[header_offset..])
             }) {
                 Poll::Ready(Ok((n, mut other_addr))) => {
+                    if self.admission.publishes_guest_port() {
+                        // A published port admits its private-network peers,
+                        // which stay its peers while they keep exchanging
+                        // datagrams with the guest.
+                        let now = Instant::now();
+                        if recent_peer(&self.peers, &other_addr, now, timeout).is_none()
+                            && !self.admission.admits(
+                                other_addr.ip(),
+                                None,
+                                &state.params,
+                                &mut state.host_addresses,
+                            )
+                        {
+                            tracelimit::info_ratelimited!(
+                                peer = %other_addr,
+                                guest_port = self.guest_port,
+                                "dropping an inbound UDP datagram from a peer that the listener does not admit"
+                            );
+                            self.stats.rx_refused.increment();
+                            continue;
+                        }
+                        remember_peer(&mut self.peers, other_addr, now, timeout);
+                    }
                     // Check if this connection originated from the same guest in order to adjust
                     // the port in the crafted packet to match the guest value.
                     if state.params.is_local_address(&other_addr) {
@@ -315,7 +547,7 @@ impl<T: Client> Access<'_, T> {
                 return false;
             }
 
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client, timeout)
         });
 
         for listener in self.inner.udp.listeners.values_mut() {
@@ -324,6 +556,7 @@ impl<T: Client> Access<'_, T> {
                 &mut self.inner.state,
                 self.client,
                 &self.inner.udp.connections,
+                timeout,
             );
         }
 
@@ -391,6 +624,19 @@ impl<T: Client> Access<'_, T> {
                     &checksum.caps(),
                 )?;
 
+                let guest_addr = SocketAddr::V4(SocketAddrV4::new(addrs.src_addr, udp.src_port));
+
+                let dst_sock_addr = SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr, udp.dst_port));
+
+                if let Some(result) = self.send_to_published_peer(
+                    udp_packet.payload(),
+                    guest_addr,
+                    dst_sock_addr,
+                    checksum.gso,
+                ) {
+                    return result;
+                }
+
                 if udp.dst_port == DNS_PORT
                     && self.inner.dns.should_intercept_static_queries()
                     && self.handle_dns(
@@ -413,10 +659,6 @@ impl<T: Client> Access<'_, T> {
                     }
                 }
 
-                let guest_addr = SocketAddr::V4(SocketAddrV4::new(addrs.src_addr, udp.src_port));
-
-                let dst_sock_addr = SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr, udp.dst_port));
-
                 (guest_addr, dst_sock_addr)
             }
             IpAddresses::V6(addrs) => {
@@ -426,6 +668,21 @@ impl<T: Client> Access<'_, T> {
                     &addrs.dst_addr.into(),
                     &checksum.caps(),
                 )?;
+
+                let guest_addr =
+                    SocketAddr::V6(SocketAddrV6::new(addrs.src_addr, udp.src_port, 0, 0));
+
+                let dst_sock_addr =
+                    SocketAddr::V6(SocketAddrV6::new(addrs.dst_addr, udp.dst_port, 0, 0));
+
+                if let Some(result) = self.send_to_published_peer(
+                    udp_packet.payload(),
+                    guest_addr,
+                    dst_sock_addr,
+                    checksum.gso,
+                ) {
+                    return result;
+                }
 
                 if udp.dst_port == DNS_PORT
                     && self.inner.dns.should_intercept_static_queries()
@@ -449,16 +706,12 @@ impl<T: Client> Access<'_, T> {
                     }
                 }
 
-                let guest_addr =
-                    SocketAddr::V6(SocketAddrV6::new(addrs.src_addr, udp.src_port, 0, 0));
-
-                let dst_sock_addr =
-                    SocketAddr::V6(SocketAddrV6::new(addrs.dst_addr, udp.dst_port, 0, 0));
-
                 (guest_addr, dst_sock_addr)
             }
         };
 
+        // The peer as the guest addresses it, from which its replies come.
+        let peer_addr = dst_sock_addr;
         // Resolve virtual mapped addresses back to the real host address.
         let mut dst_sock_addr = self
             .inner
@@ -474,6 +727,7 @@ impl<T: Client> Access<'_, T> {
             }
         }
 
+        let timeout = self.inner.udp.timeout;
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
         let socket = conn.socket.as_ref().unwrap().get();
         if conn.gso_size != checksum.gso {
@@ -484,8 +738,10 @@ impl<T: Client> Access<'_, T> {
         let result = platform::send_to(socket, udp_packet.payload(), &dst_sock_addr, checksum.gso);
         match result {
             Ok(_) => {
+                let now = Instant::now();
                 conn.stats.tx_packets.increment();
-                conn.last_activity = Instant::now();
+                conn.last_activity = now;
+                conn.remember_translated_peer(dst_sock_addr, peer_addr, now, timeout);
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -497,6 +753,30 @@ impl<T: Client> Access<'_, T> {
                 Err(DropReason::Io(err))
             }
         }
+    }
+
+    /// Sends a guest datagram from a published port to `peer`, as the guest
+    /// addresses it, through the publishing listener when `peer` recently
+    /// exchanged datagrams with that port, so the peer sees it come from the
+    /// host port that it reached. This precedes the gateway's handling of the
+    /// destination, which the guest's reply must not reinterpret. Returns
+    /// `None` for other datagrams.
+    fn send_to_published_peer(
+        &mut self,
+        data: &[u8],
+        guest: SocketAddr,
+        peer: SocketAddr,
+        gso: Option<u16>,
+    ) -> Option<Result<(), DropReason>> {
+        let peer = self.inner.state.resolve_destination(&peer);
+        let timeout = self.inner.udp.timeout;
+        let listener = self
+            .inner
+            .udp
+            .listeners
+            .get_mut(&PortForwardKey::from_socket_addr(guest, guest.port()).publication())?;
+        let address = recent_peer(&listener.peers, &peer, Instant::now(), timeout)?;
+        Some(listener.send(data, &address, gso, timeout))
     }
 
     fn get_or_insert(
@@ -530,6 +810,7 @@ impl<T: Client> Access<'_, T> {
                     recycle: false,
                     last_activity: Instant::now(),
                     gso_size: None,
+                    translated_peers: HashMap::new(),
                 };
                 Ok(e.insert(conn))
             }
@@ -584,10 +865,27 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for forwarding inbound UDP
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
+        self.bind_udp_port_with_admission(socket, guest_port, InboundAdmission::Any)
+    }
+
+    /// Binds to the specified host IP and port for forwarding inbound UDP
+    /// packets from the peers that `admission` admits to the guest, and drops
+    /// the packets of other peers.
+    ///
+    /// When the listener publishes the guest port, which it may do beside an
+    /// explicit forward to the same guest port, the guest's datagrams from
+    /// that port to the listener's recent peers leave through the listener's
+    /// socket.
+    pub fn bind_udp_port_with_admission(
+        &mut self,
+        socket: Socket,
+        guest_port: u16,
+        admission: InboundAdmission,
+    ) -> Result<(), BindError> {
         let socket: UdpSocket = socket.into();
         let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
         let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
-        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port).with_admission(admission);
         if self.inner.udp.listeners.contains_key(&key) {
             return Err(BindError::PortAlreadyBound(guest_port));
         }
@@ -598,6 +896,9 @@ impl<T: Client> Access<'_, T> {
                 host_addr,
                 guest_port,
                 stats: Default::default(),
+                admission,
+                peers: HashMap::new(),
+                gso_size: None,
             },
         );
         Ok(())
@@ -605,13 +906,21 @@ impl<T: Client> Access<'_, T> {
 
     /// Unbinds from the specified guest port and IP family.
     pub fn unbind_udp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
-        if self
-            .inner
-            .udp
-            .listeners
-            .remove(&PortForwardKey::new(family, port))
-            .is_some()
-        {
+        self.unbind_udp_listener(PortForwardKey::new(family, port))
+    }
+
+    /// Stops publishing the specified guest port of the IP family to the
+    /// host's private networks.
+    pub fn unbind_published_udp_port(
+        &mut self,
+        family: IpVersion,
+        port: u16,
+    ) -> Result<(), BindError> {
+        self.unbind_udp_listener(PortForwardKey::new(family, port).publication())
+    }
+
+    fn unbind_udp_listener(&mut self, key: PortForwardKey) -> Result<(), BindError> {
+        if self.inner.udp.listeners.remove(&key).is_some() {
             Ok(())
         } else {
             Err(BindError::PortNotBound)
@@ -815,6 +1124,7 @@ fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
 #[cfg(all(unix, test))]
 mod tests {
     mod limits;
+    mod translated_peers;
 
     use super::*;
     use crate::Consomme;
@@ -1280,5 +1590,213 @@ mod tests {
             src_ip, guest_ip,
             "loopback UDP source IP should not be the guest's own IP"
         );
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::Consomme;
+    use crate::ConsommeParams;
+    use pal_async::DefaultDriver;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    struct TestClient {
+        driver: DefaultDriver,
+        received: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl Client for TestClient {
+        fn driver(&self) -> &dyn pal_async::driver::Driver {
+            &self.driver
+        }
+
+        fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+            self.received.lock().push(data.to_vec());
+        }
+
+        fn rx_mtu(&mut self) -> usize {
+            1514
+        }
+    }
+
+    fn consomme() -> Consomme {
+        let mut params = ConsommeParams::new().unwrap();
+        params.allow_host_local_access = true;
+        Consomme::new(params)
+    }
+
+    /// Binds a loopback listener that publishes `guest_port` and returns its
+    /// host address.
+    fn publish(
+        consomme: &mut Consomme,
+        client: &mut TestClient,
+        guest_port: u16,
+        host: bool,
+    ) -> SocketAddr {
+        let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        socket
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+        consomme
+            .access(client)
+            .bind_udp_port_with_admission(
+                socket,
+                guest_port,
+                InboundAdmission::PrivateNetwork { host },
+            )
+            .unwrap();
+        host_addr
+    }
+
+    /// Polls until `done` holds or five seconds pass.
+    async fn poll_until(
+        consomme: &mut Consomme,
+        client: &mut TestClient,
+        mut done: impl FnMut(&Consomme, &TestClient) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            std::future::poll_fn(|cx| {
+                consomme.access(client).poll(cx);
+                Poll::Ready(())
+            })
+            .await;
+            if done(consomme, client) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            pal_async::timer::PolledTimer::new(&client.driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+    }
+
+    fn refused(consomme: &Consomme) -> u64 {
+        consomme
+            .udp
+            .listeners
+            .values()
+            .map(|listener| listener.stats.rx_refused.get())
+            .sum()
+    }
+
+    #[pal_async::async_test]
+    async fn published_port_drops_unadmitted_host_datagrams(driver: DefaultDriver) {
+        let mut consomme = consomme();
+        let mut client = TestClient {
+            driver,
+            received: Default::default(),
+        };
+        let host_addr = publish(&mut consomme, &mut client, 5601, false);
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(b"refused", host_addr).unwrap();
+        assert!(
+            poll_until(&mut consomme, &mut client, |consomme, _| refused(consomme)
+                == 1)
+            .await
+        );
+        assert!(client.received.lock().is_empty());
+    }
+
+    #[pal_async::async_test]
+    async fn published_port_replies_from_the_port_that_the_peer_reached(driver: DefaultDriver) {
+        let mut consomme = consomme();
+        let mut client = TestClient {
+            driver,
+            received: Default::default(),
+        };
+        let guest_port = 5602;
+        let host_addr = publish(&mut consomme, &mut client, guest_port, true);
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        sender.send_to(b"ping", host_addr).unwrap();
+        assert!(
+            poll_until(&mut consomme, &mut client, |_, client| !client
+                .received
+                .lock()
+                .is_empty())
+            .await
+        );
+        assert_eq!(refused(&consomme), 0);
+
+        // The guest sees the datagram at its port, from a virtual address
+        // that stands for the host.
+        let (guest, peer) = {
+            let received = client.received.lock();
+            let frame = EthernetFrame::new_unchecked(received[0].as_slice());
+            let ip = Ipv4Packet::new_unchecked(frame.payload());
+            let udp = UdpPacket::new_unchecked(ip.payload());
+            assert_eq!(udp.dst_port(), guest_port);
+            assert_eq!(udp.payload(), b"ping");
+            (
+                SocketAddr::from((ip.dst_addr(), udp.dst_port())),
+                SocketAddr::from((ip.src_addr(), udp.src_port())),
+            )
+        };
+        assert!(consomme.carries_udp_flow(guest, peer));
+        assert!(!consomme.carries_udp_flow(SocketAddr::from((guest.ip(), guest_port + 1)), peer));
+
+        // The guest's reply leaves through the published port.
+        let payload = b"pong";
+        let mut buffer = [0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + 4];
+        buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
+        let guest_mac = consomme.params_mut().client_mac;
+        let gateway_mac = consomme.params_mut().gateway_mac;
+        let length = build_udp_packet(
+            &mut EthernetFrame::new_unchecked(&mut buffer[..]),
+            guest.ip().into(),
+            peer.ip().into(),
+            guest.port(),
+            peer.port(),
+            payload.len(),
+            guest_mac,
+            gateway_mac,
+        );
+        consomme
+            .access(&mut client)
+            .send(&buffer[..length], &ChecksumState::NONE)
+            .unwrap();
+        let mut reply = [0; 16];
+        let (count, from) = sender.recv_from(&mut reply).unwrap();
+        assert_eq!(&reply[..count], payload);
+        assert_eq!(from, host_addr);
+    }
+
+    #[pal_async::async_test]
+    async fn publication_coexists_with_an_explicit_forward(driver: DefaultDriver) {
+        let mut consomme = consomme();
+        let mut client = TestClient {
+            driver,
+            received: Default::default(),
+        };
+        let guest_port = 5603;
+        let forward = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        forward
+            .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+            .unwrap();
+        consomme
+            .access(&mut client)
+            .bind_udp_port(forward, guest_port)
+            .unwrap();
+        publish(&mut consomme, &mut client, guest_port, false);
+
+        // Each listener unbinds separately.
+        let mut access = consomme.access(&mut client);
+        access
+            .unbind_published_udp_port(IpVersion::Ipv4, guest_port)
+            .unwrap();
+        assert!(matches!(
+            access.unbind_published_udp_port(IpVersion::Ipv4, guest_port),
+            Err(BindError::PortNotBound)
+        ));
+        access.unbind_udp_port(IpVersion::Ipv4, guest_port).unwrap();
+        assert!(consomme.udp.listeners.is_empty());
     }
 }

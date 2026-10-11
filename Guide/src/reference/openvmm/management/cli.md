@@ -154,11 +154,19 @@ describes the source definitions.
   when ingress is denied; unsolicited connections toward the guest remain
   unavailable.
 
-  The portable profile cannot truthfully provide unrestricted inbound
-  connectivity, so `--network-ingress allow` is rejected before VM resources
-  are opened. Egress `allow` may accompany `--block-host`; egress `deny` may
-  accompany `--allow-host` or `--allow-endpoint`. Contradictory default and
-  rule combinations are rejected at the same validation boundary.
+  `--network-ingress allow` publishes every TCP and UDP port on which the guest
+  listens to the host's private networks, without a port list. OpenVMM
+  appends `virtnet_ingress=allow` to the command line, the guest announces its
+  listeners to the IPv4 gateway, and Consomme listens on every host address at
+  each announced port, relaying only peers whose addresses are not globally
+  reachable. Globally reachable peers are refused, and so is the host itself
+  unless `--host-loopback allow` admits it. Replies to admitted peers pass
+  regardless of the egress policy. Snapshot capture and restore reject ingress
+  `allow`, because its listeners are live host attachments.
+
+  Egress `allow` may accompany `--block-host`; egress `deny` may accompany
+  `--allow-host` or `--allow-endpoint`. Contradictory default and rule
+  combinations are rejected at the same validation boundary.
 
   `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
   the generic L3/L4 policy form. A rule names a `CIDR`, an IPv4 or IPv6
@@ -188,16 +196,25 @@ describes the source definitions.
   ARP. Parsing, canonicalization, and contradictory option checks
   complete before VM resources are opened.
 
-  `--host-loopback <allow|deny>` controls host-local access. The portable
-  profile cannot provide generic bidirectional host-loopback connectivity:
-  explicit `allow` without `--host-loopback-forward` is rejected before VM
-  resources are opened. With deliberate forwards, `allow` preserves
-  guest-to-host access subject to egress policy and publishes only the named
-  host-to-guest ports. Omitting the option preserves the existing
-  guest-gateway-to-host-loopback mapping, from the IPv4 gateway to host IPv4
-  loopback and from the IPv6 gateway to host IPv6 loopback, without publishing
-  guest ports. `deny` blocks general gateway and host-local destinations and
-  rejects every `--host-loopback-forward`.
+  `--host-loopback <allow|deny>` controls host-local access. Explicit `allow`
+  provides generic bidirectional host-loopback connectivity without a port
+  list: the guest reaches host loopback through its gateway subject to the
+  egress policy, which applies the gateway's rules also at the addresses at
+  which Consomme presents host-loopback peers, and every TCP and UDP port on
+  which the guest listens is published on host loopback for the host alone.
+  Without `--network-ingress allow`, OpenVMM appends
+  `virtnet_ingress=host-loopback` to the command line, the guest announces its
+  listeners to the IPv4 gateway, and Consomme listens on host IPv4 or IPv6
+  loopback at each announced port, never displacing a host listener that
+  already holds the port. Replies to the host pass regardless of the egress
+  policy. With `--network-ingress allow`, the listeners published to the
+  host's private networks admit the host instead. Snapshot capture and restore
+  reject explicit `allow`, because its listeners are live host attachments.
+  Omitting the option preserves the existing guest-gateway-to-host-loopback
+  mapping, from the IPv4 gateway to host IPv4 loopback and from the IPv6
+  gateway to host IPv6 loopback, without publishing guest ports. `deny` blocks
+  general gateway and host-local destinations and rejects every
+  `--host-loopback-forward`.
 
   `--network-proxy <IPv4:TCP-PORT>` preserves one exact proxy endpoint when
   host loopback is denied. The guest-visible address must equal the derived
@@ -206,12 +223,10 @@ describes the source definitions.
   allowed. The exception is included in the snapshot policy digest.
 
   `--host-loopback-forward <tcp|udp:HOST-PORT:GUEST-PORT>` binds one localhost
-  port and forwards it into the guest. It requires explicit
-  `--host-loopback allow`; duplicate bindings and more than 64 forwards are
-  rejected before resources are opened. Live forwards are process-local
-  attachments and are rejected for snapshot capture or restore.
-  Explicit forwarding is port publishing, not support for a generic
-  bidirectional host-loopback allow policy.
+  port and forwards it into the guest, possibly to another guest port. It
+  requires explicit `--host-loopback allow`; duplicate bindings and more than
+  64 forwards are rejected before resources are opened. Live forwards are
+  process-local attachments and are rejected for snapshot capture or restore.
 
   Networked snapshots record the `portable` profile, drain accepted TX and
   endpoint-ready RX at the capture boundary, rewind unused guest RX

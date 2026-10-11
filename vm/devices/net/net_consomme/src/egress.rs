@@ -6,8 +6,13 @@
 //! The endpoint accepts a run-scoped [`EgressPolicy`] while no queue is
 //! active. The queue's transmit path assembles each guest frame from guest
 //! memory and drops the frames that the policy denies before they reach the
-//! Consomme stack.
+//! Consomme stack. A reply candidate that the rules deny passes only when the
+//! stack carries its flow, and the rules evaluate traffic to a virtual address
+//! at which the stack presents a host-local peer where the stack routes it.
+//! The endpoint also consumes the guest's listener announcements when it
+//! publishes them, to the host's private networks or on host loopback alone.
 
+use crate::ClientNoPool;
 use crate::ConsommeEndpoint;
 use crate::ConsommeQueue;
 use anyhow::Context as _;
@@ -15,6 +20,7 @@ use consomme::ChecksumState;
 use net_backend::BufferAccess;
 use net_backend::TxSegmentType;
 use net_backend_resources::egress::EgressPolicy;
+use net_backend_resources::ingress::IngressTransport;
 
 impl ConsommeEndpoint {
     /// Implements `set_egress_policy`.
@@ -29,6 +35,35 @@ impl ConsommeEndpoint {
 }
 
 impl ConsommeQueue {
+    /// Applies the listener announcement that `frame` carries, if the
+    /// endpoint publishes the guest's listeners, and returns whether the frame
+    /// was one.
+    fn publish_announcement(&mut self, frame: &[u8]) -> bool {
+        let Some(endpoint) = self.endpoint_state.as_mut() else {
+            return false;
+        };
+        let Some(publisher) = endpoint.publisher.as_mut() else {
+            return false;
+        };
+        let params = endpoint.consomme.params_mut();
+        let Some(payload) = net_backend_resources::ingress::listener_announcement_payload(
+            frame,
+            frame.len(),
+            params.client_mac.0,
+            params.client_ip,
+            params.gateway_ip,
+        ) else {
+            return false;
+        };
+        publisher.apply(
+            &frame[payload],
+            &mut endpoint.consomme.access(&mut ClientNoPool {
+                driver: &self.driver,
+            }),
+        );
+        true
+    }
+
     /// Sends the queued guest frames that the egress policy allows to the
     /// Consomme stack and completes all of them.
     pub(crate) fn process_tx(&mut self, pool: &mut dyn BufferAccess) {
@@ -76,17 +111,34 @@ impl ConsommeQueue {
                 offset = end;
             }
 
-            let policy_result = (offset == packet_len)
-                .then(|| {
-                    self.endpoint_state
-                        .as_ref()
-                        .and_then(|state| state.egress_policy.as_ref())
-                        .map(|policy| policy.authorize_frame(&buffer, buffer.len()))
-                })
-                .flatten();
-            if policy_result.is_some_and(|result| result.is_err()) {
+            let complete = offset == packet_len;
+            let announced = complete && self.publish_announcement(&buffer);
+            let policy_result =
+                (complete && !announced)
+                    .then(|| {
+                        self.endpoint_state.as_ref().and_then(|state| {
+                            let consomme = &state.consomme;
+                            state.egress_policy.as_ref().map(|policy| {
+                                policy.authorize_frame_with_flows(
+                                    &buffer,
+                                    buffer.len(),
+                                    &mut |candidate| match candidate.transport {
+                                        IngressTransport::Tcp => consomme
+                                            .carries_tcp_flow(candidate.guest, candidate.peer),
+                                        IngressTransport::Udp => consomme
+                                            .carries_udp_flow(candidate.guest, candidate.peer),
+                                    },
+                                    &|address| consomme.virtual_address_destination(address),
+                                )
+                            })
+                        })
+                    })
+                    .flatten();
+            if announced {
+                // The endpoint consumed the announcement.
+            } else if policy_result.is_some_and(|result| result.is_err()) {
                 self.stats.tx_dropped.increment();
-            } else if offset == packet_len
+            } else if complete
                 && let Err(error) =
                     self.with_consomme(pool, |consomme| consomme.send(&buffer, &checksum))
             {

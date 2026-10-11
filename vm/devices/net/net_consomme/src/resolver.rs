@@ -112,6 +112,15 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
         } else {
             ConsommeEndpoint::new_with_ports(state, port_forwards)
         };
+        let endpoint = match resource.private_network_ingress {
+            Some(ingress) => {
+                endpoint.with_private_network_ingress(ingress, resource.static_ipv6.is_some())
+            }
+            None if resource.host_loopback_ingress => {
+                endpoint.with_host_loopback_ingress(resource.static_ipv6.is_some())
+            }
+            None => endpoint,
+        };
         Ok(endpoint.into())
     }
 }

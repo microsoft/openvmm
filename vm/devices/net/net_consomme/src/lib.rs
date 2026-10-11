@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod egress;
+mod ingress;
 mod quiesce;
 pub mod resolver;
 
@@ -39,6 +40,7 @@ use net_backend::TxSegment;
 use net_backend_resources::consomme::ConsommeRequest;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
+use net_backend_resources::consomme::PrivateNetworkIngress;
 use net_backend_resources::egress::EgressPolicy;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
@@ -118,6 +120,7 @@ struct EndpointState {
     port_recv: Option<mesh::Receiver<ConsommeRequest>>,
     port_forwards: Vec<PortForwardConfig>,
     egress_policy: Option<EgressPolicy>,
+    publisher: Option<ingress::ListenerPublisher>,
 }
 
 impl ConsommeEndpoint {
@@ -129,6 +132,7 @@ impl ConsommeEndpoint {
                 port_recv: None,
                 port_forwards: Vec::new(),
                 egress_policy: None,
+                publisher: None,
             }))),
         }
     }
@@ -142,6 +146,7 @@ impl ConsommeEndpoint {
                 port_recv: None,
                 port_forwards: ports,
                 egress_policy: None,
+                publisher: None,
             }))),
         }
     }
@@ -157,6 +162,7 @@ impl ConsommeEndpoint {
                     port_recv: None,
                     port_forwards: Vec::new(),
                     egress_policy: None,
+                    publisher: None,
                 }))),
             },
             ConsommeControl { send },
@@ -177,8 +183,36 @@ impl ConsommeEndpoint {
                 port_recv: Some(port_recv),
                 port_forwards: ports,
                 egress_policy: None,
+                publisher: None,
             }))),
         }
+    }
+
+    /// Publishes the ports that the guest announces to the host's private
+    /// networks, in IPv6 too when `guest_has_ipv6`. See
+    /// [`net_backend_resources::ingress`].
+    pub fn with_private_network_ingress(
+        self,
+        ingress: PrivateNetworkIngress,
+        guest_has_ipv6: bool,
+    ) -> Self {
+        self.with_publisher(ingress::ListenerPublisher::new(ingress, guest_has_ipv6))
+    }
+
+    /// Publishes the ports that the guest announces on host loopback alone,
+    /// for the host itself, in IPv6 too when `guest_has_ipv6`. See
+    /// [`net_backend_resources::ingress`].
+    pub fn with_host_loopback_ingress(self, guest_has_ipv6: bool) -> Self {
+        self.with_publisher(ingress::ListenerPublisher::host_loopback(guest_has_ipv6))
+    }
+
+    fn with_publisher(self, publisher: ingress::ListenerPublisher) -> Self {
+        self.endpoint_state
+            .lock()
+            .as_mut()
+            .expect("a new endpoint has no active queue")
+            .publisher = Some(publisher);
+        self
     }
 }
 
