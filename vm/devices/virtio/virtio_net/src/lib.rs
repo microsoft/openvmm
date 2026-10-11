@@ -139,7 +139,8 @@ struct NetStatus {
     _reserved: u16,
 }
 
-const DEFAULT_MTU: u16 = 1514;
+const DEFAULT_MTU: u16 = 1500;
+const BITS_PER_MEGABIT: u64 = 1_000_000;
 
 #[expect(dead_code)]
 const VIRTIO_NET_MAX_QUEUES: u16 = 0x8000;
@@ -270,12 +271,15 @@ impl VirtioDevice for Device {
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_status(true)
+            .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
-        let features_bank1 = NetworkFeaturesBank1::new().with_host_uso(host_uso);
+        let features_bank1 = NetworkFeaturesBank1::new()
+            .with_host_uso(host_uso)
+            .with_speed_duplex(true);
 
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,
@@ -570,6 +574,10 @@ impl NicBuilder {
 
         let driver = driver_source.simple();
         let tx_offload_support = endpoint.tx_offload_support();
+        let speed = u32::try_from(endpoint.link_speed() / BITS_PER_MEGABIT)
+            .ok()
+            .filter(|speed| *speed <= i32::MAX as u32)
+            .unwrap_or(u32::MAX);
         let adapter = Arc::new(Adapter {
             driver,
             max_queue_pairs,
@@ -588,7 +596,7 @@ impl NicBuilder {
             status: NetStatus::new().with_link_up(true).into(),
             max_virtqueue_pairs: max_queue_pairs,
             mtu: DEFAULT_MTU,
-            speed: 0xffffffff,
+            speed,
             duplex: 0xff,
             rss_max_key_size: 0,
             rss_max_indirection_table_length: 0,

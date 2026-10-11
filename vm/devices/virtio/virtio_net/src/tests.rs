@@ -1896,6 +1896,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac(), "MAC feature should always be set");
+    assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(
         bank0.csum(),
         "CSUM should be set when tcp+udp offloads supported"
@@ -1912,9 +1913,16 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
 
     let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
     assert!(
+        bank1.speed_duplex(),
+        "SPEED_DUPLEX feature should always be set"
+    );
+    assert!(
         bank1.host_uso(),
         "HOST_USO should be set when uso+udp offloads supported"
     );
+    assert_eq!(device.registers.mtu, 1500);
+    assert_eq!(device.registers.speed, 10_000);
+    assert_eq!(device.registers.duplex, 0xff);
 }
 
 /// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order
@@ -1972,6 +1980,7 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac());
+    assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
@@ -1984,6 +1993,10 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     );
 
     let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
+    assert!(
+        bank1.speed_duplex(),
+        "SPEED_DUPLEX feature should always be set"
+    );
     assert!(
         !bank1.host_uso(),
         "HOST_USO should not be set without USO offloads"
