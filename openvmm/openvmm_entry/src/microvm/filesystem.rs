@@ -2210,6 +2210,78 @@ mod tests {
         assert!(error.contains("invalid denied path"), "{error}");
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn host_paths_may_contain_commas() {
+        use openvmm_defs::microvm::MicrovmFilesystemAccess;
+
+        let base = tempfile::tempdir().unwrap();
+        let alpha = base.path().join("alpha,beta");
+        let reports = base.path().join("2026, final");
+        for root in [&alpha, &reports] {
+            fs_err::create_dir_all(root.join("secret")).unwrap();
+        }
+        // The text before a path's last comma names another directory.
+        fs_err::create_dir(base.path().join("alpha")).unwrap();
+        let canonical = |path: &Path| {
+            fs_err::canonicalize(path)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        let alpha_secret = alpha.join("secret").display().to_string();
+        let reports_secret = reports.join("secret").display().to_string();
+
+        // The mode follows the last comma, so `--mount` shares the exact
+        // directory, with its mode and policy.
+        let options = mount_options(
+            &[format!("/work,{},rw", alpha.display())],
+            &["--mount-deny", "secret"],
+        );
+        options.validate_microvm_options().unwrap();
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert_eq!(filesystem.config.guest_mount_target, "/work");
+        assert_eq!(filesystem.config.access, MicrovmFilesystemAccess::ReadWrite);
+        assert_eq!(filesystem.config.denied_paths, ["secret"]);
+        assert_eq!(filesystem.root_path, canonical(&alpha));
+        let options = mount_options(
+            &[format!("/reports,{},ro", reports.display())],
+            &["--mount-deny", &reports_secret],
+        );
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert_eq!(filesystem.config.access, MicrovmFilesystemAccess::ReadOnly);
+        assert_eq!(filesystem.config.denied_paths, ["secret"]);
+        assert_eq!(filesystem.root_path, canonical(&reports));
+
+        // Without the mode, the text after the last comma is no mode.
+        let unmoded = format!("/work,{}", alpha.display());
+        assert!(
+            Options::try_parse_from(["openvmm", "--machine", "microvm", "--mount", &unmoded])
+                .is_err()
+        );
+
+        // Children of an aggregate follow the same rule.
+        let options = aggregate_options(
+            &[
+                format!("work,{},rw", alpha.display()),
+                format!("reports,{},ro", reports.display()),
+            ],
+            &[
+                "--mount-deny",
+                &alpha_secret,
+                "--mount-deny",
+                &reports_secret,
+            ],
+        );
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert_eq!(filesystem.children[0].0, canonical(&alpha));
+        assert_eq!(filesystem.children[1].0, canonical(&reports));
+        for child in &filesystem.config.children {
+            assert_eq!(child.denied_paths, ["secret"]);
+        }
+    }
+
     #[test]
     fn mount_deny_hides_a_root_that_has_allowed_paths() {
         let root = policy_share();

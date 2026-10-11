@@ -35,7 +35,9 @@ openvmm --machine microvm \
 ```
 
 The format is `GUEST_TARGET,HOST_PATH[,ro|rw]`. The default mode is `ro`;
-read-write access must be explicit. `--mount` may appear once. The profile
+read-write access must be explicit. The guest target ends at the first comma,
+and the mode follows the last comma, so a host path may contain commas when
+the mode is given. `--mount` may appear once. The profile
 fixes the remaining guest-visible configuration:
 
 | Property | Value |
