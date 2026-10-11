@@ -8,8 +8,21 @@
 
 use pci_resource_assignment::AssignmentError;
 use pci_resource_assignment::PciConfigAccess;
+use std::ops::Range;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::Chipset;
+
+/// A final PCI BAR assignment, including its segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedPciBar {
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub kind: pci_resource_assignment::AssignedBarKind,
+    pub index: u8,
+    pub range: Range<u64>,
+}
 
 /// Implements [`PciConfigAccess`] by performing MMIO reads/writes through
 /// the [`Chipset`]'s MMIO dispatch at the ECAM address range.
@@ -53,7 +66,8 @@ impl<'a> EcamConfigAccess<'a> {
 pub async fn assign_pci_resources_for_root_complexes(
     chipset: &Chipset,
     pcie_host_bridges: &[PcieHostBridge],
-) -> Result<(), AssignmentError> {
+) -> Result<Vec<AssignedPciBar>, AssignmentError> {
+    let mut assigned_bars = Vec::new();
     for hb in pcie_host_bridges {
         let params = pci_resource_assignment::AssignmentParams {
             start_bus: hb.start_bus,
@@ -64,9 +78,21 @@ pub async fn assign_pci_resources_for_root_complexes(
         };
         let mut ecam =
             EcamConfigAccess::new(chipset, hb.ecam_range.start(), hb.start_bus, hb.end_bus);
-        pci_resource_assignment::assign_pci_resources(&mut ecam, &params).await?;
+        let devices =
+            pci_resource_assignment::assign_pci_resources_with_report(&mut ecam, &params).await?;
+        assigned_bars.extend(devices.into_iter().flat_map(|device| {
+            device.bars.into_iter().map(move |bar| AssignedPciBar {
+                segment: hb.segment,
+                bus: device.bus,
+                device: device.device,
+                function: device.function,
+                kind: bar.kind,
+                index: bar.index,
+                range: bar.range,
+            })
+        }));
     }
-    Ok(())
+    Ok(assigned_bars)
 }
 
 impl PciConfigAccess for EcamConfigAccess<'_> {

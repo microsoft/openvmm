@@ -67,7 +67,7 @@ impl PetriVmConfigOpenVmm {
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
-            .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
+            .any(|device| matches!(device.resource_id(), "nvme" | "gdma"));
         let supports_save_restore = !resources.properties.is_openhcl
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)

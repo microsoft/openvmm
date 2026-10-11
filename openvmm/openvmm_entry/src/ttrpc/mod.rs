@@ -2041,10 +2041,7 @@ async fn build_pcie_topology(
     let mut devices = Vec::new();
     for (port_name, device) in pending_devices {
         let resource = build_pci_device(device, registry, iommufds).await?;
-        devices.push(PcieDeviceConfig {
-            port_name,
-            resource,
-        });
+        devices.push(PcieDeviceConfig::new(port_name, resource));
     }
 
     let generic_initiators = generic_initiators
@@ -2052,6 +2049,7 @@ async fn build_pcie_topology(
         .map(|initiator| PcieGenericInitiatorConfig {
             port_name: initiator.port_name,
             node: initiator.node,
+            memory_range: None,
         })
         .collect();
 
@@ -2073,6 +2071,10 @@ fn parse_pcie_iommu(
     match config.kind.context("missing PCIe IOMMU kind")? {
         Kind::Smmu(config) => {
             anyhow::ensure!(
+                !config.accel,
+                "accelerated SMMUs are not supported over ttrpc"
+            );
+            anyhow::ensure!(
                 cfg!(guest_arch = "aarch64"),
                 "SMMU is only supported for aarch64 guests"
             );
@@ -2081,7 +2083,9 @@ fn parse_pcie_iommu(
                 Some(bits) => SmmuOas::Fixed(bits.try_into().context("SMMU OAS out of range")?),
             };
             Ok(PcieIommuConfig::Smmu {
-                accel: config.accel,
+                accel: false,
+                ats: false,
+                ssid_bits: 0,
                 oas,
             })
         }
@@ -2212,6 +2216,9 @@ fn build_vfio_device(
             iommufd,
             iommu_id,
             bar_addresses,
+            direct_iommu: false,
+            direct_pasid: false,
+            direct_ats: false,
         }
         .into_resource());
     }
@@ -2703,46 +2710,55 @@ mod tests {
         use vmservice::pcie_iommu_config::Kind;
 
         assert!(parse_pcie_iommu(vmservice::PcieIommuConfig::default()).is_err());
-        for accel in [false, true] {
-            for oas_bits in [
-                None,
-                Some(48),
-                Some(0),
-                Some(33),
-                Some(u32::from(u8::MAX)),
-                Some(256),
-                Some(u32::MAX),
-            ] {
-                let result = parse_pcie_iommu(vmservice::PcieIommuConfig {
-                    kind: Some(Kind::Smmu(vmservice::SmmuConfig { accel, oas_bits })),
-                });
-                if !cfg!(guest_arch = "aarch64") {
-                    assert!(result.err().unwrap().to_string().contains("aarch64"));
-                } else if oas_bits.is_none_or(|bits| u8::try_from(bits).is_ok()) {
-                    let PcieIommuConfig::Smmu {
-                        accel: actual_accel,
-                        oas,
-                    } = result.unwrap()
-                    else {
-                        panic!("expected SMMU configuration");
-                    };
-                    assert_eq!(actual_accel, accel);
-                    match (oas, oas_bits) {
-                        (SmmuOas::Auto, None) => {}
-                        (SmmuOas::Fixed(actual), Some(expected)) => {
-                            assert_eq!(u32::from(actual), expected)
-                        }
-                        _ => panic!("unexpected OAS policy"),
+        let error = parse_pcie_iommu(vmservice::PcieIommuConfig {
+            kind: Some(Kind::Smmu(vmservice::SmmuConfig {
+                accel: true,
+                oas_bits: None,
+            })),
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "accelerated SMMUs are not supported over ttrpc"
+        );
+
+        for oas_bits in [
+            None,
+            Some(48),
+            Some(0),
+            Some(33),
+            Some(u32::from(u8::MAX)),
+            Some(256),
+            Some(u32::MAX),
+        ] {
+            let result = parse_pcie_iommu(vmservice::PcieIommuConfig {
+                kind: Some(Kind::Smmu(vmservice::SmmuConfig {
+                    accel: false,
+                    oas_bits,
+                })),
+            });
+            if !cfg!(guest_arch = "aarch64") {
+                assert!(result.err().unwrap().to_string().contains("aarch64"));
+            } else if oas_bits.is_none_or(|bits| u8::try_from(bits).is_ok()) {
+                let PcieIommuConfig::Smmu { accel, oas, .. } = result.unwrap() else {
+                    panic!("expected SMMU configuration");
+                };
+                assert!(!accel);
+                match (oas, oas_bits) {
+                    (SmmuOas::Auto, None) => {}
+                    (SmmuOas::Fixed(actual), Some(expected)) => {
+                        assert_eq!(u32::from(actual), expected)
                     }
-                } else {
-                    assert!(
-                        result
-                            .err()
-                            .unwrap()
-                            .to_string()
-                            .contains("SMMU OAS out of range")
-                    );
+                    _ => panic!("unexpected OAS policy"),
                 }
+            } else {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("SMMU OAS out of range")
+                );
             }
         }
     }
@@ -2755,7 +2771,7 @@ mod tests {
             None,
             Some(vmservice::PcieIommuConfig {
                 kind: Some(Kind::Smmu(vmservice::SmmuConfig {
-                    accel: true,
+                    accel: false,
                     oas_bits: Some(48),
                 })),
             }),

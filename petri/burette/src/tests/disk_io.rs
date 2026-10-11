@@ -180,9 +180,9 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                             use openvmm_defs::config::PcieDeviceConfig;
 
                             // erofs image on port 0
-                            c.pcie_devices.push(PcieDeviceConfig {
-                                port_name: "s0rc0rp0".into(),
-                                resource: virtio_resources::VirtioPciDeviceHandle(
+                            c.pcie_devices.push(PcieDeviceConfig::new(
+                                "s0rc0rp0".into(),
+                                virtio_resources::VirtioPciDeviceHandle(
                                     virtio_resources::blk::VirtioBlkHandle {
                                         disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                         read_only: true,
@@ -191,11 +191,11 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                     .into_resource(),
                                 )
                                 .into_resource(),
-                            });
+                            ));
                             // data disk on port 1
-                            c.pcie_devices.push(PcieDeviceConfig {
-                                port_name: "s0rc0rp1".into(),
-                                resource: virtio_resources::VirtioPciDeviceHandle(
+                            c.pcie_devices.push(PcieDeviceConfig::new(
+                                "s0rc0rp1".into(),
+                                virtio_resources::VirtioPciDeviceHandle(
                                     virtio_resources::blk::VirtioBlkHandle {
                                         disk,
                                         read_only: false,
@@ -204,7 +204,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                     .into_resource(),
                                 )
                                 .into_resource(),
-                            });
+                            ));
                         })
                 });
             }
@@ -222,9 +222,9 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                 use openvmm_defs::config::PcieDeviceConfig;
 
                                 // erofs image on a PCIe root port
-                                c.pcie_devices.push(PcieDeviceConfig {
-                                    port_name: "s0rc0rp0".into(),
-                                    resource: virtio_resources::VirtioPciDeviceHandle(
+                                c.pcie_devices.push(PcieDeviceConfig::new(
+                                    "s0rc0rp0".into(),
+                                    virtio_resources::VirtioPciDeviceHandle(
                                         virtio_resources::blk::VirtioBlkHandle {
                                             disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                             read_only: true,
@@ -233,7 +233,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                         .into_resource(),
                                     )
                                     .into_resource(),
-                                });
+                                ));
                             })
                     })
                     .add_vmbus_storage_controller(

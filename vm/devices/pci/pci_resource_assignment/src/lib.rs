@@ -51,6 +51,7 @@ pub trait PciConfigAccess {
 }
 
 pub use memory_range::MemoryRange;
+use std::ops::Range;
 
 /// Parameters for PCI resource assignment on a single host bridge.
 #[derive(Debug, Clone)]
@@ -70,6 +71,39 @@ pub struct AssignmentParams {
     pub preserve_bars: bool,
 }
 
+/// A final BAR assignment produced by PCI resource allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedBar {
+    /// Whether this is a function BAR or reserved SR-IOV VF BAR space.
+    pub kind: AssignedBarKind,
+    /// BAR register index.
+    pub index: u8,
+    /// Assigned MMIO range.
+    pub range: Range<u64>,
+}
+
+/// The source of an assigned BAR range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignedBarKind {
+    /// A BAR belonging to the enumerated PCI function.
+    Function,
+    /// The aggregate aperture reserved for all VFs of an SR-IOV PF.
+    SriovVf,
+}
+
+/// Final BAR assignments for one PCI function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedDevice {
+    /// Assigned bus number.
+    pub bus: u8,
+    /// Device number.
+    pub device: u8,
+    /// Function number.
+    pub function: u8,
+    /// Assigned endpoint or bridge BARs.
+    pub bars: Vec<AssignedBar>,
+}
+
 /// Assign PCI resources (bus numbers and BAR addresses) for a host bridge.
 ///
 /// This walks the PCI topology starting at `params.start_bus`, assigns bus
@@ -79,10 +113,119 @@ pub async fn assign_pci_resources(
     cfg: &mut impl PciConfigAccess,
     params: &AssignmentParams,
 ) -> Result<(), AssignmentError> {
+    assign_pci_resources_with_report(cfg, params)
+        .await
+        .map(drop)
+}
+
+/// Assign PCI resources and return the final BAR map.
+///
+/// The report contains the exact addresses and sizes already discovered by
+/// the allocator, avoiding a second destructive BAR-probing cycle.
+pub async fn assign_pci_resources_with_report(
+    cfg: &mut impl PciConfigAccess,
+    params: &AssignmentParams,
+) -> Result<Vec<AssignedDevice>, AssignmentError> {
     let mut devices = enumerate::enumerate_and_probe(cfg, params).await?;
     assign::assign_addresses(&mut devices, params)?;
     assign::program_assignments(cfg, &devices).await;
-    Ok(())
+    Ok(collect_assignments(&devices))
+}
+
+fn collect_assignments(devices: &[enumerate::DiscoveredDevice]) -> Vec<AssignedDevice> {
+    let mut assignments = Vec::new();
+    for device in devices {
+        let mut bars = device
+            .bars
+            .iter()
+            .map(|bar| {
+                let address = bar.address.expect("address assignment completed");
+                AssignedBar {
+                    kind: AssignedBarKind::Function,
+                    index: bar.index,
+                    range: address..address + bar.size,
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(sriov) = &device.sriov {
+            bars.extend(sriov.vf_bars.iter().map(|bar| {
+                let address = bar.address.expect("VF BAR address assignment completed");
+                let size = bar
+                    .size
+                    .checked_mul(sriov.total_vfs as u64)
+                    .expect("VF BAR reservation size was validated");
+                AssignedBar {
+                    kind: AssignedBarKind::SriovVf,
+                    index: bar.index,
+                    range: address..address + size,
+                }
+            }));
+        }
+        assignments.push(AssignedDevice {
+            bus: device.bus,
+            device: device.device,
+            function: device.function,
+            bars,
+        });
+        assignments.extend(collect_assignments(&device.children));
+    }
+    assignments
+}
+
+#[cfg(test)]
+mod assignment_report_tests {
+    use super::*;
+
+    #[test]
+    fn includes_total_sriov_vf_bar_reservation() {
+        let devices = [enumerate::DiscoveredDevice {
+            bus: 1,
+            device: 0,
+            function: 0,
+            is_bridge: false,
+            bars: vec![enumerate::DiscoveredBar {
+                index: 0,
+                size: 0x100,
+                is_64bit: false,
+                is_prefetchable: false,
+                address: Some(0x1000),
+                pinned_address: None,
+            }],
+            children: vec![],
+            secondary_bus: None,
+            subordinate_bus: None,
+            sriov: Some(enumerate::DiscoveredSriov {
+                cap_offset: 0x100,
+                total_vfs: 4,
+                vf_bars: vec![enumerate::DiscoveredBar {
+                    index: 2,
+                    size: 0x20_0000,
+                    is_64bit: true,
+                    is_prefetchable: true,
+                    address: Some(0x1_0000_0000),
+                    pinned_address: None,
+                }],
+            }),
+            bridge_assignment: None,
+        }];
+
+        let assignments = collect_assignments(&devices);
+        assert_eq!(
+            assignments[0].bars,
+            [
+                AssignedBar {
+                    kind: AssignedBarKind::Function,
+                    index: 0,
+                    range: 0x1000..0x1100,
+                },
+                AssignedBar {
+                    kind: AssignedBarKind::SriovVf,
+                    index: 2,
+                    range: 0x1_0000_0000..0x1_0080_0000,
+                }
+            ]
+        );
+    }
 }
 
 /// Errors during resource assignment.

@@ -143,17 +143,21 @@ async fn boot_no_vmbus_pcie_aarch64_tcg(
         .modify_backend(move |b| {
             b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
                 c.hypervisor.with_hv = false;
-                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                    port_name: "s0rc0rp1".into(),
-                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                        pci_id: vfio_bdf,
-                        cdev,
-                        iommufd,
-                        iommu_id: "iommu0".into(),
-                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
-                    }
-                    .into_resource(),
-                });
+                c.pcie_devices
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
+                        "s0rc0rp1".into(),
+                        vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: vfio_bdf,
+                            cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                            direct_iommu: false,
+                            direct_pasid: false,
+                            direct_ats: false,
+                        }
+                        .into_resource(),
+                    ));
             })
         })
         .run()
@@ -254,17 +258,21 @@ async fn boot_no_vmbus_pcie_smmu_accel_aarch64_tcg(
                             }
                         }
                     }
-                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                        port_name: "s0rc0rp1".into(),
-                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                            pci_id: vfio_bdf,
-                            cdev,
-                            iommufd,
-                            iommu_id: "iommu0".into(),
-                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
-                        }
-                        .into_resource(),
-                    });
+                    c.pcie_devices
+                        .push(openvmm_defs::config::PcieDeviceConfig::new(
+                            "s0rc0rp1".into(),
+                            vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                                pci_id: vfio_bdf,
+                                cdev,
+                                iommufd,
+                                iommu_id: "iommu0".into(),
+                                bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                                direct_iommu: false,
+                                direct_pasid: false,
+                                direct_ats: false,
+                            }
+                            .into_resource(),
+                        ));
                 })
         })
         .run()
@@ -489,28 +497,36 @@ async fn assigned_device_peer_to_peer_dma_aarch64_tcg(
         .modify_backend(move |b| {
             b.with_pcie_root_topology(1, 1, 3).with_custom_config(|c| {
                 c.hypervisor.with_hv = false;
-                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                    port_name: "s0rc0rp1".into(),
-                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                        pci_id: edu_bdf_for_cfg.clone(),
-                        cdev: edu_cdev,
-                        iommufd,
-                        iommu_id: "iommu0".into(),
-                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
-                    }
-                    .into_resource(),
-                });
-                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                    port_name: "s0rc0rp2".into(),
-                    resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                        pci_id: ivshmem_bdf_for_cfg.clone(),
-                        cdev: ivshmem_cdev,
-                        iommufd: iommufd2,
-                        iommu_id: "iommu0".into(),
-                        bar_addresses: [BarAddressConfig::GuestAssigned; 6],
-                    }
-                    .into_resource(),
-                });
+                c.pcie_devices
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
+                        "s0rc0rp1".into(),
+                        vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: edu_bdf_for_cfg.clone(),
+                            cdev: edu_cdev,
+                            iommufd,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                            direct_iommu: false,
+                            direct_pasid: false,
+                            direct_ats: false,
+                        }
+                        .into_resource(),
+                    ));
+                c.pcie_devices
+                    .push(openvmm_defs::config::PcieDeviceConfig::new(
+                        "s0rc0rp2".into(),
+                        vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                            pci_id: ivshmem_bdf_for_cfg.clone(),
+                            cdev: ivshmem_cdev,
+                            iommufd: iommufd2,
+                            iommu_id: "iommu0".into(),
+                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                            direct_iommu: false,
+                            direct_pasid: false,
+                            direct_ats: false,
+                        }
+                        .into_resource(),
+                    ));
             })
         })
         .run()
@@ -708,17 +724,21 @@ async fn assigned_device_smmu_accel_fault_aarch64_tcg(
                             }
                         }
                     }
-                    c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
-                        port_name: "s0rc0rp1".into(),
-                        resource: vfio_assigned_device_resources::VfioCdevDeviceHandle {
-                            pci_id: edu_bdf,
-                            cdev: edu_cdev,
-                            iommufd,
-                            iommu_id: "iommu0".into(),
-                            bar_addresses: [BarAddressConfig::GuestAssigned; 6],
-                        }
-                        .into_resource(),
-                    });
+                    c.pcie_devices
+                        .push(openvmm_defs::config::PcieDeviceConfig::new(
+                            "s0rc0rp1".into(),
+                            vfio_assigned_device_resources::VfioCdevDeviceHandle {
+                                pci_id: edu_bdf,
+                                cdev: edu_cdev,
+                                iommufd,
+                                iommu_id: "iommu0".into(),
+                                bar_addresses: [BarAddressConfig::GuestAssigned; 6],
+                                direct_iommu: false,
+                                direct_pasid: false,
+                                direct_ats: false,
+                            }
+                            .into_resource(),
+                        ));
                 })
         })
         .run()

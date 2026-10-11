@@ -691,6 +691,11 @@ async fn probe_sriov(
     sriov_offset: Option<u16>,
     preserve_bars: bool,
 ) -> Option<SriovProbeResult> {
+    let vendor_device = cfg.read_u32(bus, devfn, 0).await;
+    if vendor_device & 0xffff == 0x10de && vendor_device >> 16 == 0x2941 {
+        return None;
+    }
+
     let offset = sriov_offset?;
 
     // Read TotalVFs.

@@ -459,6 +459,7 @@ pub mod caps {
             #![expect(missing_docs)] // self explanatory variants
             ACS   = 0x0D,
             ARI   = 0x0E,
+            ATS   = 0x0F,
             SRIOV = 0x10,
             REBAR = 0x15,
             PASID = 0x1B,
