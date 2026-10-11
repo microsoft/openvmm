@@ -154,11 +154,19 @@ describes the source definitions.
   when ingress is denied; unsolicited connections toward the guest remain
   unavailable.
 
-  The portable profile cannot truthfully provide unrestricted inbound
-  connectivity, so `--network-ingress allow` is rejected before VM resources
-  are opened. Egress `allow` may accompany `--block-host`; egress `deny` may
-  accompany `--allow-host` or `--allow-endpoint`. Contradictory default and
-  rule combinations are rejected at the same validation boundary.
+  `--network-ingress allow` publishes every TCP and UDP port on which the guest
+  listens to the host's private networks, without a port list. OpenVMM
+  appends `virtnet_ingress=allow` to the command line, the guest announces its
+  listeners to the IPv4 gateway, and Consomme listens on every host address at
+  each announced port, relaying only peers whose addresses are not globally
+  reachable. Globally reachable peers are refused, and so is the host itself
+  unless `--host-loopback allow` admits it. Replies to admitted peers pass
+  regardless of the egress policy. Snapshot capture and restore reject ingress
+  `allow`, because its listeners are live host attachments.
+
+  Egress `allow` may accompany `--block-host`; egress `deny` may accompany
+  `--allow-host` or `--allow-endpoint`. Contradictory default and rule
+  combinations are rejected at the same validation boundary.
 
   `--network-egress-allow <RULE>` and `--network-egress-deny <RULE>` provide
   the generic L3/L4 policy form. A rule names a `CIDR`, an IPv4 or IPv6
@@ -189,9 +197,11 @@ describes the source definitions.
   complete before VM resources are opened.
 
   `--host-loopback <allow|deny>` controls host-local access. The portable
-  profile cannot provide generic bidirectional host-loopback connectivity:
-  explicit `allow` without `--host-loopback-forward` is rejected before VM
-  resources are opened. With deliberate forwards, `allow` preserves
+  profile cannot provide generic bidirectional host-loopback connectivity on
+  its own: explicit `allow` without `--host-loopback-forward` is rejected
+  before VM resources are opened unless `--network-ingress allow` is present,
+  whose published listeners then also admit the host. With deliberate
+  forwards, `allow` preserves
   guest-to-host access subject to egress policy and publishes only the named
   host-to-guest ports. Omitting the option preserves the existing
   guest-gateway-to-host-loopback mapping, from the IPv4 gateway to host IPv4
