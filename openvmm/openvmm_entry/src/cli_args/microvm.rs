@@ -428,7 +428,9 @@ pub struct MicrovmCli {
 
     /// attach a host directory to the fixed microVM virtio-fs slot
     ///
-    /// The directory uses the `microvm` tag. An active snapshot requires the
+    /// The directory uses the `microvm` tag. GUEST_TARGET ends at the first
+    /// comma, and the optional mode follows the last comma, so HOST_PATH may
+    /// contain commas when the mode is given. An active snapshot requires the
     /// same canonical host path, guest target, and mode. A dormant-slot
     /// snapshot may bind one new attachment on restore; the resumed guest
     /// must mount the `microvm` tag explicitly. To share several host
@@ -589,19 +591,20 @@ impl FromStr for MicrovmMountCli {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut fields = value.splitn(3, ',');
-        let guest_target = fields
-            .next()
-            .filter(|value| !value.is_empty())
-            .context("expected <guest-target>,<host-path>[,ro|rw]")?;
-        let host_path = fields
-            .next()
-            .filter(|value| !value.is_empty())
-            .context("expected <guest-target>,<host-path>[,ro|rw]")?;
-        let access = match fields.next().unwrap_or("ro") {
+        const USAGE: &str = "expected <guest-target>,<host-path>[,ro|rw]";
+        // The guest target ends at the first comma. With another comma, the
+        // mode follows the last one, so a host path may contain commas when
+        // the mode is given.
+        let (guest_target, rest) = value.split_once(',').context(USAGE)?;
+        let (host_path, mode) = rest.rsplit_once(',').unwrap_or((rest, "ro"));
+        anyhow::ensure!(!guest_target.is_empty() && !host_path.is_empty(), USAGE);
+        let access = match mode {
             "ro" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
             "rw" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
-            mode => anyhow::bail!("invalid microVM mount mode '{mode}'; expected ro or rw"),
+            mode => anyhow::bail!(
+                "invalid microVM mount mode '{mode}'; expected ro or rw (a host path that \
+                 contains commas requires the mode)"
+            ),
         };
         openvmm_defs::microvm::MicrovmFilesystemConfig::new(guest_target.to_owned(), access)?;
         Ok(Self {
@@ -2948,6 +2951,46 @@ mod tests {
         assert!(MicrovmMountCli::from_str("relative,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/../escape,host").is_err());
         assert!(MicrovmMountCli::from_str("/mnt/share,host,write").is_err());
+
+        // The mode follows the last comma, so a host path may contain commas
+        // when the mode is given.
+        let commas = MicrovmMountCli::from_str("/mnt/share,/srv/alpha,beta,rw").unwrap();
+        assert_eq!(commas.guest_target, "/mnt/share");
+        assert_eq!(commas.host_path, PathBuf::from("/srv/alpha,beta"));
+        assert_eq!(
+            commas.access,
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite
+        );
+        let spaced = MicrovmMountCli::from_str(r"/reports,C:\reports\2026, final,ro").unwrap();
+        assert_eq!(spaced.host_path, PathBuf::from(r"C:\reports\2026, final"));
+        assert_eq!(
+            spaced.access,
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly
+        );
+        // A host path that ends in a comma or in what looks like a mode keeps
+        // it before the mode.
+        let suffixed = MicrovmMountCli::from_str("/mnt/share,/srv/data,rw,ro").unwrap();
+        assert_eq!(suffixed.host_path, PathBuf::from("/srv/data,rw"));
+        assert_eq!(
+            suffixed.access,
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly
+        );
+        let trailing = MicrovmMountCli::from_str("/mnt/share,/srv/data,,rw").unwrap();
+        assert_eq!(trailing.host_path, PathBuf::from("/srv/data,"));
+        for invalid in [
+            "",
+            "/mnt/share",
+            "/mnt/share,",
+            ",host",
+            ",host,rw",
+            "/mnt/share,,rw",
+            "/mnt/share,host,",
+            // Without the mode, the text after the last comma is no mode.
+            "/mnt/share,/srv/alpha,beta",
+            "/mnt/share,host,rw,write",
+        ] {
+            assert!(MicrovmMountCli::from_str(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
