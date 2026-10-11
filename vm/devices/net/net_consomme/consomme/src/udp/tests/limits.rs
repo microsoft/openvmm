@@ -29,6 +29,7 @@ fn insert_socketless_flows(consomme: &mut Consomme, count: usize) {
                 recycle: false,
                 last_activity: Instant::now(),
                 gso_size: None,
+                translated_peers: Default::default(),
             },
         );
     }
