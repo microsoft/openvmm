@@ -894,3 +894,151 @@ fn ipv6_policies_have_their_own_canonical_encoding() {
             .any(|window| window == record)
     );
 }
+
+fn with_tcp_flags(mut frame: Vec<u8>, flags: u8) -> Vec<u8> {
+    frame[54 + 13] = flags;
+    frame
+}
+
+#[test]
+fn ingress_admits_ipv6_replies_in_every_mode() {
+    const SYN: u8 = 0x02;
+    const SYN_ACK: u8 = 0x12;
+    let peer = address("fd12:3456::7");
+    for mode in [
+        EgressPolicyMode::DenyAll,
+        EgressPolicyMode::AllowList(vec!["192.0.2.0/24".parse().unwrap()]),
+        rules(EgressAction::Deny, &["2001:db8::/32:tcp:443"], &[]),
+    ] {
+        let without_ingress = dual_stack(mode.clone());
+        let with_ingress = dual_stack(mode).with_ingress(EgressAction::Allow);
+
+        // The guest resolves the gateway and other on-link neighbors, which
+        // these modes do not otherwise let it resolve.
+        for target in [GATEWAY_IPV6, address("fd00::a00:9")] {
+            authorize(&with_ingress, &solicitation(GUEST_IPV6, target, true)).unwrap();
+        }
+        assert!(
+            authorize(
+                &without_ingress,
+                &solicitation(GUEST_IPV6, address("fd00::a00:9"), true)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            authorize(
+                &with_ingress,
+                &solicitation(GUEST_IPV6, address("2001:db8::7"), true)
+            ),
+            Err(EgressDenied::NeighborDiscoveryDenied)
+        );
+
+        // It resolves the addresses in the subnet at which the gateway presents
+        // host peers, such as the host's IPv6 loopback, from either of its
+        // addresses, but no link-local address.
+        let guest_link_local = link_local_address(MacAddress::new(GUEST_MAC));
+        let host_peer = address("fd00::a00:ff");
+        for source in [GUEST_IPV6, guest_link_local] {
+            authorize(&with_ingress, &solicitation(source, host_peer, true)).unwrap();
+            assert!(authorize(&without_ingress, &solicitation(source, host_peer, true)).is_err());
+        }
+        for target in [address("fe80::ff:fe00:1:1"), guest_link_local] {
+            assert_eq!(
+                authorize(&with_ingress, &solicitation(GUEST_IPV6, target, true)),
+                Err(EgressDenied::NeighborDiscoveryDenied)
+            );
+        }
+
+        // A reply candidate passes the prefilter, and the endpoint admits it
+        // only for a flow that it carries.
+        for (frame, transport) in [
+            (
+                with_tcp_flags(tcp(peer, 8080), SYN_ACK),
+                IngressTransport::Tcp,
+            ),
+            (udp(peer, 5353), IngressTransport::Udp),
+        ] {
+            assert!(authorize(&without_ingress, &frame).is_err());
+            authorize(&with_ingress, &frame).unwrap();
+            let mut seen = Vec::new();
+            let denied = with_ingress.authorize_frame_with_flows(
+                &frame,
+                frame.len(),
+                &mut |c| {
+                    seen.push(*c);
+                    false
+                },
+                &|_| None,
+            );
+            assert!(denied.is_err());
+            assert_eq!(
+                seen,
+                [ReplyCandidate {
+                    transport,
+                    guest: SocketAddr::from((GUEST_IPV6, 12345)),
+                    peer: SocketAddr::from((peer, read_u16(&frame, 56))),
+                }]
+            );
+            with_ingress
+                .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true, &|_| None)
+                .unwrap();
+        }
+
+        // A connection-opening SYN and ICMPv6 remain subject to the mode.
+        for frame in [with_tcp_flags(tcp(peer, 8080), SYN), echo_request(peer)] {
+            assert!(authorize(&with_ingress, &frame).is_err());
+            assert!(
+                with_ingress
+                    .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true, &|_| None)
+                    .is_err()
+            );
+        }
+    }
+
+    // Rules still admit what they allow without consulting the flows.
+    let allowed = policy(EgressAction::Deny, &["2001:db8::/32:tcp:443"], &[])
+        .with_ingress(EgressAction::Allow);
+    let frame = with_tcp_flags(tcp(address("2001:db8::7"), 443), SYN);
+    allowed
+        .authorize_frame_with_flows(
+            &frame,
+            frame.len(),
+            &mut |_| panic!("allowed traffic is no reply candidate"),
+            &|_| None,
+        )
+        .unwrap();
+}
+
+#[test]
+fn rules_evaluate_ipv6_host_loopback_peers_at_the_gateway() {
+    const SYN: u8 = 0x02;
+    const SYN_ACK: u8 = 0x12;
+    // The endpoint presents the host's IPv6 loopback at an address in the
+    // guest's subnet.
+    let loopback_peer = address("fd00::a00:ff");
+    let routed = |destination: IpAddr| {
+        (destination == IpAddr::V6(loopback_peer)).then_some(IpAddr::V6(Ipv6Addr::LOCALHOST))
+    };
+    let policy = policy(EgressAction::Allow, &[], &["fd00::a00:1/128:tcp:2375"])
+        .with_host_loopback_ingress(EgressAction::Allow);
+    let authorize_with = |frame: &[u8], carried: bool| {
+        policy.authorize_frame_with_flows(frame, frame.len(), &mut |_| carried, &routed)
+    };
+
+    for destination in [GATEWAY_IPV6, loopback_peer] {
+        assert_eq!(
+            authorize_with(&with_tcp_flags(tcp(destination, 2375), SYN), true),
+            Err(EgressDenied::DestinationDenied)
+        );
+        authorize_with(&with_tcp_flags(tcp(destination, 8080), SYN), false).unwrap();
+    }
+    // The prefilter leaves the peer's address to the endpoint, which still
+    // admits replies for the flows that it carries.
+    authorize(&policy, &with_tcp_flags(tcp(loopback_peer, 2375), SYN)).unwrap();
+    let reply = with_tcp_flags(tcp(loopback_peer, 2375), SYN_ACK);
+    authorize_with(&reply, true).unwrap();
+    assert_eq!(
+        authorize_with(&reply, false),
+        Err(EgressDenied::DestinationDenied)
+    );
+}
