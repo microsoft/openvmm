@@ -535,6 +535,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 config,
                 &network.policy,
                 &self.opt.microvm.host_loopback_forward,
+                self.opt.microvm_private_network_ingress(),
                 resources,
             )?;
             add_virtio_device(
@@ -801,12 +802,16 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|_| openvmm_defs::microvm::microvm_virtio_net_irq(requested_hypervisor))
                 .transpose()?;
+            let ingress = self.network.as_ref().is_some_and(|network| {
+                network.policy.ingress_action()
+                    == net_backend_resources::egress::EgressAction::Allow
+            });
             let network = cfg
                 .microvm
                 .network
                 .as_ref()
                 .zip(network_irq)
-                .map(|(network, irq)| (network, irq, self.gateway_dns));
+                .map(|(network, irq)| (network, irq, self.gateway_dns, ingress));
             if let Some(snapshot_tier) = opt.microvm.snapshot_tier {
                 anyhow::ensure!(
                     !cmdline

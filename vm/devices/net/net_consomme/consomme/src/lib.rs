@@ -22,6 +22,7 @@ mod dhcpv6;
 mod dns;
 mod dns_resolver;
 mod icmp;
+mod inbound;
 pub mod limits;
 mod local_addr_map;
 mod ndp;
@@ -45,6 +46,8 @@ const DEFAULT_TCP_BUFFER_BOUNDS: TcpBufferBounds = TcpBufferBounds {
 
 pub use dns_resolver::StaticDnsRecord;
 pub use dns_resolver::StaticDnsRecordError;
+pub use inbound::InboundAdmission;
+pub use inbound::is_private_network_address;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -90,11 +93,18 @@ impl core::fmt::Display for FourTuple {
 struct PortForwardKey {
     family: IpVersion,
     guest_port: u16,
+    /// Whether the listener publishes the guest port to the host's private
+    /// networks, which it may do beside an explicit forward to that port.
+    published: bool,
 }
 
 impl PortForwardKey {
     fn new(family: IpVersion, guest_port: u16) -> Self {
-        Self { family, guest_port }
+        Self {
+            family,
+            guest_port,
+            published: false,
+        }
     }
 
     fn from_socket_addr(addr: SocketAddr, guest_port: u16) -> Self {
@@ -104,11 +114,37 @@ impl PortForwardKey {
         };
         Self::new(family, guest_port)
     }
+
+    /// Returns the key of the listener that publishes the same guest port.
+    fn publication(self) -> Self {
+        Self {
+            published: true,
+            ..self
+        }
+    }
+
+    /// Returns the key of a listener that admits the peers that `admission`
+    /// admits.
+    fn with_admission(self, admission: InboundAdmission) -> Self {
+        Self {
+            published: admission.publishes_guest_port(),
+            ..self
+        }
+    }
+
+    /// Returns whether both keys name the same guest port of one family.
+    fn same_guest_port(self, other: Self) -> bool {
+        self.family == other.family && self.guest_port == other.guest_port
+    }
 }
 
 impl core::fmt::Display for PortForwardKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}", self.family, self.guest_port)
+        write!(f, "{}:{}", self.family, self.guest_port)?;
+        if self.published {
+            f.write_str(":published")?;
+        }
+        Ok(())
     }
 }
 
@@ -131,6 +167,8 @@ struct ConsommeState {
     #[inspect(skip)]
     buffer: Box<[u8]>,
     local_addr_map: local_addr_map::LocalAddrMap,
+    #[inspect(skip)]
+    host_addresses: inbound::HostAddresses,
 }
 
 /// Dynamic networking properties of a consomme endpoint.
@@ -413,6 +451,21 @@ impl ConsommeParams {
     /// IPv6 identity.
     fn is_gateway_ipv6(&self, address: Ipv6Address) -> bool {
         address == self.gateway_link_local_ipv6 || self.gateway_ipv6 == Some(address)
+    }
+
+    /// Returns whether `address` lies in the guest's IPv4 subnet or in the
+    /// subnet of its static IPv6 identity, where the guest takes it for its
+    /// gateway, itself, or a neighbor that the gateway answers for.
+    fn is_guest_network_address(&self, address: IpAddr) -> bool {
+        match address {
+            IpAddr::V4(address) => {
+                let mask = u32::from(self.net_mask);
+                u32::from(address) & mask == u32::from(self.gateway_ip) & mask
+            }
+            IpAddr::V6(address) => self
+                .gateway_ipv6
+                .is_some_and(|gateway| is_same_ipv6_subnet(address, gateway, self.prefix_len_ipv6)),
+        }
     }
 }
 
@@ -874,6 +927,7 @@ impl Consomme {
                 params,
                 buffer: Box::new([0; 65536]),
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
+                host_addresses: inbound::HostAddresses::new(),
             },
             tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
             udp: udp::Udp::new(udp_timeout),
@@ -944,6 +998,20 @@ impl Consomme {
             inner: self,
             client,
         }
+    }
+
+    /// Returns whether a TCP connection between the guest's `guest` address
+    /// and `peer`, as the guest addresses it, exists.
+    pub fn carries_tcp_flow(&self, guest: SocketAddr, peer: SocketAddr) -> bool {
+        self.tcp.carries_flow(guest, peer)
+    }
+
+    /// Returns whether `peer`, as the guest addresses it, recently exchanged
+    /// datagrams with the guest port of `guest` that a listener publishes to
+    /// the host's private networks.
+    pub fn carries_udp_flow(&self, guest: SocketAddr, peer: SocketAddr) -> bool {
+        self.udp
+            .carries_flow(guest, self.state.resolve_destination(&peer))
     }
 }
 

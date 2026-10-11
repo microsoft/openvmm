@@ -127,6 +127,7 @@ pub(super) fn microvm_network_endpoint(
     network: &openvmm_defs::microvm::MicrovmNetworkConfig,
     policy: &net_backend_resources::egress::EgressPolicy,
     loopback_forwards: &[cli_args::microvm::MicrovmLoopbackForwardCli],
+    private_network_ingress: Option<net_backend_resources::consomme::PrivateNetworkIngress>,
     _resources: &mut VmResources,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     let ports = loopback_forwards
@@ -167,6 +168,7 @@ pub(super) fn microvm_network_endpoint(
         allow_host_local_access: Some(allow_host_loopback),
         map_gateway_to_host_loopback: Some(allow_host_loopback),
         gateway_loopback_proxy_port: policy.proxy_endpoint().map(|endpoint| endpoint.port()),
+        private_network_ingress,
     }
     .into_resource())
 }
@@ -201,7 +203,7 @@ pub(crate) mod tests {
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
-            Some((network, irq, policy.gateway_dns_server())),
+            Some((network, irq, policy.gateway_dns_server(), false)),
             false,
             &[],
             false,

@@ -60,11 +60,34 @@ to IPv4-mapped destinations are rejected because a dual-stack host socket
 would reach the embedded IPv4 host.
 
 The portable profile accepts directional network defaults through
-`--network-egress <allow|deny>` and `--network-ingress <allow|deny>`. It
-supports both egress actions and ingress `deny`. Stateful replies to an
-allowed guest-initiated flow are not treated as new inbound connections.
-Ingress `allow` is rejected before VM resources are opened because portable
-NAT does not expose arbitrary guest listeners.
+`--network-egress <allow|deny>` and `--network-ingress <allow|deny>`, and
+supports both actions of each. Stateful replies to an allowed guest-initiated
+flow are not treated as new inbound connections.
+
+With ingress `allow`, the guest's listeners are published to the host's
+private networks. OpenVMM appends `virtnet_ingress=allow` to the microVM
+command line, and the guest announces the TCP and UDP ports on which it listens
+in UDP datagrams to port 1021 of the IPv4 gateway, sent from a privileged
+source port (see `net_backend_resources::ingress`). The endpoint consumes each
+announcement before the egress policy and keeps one host listener per
+announced port and address family, bound to every host address at the guest's
+port number. A listener relays only peers whose addresses are not globally
+reachable, such as private-use, shared, link-local, or unique local
+addresses; it resets the TCP connections and drops the UDP datagrams of other
+peers. It also refuses peers inside the guest's own subnets, which the guest
+would take for its gateway or its neighbors, and IPv6 link-local peers, whose
+replies would leave from the guest's link-local address. Peers at the host's
+own addresses, including loopback, count as host
+loopback and are admitted only with explicit `--host-loopback allow`. Replies
+to admitted peers pass regardless of the egress policy: a TCP segment other
+than an initial SYN, or a UDP datagram, that the policy denies is admitted
+only when it continues a flow that Consomme carries. A UDP reply to a recent
+peer of a published port leaves through that port's listener, before the
+gateway interprets its destination, so the client sees it come from the
+address and port that it reached. A publication may coexist with an explicit
+forward to the same guest port. Ports that the host cannot bind, such as ones
+that a host process holds, are retried with the next announcement. Snapshots
+reject ingress `allow`.
 
 The generic egress rule form accepts destination IPv4 or IPv6 addresses or
 CIDRs, optionally restricted to TCP, UDP, or ICMP, and for TCP or UDP
@@ -79,8 +102,9 @@ headers, including fragments. The legacy `--allow-host`, `--block-host`, and
 `--allow-endpoint` forms are IPv4 policies that deny all IPv6.
 
 The portable profile does not provide generic bidirectional host-loopback
-connectivity. Explicit `--host-loopback allow` without any
-`--host-loopback-forward` is rejected before VM resources are opened.
+connectivity on its own. Explicit `--host-loopback allow` without any
+`--host-loopback-forward` is rejected before VM resources are opened unless
+ingress is `allow`, whose published listeners then also admit the host.
 With deliberate TCP/UDP forwards, `allow` maps the guest-visible gateway to
 host loopback, permits host-local destinations subject to egress policy, and
 publishes only the specified localhost-to-guest ports. This is port publishing,

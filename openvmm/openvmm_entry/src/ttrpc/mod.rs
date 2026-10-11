@@ -1920,6 +1920,7 @@ fn parse_nic_config(
             allow_host_local_access: None,
             map_gateway_to_host_loopback: None,
             gateway_loopback_proxy_port: None,
+            private_network_ingress: None,
         }
         .into_resource(),
         _ => anyhow::bail!("unsupported backend"),
@@ -2543,6 +2544,7 @@ fn build_nic_backend(
                 allow_host_local_access: None,
                 map_gateway_to_host_loopback: None,
                 gateway_loopback_proxy_port: None,
+                private_network_ingress: None,
             }
             .into_resource()
         }
