@@ -602,8 +602,8 @@ impl FromStr for MicrovmMountCli {
             "ro" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
             "rw" => openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite,
             mode => anyhow::bail!(
-                "invalid microVM mount mode '{mode}'; expected ro or rw (a host path that \
-                 contains commas requires the mode)"
+                "invalid microVM mount mode '{mode}'; expected ro or rw (if HOST_PATH \
+                 contains commas, end the value with ,ro or ,rw)"
             ),
         };
         openvmm_defs::microvm::MicrovmFilesystemConfig::new(guest_target.to_owned(), access)?;
@@ -2991,6 +2991,15 @@ mod tests {
         ] {
             assert!(MicrovmMountCli::from_str(invalid).is_err(), "{invalid}");
         }
+        // The error for another mode suggests the mode for a host path with
+        // commas.
+        let error = MicrovmMountCli::from_str("/mnt/share,/srv/alpha,beta")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("mode 'beta'") && error.contains("if HOST_PATH contains commas"),
+            "{error}"
+        );
     }
 
     #[test]
