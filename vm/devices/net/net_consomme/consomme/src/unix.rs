@@ -4,7 +4,7 @@
 #![cfg(unix)]
 //! Unix platform helpers for consomme.
 //!
-//! - IPv6 address detection via `getifaddrs()`.
+//! - Host address listing and IPv6 address detection via `getifaddrs()`.
 //! - UDP GSO send:
 //!   - Linux: `setsockopt(IPPROTO_UDP, UDP_SEGMENT)` sets the segment size
 //!     once per connection
@@ -14,6 +14,8 @@
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
 #![expect(unsafe_code)]
 
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
@@ -199,6 +201,13 @@ pub fn send_to(
 /// Checks whether the host has at least one non-link-local, non-loopback
 /// IPv6 unicast address assigned.
 pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {
+    Ok(host_unicast_addresses()?
+        .iter()
+        .any(|address| matches!(address, IpAddr::V6(address) if super::is_routable_ipv6(address))))
+}
+
+/// Lists the unicast addresses of the host's interfaces, loopback included.
+pub fn host_unicast_addresses() -> Result<Vec<IpAddr>, std::io::Error> {
     let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
 
     // SAFETY: Calling getifaddrs according to its API contract. The function
@@ -208,38 +217,42 @@ pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {
         return Err(std::io::Error::last_os_error());
     }
 
-    let mut found = false;
+    let mut addresses = Vec::new();
     let mut current = addrs;
 
     while !current.is_null() {
         // SAFETY: `current` is a valid node in the linked list allocated by
-        // getifaddrs. We dereference it to read ifa_addr and ifa_next.
-        // When ifa_addr is a non-null AF_INET6 sockaddr, we cast to
-        // sockaddr_in6 to extract the address bytes.
-        let (ipv6_addr, next) = unsafe {
+        // getifaddrs. We dereference it to read ifa_addr and ifa_next. A
+        // non-null ifa_addr of family AF_INET or AF_INET6 points to a
+        // sockaddr_in or sockaddr_in6, which we read the address from.
+        let (address, next) = unsafe {
             let ifa = &*current;
-            let addr =
-                if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET6 {
-                    let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
-                    Some(Ipv6Addr::from(sin6.sin6_addr.s6_addr))
-                } else {
-                    None
-                };
-            (addr, ifa.ifa_next)
+            let address = if ifa.ifa_addr.is_null() {
+                None
+            } else {
+                match i32::from((*ifa.ifa_addr).sa_family) {
+                    libc::AF_INET => {
+                        let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                        Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                            sin.sin_addr.s_addr,
+                        ))))
+                    }
+                    libc::AF_INET6 => {
+                        let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                        Some(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)))
+                    }
+                    _ => None,
+                }
+            };
+            (address, ifa.ifa_next)
         };
 
-        if let Some(addr) = ipv6_addr {
-            if super::is_routable_ipv6(&addr) {
-                found = true;
-                break;
-            }
-        }
-
+        addresses.extend(address);
         current = next;
     }
 
     // SAFETY: Freeing the linked list allocated by getifaddrs.
     unsafe { libc::freeifaddrs(addrs) };
 
-    Ok(found)
+    Ok(addresses)
 }
