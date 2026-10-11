@@ -52,6 +52,7 @@ fixes the remaining guest-visible configuration:
 | Maximum write | 1 MiB payload plus protocol headers |
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
 | Device nodes | `rw`: `mknod` of a character or block device fails with `EPERM`; `ro`: `EROFS` |
+| Rename flags | `RENAME_NOREPLACE` or `RENAME_EXCHANGE`: passed to `renameat2` on a Linux host, so `RENAME_EXCHANGE` swaps two names, and `EINVAL` on a Windows host; other flags, such as `RENAME_WHITEOUT`: `EINVAL` |
 
 ### Several host directories
 
