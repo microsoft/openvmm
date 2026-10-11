@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod egress;
+pub mod ingress;
 pub mod mac_address;
 
 /// Null backend.
@@ -103,6 +104,20 @@ pub mod consomme {
         Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
     }
 
+    /// Publication of the guest's listening ports to the host's private
+    /// networks; see [`crate::ingress`].
+    ///
+    /// The endpoint listens on every host address, at the guest's port
+    /// numbers, for the TCP and UDP ports that the guest announces, and admits
+    /// clients whose addresses are not globally reachable. It refuses the host
+    /// itself, through loopback or one of its own addresses, unless
+    /// `admit_host` is set.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, MeshPayload)]
+    pub struct PrivateNetworkIngress {
+        /// Whether the host itself may also connect to the published ports.
+        pub admit_host: bool,
+    }
+
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
     pub struct ConsommeHandle {
@@ -123,6 +138,9 @@ pub mod consomme {
         /// Exact gateway TCP port translated to host loopback even when the
         /// general gateway mapping is disabled.
         pub gateway_loopback_proxy_port: Option<u16>,
+        /// Publishes the ports that the guest announces to the host's private
+        /// networks.
+        pub private_network_ingress: Option<PrivateNetworkIngress>,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

@@ -894,3 +894,110 @@ fn ipv6_policies_have_their_own_canonical_encoding() {
             .any(|window| window == record)
     );
 }
+
+fn with_tcp_flags(mut frame: Vec<u8>, flags: u8) -> Vec<u8> {
+    frame[54 + 13] = flags;
+    frame
+}
+
+#[test]
+fn ingress_admits_ipv6_replies_in_every_mode() {
+    const SYN: u8 = 0x02;
+    const SYN_ACK: u8 = 0x12;
+    let peer = address("fd12:3456::7");
+    for mode in [
+        EgressPolicyMode::DenyAll,
+        EgressPolicyMode::AllowList(vec!["192.0.2.0/24".parse().unwrap()]),
+        rules(EgressAction::Deny, &["2001:db8::/32:tcp:443"], &[]),
+    ] {
+        let without_ingress = dual_stack(mode.clone());
+        let with_ingress = dual_stack(mode).with_ingress(EgressAction::Allow);
+
+        // The guest resolves the gateway and other on-link neighbors, which
+        // these modes do not otherwise let it resolve.
+        for target in [GATEWAY_IPV6, address("fd00::a00:9")] {
+            authorize(&with_ingress, &solicitation(GUEST_IPV6, target, true)).unwrap();
+        }
+        assert!(
+            authorize(
+                &without_ingress,
+                &solicitation(GUEST_IPV6, address("fd00::a00:9"), true)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            authorize(
+                &with_ingress,
+                &solicitation(GUEST_IPV6, address("2001:db8::7"), true)
+            ),
+            Err(EgressDenied::NeighborDiscoveryDenied)
+        );
+
+        // It also resolves the link-local addresses at which the gateway
+        // presents host peers, such as the host's IPv6 loopback, from either
+        // of its addresses, but never its own link-local address.
+        let guest_link_local = link_local_address(MacAddress::new(GUEST_MAC));
+        let host_peer = address("fe80::ff:fe00:1:1");
+        for source in [GUEST_IPV6, guest_link_local] {
+            authorize(&with_ingress, &solicitation(source, host_peer, true)).unwrap();
+            assert!(authorize(&without_ingress, &solicitation(source, host_peer, true)).is_err());
+        }
+        assert_eq!(
+            authorize(
+                &with_ingress,
+                &solicitation(GUEST_IPV6, guest_link_local, true)
+            ),
+            Err(EgressDenied::NeighborDiscoveryDenied)
+        );
+
+        // A reply candidate passes the prefilter, and the endpoint admits it
+        // only for a flow that it carries.
+        for (frame, transport) in [
+            (
+                with_tcp_flags(tcp(peer, 8080), SYN_ACK),
+                IngressTransport::Tcp,
+            ),
+            (udp(peer, 5353), IngressTransport::Udp),
+        ] {
+            assert!(authorize(&without_ingress, &frame).is_err());
+            authorize(&with_ingress, &frame).unwrap();
+            let mut seen = Vec::new();
+            let denied = with_ingress.authorize_frame_with_flows(&frame, frame.len(), &mut |c| {
+                seen.push(*c);
+                false
+            });
+            assert!(denied.is_err());
+            assert_eq!(
+                seen,
+                [ReplyCandidate {
+                    transport,
+                    guest: SocketAddr::from((GUEST_IPV6, 12345)),
+                    peer: SocketAddr::from((peer, read_u16(&frame, 56))),
+                }]
+            );
+            with_ingress
+                .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true)
+                .unwrap();
+        }
+
+        // A connection-opening SYN and ICMPv6 remain subject to the mode.
+        for frame in [with_tcp_flags(tcp(peer, 8080), SYN), echo_request(peer)] {
+            assert!(authorize(&with_ingress, &frame).is_err());
+            assert!(
+                with_ingress
+                    .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true)
+                    .is_err()
+            );
+        }
+    }
+
+    // Rules still admit what they allow without consulting the flows.
+    let allowed = policy(EgressAction::Deny, &["2001:db8::/32:tcp:443"], &[])
+        .with_ingress(EgressAction::Allow);
+    let frame = with_tcp_flags(tcp(address("2001:db8::7"), 443), SYN);
+    allowed
+        .authorize_frame_with_flows(&frame, frame.len(), &mut |_| {
+            panic!("allowed traffic is no reply candidate")
+        })
+        .unwrap();
+}
