@@ -94,8 +94,6 @@ pub struct WatchdogServicesState {
     count: u32,
     // internal state
     configured_count: u32,
-    /// The timer fired and the platform's timeout action has not finished.
-    timeout_pending: bool,
 }
 
 impl WatchdogServicesState {
@@ -105,7 +103,6 @@ impl WatchdogServicesState {
             resolution: BIOS_WATCHDOG_TIMER_PERIOD_S,
             count: BIOS_WATCHDOG_DEFAULT_COUNT,
             configured_count: BIOS_WATCHDOG_DEFAULT_COUNT,
-            timeout_pending: false,
         }
     }
 }
@@ -157,6 +154,16 @@ impl WatchdogServices {
         // An in-flight timeout action keeps running: it owns the platform, so
         // dropping it would lose the platform, and the timeout did happen.
         self.state = WatchdogServicesState::new();
+    }
+
+    /// Runs an in-flight timeout action to completion.
+    ///
+    /// Devices call this when they stop or reset, so a saved state never
+    /// holds a timeout whose action has not finished.
+    pub async fn finish_timeout_action(&mut self) {
+        if let Some(action) = self.timeout_action.take() {
+            self.platform = Some(action.await);
+        }
     }
 
     pub fn read(&mut self, reg: Register) -> Result<u32, WatchdogServiceError> {
@@ -239,19 +246,14 @@ impl WatchdogServices {
                 };
                 self.timeout_action = None;
                 self.platform = Some(platform);
-                self.state.timeout_pending = false;
             }
 
-            // A restored state can owe the action without the timer firing again.
-            if !self.state.timeout_pending {
-                let Poll::Ready(_now) = self.vmtime.poll_timeout(cx) else {
-                    return;
-                };
-                tracing::error!(name = self.debug_id, "Encountered a watchdog timeout");
-                self.state.config.set_configured(false);
-                self.state.config.set_enabled(false);
-                self.state.timeout_pending = true;
-            }
+            let Poll::Ready(_now) = self.vmtime.poll_timeout(cx) else {
+                return;
+            };
+            tracing::error!(name = self.debug_id, "Encountered a watchdog timeout");
+            self.state.config.set_configured(false);
+            self.state.config.set_enabled(false);
 
             // Poll the action instead of blocking on it: the platform persists
             // the timeout to its store first, and the store can be served by
@@ -289,8 +291,6 @@ mod save_restore {
             pub count: u32,
             #[mesh(4)]
             pub configured_count: u32,
-            #[mesh(5)]
-            pub timeout_pending: bool,
         }
     }
 
@@ -303,7 +303,6 @@ mod save_restore {
                 resolution,
                 count,
                 configured_count,
-                timeout_pending,
             } = self.state;
 
             let saved_state = state::SavedState {
@@ -311,7 +310,6 @@ mod save_restore {
                 resolution,
                 count,
                 configured_count,
-                timeout_pending,
             };
 
             Ok(saved_state)
@@ -323,7 +321,6 @@ mod save_restore {
                 resolution,
                 count,
                 configured_count,
-                timeout_pending,
             } = state;
 
             self.state = WatchdogServicesState {
@@ -331,7 +328,6 @@ mod save_restore {
                 resolution,
                 count,
                 configured_count,
-                timeout_pending,
             };
 
             Ok(())
@@ -349,7 +345,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
-    use vmcore::save_restore::SaveRestore;
     use vmcore::vmtime::SavedState as VmTimeSavedState;
     use vmcore::vmtime::VmTime;
     use vmcore::vmtime::VmTimeKeeper;
@@ -455,37 +450,38 @@ mod tests {
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
 
         poll_once(&mut watchdog);
-        assert!(watchdog.state.timeout_pending);
+        assert!(watchdog.timeout_action.is_some());
         assert!(!acted.load(Ordering::SeqCst));
         assert!(!watchdog.state.config.enabled());
 
         permit.send(());
         drive_until_acted(&mut watchdog, &acted).await;
-        assert!(!watchdog.state.timeout_pending);
-        assert!(!watchdog.save().unwrap().timeout_pending);
+        poll_once(&mut watchdog);
+        assert!(watchdog.timeout_action.is_none());
+        assert!(watchdog.platform.is_some());
     }
 
-    /// A state saved while the action was in flight must still carry it out
-    /// after a restore, rather than drop it.
+    /// Stopping the device finishes an in-flight action, even one a reset
+    /// left running, so no saved state is taken with a timeout still owed.
     #[async_test]
-    async fn restored_pending_timeout_runs_the_action(driver: DefaultDriver) {
+    async fn finish_runs_the_in_flight_action(driver: DefaultDriver) {
         let TestWatchdog {
             mut watchdog,
-            keeper: _keeper,
+            mut keeper,
             permit,
             acted,
         } = test_watchdog(&driver).await;
 
-        let mut saved = watchdog.save().unwrap();
-        saved.timeout_pending = true;
-        watchdog.restore(saved).unwrap();
-
+        arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        assert!(!acted.load(Ordering::SeqCst));
+        watchdog.reset();
+        assert!(watchdog.timeout_action.is_some());
 
         permit.send(());
-        drive_until_acted(&mut watchdog, &acted).await;
-        assert!(!watchdog.save().unwrap().timeout_pending);
+        watchdog.finish_timeout_action().await;
+        assert!(acted.load(Ordering::SeqCst));
+        assert!(watchdog.timeout_action.is_none());
+        assert!(watchdog.platform.is_some());
     }
 
     /// A reset while the action is in flight must not lose the platform: the
@@ -501,22 +497,24 @@ mod tests {
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.state.timeout_pending);
+        assert!(watchdog.timeout_action.is_some());
 
         watchdog.reset();
-        assert!(!watchdog.state.timeout_pending);
+        assert!(watchdog.timeout_action.is_some());
 
         permit.send(());
         drive_until_acted(&mut watchdog, &acted).await;
+        poll_once(&mut watchdog);
         assert!(watchdog.platform.is_some());
 
         acted.store(false, Ordering::SeqCst);
         arm_and_expire(&mut watchdog, &mut keeper, 4).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.state.timeout_pending);
+        assert!(watchdog.timeout_action.is_some());
 
         permit.send(());
         drive_until_acted(&mut watchdog, &acted).await;
-        assert!(!watchdog.state.timeout_pending);
+        poll_once(&mut watchdog);
+        assert!(watchdog.timeout_action.is_none());
     }
 }

@@ -3225,6 +3225,7 @@ dependencies = [
  "inspect",
  "mesh",
  "open_enum",
+ "pal_async",
  "thiserror 2.0.16",
  "tracelimit",
  "vm_resource",

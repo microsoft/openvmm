@@ -135,9 +135,12 @@ impl PollDevice for GuestWatchdogServices {
 impl ChangeDeviceState for GuestWatchdogServices {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.watchdog.finish_timeout_action().await;
+    }
 
     async fn reset(&mut self) {
+        self.watchdog.finish_timeout_action().await;
         self.watchdog.reset();
         self.state.watchdog_reg = 0;
     }
@@ -241,5 +244,82 @@ mod save_restore {
             self.watchdog.restore(inner)?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use vmcore::vmtime::SavedState as VmTimeSavedState;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+    use watchdog_core::platform::WatchdogCallback;
+
+    /// A platform whose timeout action waits for a permit.
+    struct GatedPlatform {
+        permit: mesh::Receiver<()>,
+        acted: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl WatchdogPlatform for GatedPlatform {
+        async fn on_timeout(&mut self) {
+            self.permit.recv().await.unwrap();
+            self.acted.store(true, Ordering::SeqCst);
+        }
+
+        async fn read_and_clear_boot_status(&mut self) -> bool {
+            false
+        }
+
+        fn add_callback(&mut self, _callback: Box<dyn WatchdogCallback>) {}
+    }
+
+    /// Stopping the device must finish a timeout action already in flight,
+    /// so the state saved after the stop does not drop it.
+    #[async_test]
+    async fn stop_finishes_the_timeout_action(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = keeper.builder().build(&driver).await.unwrap();
+        let (permit, permit_recv) = mesh::channel();
+        let acted = Arc::new(AtomicBool::new(false));
+        let platform = GatedPlatform {
+            permit: permit_recv,
+            acted: acted.clone(),
+        };
+        let mut device = GuestWatchdogServices::new(
+            vmtime.access("guest-watchdog"),
+            Box::new(platform),
+            Box::new(()),
+            false,
+        )
+        .await;
+
+        // Configured and enabled, with a one-second count.
+        device
+            .watchdog
+            .write(watchdog_core::Register::Count, 1)
+            .unwrap();
+        device
+            .watchdog
+            .write(watchdog_core::Register::Config, 0b11)
+            .unwrap();
+        keeper
+            .restore(VmTimeSavedState::from_vmtime(VmTime::from_100ns(
+                2 * 10_000_000,
+            )))
+            .await;
+
+        device.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
+        assert!(!acted.load(Ordering::SeqCst));
+
+        permit.send(());
+        device.stop().await;
+        assert!(acted.load(Ordering::SeqCst));
     }
 }

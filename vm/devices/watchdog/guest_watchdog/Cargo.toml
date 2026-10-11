@@ -23,5 +23,8 @@ tracelimit.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+
 [lints]
 workspace = true
