@@ -6,6 +6,8 @@
 #[cfg(test)]
 mod aggregate_fs_tests;
 pub(crate) mod device;
+#[cfg(test)]
+mod exchange_tests;
 pub(crate) mod file;
 pub(crate) mod fs;
 #[cfg(test)]
