@@ -47,6 +47,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 use crate::Device;
 
+use crate::BITS_PER_MEGABIT;
 use crate::NetworkFeaturesBank0;
 use crate::NetworkFeaturesBank1;
 use crate::VirtioNetHeader;
@@ -1887,6 +1888,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             tso: true,
             uso: true,
         },
+        link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
     let device = Device::builder()
@@ -1933,6 +1935,7 @@ async fn advertises_in_order(driver: DefaultDriver) {
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
     let endpoint = MockEndpointWithOffloads {
         offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
     };
     let device = Device::builder()
         .build(&driver_source, Box::new(endpoint), mac)
@@ -1971,6 +1974,7 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
 
     let endpoint = MockEndpointWithOffloads {
         offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
     let device = Device::builder()
@@ -2003,9 +2007,42 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     );
 }
 
+#[async_test]
+async fn link_speed_boundaries(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+    let build_device = |link_speed| {
+        Device::builder()
+            .build(
+                &driver_source,
+                Box::new(MockEndpointWithOffloads {
+                    offloads: TxOffloadSupport::default(),
+                    link_speed,
+                }),
+                mac,
+            )
+            .unwrap()
+    };
+
+    let max_valid_speed = i32::MAX as u64;
+    assert_eq!(
+        build_device(max_valid_speed * BITS_PER_MEGABIT)
+            .registers
+            .speed,
+        max_valid_speed as u32
+    );
+    assert_eq!(
+        build_device((max_valid_speed + 1) * BITS_PER_MEGABIT)
+            .registers
+            .speed,
+        u32::MAX
+    );
+}
+
 // Mock endpoint that reports specific offload support.
 struct MockEndpointWithOffloads {
     offloads: TxOffloadSupport,
+    link_speed: u64,
 }
 
 impl InspectMut for MockEndpointWithOffloads {
@@ -2037,6 +2074,10 @@ impl Endpoint for MockEndpointWithOffloads {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.offloads
+    }
+
+    fn link_speed(&self) -> u64 {
+        self.link_speed
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
