@@ -80,6 +80,14 @@ pub const MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS: u64 = 5_000;
 pub const MICROVM_VIRTIO_CONTROL_CONSOLE_ID: &str = "virtio-control-console";
 /// Host-owned kernel command-line token identifying the control tty.
 pub const MICROVM_CONTROL_TTY_COMMAND_LINE: &str = "nvx_control_tty=hvc2";
+/// Host-owned kernel command-line token asking the guest to announce its TCP
+/// and UDP listeners for private-network ingress; see
+/// [`net_backend_resources::ingress`].
+pub const MICROVM_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingress=allow";
+/// Host-owned kernel command-line token asking the guest to announce its TCP
+/// and UDP listeners for host-loopback ingress alone, which publishes them on
+/// host loopback; see [`net_backend_resources::ingress`].
+pub const MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingress=host-loopback";
 /// MicroVM virtio MMIO reservations in stable device order.
 pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
@@ -258,6 +266,30 @@ pub struct MicrovmSandboxBlockConfig {
     pub role: MicrovmSandboxBlockRole,
     /// Whether writes are rejected by the VMM.
     pub read_only: bool,
+}
+
+/// The peers to which a microVM publishes the listeners that its guest
+/// announces, which selects the host-owned token that asks the guest to
+/// announce them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicrovmIngress {
+    /// Clients on the host's private networks and, with host-loopback access,
+    /// the host itself; see [`MICROVM_INGRESS_COMMAND_LINE_TOKEN`].
+    PrivateNetworks,
+    /// The host alone, on host loopback; see
+    /// [`MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN`].
+    HostLoopback,
+}
+
+impl MicrovmIngress {
+    /// Returns the host-owned token that asks the guest to announce its
+    /// listeners for this ingress.
+    pub const fn command_line_token(self) -> &'static str {
+        match self {
+            Self::PrivateNetworks => MICROVM_INGRESS_COMMAND_LINE_TOKEN,
+            Self::HostLoopback => MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN,
+        }
+    }
 }
 
 /// Static guest-visible network identity for the microVM NIC.
@@ -987,6 +1019,18 @@ impl MicrovmNetworkConfig {
     /// Returns the pinned bootstrap tokens, naming `gateway_dns`, one of this
     /// identity's gateway addresses, as the guest's DNS server.
     pub fn command_line_fragment_with_dns(&self, gateway_dns: Option<std::net::IpAddr>) -> String {
+        self.command_line_fragment_with(gateway_dns, None)
+    }
+
+    /// Returns the pinned bootstrap tokens, naming `gateway_dns`, one of this
+    /// identity's gateway addresses, as the guest's DNS server and, with
+    /// `ingress`, asking the guest to announce its listeners with
+    /// [`MicrovmIngress::command_line_token`].
+    pub fn command_line_fragment_with(
+        &self,
+        gateway_dns: Option<std::net::IpAddr>,
+        ingress: Option<MicrovmIngress>,
+    ) -> String {
         let dns = gateway_dns.map_or_else(String::new, |server| format!(" virtnet_dns={server}"));
         let ipv6 = self.ipv6.map_or_else(String::new, |ipv6| {
             format!(
@@ -994,13 +1038,17 @@ impl MicrovmNetworkConfig {
                 ipv6.guest_ipv6, ipv6.prefix_length, ipv6.derived_gateway_ipv6
             )
         });
+        let ingress = ingress.map_or_else(String::new, |ingress| {
+            format!(" {}", ingress.command_line_token())
+        });
         format!(
-            "virtnet_ip={} virtnet_mask={} virtnet_gw={}{}{}",
+            "virtnet_ip={} virtnet_mask={} virtnet_gw={}{}{}{}",
             self.guest_ipv4,
             self.netmask(),
             self.derived_gateway_ipv4,
             dns,
             ipv6,
+            ingress,
         )
     }
 
@@ -1204,11 +1252,17 @@ pub fn microvm_filesystem_slot_count(first_slot: bool, attached: usize) -> anyho
 /// Appends sandbox virtio devices in fixed-address order.
 ///
 /// `filesystem_slot` reserves the virtio-fs slot, and `filesystems`, at most
-/// one, occupies it. `network` carries the NIC's identity, its interrupt, and
-/// the gateway address, if any, that the guest names as its DNS server.
+/// one, occupies it. `network` carries the NIC's identity, its interrupt, the
+/// gateway address, if any, that the guest names as its DNS server, and the
+/// ingress, if any, for which the guest announces its listeners.
 pub fn append_microvm_virtio_discovery(
     cmdline: &mut String,
-    network: Option<(&MicrovmNetworkConfig, u32, Option<std::net::IpAddr>)>,
+    network: Option<(
+        &MicrovmNetworkConfig,
+        u32,
+        Option<std::net::IpAddr>,
+        Option<MicrovmIngress>,
+    )>,
     filesystem_slot: bool,
     filesystems: &[MicrovmFilesystemConfig],
     has_console: bool,
@@ -1230,7 +1284,7 @@ pub fn append_microvm_virtio_discovery(
     validate_microvm_filesystems(filesystems)?;
 
     use std::fmt::Write as _;
-    if let Some((_, irq, _)) = network {
+    if let Some((_, irq, _, _)) = network {
         anyhow::ensure!(
             matches!(irq, MICROVM_VIRTIO_NET_KVM_IRQ | MICROVM_VIRTIO_NET_WHP_IRQ),
             "microVM virtio-net IRQ {irq} is not part of the fixed machine contract"
@@ -1271,11 +1325,11 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
         )?;
     }
-    if let Some((network, _, gateway_dns)) = network {
+    if let Some((network, _, gateway_dns, ingress)) = network {
         write!(
             cmdline,
             " {}",
-            network.command_line_fragment_with_dns(gateway_dns)
+            network.command_line_fragment_with(gateway_dns, ingress)
         )?;
     }
     for (filesystem, slot) in filesystems.iter().zip(&MICROVM_FILESYSTEM_SLOTS) {
@@ -1342,6 +1396,39 @@ fn microvm_command_line_dns_server(
         "microVM DNS bootstrap does not match the portable gateway"
     );
     Ok(server)
+}
+
+/// Returns the ingress for which the command line asks the guest to announce
+/// its listeners with [`MicrovmIngress::command_line_token`], which needs
+/// `network`.
+fn microvm_command_line_ingress(
+    network: Option<&MicrovmNetworkConfig>,
+    tokens: &[&str],
+) -> anyhow::Result<Option<MicrovmIngress>> {
+    let ingress_tokens = tokens
+        .iter()
+        .copied()
+        .filter(|token| token.starts_with("virtnet_ingress="))
+        .collect::<Vec<_>>();
+    match ingress_tokens.as_slice() {
+        [] => Ok(None),
+        [token] => {
+            let Some(ingress) = [
+                MicrovmIngress::PrivateNetworks,
+                MicrovmIngress::HostLoopback,
+            ]
+            .into_iter()
+            .find(|ingress| ingress.command_line_token() == *token) else {
+                anyhow::bail!("microVM command line has an invalid virtnet_ingress= token");
+            };
+            anyhow::ensure!(
+                network.is_some(),
+                "microVM ingress bootstrap requires virtio-net"
+            );
+            Ok(Some(ingress))
+        }
+        _ => anyhow::bail!("microVM command line has an invalid number of virtnet_ingress= tokens"),
+    }
 }
 
 fn validate_microvm_command_line(
@@ -1468,6 +1555,7 @@ fn validate_microvm_command_line(
         );
     }
     let dns_server = microvm_command_line_dns_server(config.microvm.network.as_ref(), &tokens)?;
+    let ingress = microvm_command_line_ingress(config.microvm.network.as_ref(), &tokens)?;
     let mut expected_discovery = Vec::new();
     if has_network {
         let irq = microvm_virtio_net_irq(hypervisor_id)?;
@@ -1499,7 +1587,7 @@ fn validate_microvm_command_line(
     if let Some(network) = &config.microvm.network {
         expected_discovery.extend(
             network
-                .command_line_fragment_with_dns(dns_server)
+                .command_line_fragment_with(dns_server, ingress)
                 .split_ascii_whitespace()
                 .map(str::to_owned),
         );
@@ -1659,6 +1747,7 @@ fn build_microvm_command_line_inner(
                 "virtnet_dns=",
                 "virtnet_ip6=",
                 "virtnet_gw6=",
+                "virtnet_ingress=",
                 "virtfs_dir=",
                 "virtfs_tag=",
                 "virtfs_mode=",
@@ -2322,6 +2411,79 @@ mod tests {
     }
 
     #[test]
+    fn microvm_ingress_bootstrap_is_host_owned() {
+        let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let dns = Some("10.0.0.1".parse().unwrap());
+        for (ingress, token) in [
+            (
+                MicrovmIngress::PrivateNetworks,
+                MICROVM_INGRESS_COMMAND_LINE_TOKEN,
+            ),
+            (
+                MicrovmIngress::HostLoopback,
+                MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN,
+            ),
+        ] {
+            let fragment = network.command_line_fragment_with(dns, Some(ingress));
+            assert_eq!(
+                fragment,
+                format!("{} {token}", network.command_line_fragment_with_dns(dns))
+            );
+            let tokens = fragment.split_ascii_whitespace().collect::<Vec<_>>();
+            assert_eq!(
+                microvm_command_line_ingress(Some(&network), &tokens).unwrap(),
+                Some(ingress)
+            );
+
+            let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+            append_microvm_virtio_discovery(
+                &mut cmdline,
+                Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, dns, Some(ingress))),
+                false,
+                &[],
+                false,
+                false,
+                &[],
+            )
+            .unwrap();
+            assert!(cmdline.ends_with(&format!(
+                "virtnet_dns=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1 \
+                 {token}"
+            )));
+            assert!(build_microvm_command_line(&[token.to_owned()], false).is_err());
+        }
+        assert_eq!(
+            microvm_command_line_ingress(Some(&network), &[]).unwrap(),
+            None
+        );
+
+        for (network, tokens) in [
+            (Some(&network), &["virtnet_ingress=deny"][..]),
+            (
+                Some(&network),
+                &[
+                    MICROVM_INGRESS_COMMAND_LINE_TOKEN,
+                    MICROVM_INGRESS_COMMAND_LINE_TOKEN,
+                ],
+            ),
+            (
+                Some(&network),
+                &[
+                    MICROVM_INGRESS_COMMAND_LINE_TOKEN,
+                    MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN,
+                ],
+            ),
+            (None, &[MICROVM_INGRESS_COMMAND_LINE_TOKEN]),
+            (None, &[MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN]),
+        ] {
+            assert!(
+                microvm_command_line_ingress(network, tokens).is_err(),
+                "{tokens:?}"
+            );
+        }
+    }
+
+    #[test]
     fn microvm_sandbox_block_slots_are_stable() {
         let blocks = [
             MicrovmSandboxBlockConfig {
@@ -2866,7 +3028,7 @@ mod tests {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
         append_microvm_virtio_discovery(
             &mut cmdline,
-            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None)),
+            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None, None)),
             true,
             std::slice::from_ref(&aggregate),
             true,

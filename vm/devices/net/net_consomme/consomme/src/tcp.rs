@@ -12,6 +12,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::FourTuple;
+use crate::InboundAdmission;
 use crate::IpAddresses;
 use crate::IpVersion;
 use crate::PortForwardKey;
@@ -84,6 +85,8 @@ pub(crate) struct Tcp {
 #[derive(Inspect, Default)]
 struct TcpAggregateStats {
     connections_accepted: Counter,
+    /// Connections that a listener reset because it does not admit the peer.
+    connections_refused: Counter,
     connections_initiated: Counter,
     /// Connections closed normally (LastAck final ACK, TimeWait, FIN exchange).
     connections_closed_normal: Counter,
@@ -173,6 +176,15 @@ impl Tcp {
             },
             aggregate_stats: TcpAggregateStats::default(),
         }
+    }
+
+    /// Returns whether a connection between `guest` and `peer`, as the guest
+    /// addresses them, exists.
+    pub(crate) fn carries_flow(&self, guest: SocketAddr, peer: SocketAddr) -> bool {
+        self.connections.contains_key(&FourTuple {
+            src: guest,
+            dst: peer,
+        })
     }
 }
 
@@ -729,6 +741,8 @@ struct TcpListener {
     #[inspect(skip)]
     socket: Option<PolledSocket<Socket>>,
     host_port: u16,
+    #[inspect(debug)]
+    admission: InboundAdmission,
 }
 
 #[derive(Debug, PartialEq, Eq, Inspect)]
@@ -787,12 +801,33 @@ impl<T: Client> Access<'_, T> {
             .retain(|key, listener| match listener.poll_listener(cx) {
                 Ok(result) => {
                     if let Some((socket, mut other_addr)) = result {
+                        let local = socket
+                            .local_addr()
+                            .ok()
+                            .and_then(|address| address.as_socket())
+                            .map(|address| address.ip());
+                        if !listener.admission.admits(
+                            other_addr.ip(),
+                            local,
+                            &self.inner.state.params,
+                            &mut self.inner.state.host_addresses,
+                        ) {
+                            tracelimit::info_ratelimited!(
+                                peer = %other_addr,
+                                guest_port = key.guest_port,
+                                "resetting an inbound TCP connection from a peer that the listener does not admit"
+                            );
+                            // An abortive close resets the connection.
+                            let _ = socket.set_linger(Some(Duration::ZERO));
+                            self.inner.tcp.aggregate_stats.connections_refused.increment();
+                            return true;
+                        }
                         // If this packet was originally from the guest, update the port to match
                         // the original guest port. This allows loopback to work as expected.
                         if self.inner.state.params.is_local_address(&other_addr) {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
                                 if matches!(connection.inner.state, TcpState::Connecting | TcpState::SynReceived)
-                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()) == *key
+                                    && PortForwardKey::from_socket_addr(other_ft.dst, other_ft.dst.port()).same_guest_port(*key)
                                 {
                                     if let LoopbackPortInfo::ProxyForGuestPort {
                                         sending_port,
@@ -1185,14 +1220,29 @@ impl<T: Client> Access<'_, T> {
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
+        self.bind_tcp_port_with_admission(socket, guest_port, InboundAdmission::Any)
+    }
+
+    /// Binds to the specified host IP and port for listening for incoming
+    /// connections from the peers that `admission` admits, and resets the
+    /// connections of other peers.
+    ///
+    /// A listener that publishes the guest port may coexist with an explicit
+    /// forward to the same guest port.
+    pub fn bind_tcp_port_with_admission(
+        &mut self,
+        socket: Socket,
+        guest_port: u16,
+        admission: InboundAdmission,
+    ) -> Result<(), BindError> {
         let host_addr = Self::socket_local_addr(&socket)?;
-        let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
+        let key = PortForwardKey::from_socket_addr(host_addr, guest_port).with_admission(admission);
         match self.inner.tcp.listeners.entry(key) {
             hash_map::Entry::Occupied(_) => {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
-                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
+                let listener = TcpListener::from_socket(self.client.driver(), socket, admission)?;
                 e.insert(listener);
             }
         };
@@ -1201,12 +1251,21 @@ impl<T: Client> Access<'_, T> {
 
     /// Unbinds from the specified guest port and IP family.
     pub fn unbind_tcp_port(&mut self, family: IpVersion, port: u16) -> Result<(), BindError> {
-        match self
-            .inner
-            .tcp
-            .listeners
-            .entry(PortForwardKey::new(family, port))
-        {
+        self.unbind_tcp_listener(PortForwardKey::new(family, port))
+    }
+
+    /// Stops publishing the specified guest port of the IP family to the
+    /// host's private networks.
+    pub fn unbind_published_tcp_port(
+        &mut self,
+        family: IpVersion,
+        port: u16,
+    ) -> Result<(), BindError> {
+        self.unbind_tcp_listener(PortForwardKey::new(family, port).publication())
+    }
+
+    fn unbind_tcp_listener(&mut self, key: PortForwardKey) -> Result<(), BindError> {
+        match self.inner.tcp.listeners.entry(key) {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
                 Ok(())
@@ -3053,7 +3112,11 @@ impl TcpListener {
     ///
     /// The socket must already be bound to an address. This method will call
     /// `listen` on it.
-    pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+    pub fn from_socket(
+        driver: &dyn Driver,
+        socket: Socket,
+        admission: InboundAdmission,
+    ) -> Result<Self, BindError> {
         let Some(host_port) = socket
             .local_addr()
             .map_err(BindError::Io)?
@@ -3076,6 +3139,7 @@ impl TcpListener {
         Ok(Self {
             socket: Some(socket),
             host_port,
+            admission,
         })
     }
 
