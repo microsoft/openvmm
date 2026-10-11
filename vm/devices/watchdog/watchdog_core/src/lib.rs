@@ -154,6 +154,9 @@ impl WatchdogServices {
         // An in-flight timeout action keeps running: it owns the platform, so
         // dropping it would lose the platform, and the timeout did happen.
         self.state = WatchdogServicesState::new();
+        // The reset state is unconfigured, so a deadline the guest armed
+        // before the reset must not fire after it.
+        self.stop_timer();
     }
 
     /// Runs an in-flight timeout action to completion.
@@ -419,6 +422,12 @@ mod tests {
     /// Arms a one-second count, then moves the stopped clock to `secs`, so
     /// the timer is due on the next poll without waiting for real time.
     async fn arm_and_expire(watchdog: &mut WatchdogServices, keeper: &mut VmTimeKeeper, secs: u64) {
+        arm(watchdog);
+        advance_to(keeper, secs).await;
+    }
+
+    /// Arms a one-second count.
+    fn arm(watchdog: &mut WatchdogServices) {
         watchdog.write(Register::Count, 1).unwrap();
         watchdog
             .write(
@@ -429,6 +438,10 @@ mod tests {
                     .into(),
             )
             .unwrap();
+    }
+
+    /// Moves the stopped clock to `secs`.
+    async fn advance_to(keeper: &mut VmTimeKeeper, secs: u64) {
         keeper
             .restore(VmTimeSavedState::from_vmtime(VmTime::from_100ns(
                 secs * 10_000_000,
@@ -482,6 +495,25 @@ mod tests {
         assert!(acted.load(Ordering::SeqCst));
         assert!(watchdog.timeout_action.is_none());
         assert!(watchdog.platform.is_some());
+    }
+
+    /// A reset leaves the watchdog unconfigured, so a timer the guest armed
+    /// before the reset must not fire after it.
+    #[async_test]
+    async fn reset_cancels_the_armed_timer(driver: DefaultDriver) {
+        let TestWatchdog {
+            mut watchdog,
+            mut keeper,
+            permit: _permit,
+            acted: _acted,
+        } = test_watchdog(&driver).await;
+
+        arm(&mut watchdog);
+        watchdog.reset();
+        advance_to(&mut keeper, 2).await;
+
+        poll_once(&mut watchdog);
+        assert!(watchdog.timeout_action.is_none());
     }
 
     /// A reset while the action is in flight must not lose the platform: the
