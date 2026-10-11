@@ -51,6 +51,7 @@ fixes the remaining guest-visible configuration:
 | File policy | Direct I/O |
 | Maximum write | 1 MiB payload plus protocol headers |
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
+| Rename flags | Linux host: passed to `renameat2`, so `RENAME_EXCHANGE` swaps two names; Windows host: `EINVAL` |
 
 ### Several host directories
 
