@@ -227,7 +227,9 @@ describes the source definitions.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
   one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 6, with tag `microvm`.
   `--mount` may appear once. The default mode is read-only; `rw` must be
-  explicit. The guest target must be an absolute, non-root Linux path without
+  explicit. The guest target ends at the first comma, and the mode follows
+  the last comma, so a host path may contain commas when the mode is given.
+  The guest target must be an absolute, non-root Linux path without
   dot, parent, empty, whitespace, backslash, or `=` components.
 
   ```bash
