@@ -31,7 +31,7 @@ impl StateUnit for StartResultUnit {
     }
 
     async fn stop(&mut self) {
-        self.stopped.store(true, Ordering::Relaxed);
+        assert!(!self.stopped.swap(true, Ordering::Relaxed));
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
@@ -152,7 +152,14 @@ async fn test_stop_cleans_up_failed_start_while_running(driver: DefaultDriver) {
 
     units.start_stopped_units().await.unwrap_err();
     assert!(units.is_running());
+    let retry_error = units.start_stopped_units().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
     units.stop().await;
     assert!(failed_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
+    let retry_error = units.start().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+    assert!(units.reset().await.is_err());
+    assert!(units.save().await.is_err());
+    assert!(units.restore(Vec::new()).await.is_err());
 }
