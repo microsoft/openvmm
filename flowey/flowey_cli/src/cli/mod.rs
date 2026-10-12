@@ -14,6 +14,7 @@ use std::path::Path;
 
 pub mod debug;
 pub mod exec_snippet;
+pub(crate) mod identifiers;
 pub mod pipeline;
 pub mod regen;
 pub mod var_db;

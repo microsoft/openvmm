@@ -5,11 +5,13 @@ use super::common_yaml::BashCommands;
 use super::common_yaml::FloweySource;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;
+use super::common_yaml::job_identifiers;
 use super::common_yaml::write_generated_yaml_and_json;
 use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
+use crate::cli::identifiers::JobIdentifiers;
 use crate::cli::pipeline::CheckMode;
 use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
@@ -81,6 +83,7 @@ pub fn ado_yaml(
         job_command_wrappers: BTreeMap::new(),
         job_platforms: BTreeMap::new(),
         job_archs: BTreeMap::new(),
+        job_identifiers: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -111,11 +114,14 @@ pub fn ado_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        let super::common_yaml::ResolvedFlowSteps {
-            steps,
-            request_db: req_db,
-            config_db: cfg_db,
-        } = resolve_flow_as_ado_yaml_steps(
+        let (
+            super::common_yaml::ResolvedFlowSteps {
+                steps,
+                request_db: req_db,
+                config_db: cfg_db,
+            },
+            identifiers,
+        ) = resolve_flow_as_ado_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
@@ -129,6 +135,11 @@ pub fn ado_yaml(
             job_idx.index(),
         )
         .context(format!("in job '{label}'"))?;
+
+        let variable_aliases = identifiers.variables.by_name();
+        pipeline_static_db
+            .job_identifiers
+            .insert(job_idx.index(), identifiers);
 
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
@@ -264,7 +275,8 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
 
         let mut flowey_bootstrap_bash = String::new();
 
-        let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx.index());
+        let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx.index())
+            .with_aliases(&variable_aliases);
 
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             var_db
@@ -857,34 +869,39 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
     platform: FlowPlatform,
     arch: FlowArch,
     job_idx: usize,
-) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
+) -> anyhow::Result<(super::common_yaml::ResolvedFlowSteps, JobIdentifiers)> {
     let mut output_steps = Vec::new();
 
-    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
-        mut output_graph,
-        request_db,
-        config_db,
-        found_unreachable_nodes,
-    } = crate::flow_resolver::stage1_dag::stage1_dag(
+    let flow = crate::flow_resolver::stage1_dag::stage1_dag(
         FlowBackend::Ado,
         platform,
         arch,
         resolved_patches,
         seed_nodes,
         seed_configs,
-        external_read_vars,
+        external_read_vars.clone(),
         // TODO: support ADO agents with persistent storage
         None,
     )?;
 
-    if found_unreachable_nodes {
+    if flow.found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
+
+    let identifiers = job_identifiers(&flow, external_read_vars);
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes: _,
+    } = flow;
+    let node_aliases = identifiers.nodes.by_name();
+    let variable_aliases = identifiers.variables.by_name();
 
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
-    let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx);
+    let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx).with_aliases(&variable_aliases);
 
     let mut bash_commands = BashCommands::new_ado();
     for idx in output_order.into_iter().rev() {
@@ -900,11 +917,14 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 label,
                 code: _,
             } => {
+                let node_alias = node_aliases.get(node_modpath).with_context(|| {
+                    format!("missing compact identifier for node '{node_modpath}'")
+                })?;
                 output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
                     "$(FLOWEY_BIN)",
-                    node_modpath,
+                    node_alias,
                     idx,
                     job_idx,
                 ));
@@ -938,9 +958,12 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                     }
 
                     let raw_yaml = if code.lock().is_some() {
+                        let node_alias = node_aliases.get(node_modpath).with_context(|| {
+                            format!("missing compact identifier for node '{node_modpath}'")
+                        })?;
                         let inline_snippet = crate::cli::exec_snippet::construct_exec_snippet_cli(
                             "$(FLOWEY_BIN)",
-                            node_modpath,
+                            node_alias,
                             code_idx,
                             job_idx,
                         );
@@ -1047,9 +1070,12 @@ EOF
         })
         .collect();
 
-    Ok(super::common_yaml::ResolvedFlowSteps {
-        steps: output_steps,
-        request_db,
-        config_db,
-    })
+    Ok((
+        super::common_yaml::ResolvedFlowSteps {
+            steps: output_steps,
+            request_db,
+            config_db,
+        },
+        identifiers,
+    ))
 }

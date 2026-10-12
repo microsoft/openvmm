@@ -54,3 +54,27 @@ Flowey is architected as a standalone tool with a layered crate structure that s
 - **`flowey_lib_common`**: Ecosystem-wide reusable nodes (installing Rust, running Cargo, downloading tools, etc.) that could be useful across projects outside of OpenVMM.
 - **`flowey_lib_hvlite`**: OpenVMM-specific nodes and workflows that build on the common library primitives.
 - **`flowey_hvlite`**: The OpenVMM pipeline definitions that compose nodes from the libraries above into complete CI/CD workflows.
+
+## Generated CI Identifiers
+
+Flowey uses compact identifiers to reduce generated Azure DevOps and GitHub
+Actions YAML, keeping GitHub workflows within the workflow file size limit.
+Node and variable arguments in generated `flowey e` and `flowey v` commands
+use job-scoped aliases such as `@0`, including initialization and inline Rust
+snippets. GitHub action steps use short IDs such as `s0`, with matching output
+references. Human-readable job and step names, and Azure DevOps task/output
+names, are unchanged.
+
+Generated variables that bridge Rust values into CI use short names such as
+`fv1`. The same name is used for the export and its GitHub `${{ env.fv1 }}`
+expression or Azure DevOps `$(fv1)` macro. Treat `fv<number>` as Flowey's
+generated namespace when defining custom CI variables.
+
+During the pipeline's self-check, Flowey writes the alias mappings to
+`pipeline.json`, alongside the full node requests and configuration. Runtime
+commands resolve aliases before accessing nodes or variables, so logs and the
+runtime variable database retain readable names. Full names remain valid CLI
+arguments; pipelines generated without aliases continue to work.
+
+After changing nodes or pipeline generation, run `cargo xflowey regen` to update
+the checked-in pipelines.

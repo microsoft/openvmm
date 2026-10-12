@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 use crate::cli::FlowBackendCli;
+use crate::cli::identifiers::IdentifierAliases;
+use crate::cli::identifiers::JobIdentifiers;
 use anyhow::Context;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
@@ -44,6 +46,30 @@ pub struct ExecSnippet {
 pub const VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR: &str = "_internal_WORKING_DIR";
 pub const VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR: &str = "_internal_PERSISTENT_STORAGE_DIR";
 
+fn resolve_snippets<'a>(
+    args: &'a [String],
+    aliases: Option<&'a IdentifierAliases>,
+) -> anyhow::Result<Vec<(&'a str, usize)>> {
+    let (pairs, remaining) = args.as_chunks::<2>();
+    if !remaining.is_empty() {
+        anyhow::bail!("expected a node identifier and snippet index for each snippet");
+    }
+
+    pairs
+        .iter()
+        .map(|[node, index]| {
+            let node = match aliases {
+                Some(aliases) => aliases.resolve(node)?,
+                None => node.as_str(),
+            };
+            let index = index
+                .parse()
+                .with_context(|| format!("invalid snippet index '{index}'"))?;
+            Ok((node, index))
+        })
+        .collect()
+}
+
 impl ExecSnippet {
     pub fn run(self) -> anyhow::Result<()> {
         let Self {
@@ -52,7 +78,16 @@ impl ExecSnippet {
             dry_run,
         } = self;
 
-        let mut runtime_var_db = super::var_db::open_var_db(job_idx)?;
+        let pipeline_static_db = FloweyPipelineStaticDb::load()?;
+        let snippets = resolve_snippets(
+            &node_modpath_and_snippet_idx,
+            pipeline_static_db
+                .job_identifiers
+                .get(&job_idx)
+                .map(|identifiers| &identifiers.nodes),
+        )?;
+        let mut runtime_var_db =
+            super::var_db::open_var_db_with_pipeline(job_idx, &pipeline_static_db)?;
 
         let working_dir: PathBuf = {
             let Some((working_dir, _)) =
@@ -67,53 +102,41 @@ impl ExecSnippet {
                 .into()
         };
 
-        let FloweyPipelineStaticDb {
-            flow_backend,
-            var_db_backend_kind: _,
-            job_reqs,
-            job_configs,
-            job_command_wrappers,
-            job_platforms,
-            job_archs,
-        } = {
-            let current_exe = std::env::current_exe()
-                .context("failed to get path to current flowey executable")?;
-            let pipeline_static_db =
-                fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
-            serde_json::from_reader(pipeline_static_db)?
-        };
+        let flow_backend = pipeline_static_db.flow_backend;
 
-        let flow_platform = *job_platforms
+        let flow_platform = *pipeline_static_db
+            .job_platforms
             .get(&job_idx)
             .context("invalid job_idx: missing platform")?;
-        let flow_arch = *job_archs
+        let flow_arch = *pipeline_static_db
+            .job_archs
             .get(&job_idx)
             .context("invalid job_idx: missing arch")?;
 
-        let command_wrapper = job_command_wrappers.get(&job_idx).cloned();
+        let command_wrapper = pipeline_static_db
+            .job_command_wrappers
+            .get(&job_idx)
+            .cloned();
 
-        for [node_modpath, snippet_idx] in node_modpath_and_snippet_idx
-            .chunks_exact(2)
-            .map(|x| -> [String; 2] { x.to_vec().try_into().unwrap() })
-        {
-            let snippet_idx = snippet_idx.parse::<usize>().unwrap();
-
-            let raw_json_reqs: Vec<Box<[u8]>> = job_reqs
+        for (node_modpath, snippet_idx) in snippets {
+            let raw_json_reqs: Vec<Box<[u8]>> = pipeline_static_db
+                .job_reqs
                 .get(&job_idx)
                 .context("invalid job_idx")?
-                .get(&node_modpath)
+                .get(node_modpath)
                 .context("pipeline db did not include data for specified node")?
                 .iter()
                 .map(|v| v.0.clone())
                 .collect::<Vec<_>>();
 
-            let raw_config_bytes: Vec<Box<[u8]>> = job_configs
+            let raw_config_bytes: Vec<Box<[u8]>> = pipeline_static_db
+                .job_configs
                 .get(&job_idx)
-                .and_then(|m| m.get(&node_modpath))
+                .and_then(|m| m.get(node_modpath))
                 .map(|v| v.iter().map(|v| v.0.clone()).collect())
                 .unwrap_or_default();
 
-            let Some(node_handle) = NodeHandle::try_from_modpath(&node_modpath) else {
+            let Some(node_handle) = NodeHandle::try_from_modpath(node_modpath) else {
                 anyhow::bail!("could not find node with that name")
             };
 
@@ -370,6 +393,17 @@ pub(crate) struct FloweyPipelineStaticDb {
     pub job_command_wrappers: BTreeMap<usize, flowey_core::shell::CommandWrapperKind>,
     pub job_platforms: BTreeMap<usize, FlowPlatform>,
     pub job_archs: BTreeMap<usize, FlowArch>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub job_identifiers: BTreeMap<usize, JobIdentifiers>,
+}
+
+impl FloweyPipelineStaticDb {
+    pub fn load() -> anyhow::Result<Self> {
+        let current_exe =
+            std::env::current_exe().context("failed to get path to current flowey executable")?;
+        let file = fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
+        serde_json::from_reader(file).context("failed to read pipeline database")
+    }
 }
 
 // encode requests as JSON stored in a JSON string (to make human inspection
