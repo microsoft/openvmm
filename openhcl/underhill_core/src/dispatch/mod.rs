@@ -410,7 +410,6 @@ impl LoadedVm {
                             rpc.complete(Err(RemoteError::new(
                                 error.context("failed to resume VM"),
                             )));
-                            break None;
                         } else {
                             rpc.complete(Ok(true));
                         }
