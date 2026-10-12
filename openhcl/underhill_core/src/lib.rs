@@ -690,7 +690,7 @@ async fn run_control(
                             .vm_rpc
                             .call(UhVmRpc::Resume, ())
                             .await
-                            .context("failed to resumed VM")?;
+                            .context("failed to resume VM")??;
 
                         let was_halted = workers
                             .vm_rpc

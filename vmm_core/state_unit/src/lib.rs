@@ -461,6 +461,24 @@ impl StateUnits {
         self.running
     }
 
+    fn check_no_terminal_units(&self, op: &'static str) -> Result<(), StateTransitionError> {
+        let inner = self.inner.lock();
+        check(
+            op,
+            inner.units.values().filter_map(|unit| {
+                (unit.state == State::StartUncertain).then(|| {
+                    (
+                        unit.name.clone(),
+                        Err::<(), _>(anyhow::anyhow!(
+                            "unit is in terminal state {:?}",
+                            unit.state
+                        )),
+                    )
+                })
+            }),
+        )
+    }
+
     /// Starts any units that are individually stopped, because they were added
     /// via [`StateUnits::add`] while the VM was running.
     ///
@@ -480,6 +498,16 @@ impl StateUnits {
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
+        {
+            let mut inner = self.inner.lock();
+            for unit in inner.units.values_mut() {
+                if unit.state == State::StartUncertain {
+                    // Start may have changed the unit before failing, so it
+                    // must receive a stop request with the running units.
+                    unit.state = State::Running;
+                }
+            }
+        }
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -501,6 +529,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("reset")?;
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
         let r = self
@@ -525,6 +554,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("save")?;
         // Save can occur in any order since it will not observably mutate
         // state.
         let r = self
@@ -558,6 +588,7 @@ impl StateUnits {
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("restore")?;
 
         #[derive(Debug, Error)]
         enum RestoreUnitError {
