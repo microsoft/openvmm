@@ -221,6 +221,7 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
     QuiesceUncertain,
 }
 
@@ -466,8 +467,11 @@ impl StateUnits {
         let inner = self.inner.lock();
         check(
             op,
-            inner.units.values().filter_map(|unit| {
-                (unit.state == State::StartUncertain).then(|| {
+            inner
+                .units
+                .values()
+                .filter(|unit| unit.state == State::StartUncertain)
+                .map(|unit| {
                     (
                         unit.name.clone(),
                         Err::<(), _>(anyhow::anyhow!(
@@ -475,8 +479,7 @@ impl StateUnits {
                             unit.state
                         )),
                     )
-                })
-            }),
+                }),
         )
     }
 
