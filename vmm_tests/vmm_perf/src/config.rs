@@ -84,9 +84,7 @@ impl VmmPerfProfileVariant {
             VmmPerfProfile::Iperf3 => "iperf3",
             VmmPerfProfile::BootTime => "boot_time",
         };
-        let is_default_vmbus = matches!(self.profile, VmmPerfProfile::Fio | VmmPerfProfile::Iperf3)
-            && self.modifiers == ["vmbus"];
-        if self.modifiers.is_empty() || is_default_vmbus {
+        if self.modifiers.is_empty() {
             profile.into()
         } else {
             format!("{profile}_{}", self.modifiers.join("_").replace('-', "_"))

@@ -96,7 +96,7 @@ mod tests {
                 .iter()
                 .map(|profile| profile.name())
                 .collect::<Vec<_>>(),
-            ["fio", "iperf3", "boot_time"]
+            ["fio_vmbus", "iperf3_vmbus", "boot_time"]
         );
         assert!(cli.temp_dir.is_none());
         assert!(cli.vm_sizes_json.is_none());
@@ -135,7 +135,7 @@ mod tests {
                 .iter()
                 .map(|profile| profile.name())
                 .collect::<Vec<_>>(),
-            ["fio", "fio_virtio", "boot_time"]
+            ["fio_vmbus", "fio_virtio", "boot_time"]
         );
         assert_eq!(cli.vm_sizes_json.as_deref(), Some("[]"));
         assert_eq!(cli.parameters_json.as_deref(), Some("{}"));
