@@ -356,47 +356,62 @@ impl VirtioTransportCore {
         }
     }
 
+    fn start_params(&mut self, ops: &mut dyn TransportOps) -> Option<StartParams> {
+        if !self.device_status.driver_ok() {
+            return None;
+        }
+
+        let features = self.driver_feature;
+        let mut queues = Vec::new();
+        for (i, qd) in self.queues.iter_mut().enumerate() {
+            if !qd.params.enable {
+                continue;
+            }
+            let initial_state = qd.saved_state.take();
+            queues.push((
+                i,
+                qd.params,
+                qd.msix_vector,
+                qd.event.clone(),
+                initial_state,
+            ));
+        }
+        let queues = queues
+            .into_iter()
+            .map(|(i, params, msix_vector, event, initial_state)| {
+                let notify = ops.create_queue_interrupt(i, msix_vector);
+                (
+                    i as u16,
+                    QueueResources {
+                        params,
+                        notify,
+                        event,
+                        guest_memory: self.guest_memory.clone(),
+                    },
+                    initial_state,
+                )
+            })
+            .collect();
+
+        Some(StartParams { queues, features })
+    }
+
     /// `ChangeDeviceState::start()` implementation.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
-        if self.device_status.driver_ok() {
-            let features = self.driver_feature;
-            let mut queues = Vec::new();
-            for (i, qd) in self.queues.iter_mut().enumerate() {
-                if !qd.params.enable {
-                    continue;
-                }
-                let initial_state = qd.saved_state.take();
-                queues.push((
-                    i,
-                    qd.params,
-                    qd.msix_vector,
-                    qd.event.clone(),
-                    initial_state,
-                ));
-            }
-            let queues: Vec<_> = queues
-                .into_iter()
-                .map(|(i, params, msix_vector, event, initial_state)| {
-                    let notify = ops.create_queue_interrupt(i, msix_vector);
-                    (
-                        i as u16,
-                        QueueResources {
-                            params,
-                            notify,
-                            event,
-                            guest_memory: self.guest_memory.clone(),
-                        },
-                        initial_state,
-                    )
-                })
-                .collect();
-
-            let params = StartParams { queues, features };
-
-            // Fire and forget — start() is sync, can't await.
+        if let Some(params) = self.start_params(ops) {
             self.device_sender
                 .send(DeviceCommand::Start(Rpc::detached(params)));
         }
+    }
+
+    /// `ChangeDeviceState::start_fallible()` implementation.
+    pub async fn start_fallible(&mut self, ops: &mut dyn TransportOps) -> anyhow::Result<()> {
+        if let Some(params) = self.start_params(ops) {
+            self.device_sender
+                .call_failable(DeviceCommand::Start, params)
+                .await?;
+        }
+        Ok(())
     }
 
     /// `ChangeDeviceState::stop()` implementation.

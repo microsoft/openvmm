@@ -273,11 +273,6 @@ pub async fn run_device_task(
                 rpc.handle(async |()| task.stop().await).await;
             }
             DeviceCommand::Start(rpc) => {
-                // Start is used by ChangeDeviceState::start(), which is
-                // sync and uses Rpc::detached() — errors are logged here
-                // but not propagated to the transport.
-                // TODO: update ChangeDeviceState to allow async start()
-                // so failures can be handled by the transport.
                 rpc.handle_failable(async |params| task.start(params).await)
                     .await;
             }
