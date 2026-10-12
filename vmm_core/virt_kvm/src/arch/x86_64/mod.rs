@@ -370,6 +370,15 @@ impl virt::Hypervisor for Kvm {
             if !supported {
                 return Err(KvmError::NestedVirtUnsupported);
             }
+            // Without nested state, a vCPU in nested operation can be neither
+            // saved nor taken out of it on reset.
+            let nested_state = self
+                .kvm
+                .check_extension(kvm::KVM_CAP_NESTED_STATE)
+                .map_err(kvm::Error::CheckExtension)?;
+            if nested_state <= 0 {
+                return Err(kvm::Error::MissingCapability("KVM_CAP_NESTED_STATE").into());
+            }
         }
 
         let snp_config = match &config.isolation {
