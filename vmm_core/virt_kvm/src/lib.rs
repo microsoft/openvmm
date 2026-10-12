@@ -65,6 +65,8 @@ pub enum KvmError {
     AvailableCheck(#[source] std::io::Error),
     #[error(transparent)]
     State(#[from] Box<StateError<KvmError>>),
+    #[error("failed to leave nested virtualization before resetting the vp")]
+    LeaveNested(#[source] kvm::Error),
     #[error("invalid state while restoring: {0}")]
     InvalidState(&'static str),
     #[error("unsupported isolation configuration: {0}")]

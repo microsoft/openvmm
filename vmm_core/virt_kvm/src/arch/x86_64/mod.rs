@@ -1915,7 +1915,16 @@ impl<'p> Processor for KvmProcessor<'p> {
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0).reset_all(&vp_info)
+        let mut access = self.access_state(Vtl::Vtl0);
+        // Leave nested operation before resetting registers: KVM rejects the
+        // at-reset CR4 while the vCPU is still in VMX operation.
+        access
+            .kvm()
+            .clear_nested_state()
+            .map_err(KvmError::LeaveNested)?;
+        access
+            .reset_all(&vp_info)
+            .map_err(|err| KvmError::State(Box::new(err)))
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
