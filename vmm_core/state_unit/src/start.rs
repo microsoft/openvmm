@@ -124,7 +124,7 @@ impl StateUnits {
                     Some(&failed_start_ids),
                     State::StartUncertain,
                     State::Stopping,
-                    State::StartUncertain,
+                    State::StartFailedStopped,
                     StateRequest::Stop,
                     |_, _| Some(()),
                     |unit| &unit.dependents,
