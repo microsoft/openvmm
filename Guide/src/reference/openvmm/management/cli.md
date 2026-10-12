@@ -269,6 +269,11 @@ describes the source definitions.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--vmgenid`: Add a VM Generation ID device (x86_64 Linux direct boot only;
+  UEFI guests get one from the firmware). The guest's `vmgenid` driver
+  (`CONFIG_VMGENID`) reseeds the kernel RNG when the ID changes. Every
+  `--restore-snapshot` installs a new ID and notifies the guest, so VMs
+  restored from the same snapshot stop sharing RNG state immediately.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a

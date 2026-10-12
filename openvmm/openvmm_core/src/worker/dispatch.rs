@@ -925,6 +925,9 @@ struct LoadedVmInner {
     /// ((device, function), interrupt)
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
+    /// GPA of the standalone generation ID buffer, if that device is present.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    generation_id_gpa: Option<u64>,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
     load_mode: LoadMode,
@@ -2101,6 +2104,20 @@ impl InitializedVm {
             }
         };
 
+        // A standalone generation ID device (Linux direct boot) has no
+        // firmware to describe it to the guest, so the DSDT built by the
+        // direct-boot loader must.
+        let generation_id_gpa = cfg
+            .chipset_devices
+            .iter()
+            .any(|dev| {
+                dev.resource.id()
+                    == <chipset_resources::generation_id::GenerationIdDeviceHandle as vm_resource::ResourceId<
+                        vm_resource::kind::ChipsetDeviceHandleKind,
+                    >>::ID
+            })
+            .then_some(chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA);
+
         let BaseChipsetBuilderOutput {
             chipset_builder,
             device_interfaces: base_chipset_device_interfaces,
@@ -3214,6 +3231,7 @@ impl InitializedVm {
                 virtio_mmio_irq,
                 chipset_mmio,
                 pci_legacy_interrupts,
+                generation_id_gpa,
                 igvm_file,
                 next_igvm_file: None,
                 _vmgs_task: vmgs_task,
@@ -3429,6 +3447,7 @@ impl LoadedVmInner {
                                 self.virtio_mmio_region,
                                 self.virtio_mmio_irq,
                                 &self.pci_legacy_interrupts,
+                                self.generation_id_gpa,
                             )
                         });
 
@@ -4408,6 +4427,7 @@ fn add_devices_to_dsdt_x64(
     virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
+    generation_id_gpa: Option<u64>,
 ) {
     dsdt.add_apic();
 
@@ -4459,6 +4479,10 @@ fn add_devices_to_dsdt_x64(
         );
     }
     dsdt.add_rtc();
+
+    if let Some(gpa) = generation_id_gpa {
+        dsdt.add_generation_id(gpa, generation_id::resolver::GPE0_LINE_GENERATION_ID as u8);
+    }
 }
 
 #[cfg(guest_arch = "aarch64")]

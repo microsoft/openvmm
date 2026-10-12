@@ -1174,6 +1174,14 @@ flags:
     #[clap(long)]
     pub battery: bool,
 
+    /// expose a VM Generation ID device (x86_64 Linux direct boot only).
+    ///
+    /// The guest's `vmgenid` driver reseeds the kernel RNG whenever the ID
+    /// changes. Each `--restore-snapshot` gets a new ID and notifies the
+    /// guest, so clones restored from one snapshot diverge immediately.
+    #[clap(long)]
+    pub vmgenid: bool,
+
     /// enable guest hibernation
     #[clap(long)]
     pub hibernation: bool,

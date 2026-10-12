@@ -2918,12 +2918,16 @@ dependencies = [
 name = "generation_id"
 version = "0.0.0"
 dependencies = [
+ "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "getrandom 0.4.2",
  "guestmem",
  "inspect",
  "mesh",
  "tracelimit",
  "tracing",
+ "vm_resource",
  "vmcore",
 ]
 
@@ -5902,6 +5906,7 @@ dependencies = [
  "framebuffer",
  "futures",
  "futures-concurrency",
+ "generation_id",
  "get_resources",
  "getrandom 0.4.2",
  "guestmem",
@@ -6216,6 +6221,7 @@ dependencies = [
  "disklayer_vhdx",
  "firmware_uefi",
  "gdma",
+ "generation_id",
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",

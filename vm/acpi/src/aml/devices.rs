@@ -88,6 +88,40 @@ impl AmlObject for Device {
     }
 }
 
+/// An AML Scope, which places its contents in an existing namespace (e.g.
+/// `\_GPE`).
+pub struct Scope {
+    name: Vec<u8>,
+    objects: Vec<u8>,
+}
+
+impl Scope {
+    /// Construct a new [`Scope`].
+    pub fn new(name: &[u8]) -> Self {
+        Self {
+            name: encode_name(name),
+            objects: vec![],
+        }
+    }
+
+    /// Add an object to the body of the scope.
+    pub fn add_object(&mut self, obj: &impl AmlObject) {
+        obj.append_to_vec(&mut self.objects);
+    }
+}
+
+impl AmlObject for Scope {
+    // A scope consists of the identifier (0x10) followed by the length, the
+    // name and then the contained objects.
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x10);
+        let length = self.name.len() + self.objects.len();
+        byte_stream.extend_from_slice(&encode_package_len(length));
+        byte_stream.extend_from_slice(&self.name);
+        byte_stream.extend_from_slice(&self.objects);
+    }
+}
+
 /// An EISA identifier for a device.
 pub struct EisaId(pub [u8; 7]);
 

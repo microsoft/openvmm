@@ -405,6 +405,60 @@ impl Dsdt {
         rtc.add_object(&rtc_crs);
         self.add_object(&rtc);
     }
+
+    /// Add a VM Generation ID device (Microsoft "Virtual Machine Generation
+    /// ID" specification) whose 16-byte ID lives at the host-chosen `gpa`,
+    /// plus the x86 GPE0 handler that notifies it, with the following ASL:
+    /// ```text
+    /// Device(\_SB.GENC)
+    /// {
+    ///     Name(_HID, "MSFT1002")
+    ///     Name(_CID, "VMGENCTR")
+    ///     Name(_UID, 0)
+    ///     Name(_DDN, "VM_Gen_Counter")
+    ///     Method(ADDR, 0) { Return(Package(2) { <gpa low>, <gpa high> }) }
+    /// }
+    /// Scope(\_GPE)
+    /// {
+    ///     Method(_Exx) { Notify(\_SB.GENC, 0x80) } // xx = gpe0_bit, edge
+    /// }
+    /// ```
+    /// This mirrors the Hyper-V UEFI firmware's DSDT. Linux binds its
+    /// `vmgenid` driver via the `VMGENCTR` compatible ID.
+    pub fn add_generation_id(&mut self, gpa: u64, gpe0_bit: u8) {
+        let mut genc = Device::new(b"\\_SB.GENC");
+        genc.add_object(&NamedString::new(b"_HID", b"MSFT1002"));
+        genc.add_object(&NamedString::new(b"_CID", b"VMGENCTR"));
+        genc.add_object(&NamedInteger::new(b"_UID", 0));
+        genc.add_object(&NamedString::new(b"_DDN", b"VM_Gen_Counter"));
+        let mut addr = Method::new(b"ADDR");
+        let mut elems = encode_integer(gpa & 0xffff_ffff);
+        elems.extend_from_slice(&encode_integer(gpa >> 32));
+        addr.add_operation(&ReturnOp {
+            result: StructuredPackage {
+                elem_count: 2,
+                elem_data: elems,
+            }
+            .to_bytes(),
+        });
+        genc.add_object(&addr);
+        self.add_object(&genc);
+
+        let hex = b"0123456789ABCDEF";
+        let mut gpe_method = Method::new(&[
+            b'_',
+            b'E',
+            hex[(gpe0_bit >> 4) as usize],
+            hex[(gpe0_bit & 0xf) as usize],
+        ]);
+        gpe_method.add_operation(&NotifyOp {
+            object: encode_name(b"\\_SB.GENC"),
+            value: 0x80,
+        });
+        let mut gpe = Scope::new(b"\\_GPE");
+        gpe.add_object(&gpe_method);
+        self.add_object(&gpe);
+    }
 }
 
 #[cfg(test)]
@@ -467,6 +521,36 @@ mod tests {
         // creator_rev
         let creator_rev = u32::from_le_bytes(bytes[32..36].try_into().unwrap());
         assert_eq!(creator_rev, 0x5000000);
+    }
+
+    #[test]
+    fn verify_generation_id() {
+        let mut dsdt = Dsdt::new();
+        dsdt.add_generation_id(0xef000, 0);
+        let bytes = dsdt.to_bytes();
+        verify_header(&bytes);
+        let body = &bytes[36..];
+
+        // Device(\_SB.GENC)
+        assert_eq!(&body[..2], &[0x5b, 0x82]);
+        let genc_name = [b'\\', 0x2e, b'_', b'S', b'B', b'_', b'G', b'E', b'N', b'C'];
+        assert!(body.windows(genc_name.len()).any(|w| w == genc_name));
+        let addr = [
+            0x14, 0x10, b'A', b'D', b'D', b'R', 0x00, // Method(ADDR, 0)
+            0xa4, // Return
+            0x12, 0x08, 0x02, // Package(2)
+            0x0c, 0x00, 0xf0, 0x0e, 0x00, // 0xef000
+            0x00, // 0
+        ];
+        assert!(body.windows(addr.len()).any(|w| w == addr));
+        assert!(body.windows(10).any(|w| w == b"\x0dVMGENCTR\x00"));
+        let gpe = [
+            0x10, 0x1a, b'\\', b'_', b'G', b'P', b'E', // Scope(\_GPE)
+            0x14, 0x13, b'_', b'E', b'0', b'0', 0x00, // Method(_E00, 0)
+            0x86, b'\\', 0x2e, b'_', b'S', b'B', b'_', b'G', b'E', b'N', b'C', 0x0a,
+            0x80, // Notify(\_SB.GENC, 0x80)
+        ];
+        assert!(body.ends_with(&gpe));
     }
 
     #[test]

@@ -1708,6 +1708,31 @@ async fn vm_config_from_command_line(
         });
     }
 
+    if opt.vmgenid {
+        anyhow::ensure!(
+            cfg!(guest_arch = "x86_64"),
+            "--vmgenid is only supported for x86_64 guests"
+        );
+        anyhow::ensure!(
+            !(opt.uefi.is_some() || opt.pcat || opt.igvm.is_some()),
+            "--vmgenid requires Linux direct boot (--kernel); UEFI guests get VM generation ID from the firmware"
+        );
+        let mut initial_generation_id = [0; 16];
+        getrandom::fill(&mut initial_generation_id).expect("rng failure");
+        chipset_devices.push(ChipsetDeviceHandle {
+            name: "generation_id".to_string(),
+            resource: chipset_resources::generation_id::GenerationIdDeviceHandle {
+                gpa: chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA,
+                initial_generation_id,
+                // Every snapshot restore is a new VM generation, so clones
+                // restored from one snapshot reseed their RNGs differently.
+                new_generation_on_restore: true,
+                generation_id_recv: mesh::channel().1,
+            }
+            .into_resource(),
+        });
+    }
+
     let vga_firmware = if opt.pcat {
         Some(openvmm_pcat_locator::find_svga_bios(
             opt.vga_firmware.as_deref(),

@@ -226,6 +226,46 @@ pub mod pit {
     }
 }
 
+pub mod generation_id {
+    //! Resource definitions for a standalone VM Generation ID device, used
+    //! when no firmware (UEFI/PCAT) is present to host the generation ID
+    //! buffer, e.g. Linux direct boot.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Guest physical address of the generation ID buffer for x86 Linux
+    /// direct boot.
+    ///
+    /// This lies in the legacy BIOS area `[0xe0000, 0x100000)`, which the
+    /// direct-boot loader reports as E820 reserved. That satisfies the VM
+    /// Generation ID specification: the buffer is 8-byte aligned, not in
+    /// AddressRangeMemory/AddressRangeACPI, and cacheable. It sits between
+    /// the RSDP (0xe0000) and the SMBIOS anchor (0xf0000).
+    pub const X86_DIRECT_BOOT_GENERATION_ID_GPA: u64 = 0xef000;
+
+    /// A handle to a standalone VM Generation ID device.
+    #[derive(MeshPayload)]
+    pub struct GenerationIdDeviceHandle {
+        /// Guest physical address of the 16-byte generation ID buffer. The
+        /// platform's ACPI tables must describe the same address.
+        pub gpa: u64,
+        /// The generation ID for a fresh boot.
+        pub initial_generation_id: [u8; 16],
+        /// Whether restoring saved state starts a new VM generation (new ID
+        /// plus guest notification). Enable this for snapshot restore, so
+        /// each clone reseeds its RNG differently.
+        pub new_generation_on_restore: bool,
+        /// Channel to receive host-requested generation ID updates.
+        pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenerationIdDeviceHandle {
+        const ID: &'static str = "generation_id";
+    }
+}
+
 pub mod battery {
     //! Resource definitions for the battery device
 
