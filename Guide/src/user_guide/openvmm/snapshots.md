@@ -20,6 +20,12 @@ These are stored as three files in a snapshot directory:
 | `state.bin`     | Serialized device state                     |
 | `memory.bin`    | Memory backing file                         |
 
+```admonish note
+On the KVM backend, the saved per-VP state includes nested-virtualization
+(VMX/SVM) state, so a VM that is itself running a nested hypervisor can be
+snapshotted and resumed.
+```
+
 ## Prerequisites
 
 Snapshots require **file-backed guest memory**. Pass `file=<PATH>` in the

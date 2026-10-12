@@ -701,17 +701,20 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(KvmError::NotSupported)
+        // Empty only on a host without KVM_CAP_NESTED_STATE.
+        let data = self.kvm().get_nested_state()?;
+        Ok(vp::NestedState { data })
     }
 
     fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
-        if !value.data.is_empty() {
-            return Err(KvmError::NestedStateRestoreUnsupported);
-        }
         // Empty is NestedState::at_reset's sentinel. There is no saved payload
         // to restore; synthesize the vendor's architectural reset state.
-        self.kvm()
-            .reset_nested_state(self.vp.partition.caps.vendor.is_intel_compatible())?;
+        if value.data.is_empty() {
+            self.kvm()
+                .reset_nested_state(self.vp.partition.caps.vendor.is_intel_compatible())?;
+            return Ok(());
+        }
+        self.kvm().set_nested_state(&value.data)?;
         Ok(())
     }
 }

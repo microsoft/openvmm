@@ -89,6 +89,8 @@ pub enum KvmError {
     AvailableCheck(#[source] std::io::Error),
     #[error(transparent)]
     State(#[from] Box<StateError<KvmError>>),
+    #[error("failed to leave nested virtualization before resetting the vp")]
+    LeaveNested(#[source] kvm::Error),
     #[error("invalid state while restoring: {0}")]
     InvalidState(&'static str),
     #[error("unsupported isolation configuration: {0}")]
@@ -109,9 +111,6 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error("nested virtualization was requested but the host does not support it")]
     NestedVirtUnsupported,
-    #[cfg(guest_arch = "x86_64")]
-    #[error("restoring saved nested state is not supported; only reset is implemented")]
-    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,
