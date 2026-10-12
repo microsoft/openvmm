@@ -32,6 +32,11 @@ pub trait ChangeDeviceState {
     /// The default preserves the notification-only behavior of [`Self::start`].
     /// Devices that restore process-local workers should override this so a
     /// restore failure is reported before dependent units start.
+    ///
+    /// After this is called, [`Self::stop`] may be called to roll back startup,
+    /// regardless of whether this method succeeds. Implementations that return
+    /// an error must leave the device in a state where `stop` is safe and
+    /// cleans up any partial startup.
     fn start_fallible(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
         self.start();
         async { Ok(()) }
@@ -43,8 +48,9 @@ pub trait ChangeDeviceState {
     /// should be in a stable state where it can be saved without losing data
     /// (if it implements the appropriate trait).
     ///
-    /// Callers must ensure that the device is in a started state before calling
-    /// this method.
+    /// Callers must ensure that the device has had [`Self::start`] or
+    /// [`Self::start_fallible`] called and has not subsequently been stopped.
+    /// This includes a `start_fallible` call that returned an error.
     fn stop(&mut self) -> impl Send + Future<Output = ()>;
 
     /// Resets the device state to its initial state, for a fresh boot.
