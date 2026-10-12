@@ -85,6 +85,7 @@ impl StateUnits {
 
         let mut failures = Vec::new();
         let mut started_ids = Vec::new();
+        let mut failed_start_ids = Vec::new();
         {
             let mut inner = self.inner.lock();
             for (name, id, result) in results {
@@ -102,6 +103,7 @@ impl StateUnits {
                     }
                     StartResult::Failed(error) => {
                         unit.state = State::StartUncertain;
+                        failed_start_ids.push(id);
                         failures.push(format!("{name}: {error:#}"));
                     }
                     StartResult::Uncertain(error) => {
@@ -116,6 +118,19 @@ impl StateUnits {
             self.running = true;
             Ok(())
         } else {
+            if !failed_start_ids.is_empty() {
+                self.run_op(
+                    "failed_start_cleanup",
+                    Some(&failed_start_ids),
+                    State::StartUncertain,
+                    State::Stopping,
+                    State::StartUncertain,
+                    StateRequest::Stop,
+                    |_, _| Some(()),
+                    |unit| &unit.dependents,
+                )
+                .await;
+            }
             if !started_ids.is_empty() {
                 self.run_op(
                     "failed_start_rollback",
