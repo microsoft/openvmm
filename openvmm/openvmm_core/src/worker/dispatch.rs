@@ -3826,7 +3826,7 @@ impl LoadedVm {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
                                             "worker restart failed and the VM could not resume",
                                         ))));
-                                        continue;
+                                        return;
                                     }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
@@ -3902,7 +3902,15 @@ impl LoadedVm {
                             )
                             .await?;
                             self.inner.vmbus_devices.push(device);
-                            self.state_units.start_stopped_units().await?;
+                            if let Err(error) = self.state_units.start_stopped_units().await {
+                                let device = self
+                                    .inner
+                                    .vmbus_devices
+                                    .pop()
+                                    .expect("device was just pushed");
+                                drop(device.remove().await);
+                                return Err(error);
+                            }
                             anyhow::Ok(())
                         })
                         .await
@@ -4048,7 +4056,15 @@ impl LoadedVm {
                             // MSI. The guest may begin probing config space
                             // immediately after receiving the interrupt, so
                             // the device must be ready first.
-                            self.state_units.start_stopped_units().await?;
+                            if let Err(error) = self.state_units.start_stopped_units().await {
+                                let (_, unit, _) = self
+                                    .inner
+                                    .pcie_hotplug_devices
+                                    .pop()
+                                    .expect("device was just pushed");
+                                unit.remove().await;
+                                return Err(error);
+                            }
 
                             // Now attach the device and notify the guest.
                             if let Err(e) = rc.lock().hotplug_add_device(
