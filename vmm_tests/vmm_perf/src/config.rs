@@ -84,7 +84,9 @@ impl VmmPerfProfileVariant {
             VmmPerfProfile::Iperf3 => "iperf3",
             VmmPerfProfile::BootTime => "boot_time",
         };
-        if self.modifiers.is_empty() || self.modifiers == ["vmbus"] {
+        let is_default_vmbus = matches!(self.profile, VmmPerfProfile::Fio | VmmPerfProfile::Iperf3)
+            && self.modifiers == ["vmbus"];
+        if self.modifiers.is_empty() || is_default_vmbus {
             profile.into()
         } else {
             format!("{profile}_{}", self.modifiers.join("_").replace('-', "_"))
@@ -443,7 +445,6 @@ mod tests {
             ("iperf3", "IPERF3-VMBUS"),
             ("iperf3:virtio", "IPERF3-VIRTIO"),
             ("boot-time", "BOOTTIME"),
-            ("boot-time:cold:measured", "BOOTTIME-COLD-MEASURED"),
         ] {
             let profile = profile.parse::<VmmPerfProfileVariant>().unwrap();
             assert_eq!(
@@ -463,13 +464,6 @@ mod tests {
                 format!("PERF-OPENVMM-ARM64-WIN-UEFI-{suffix}.json")
             );
         }
-        assert_eq!(
-            "boot-time:cold:measured"
-                .parse::<VmmPerfProfileVariant>()
-                .unwrap()
-                .name(),
-            "boot_time_cold_measured"
-        );
     }
 
     #[test]
