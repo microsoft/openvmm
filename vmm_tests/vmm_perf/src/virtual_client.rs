@@ -4,7 +4,7 @@
 use super::command::VirtualClientCommandBuilder;
 use super::command::run_command;
 use super::config::VmmPerfConfig;
-use super::config::VmmPerfProfile;
+use super::config::VmmPerfProfileVariant;
 use super::diagnostics::RunDiagnostics;
 use super::host::HostEnvironment;
 use super::runtime::VmmPerfRuntime;
@@ -20,7 +20,7 @@ use std::time::UNIX_EPOCH;
 const ITERATIONS: u32 = 1;
 
 pub(crate) struct VirtualClientRunRequest<'a> {
-    pub(crate) profile: VmmPerfProfile,
+    pub(crate) profile: VmmPerfProfileVariant,
     pub(crate) config: VmmPerfConfig,
     pub(crate) runtime: &'a VmmPerfRuntime,
     pub(crate) openvmm: &'a Path,
@@ -33,7 +33,7 @@ pub(crate) struct VirtualClientRunRequest<'a> {
 
 pub(crate) struct VirtualClientRun<'a> {
     name: String,
-    profile: VmmPerfProfile,
+    profile: VmmPerfProfileVariant,
     runtime: &'a VmmPerfRuntime,
     directories: RunDirectories,
     host: &'a HostEnvironment,
@@ -56,7 +56,7 @@ impl<'a> VirtualClientRun<'a> {
         let mut custom_parameters = request.config.parameters;
         let work_dir_base = custom_parameters.remove("WorkDir");
         let directories = RunDirectories::prepare(
-            request.profile,
+            &request.profile,
             &request.config.name,
             request.output_dir,
             request.temp_dir,
@@ -87,12 +87,12 @@ impl<'a> VirtualClientRun<'a> {
             "selected VMM.Perf work directory"
         );
 
-        let experiment_id = experiment_id(request.profile, &request.config.name)?;
+        let experiment_id = experiment_id(&request.profile, &request.config.name)?;
         let mut command_builder = VirtualClientCommandBuilder::new(
             request.runtime.root(),
             request.runtime.virtual_client(),
         )
-        .profile(request.profile)
+        .profile(request.profile.clone())
         .iterations(ITERATIONS)
         .package_dir(&request.runtime.package_dir())
         .log_dir(&directories.virtual_client_logs)
@@ -238,7 +238,7 @@ struct RunDirectories {
 
 impl RunDirectories {
     fn prepare(
-        profile: VmmPerfProfile,
+        profile: &VmmPerfProfileVariant,
         config_name: &str,
         output_dir: &Path,
         temp_root: &Path,
@@ -254,7 +254,7 @@ impl RunDirectories {
 
         fs_err::create_dir_all(temp_root)?;
         let work = tempfile::Builder::new()
-            .prefix(temp_dir_prefix(profile))
+            .prefix(profile.temp_dir_prefix())
             .tempdir_in(temp_root)?;
         let data_dir = work.path().join("data");
         let temp_dir = work.path().join("temp");
@@ -310,17 +310,9 @@ impl RunDirectories {
     }
 }
 
-fn temp_dir_prefix(profile: VmmPerfProfile) -> &'static str {
-    match profile {
-        VmmPerfProfile::Fio => "f-",
-        VmmPerfProfile::Iperf3 => "i-",
-        VmmPerfProfile::BootTime => "b-",
-    }
-}
-
 fn staged_config_output_dir(
     output_dir: &Path,
-    profile: VmmPerfProfile,
+    profile: &VmmPerfProfileVariant,
     config_name: &str,
 ) -> PathBuf {
     output_dir.join(profile.name()).join(config_name)
@@ -387,7 +379,7 @@ fn path_for_virtual_client(path: PathBuf) -> PathBuf {
     path
 }
 
-fn experiment_id(profile: VmmPerfProfile, config_name: &str) -> anyhow::Result<String> {
+fn experiment_id(profile: &VmmPerfProfileVariant, config_name: &str) -> anyhow::Result<String> {
     Ok(format!(
         "{}-{config_name}-{}",
         profile.name(),
@@ -400,7 +392,7 @@ mod tests {
     use super::resolve_parameters;
     use super::resolve_work_dir_base;
     use super::staged_config_output_dir;
-    use crate::config::VmmPerfProfile;
+    use crate::config::VmmPerfProfileVariant;
     use crate::test_support;
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -440,7 +432,11 @@ mod tests {
     #[test]
     fn stages_profile_specific_output_paths() {
         assert_eq!(
-            staged_config_output_dir(Path::new("out"), VmmPerfProfile::BootTime, "cfg"),
+            staged_config_output_dir(
+                Path::new("out"),
+                &"boot-time".parse::<VmmPerfProfileVariant>().unwrap(),
+                "cfg",
+            ),
             Path::new("out").join("boot_time").join("cfg")
         );
     }

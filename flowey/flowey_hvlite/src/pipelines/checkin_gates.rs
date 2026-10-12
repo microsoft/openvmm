@@ -2007,7 +2007,7 @@ impl IntoPipeline for CheckinGatesCli {
                             target: target.clone(),
                             runner: ctx.use_typed_artifact(&runner),
                             openvmm: ctx.use_typed_artifact(&openvmm),
-                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::all_profiles(),
                             vm_sizes_json: None,
                             parameters_json: None,
                             runtime_archive: None,

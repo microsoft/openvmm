@@ -9,7 +9,6 @@ use crate::common::CommonTriple;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
-use crate::run_vmm_perf::VmmPerfProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -19,7 +18,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub runner: ReadVar<VmmPerfOutput>,
         pub openvmm: ReadVar<OpenvmmOutput>,
-        pub profiles: Vec<VmmPerfProfile>,
+        pub profiles: Vec<String>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
         /// Local runtime archive override. CI always uses the pinned download.

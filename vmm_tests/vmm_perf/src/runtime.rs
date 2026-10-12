@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::config::VmmPerfProfile;
+use super::config::VmmPerfProfileVariant;
 use anyhow::Context as _;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -33,7 +33,7 @@ impl VmmPerfRuntime {
         })
     }
 
-    pub(crate) fn validate_profile(&self, profile: VmmPerfProfile) -> anyhow::Result<()> {
+    pub(crate) fn validate_profile(&self, profile: &VmmPerfProfileVariant) -> anyhow::Result<()> {
         ensure_file(
             &self.root.join("profiles").join(profile.file()),
             "VMM.Perf profile",
