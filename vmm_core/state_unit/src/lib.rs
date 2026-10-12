@@ -222,6 +222,7 @@ enum State {
     Saving,
     Restoring,
     StartUncertain,
+    StartFailedStopped,
     QuiesceUncertain,
 }
 
@@ -470,7 +471,12 @@ impl StateUnits {
             inner
                 .units
                 .values()
-                .filter(|unit| unit.state == State::StartUncertain)
+                .filter(|unit| {
+                    matches!(
+                        unit.state,
+                        State::StartUncertain | State::StartFailedStopped
+                    )
+                })
                 .map(|unit| {
                     (
                         unit.name.clone(),
@@ -502,16 +508,24 @@ impl StateUnits {
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
-        {
+        // Make uncertain starts receive Stop and already-cleaned failures skip
+        // it, then restore both terminal markers after the ordered operation.
+        let terminal_states = {
             let mut inner = self.inner.lock();
-            for unit in inner.units.values_mut() {
-                if unit.state == State::StartUncertain {
-                    // Start may have changed the unit before failing, so it
-                    // must receive a stop request with the running units.
-                    unit.state = State::Running;
-                }
-            }
-        }
+            inner
+                .units
+                .iter_mut()
+                .filter_map(|(&id, unit)| {
+                    let state = unit.state;
+                    match state {
+                        State::StartUncertain => unit.state = State::Running,
+                        State::StartFailedStopped => unit.state = State::Stopped,
+                        _ => return None,
+                    }
+                    Some((id, state))
+                })
+                .collect::<Vec<_>>()
+        };
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -525,6 +539,13 @@ impl StateUnits {
             |unit| &unit.dependents,
         )
         .await;
+        let mut inner = self.inner.lock();
+        for (id, state) in terminal_states {
+            if let Some(unit) = inner.units.get_mut(&id) {
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = state;
+            }
+        }
         self.running = false;
     }
 
