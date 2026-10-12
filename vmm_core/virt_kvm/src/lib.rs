@@ -88,6 +88,9 @@ pub enum KvmError {
     #[error("nested virtualization was requested but the host does not support it")]
     NestedVirtUnsupported,
     #[cfg(guest_arch = "x86_64")]
+    #[error("cannot save the vp while a PIC interrupt is queued in KVM")]
+    ExtintQueued,
+    #[cfg(guest_arch = "x86_64")]
     #[error("unsupported CPU vendor")]
     UnsupportedCpuVendor,
     #[cfg(guest_arch = "x86_64")]

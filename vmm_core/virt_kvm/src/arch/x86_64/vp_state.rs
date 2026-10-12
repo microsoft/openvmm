@@ -693,6 +693,11 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
+        // KVM reports a queued PIC interrupt in neither the VP state nor the
+        // nested state, so saving now would lose it.
+        if self.vp.runner.extint_may_be_queued() {
+            return Err(KvmError::ExtintQueued);
+        }
         // Empty only on a host without KVM_CAP_NESTED_STATE.
         let data = self.kvm().get_nested_state()?;
         Ok(vp::NestedState { data })

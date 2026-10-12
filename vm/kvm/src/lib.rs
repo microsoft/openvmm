@@ -1906,6 +1906,7 @@ impl<'a> Processor<'a> {
         VpRunner {
             partition: self.0,
             idx: self.1,
+            extint_queued: false,
             _not_send_sync: PhantomData,
         }
     }
@@ -1914,6 +1915,8 @@ impl<'a> Processor<'a> {
 pub struct VpRunner<'a> {
     partition: &'a Partition,
     idx: u32,
+    /// Whether KVM may still hold an extint queued with `KVM_INTERRUPT`.
+    extint_queued: bool,
     // This type stores the current thread in `partition` and removes it in
     // `drop`, so don't allow sending or sharing this.
     _not_send_sync: PhantomData<*const u8>,
@@ -1983,6 +1986,11 @@ impl<'a> VpRunner<'a> {
             // SAFETY: Calling IOCTL as documented, with no special requirements.
             let result = unsafe { ioctl::kvm_run(vp.vcpu.as_raw_fd(), 0) };
             CURRENT_KVM_RUN.with(|r| r.store(NO_KVM_RUN, Ordering::Relaxed));
+            // KVM reports the VP ready for an interrupt only once no extint is
+            // queued, and updates the field even when it returns early.
+            if self.run_data().ready_for_interrupt_injection != 0 {
+                self.extint_queued = false;
+            }
             match result {
                 Ok(_) => Ok(true),
                 Err(err) => match err {
@@ -2221,10 +2229,18 @@ impl<'a> VpRunner<'a> {
     /// [`Self::check_or_request_interrupt_window`] has returned `true`.
     pub fn queue_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
+        self.extint_queued = true;
         // Remember that there is a pending extint interrupt. KVM will update
         // this field again after the VP runs.
         self.run_data().ready_for_interrupt_injection = 0;
         Ok(())
+    }
+
+    /// Returns whether KVM may still hold an extint queued with
+    /// [`Self::queue_extint_interrupt`], which is then missing from any saved
+    /// VP state.
+    pub fn extint_may_be_queued(&self) -> bool {
+        self.extint_queued
     }
 }
 
