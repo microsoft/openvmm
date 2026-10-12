@@ -1014,13 +1014,9 @@ mod test {
                 sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
             },
             cmdline: ArrayString::new(),
-            vmbus_vtl2: VmbusInfo {
-                mmio,
-                connection_id: 0,
-            },
+            vmbus_vtl2: VmbusInfo { mmio },
             vmbus_vtl0: VmbusInfo {
                 mmio: ArrayVec::new(),
-                connection_id: 0,
             },
             com3_serial: ComInfo::None,
             gic: None,
