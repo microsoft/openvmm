@@ -828,7 +828,7 @@ impl Inner {
         let units = if let Some(unit_ids) = unit_ids {
             unit_ids
                 .iter()
-                .map(|id| map(*id, &self.units[id]))
+                .filter_map(|id| self.units.get(id).map(|unit| map(*id, unit)))
                 .collect()
         } else {
             self.units.iter().map(|(id, unit)| map(*id, unit)).collect()
