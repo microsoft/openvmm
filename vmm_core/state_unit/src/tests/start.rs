@@ -276,6 +276,53 @@ async fn test_initial_uncertain_start_is_cleaned(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _exited = units
+        .add("exited")
+        .spawn(&driver, |mut recv| async move {
+            let unit = StartResultUnit {
+                started: Arc::new(AtomicBool::new(true)),
+                stopped: Arc::new(AtomicBool::new(false)),
+                fail: false,
+            };
+            let request = recv.next().await.unwrap();
+            let StateRequest::Start(response) = request else {
+                panic!("unexpected request");
+            };
+            response.handle_failable_sync(|()| anyhow::Ok(()));
+            unit
+        })
+        .unwrap();
+    let _failed = units
+        .add("failed")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: Arc::new(AtomicBool::new(false)),
+                    fail: true,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+
+    let error = units.start().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failed_start_rollback stop failed")
+    );
+    assert!(!units.is_running());
+    let retry_error = units.start().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+    assert!(units.reset().await.is_err());
+    assert!(units.save().await.is_err());
+    assert!(units.restore(Vec::new()).await.is_err());
+}
+
+#[async_test]
 async fn test_rollback_ready_set_ignores_removed_unit(driver: DefaultDriver) {
     let units = StateUnits::new();
     let unit = units
