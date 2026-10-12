@@ -3830,7 +3830,7 @@ impl LoadedVm {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
                                             "worker restart failed and the VM could not resume",
                                         ))));
-                                        return;
+                                        break;
                                     }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
