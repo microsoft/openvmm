@@ -3,9 +3,11 @@
 
 //! Tests for fallible start.
 
+use crate::StateRequest;
 use crate::StateUnit;
 use crate::StateUnits;
 use crate::run_unit;
+use futures::StreamExt;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -156,6 +158,65 @@ async fn test_stop_cleans_up_failed_start_while_running(driver: DefaultDriver) {
     assert!(retry_error.to_string().contains("terminal state"));
     units.stop().await;
     assert!(failed_stopped.load(Ordering::Relaxed));
+    assert!(!units.is_running());
+    let retry_error = units.start().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+    assert!(units.reset().await.is_err());
+    assert!(units.save().await.is_err());
+    assert!(units.restore(Vec::new()).await.is_err());
+}
+
+#[async_test]
+async fn test_uncertain_start_is_cleaned_once_and_remains_terminal(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _running = units
+        .add("running")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: Arc::new(AtomicBool::new(false)),
+                    fail: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let uncertain_started = Arc::new(AtomicBool::new(false));
+    let uncertain_stopped = Arc::new(AtomicBool::new(false));
+    let _uncertain = units
+        .add("uncertain")
+        .spawn(&driver, |mut recv| {
+            let mut unit = StartResultUnit {
+                started: uncertain_started.clone(),
+                stopped: uncertain_stopped.clone(),
+                fail: false,
+            };
+            async move {
+                while let Some(request) = recv.next().await {
+                    match request {
+                        StateRequest::Start(response) => {
+                            unit.started.store(true, Ordering::Relaxed);
+                            drop(response);
+                        }
+                        request => request.apply(&mut unit).await,
+                    }
+                }
+                unit
+            }
+        })
+        .unwrap();
+
+    units.start_stopped_units().await.unwrap_err();
+    assert!(uncertain_started.load(Ordering::Relaxed));
+    assert!(units.is_running());
+    let retry_error = units.start_stopped_units().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+
+    units.stop().await;
+    assert!(uncertain_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
     let retry_error = units.start().await.unwrap_err();
     assert!(retry_error.to_string().contains("terminal state"));
