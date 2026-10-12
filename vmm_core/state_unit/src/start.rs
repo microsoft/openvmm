@@ -119,26 +119,36 @@ impl StateUnits {
             self.running = true;
             Ok(())
         } else {
-            failures.extend(self.cleanup_failed_starts(&failed_or_uncertain_ids).await);
-            if !started_ids.is_empty() {
-                self.run_op(
-                    "failed_start_rollback",
-                    Some(&started_ids),
-                    State::Running,
-                    State::Stopping,
-                    State::Stopped,
-                    StateRequest::Stop,
-                    |_, _| Some(()),
-                    |unit| &unit.dependents,
+            failures.extend(
+                self.stop_after_failed_start(
+                    "failed_start_cleanup",
+                    &failed_or_uncertain_ids,
+                    State::StartUncertain,
+                    State::StartFailedStopped,
                 )
-                .await;
-            }
+                .await,
+            );
+            failures.extend(
+                self.stop_after_failed_start(
+                    "failed_start_rollback",
+                    &started_ids,
+                    State::Running,
+                    State::Stopped,
+                )
+                .await,
+            );
             self.running = was_running;
             anyhow::bail!("state units could not start: {}", failures.join("; "))
         }
     }
 
-    async fn cleanup_failed_starts(&self, unit_ids: &[u64]) -> Vec<String> {
+    async fn stop_after_failed_start(
+        &self,
+        op: &'static str,
+        unit_ids: &[u64],
+        old_state: State,
+        stopped_state: State,
+    ) -> Vec<String> {
         let mut operations = Vec::new();
         let ready_set;
         {
@@ -149,15 +159,13 @@ impl StateUnits {
                 .iter_mut()
                 .filter(|(id, _)| ready_set.0.contains_key(id))
             {
-                assert_eq!(unit.state, State::StartUncertain);
+                assert_eq!(unit.state, old_state);
                 let name = unit.name.clone();
                 let dependents = unit.dependents.clone();
                 let ready_set = ready_set.clone();
                 let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
                 operations.push(async move {
-                    ready_set
-                        .wait("failed_start_cleanup", id, &dependents)
-                        .await;
+                    ready_set.wait(op, id, &dependents).await;
                     let result = stop.await;
                     ready_set.done(id, true);
                     (name, id, result)
@@ -175,14 +183,14 @@ impl StateUnits {
             };
             assert_eq!(unit.state, State::Stopping);
             match result {
-                Ok(Some(())) => unit.state = State::StartFailedStopped,
+                Ok(Some(())) => unit.state = stopped_state,
                 Ok(None) => {
                     unit.state = State::StartUncertain;
-                    failures.push(format!("{name}: cleanup stop request was not sent"));
+                    failures.push(format!("{name}: {op} stop request was not sent"));
                 }
                 Err(error) => {
                     unit.state = State::StartUncertain;
-                    failures.push(format!("{name}: cleanup stop failed: {error:#}"));
+                    failures.push(format!("{name}: {op} stop failed: {error:#}"));
                 }
             }
         }
