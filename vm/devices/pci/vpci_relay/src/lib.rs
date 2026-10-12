@@ -490,7 +490,7 @@ impl VpciRelay {
                 .await?
         };
 
-        entry.insert(RelayedDevice {
+        let device = RelayedDevice {
             bus_instance_id: instance_id,
             bus_client: vpci_client,
             vpci_device: vpci_device.clone(),
@@ -498,9 +498,13 @@ impl VpciRelay {
             bus_unit,
             device_unit,
             ready_to_remove: false,
-        });
+        };
 
-        state_units.start_stopped_units().await?;
+        if let Err(error) = state_units.start_stopped_units().await {
+            device.remove().await;
+            return Err(error);
+        }
+        entry.insert(device);
         Ok(())
     }
 }
