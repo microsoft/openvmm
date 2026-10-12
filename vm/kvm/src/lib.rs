@@ -1730,6 +1730,22 @@ impl<'a> Processor<'a> {
         Ok(())
     }
 
+    /// Returns whether the vCPU is running a nested guest.
+    #[cfg(target_arch = "x86_64")]
+    pub fn is_in_nested_guest(&self) -> Result<bool> {
+        let current = self.get_nested_state()?;
+        if current.is_empty() {
+            return Ok(false);
+        }
+        // SAFETY: `current` is at least a header (get_nested_state guarantees
+        // it), and `flags` is a plain u16 read at a fixed offset.
+        let flags = unsafe {
+            std::ptr::addr_of!((*current.as_ptr().cast::<kvm_nested_state>()).flags)
+                .read_unaligned()
+        };
+        Ok(u32::from(flags) & KVM_STATE_NESTED_GUEST_MODE != 0)
+    }
+
     /// Restores nested-virtualization state previously captured by
     /// [`Processor::get_nested_state`].
     ///
