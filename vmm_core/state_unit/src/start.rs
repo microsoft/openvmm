@@ -85,7 +85,7 @@ impl StateUnits {
 
         let mut failures = Vec::new();
         let mut started_ids = Vec::new();
-        let mut failed_start_ids = Vec::new();
+        let mut failed_or_uncertain_ids = Vec::new();
         {
             let mut inner = self.inner.lock();
             for (name, id, result) in results {
@@ -103,11 +103,12 @@ impl StateUnits {
                     }
                     StartResult::Failed(error) => {
                         unit.state = State::StartUncertain;
-                        failed_start_ids.push(id);
+                        failed_or_uncertain_ids.push(id);
                         failures.push(format!("{name}: {error:#}"));
                     }
                     StartResult::Uncertain(error) => {
                         unit.state = State::StartUncertain;
+                        failed_or_uncertain_ids.push(id);
                         failures.push(format!("{name}: {error:#}"));
                     }
                 }
@@ -118,19 +119,7 @@ impl StateUnits {
             self.running = true;
             Ok(())
         } else {
-            if !failed_start_ids.is_empty() {
-                self.run_op(
-                    "failed_start_cleanup",
-                    Some(&failed_start_ids),
-                    State::StartUncertain,
-                    State::Stopping,
-                    State::StartFailedStopped,
-                    StateRequest::Stop,
-                    |_, _| Some(()),
-                    |unit| &unit.dependents,
-                )
-                .await;
-            }
+            failures.extend(self.cleanup_failed_starts(&failed_or_uncertain_ids).await);
             if !started_ids.is_empty() {
                 self.run_op(
                     "failed_start_rollback",
@@ -147,5 +136,56 @@ impl StateUnits {
             self.running = was_running;
             anyhow::bail!("state units could not start: {}", failures.join("; "))
         }
+    }
+
+    async fn cleanup_failed_starts(&self, unit_ids: &[u64]) -> Vec<String> {
+        let mut operations = Vec::new();
+        let ready_set;
+        {
+            let mut inner = self.inner.lock();
+            ready_set = inner.ready_set(Some(unit_ids));
+            for (&id, unit) in inner
+                .units
+                .iter_mut()
+                .filter(|(id, _)| ready_set.0.contains_key(id))
+            {
+                assert_eq!(unit.state, State::StartUncertain);
+                let name = unit.name.clone();
+                let dependents = unit.dependents.clone();
+                let ready_set = ready_set.clone();
+                let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
+                operations.push(async move {
+                    ready_set
+                        .wait("failed_start_cleanup", id, &dependents)
+                        .await;
+                    let result = stop.await;
+                    ready_set.done(id, true);
+                    (name, id, result)
+                });
+                unit.state = State::Stopping;
+            }
+        }
+
+        let results = join_all(operations).await;
+        let mut failures = Vec::new();
+        let mut inner = self.inner.lock();
+        for (name, id, result) in results {
+            let Some(unit) = inner.units.get_mut(&id) else {
+                continue;
+            };
+            assert_eq!(unit.state, State::Stopping);
+            match result {
+                Ok(Some(())) => unit.state = State::StartFailedStopped,
+                Ok(None) => {
+                    unit.state = State::StartUncertain;
+                    failures.push(format!("{name}: cleanup stop request was not sent"));
+                }
+                Err(error) => {
+                    unit.state = State::StartUncertain;
+                    failures.push(format!("{name}: cleanup stop failed: {error:#}"));
+                }
+            }
+        }
+        failures
     }
 }
