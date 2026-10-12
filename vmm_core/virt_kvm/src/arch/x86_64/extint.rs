@@ -11,8 +11,8 @@ use crate::KvmRunVpError;
 /// KVM cannot turn an interrupt in the slot into an exit from a nested guest,
 /// so while the VP runs one, the interrupt is queued with
 /// [`kvm::VpRunner::queue_extint_interrupt`] and KVM decides. KVM does not
-/// report a queued interrupt, so VP state saved before the guest takes it does
-/// not include it.
+/// report a queued interrupt, so the VP state cannot be saved until KVM has
+/// delivered it (see [`kvm::VpRunner::extint_may_be_queued`]).
 ///
 /// The caller must meet the requirements of both [`inject`] and
 /// [`kvm::VpRunner::queue_extint_interrupt`]. Returns whether an interrupt was
@@ -285,6 +285,7 @@ mod tests {
             assert_eq!(next_out_port(&mut runner, timed_out), HANDLER_PORT.into());
             assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
             assert_eq!(next_out_port(&mut runner, timed_out), RESUMED_PORT.into());
+            assert!(!runner.extint_may_be_queued());
             drop(runner);
             drop(done);
         });
@@ -374,6 +375,23 @@ mod tests {
 
             // KVM does not report a queued extint.
             assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn queued_extint_is_tracked_across_a_stop() {
+        check_extint(KVM_MP_STATE_RUNNABLE, |runner, _vp| {
+            refresh_interrupt_window(runner);
+            assert!(runner.check_or_request_interrupt_window());
+            assert!(!runner.extint_may_be_queued());
+            runner.queue_extint_interrupt(VECTOR).unwrap();
+            assert!(runner.extint_may_be_queued());
+
+            // A stop completes the exit without running the VP, so KVM still
+            // holds the interrupt.
+            refresh_interrupt_window(runner);
+            assert!(runner.extint_may_be_queued());
         });
     }
 
