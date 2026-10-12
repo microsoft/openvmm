@@ -3823,10 +3823,11 @@ impl LoadedVm {
                             Err(err) => {
                                 if stopped {
                                     if let Err(start_error) = self.state_units.start().await {
+                                        self.running = false;
                                         rpc.complete(Err(RemoteError::new(start_error.context(
                                             "worker restart failed and the VM could not resume",
                                         ))));
-                                        break;
+                                        continue;
                                     }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
