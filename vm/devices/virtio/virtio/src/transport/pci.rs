@@ -772,6 +772,10 @@ impl ChangeDeviceState for VirtioPciDevice {
         self.core.start(&mut self.pci);
     }
 
+    async fn start_fallible(&mut self) -> anyhow::Result<()> {
+        self.core.start_fallible(&mut self.pci).await
+    }
+
     async fn stop(&mut self) {
         self.core.stop(&mut self.pci).await;
     }
