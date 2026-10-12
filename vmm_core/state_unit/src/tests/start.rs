@@ -25,8 +25,8 @@ struct StartResultUnit {
 
 impl StateUnit for StartResultUnit {
     async fn start(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.fail, "intentional start failure");
         self.started.store(true, Ordering::Relaxed);
+        anyhow::ensure!(!self.fail, "intentional start failure");
         Ok(())
     }
 
@@ -71,13 +71,15 @@ async fn test_start_failure_blocks_dependent(driver: DefaultDriver) {
             )
         })
         .unwrap();
+    let failed_started = Arc::new(AtomicBool::new(false));
+    let failed_stopped = Arc::new(AtomicBool::new(false));
     let failed = units
         .add("failed")
         .spawn(&driver, |recv| {
             run_unit(
                 StartResultUnit {
-                    started: Arc::new(AtomicBool::new(false)),
-                    stopped: Arc::new(AtomicBool::new(false)),
+                    started: failed_started.clone(),
+                    stopped: failed_stopped.clone(),
                     fail: true,
                 },
                 recv,
@@ -104,6 +106,8 @@ async fn test_start_failure_blocks_dependent(driver: DefaultDriver) {
     assert!(error.to_string().contains("intentional start failure"));
     assert!(independent_started.load(Ordering::Relaxed));
     assert!(independent_stopped.load(Ordering::Relaxed));
+    assert!(failed_started.load(Ordering::Relaxed));
+    assert!(failed_stopped.load(Ordering::Relaxed));
     assert!(!dependent_started.load(Ordering::Relaxed));
     assert!(!units.is_running());
     let retry_error = units.start().await.unwrap_err();
