@@ -228,9 +228,10 @@ impl LoadedVm {
         mut worker_rpc: mesh::Receiver<WorkerRpc<T>>,
     ) -> anyhow::Result<Option<LoadedVmState<T>>> {
         if autostart_vps {
-            self.start(correlation_id)
-                .await
-                .context("failed to autostart VM")?;
+            if let Err(error) = self.start(correlation_id).await {
+                self.teardown().await;
+                return Err(error.context("failed to autostart VM"));
+            }
         }
 
         // VTL2 settings services
@@ -578,6 +579,12 @@ impl LoadedVm {
             }
         };
 
+        self.teardown().await;
+
+        Ok(state)
+    }
+
+    async fn teardown(self) {
         let _client_notify_send = self.partition_unit.teardown().await;
 
         // Terminate the vmbus relay before vmbus to avoid sending channel
@@ -589,8 +596,6 @@ impl LoadedVm {
         if let Some(vmbus) = self.vmbus_server {
             vmbus.remove().await.shutdown().await;
         }
-
-        Ok(state)
     }
 
     /// Handles a servicing request from the host.
