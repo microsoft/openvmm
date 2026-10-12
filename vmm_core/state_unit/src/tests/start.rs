@@ -13,6 +13,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
@@ -186,6 +187,60 @@ async fn test_uncertain_start_is_cleaned_once_and_remains_terminal(driver: Defau
 
     let uncertain_started = Arc::new(AtomicBool::new(false));
     let uncertain_stopped = Arc::new(AtomicBool::new(false));
+    let stop_requests = Arc::new(AtomicUsize::new(0));
+    let _uncertain = units
+        .add("uncertain")
+        .spawn(&driver, |mut recv| {
+            let stop_requests = stop_requests.clone();
+            let mut unit = StartResultUnit {
+                started: uncertain_started.clone(),
+                stopped: uncertain_stopped.clone(),
+                fail: false,
+            };
+            async move {
+                while let Some(request) = recv.next().await {
+                    match request {
+                        StateRequest::Start(response) => {
+                            unit.started.store(true, Ordering::Relaxed);
+                            drop(response);
+                        }
+                        StateRequest::Stop(response)
+                            if stop_requests.fetch_add(1, Ordering::Relaxed) == 0 =>
+                        {
+                            drop(response);
+                        }
+                        request => request.apply(&mut unit).await,
+                    }
+                }
+                unit
+            }
+        })
+        .unwrap();
+
+    units.start_stopped_units().await.unwrap_err();
+    assert!(uncertain_started.load(Ordering::Relaxed));
+    assert_eq!(stop_requests.load(Ordering::Relaxed), 1);
+    assert!(!uncertain_stopped.load(Ordering::Relaxed));
+    assert!(units.is_running());
+    let retry_error = units.start_stopped_units().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+
+    units.stop().await;
+    assert_eq!(stop_requests.load(Ordering::Relaxed), 2);
+    assert!(uncertain_stopped.load(Ordering::Relaxed));
+    assert!(!units.is_running());
+    let retry_error = units.start().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+    assert!(units.reset().await.is_err());
+    assert!(units.save().await.is_err());
+    assert!(units.restore(Vec::new()).await.is_err());
+}
+
+#[async_test]
+async fn test_initial_uncertain_start_is_cleaned(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let uncertain_started = Arc::new(AtomicBool::new(false));
+    let uncertain_stopped = Arc::new(AtomicBool::new(false));
     let _uncertain = units
         .add("uncertain")
         .spawn(&driver, |mut recv| {
@@ -209,13 +264,8 @@ async fn test_uncertain_start_is_cleaned_once_and_remains_terminal(driver: Defau
         })
         .unwrap();
 
-    units.start_stopped_units().await.unwrap_err();
+    units.start().await.unwrap_err();
     assert!(uncertain_started.load(Ordering::Relaxed));
-    assert!(units.is_running());
-    let retry_error = units.start_stopped_units().await.unwrap_err();
-    assert!(retry_error.to_string().contains("terminal state"));
-
-    units.stop().await;
     assert!(uncertain_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
     let retry_error = units.start().await.unwrap_err();
