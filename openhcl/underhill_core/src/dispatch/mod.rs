@@ -79,7 +79,7 @@ use vtl2_settings_worker::handle_vtl2_config_rpc;
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
     Pause(Rpc<(), bool>),
-    Resume(Rpc<(), bool>),
+    Resume(FailableRpc<(), bool>),
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
@@ -226,9 +226,11 @@ impl LoadedVm {
         correlation_id: Option<Guid>,
         mut vm_rpc: mesh::Receiver<UhVmRpc>,
         mut worker_rpc: mesh::Receiver<WorkerRpc<T>>,
-    ) -> Option<LoadedVmState<T>> {
+    ) -> anyhow::Result<Option<LoadedVmState<T>>> {
         if autostart_vps {
-            self.start(correlation_id).await;
+            self.start(correlation_id)
+                .await
+                .context("failed to autostart VM")?;
         }
 
         // VTL2 settings services
@@ -316,25 +318,35 @@ impl LoadedVm {
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
-                        let state = async {
+                        let (state, terminate) = async {
                             let running = self.stop().await;
                             match self
                                 .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
                                 .await
                             {
-                                Ok(servicing_state) => Some((rpc, servicing_state)),
+                                Ok(servicing_state) => (Some((rpc, servicing_state)), false),
                                 Err(err) => {
                                     if running {
-                                        self.start(None).await;
+                                        if let Err(start_error) = self.start(None).await {
+                                            rpc.complete(Err(RemoteError::new(
+                                                start_error.context(format!(
+                                                    "worker restart failed ({err:#}) and the VM could not resume"
+                                                )),
+                                            )));
+                                            return (None, true);
+                                        }
                                     }
                                     rpc.complete(Err(RemoteError::new(err)));
-                                    None
+                                    (None, false)
                                 }
                             }
                         }
                         .instrument(tracing::info_span!("restart", CVM_ALLOWED))
                         .await;
 
+                        if terminate {
+                            break None;
+                        }
                         if let Some((rpc, servicing_state)) = state {
                             break Some(LoadedVmState {
                                 restart_rpc: rpc,
@@ -391,29 +403,30 @@ impl LoadedVm {
                 }
                 Event::UhVmRpc(msg) => match msg {
                     UhVmRpc::Resume(rpc) => {
-                        rpc.handle(async |()| {
-                            if !self.state_units.is_running() {
-                                self.start(None).await;
-                                true
-                            } else {
-                                false
-                            }
-                        })
-                        .await
+                        if self.state_units.is_running() {
+                            rpc.complete(Ok(false));
+                        } else if let Err(error) = self.start(None).await {
+                            rpc.complete(Err(RemoteError::new(
+                                error.context("failed to resume VM"),
+                            )));
+                            break None;
+                        } else {
+                            rpc.complete(Ok(true));
+                        }
                     }
                     UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
-                        rpc.handle_failable(async |()| {
-                            let running = self.stop().await;
-                            let r = self
-                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
-                                .await;
-                            if running {
-                                self.start(None).await;
-                            }
-                            r.map(mesh::payload::encode)
-                        })
-                        .await
+                        let running = self.stop().await;
+                        let result = self
+                            .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                            .await;
+                        if running && let Err(error) = self.start(None).await {
+                            rpc.complete(Err(RemoteError::new(
+                                error.context("failed to resume VM after save"),
+                            )));
+                            break None;
+                        }
+                        rpc.complete(result.map(mesh::payload::encode).map_err(RemoteError::new));
                     }
                     UhVmRpc::ClearHalt(rpc) => {
                         rpc.handle(async |()| self.partition_unit.clear_halt().await)
@@ -577,7 +590,7 @@ impl LoadedVm {
             vmbus.remove().await.shutdown().await;
         }
 
-        state
+        Ok(state)
     }
 
     /// Handles a servicing request from the host.
@@ -628,7 +641,9 @@ impl LoadedVm {
                     .context("failed to notify host of servicing-while-paused failure")?;
 
                 if running {
-                    self.start(Some(correlation_id)).await;
+                    self.start(Some(correlation_id))
+                        .await
+                        .context("failed to resume VM after servicing failure")?;
                 }
                 false
             }
@@ -867,15 +882,8 @@ impl LoadedVm {
         }
     }
 
-    async fn start(&mut self, correlation_id: Option<Guid>) {
-        if let Err(error) = self.state_units.start().await {
-            tracing::error!(
-                CVM_ALLOWED,
-                error = error.as_ref() as &dyn std::error::Error,
-                "VM state units failed to start"
-            );
-            return;
-        }
+    async fn start(&mut self, correlation_id: Option<Guid>) -> anyhow::Result<()> {
+        self.state_units.start().await?;
 
         // Log the boot/blackout time.
         let reference_time = ReferenceTime::new(self.partition.reference_time());
@@ -901,6 +909,8 @@ impl LoadedVm {
                 "starting VM"
             )
         }
+
+        Ok(())
     }
 
     /// Returns true if the VM was previously running.
@@ -1102,7 +1112,20 @@ impl LoadedVm {
             )
             .await?;
 
-        self.state_units.start_stopped_units().await?;
+        if let Err(error) = self.state_units.start_stopped_units().await {
+            if let Err(remove_error) = self
+                .network_settings
+                .as_mut()
+                .unwrap()
+                .remove_network(instance_id)
+                .await
+            {
+                return Err(error.context(format!(
+                    "failed to remove network after start failure: {remove_error:#}"
+                )));
+            }
+            return Err(error);
+        }
         self.emuplat_servicing.netvsp_state.push(save_state);
 
         Ok(())
