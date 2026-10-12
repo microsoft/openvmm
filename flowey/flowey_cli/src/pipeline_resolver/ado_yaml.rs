@@ -900,15 +900,13 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 label,
                 code: _,
             } => {
-                output_steps.extend(bash_commands.push(
+                output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
-                    crate::cli::exec_snippet::construct_exec_snippet_cli(
-                        "$(FLOWEY_BIN)",
-                        node_modpath,
-                        idx,
-                        job_idx,
-                    ),
+                    "$(FLOWEY_BIN)",
+                    node_modpath,
+                    idx,
+                    job_idx,
                 ));
             }
             Step::AdoYaml {
