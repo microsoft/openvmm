@@ -224,3 +224,26 @@ async fn test_uncertain_start_is_cleaned_once_and_remains_terminal(driver: Defau
     assert!(units.save().await.is_err());
     assert!(units.restore(Vec::new()).await.is_err());
 }
+
+#[async_test]
+async fn test_rollback_ready_set_ignores_removed_unit(driver: DefaultDriver) {
+    let units = StateUnits::new();
+    let unit = units
+        .add("removed")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: Arc::new(AtomicBool::new(false)),
+                    fail: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    let id = unit.handle().id.id;
+    unit.remove().await;
+
+    let ready_set = units.inner.lock().ready_set(Some(&[id]));
+    assert!(ready_set.0.is_empty());
+}
