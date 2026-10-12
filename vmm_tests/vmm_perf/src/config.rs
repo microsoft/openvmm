@@ -139,9 +139,9 @@ fn validate_modifier(value: &str) -> Result<String, String> {
     if value.is_empty()
         || !value
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            .all(|character| character.is_ascii_alphanumeric())
     {
-        return Err("profile modifier must contain only ASCII letters, numbers, or hyphens".into());
+        return Err("profile modifier must contain only ASCII letters or numbers".into());
     }
     Ok(value.to_ascii_lowercase())
 }
@@ -476,6 +476,7 @@ mod tests {
             "fio:../virtio",
             "fio:virtio/vmbus",
             "fio:virtio_vmbus",
+            "fio:a-b",
             "fio:virtio:virtio",
         ] {
             assert!(profile.parse::<VmmPerfProfileVariant>().is_err());
