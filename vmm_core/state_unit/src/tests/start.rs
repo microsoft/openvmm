@@ -108,4 +108,47 @@ async fn test_start_failure_blocks_dependent(driver: DefaultDriver) {
     assert!(!units.is_running());
     let retry_error = units.start().await.unwrap_err();
     assert!(retry_error.to_string().contains("terminal state"));
+    assert!(units.reset().await.is_err());
+    assert!(units.save().await.is_err());
+    assert!(units.restore(Vec::new()).await.is_err());
+}
+
+#[async_test]
+async fn test_stop_cleans_up_failed_start_while_running(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _running = units
+        .add("running")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: Arc::new(AtomicBool::new(false)),
+                    fail: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let failed_stopped = Arc::new(AtomicBool::new(false));
+    let _failed = units
+        .add("failed")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: failed_stopped.clone(),
+                    fail: true,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+
+    units.start_stopped_units().await.unwrap_err();
+    assert!(units.is_running());
+    units.stop().await;
+    assert!(failed_stopped.load(Ordering::Relaxed));
+    assert!(!units.is_running());
 }

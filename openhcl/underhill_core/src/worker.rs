@@ -465,6 +465,7 @@ impl Worker for UnderhillVmWorker {
         ));
         tracing::info!(CVM_ALLOWED, "terminating worker");
         self.get_thread.join().unwrap();
+        let state = state?;
         if let Some(state) = state {
             let params = UnderhillWorkerParameters {
                 env_cfg: self.env_cfg,
