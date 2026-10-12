@@ -279,6 +279,7 @@ impl VirtioDevice for Device {
 
         let features_bank1 = NetworkFeaturesBank1::new()
             .with_host_uso(host_uso)
+            .with_guest_hdrlen(true)
             .with_speed_duplex(true);
 
         DeviceTraits {

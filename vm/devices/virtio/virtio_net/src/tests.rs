@@ -1919,6 +1919,10 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         "SPEED_DUPLEX feature should always be set"
     );
     assert!(
+        bank1.guest_hdrlen(),
+        "GUEST_HDRLEN feature should always be set"
+    );
+    assert!(
         bank1.host_uso(),
         "HOST_USO should be set when uso+udp offloads supported"
     );
@@ -2000,6 +2004,10 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     assert!(
         bank1.speed_duplex(),
         "SPEED_DUPLEX feature should always be set"
+    );
+    assert!(
+        bank1.guest_hdrlen(),
+        "GUEST_HDRLEN feature should always be set"
     );
     assert!(
         !bank1.host_uso(),
