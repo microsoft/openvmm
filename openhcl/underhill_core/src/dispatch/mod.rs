@@ -319,13 +319,13 @@ impl LoadedVm {
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
-                        let (state, terminate) = async {
+                        let state = async {
                             let running = self.stop().await;
                             match self
                                 .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
                                 .await
                             {
-                                Ok(servicing_state) => (Some((rpc, servicing_state)), false),
+                                Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
                                         if let Err(start_error) = self.start(None).await {
@@ -334,20 +334,17 @@ impl LoadedVm {
                                                     "worker restart failed ({err:#}) and the VM could not resume"
                                                 )),
                                             )));
-                                            return (None, true);
+                                            return None;
                                         }
                                     }
                                     rpc.complete(Err(RemoteError::new(err)));
-                                    (None, false)
+                                    None
                                 }
                             }
                         }
                         .instrument(tracing::info_span!("restart", CVM_ALLOWED))
                         .await;
 
-                        if terminate {
-                            break None;
-                        }
                         if let Some((rpc, servicing_state)) = state {
                             break Some(LoadedVmState {
                                 restart_rpc: rpc,
@@ -424,7 +421,7 @@ impl LoadedVm {
                             rpc.complete(Err(RemoteError::new(
                                 error.context("failed to resume VM after save"),
                             )));
-                            break None;
+                            continue;
                         }
                         rpc.complete(result.map(mesh::payload::encode).map_err(RemoteError::new));
                     }
