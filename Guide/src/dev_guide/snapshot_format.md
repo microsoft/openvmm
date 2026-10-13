@@ -23,8 +23,13 @@ crate's protobuf encoding.
 
 ## Device state (`state.bin`)
 
-The device state contains every device's saved state, collected via the
-`SaveRestore` trait and encoded as a `mesh` protobuf message. The
+The device state is a `mesh` protobuf message containing:
+
+- `units` — saved-state blobs returned by state units with mutable state
+- `inventory` — the complete set of registered state-unit names, including
+  units that returned no blob
+
+The state is collected via the `SaveRestore` trait. The
 [Save State](contrib/save-state.md) compatibility rules (mesh tag stability,
 default values, forward/backward compatibility) apply.
 
@@ -61,25 +66,40 @@ Each VM component that participates in save/restore is registered as a
 "state unit" with a unique string name via `StateUnits::add("name")`.
 During save, every state unit receives a `StateRequest::Save`. Units that
 have state return `Ok(Some(blob))`; units with no persistent state (e.g.
-the input distributor) return `Ok(None)` and are omitted from `state.bin`.
+the input distributor) return `Ok(None)` and are omitted from the `units`
+field.
 
-The resulting `state.bin` contains a `Vec<SavedStateUnit>`, where each
-entry pairs a unit name with its opaque protobuf-encoded state blob.
+The `units` field is a `Vec<SavedStateUnit>`, where each entry pairs a unit
+name with its opaque protobuf-encoded state blob. The `inventory` field is
+captured from the same unit-set snapshot as those blobs. Names are written in
+canonical order, but ordering is not part of snapshot compatibility.
 
 ### Restore matching rules
 
-During restore, `StateUnits::restore()` matches saved-state entries to
-currently registered units **by name**:
+For a snapshot with an inventory, the VM worker first compares the saved and
+currently registered names as unordered exact sets:
 
 | Scenario | Result |
 |---|---|
-| Names match exactly | State is dispatched to the unit |
+| Inventories contain exactly the same names | Validation succeeds |
+| Missing or extra inventory name | **Error** — inventory mismatch |
+| Saved inventory contains a duplicate name | **Error** — inventory mismatch |
+
+After inventory validation, `StateUnits::restore()` dispatches entries from
+the `units` field **by name**:
+
+| Scenario | Result |
+|---|---|
+| Saved entry has a matching unit | State is dispatched to the unit |
 | Saved entry has no matching unit | **Error** — `unknown unit name` |
-| Unit exists with no saved entry | Unit is skipped (keeps default state) |
+| Inventory unit has no blob | Unit is skipped (no mutable state) |
 | Duplicate name in saved state | **Error** — `duplicate unit name` |
 
-This means removing a device between save and restore will fail, but
-adding a new device is allowed (it initialises to its power-on defaults).
+Snapshots written before the `inventory` field was added decode with an empty
+inventory and skip exact-set validation. For these legacy snapshots, an extra
+current unit is accepted and keeps its initial state, while a saved entry
+without a current unit still fails. The legacy exception preserves backward
+compatibility; changing the device set is not a supported restore workflow.
 
 ### Unit naming conventions
 
