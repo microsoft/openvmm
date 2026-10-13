@@ -74,6 +74,49 @@ pub struct Request {
     operation: FuseOperation,
 }
 
+struct LimitedReader<R> {
+    reader: R,
+    remaining: usize,
+}
+
+impl<R: RequestReader> io::Read for LimitedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let len = buffer.len().min(self.remaining);
+        if len == 0 {
+            return Ok(0);
+        }
+        let read = self.reader.read(&mut buffer[..len])?;
+        self.remaining -= read;
+        Ok(read)
+    }
+}
+
+impl<R: RequestReader> RequestReader for LimitedReader<R> {
+    fn read_until_count(&mut self, byte: u8, count: usize) -> lx::Result<Vec<u8>> {
+        let count = count.min(self.remaining);
+        let buffer = self.reader.read_until_count(byte, count)?;
+        let consumed = buffer.len().checked_add(1).ok_or(lx::Error::E2BIG)?;
+        if consumed > count {
+            return Err(lx::Error::EIO);
+        }
+        self.remaining -= consumed;
+        Ok(buffer)
+    }
+
+    fn remaining_len(&self) -> usize {
+        self.remaining
+    }
+
+    fn read_count(&mut self, count: usize) -> lx::Result<Box<[u8]>> {
+        if count > self.remaining {
+            return Err(lx::Error::EINVAL);
+        }
+        let buffer = self.reader.read_count(count)?;
+        self.remaining -= count;
+        Ok(buffer)
+    }
+}
+
 impl Request {
     /// Create a new request from the specified data.
     pub fn new(mut reader: impl RequestReader) -> lx::Result<Self> {
@@ -130,7 +173,7 @@ impl Request {
         );
     }
 
-    fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
+    fn read_operation(header: &fuse_in_header, reader: impl RequestReader) -> FuseOperation {
         let header_size = size_of_val(header);
         let available_len = reader.remaining_len().saturating_add(header_size);
         if header.len as usize > available_len || (header.len as usize) < header_size {
@@ -143,13 +186,17 @@ impl Request {
             );
             return FuseOperation::Invalid;
         }
+        let payload_len = header.len as usize - header_size;
+        let mut reader = LimitedReader {
+            reader,
+            remaining: payload_len,
+        };
 
         // FUSE_INIT requires special handling: the kernel may send either the
         // legacy 16-byte payload or the extended 64-byte payload (when
         // FUSE_INIT_EXT is supported). Read whatever is available and
         // zero-fill the rest so that flags2 defaults to 0 for old kernels.
         if header.opcode == FUSE_INIT {
-            let payload_len = (header.len as usize) - size_of::<fuse_in_header>();
             let available = payload_len.min(size_of::<fuse_init_in>());
             if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
                 tracelimit::error_ratelimited!(
@@ -161,7 +208,8 @@ impl Request {
                 return FuseOperation::Invalid;
             }
             let mut init = fuse_init_in::new_zeroed();
-            if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
+            if let Err(e) = io::Read::read_exact(&mut reader, &mut init.as_mut_bytes()[..available])
+            {
                 tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
@@ -213,7 +261,12 @@ pub trait RequestReader: io::Read {
     /// (but not including) the matching byte.
     ///
     /// This is used to read NULL-terminated strings.
-    fn read_until(&mut self, byte: u8) -> lx::Result<Vec<u8>>;
+    fn read_until(&mut self, byte: u8) -> lx::Result<Vec<u8>> {
+        self.read_until_count(byte, self.remaining_len())
+    }
+
+    /// Read until a matching byte is found, examining at most `count` bytes.
+    fn read_until_count(&mut self, byte: u8, count: usize) -> lx::Result<Vec<u8>>;
 
     /// Gets the remaining, unread length of the input data.
     fn remaining_len(&self) -> usize;
@@ -256,8 +309,8 @@ pub trait RequestReader: io::Read {
 }
 
 impl RequestReader for &[u8] {
-    fn read_until(&mut self, byte: u8) -> lx::Result<Vec<u8>> {
-        let length = self
+    fn read_until_count(&mut self, byte: u8, count: usize) -> lx::Result<Vec<u8>> {
+        let length = self[..count.min(self.len())]
             .iter()
             .position(|&c| c == byte)
             .ok_or(lx::Error::EINVAL)?;
@@ -447,6 +500,45 @@ pub(crate) mod tests {
         } else {
             panic!("Incorrect operation {:?}", request.operation);
         }
+    }
+
+    #[test]
+    fn payload_cannot_extend_past_declared_length() {
+        let arg = fuse_write_in {
+            fh: 1,
+            offset: 0,
+            size: 4,
+            write_flags: 0,
+            lock_owner: 0,
+            flags: 0,
+            padding: 0,
+        };
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_write_in>()) as u32,
+            opcode: FUSE_WRITE,
+            unique: 1,
+            nodeid: 1,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(header.as_bytes());
+        data.extend_from_slice(arg.as_bytes());
+        data.extend_from_slice(&[1, 2, 3, 4]);
+
+        let request = Request::new(data.as_slice()).unwrap();
+        assert!(matches!(request.operation, FuseOperation::Error(_)));
+    }
+
+    #[test]
+    fn unused_descriptor_capacity_is_ignored() {
+        let mut data = FUSE_OPEN_REQUEST.to_vec();
+        data.extend_from_slice(&[0xaa; 16]);
+
+        let request = Request::new(data.as_slice()).unwrap();
+        assert!(matches!(request.operation, FuseOperation::Open { .. }));
     }
 
     #[test]
