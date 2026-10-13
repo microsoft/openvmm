@@ -84,10 +84,12 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
     let initrd = crate::bootstrap::prepare_initrd(&config)?;
     let firmware = match &config.profile.boot {
         IncubatorBoot::LinuxDirect => Firmware::LinuxDirect {
+            isolation: None,
             kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
             initrd: ResolvedArtifact::from_local_path(config.initrd.clone()),
         },
         IncubatorBoot::Mshv(boot) => Firmware::Uefi {
+            isolation: None,
             uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
             guest: petri::UefiGuest::Mshv(petri::mshv_boot::MshvBoot {
                 host_boot: ResolvedArtifact::from_local_path(boot.host_boot.clone()),

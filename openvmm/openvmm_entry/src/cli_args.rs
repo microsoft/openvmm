@@ -3317,6 +3317,8 @@ pub enum Vtl0LateMapPolicyCli {
 /// PCIe MSI controller selection for aarch64.
 #[derive(Debug, Copy, Clone, Default, ValueEnum)]
 pub enum GicMsiCli {
+    /// Disable GIC MSI
+    Disabled,
     /// Use ITS when available, fall back to GICv2m.
     #[default]
     Auto,
@@ -3330,6 +3332,7 @@ pub enum GicMsiCli {
 pub enum IsolationCli {
     Vbs,
     Snp,
+    Cca,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]

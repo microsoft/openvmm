@@ -1302,6 +1302,7 @@ impl WhpPartitionInner {
                     .bank0
                     .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
                 vendor,
+                shared_gpa_bit: None,
             }
         };
 

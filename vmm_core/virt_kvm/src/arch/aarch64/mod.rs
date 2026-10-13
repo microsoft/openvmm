@@ -839,6 +839,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 isolation: virt::IsolationType::None,
                 vendor: Vendor::ARM,
                 supports_aarch32_el0,
+                shared_gpa_bit: None,
             }
         };
 
