@@ -173,13 +173,17 @@ async fn test_quiesce_skips_stopped_units(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(stops.load(Ordering::Relaxed), 0);
+    units
+        .resume_after_failed_save(Duration::from_secs(1))
+        .await
+        .unwrap();
     assert!(
         units
             .inner
             .lock()
             .units
             .values()
-            .all(|unit| unit.state == State::Stopped)
+            .any(|unit| unit.name.as_ref() == "stopped" && unit.state == State::Stopped)
     );
 }
 
@@ -290,12 +294,18 @@ async fn test_rollback_readiness_timeout_is_bounded(driver: DefaultDriver) {
         .quiesce_for_save(Duration::from_secs(1))
         .await
         .unwrap();
-    let _b = units
+    let b = units
         .add("b")
         .depends_on(a.handle())
         .dependency_of(a.handle())
         .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
         .unwrap();
+    // Exercise the deadline against a cyclic rollback set directly.
+    units
+        .save_quiesced_units
+        .as_mut()
+        .unwrap()
+        .push(b.handle().id.id);
 
     let started = std::time::Instant::now();
     let error = units
