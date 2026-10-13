@@ -631,7 +631,9 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
-                if self.guest_watchdog {
+                // TEST ONLY: enable the guest watchdog by default for every UEFI
+                // VM (all architectures) to evaluate an on-by-default policy.
+                if self.guest_watchdog || matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
                     result.attach_guest_watchdog();
                 }
                 if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {

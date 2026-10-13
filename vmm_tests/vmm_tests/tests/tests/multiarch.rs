@@ -26,6 +26,8 @@ use vmm_test_macros::vmm_test_with;
 
 /// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
+/// TEST ONLY: guest watchdog on-by-default evaluation.
+mod guest_watchdog;
 /// Guest hibernation and OpenHCL hibernate token tests.
 mod hibernate;
 /// Nested-virtualization test: Hyper-V role + DDA inside an OpenVMM guest.
