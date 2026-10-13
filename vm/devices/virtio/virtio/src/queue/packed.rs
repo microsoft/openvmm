@@ -216,26 +216,45 @@ impl PackedQueueCompleteWork {
         self.next_index | (u16::from(self.wrapped_bit) << 15)
     }
 
-    pub fn complete_descriptor(
+    pub fn complete_descriptors<'a>(
         &mut self,
-        context: &PackedQueueCompletionContext,
-        bytes_written: u32,
+        mut completions: impl ExactSizeIterator<Item = (&'a PackedQueueCompletionContext, u32)> + Clone,
     ) -> Result<bool, QueueError> {
-        let descriptor = PackedDescriptor::new()
-            .with_buffer_id(context.buffer_id)
-            .with_length(bytes_written)
-            .with_flags(
-                DescriptorFlags::new()
-                    .with_available(self.wrapped_bit)
-                    .with_used(self.wrapped_bit),
-            );
+        if completions.len() == 0 {
+            return Ok(false);
+        }
+
+        let old_index = self.next_index;
+        let old_wrapped_bit = self.wrapped_bit;
+        let mut new_index = old_index;
+        let mut new_wrapped_bit = old_wrapped_bit;
+
         // Ensure any prior writes to guest buffers (e.g. device data) are
-        // visible before the used descriptor becomes visible to the guest.
+        // visible before the used descriptors become visible to the guest.
         atomic::fence(atomic::Ordering::Release);
-        self.queue_desc
-            .write_plain(descriptor_offset(self.next_index), &descriptor)
-            .map_err(QueueError::Memory)?;
-        // Ensure the descriptor update is visible before checking if the guest requires notification.
+
+        for (context, bytes_written) in completions.clone() {
+            let descriptor = PackedDescriptor::new()
+                .with_buffer_id(context.buffer_id)
+                .with_length(bytes_written)
+                .with_flags(
+                    DescriptorFlags::new()
+                        .with_available(new_wrapped_bit)
+                        .with_used(new_wrapped_bit),
+                );
+            self.queue_desc
+                .write_plain(descriptor_offset(new_index), &descriptor)
+                .map_err(QueueError::Memory)?;
+            advance(
+                &mut new_index,
+                &mut new_wrapped_bit,
+                self.queue_size,
+                context.descriptor_count,
+            );
+        }
+
+        // Ensure all descriptor updates are visible before checking if the
+        // guest requires notification.
         atomic::fence(atomic::Ordering::SeqCst);
         let driver_event: PackedEventSuppression = self
             .driver_event
@@ -244,18 +263,35 @@ impl PackedQueueCompleteWork {
         let send_signal = match driver_event.flags() {
             EventSuppressionFlags::Disabled => false,
             EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
-                driver_event.offset() == self.next_index && driver_event.wrap() == self.wrapped_bit
+                let mut index = old_index;
+                let mut wrapped_bit = old_wrapped_bit;
+                completions.any(|(context, _)| {
+                    let matches =
+                        driver_event.offset() == index && driver_event.wrap() == wrapped_bit;
+                    advance(
+                        &mut index,
+                        &mut wrapped_bit,
+                        self.queue_size,
+                        context.descriptor_count,
+                    );
+                    matches
+                })
             }
             _ => true,
         };
-        // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
-        let raw = self.next_index + context.descriptor_count;
-        self.next_index = if raw >= self.queue_size {
-            self.wrapped_bit = !self.wrapped_bit;
-            raw - self.queue_size
-        } else {
-            raw
-        };
+        self.next_index = new_index;
+        self.wrapped_bit = new_wrapped_bit;
         Ok(send_signal)
     }
+}
+
+fn advance(index: &mut u16, wrapped_bit: &mut bool, queue_size: u16, count: u16) {
+    // A chain is never longer than the ring, so the cursor wraps at most once.
+    let raw = *index + count;
+    *index = if raw >= queue_size {
+        *wrapped_bit = !*wrapped_bit;
+        raw - queue_size
+    } else {
+        raw
+    };
 }

@@ -1002,6 +1002,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 ip_checksum,
                                 l4_checksum,
                                 l4_protocol,
+                                checksum_offload: None,
+                                gso: None,
                                 vlan: vlantag,
                             },
                         );
