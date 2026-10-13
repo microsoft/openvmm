@@ -120,9 +120,16 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
             if new_len > crate::MAX_GUEST_BUFFER_SIZE {
                 return Err(lx::Error::E2BIG);
             }
-            buffer
-                .try_reserve_exact(len)
-                .map_err(|_| lx::Error::ENOMEM)?;
+            if new_len > buffer.capacity() {
+                let new_capacity = buffer
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(new_len)
+                    .min(crate::MAX_GUEST_BUFFER_SIZE);
+                buffer
+                    .try_reserve_exact(new_capacity - buffer.len())
+                    .map_err(|_| lx::Error::ENOMEM)?;
+            }
             buffer.resize(new_len, 0);
             let start_offset = self.offset;
             let start_position = self.position;
@@ -237,6 +244,7 @@ mod tests {
     use super::*;
     use fuse::FuseOperation;
     use fuse::Request;
+    use fuse::RequestReader as _;
     use fuse::protocol::FUSE_SETXATTR;
     use fuse::protocol::FUSE_WRITE;
     use fuse::protocol::fuse_in_header;
@@ -389,5 +397,20 @@ mod tests {
             request.operation(),
             FuseOperation::Error(err) if *err == lx::Error::E2BIG
         ));
+    }
+
+    #[test]
+    fn unterminated_string_stops_at_buffer_limit() {
+        let len = crate::MAX_GUEST_BUFFER_SIZE + 1;
+        let mem = GuestMemory::allocate(len);
+        mem.write_at(0, &vec![b'a'; len]).unwrap();
+        let payload = [VirtioQueuePayload {
+            writeable: false,
+            address: 0,
+            length: len as u32,
+        }];
+        let mut reader = test_reader(&mem, &payload);
+
+        assert_eq!(reader.read_until(0).unwrap_err(), lx::Error::E2BIG);
     }
 }
