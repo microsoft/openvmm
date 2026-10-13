@@ -23,6 +23,7 @@ use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
+use crate::serial_io::file_serial;
 use crate::vm_controller::GuestPowerActions;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
@@ -2496,6 +2497,10 @@ fn build_serial_backend(
             let (serial_fn, action) = open_socket_backend(connect);
             serial_fn(socket_path.as_ref())
                 .with_context(|| format!("failed to {action} serial socket: {socket_path}"))
+        }
+        vmservice::serial_backend::Kind::File(vmservice::SerialFile { path, append }) => {
+            anyhow::ensure!(!path.is_empty(), "serial file path must not be empty");
+            file_serial(path.as_ref(), append, "ttrpc-serial-file")
         }
     }
 }

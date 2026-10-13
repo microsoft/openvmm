@@ -42,6 +42,37 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+## Virtio-console file output
+
+`VmService` can write a virtio-console stream directly to a host file. Set the
+console's `SerialBackend` to `SerialFile`:
+
+```text
+pcie {
+  root_complexes {
+    name: "rc0"
+    root_ports {
+      name: "console"
+      attached { device { virtio { console {
+        backend { file {
+          path: "path/to/console.log"
+          append: false
+        } }
+      } } } }
+    }
+  }
+}
+```
+
+The file is opened while `CreateVM` processes the device configuration, so an
+invalid path or permission failure causes `CreateVM` to fail. With `append`
+unset or `false`, OpenVMM creates or truncates the file. With `append: true`,
+OpenVMM preserves existing contents and appends new guest output.
+
+The backend remains open for the console lifetime. OpenVMM does not rotate or
+limit the file, so the management client owns retention. `SerialRelay` remains
+available when the client needs an interactive or externally managed stream.
+
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
 hypervisor backend must support virtual devices. The caller supplies the

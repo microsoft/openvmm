@@ -21,6 +21,7 @@ use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use petri::ResolvedArtifact;
 use petri::TestChild;
 use petri::pipette::cmd;
@@ -335,7 +336,14 @@ async fn test_ttrpc_interface(
 
     for i in 0..3 {
         let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
-        let console_path = tempdir.path().join(format!("console-{i}.sock"));
+        let console_path = if i == 2 {
+            tempdir.path().join(format!("console-{i}.log"))
+        } else {
+            tempdir.path().join(format!("console-{i}.sock"))
+        };
+        if i == 2 {
+            std::fs::write(&console_path, b"stale console contents")?;
+        }
         let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
         let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
         let second_hotplug_virtiofs_root =
@@ -345,7 +353,7 @@ async fn test_ttrpc_interface(
         std::fs::create_dir_all(&second_hotplug_virtiofs_root)?;
         std::fs::write(virtiofs_root.join("content"), b"boot virtio-fs share")?;
         let hvsocket_path = tempdir.path().join(format!("hvsocket-{i}"));
-        let pipette_listener = if i == 0 {
+        let pipette_listener = if i != 1 {
             let path = format!(
                 "{}_{}",
                 hvsocket_path.to_string_lossy(),
@@ -516,6 +524,29 @@ async fn test_ttrpc_interface(
                     }],
                 }),
             )
+        } else if i == 2 {
+            (
+                Some(vmservice::MemoryConfig {
+                    memory_mb: 256,
+                    ..Default::default()
+                }),
+                None,
+                Some(vmservice::ProcessorConfig {
+                    processor_count: 2,
+                    ..Default::default()
+                }),
+                Some(vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        name: "rc0".to_string(),
+                        end_bus: 255,
+                        low_mmio: 64 * 1024 * 1024,
+                        high_mmio: 1024 * 1024 * 1024,
+                        root_ports: vec![virtio_console_file_port("console", &console_path)],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+            )
         } else {
             (
                 Some(vmservice::MemoryConfig {
@@ -531,7 +562,7 @@ async fn test_ttrpc_interface(
             )
         };
 
-        let (boot_initrd_path, kernel_cmdline) = if i == 0 {
+        let (boot_initrd_path, kernel_cmdline) = if i != 1 {
             (
                 pipette_initrd_file.path(),
                 format!(
@@ -610,7 +641,7 @@ async fn test_ttrpc_interface(
                                 )),
                                 ..Default::default()
                             }],
-                            virtio_console: Some(vmservice::VirtioConsoleConfig {
+                            virtio_console: (i != 2).then(|| vmservice::VirtioConsoleConfig {
                                 socket_path: console_path.to_string_lossy().into(),
                                 connect: use_connect,
                             }),
@@ -632,7 +663,7 @@ async fn test_ttrpc_interface(
                             }],
                             ..Default::default()
                         }),
-                        hvsocket_config: (i == 0).then(|| vmservice::HvSocketConfig {
+                        hvsocket_config: (i != 1).then(|| vmservice::HvSocketConfig {
                             path: hvsocket_path.to_string_lossy().to_string(),
                         }),
                         smbios_config,
@@ -826,12 +857,24 @@ async fn test_ttrpc_interface(
             UnixStream::connect(&com1_path).unwrap()
         };
 
-        // Get the console connection the same way.
-        let console = if let Some(listener) = console_listener {
-            let (stream, _) = listener.accept().unwrap();
-            stream
+        let _console_task = if i == 2 {
+            None
         } else {
-            UnixStream::connect(&console_path).unwrap()
+            // Get the console connection the same way.
+            let console = if let Some(listener) = console_listener {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+            } else {
+                UnixStream::connect(&console_path).unwrap()
+            };
+            Some(driver.spawn(
+                "console",
+                petri::log_task(
+                    params.log_source.log_file("virtio-console").unwrap(),
+                    PolledSocket::new(&driver, console).unwrap(),
+                    "virtio console",
+                ),
+            ))
         };
 
         let _com1_task = driver.spawn(
@@ -840,15 +883,6 @@ async fn test_ttrpc_interface(
                 params.log_source.log_file("linux").unwrap(),
                 PolledSocket::new(&driver, com1).unwrap(),
                 "linux com1",
-            ),
-        );
-
-        let _console_task = driver.spawn(
-            "console",
-            petri::log_task(
-                params.log_source.log_file("virtio-console").unwrap(),
-                PolledSocket::new(&driver, console).unwrap(),
-                "virtio console",
             ),
         );
 
@@ -890,24 +924,31 @@ async fn test_ttrpc_interface(
                         params.log_source.output_dir(),
                     )
                     .await?;
-                    validate_pcie_config(&agent).await?;
-                    #[cfg(windows)]
-                    {
-                        mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
-                        validate_virtio_fs_access(&agent, "/mnt/testfs", &virtiofs_root, true)
-                            .await?;
+                    if i == 2 {
                         let sh = agent.unix_shell();
-                        cmd!(sh, "umount /mnt/testfs").run().await?;
-                        validate_vpci_virtio_fs_hotplug(
-                            &client,
-                            &agent,
-                            &hotplug_virtiofs_root,
-                            &second_hotplug_virtiofs_root,
-                        )
-                        .await?;
+                        cmd!(sh, "sh -c 'printf ttrpc-console-file-marker > /dev/hvc0'")
+                            .run()
+                            .await?;
+                        validate_console_file(&driver, &console_path).await?;
+                    } else {
+                        validate_pcie_config(&agent).await?;
+                        #[cfg(windows)]
+                        {
+                            mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
+                            validate_virtio_fs_access(&agent, "/mnt/testfs", &virtiofs_root, true)
+                                .await?;
+                            let sh = agent.unix_shell();
+                            cmd!(sh, "umount /mnt/testfs").run().await?;
+                            validate_vpci_virtio_fs_hotplug(
+                                &client,
+                                &agent,
+                                &hotplug_virtiofs_root,
+                                &second_hotplug_virtiofs_root,
+                            )
+                            .await?;
+                        }
+                        validate_smbios(&agent).await?;
                     }
-
-                    validate_smbios(&agent).await?;
                     agent.power_off().await?;
                 }
 
@@ -1275,6 +1316,25 @@ fn pcie_root_port(
     }
 }
 
+fn virtio_console_file_port(name: &str, path: &Path) -> vmservice::PciePort {
+    pcie_root_port(
+        name,
+        false,
+        Some(attachment_device(virtio_device(
+            vmservice::virtio_device::Kind::Console(vmservice::VirtioConsole {
+                backend: Some(vmservice::SerialBackend {
+                    kind: Some(vmservice::serial_backend::Kind::File(
+                        vmservice::SerialFile {
+                            path: path.to_string_lossy().into_owned(),
+                            append: false,
+                        },
+                    )),
+                }),
+            }),
+        ))),
+    )
+}
+
 /// Wraps a virtio device function kind as a `PcieDeviceKind`.
 fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceKind {
     vmservice::PcieDeviceKind {
@@ -1282,6 +1342,27 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
             vmservice::VirtioDevice { kind: Some(kind) },
         )),
     }
+}
+
+async fn validate_console_file(driver: &DefaultDriver, path: &Path) -> anyhow::Result<()> {
+    const MARKER: &str = "ttrpc-console-file-marker";
+    let mut timer = PolledTimer::new(driver);
+    let mut contents = String::new();
+
+    for _ in 0..50 {
+        contents = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read console file '{}'", path.display()))?;
+        if contents.contains(MARKER) {
+            anyhow::ensure!(
+                !contents.contains("stale console contents"),
+                "console file was not truncated: {contents:?}"
+            );
+            return Ok(());
+        }
+        timer.sleep(Duration::from_millis(20)).await;
+    }
+
+    anyhow::bail!("console file did not contain {MARKER:?}: {contents:?}")
 }
 
 #[cfg(windows)]
