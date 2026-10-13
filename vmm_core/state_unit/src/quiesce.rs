@@ -35,13 +35,21 @@ impl QuiesceForSaveError {
 }
 
 impl StateUnits {
-    /// Stops host-input producers before establishing a snapshot vCPU boundary.
+    /// Stops host-input producers in running units before establishing a
+    /// snapshot vCPU boundary.
+    ///
+    /// Stopped units are skipped, and terminal lifecycle states fail the
+    /// transaction.
     pub async fn quiesce_input_for_save(&self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("quiesce_input", timeout, StateRequest::QuiesceInput)
             .await
     }
 
-    /// Resumes host-input producers before releasing a failed snapshot boundary.
+    /// Resumes host-input producers in running units before releasing a failed
+    /// snapshot boundary.
+    ///
+    /// Stopped units are skipped, and terminal lifecycle states fail the
+    /// transaction.
     pub async fn resume_input_after_save(&self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("resume_input", timeout, StateRequest::ResumeInput)
             .await
@@ -53,24 +61,42 @@ impl StateUnits {
         timeout: Duration,
         request: impl Copy + FnOnce(FailableRpc<(), ()>) -> StateRequest,
     ) -> anyhow::Result<()> {
-        let operations = {
+        let (operations, mut failures) = {
             let inner = self.inner.lock();
-            inner
+            let mut failures = Vec::new();
+            let operations = inner
                 .units
                 .values()
-                .map(|unit| {
-                    let name = unit.name.clone();
-                    let operation = state_change(name.clone(), unit, request, Some(()));
-                    async move { (name, operation.await) }
+                .filter_map(|unit| match unit.state {
+                    State::Running => {
+                        let name = unit.name.clone();
+                        let operation = state_change(name.clone(), unit, request, Some(()));
+                        Some(async move { (name, operation.await) })
+                    }
+                    State::Stopped => None,
+                    State::StartUncertain | State::StartFailedStopped | State::QuiesceUncertain => {
+                        failures.push(format!(
+                            "{}: unit is in terminal state {:?}",
+                            unit.name, unit.state
+                        ));
+                        None
+                    }
+                    state => {
+                        failures.push(format!(
+                            "{}: unit is in unexpected state {state:?}",
+                            unit.name
+                        ));
+                        None
+                    }
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (operations, failures)
         };
         let mut context = CancelContext::new().with_timeout(timeout);
         let results = context
             .until_cancelled(join_all(operations))
             .await
             .with_context(|| format!("{operation} timed out"))?;
-        let mut failures = Vec::new();
         for (name, result) in results {
             match result {
                 Ok(Some(Ok(()))) => {}

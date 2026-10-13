@@ -5,9 +5,11 @@
 
 use super::TestUnit;
 use crate::State;
+use crate::StateRequest;
 use crate::StateUnit;
 use crate::StateUnits;
 use crate::run_unit;
+use futures::StreamExt;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -122,6 +124,238 @@ impl InspectMut for StopCountingUnit {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond();
     }
+}
+
+#[derive(Default)]
+struct InputCounts {
+    quiesces: AtomicUsize,
+    resumes: AtomicUsize,
+}
+
+struct InputTestUnit {
+    driver: DefaultDriver,
+    counts: Arc<InputCounts>,
+    delay: Option<Duration>,
+    fail_start: bool,
+    fail_quiesce: bool,
+    fail_resume: bool,
+}
+
+impl StateUnit for InputTestUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.fail_start, "intentional start failure");
+        Ok(())
+    }
+
+    async fn stop(&mut self) {}
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.counts.quiesces.fetch_add(1, Ordering::Relaxed);
+        if let Some(delay) = self.delay {
+            pal_async::timer::PolledTimer::new(&self.driver)
+                .sleep(delay)
+                .await;
+        }
+        anyhow::ensure!(!self.fail_quiesce, "intentional input quiesce failure");
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.counts.resumes.fetch_add(1, Ordering::Relaxed);
+        anyhow::ensure!(!self.fail_resume, "intentional input resume failure");
+        Ok(())
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for InputTestUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
+fn input_unit(driver: &DefaultDriver, counts: Arc<InputCounts>) -> InputTestUnit {
+    InputTestUnit {
+        driver: driver.clone(),
+        counts,
+        delay: None,
+        fail_start: false,
+        fail_quiesce: false,
+        fail_resume: false,
+    }
+}
+
+#[async_test]
+async fn test_input_hooks_run_only_for_running_units(driver: DefaultDriver) {
+    let units = StateUnits::new();
+    let running_counts = Arc::new(InputCounts::default());
+    let _running = units
+        .add("running")
+        .spawn(&driver, |recv| {
+            run_unit(input_unit(&driver, running_counts.clone()), recv)
+        })
+        .unwrap();
+    let mut units = units;
+    units.start().await.unwrap();
+
+    let stopped_counts = Arc::new(InputCounts::default());
+    let _stopped = units
+        .add("stopped")
+        .spawn(&driver, |recv| {
+            run_unit(input_unit(&driver, stopped_counts.clone()), recv)
+        })
+        .unwrap();
+
+    units
+        .quiesce_input_for_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+    units
+        .resume_input_after_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+
+    assert_eq!(running_counts.quiesces.load(Ordering::Relaxed), 1);
+    assert_eq!(running_counts.resumes.load(Ordering::Relaxed), 1);
+    assert_eq!(stopped_counts.quiesces.load(Ordering::Relaxed), 0);
+    assert_eq!(stopped_counts.resumes.load(Ordering::Relaxed), 0);
+}
+
+#[async_test]
+async fn test_input_hook_errors_are_reported_per_unit(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let successful_counts = Arc::new(InputCounts::default());
+    let _successful = units
+        .add("successful")
+        .spawn(&driver, |recv| {
+            run_unit(input_unit(&driver, successful_counts.clone()), recv)
+        })
+        .unwrap();
+    let failing_counts = Arc::new(InputCounts::default());
+    let _failing = units
+        .add("failing")
+        .spawn(&driver, |recv| {
+            let mut unit = input_unit(&driver, failing_counts.clone());
+            unit.fail_quiesce = true;
+            unit.fail_resume = true;
+            run_unit(unit, recv)
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let error = units
+        .quiesce_input_for_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failing: intentional input quiesce failure")
+    );
+    let error = units
+        .resume_input_after_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failing: intentional input resume failure")
+    );
+    assert_eq!(successful_counts.quiesces.load(Ordering::Relaxed), 1);
+    assert_eq!(successful_counts.resumes.load(Ordering::Relaxed), 1);
+    assert_eq!(failing_counts.quiesces.load(Ordering::Relaxed), 1);
+    assert_eq!(failing_counts.resumes.load(Ordering::Relaxed), 1);
+}
+
+#[async_test]
+async fn test_input_hook_closed_channel_is_reported(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _closed = units
+        .add("closed")
+        .spawn(&driver, |mut recv| async move {
+            let request = recv.next().await.unwrap();
+            let StateRequest::Start(response) = request else {
+                panic!("unexpected request");
+            };
+            response.handle_failable_sync(|()| anyhow::Ok(()));
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let error = units
+        .quiesce_input_for_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("quiesce_input failed: closed:"));
+}
+
+#[async_test]
+async fn test_input_hook_timeout_is_bounded(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let counts = Arc::new(InputCounts::default());
+    let _slow = units
+        .add("slow")
+        .spawn(&driver, |recv| {
+            let mut unit = input_unit(&driver, counts.clone());
+            unit.delay = Some(Duration::from_secs(1));
+            run_unit(unit, recv)
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let started = std::time::Instant::now();
+    let error = units
+        .quiesce_input_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("quiesce_input timed out"));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(counts.quiesces.load(Ordering::Relaxed), 1);
+}
+
+#[async_test]
+async fn test_input_hooks_reject_terminal_units(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _running = units
+        .add("running")
+        .spawn(&driver, |recv| {
+            run_unit(input_unit(&driver, Arc::new(InputCounts::default())), recv)
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let terminal_counts = Arc::new(InputCounts::default());
+    let _terminal = units
+        .add("terminal")
+        .spawn(&driver, |recv| {
+            let mut unit = input_unit(&driver, terminal_counts.clone());
+            unit.fail_start = true;
+            run_unit(unit, recv)
+        })
+        .unwrap();
+    units.start_stopped_units().await.unwrap_err();
+
+    let error = units
+        .quiesce_input_for_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("terminal: unit is in terminal state StartFailedStopped")
+    );
+    assert_eq!(terminal_counts.quiesces.load(Ordering::Relaxed), 0);
 }
 
 #[async_test]
