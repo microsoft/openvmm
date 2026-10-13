@@ -339,6 +339,41 @@ async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDri
 }
 
 #[async_test]
+async fn test_failed_start_cleanup_failure_blocks_dependency_rollback(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let dependency_stopped = Arc::new(AtomicBool::new(false));
+    let dependency = units
+        .add("dependency")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: dependency_stopped.clone(),
+                    fail: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    let _failed = units
+        .add("failed")
+        .depends_on(dependency.handle())
+        .spawn(&driver, |mut recv| async move {
+            let request = recv.next().await.unwrap();
+            let StateRequest::Start(response) = request else {
+                panic!("unexpected request");
+            };
+            response.handle_failable_sync(|()| anyhow::bail!("intentional start failure"));
+        })
+        .unwrap();
+
+    let error = units.start().await.unwrap_err().to_string();
+    assert!(error.contains("failed_start_cleanup stop failed"));
+    assert!(error.contains("failed_start_rollback stop skipped"));
+    assert!(!dependency_stopped.load(Ordering::Relaxed));
+}
+
+#[async_test]
 async fn test_rollback_ready_set_ignores_removed_unit(driver: DefaultDriver) {
     let units = StateUnits::new();
     let unit = units

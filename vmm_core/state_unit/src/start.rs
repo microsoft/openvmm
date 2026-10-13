@@ -120,22 +120,8 @@ impl StateUnits {
             Ok(())
         } else {
             failures.extend(
-                self.stop_after_failed_start(
-                    "failed_start_cleanup",
-                    &failed_or_uncertain_ids,
-                    State::StartUncertain,
-                    State::StartFailedStopped,
-                )
-                .await,
-            );
-            failures.extend(
-                self.stop_after_failed_start(
-                    "failed_start_rollback",
-                    &started_ids,
-                    State::Running,
-                    State::Stopped,
-                )
-                .await,
+                self.stop_after_failed_start(&failed_or_uncertain_ids, &started_ids)
+                    .await,
             );
             self.running = was_running;
             anyhow::bail!("state units could not start: {}", failures.join("; "))
@@ -144,21 +130,33 @@ impl StateUnits {
 
     async fn stop_after_failed_start(
         &self,
-        op: &'static str,
-        unit_ids: &[u64],
-        old_state: State,
-        stopped_state: State,
+        failed_or_uncertain_ids: &[u64],
+        started_ids: &[u64],
     ) -> Vec<String> {
+        let unit_ids = failed_or_uncertain_ids
+            .iter()
+            .chain(started_ids)
+            .copied()
+            .collect::<Vec<_>>();
         let mut operations = Vec::new();
         let ready_set;
         {
             let mut inner = self.inner.lock();
-            ready_set = inner.ready_set(Some(unit_ids));
+            ready_set = inner.ready_set(Some(&unit_ids));
             for (&id, unit) in inner
                 .units
                 .iter_mut()
                 .filter(|(id, _)| ready_set.0.contains_key(id))
             {
+                let (op, old_state, stopped_state) = if failed_or_uncertain_ids.contains(&id) {
+                    (
+                        "failed_start_cleanup",
+                        State::StartUncertain,
+                        State::StartFailedStopped,
+                    )
+                } else {
+                    ("failed_start_rollback", State::Running, State::Stopped)
+                };
                 assert_eq!(unit.state, old_state);
                 let name = unit.name.clone();
                 let dependents = unit.dependents.clone();
@@ -167,11 +165,11 @@ impl StateUnits {
                 operations.push(async move {
                     if !ready_set.wait(op, id, &dependents).await {
                         ready_set.done(id, false);
-                        return (name, id, None);
+                        return (name, id, op, stopped_state, None);
                     }
                     let result = stop.await;
                     ready_set.done(id, matches!(&result, Ok(Some(()))));
-                    (name, id, Some(result))
+                    (name, id, op, stopped_state, Some(result))
                 });
                 unit.state = State::Stopping;
             }
@@ -180,7 +178,7 @@ impl StateUnits {
         let results = join_all(operations).await;
         let mut failures = Vec::new();
         let mut inner = self.inner.lock();
-        for (name, id, result) in results {
+        for (name, id, op, stopped_state, result) in results {
             let Some(unit) = inner.units.get_mut(&id) else {
                 continue;
             };
