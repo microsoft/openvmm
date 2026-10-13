@@ -278,7 +278,7 @@ impl MshvIsolationState {
     fn map_user_memory(&self, vmfd: &VmFd, region: mshv_user_mem_region) -> anyhow::Result<bool> {
         match self {
             Self::None => {
-                crate::timing::map_user_memory(vmfd, region)?;
+                timing::map_user_memory(vmfd, region)?;
                 Ok(true)
             }
             #[cfg(guest_arch = "x86_64")]
@@ -290,7 +290,7 @@ impl MshvIsolationState {
                     anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
                 }
                 arch::SnpLaunchState::Finished => {
-                    crate::timing::map_user_memory(vmfd, region)?;
+                    timing::map_user_memory(vmfd, region)?;
                     Ok(true)
                 }
                 arch::SnpLaunchState::Failed => {
