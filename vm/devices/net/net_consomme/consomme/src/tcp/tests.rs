@@ -895,7 +895,7 @@ impl TcpTestHarness {
                 None => Poll::Pending,
             }
         });
-        let timeout = timer.sleep(std::time::Duration::from_secs(5));
+        let timeout = timer.sleep(Duration::from_secs(5));
         let poll = std::pin::pin!(poll);
         let timeout = std::pin::pin!(timeout);
         match futures::future::select(poll, timeout).await {
@@ -1126,7 +1126,7 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
     connector.set_nonblocking(true).unwrap();
 
     // Poll until consomme delivers a SYN to the guest.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -1146,7 +1146,7 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
             "timed out waiting for forwarded TCP SYN"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
@@ -1542,7 +1542,7 @@ async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
     connector.set_nonblocking(true).unwrap();
 
     // Poll until consomme delivers a SYN to the guest.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -1562,7 +1562,7 @@ async fn test_tcp_port_forward_loopback_src_rewritten(driver: DefaultDriver) {
             "timed out waiting for forwarded TCP SYN"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
@@ -1630,7 +1630,7 @@ async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: Defaul
     connector.set_nonblocking(true).unwrap();
 
     // Poll until consomme delivers a SYN to the guest.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -1650,7 +1650,7 @@ async fn test_tcp_port_forward_loopback_adapter_src_not_rewritten(driver: Defaul
             "timed out waiting for forwarded TCP SYN"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
@@ -2083,7 +2083,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
     connector.set_nonblocking(true).unwrap();
 
     // Poll until consomme sends a SYN to the guest.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -2103,7 +2103,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
             "timed out waiting for SYN"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
@@ -2247,7 +2247,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
     // Poll multiple cycles to let consomme read from the host socket
     // and send data to the guest. The host socket needs to become
     // readable first.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -2267,7 +2267,7 @@ async fn test_tcp_port_forward_window_scale_guard(driver: DefaultDriver) {
             "timed out waiting for host→guest data"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
@@ -2355,7 +2355,7 @@ async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
     // Poll until consomme delivers the loopback SYN back to the guest on the
     // listener port. The source port in that SYN should be the guest's
     // original source port (55555), not the proxy's ephemeral port.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         std::future::poll_fn(|cx| {
             consomme.access(&mut client).poll(cx);
@@ -2376,7 +2376,7 @@ async fn test_tcp_loopback_port_remap(driver: DefaultDriver) {
             "timed out waiting for loopback TCP SYN to be forwarded back to guest"
         );
         pal_async::timer::PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(10))
+            .sleep(Duration::from_millis(10))
             .await;
     }
 
