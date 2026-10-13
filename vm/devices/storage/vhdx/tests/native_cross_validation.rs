@@ -1130,9 +1130,7 @@ impl RustVhdx {
         let mut params = vhdx::CreateParams {
             disk_size,
             block_size,
-            disk_type: vhdx::DiskType::Differencing(
-                vhdx::VhdxParent::new(Guid::new_random()).unwrap(),
-            ),
+            disk_type: vhdx::DiskType::Differencing(vhdx::VhdxParent::unlinked()),
             ..Default::default()
         };
         vhdx::create(&file, &mut params)

@@ -264,10 +264,6 @@ pub enum InvalidFormatReason {
     #[error("block alignment must be a power of 2")]
     BlockAlignmentNotPowerOfTwo,
 
-    /// A differencing disk did not specify its parent's data write GUID.
-    #[error("differencing disk requires a non-zero parent linkage GUID")]
-    MissingParentLinkage,
-
     /// A parent locator string contained a NUL character.
     #[error("parent locator strings cannot contain NUL characters")]
     ParentLocatorContainsNull,

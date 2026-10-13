@@ -859,9 +859,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -877,9 +875,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -1136,7 +1132,6 @@ mod tests {
         let file = InMemoryFile::new(0);
         let parent_linkage = Guid::new_random();
         let parent = crate::VhdxParent::new(parent_linkage)
-            .unwrap()
             .with_relative_path(".\\parent.vhdx")
             .unwrap()
             .with_absolute_win32_path("C:\\VMs\\parent.vhdx")
@@ -1174,7 +1169,6 @@ mod tests {
         let file = InMemoryFile::new(0);
         let parent_linkage = Guid::new_random();
         let parent = crate::VhdxParent::new(parent_linkage)
-            .unwrap()
             .with_relative_path(".\\parent.vhdx")
             .unwrap()
             .with_absolute_win32_path("C:\\VMs\\parent.vhdx")
@@ -1207,9 +1201,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();

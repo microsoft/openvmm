@@ -42,9 +42,7 @@
 //! failures exit with status 1. `check` exits with status 2 when an image or
 //! its parent chain is inconsistent. A dirty log is reported as a warning and
 //! can be repaired with `replay`.
-
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod file;
 mod util;
@@ -69,33 +67,6 @@ use crate::vhdx::VhdxConvertFormatOptions;
 use crate::vhdx::create_image;
 use crate::vhdx::read_chunk as read_vhdx_chunk;
 use crate::vhdx::write_chunk as write_vhdx_chunk;
-
-#[cfg(test)]
-use crate::vhdx::MapRun;
-#[cfg(test)]
-use crate::vhdx::VhdxCreateFormatOptions;
-#[cfg(test)]
-use crate::vhdx::check as test_check;
-#[cfg(test)]
-use crate::vhdx::disk_type as vhdx_disk_type;
-#[cfg(test)]
-use crate::vhdx::parse_convert_format_options as parse_vhdx_convert_format_options;
-#[cfg(test)]
-use crate::vhdx::parse_create_format_options as parse_vhdx_create_format_options;
-#[cfg(test)]
-use crate::vhdx::replay as test_replay;
-#[cfg(test)]
-use crate::vhdx::resolve_parent_path;
-#[cfg(test)]
-use crate::vhdx::visit_map_runs;
-#[cfg(test)]
-use ::vhdx::CreateParams;
-#[cfg(test)]
-use ::vhdx::DiskType as VhdxDiskType;
-#[cfg(test)]
-use ::vhdx::VhdxParent;
-#[cfg(test)]
-use guid::Guid;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum ImageFormat {
@@ -468,6 +439,12 @@ async fn convert(
 
 const COPY_CHUNK_SIZE: u64 = 1024 * 1024;
 
+// FUTURE: Route conversion through disk_backend so that all OpenVMM disk
+// backends, including layered differencing chains, can be used as conversion
+// sources and destinations. The current disk backend lifecycle only exposes
+// flushing, while writable VHDX output must be cleanly closed to clear its log
+// GUID. Keep the direct format adapters until the backend infrastructure has
+// an explicit clean-close operation.
 async fn copy_raw_to_vhdx(
     input: &BlockingFile,
     output: &VhdxFile<BlockingFile>,
@@ -544,6 +521,18 @@ async fn copy_vhdx_to_vhdx(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vhdx::MapRun;
+    use crate::vhdx::VhdxCreateFormatOptions;
+    use crate::vhdx::check as test_check;
+    use crate::vhdx::disk_type as vhdx_disk_type;
+    use crate::vhdx::parse_convert_format_options as parse_vhdx_convert_format_options;
+    use crate::vhdx::parse_create_format_options as parse_vhdx_create_format_options;
+    use crate::vhdx::replay as test_replay;
+    use crate::vhdx::resolve_parent_path;
+    use crate::vhdx::visit_map_runs;
+    use ::vhdx::CreateParams;
+    use ::vhdx::DiskType as VhdxDiskType;
+    use ::vhdx::VhdxParent;
 
     #[cfg(unix)]
     #[test]
@@ -552,8 +541,7 @@ mod tests {
         let parent_path = directory.path().join("parent.vhdx");
         let child_path = directory.path().join("child.vhdx");
         std::fs::write(&parent_path, []).unwrap();
-        let parent = VhdxParent::new(Guid::new_random())
-            .unwrap()
+        let parent = VhdxParent::unlinked()
             .with_volume_path(parent_path.to_str().unwrap())
             .unwrap()
             .with_absolute_win32_path(parent_path.to_str().unwrap())
@@ -1024,7 +1012,6 @@ mod tests {
             .await
             .unwrap();
         let vhdx_parent = VhdxParent::new(parent.data_write_guid())
-            .unwrap()
             .with_relative_path("parent.vhdx")
             .unwrap();
         let child_file = BlockingFile::create(&child_path, false).unwrap();

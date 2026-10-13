@@ -170,7 +170,7 @@ impl ParentLocator {
             .ok_or(VhdxParentError::MissingParentLinkage)?
             .parse()
             .map_err(VhdxParentError::InvalidParentLinkage)?;
-        let mut parent = VhdxParent::new(linkage).map_err(VhdxParentError::InvalidParent)?;
+        let mut parent = VhdxParent::new(linkage);
         if let Some(path) = self.find(format::PARENT_LOCATOR_KEY_RELATIVE_PATH) {
             parent = parent
                 .with_relative_path(path)
@@ -337,8 +337,7 @@ mod tests {
     #[test]
     fn parent_candidate_paths() {
         let directory = Path::new("child");
-        let parent = VhdxParent::new(Guid::new_random())
-            .unwrap()
+        let parent = VhdxParent::unlinked()
             .with_relative_path(r".\parents\parent.vhdx")
             .unwrap()
             .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
@@ -355,8 +354,7 @@ mod tests {
             expected
         );
 
-        let parent = VhdxParent::new(Guid::new_random())
-            .unwrap()
+        let parent = VhdxParent::unlinked()
             .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
             .unwrap()
             .with_absolute_win32_path(r"\\?\C:\parent.vhdx")
@@ -380,10 +378,7 @@ mod tests {
             ),
             (r".\/parent.vhdx", directory.join("parent.vhdx")),
         ] {
-            let parent = VhdxParent::new(Guid::new_random())
-                .unwrap()
-                .with_relative_path(relative)
-                .unwrap();
+            let parent = VhdxParent::unlinked().with_relative_path(relative).unwrap();
             assert_eq!(
                 parent.candidate_paths(directory).collect::<Vec<_>>(),
                 vec![expected],
@@ -395,10 +390,7 @@ mod tests {
     #[test]
     fn relative_parent_locator_preserves_strings() {
         for relative in [r".\parent.vhdx", r"..\parents\parent.vhdx", "parent:stream"] {
-            let parent = VhdxParent::new(Guid::new_random())
-                .unwrap()
-                .with_relative_path(relative)
-                .unwrap();
+            let parent = VhdxParent::unlinked().with_relative_path(relative).unwrap();
             assert_eq!(parent.relative_path(), Some(relative));
 
             let linkage = Guid::new_random().to_string();

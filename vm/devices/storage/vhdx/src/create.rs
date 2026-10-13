@@ -49,17 +49,18 @@ pub struct VhdxParent {
 
 impl VhdxParent {
     /// Creates parent information from the parent's data-write GUID.
-    pub fn new(linkage: Guid) -> Result<Self, InvalidFormatReason> {
-        if linkage == Guid::ZERO {
-            return Err(InvalidFormatReason::MissingParentLinkage);
-        }
-
-        Ok(Self {
+    pub fn new(linkage: Guid) -> Self {
+        Self {
             linkage,
             relative_path: None,
             volume_path: None,
             absolute_win32_path: None,
-        })
+        }
+    }
+
+    /// Creates parent information without an associated parent.
+    pub fn unlinked() -> Self {
+        Self::new(Guid::ZERO)
     }
 
     /// Adds a path relative to the child VHDX file.
@@ -708,15 +709,10 @@ mod tests {
     use zerocopy::FromBytes;
 
     #[test]
-    fn vhdx_parent_validates_identity_and_paths() {
+    fn vhdx_parent_validates_paths() {
+        assert_eq!(VhdxParent::unlinked().linkage(), Guid::ZERO);
         assert!(matches!(
-            VhdxParent::new(Guid::ZERO),
-            Err(InvalidFormatReason::MissingParentLinkage)
-        ));
-        assert!(matches!(
-            VhdxParent::new(Guid::new_random())
-                .unwrap()
-                .with_relative_path("parent\0.vhdx"),
+            VhdxParent::unlinked().with_relative_path("parent\0.vhdx"),
             Err(InvalidFormatReason::ParentLocatorContainsNull)
         ));
     }
@@ -1098,7 +1094,7 @@ mod tests {
         let parent_linkage = Guid::new_random();
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: DiskType::Differencing(VhdxParent::new(parent_linkage).unwrap()),
+            disk_type: DiskType::Differencing(VhdxParent::new(parent_linkage)),
             ..Default::default()
         };
         create(&file, &mut params).await.unwrap();
@@ -1136,8 +1132,7 @@ mod tests {
     #[async_test]
     async fn create_rejects_oversized_parent_locator() {
         let file = InMemoryFile::new(0);
-        let parent = VhdxParent::new(Guid::new_random())
-            .unwrap()
+        let parent = VhdxParent::unlinked()
             .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
             .unwrap();
         let mut params = CreateParams {

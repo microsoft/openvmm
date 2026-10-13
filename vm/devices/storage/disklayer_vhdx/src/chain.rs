@@ -242,8 +242,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("parent.vhdx");
         std::fs::write(&path, []).unwrap();
-        let parent = vhdx::VhdxParent::new(Guid::new_random())
-            .unwrap()
+        let parent = vhdx::VhdxParent::unlinked()
             .with_volume_path(path.to_str().unwrap())
             .unwrap()
             .with_absolute_win32_path(path.to_str().unwrap())
@@ -271,7 +270,6 @@ mod tests {
 
         for (linkage, valid) in [(params.data_write_guid, true), (Guid::new_random(), false)] {
             let parent = vhdx::VhdxParent::new(linkage)
-                .unwrap()
                 .with_relative_path(r".\parent.vhdx")
                 .unwrap();
             let file = crate::io::BlockingFile::open(&child_path, false).unwrap();

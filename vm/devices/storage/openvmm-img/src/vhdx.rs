@@ -215,7 +215,7 @@ pub(crate) async fn create_image(options: CreateOptions) -> Result<()> {
         let relative_path = relative_path.ok();
         #[cfg(not(windows))]
         let relative_path = Some(relative_path?);
-        let mut vhdx_parent = VhdxParent::new(parent.data_write_guid())?;
+        let mut vhdx_parent = VhdxParent::new(parent.data_write_guid());
         if let Some(relative_path) = relative_path {
             vhdx_parent = vhdx_parent.with_relative_path(relative_path)?;
         }

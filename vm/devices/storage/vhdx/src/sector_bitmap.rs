@@ -261,9 +261,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(guid::Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -559,9 +557,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(guid::Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
@@ -611,9 +607,7 @@ mod tests {
         let file = InMemoryFile::new(0);
         let mut params = CreateParams {
             disk_size: format::GB1,
-            disk_type: crate::DiskType::Differencing(
-                crate::VhdxParent::new(guid::Guid::new_random()).unwrap(),
-            ),
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..Default::default()
         };
         create::create(&file, &mut params).await.unwrap();
