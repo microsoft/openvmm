@@ -3352,7 +3352,7 @@ mod tests {
             actions.push_back(if outage {
                 IgvmAgentAction::RespondFailure
             } else {
-                IgvmAgentAction::RespondSuccessV3 {
+                IgvmAgentAction::RespondSuccessExtendedPayload {
                     key_release_context_hash: Some(encode_key_release_context_hash(&hash)),
                 }
             });
@@ -3463,7 +3463,7 @@ mod tests {
     async fn context_hash_legacy_responses_write_v3(driver: DefaultDriver) {
         for response in [
             IgvmAgentAction::RespondSuccessV2,
-            IgvmAgentAction::RespondSuccessV3 {
+            IgvmAgentAction::RespondSuccessExtendedPayload {
                 key_release_context_hash: None,
             },
         ] {
@@ -3524,13 +3524,13 @@ mod tests {
     async fn context_hash_failures_are_terminal_and_preserve_protectors(driver: DefaultDriver) {
         for response in [
             IgvmAgentAction::RespondSuccessV2,
-            IgvmAgentAction::RespondSuccessV3 {
+            IgvmAgentAction::RespondSuccessExtendedPayload {
                 key_release_context_hash: None,
             },
-            IgvmAgentAction::RespondSuccessV3 {
+            IgvmAgentAction::RespondSuccessExtendedPayload {
                 key_release_context_hash: Some("bad hash".into()),
             },
-            IgvmAgentAction::RespondSuccessV3 {
+            IgvmAgentAction::RespondSuccessExtendedPayload {
                 key_release_context_hash: Some(String::new()),
             },
         ] {
@@ -3605,10 +3605,10 @@ mod tests {
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([
-                    IgvmAgentAction::RespondSuccessV3 {
+                    IgvmAgentAction::RespondSuccessExtendedPayload {
                         key_release_context_hash: Some(encode_key_release_context_hash(&hash_a)),
                     },
-                    IgvmAgentAction::RespondSuccessV3 {
+                    IgvmAgentAction::RespondSuccessExtendedPayload {
                         key_release_context_hash: Some(encode_key_release_context_hash(&hash_b)),
                     },
                     IgvmAgentAction::RespondFailure,
@@ -3745,7 +3745,7 @@ mod tests {
             let mut plan = IgvmAgentTestPlan::default();
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-                VecDeque::from([IgvmAgentAction::RespondSuccessV3 {
+                VecDeque::from([IgvmAgentAction::RespondSuccessExtendedPayload {
                     key_release_context_hash: Some(hash.into()),
                 }]),
             );

@@ -480,11 +480,15 @@ mod tests {
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
-    fn v3_frame(payload: &[u8]) -> Vec<u8> {
+    fn extended_frame(payload: &[u8]) -> Vec<u8> {
         let header = IgvmAttestKeyReleaseResponseHeader {
             data_size: (size_of::<IgvmAttestKeyReleaseResponseHeader>() + payload.len()) as u32,
-            version: IgvmAttestResponseVersion::VERSION_3,
-            error_info: IgvmErrorInfo::default(),
+            version: IgvmAttestResponseVersion::VERSION_2,
+            error_info: IgvmErrorInfo {
+                igvm_signal: openhcl_attestation_protocol::igvm_attest::get::IgvmSignal::new()
+                    .with_extended_payload(true),
+                ..Default::default()
+            },
         };
         [header.as_bytes(), payload].concat()
     }
@@ -501,17 +505,20 @@ mod tests {
             br#"{"schema_version":1,"request_type":"key_release","payload":42,"extensions":{}}"#,
             br#"{"schema_version":1,"request_type":"key_release","payload":"","extensions":null}"#,
         ];
-        let mut responses: Vec<_> = invalid_payloads.iter().map(|p| v3_frame(p)).collect();
-        let mut truncated = v3_frame(b"{}");
+        let mut responses: Vec<_> = invalid_payloads.iter().map(|p| extended_frame(p)).collect();
+        let mut truncated = extended_frame(b"{}");
         truncated.pop();
         responses.push(truncated);
-        let mut invalid_header = v3_frame(b"{}");
+        let mut invalid_header = extended_frame(b"{}");
         invalid_header[..4].copy_from_slice(&0u32.to_le_bytes());
         responses.push(invalid_header);
-        let mut invalid_version = v3_frame(b"{}");
+        let mut invalid_version = extended_frame(b"{}");
         invalid_version[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
         responses.push(invalid_version);
-        responses.push(v3_frame(&vec![b' '; KEY_RELEASE_RESPONSE_BUFFER_SIZE]));
+        responses.push(extended_frame(&vec![
+            b' ';
+            KEY_RELEASE_RESPONSE_BUFFER_SIZE
+        ]));
 
         for response in responses {
             let error =
@@ -526,11 +533,13 @@ mod tests {
             let wrapped_response = match std::str::from_utf8(
                 &response[size_of::<IgvmAttestKeyReleaseResponseHeader>()..],
             ) {
-                Ok(payload) if payload.contains("\"request_type\":\"key_release\"") => v3_frame(
-                    payload
-                        .replace("\"key_release\"", "\"wrapped_key\"")
-                        .as_bytes(),
-                ),
+                Ok(payload) if payload.contains("\"request_type\":\"key_release\"") => {
+                    extended_frame(
+                        payload
+                            .replace("\"key_release\"", "\"wrapped_key\"")
+                            .as_bytes(),
+                    )
+                }
                 _ => response.clone(),
             };
             let error = igvm_attest::wrapped_key::parse_response(&wrapped_response)
@@ -542,7 +551,7 @@ mod tests {
             );
         }
 
-        let wrong_key_type = v3_frame(
+        let wrong_key_type = extended_frame(
             br#"{"schema_version":1,"request_type":"wrapped_key","payload":"","extensions":{}}"#,
         );
         let error =
@@ -552,7 +561,7 @@ mod tests {
             RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
                 .is_context_failure()
         );
-        let wrong_wrapped_type = v3_frame(
+        let wrong_wrapped_type = extended_frame(
             br#"{"schema_version":1,"request_type":"key_release","payload":"","extensions":{}}"#,
         );
         let error = igvm_attest::wrapped_key::parse_response(&wrong_wrapped_type)
@@ -569,7 +578,7 @@ mod tests {
         // A malformed hash is a key-release-only error, not a shared envelope
         // error. Wrapped-key acceptance is tested with valid CPS payloads in
         // igvm_attest::wrapped_key::tests.
-        let response = v3_frame(
+        let response = extended_frame(
             br#"{"schema_version":1,"request_type":"key_release","payload":"","extensions":{"key_release_context_hash":"bad"}}"#,
         );
         let error =
@@ -606,7 +615,7 @@ mod tests {
                 "payload": "not a key payload",
                 "extensions": extensions,
             });
-            let response = v3_frame(&serde_json::to_vec(&envelope).unwrap());
+            let response = extended_frame(&serde_json::to_vec(&envelope).unwrap());
             let error =
                 igvm_attest::key_release::parse_response_requiring_context(&response, 256, true)
                     .unwrap_err();
@@ -659,7 +668,7 @@ mod tests {
 
     #[test]
     fn candidate_context_is_not_returned_when_key_unwrap_fails() {
-        use crate::igvm_attest::tests::v3_response;
+        use crate::igvm_attest::tests::extended_response;
         use openhcl_attestation_protocol::igvm_attest::akv::AkvKeyReleaseKeyBlob;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestType;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
@@ -684,7 +693,7 @@ mod tests {
         ];
         for (stage, ciphertext) in blobs.into_iter().enumerate() {
             let payload = serde_json::to_string(&AkvKeyReleaseKeyBlob { ciphertext }).unwrap();
-            let response = v3_response(
+            let response = extended_response(
                 IgvmAttestResponseRequestType::KeyRelease,
                 &payload,
                 Some([0xb2; 32]),

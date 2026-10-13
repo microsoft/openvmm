@@ -40,7 +40,7 @@ pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
 /// Current IGVM Attest response header version.
 pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: IgvmAttestResponseVersion =
-    IgvmAttestResponseVersion::VERSION_3;
+    IgvmAttestResponseVersion::VERSION_2;
 
 open_enum! {
     /// IGVM Attest response header versions.
@@ -50,14 +50,12 @@ open_enum! {
         VERSION_1 = 1,
         /// Version 2
         VERSION_2 = 2,
-        /// Version 3: the version 2 binary header followed by a JSON envelope.
-        VERSION_3 = 3,
     }
 }
 
 /// Current IGVM Attest request header version.
 pub const IGVM_ATTEST_REQUEST_CURRENT_VERSION: IgvmAttestRequestVersion =
-    IgvmAttestRequestVersion::VERSION_3;
+    IgvmAttestRequestVersion::VERSION_2;
 
 open_enum! {
     /// IGVM Attest request header versions.
@@ -67,16 +65,13 @@ open_enum! {
         VERSION_1 = 1,
         /// Version 2
         VERSION_2 = 2,
-        /// Version 3: supports enveloped key-release and wrapped-key responses.
-        /// AK certificate requests must continue to use version 2.
-        VERSION_3 = 3,
     }
 }
 
-/// Schema version of the JSON envelope following a version 3 response header.
+/// Schema version of the JSON envelope selected by the extended-payload signal.
 pub const IGVM_ATTEST_RESPONSE_SCHEMA_VERSION: u32 = 1;
 
-/// Request types supported by the version 3 response envelope.
+/// Request types supported by the extended response envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IgvmAttestResponseRequestType {
@@ -86,7 +81,7 @@ pub enum IgvmAttestResponseRequestType {
     WrappedKey,
 }
 
-/// Version 3 response body. The existing 32-byte binary header, including
+/// Extended response body. The existing 32-byte version 2 header, including
 /// `IgvmErrorInfo`, precedes this JSON and is included in its `data_size`.
 /// Consumers must validate the schema version and expected request type.
 #[derive(Debug, Serialize)]
@@ -143,7 +138,7 @@ fn deserialize_object<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer.deserialize_map(ObjectVisitor(std::marker::PhantomData))
 }
 
-/// Optional version 3 key-release metadata. This is untrusted host input, not
+/// Optional extended key-release metadata. This is untrusted host input, not
 /// authenticated evidence of the key-release policy.
 #[derive(Debug, Default, Serialize)]
 pub struct IgvmAttestResponseExtensions {
@@ -168,7 +163,7 @@ impl<'de> Deserialize<'de> for IgvmAttestResponseExtensions {
     }
 }
 
-/// Version 3 wrapped-key metadata. No extensions are currently recognized;
+/// Extended wrapped-key metadata. No extensions are currently recognized;
 /// all fields, including duplicate unknown fields, are ignored.
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct IgvmAttestWrappedKeyResponseExtensions {}
@@ -337,6 +332,12 @@ impl IgvmAttestRequestHeader {
     }
 }
 
+/// Request capability indicating support for extended JSON payloads.
+pub const IGVM_REQUEST_EXTENDED_PAYLOAD_BIT: u32 = 1 << 5;
+
+/// Response signal indicating an extended JSON payload.
+pub const IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT: u32 = 1 << 6;
+
 /// Bitmap of additional Igvm request attributes.
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
@@ -350,6 +351,7 @@ impl IgvmAttestRequestHeader {
 ///     SHA-1 (MGF1-SHA-1).
 /// 4 - corim_endorsement: Request that the IGVM Agent fetch the CoRIM launch
 ///     endorsement for the guest and include it in the attestation flow.
+/// 5 - extended_payload: Request support for JSON key-response envelopes.
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
@@ -358,7 +360,9 @@ pub struct IgvmCapabilityBitMap {
     pub skip_hw_unsealing: bool,
     pub use_rsa_aes_key_wrap_384: bool,
     pub corim_endorsement: bool,
-    #[bits(27)]
+    /// IGVM_REQUEST_EXTENDED_PAYLOAD_BIT (1 << 5): accepts JSON envelopes.
+    pub extended_payload: bool,
+    #[bits(26)]
     _reserved: u32,
 }
 
@@ -423,6 +427,8 @@ impl IgvmAttestRequestDataExt {
 ///     CKM_RSA_AES_KEY_WRAP scheme (inner RSA-OAEP using SHA-1).
 /// 3 - IGVM_SIGNAL_CORIM_ENDORSEMENT_REQUESTED_BIT: Set by the IGVM Agent to
 ///     indicate that the agent requested the CoRIM endorsement.
+/// 4-5 - Reserved.
+/// 6 - IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT: The response uses a JSON envelope.
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
@@ -430,11 +436,15 @@ pub struct IgvmSignal {
     pub skip_hw_unsealing: bool,
     pub rsa_aes_key_wrap_384_used: bool,
     pub corim_endorsement_requested: bool,
-    #[bits(28)]
+    #[bits(2)]
+    _reserved_before_extended_payload: u8,
+    /// IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT (1 << 6): payload is a JSON envelope.
+    pub extended_payload: bool,
+    #[bits(25)]
     _reserved: u32,
 }
 
-/// The common response header shared by V1, V2, and V3 Igvm attest responses.
+/// The common response header shared by V1 and V2 Igvm attest responses.
 #[repr(C)]
 #[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestCommonResponseHeader {

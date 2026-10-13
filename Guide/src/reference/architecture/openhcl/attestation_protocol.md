@@ -13,44 +13,46 @@ lifecycle, trust boundary, context adoption, and hardware protector formats.
 
 ## Request and response versions
 
-`KEY_RELEASE_REQUEST` and `WRAPPED_KEY_REQUEST` advertise V3 in
-`IgvmAttestRequestData.version`. The outer request header remains version 2;
-V3 retains the V2 request-data extension and capability bitmap. There is no
-additional envelope-negotiation capability bit.
+`KEY_RELEASE_REQUEST` and `WRAPPED_KEY_REQUEST` use V2 in
+`IgvmAttestRequestData.version` and set
+`IGVM_REQUEST_EXTENDED_PAYLOAD_BIT` (`1u << 5`) in the request capability
+bitmap. The outer request header and request-data extension remain unchanged.
+No new binary protocol version is introduced.
 
 | Request | Current request-data version | Accepted response formats |
 | --- | --- | --- |
-| Key release | V3 | V1/V2 original payload; V3 envelope |
-| Wrapped key | V3 | V1/V2 original payload; V3 envelope |
+| Key release | V2, extended-payload bit set | V1/V2 original payload; V2 flagged envelope |
+| Wrapped key | V2, extended-payload bit set | V1/V2 original payload; V2 flagged envelope |
 | AK certificate | V2 | V1/V2 binary certificate only |
 
-Since V2, host agents accept newer request versions and return a response
-version they support. A V2-only agent therefore returns V2 for a V3 key
-request. OpenHCL selects the parser from the actual response version, not
-the advertised request version. This works on both provisioning and later
-encrypted boots; V2 responses have no envelope or context hash.
+An agent sets `IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT` (`1u << 6`) in the V2
+response signal bitmap when it returns an envelope. OpenHCL selects the
+body parser from that response bit, not the request capability or body shape.
+If the bit is clear, the body retains its original service format and
+supplies no context hash. V1 responses also retain their legacy format.
 
 Legacy response acceptance remains subject to the
 [cached-context requirement](attestation.md#stateful-context-lifecycle);
-advertising V3 does not require a V3 response on an unbound VM.
+advertising extended-payload support does not require an envelope on an
+unbound VM. A malformed flagged envelope is never retried as a legacy body.
 
-AK certificate requests are explicitly pinned to V2. V3 is not an AK
-certificate protocol; its responses are rejected, rather than interpreted as
-an envelope or certificate.
+AK certificate requests remain V2 and do not set the extended-payload bit.
+Flagged AK certificate responses are rejected. Unknown header versions,
+including version 3, are rejected for all request types.
 
-## V3 response framing
+## Extended response framing
 
-V3 retains the complete 32-byte V2 binary response header. A UTF-8 JSON
+An extended response retains the complete 32-byte V2 header. A UTF-8 JSON
 envelope follows it. The offsets below are byte offsets from the response
 start; integer header fields are 32-bit little-endian values.
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | `data_size`, including header and envelope |
-| 4 | 4 | Response `version` = 3 |
+| 4 | 4 | Response `version` = 2 |
 | 8 | 4 | `IgvmErrorInfo.error_code` |
 | 12 | 4 | `IgvmErrorInfo.http_status_code` |
-| 16 | 4 | `IgvmErrorInfo.igvm_signal` bitmap |
+| 16 | 4 | `IgvmErrorInfo.igvm_signal`, bit 6 set |
 | 20 | 12 | `IgvmErrorInfo.reserved` |
 | 32 | Variable | JSON envelope |
 
@@ -58,12 +60,13 @@ The parser bounds `data_size` against the supplied response and requires at
 least the version-specific header size. It interprets the body only through
 `data_size`, not trailing buffer bytes. A nonzero `error_code` remains a
 service failure with the existing retry/recovery signals; such an error can
-have just the binary header, without a success envelope.
+have just the binary header, without a success envelope. Error handling
+takes precedence over the extended-payload bit.
 
 ### Errors and signals
 
-The signal bits remain in the binary header. V3 does not move errors or
-signals into JSON.
+The signal bits remain in the binary header. Extended payloads do not move
+errors or signals into JSON.
 
 | Bit | Signal |
 | --- | --- |
@@ -71,6 +74,8 @@ signals into JSON.
 | 1 | Skip hardware unsealing |
 | 2 | RSA-AES key wrap with SHA-384 used |
 | 3 | CoRIM endorsement requested |
+| 4-5 | Reserved |
+| 6 | Extended JSON payload (`IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT`) |
 
 ### Envelope schema
 
@@ -78,7 +83,7 @@ All four top-level fields are required:
 
 | Field | Contract |
 | --- | --- |
-| `schema_version` | Integer 1; independent of binary response version 3 |
+| `schema_version` | Integer 1; independent of binary response version 2 |
 | `request_type` | `key_release` or `wrapped_key`, matching the request |
 | `payload` | UTF-8 string containing the original service JSON or JWT |
 | `extensions` | Object; `{}` is valid when no metadata is supplied |
@@ -132,7 +137,7 @@ base64 encodings independently of the context hash.
 ## Limits and failure handling
 
 Key-release and wrapped-key responses use a 64 KiB GET response buffer,
-including framing. AK certificates use a 4 KiB buffer. V3 parsing allocates
+including framing. AK certificates use a 4 KiB buffer. Envelope parsing allocates
 an owned string for the unescaped payload. JSON escaping and envelope
 metadata count toward the response limit, so a service payload that fits
 without an envelope may exceed the limit when enveloped. Oversized responses
