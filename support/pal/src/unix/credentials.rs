@@ -44,5 +44,35 @@ pub fn unix_socket_peer_user_id(socket: BorrowedFd<'_>) -> io::Result<u32> {
             "SO_PEERCRED returned an invalid credential length",
         ));
     }
+    if credentials.uid == libc::uid_t::MAX {
+        return Err(Error::new(
+            io::ErrorKind::InvalidData,
+            "SO_PEERCRED returned no peer user ID",
+        ));
+    }
     Ok(credentials.uid)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixDatagram;
+    use test_with_tracing::test;
+
+    #[test]
+    fn pathname_datagram_without_peer_credentials_is_rejected() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(format!(".pal-peer-credentials-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let server = UnixDatagram::bind(&path).unwrap();
+        let client = UnixDatagram::unbound().unwrap();
+        client.connect(&path).unwrap();
+
+        let error = unix_socket_peer_user_id(client.as_fd()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        drop(server);
+        std::fs::remove_file(path).unwrap();
+    }
 }
