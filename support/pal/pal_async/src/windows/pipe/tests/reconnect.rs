@@ -95,12 +95,16 @@ async fn reuse_server_pipe_after_client_close(driver: DefaultDriver) {
     server.disconnect_pipe().unwrap();
 
     listener = ListeningPipe::new(&driver, server).unwrap();
-    let _client = OpenOptions::new()
+    let client = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
         .unwrap();
-    listener.await.unwrap();
+    let mut connected = PolledPipe::new(&driver, listener.await.unwrap()).unwrap();
+    let mut closing = poll_fn(|cx| connected.poll_closing(cx));
+    assert!(futures::poll!(&mut closing).is_pending());
+    drop(client);
+    closing.await.unwrap();
 }
 
 #[async_test]
