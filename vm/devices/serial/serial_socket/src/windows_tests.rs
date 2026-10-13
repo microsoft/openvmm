@@ -3,6 +3,7 @@
 
 use crate::windows::OpenWindowsPipeSerialConfig;
 use crate::windows::WindowsPipeSerialBackend;
+use futures::AsyncWriteExt;
 use futures::future::poll_fn;
 use pal::windows::pipe::Disposition;
 use pal::windows::pipe::PipeExt;
@@ -42,7 +43,8 @@ async fn reconnects_after_client_close(driver: DefaultDriver) {
     client.set_pipe_mode(PIPE_NOWAIT).unwrap();
     poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
     drop(client);
-    poll_fn(|cx| backend.poll_disconnect(cx)).await.unwrap();
+    assert!(backend.write(b"lost connection").await.is_err());
+    assert!(!backend.is_connected());
 
     let _replacement = OpenOptions::new()
         .read(true)
