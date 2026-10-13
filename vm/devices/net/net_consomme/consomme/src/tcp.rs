@@ -68,6 +68,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 #[derive(InspectMut)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
@@ -161,6 +162,10 @@ impl TcpError {
 }
 
 impl Tcp {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field("active_connections", self.connections.len());
+    }
+
     pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
         Self {
             connections: HashMap::new(),
