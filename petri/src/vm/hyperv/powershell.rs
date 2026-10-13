@@ -20,7 +20,10 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -282,6 +285,8 @@ pub struct HyperVNewCustomVMArgs {
     pub guest_state_path: Option<PathBuf>,
     /// VMBUS message redirection
     pub vmbus_message_redirection: Option<bool>,
+    /// Enable the OpenHCL guest feature set.
+    pub enable_openhcl: bool,
     /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
     /// OpenHCL command line parameters
@@ -360,7 +365,7 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        let is_openhcl = self.firmware_file.is_some();
+        let is_openhcl = self.enable_openhcl;
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
@@ -509,7 +514,7 @@ impl HyperVNewCustomVMArgs {
         }
 
         Ok(HyperVNewCustomVMArgs {
-            name: name.to_owned(),
+            name: make_vm_safe_name(name),
             generation: Some(if properties.is_pcat {
                 HyperVGeneration::One
             } else {
@@ -638,6 +643,7 @@ impl HyperVNewCustomVMArgs {
             },
             hibernation_enabled: config.hibernation_enabled,
             com_1: true,
+            enable_openhcl: properties.is_openhcl,
 
             // specified after creation
             firmware_file: None,
@@ -650,6 +656,41 @@ impl HyperVNewCustomVMArgs {
             management_vtl_settings: None,
             physical_nvme_devices: physical_nvme_devices.clone(),
         })
+    }
+}
+
+/// Creates a VM-safe name that respects platform limitations.
+///
+/// Hyper-V limits VM names to 100 characters. For names that exceed this limit,
+/// this function truncates to 96 characters and appends a 4-character hash
+/// to ensure uniqueness while staying within the limit.
+fn make_vm_safe_name(name: &str) -> String {
+    const MAX_VM_NAME_LENGTH: usize = 100;
+    const HASH_LENGTH: usize = 4;
+    const MAX_PREFIX_LENGTH: usize = MAX_VM_NAME_LENGTH - HASH_LENGTH;
+
+    if name.len() <= MAX_VM_NAME_LENGTH {
+        name.to_owned()
+    } else {
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Format hash as a 4-character hex string
+        let hash_suffix = format!("{:04x}", hash & 0xFFFF);
+
+        // Truncate the name and append the hash
+        let truncated = &name[..MAX_PREFIX_LENGTH];
+        tracing::debug!(
+            "VM name too long ({}), truncating '{}' to '{}{}'",
+            name.len(),
+            name,
+            truncated,
+            hash_suffix
+        );
+
+        format!("{}{}", truncated, hash_suffix)
     }
 }
 
@@ -820,6 +861,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("GuestStateLifetime", args.guest_state_lifetime)
             .arg_opt("GuestStateFilePath", args.guest_state_path)
             .arg_opt("VMBusMessageRedirection", args.vmbus_message_redirection)
+            .arg("EnableOpenHCL", args.enable_openhcl)
             .arg_opt("FirmwareFile", args.firmware_file)
             .arg_opt("FirmwareParameters", args.firmware_parameters)
             .flag_opt(

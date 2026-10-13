@@ -173,6 +173,9 @@ describes the source definitions.
   explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
   add a host UEFI device. You can pass `--uefi` settings for the firmware
   loaded by OpenHCL.
+
+  On x86, the IGVM device tree describes only some COM ports. See
+  [Device Tree](../../architecture/openvmm/device-tree.md).
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.
@@ -321,7 +324,10 @@ Serial devices can be configured to appear as different devices inside the guest
 
 The `BACKEND` argument is the same for all serial devices:
 
-  * `none`: Serial output is dropped.
+  * `none`: No serial backend is configured. Depending on the chipset, the
+      serial device is either omitted or present with a disconnected backend.
+  * `null`: A connected serial backend accepts and discards all output and
+      never provides input.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
   * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set

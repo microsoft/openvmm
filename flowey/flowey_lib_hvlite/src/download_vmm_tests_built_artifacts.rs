@@ -34,7 +34,6 @@ impl SimpleFlowNode for Node {
                     nextest_vmm_tests_archive_linux_x64,
                     nextest_vmm_tests_archive_linux_musl_x64,
                     nextest_vmm_tests_archive_linux_musl_aarch64,
-                    incubator_linux_x64,
                     prep_steps_windows_x64,
                     prep_steps_linux_musl_x64,
                     test_igvm_agent_rpc_server_windows_x64,
@@ -59,6 +58,7 @@ impl SimpleFlowNode for Node {
                     openhcl_standard_dev_x64,
                     openhcl_standard_dev_aarch64,
                     openhcl_cvm_x64,
+                    vmfirmwareigvm_cvm_x64,
                     openhcl_linux_direct_x64,
                     tmks_x64,
                     tmks_aarch64,
@@ -126,7 +126,6 @@ impl SimpleFlowNode for Node {
             "aarch64-linux-musl-vmm-tests-archive"
         );
 
-        download!(incubator_linux_x64, "x64-linux-incubator");
         download!(prep_steps_windows_x64, "x64-windows-prep_steps");
         download!(prep_steps_linux_musl_x64, "x64-linux-musl-prep_steps");
         download!(
@@ -162,6 +161,7 @@ impl SimpleFlowNode for Node {
         download!(openhcl_standard_dev_x64, "x64-openhcl-igvm-devkern");
         download!(openhcl_standard_dev_aarch64, "aarch64-openhcl-igvm-devkern");
         download!(openhcl_cvm_x64, "x64-openhcl-igvm-cvm");
+        download!(vmfirmwareigvm_cvm_x64, "x64-vmfirmwareigvm-cvm");
         download!(
             openhcl_linux_direct_x64,
             "x64-openhcl-igvm-test-linux-direct"
