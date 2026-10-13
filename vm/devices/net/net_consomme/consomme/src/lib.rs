@@ -178,7 +178,7 @@ pub struct ConsommeParams {
     /// This field is learned from incoming IPv6 traffic from the guest.
     #[inspect(with = "|x| x.map(inspect::AsDisplay)")]
     pub client_ip_ipv6_routable: Option<Ipv6Address>,
-    /// Idle timeout for UDP connections.
+    /// Idle timeout for UDP and ICMP connections.
     pub udp_timeout: Duration,
     /// Inactivity timeout for TCP connections waiting for a close handshake
     /// to make progress, including closes initiated before the initial
@@ -854,7 +854,7 @@ impl Consomme {
             },
             tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
             udp: udp::Udp::new(udp_timeout),
-            icmp: icmp::Icmp::new(),
+            icmp: icmp::Icmp::new(udp_timeout),
             dns,
             host_has_ipv6,
         }
