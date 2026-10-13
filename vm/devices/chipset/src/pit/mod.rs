@@ -234,8 +234,17 @@ impl Timer {
                 } else {
                     u64::from(self.state.cr)
                 };
+                if reload == 1 && mode == Mode::RateGenerator {
+                    // A count-one rate generator reloads every tick without
+                    // lowering OUT.
+                    break;
+                }
                 let period = if reload == 0 {
                     if bcd { 10_000 } else { 0x1_0000 }
+                } else if reload == 1 {
+                    // Mode 3 strips the odd bit before wrapping through the
+                    // counter range, taking one extra tick to return here.
+                    if bcd { 10_001 } else { 0x1_0001 }
                 } else {
                     reload
                 };
@@ -1057,9 +1066,19 @@ mod tests {
     #[test]
     fn long_elapsed_downtime_fast_forwards_periodic_pit() {
         for mode in [Mode::RateGenerator, Mode::SquareWave] {
-            for (count, bcd) in [(100, false), (1234, true), (0, false), (0, true)] {
+            for (count, bcd) in [
+                (100, false),
+                (1234, true),
+                (0, false),
+                (0, true),
+                (1, false),
+                (1, true),
+            ] {
+                let counter_range = if bcd { 10_000 } else { 0x1_0000 };
                 let period = if count == 0 {
-                    if bcd { 10_000 } else { 0x1_0000 }
+                    counter_range
+                } else if count == 1 && mode == Mode::SquareWave {
+                    counter_range + 1
                 } else {
                     u64::from(count)
                 };
@@ -1095,6 +1114,24 @@ mod tests {
                     "{mode:?}, count={count}, bcd={bcd}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn count_one_rate_generator_does_not_emit_irq0_edges() {
+        for bcd in [false, true] {
+            let target = Arc::new(RecordingTarget::default());
+            let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+            let mut timer = Timer::new(true, Some(interrupt));
+            set_timer(&mut timer, Mode::RateGenerator, 1, bcd);
+            timer.evaluate(1);
+            target.0.lock().clear();
+            let active_state = timer.state;
+
+            timer.evaluate(u64::MAX);
+
+            assert_eq!(timer.state, active_state, "bcd={bcd}");
+            assert!(target.0.lock().is_empty(), "bcd={bcd}");
         }
     }
 
