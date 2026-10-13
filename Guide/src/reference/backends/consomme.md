@@ -193,7 +193,8 @@ DNS over TCP is also supported for large responses.
 Echo requests (ping) are forwarded through a host-side ICMP socket.
 The guest's TTL is preserved, so ping works and traceroute partially
 works (the echo reply comes back, but intermediate TTL Exceeded hops
-are not relayed — see limitations).
+are not relayed — see limitations). Idle ICMP source flows use the same
+configurable timeout as UDP bindings (5 minutes by default).
 
 ### ARP and NDP
 
