@@ -878,8 +878,9 @@ impl ClientTask {
             }
 
             if self.can_pause_resume() {
-                self.drive_core(vmbus_client_core::Event::Pause);
                 self.inner.messages.pause();
+                self.drive_core(vmbus_client_core::Event::Pause);
+                self.inner.messages.pause_queued();
                 self.paused_via_message = true;
             } else {
                 // Mask the sint to pause the message stream. The host will
@@ -899,6 +900,9 @@ impl ClientTask {
             }
             if !self.can_pause_resume() {
                 self.msg_source.resume_message_stream();
+            } else {
+                self.queue_resume();
+                self.paused_via_message = false;
             }
             self.inner.messages.resume();
         }
@@ -1323,9 +1327,11 @@ struct OutgoingMessages {
 }
 
 #[derive(Inspect, PartialEq, Eq, Debug)]
+#[inspect(external_tag)]
 enum OutgoingMessageState {
     Running,
-    SendingPauseMessage,
+    QueueingPause,
+    SendingPauseMessage { remaining: usize },
     Paused,
 }
 
@@ -1367,7 +1373,7 @@ impl OutgoingMessages {
             })
             .await
         };
-        match self.state {
+        match &mut self.state {
             OutgoingMessageState::Running => {
                 while let Some(msg) = self.queued.front() {
                     send(msg).await;
@@ -1375,13 +1381,21 @@ impl OutgoingMessages {
                     self.queued.pop_front();
                 }
             }
-            OutgoingMessageState::SendingPauseMessage => {
-                while let Some(msg) = self.queued.front() {
+            OutgoingMessageState::SendingPauseMessage { remaining } => {
+                while *remaining != 0 {
+                    let msg = self
+                        .queued
+                        .front()
+                        .expect("pause boundary exceeds queued messages");
                     send(msg).await;
                     tracing::trace!("sent queued message while pausing");
                     self.queued.pop_front();
+                    *remaining -= 1;
                 }
                 self.state = OutgoingMessageState::Paused;
+            }
+            OutgoingMessageState::QueueingPause => {
+                unreachable!("pause message must be queued before flushing")
             }
             OutgoingMessageState::Paused => {}
         }
@@ -1391,7 +1405,16 @@ impl OutgoingMessages {
     /// to stop sending messages after sending a pause response.
     fn pause(&mut self) {
         assert_eq!(self.state, OutgoingMessageState::Running);
-        self.state = OutgoingMessageState::SendingPauseMessage;
+        self.state = OutgoingMessageState::QueueingPause;
+    }
+
+    /// Mark the end of the work that may be sent before the host is paused.
+    fn pause_queued(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::QueueingPause);
+        assert!(!self.queued.is_empty());
+        self.state = OutgoingMessageState::SendingPauseMessage {
+            remaining: self.queued.len(),
+        };
     }
 
     /// Force a pause by setting the state to Paused. This is used when the
@@ -1503,6 +1526,53 @@ mod tests {
         ) -> Poll<()> {
             Poll::Pending
         }
+    }
+
+    struct RecordingPoster {
+        sender: mesh::Sender<OutgoingMessage>,
+    }
+
+    impl PollPostMessage for RecordingPoster {
+        fn poll_post_message(
+            &mut self,
+            _cx: &mut Context<'_>,
+            _connection_id: u32,
+            _typ: u32,
+            msg: &[u8],
+        ) -> Poll<()> {
+            self.sender
+                .send(OutgoingMessage::from_message(msg).unwrap());
+            Poll::Ready(())
+        }
+    }
+
+    #[async_test]
+    async fn pause_stops_flushing_at_pause_message(_driver: DefaultDriver) {
+        let before_pause = OutgoingMessage::new(&protocol::RelIdReleased {
+            channel_id: ChannelId(7),
+        });
+        let pause = OutgoingMessage::new(&protocol::Pause);
+        let after_pause = OutgoingMessage::new(&protocol::RelIdReleased {
+            channel_id: ChannelId(8),
+        });
+        let (sender, mut receiver) = mesh::channel();
+        let mut messages = OutgoingMessages {
+            poster: Box::new(RecordingPoster { sender }),
+            queued: VecDeque::from([before_pause.clone()]),
+            state: OutgoingMessageState::Running,
+        };
+
+        messages.pause();
+        messages.send_raw(pause.data().to_vec());
+        messages.pause_queued();
+        messages.send_raw(after_pause.data().to_vec());
+        messages.flush_messages().await;
+
+        assert_eq!(receiver.next().await.unwrap().data(), before_pause.data());
+        assert_eq!(receiver.next().await.unwrap().data(), pause.data());
+        assert_eq!(messages.state, OutgoingMessageState::Paused);
+        assert_eq!(messages.queued.len(), 1);
+        assert_eq!(messages.queued.front().unwrap().data(), after_pause.data());
     }
 
     #[test]
@@ -2364,6 +2434,51 @@ mod tests {
                 channel_id: ChannelId(0),
             },
         );
+    }
+
+    #[async_test]
+    async fn stop_resumes_host_before_retrying_pending_revoked_channel(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let channel = server.get_channel(&mut client).await;
+        let modify = channel.request_send.call(
+            ChannelRequest::Modify,
+            ModifyRequest::TargetVp { target_vp: 1 },
+        );
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyChannel {
+                channel_id: ChannelId(0),
+                target_vp: 1,
+            },
+        );
+
+        let client_stop = client.stop();
+        let server_stop = async {
+            check_message(server.next().await.unwrap(), protocol::Pause);
+            server.send(in_msg(
+                MessageType::RESCIND_CHANNEL_OFFER,
+                protocol::RescindChannelOffer {
+                    channel_id: ChannelId(0),
+                },
+            ));
+            server.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+
+            check_message(server.next().await.unwrap(), protocol::Resume);
+            server.send(in_msg(
+                MessageType::MODIFY_CHANNEL_RESPONSE,
+                protocol::ModifyChannelResponse {
+                    channel_id: ChannelId(0),
+                    status: protocol::STATUS_SUCCESS,
+                },
+            ));
+
+            check_message(server.next().await.unwrap(), protocol::Pause);
+            server.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+        };
+        (client_stop, server_stop).join().await;
+
+        assert_eq!(modify.await.unwrap(), protocol::STATUS_SUCCESS);
+        channel.revoke_recv.await.unwrap();
     }
 
     #[async_test]
