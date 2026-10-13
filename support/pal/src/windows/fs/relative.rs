@@ -5,9 +5,11 @@
 //! hard-linking, and enumerating files relative to an opened directory, and
 //! querying the identity of an opened file.
 
+use crate::windows::BorrowedHandleExt;
 use crate::windows::ObjectAttributes;
 use crate::windows::UnicodeString;
 use crate::windows::chk_status;
+use std::cell::UnsafeCell;
 use std::fs;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -17,9 +19,14 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::ptr;
 use std::ptr::null_mut;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering;
 use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NO_MORE_FILES;
+use windows_sys::Win32::Foundation::STATUS_PENDING;
+use windows_sys::Win32::Foundation::WAIT_FAILED;
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
@@ -35,6 +42,8 @@ use windows_sys::Win32::Storage::FileSystem::FileStandardInfo;
 use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::Threading::INFINITE;
+use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 /// Stable identity and EOF for one opened file generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,18 +53,64 @@ pub struct FileIdentity {
     pub end_of_file: u64,
 }
 
+struct PendingIoStatus(UnsafeCell<IO_STATUS_BLOCK>);
+
+impl PendingIoStatus {
+    fn new() -> Self {
+        let mut io_status = IO_STATUS_BLOCK::default();
+        io_status.Anonymous.Status = STATUS_PENDING;
+        Self(UnsafeCell::new(io_status))
+    }
+
+    fn as_ptr(&self) -> *mut IO_STATUS_BLOCK {
+        self.0.get()
+    }
+
+    fn completion_status(&self) -> Option<i32> {
+        // SAFETY: IO_STATUS_BLOCK begins with its aligned NTSTATUS. The kernel
+        // may update it until it changes from STATUS_PENDING.
+        let status = unsafe { &*self.0.get().cast::<AtomicI32>() }.load(Ordering::Acquire);
+        (status != STATUS_PENDING).then_some(status)
+    }
+}
+
 fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
-    let mut mode = ntioapi::FILE_MODE_INFORMATION::default();
-    let mut io_status = IO_STATUS_BLOCK::default();
-    chk_status(unsafe {
+    // A synchronous file object necessarily grants SYNCHRONIZE. Duplicating
+    // that access before starting the query also makes every pending query
+    // waitable, including the asynchronous objects this function rejects.
+    let file = file.as_handle().duplicate(false, Some(SYNCHRONIZE))?;
+    let mut mode = Box::new(ntioapi::FILE_MODE_INFORMATION::default());
+    let io_status = Box::new(PendingIoStatus::new());
+    let mut status = unsafe {
         ntioapi::NtQueryInformationFile(
             file.as_raw_handle(),
-            &mut io_status,
-            (&raw mut mode).cast(),
+            io_status.as_ptr(),
+            (&raw mut *mode).cast(),
             size_of::<ntioapi::FILE_MODE_INFORMATION>() as u32,
             ntioapi::FileModeInformation,
         )
-    })?;
+    };
+    if status == STATUS_PENDING {
+        loop {
+            if let Some(completion_status) = io_status.completion_status() {
+                status = completion_status;
+                break;
+            }
+            let wait = unsafe { WaitForSingleObject(file.as_raw_handle(), INFINITE) };
+            if wait != WAIT_OBJECT_0 {
+                let error = if wait == WAIT_FAILED {
+                    io::Error::last_os_error()
+                } else {
+                    io::Error::other(format!("unexpected file wait result {wait:#x}"))
+                };
+                // The query may still own both output buffers.
+                let _ = Box::leak(mode);
+                let _ = Box::leak(io_status);
+                return Err(error);
+            }
+        }
+    }
+    chk_status(status)?;
     if mode.Mode & (ntioapi::FILE_SYNCHRONOUS_IO_ALERT | ntioapi::FILE_SYNCHRONOUS_IO_NONALERT) == 0
     {
         return Err(io::Error::new(
