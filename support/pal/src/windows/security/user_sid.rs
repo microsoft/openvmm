@@ -113,6 +113,7 @@ pub fn process_user_sid(process_id: u32) -> std::io::Result<MaximumSid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn current_process_sid_has_a_bounded_binary_identity() {
