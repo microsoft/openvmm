@@ -6,6 +6,13 @@
 //! On x86_64 the BSP is created only after all guest memory is attached. The
 //! partition capabilities are then discovered from the BSP, so they are not
 //! available before [`MshvPartitionInner::finalize_memory`] completes.
+//!
+//! For a non-isolated partition, attached memory is already registered with
+//! MSHV, so the BSP is created after registration. An SNP partition instead
+//! defers registering its pre-launch ranges to the SNP launch, which needs the
+//! BSP to build the measured CPUID page and to set the SEV control register.
+//! On SNP, the BSP is therefore created after the ranges are recorded but
+//! before MSHV registers them.
 
 use super::hv1_reference_tsc_page_supported;
 use crate::Error;
