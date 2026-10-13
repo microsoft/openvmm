@@ -294,6 +294,10 @@ pub fn zero_range(file: &fs::File, start: u64, end: u64) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
+    use std::io::Write;
     use std::os::windows::fs::OpenOptionsExt;
     use std::path::Path;
     use std::path::PathBuf;
@@ -393,6 +397,55 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn sparse_controls_track_and_zero_allocated_ranges() {
+        const FILE_LENGTH: u64 = 16 * 1024 * 1024;
+        const EXTENT_LENGTH: u64 = 64 * 1024;
+        const FIRST_OFFSET: u64 = 64 * 1024;
+        const SECOND_OFFSET: u64 = 8 * 1024 * 1024;
+
+        let root = TestDirectory::new();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(root.join("sparse"))
+            .unwrap();
+        set_sparse(&file).unwrap();
+        file.set_len(FILE_LENGTH).unwrap();
+
+        let first_contents = vec![0x11; EXTENT_LENGTH as usize];
+        let second_contents = vec![0x22; EXTENT_LENGTH as usize];
+        file.seek(SeekFrom::Start(FIRST_OFFSET)).unwrap();
+        file.write_all(&first_contents).unwrap();
+        file.seek(SeekFrom::Start(SECOND_OFFSET)).unwrap();
+        file.write_all(&second_contents).unwrap();
+        file.sync_all().unwrap();
+
+        let covers = |ranges: &[(u64, u64)], offset| {
+            ranges.iter().any(|(start, length)| {
+                *start <= offset && start.checked_add(*length).is_some_and(|end| offset < end)
+            })
+        };
+        let ranges = allocated_ranges(&file, FILE_LENGTH).unwrap();
+        assert!(covers(&ranges, FIRST_OFFSET));
+        assert!(covers(&ranges, SECOND_OFFSET));
+        let allocated = allocation_size(&file).unwrap();
+        assert!(allocated > 0);
+        assert!(allocated < FILE_LENGTH);
+
+        zero_range(&file, FIRST_OFFSET, FIRST_OFFSET + EXTENT_LENGTH).unwrap();
+        file.sync_all().unwrap();
+        let ranges = allocated_ranges(&file, FILE_LENGTH).unwrap();
+        assert!(!covers(&ranges, FIRST_OFFSET));
+        assert!(covers(&ranges, SECOND_OFFSET));
+
+        let mut contents = vec![0xff; EXTENT_LENGTH as usize];
+        file.seek(SeekFrom::Start(FIRST_OFFSET)).unwrap();
+        file.read_exact(&mut contents).unwrap();
+        assert_eq!(contents, vec![0; EXTENT_LENGTH as usize]);
     }
 
     #[test]
