@@ -166,7 +166,28 @@ impl AsyncRun<RngQueue> for RngWorker {
 }
 
 fn process_rng_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
-    let writable_len = std::cmp::min(work.get_payload_length(true) as usize, MAX_REQUEST_BYTES);
+    for payload in work
+        .payload
+        .iter()
+        .filter(|payload| payload.writeable && payload.length != 0)
+    {
+        if let Err(err) = mem.subrange(payload.address, payload.length.into(), false) {
+            tracelimit::error_ratelimited!(
+                err = &err as &dyn std::error::Error,
+                "invalid writable RNG descriptor"
+            );
+            return 0;
+        }
+    }
+
+    let writable_len = {
+        let len = work.get_payload_length(true);
+        if len > MAX_REQUEST_BYTES as u64 {
+            1
+        } else {
+            len as usize
+        }
+    };
     if writable_len == 0 {
         return 0;
     }
@@ -189,6 +210,7 @@ fn process_rng_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32
 mod tests {
     use super::*;
     use core::mem::offset_of;
+    use guestmem::PAGE_SIZE;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::wait::PolledWait;
@@ -346,10 +368,26 @@ mod tests {
         /// Submit a single writable buffer and wait for completion.
         /// Returns (descriptor_id, bytes_written).
         async fn submit_and_wait(&mut self, data_gpa: u64, len: u32) -> (u16, u32) {
-            let desc_idx = 0u16;
-            let flags = DescriptorFlags::new().with_write(true);
-            write_descriptor(&self.mem, desc_idx, data_gpa, len, flags, 0);
-            make_available(&self.mem, desc_idx, &mut self.avail_idx);
+            self.submit_chain_and_wait(&[(data_gpa, len)]).await
+        }
+
+        async fn submit_chain_and_wait(&mut self, buffers: &[(u64, u32)]) -> (u16, u32) {
+            assert!(!buffers.is_empty());
+            assert!(buffers.len() <= QUEUE_SIZE as usize);
+
+            for (index, &(data_gpa, len)) in buffers.iter().enumerate() {
+                let has_next = index + 1 < buffers.len();
+                let flags = DescriptorFlags::new().with_write(true).with_next(has_next);
+                write_descriptor(
+                    &self.mem,
+                    index as u16,
+                    data_gpa,
+                    len,
+                    flags,
+                    (index + 1) as u16,
+                );
+            }
+            make_available(&self.mem, 0, &mut self.avail_idx);
             self.queue_event.signal();
 
             let mut wait = PolledWait::new(&self.driver, self.interrupt_event.clone()).unwrap();
@@ -403,6 +441,74 @@ mod tests {
             written, 0,
             "zero-length request should complete with 0 bytes"
         );
+    }
+
+    #[async_test]
+    async fn rng_ignores_zero_length_buffer_with_invalid_address(driver: DefaultDriver) {
+        let mut harness = TestHarness::new(&driver);
+        harness.enable().await;
+
+        let (_id, written) = harness
+            .submit_chain_and_wait(&[(u64::MAX, 0), (DATA_BASE, 1)])
+            .await;
+
+        assert_eq!(written, 1);
+    }
+
+    #[async_test]
+    async fn rng_rejects_chain_before_writing_valid_prefix(driver: DefaultDriver) {
+        let mut harness = TestHarness::new(&driver);
+        harness.enable().await;
+
+        let data_gpa = DATA_BASE;
+        let original = vec![0x5a; PAGE_SIZE];
+        harness.mem.write_at(data_gpa, &original).unwrap();
+
+        let (_id, written) = harness
+            .submit_chain_and_wait(&[
+                (data_gpa, PAGE_SIZE as u32),
+                (TOTAL_MEM_SIZE as u64, PAGE_SIZE as u32),
+            ])
+            .await;
+
+        assert_eq!(written, 0);
+        let mut result = vec![0; PAGE_SIZE];
+        harness.mem.read_at(data_gpa, &mut result).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[async_test]
+    async fn rng_limits_oversized_buffer_to_one_byte(driver: DefaultDriver) {
+        let mut harness = TestHarness::new(&driver);
+        harness.enable().await;
+
+        let len = MAX_REQUEST_BYTES + PAGE_SIZE;
+        let original = vec![0x5a; len];
+        harness.mem.write_at(DATA_BASE, &original).unwrap();
+
+        let (_id, written) = harness.submit_and_wait(DATA_BASE, len as u32).await;
+
+        assert_eq!(written, 1);
+        let mut result = vec![0; len];
+        harness.mem.read_at(DATA_BASE, &mut result).unwrap();
+        assert_eq!(result[1..], original[1..]);
+    }
+
+    #[async_test]
+    async fn rng_rejects_wrapping_buffer_range(driver: DefaultDriver) {
+        let mut harness = TestHarness::new(&driver);
+        harness.enable().await;
+
+        let original = vec![0x5a; PAGE_SIZE];
+        harness.mem.write_at(DATA_BASE, &original).unwrap();
+
+        let data_gpa = u64::MAX - (PAGE_SIZE as u64 / 2);
+        let (_id, written) = harness.submit_and_wait(data_gpa, PAGE_SIZE as u32).await;
+
+        assert_eq!(written, 0);
+        let mut result = vec![0; PAGE_SIZE];
+        harness.mem.read_at(DATA_BASE, &mut result).unwrap();
+        assert_eq!(result, original);
     }
 
     #[async_test]
