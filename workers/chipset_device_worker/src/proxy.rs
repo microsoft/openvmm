@@ -306,8 +306,7 @@ async fn start_remote_device(
     gm_proxy: &mut GuestMemoryProxy,
     enc_gm_proxy: &mut GuestMemoryProxy,
 ) -> anyhow::Result<()> {
-    let start = req_send.call_failable(DeviceRequest::Start, ());
-    futures::pin_mut!(start);
+    let mut start = std::pin::pin!(req_send.call_failable(DeviceRequest::Start, ()));
     std::future::poll_fn(|cx| {
         gm_proxy.poll(cx);
         enc_gm_proxy.poll(cx);
