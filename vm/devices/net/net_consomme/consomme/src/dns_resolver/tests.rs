@@ -4,6 +4,7 @@
 //! Tests of the DNS resolver's pending-request limit.
 
 use super::*;
+use test_with_tracing::test;
 
 struct HoldingBackend;
 
