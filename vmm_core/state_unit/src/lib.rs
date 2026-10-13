@@ -87,9 +87,15 @@ pub enum StateRequest {
     Stop(Rpc<(), ()>),
 
     /// Stop accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// A [`StateRequest::ResumeInput`] may follow even if this request returns
+    /// an error or its response is not observed.
     QuiesceInput(FailableRpc<(), ()>),
 
     /// Resume host input after a failed snapshot transaction.
+    ///
+    /// The handler must be safe whether or not input quiesce completed and
+    /// idempotent across repeated recovery attempts.
     ResumeInput(FailableRpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
@@ -126,11 +132,17 @@ pub trait StateUnit: InspectMut {
     async fn stop(&mut self);
 
     /// Stops accepting new host input while preserving runtime state.
+    ///
+    /// [`StateUnit::resume_input`] may be called even if this method returns
+    /// an error or its response is not observed.
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
     /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`StateUnit::quiesce_input`] completed
+    /// and idempotent across repeated recovery attempts.
     async fn resume_input(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
