@@ -48,6 +48,8 @@ pub enum Error {
     },
     #[error("failed to parse ELF program header")]
     InvalidProgramHeader(#[source] object::read::Error),
+    #[error("ELF image contains no loadable segments")]
+    NoLoadableSegments,
     #[error("adding load offset {load_offset} to paddr {p_paddr} overflowed")]
     LoadOffsetOverflow { load_offset: u64, p_paddr: u64 },
     #[error("invalid ELF program header memory offset {mem_offset}, below start {start_address}")]
@@ -166,6 +168,9 @@ where
     let phdrs = ehdr
         .program_headers(LE, &reader)
         .map_err(Error::InvalidProgramHeader)?;
+    if !phdrs.iter().any(|phdr| phdr.p_type.get(LE) == elf::PT_LOAD) {
+        return Err(Error::NoLoadableSegments);
+    }
 
     // For PIC kernels, calculate load offset by checking lowest paddr in program headers.
     // If it is below start_address, relocate kernel upward. Handles both:
