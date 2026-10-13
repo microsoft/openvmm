@@ -1262,6 +1262,9 @@ pub mod protocol {
             let hash_alg = if scheme != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<AlgId>();
+                if bytes.len() < end {
+                    return None;
+                }
                 AlgId::read_from_prefix(&bytes[start..end]).ok()?.0 // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             } else {
                 AlgId::new(0)
@@ -1338,10 +1341,16 @@ pub mod protocol {
             let (key_bits, mode) = if algorithm != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<u16_be>();
+                if bytes.len() < end {
+                    return None;
+                }
                 let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
                 start = end;
                 end += size_of::<AlgId>();
+                if bytes.len() < end {
+                    return None;
+                }
                 let mode = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
                 (key_bits, mode)
@@ -1625,7 +1634,11 @@ pub mod protocol {
             let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
-            let public_area = TpmtPublic::deserialize(&bytes[start..])?;
+            let end = start.checked_add(size.get() as usize)?;
+            let public_area = TpmtPublic::deserialize(bytes.get(start..end)?)?;
+            if public_area.payload_size() != size.get() as usize {
+                return None;
+            }
 
             Some(Self { size, public_area })
         }
@@ -3783,6 +3796,37 @@ mod tests {
     #[test]
     fn tpm2b_buffer_rejects_truncated_payload() {
         assert!(Tpm2bBuffer::deserialize(&[0, 3, 1, 2]).is_none());
+    }
+
+    #[test]
+    fn tpm2b_public_rejects_truncated_symmetric_parameters() {
+        let bytes = [
+            0, 13, // TPM2B_PUBLIC size
+            0, 1, // type: RSA
+            0, 11, // name algorithm: SHA256
+            0, 0, 0, 0, // object attributes
+            0, 0, // empty auth policy
+            0, 6, // symmetric algorithm: AES
+            0, // truncated key bits
+        ];
+
+        assert!(Tpm2bPublic::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn tpm2b_public_rejects_truncated_scheme_parameters() {
+        let bytes = [
+            0, 15, // TPM2B_PUBLIC size
+            0, 1, // type: RSA
+            0, 11, // name algorithm: SHA256
+            0, 0, 0, 0, // object attributes
+            0, 0, // empty auth policy
+            0, 16, // symmetric algorithm: NULL
+            0, 20, // scheme: RSASSA
+            0, // truncated hash algorithm
+        ];
+
+        assert!(Tpm2bPublic::deserialize(&bytes).is_none());
     }
 
     #[test]

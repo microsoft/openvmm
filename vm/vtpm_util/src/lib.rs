@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The module includes `vtpm_util`, a tool to create and manage vTPM blobs.
+//! The module includes `vtpm-util`, a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
 mod key_import;
 mod marshal;
@@ -24,11 +24,12 @@ use std::vec;
 use tpm_lib as tpm_helper;
 use tpm_protocol::TPM_RSA_SRK_HANDLE;
 use tpm_protocol::tpm20proto::AlgId;
+use tpm_protocol::tpm20proto::AlgIdEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmtPublic;
 
-fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn create_sensitive_file(path: &str) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
 
@@ -39,7 +40,11 @@ fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
         options.mode(0o600);
     }
 
-    let mut file = options.open(path)?;
+    options.open(path)
+}
+
+fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = create_sensitive_file(path)?;
     file.write_all(contents)
 }
 
@@ -158,17 +163,11 @@ fn export_vtpm_srk_pub(
         .context("failed to read SRK public area")?;
     tracing::trace!("SRK public area: {:?}", response.out_public.public_area);
 
-    // Write the SRK pub to a file.
-    let mut srk_pub_file =
-        File::create(srk_out_path).context("failed to create SRK output file")?;
-
     // Use the full TPM2B_PUBLIC serialization to match Windows C++ GetSrkPub
     // Windows returns the raw publicArea from ReadPublic.m_pOutPublic->Get(),
     // which is the serialized TPM2B_PUBLIC structure
     let srk_pub = response.out_public.serialize();
-    srk_pub_file
-        .write_all(&srk_pub)
-        .context("failed to write SRK output file")?;
+    write_sensitive_file(srk_out_path, &srk_pub).context("failed to create SRK output file")?;
 
     // Calculate and print the SRK name (algorithm ID + hash)
     let public_area_hash = sha_256(&response.out_public.public_area.serialize());
@@ -207,6 +206,11 @@ pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
     let public_key = Tpm2bPublic::deserialize(&srkpub_content_buf)
         .context("failed to deserialize SRK public key")?;
     let public_area: TpmtPublic = public_key.public_area;
+    anyhow::ensure!(
+        public_area.name_alg == AlgIdEnum::SHA256.into(),
+        "unsupported SRK name algorithm {:?}; only SHA-256 is supported",
+        public_area.name_alg
+    );
     // Compute SHA256 hash of the public area
     let public_area_hash = sha_256(&public_area.serialize());
 
@@ -255,10 +259,19 @@ pub(crate) fn print_sha256_hash(data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use super::create_vtpm_blob_file;
     use super::print_key_name;
     use super::write_sensitive_file;
+    use super::write_srk;
     use std::fs;
     use test_with_tracing::test;
+    use tpm_protocol::tpm20proto::AlgIdEnum;
+    use tpm_protocol::tpm20proto::TpmaObjectBits;
+    use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
+    use tpm_protocol::tpm20proto::protocol::TpmsRsaParams;
+    use tpm_protocol::tpm20proto::protocol::TpmtPublic;
+    use tpm_protocol::tpm20proto::protocol::TpmtRsaScheme;
+    use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
 
     #[test]
     fn sensitive_file_does_not_overwrite_existing_file() {
@@ -289,6 +302,50 @@ mod tests {
         let error = print_key_name(path.to_str().unwrap()).unwrap_err();
 
         assert_eq!(error.to_string(), "failed to deserialize SRK public key");
+    }
+
+    #[test]
+    fn print_key_name_rejects_non_sha256_name_algorithm() {
+        let symmetric = TpmtSymDefObject::new(AlgIdEnum::NULL.into(), None, None);
+        let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+        let parameters = TpmsRsaParams::new(symmetric, scheme, 2048, 0);
+        let public_area = TpmtPublic::new(
+            AlgIdEnum::RSA.into(),
+            AlgIdEnum::SHA.into(),
+            TpmaObjectBits::new(),
+            &[],
+            parameters,
+            &[0; 256],
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unsupported-name-alg.tpm2b");
+        fs::write(&path, Tpm2bPublic::new(public_area).serialize()).unwrap();
+
+        let error = print_key_name(path.to_str().unwrap()).unwrap_err();
+
+        assert!(error.to_string().contains("only SHA-256 is supported"));
+    }
+
+    #[test]
+    fn write_srk_rejects_input_output_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob_path = directory.path().join("vtpm.blob");
+        let alias_path = directory.path().join("vtpm-alias.blob");
+        create_vtpm_blob_file(blob_path.to_str().unwrap()).unwrap();
+        fs::hard_link(&blob_path, &alias_path).unwrap();
+        let original_blob = fs::read(&blob_path).unwrap();
+
+        let error =
+            write_srk(blob_path.to_str().unwrap(), blob_path.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.to_string(), "failed to create SRK output file");
+        assert_eq!(fs::read(&blob_path).unwrap(), original_blob);
+
+        let error =
+            write_srk(blob_path.to_str().unwrap(), alias_path.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.to_string(), "failed to create SRK output file");
+        assert_eq!(fs::read(&blob_path).unwrap(), original_blob);
+        assert_eq!(fs::read(&alias_path).unwrap(), original_blob);
     }
 
     #[cfg(unix)]

@@ -17,7 +17,7 @@ enum KeyAlgorithm {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "vtpm_util",
+    name = "vtpm-util",
     about = "Tool to create and inspect vTPM artifacts."
 )]
 struct CmdArgs {

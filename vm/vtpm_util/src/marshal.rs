@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Marshal selected TPM structures used by `vtpm_util`.
+//! Marshal selected TPM structures used by `vtpm-util`.
 //! TPM reference documents such as TPM-Rev-2.0-Part-2-Structures-01.38.pdf are a good source.
 
 use tpm_protocol::tpm20proto::AlgId;
