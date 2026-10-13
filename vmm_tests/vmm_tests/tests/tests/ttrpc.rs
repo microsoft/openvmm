@@ -330,6 +330,7 @@ async fn test_ttrpc_interface(
     let nvme_disk_path = tempdir.path().join("nvme.img");
     let blk_disk_path = tempdir.path().join("blk.img");
     let scsi_disk_path = tempdir.path().join("scsi.img");
+    let append_console_path = tempdir.path().join("console-append.log");
     for path in [&nvme_disk_path, &blk_disk_path, &scsi_disk_path] {
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
     }
@@ -343,6 +344,7 @@ async fn test_ttrpc_interface(
         };
         if i == 2 {
             std::fs::write(&console_path, b"stale console contents")?;
+            std::fs::write(&append_console_path, b"stale append contents")?;
         }
         let virtiofs_root = tempdir.path().join(format!("virtiofs-{i}"));
         let hotplug_virtiofs_root = tempdir.path().join(format!("hotplug-virtiofs-{i}"));
@@ -541,7 +543,10 @@ async fn test_ttrpc_interface(
                         end_bus: 255,
                         low_mmio: 64 * 1024 * 1024,
                         high_mmio: 1024 * 1024 * 1024,
-                        root_ports: vec![virtio_console_file_port("console", &console_path)],
+                        root_ports: vec![
+                            virtio_console_file_port("console", &console_path, false),
+                            virtio_console_file_port("console-append", &append_console_path, true),
+                        ],
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -929,7 +934,23 @@ async fn test_ttrpc_interface(
                         cmd!(sh, "sh -c 'printf ttrpc-console-file-marker > /dev/hvc0'")
                             .run()
                             .await?;
-                        validate_console_file(&driver, &console_path).await?;
+                        cmd!(sh, "sh -c 'printf ttrpc-console-append-marker > /dev/hvc1'")
+                            .run()
+                            .await?;
+                        validate_console_file(
+                            &driver,
+                            &console_path,
+                            "ttrpc-console-file-marker",
+                            None,
+                        )
+                        .await?;
+                        validate_console_file(
+                            &driver,
+                            &append_console_path,
+                            "ttrpc-console-append-marker",
+                            Some("stale append contents"),
+                        )
+                        .await?;
                     } else {
                         validate_pcie_config(&agent).await?;
                         #[cfg(windows)]
@@ -1316,7 +1337,7 @@ fn pcie_root_port(
     }
 }
 
-fn virtio_console_file_port(name: &str, path: &Path) -> vmservice::PciePort {
+fn virtio_console_file_port(name: &str, path: &Path, append: bool) -> vmservice::PciePort {
     pcie_root_port(
         name,
         false,
@@ -1326,7 +1347,7 @@ fn virtio_console_file_port(name: &str, path: &Path) -> vmservice::PciePort {
                     kind: Some(vmservice::serial_backend::Kind::File(
                         vmservice::SerialFile {
                             path: path.to_string_lossy().into_owned(),
-                            append: false,
+                            append,
                         },
                     )),
                 }),
@@ -1344,25 +1365,35 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-async fn validate_console_file(driver: &DefaultDriver, path: &Path) -> anyhow::Result<()> {
-    const MARKER: &str = "ttrpc-console-file-marker";
+async fn validate_console_file(
+    driver: &DefaultDriver,
+    path: &Path,
+    marker: &str,
+    preserved: Option<&str>,
+) -> anyhow::Result<()> {
     let mut timer = PolledTimer::new(driver);
     let mut contents = String::new();
 
     for _ in 0..50 {
         contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read console file '{}'", path.display()))?;
-        if contents.contains(MARKER) {
-            anyhow::ensure!(
-                !contents.contains("stale console contents"),
-                "console file was not truncated: {contents:?}"
-            );
+        if contents.contains(marker) {
+            match preserved {
+                Some(preserved) => anyhow::ensure!(
+                    contents.contains(preserved),
+                    "console file did not preserve {preserved:?}: {contents:?}"
+                ),
+                None => anyhow::ensure!(
+                    !contents.contains("stale console contents"),
+                    "console file was not truncated: {contents:?}"
+                ),
+            }
             return Ok(());
         }
         timer.sleep(Duration::from_millis(20)).await;
     }
 
-    anyhow::bail!("console file did not contain {MARKER:?}: {contents:?}")
+    anyhow::bail!("console file did not contain {marker:?}: {contents:?}")
 }
 
 #[cfg(windows)]
