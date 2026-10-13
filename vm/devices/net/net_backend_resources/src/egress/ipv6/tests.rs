@@ -933,22 +933,21 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
             Err(EgressDenied::NeighborDiscoveryDenied)
         );
 
-        // It also resolves the link-local addresses at which the gateway
-        // presents host peers, such as the host's IPv6 loopback, from either
-        // of its addresses, but never its own link-local address.
+        // It resolves the addresses in the subnet at which the gateway presents
+        // host peers, such as the host's IPv6 loopback, from either of its
+        // addresses, but no link-local address.
         let guest_link_local = link_local_address(MacAddress::new(GUEST_MAC));
-        let host_peer = address("fe80::ff:fe00:1:1");
+        let host_peer = address("fd00::a00:ff");
         for source in [GUEST_IPV6, guest_link_local] {
             authorize(&with_ingress, &solicitation(source, host_peer, true)).unwrap();
             assert!(authorize(&without_ingress, &solicitation(source, host_peer, true)).is_err());
         }
-        assert_eq!(
-            authorize(
-                &with_ingress,
-                &solicitation(GUEST_IPV6, guest_link_local, true)
-            ),
-            Err(EgressDenied::NeighborDiscoveryDenied)
-        );
+        for target in [address("fe80::ff:fe00:1:1"), guest_link_local] {
+            assert_eq!(
+                authorize(&with_ingress, &solicitation(GUEST_IPV6, target, true)),
+                Err(EgressDenied::NeighborDiscoveryDenied)
+            );
+        }
 
         // A reply candidate passes the prefilter, and the endpoint admits it
         // only for a flow that it carries.
@@ -1014,8 +1013,9 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
 fn rules_evaluate_ipv6_host_loopback_peers_at_the_gateway() {
     const SYN: u8 = 0x02;
     const SYN_ACK: u8 = 0x12;
-    // The endpoint presents the host's IPv6 loopback at a link-local address.
-    let loopback_peer = address("fe80::ff:fe00:1:1");
+    // The endpoint presents the host's IPv6 loopback at an address in the
+    // guest's subnet.
+    let loopback_peer = address("fd00::a00:ff");
     let routed = |destination: IpAddr| {
         (destination == IpAddr::V6(loopback_peer)).then_some(IpAddr::V6(Ipv6Addr::LOCALHOST))
     };
