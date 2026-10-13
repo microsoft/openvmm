@@ -708,6 +708,14 @@ pub struct GuestMemoryClient {
     mapping_manager: MappingManagerClient,
 }
 
+#[derive(Debug, Error)]
+pub enum AliasedGuestMemoryError {
+    #[error("failed to create guest memory mapper")]
+    Mapper(#[from] VaMapperError),
+    #[error("failed to create aliased guest memory")]
+    MultiRegion(#[from] guestmem::MultiRegionError),
+}
+
 impl GuestMemoryClient {
     /// Retrieves a [`GuestMemory`] object to access guest memory from this
     /// process.
@@ -720,6 +728,23 @@ impl GuestMemoryClient {
             "ram",
             self.mapping_manager.new_mapper(false).await?,
         ))
+    }
+
+    /// Retrieves a [`GuestMemory`] object that aliases the lower GPA range at
+    /// `alias_bit`.
+    pub async fn aliased_guest_memory(
+        &self,
+        debug_name: impl Into<Arc<str>>,
+        alias_bit: u64,
+    ) -> Result<GuestMemory, AliasedGuestMemoryError> {
+        Ok(GuestMemory::new_multi_region(
+            debug_name,
+            alias_bit,
+            vec![
+                Some(self.mapping_manager.new_mapper(false).await?),
+                Some(self.mapping_manager.new_mapper(false).await?),
+            ],
+        )?)
     }
 }
 

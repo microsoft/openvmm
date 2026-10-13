@@ -658,6 +658,7 @@ mod tests {
             arch: MachineArch::Aarch64,
             host_log_levels: None,
             firmware: Firmware::LinuxDirect {
+                isolation: None,
                 kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
                 initrd: ResolvedArtifact::from_local_path("base-initrd".into()),
             },

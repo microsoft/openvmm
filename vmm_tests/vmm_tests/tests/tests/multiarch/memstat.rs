@@ -362,6 +362,7 @@ fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch
             IsolationType::Vbs => "vbs-x64",
             IsolationType::Snp => "amd-snp",
             IsolationType::Tdx => "intel-tdx",
+            IsolationType::Cca => "cca",
         })
         .unwrap_or_else(|| match machine_arch {
             MachineArch::Aarch64 => "aarch64",
