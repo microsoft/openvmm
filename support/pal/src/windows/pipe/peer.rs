@@ -98,3 +98,97 @@ pub(super) fn is_peer_closed(pipe: &File) -> io::Result<bool> {
         FILE_PIPE_DISCONNECTED_STATE | FILE_PIPE_CLOSING_STATE
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::PipeExt;
+    use super::*;
+    use crate::windows::security::LocalSecurityDescriptor;
+    use std::fs::OpenOptions;
+    use test_with_tracing::test;
+    use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+    use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::GetKernelObjectSecurity;
+
+    fn dacl_sddl(file: &File) -> io::Result<String> {
+        // SAFETY: both API calls use buffers of the reported size, and the
+        // returned SDDL string is owned by LocalFree.
+        unsafe {
+            let mut descriptor_size = 0;
+            GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut descriptor_size,
+            );
+            if descriptor_size == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut descriptor = vec![0u8; descriptor_size as usize];
+            if GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr().cast(),
+                descriptor_size,
+                &mut descriptor_size,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut sddl = null_mut();
+            if ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_mut_ptr().cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let sddl_string = U16CStr::from_ptr_str(sddl).to_string_lossy();
+            LocalFree(sddl.cast());
+            Ok(sddl_string)
+        }
+    }
+
+    #[test]
+    fn protected_named_pipe_reports_peer_information() {
+        let descriptor: LocalSecurityDescriptor = "D:P(A;;GA;;;OW)".parse().unwrap();
+        let mut name = [0; 16];
+        getrandom::fill(&mut name).unwrap();
+        let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name));
+
+        let server = new_named_pipe_with_security(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            Disposition::Create,
+            PipeMode::Byte,
+            &descriptor,
+        )
+        .unwrap();
+        assert_eq!(dacl_sddl(&server).unwrap(), "D:P(A;;FA;;;OW)");
+        assert!(is_pipe(&server));
+        assert!(!server.is_pipe_peer_closed().unwrap());
+
+        let client = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        assert_eq!(client_process_id(&server).unwrap(), std::process::id());
+        assert!(is_pipe(&client));
+        assert!(!server.is_pipe_peer_closed().unwrap());
+
+        drop(client);
+        assert!(server.is_pipe_peer_closed().unwrap());
+    }
+}
