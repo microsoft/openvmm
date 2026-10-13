@@ -7,8 +7,10 @@
 //! active. The queue's transmit path assembles each guest frame from guest
 //! memory and drops the frames that the policy denies before they reach the
 //! Consomme stack. A reply candidate that the rules deny passes only when the
-//! stack carries its flow, and the endpoint consumes the guest's listener
-//! announcements when it publishes them to the host's private networks.
+//! stack carries its flow, and the rules evaluate traffic to a virtual address
+//! at which the stack presents a host-local peer where the stack routes it.
+//! The endpoint also consumes the guest's listener announcements when it
+//! publishes them, to the host's private networks or on host loopback alone.
 
 use crate::ClientNoPool;
 use crate::ConsommeEndpoint;
@@ -126,6 +128,7 @@ impl ConsommeQueue {
                                         IngressTransport::Udp => consomme
                                             .carries_udp_flow(candidate.guest, candidate.peer),
                                     },
+                                    &|address| consomme.virtual_address_destination(address),
                                 )
                             })
                         })

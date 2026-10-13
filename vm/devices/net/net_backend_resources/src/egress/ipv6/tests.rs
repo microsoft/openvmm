@@ -962,10 +962,15 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
             assert!(authorize(&without_ingress, &frame).is_err());
             authorize(&with_ingress, &frame).unwrap();
             let mut seen = Vec::new();
-            let denied = with_ingress.authorize_frame_with_flows(&frame, frame.len(), &mut |c| {
-                seen.push(*c);
-                false
-            });
+            let denied = with_ingress.authorize_frame_with_flows(
+                &frame,
+                frame.len(),
+                &mut |c| {
+                    seen.push(*c);
+                    false
+                },
+                &|_| None,
+            );
             assert!(denied.is_err());
             assert_eq!(
                 seen,
@@ -976,7 +981,7 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
                 }]
             );
             with_ingress
-                .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true)
+                .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true, &|_| None)
                 .unwrap();
         }
 
@@ -985,7 +990,7 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
             assert!(authorize(&with_ingress, &frame).is_err());
             assert!(
                 with_ingress
-                    .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true)
+                    .authorize_frame_with_flows(&frame, frame.len(), &mut |_| true, &|_| None)
                     .is_err()
             );
         }
@@ -996,8 +1001,44 @@ fn ingress_admits_ipv6_replies_in_every_mode() {
         .with_ingress(EgressAction::Allow);
     let frame = with_tcp_flags(tcp(address("2001:db8::7"), 443), SYN);
     allowed
-        .authorize_frame_with_flows(&frame, frame.len(), &mut |_| {
-            panic!("allowed traffic is no reply candidate")
-        })
+        .authorize_frame_with_flows(
+            &frame,
+            frame.len(),
+            &mut |_| panic!("allowed traffic is no reply candidate"),
+            &|_| None,
+        )
         .unwrap();
+}
+
+#[test]
+fn rules_evaluate_ipv6_host_loopback_peers_at_the_gateway() {
+    const SYN: u8 = 0x02;
+    const SYN_ACK: u8 = 0x12;
+    // The endpoint presents the host's IPv6 loopback at a link-local address.
+    let loopback_peer = address("fe80::ff:fe00:1:1");
+    let routed = |destination: IpAddr| {
+        (destination == IpAddr::V6(loopback_peer)).then_some(IpAddr::V6(Ipv6Addr::LOCALHOST))
+    };
+    let policy = policy(EgressAction::Allow, &[], &["fd00::a00:1/128:tcp:2375"])
+        .with_host_loopback_ingress(EgressAction::Allow);
+    let authorize_with = |frame: &[u8], carried: bool| {
+        policy.authorize_frame_with_flows(frame, frame.len(), &mut |_| carried, &routed)
+    };
+
+    for destination in [GATEWAY_IPV6, loopback_peer] {
+        assert_eq!(
+            authorize_with(&with_tcp_flags(tcp(destination, 2375), SYN), true),
+            Err(EgressDenied::DestinationDenied)
+        );
+        authorize_with(&with_tcp_flags(tcp(destination, 8080), SYN), false).unwrap();
+    }
+    // The prefilter leaves the peer's address to the endpoint, which still
+    // admits replies for the flows that it carries.
+    authorize(&policy, &with_tcp_flags(tcp(loopback_peer, 2375), SYN)).unwrap();
+    let reply = with_tcp_flags(tcp(loopback_peer, 2375), SYN_ACK);
+    authorize_with(&reply, true).unwrap();
+    assert_eq!(
+        authorize_with(&reply, false),
+        Err(EgressDenied::DestinationDenied)
+    );
 }

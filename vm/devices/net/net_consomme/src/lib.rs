@@ -120,7 +120,7 @@ struct EndpointState {
     port_recv: Option<mesh::Receiver<ConsommeRequest>>,
     port_forwards: Vec<PortForwardConfig>,
     egress_policy: Option<EgressPolicy>,
-    publisher: Option<ingress::PrivateNetworkPublisher>,
+    publisher: Option<ingress::ListenerPublisher>,
 }
 
 impl ConsommeEndpoint {
@@ -196,14 +196,22 @@ impl ConsommeEndpoint {
         ingress: PrivateNetworkIngress,
         guest_has_ipv6: bool,
     ) -> Self {
+        self.with_publisher(ingress::ListenerPublisher::new(ingress, guest_has_ipv6))
+    }
+
+    /// Publishes the ports that the guest announces on host loopback alone,
+    /// for the host itself, in IPv6 too when `guest_has_ipv6`. See
+    /// [`net_backend_resources::ingress`].
+    pub fn with_host_loopback_ingress(self, guest_has_ipv6: bool) -> Self {
+        self.with_publisher(ingress::ListenerPublisher::host_loopback(guest_has_ipv6))
+    }
+
+    fn with_publisher(self, publisher: ingress::ListenerPublisher) -> Self {
         self.endpoint_state
             .lock()
             .as_mut()
             .expect("a new endpoint has no active queue")
-            .publisher = Some(ingress::PrivateNetworkPublisher::new(
-            ingress,
-            guest_has_ipv6,
-        ));
+            .publisher = Some(publisher);
         self
     }
 }

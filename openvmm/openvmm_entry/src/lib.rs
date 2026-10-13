@@ -2420,6 +2420,7 @@ fn parse_endpoint(
                 map_gateway_to_host_loopback: None,
                 gateway_loopback_proxy_port: None,
                 private_network_ingress: None,
+                host_loopback_ingress: false,
             }
             .into_resource()
         }

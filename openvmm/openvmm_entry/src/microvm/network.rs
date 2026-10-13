@@ -123,6 +123,23 @@ pub(super) fn effective_microvm_network(
     }))
 }
 
+/// Returns the ingress for which the guest announces its listeners under
+/// `policy`: private-network ingress, whose listeners also admit the host with
+/// explicit host-loopback access, or else host-loopback ingress alone.
+pub(super) fn microvm_ingress(
+    policy: &net_backend_resources::egress::EgressPolicy,
+) -> Option<openvmm_defs::microvm::MicrovmIngress> {
+    use net_backend_resources::egress::EgressAction;
+    use openvmm_defs::microvm::MicrovmIngress;
+    if policy.ingress_action() == EgressAction::Allow {
+        Some(MicrovmIngress::PrivateNetworks)
+    } else if policy.host_loopback_ingress_action() == EgressAction::Allow {
+        Some(MicrovmIngress::HostLoopback)
+    } else {
+        None
+    }
+}
+
 pub(super) fn microvm_network_endpoint(
     network: &openvmm_defs::microvm::MicrovmNetworkConfig,
     policy: &net_backend_resources::egress::EgressPolicy,
@@ -169,6 +186,8 @@ pub(super) fn microvm_network_endpoint(
         map_gateway_to_host_loopback: Some(allow_host_loopback),
         gateway_loopback_proxy_port: policy.proxy_endpoint().map(|endpoint| endpoint.port()),
         private_network_ingress,
+        host_loopback_ingress: microvm_ingress(policy)
+            == Some(openvmm_defs::microvm::MicrovmIngress::HostLoopback),
     }
     .into_resource())
 }
@@ -203,7 +222,7 @@ pub(crate) mod tests {
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
-            Some((network, irq, policy.gateway_dns_server(), false)),
+            Some((network, irq, policy.gateway_dns_server(), None)),
             false,
             &[],
             false,
@@ -393,5 +412,46 @@ pub(crate) mod tests {
         ])
         .unwrap();
         assert!(effective_microvm_network(&options, Some(&contract)).is_err());
+    }
+
+    #[test]
+    fn microvm_ingress_follows_the_ingress_and_host_loopback_actions() {
+        use openvmm_defs::microvm::MicrovmIngress;
+
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        for (arguments, expected) in [
+            (
+                &["--network-ingress", "allow", "--host-loopback", "allow"][..],
+                Some(MicrovmIngress::PrivateNetworks),
+            ),
+            (
+                &["--network-ingress", "allow"][..],
+                Some(MicrovmIngress::PrivateNetworks),
+            ),
+            (
+                &["--host-loopback", "allow", "--network-egress", "deny"][..],
+                Some(MicrovmIngress::HostLoopback),
+            ),
+            (&["--host-loopback", "deny"][..], None),
+            (&[][..], None),
+        ] {
+            let options = Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--network-profile",
+                    "portable",
+                    "--net",
+                    "10.0.0.2/24",
+                ]
+                .into_iter()
+                .chain(arguments.iter().copied()),
+            )
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+            let policy = options.microvm_egress_policy(&network).unwrap();
+            assert_eq!(microvm_ingress(&policy), expected, "{arguments:?}");
+        }
     }
 }
