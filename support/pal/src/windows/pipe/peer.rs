@@ -5,7 +5,6 @@
 //! explicit security descriptor, identifying the client process, checking
 //! whether a file is a pipe, and detecting a closed peer.
 
-use super::Disposition;
 use super::PipeMode;
 use super::create_named_pipe;
 use crate::windows::chk_status;
@@ -18,7 +17,6 @@ use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::null_mut;
 use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
-use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
 use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_CLOSING_STATE;
 use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_DISCONNECTED_STATE;
 use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_LOCAL_INFORMATION;
@@ -28,10 +26,14 @@ use windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE;
 use windows_sys::Win32::Storage::FileSystem::GetFileType;
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 
+/// Creates a new named-pipe path with an explicit security descriptor.
+///
+/// Windows only applies a named pipe's security descriptor when its path is
+/// first created, so this does not support opening another instance of an
+/// existing pipe.
 pub fn new_named_pipe_with_security(
     path: impl AsRef<Path>,
     access: u32,
-    disposition: Disposition,
     mode: PipeMode,
     security_descriptor: &SecurityDescriptor,
 ) -> io::Result<File> {
@@ -39,10 +41,7 @@ pub fn new_named_pipe_with_security(
         null_mut(),
         path.as_ref(),
         access,
-        match disposition {
-            Disposition::Create => FILE_CREATE,
-            Disposition::Open => FILE_OPEN,
-        },
+        FILE_CREATE,
         true,
         mode == PipeMode::Message,
         Some(security_descriptor),
@@ -170,7 +169,6 @@ mod tests {
         let server = new_named_pipe_with_security(
             &path,
             GENERIC_READ | GENERIC_WRITE,
-            Disposition::Create,
             PipeMode::Byte,
             &descriptor,
         )
