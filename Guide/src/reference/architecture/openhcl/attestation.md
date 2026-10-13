@@ -107,8 +107,8 @@ the wire representation and normalization rules.
    claims. The next boot reads the persisted hash for its request. A response
    arriving after report creation cannot retroactively bind that report.
 5. When hardware sealing succeeds, the new protector uses V4 if a context
-   hash is present, or V3 if it is absent. A successful V2 response or V3
-   response that omits the hash can therefore produce a V3 protector when
+   hash is present, or V3 if it is absent. A successful legacy response or
+   extended response that omits the hash can produce a V3 protector when
    no cached hash is required. An all-zero 32-byte hash is a present value,
    not an absence sentinel. Successful SKR does not require a hardware
    backup to be available.

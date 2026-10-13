@@ -242,9 +242,9 @@ mod tests {
     }
 
     #[test]
-    fn v3_and_v1_match_v2_wrapped_key() {
+    fn extended_and_v1_match_v2_wrapped_key() {
+        use crate::igvm_attest::tests::extended_response;
         use crate::igvm_attest::tests::frame_response;
-        use crate::igvm_attest::tests::v3_response;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
         let legacy = mock_response();
@@ -253,7 +253,7 @@ mod tests {
             std::str::from_utf8(&legacy[size_of::<IgvmAttestWrappedKeyResponseHeader>()..])
                 .unwrap();
         for hash in [None, Some([42; 32])] {
-            let response = v3_response(
+            let response = extended_response(
                 IgvmAttestResponseRequestType::WrappedKey,
                 payload,
                 hash,
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(parsed.wrapped_key, expected.wrapped_key);
         assert_eq!(parsed.key_reference, expected.key_reference);
 
-        let wrong_type = v3_response(
+        let wrong_type = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             payload,
             None,
@@ -288,7 +288,7 @@ mod tests {
             "schema_version": 1, "request_type": "wrapped_key", "payload": payload, "extensions": {}
         })
         .to_string();
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::WrappedKey,
             &nested,
             None,
@@ -298,8 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_ignores_all_wrapped_key_extension_values() {
-        use crate::igvm_attest::tests::frame_response;
+    fn extended_ignores_all_wrapped_key_extension_values() {
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
         let legacy = mock_response();
@@ -327,8 +326,7 @@ mod tests {
             let envelope = format!(
                 r#"{{"schema_version":1,"request_type":"wrapped_key","payload":{payload},"extensions":{extensions},"future_field":{{"ignored":true}}}}"#
             );
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = crate::igvm_attest::tests::frame_extended_response(
                 envelope.as_bytes(),
                 IgvmErrorInfo::default(),
             );
@@ -340,9 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_rejects_nonobject_extensions_and_invalid_envelopes() {
-        use crate::igvm_attest::tests::frame_response;
-
+    fn extended_rejects_nonobject_extensions_and_invalid_envelopes() {
         for extensions in [
             "null",
             "42",
@@ -358,8 +354,7 @@ mod tests {
             let envelope = format!(
                 r#"{{"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{extensions}}}"#
             );
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = crate::igvm_attest::tests::frame_extended_response(
                 envelope.as_bytes(),
                 IgvmErrorInfo::default(),
             );
@@ -387,8 +382,7 @@ mod tests {
             r#"[1,"wrapped_key","x",{}]"#,
             r#"{"schema_version":1,"request_type":"wrapped_key","payload":"x","extensions":{}} trailing"#,
         ] {
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = crate::igvm_attest::tests::frame_extended_response(
                 invalid.as_bytes(),
                 IgvmErrorInfo::default(),
             );
@@ -409,8 +403,7 @@ mod tests {
                 "payload": "x",
                 "extensions": {}
             });
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = crate::igvm_attest::tests::frame_extended_response(
                 &serde_json::to_vec(&envelope).unwrap(),
                 IgvmErrorInfo::default(),
             );
@@ -430,7 +423,6 @@ mod tests {
         for version in [
             IgvmAttestResponseVersion::VERSION_1,
             IgvmAttestResponseVersion::VERSION_2,
-            IgvmAttestResponseVersion::VERSION_3,
         ] {
             let mut response = frame_response(version, b"", IgvmErrorInfo::default());
             response[..4].copy_from_slice(&0u32.to_le_bytes());
@@ -441,8 +433,7 @@ mod tests {
                 Err(WrappedKeyError::ParseHeader(_))
             ));
         }
-        let response = frame_response(
-            IgvmAttestResponseVersion::VERSION_3,
+        let response = crate::igvm_attest::tests::frame_extended_response(
             &[0xff],
             IgvmErrorInfo {
                 error_code: 1103,

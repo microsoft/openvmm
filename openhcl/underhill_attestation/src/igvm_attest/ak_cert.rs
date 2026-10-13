@@ -89,6 +89,8 @@ pub enum AkCertError {
     ParseHeader(#[source] CommonError),
     #[error("invalid response header version: {0}")]
     InvalidResponseVersion(u32),
+    #[error("extended payload is not supported for AK certificate responses")]
+    ExtendedPayloadUnsupported,
 }
 
 /// Parse an `AK_CERT_REQUEST` response, including V2 renewal decisions.
@@ -96,8 +98,21 @@ pub fn parse_response(response: &[u8]) -> Result<AkCertResponse, AkCertError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
+    use zerocopy::FromBytes;
 
     let header = parse_response_header(response).map_err(AkCertError::ParseHeader)?;
+    if header.version == IgvmAttestResponseVersion::VERSION_2 {
+        let (header, _) =
+            IgvmAttestAkCertResponseHeader::read_from_prefix(response).map_err(|_| {
+                AkCertError::SizeTooSmall {
+                    size: response.len(),
+                    minimum_size: size_of::<IgvmAttestAkCertResponseHeader>(),
+                }
+            })?;
+        if header.error_info.igvm_signal.extended_payload() {
+            return Err(AkCertError::ExtendedPayloadUnsupported);
+        }
+    }
 
     // Extract payload as per header version
     let header_size = match header.version {
@@ -321,13 +336,21 @@ mod tests {
             assert_eq!(parse_response(&response).unwrap(), [0xff, 0x30]);
         }
         let response = frame_response(
-            IgvmAttestResponseVersion::VERSION_3,
+            IgvmAttestResponseVersion(3),
             b"{}",
             IgvmErrorInfo::default(),
         );
         assert!(matches!(
             parse_response(&response),
-            Err(AkCertError::InvalidResponseVersion(3))
+            Err(AkCertError::ParseHeader(
+                CommonError::InvalidResponseHeaderVersion { .. }
+            ))
+        ));
+        let response =
+            crate::igvm_attest::tests::frame_extended_response(b"{}", IgvmErrorInfo::default());
+        assert!(matches!(
+            parse_response(&response),
+            Err(AkCertError::ExtendedPayloadUnsupported)
         ));
     }
 

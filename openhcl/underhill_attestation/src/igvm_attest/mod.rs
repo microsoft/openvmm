@@ -73,7 +73,7 @@ pub enum Error {
     },
     #[error("response payload is not UTF-8")]
     InvalidResponseUtf8(#[source] std::str::Utf8Error),
-    #[error("invalid version 3 response envelope")]
+    #[error("invalid extended response envelope")]
     InvalidResponseEnvelope(#[source] serde_json::Error),
     #[error("unsupported response envelope schema version {0}")]
     InvalidResponseSchemaVersion(u32),
@@ -265,15 +265,6 @@ impl IgvmAttestRequestHelper {
         version: IgvmAttestRequestVersion,
         attestation_report: &[u8],
     ) -> Result<Vec<u8>, Error> {
-        // AK certificate provisioning has no V3 protocol. Keep legacy V1
-        // callers unchanged and pin callers using the current V3 default to V2.
-        let version = if self.request_type == IgvmAttestRequestType::AK_CERT_REQUEST
-            && version == IgvmAttestRequestVersion::VERSION_3
-        {
-            IgvmAttestRequestVersion::VERSION_2
-        } else {
-            version
-        };
         create_request(
             version,
             self.request_type,
@@ -304,9 +295,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
     }
     if !matches!(
         header.version,
-        IgvmAttestResponseVersion::VERSION_1
-            | IgvmAttestResponseVersion::VERSION_2
-            | IgvmAttestResponseVersion::VERSION_3
+        IgvmAttestResponseVersion::VERSION_1 | IgvmAttestResponseVersion::VERSION_2
     ) {
         Err(Error::InvalidResponseHeaderVersion {
             version: header.version,
@@ -370,7 +359,7 @@ fn response_header_size(version: IgvmAttestResponseVersion) -> usize {
 }
 
 /// Original service payload and metadata after validating the binary framing
-/// and, for V3 only, exactly one JSON envelope.
+/// and, when the extended-payload signal is set, exactly one JSON envelope.
 pub(crate) struct ParsedResponsePayload<'a, E> {
     pub header: IgvmAttestCommonResponseHeader,
     pub payload: Cow<'a, str>,
@@ -378,7 +367,7 @@ pub(crate) struct ParsedResponsePayload<'a, E> {
 }
 
 /// Validate size limits before allocating or parsing JSON. Legacy responses
-/// borrow their UTF-8 payload; V3 responses own the unescaped service payload.
+/// borrow their UTF-8 payload; extended responses own the unescaped payload.
 /// Header errors deliberately remain `Error::Attestation` for caller retry and
 /// hardware-unsealing decisions, even when no envelope accompanies an error.
 pub(crate) fn parse_response_payload<E: DeserializeOwned + Default>(
@@ -396,7 +385,17 @@ pub(crate) fn parse_response_payload<E: DeserializeOwned + Default>(
     let header = parse_response_header(response)?;
     let payload = &response[response_header_size(header.version)..header.data_size as usize];
     let payload = std::str::from_utf8(payload).map_err(Error::InvalidResponseUtf8)?;
-    if header.version != IgvmAttestResponseVersion::VERSION_3 {
+    let extended_payload = header.version == IgvmAttestResponseVersion::VERSION_2
+        && IgvmErrorInfo::read_from_prefix(
+            &response[size_of::<IgvmAttestCommonResponseHeader>()..header.data_size as usize],
+        )
+        .map_err(|_| Error::ResponseHeaderInvalidFormat {
+            response_size: header.data_size as usize,
+        })?
+        .0
+        .igvm_signal
+        .extended_payload();
+    if !extended_payload {
         return Ok(ParsedResponsePayload {
             header,
             payload: Cow::Borrowed(payload),
@@ -442,12 +441,8 @@ fn create_request(
 
     if !matches!(
         version,
-        IgvmAttestRequestVersion::VERSION_1
-            | IgvmAttestRequestVersion::VERSION_2
-            | IgvmAttestRequestVersion::VERSION_3
-    ) || (request_type == IgvmAttestRequestType::AK_CERT_REQUEST
-        && version == IgvmAttestRequestVersion::VERSION_3)
-    {
+        IgvmAttestRequestVersion::VERSION_1 | IgvmAttestRequestVersion::VERSION_2
+    ) {
         return Err(Error::InvalidRequestVersion {
             version,
             request_type,
@@ -491,6 +486,11 @@ fn create_request(
             .with_retry(true)
             .with_skip_hw_unsealing(true)
             .with_use_rsa_aes_key_wrap_384(true)
+            .with_extended_payload(matches!(
+                request_type,
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST
+                    | IgvmAttestRequestType::WRAPPED_KEY_REQUEST
+            ))
             // Signal the IGVM Agent to fetch the CoRIM launch endorsement.
             // TDX only for now.
             .with_corim_endorsement(matches!(report_type, &ReportType::Tdx));
@@ -698,6 +698,7 @@ pub(crate) mod tests {
 
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseExtensions;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseExtensions;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
     use openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash;
 
     const VM_CONFIG_WITHOUT_CONTEXT_HASH: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"ipmi-enabled":true,"secure-boot":false,"tpm-enabled":false,"tpm-version":"1.38","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
@@ -728,7 +729,15 @@ pub(crate) mod tests {
         [header.as_slice(), payload].concat()
     }
 
-    pub(crate) fn v3_response(
+    pub(super) fn frame_extended_response(
+        payload: &[u8],
+        mut error_info: IgvmErrorInfo,
+    ) -> Vec<u8> {
+        error_info.igvm_signal.set_extended_payload(true);
+        frame_response(IgvmAttestResponseVersion::VERSION_2, payload, error_info)
+    }
+
+    pub(crate) fn extended_response(
         request_type: IgvmAttestResponseRequestType,
         payload: &str,
         context_hash: Option<[u8; 32]>,
@@ -747,11 +756,7 @@ pub(crate) mod tests {
                     .map(encode_key_release_context_hash),
             },
         };
-        frame_response(
-            IgvmAttestResponseVersion::VERSION_3,
-            &serde_json::to_vec(&envelope).unwrap(),
-            error_info,
-        )
+        frame_extended_response(&serde_json::to_vec(&envelope).unwrap(), error_info)
     }
 
     fn parse_key_payload(
@@ -762,6 +767,46 @@ pub(crate) mod tests {
             IgvmAttestResponseRequestType::KeyRelease,
             KEY_RELEASE_RESPONSE_BUFFER_SIZE,
         )
+    }
+
+    #[test]
+    fn extended_payload_bit_positions_and_response_discriminator() {
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_REQUEST_EXTENDED_PAYLOAD_BIT;
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT;
+
+        assert_eq!(IGVM_REQUEST_EXTENDED_PAYLOAD_BIT, 1 << 5);
+        assert_eq!(IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT, 1 << 6);
+        assert_eq!(
+            u32::from(IgvmCapabilityBitMap::new().with_extended_payload(true)),
+            IGVM_REQUEST_EXTENDED_PAYLOAD_BIT
+        );
+        assert_eq!(
+            u32::from(IgvmSignal::new().with_extended_payload(true)),
+            IGVM_SIGNAL_EXTENDED_PAYLOAD_BIT
+        );
+        let envelope = br#"{"schema_version":1,"request_type":"key_release","payload":"inner","extensions":{}}"#;
+        for flags in [0, 1 << 4, 1 << 5, (1 << 4) | (1 << 5)] {
+            let response = frame_response(
+                IgvmAttestResponseVersion::VERSION_2,
+                envelope,
+                IgvmErrorInfo {
+                    igvm_signal: IgvmSignal::from(flags),
+                    ..Default::default()
+                },
+            );
+            let parsed = parse_key_payload(&response).unwrap();
+            assert!(matches!(parsed.payload, Cow::Borrowed(_)));
+            assert_eq!(parsed.payload.as_bytes(), envelope);
+        }
+        let response = frame_extended_response(envelope, IgvmErrorInfo::default());
+        assert_eq!(parse_key_payload(&response).unwrap().payload, "inner");
+        for legacy in [b"".as_slice(), br#"{"ciphertext":"legacy"}"#, b"a.b.c"] {
+            let response = frame_extended_response(legacy, IgvmErrorInfo::default());
+            assert!(matches!(
+                parse_key_payload(&response),
+                Err(Error::InvalidResponseEnvelope(_))
+            ));
+        }
     }
 
     #[test]
@@ -823,7 +868,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn v3_accepts_context_hash_hex_casing() {
+    fn extended_accepts_context_hash_hex_casing() {
         let payload = serde_json::to_string(
             &openhcl_attestation_protocol::igvm_attest::akv::AkvKeyReleaseKeyBlob {
                 ciphertext: vec![42; 520],
@@ -839,8 +884,7 @@ pub(crate) mod tests {
                 "schema_version": 1, "request_type": "key_release", "payload": payload,
                 "extensions": {"key_release_context_hash": hash}
             });
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = frame_extended_response(
                 &serde_json::to_vec(&envelope).unwrap(),
                 IgvmErrorInfo::default(),
             );
@@ -894,13 +938,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn v3_payload_roundtrip_and_legacy_borrowing() {
+    fn extended_payload_roundtrip_and_legacy_borrowing() {
         for request_type in [
             IgvmAttestResponseRequestType::KeyRelease,
             IgvmAttestResponseRequestType::WrappedKey,
         ] {
             for hash in [None, Some([42; 32])] {
-                let response = v3_response(
+                let response = extended_response(
                     request_type,
                     "{\"original\":\"payload\"}",
                     hash,
@@ -1108,7 +1152,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn v3_rejects_invalid_envelopes_without_downgrade() {
+    fn extended_rejects_invalid_envelopes_without_downgrade() {
         // Use raw JSON so duplicate fields are preserved in the test input.
         for invalid in [
             r#"{"schema_version":2,"request_type":"key_release","payload":"x","extensions":{}}"#,
@@ -1136,14 +1180,10 @@ pub(crate) mod tests {
             r#"{"schema_version":1,"payload":"x","extensions":{}}"#,
             r#"{"schema_version":1,"request_type":"key_release","extensions":{}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"\ud800","extensions":{}}"#,
-            r#"{"ciphertext":"legacy JSON cannot downgrade V3"}"#,
+            r#"{"ciphertext":"legacy JSON cannot downgrade an extended response"}"#,
             "a.b.c",
         ] {
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
-                invalid.as_bytes(),
-                IgvmErrorInfo::default(),
-            );
+            let response = frame_extended_response(invalid.as_bytes(), IgvmErrorInfo::default());
             assert!(parse_key_payload(&response).is_err(), "accepted {invalid}");
             assert!(
                 key_release::parse_response(&response, 256).is_err(),
@@ -1155,11 +1195,7 @@ pub(crate) mod tests {
         let duplicate = format!(
             r#"{{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{{"key_release_context_hash":"{hash}","key_release_context_hash":"{hash}"}}}}"#
         );
-        let response = frame_response(
-            IgvmAttestResponseVersion::VERSION_3,
-            duplicate.as_bytes(),
-            IgvmErrorInfo::default(),
-        );
+        let response = frame_extended_response(duplicate.as_bytes(), IgvmErrorInfo::default());
         assert!(matches!(
             parse_key_payload(&response),
             Err(Error::InvalidResponseEnvelope(_))
@@ -1167,14 +1203,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn v3_rejects_invalid_context_hashes() {
+    fn extended_rejects_invalid_context_hashes() {
         for hash in invalid_context_hashes() {
             let envelope = serde_json::json!({
                 "schema_version": 1, "request_type": "key_release", "payload": "x",
                 "extensions": {"key_release_context_hash": hash}
             });
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
+            let response = frame_extended_response(
                 &serde_json::to_vec(&envelope).unwrap(),
                 IgvmErrorInfo::default(),
             );
@@ -1189,12 +1224,19 @@ pub(crate) mod tests {
 
     #[test]
     fn response_bounds_and_utf8() {
-        for version in [
-            IgvmAttestResponseVersion::VERSION_1,
-            IgvmAttestResponseVersion::VERSION_2,
-            IgvmAttestResponseVersion::VERSION_3,
+        for (version, extended_payload) in [
+            (IgvmAttestResponseVersion::VERSION_1, false),
+            (IgvmAttestResponseVersion::VERSION_2, false),
+            (IgvmAttestResponseVersion::VERSION_2, true),
         ] {
-            let response = frame_response(version, &[0xff], IgvmErrorInfo::default());
+            let response = frame_response(
+                version,
+                &[0xff],
+                IgvmErrorInfo {
+                    igvm_signal: IgvmSignal::new().with_extended_payload(extended_payload),
+                    ..Default::default()
+                },
+            );
             assert!(matches!(
                 parse_key_payload(&response),
                 Err(Error::InvalidResponseUtf8(_))
@@ -1209,14 +1251,21 @@ pub(crate) mod tests {
             }
         }
         let envelope = br#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"future_extension":{"opaque":[1,2,3]}}}"#;
-        for version in [
-            IgvmAttestResponseVersion::VERSION_1,
-            IgvmAttestResponseVersion::VERSION_2,
-            IgvmAttestResponseVersion::VERSION_3,
+        for (version, extended_payload) in [
+            (IgvmAttestResponseVersion::VERSION_1, false),
+            (IgvmAttestResponseVersion::VERSION_2, false),
+            (IgvmAttestResponseVersion::VERSION_2, true),
         ] {
             let mut payload = envelope.to_vec();
             payload.resize(65536 - response_header_size(version), b' ');
-            let mut response = frame_response(version, &payload, IgvmErrorInfo::default());
+            let mut response = frame_response(
+                version,
+                &payload,
+                IgvmErrorInfo {
+                    igvm_signal: IgvmSignal::new().with_extended_payload(extended_payload),
+                    ..Default::default()
+                },
+            );
             assert_eq!(response.len(), 65536);
             assert!(parse_key_payload(&response).is_ok());
             assert!(matches!(
@@ -1237,7 +1286,7 @@ pub(crate) mod tests {
             assert!(parse_key_payload(&response).is_err());
         }
         // A valid shorter response may be returned in a padded transport buffer.
-        let mut response = v3_response(
+        let mut response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             "x",
             None,
@@ -1245,7 +1294,7 @@ pub(crate) mod tests {
         );
         response.extend_from_slice(&[0; 16]);
         assert_eq!(parse_key_payload(&response).unwrap().payload, "x");
-        for version in [0, 4, u32::MAX] {
+        for version in [0, 3, 4, u32::MAX] {
             let response = frame_response(
                 IgvmAttestResponseVersion(version),
                 b"",
@@ -1259,21 +1308,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn v3_request_layout_ak_pin_and_v2_response() {
+    fn extended_request_layout_ak_pin_and_v2_response() {
         use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
 
         assert_eq!(
             IGVM_ATTEST_REQUEST_CURRENT_VERSION,
-            IgvmAttestRequestVersion::VERSION_3
+            IgvmAttestRequestVersion::VERSION_2
         );
         assert_eq!(
             IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-            IgvmAttestResponseVersion::VERSION_3
+            IgvmAttestResponseVersion::VERSION_2
         );
         assert_eq!(
-            response_header_size(IgvmAttestResponseVersion::VERSION_3),
+            response_header_size(IgvmAttestResponseVersion::VERSION_2),
             32
         );
         for request_type in [
@@ -1296,11 +1345,7 @@ pub(crate) mod tests {
             assert_eq!(base.header.report_size as usize, request.len());
             assert_eq!(
                 base.request_data.version,
-                if request_type == IgvmAttestRequestType::AK_CERT_REQUEST {
-                    IgvmAttestRequestVersion::VERSION_2
-                } else {
-                    IgvmAttestRequestVersion::VERSION_3
-                }
+                IgvmAttestRequestVersion::VERSION_2
             );
             let (extension, claims) =
                 IgvmAttestRequestDataExt::read_from_prefix(remaining).unwrap();
@@ -1308,8 +1353,12 @@ pub(crate) mod tests {
             assert!(extension.capability_bitmap.retry());
             assert!(extension.capability_bitmap.skip_hw_unsealing());
             assert!(extension.capability_bitmap.use_rsa_aes_key_wrap_384());
+            assert_eq!(
+                extension.capability_bitmap.extended_payload(),
+                request_type != IgvmAttestRequestType::AK_CERT_REQUEST
+            );
             assert_eq!(claims, b"{}");
-            for version in [0, 4, u32::MAX] {
+            for version in [0, 3, 4, u32::MAX] {
                 assert!(matches!(
                     helper.create_request(IgvmAttestRequestVersion(version), &[]),
                     Err(Error::InvalidRequestVersion { .. })
@@ -1318,7 +1367,7 @@ pub(crate) mod tests {
         }
         assert!(matches!(
             create_request(
-                IgvmAttestRequestVersion::VERSION_3,
+                IgvmAttestRequestVersion(3),
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 &[],
                 &[],
@@ -1327,8 +1376,8 @@ pub(crate) mod tests {
             ),
             Err(Error::InvalidRequestVersion { .. })
         ));
-        // The response parser does not assume the request's V3 version: old
-        // agents may continue responding with V2 without any context metadata.
+        // The response signal selects the format: old agents may respond
+        // without an envelope or any context metadata.
         let response = frame_response(
             IgvmAttestResponseVersion::VERSION_2,
             b"original service payload",
