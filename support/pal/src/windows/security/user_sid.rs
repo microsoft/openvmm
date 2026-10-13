@@ -63,7 +63,9 @@ fn process_user_sid_from_handle(process: HANDLE) -> std::io::Result<MaximumSid> 
         if required < size_of::<TOKEN_USER>() as u32 {
             return Err(std::io::Error::last_os_error());
         }
-        let mut buffer = vec![0u8; required as usize];
+        // TOKEN_USER contains a pointer, so its backing storage must have
+        // pointer alignment before it is dereferenced below.
+        let mut buffer = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
         if GetTokenInformation(
             token.as_raw_handle(),
             TokenUser,
