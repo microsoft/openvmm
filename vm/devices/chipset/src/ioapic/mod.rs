@@ -499,8 +499,8 @@ mod save_restore {
         use super::*;
         use chipset_device::interrupt::LineInterruptTarget;
         use chipset_resources::ioapic::IoApicRouting;
+        use parking_lot::Mutex;
         use std::sync::Arc;
-        use std::sync::Mutex;
         use test_with_tracing::test;
 
         const ENTRY_COUNT: u8 = 2;
@@ -514,10 +514,7 @@ mod save_restore {
 
         impl IoApicRouting for RecordingRouting {
             fn assert(&self, irq: u8) {
-                self.assertions
-                    .lock()
-                    .expect("recording routing lock is not poisoned")
-                    .push(irq);
+                self.assertions.lock().push(irq);
             }
 
             fn set_route(&self, _irq: u8, _request: Option<(u64, u32)>) {}
@@ -550,13 +547,7 @@ mod save_restore {
             restored.restore(state).expect("restore succeeds");
             set_level_entry(&mut restored, false);
 
-            assert_eq!(
-                *routing
-                    .assertions
-                    .lock()
-                    .expect("recording routing lock is not poisoned"),
-                [IRQ]
-            );
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
         }
 
         #[test]
@@ -571,13 +562,7 @@ mod save_restore {
             restored.restore(state).expect("restore succeeds");
             set_level_entry(&mut restored, false);
 
-            assert!(
-                routing
-                    .assertions
-                    .lock()
-                    .expect("recording routing lock is not poisoned")
-                    .is_empty()
-            );
+            assert!(routing.assertions.lock().is_empty());
         }
 
         #[test]
