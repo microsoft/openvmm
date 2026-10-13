@@ -4288,10 +4288,8 @@ impl LoadedVm {
     ///
     /// TODO: virtio & vmbus unsupported.
     async fn save(&mut self) -> anyhow::Result<SavedState> {
-        Ok(SavedState {
-            units: self.state_units.save().await?,
-            inventory: self.state_units.inventory(),
-        })
+        let (units, inventory) = self.state_units.save_with_inventory().await?;
+        Ok(SavedState { units, inventory })
     }
 
     /// Restore state on the VM.
