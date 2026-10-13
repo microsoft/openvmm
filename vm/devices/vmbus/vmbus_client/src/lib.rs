@@ -694,6 +694,12 @@ impl ClientTask {
             version.feature_flags.guest_specified_signal_parameters()
                 || version.feature_flags.channel_interrupt_redirection()
         });
+        if request.incoming_event.is_some() && !supports_interrupt_redirection {
+            rpc.fail(anyhow::anyhow!(
+                "host does not support redirecting interrupts"
+            ));
+            return;
+        }
         if request.use_vtl2_connection_id && !supports_interrupt_redirection {
             rpc.fail(anyhow::anyhow!(
                 "host does not support specifying the connection ID"
@@ -1650,6 +1656,16 @@ mod tests {
             client: &mut VmbusClient,
             send_offers: impl FnOnce(&mut Self),
         ) -> ConnectResult {
+            self.connect_with_channels_and_features(client, SUPPORTED_FEATURE_FLAGS, send_offers)
+                .await
+        }
+
+        async fn connect_with_channels_and_features(
+            &mut self,
+            client: &mut VmbusClient,
+            feature_flags: FeatureFlags,
+            send_offers: impl FnOnce(&mut Self),
+        ) -> ConnectResult {
             let client_connect = client.connect(0, None, Guid::ZERO);
 
             let server_connect = async {
@@ -1664,7 +1680,7 @@ mod tests {
                             padding: 0,
                             selected_version_or_connection_id: 0,
                         },
-                        supported_features: SUPPORTED_FEATURE_FLAGS.into(),
+                        supported_features: feature_flags.into(),
                     },
                 ));
 
@@ -1678,7 +1694,7 @@ mod tests {
 
             let connection = connection.unwrap();
             assert_eq!(connection.version.version, Version::Copper);
-            assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+            assert_eq!(connection.version.feature_flags, feature_flags);
             connection
         }
 
@@ -1693,7 +1709,17 @@ mod tests {
         }
 
         async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> ConnectResult {
-            self.connect_with_channels(client, |this| {
+            self.get_channels_with_features(client, count, SUPPORTED_FEATURE_FLAGS)
+                .await
+        }
+
+        async fn get_channels_with_features(
+            &mut self,
+            client: &mut VmbusClient,
+            count: usize,
+            feature_flags: FeatureFlags,
+        ) -> ConnectResult {
+            self.connect_with_channels_and_features(client, feature_flags, |this| {
                 for i in 0..count {
                     let offer = protocol::OfferChannel {
                         interface_id: Guid::new_random(),
@@ -1805,6 +1831,25 @@ mod tests {
         }
     }
 
+    struct CountingSynicEvents {
+        map_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SynicEventClient for CountingSynicEvents {
+        fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
+            self.map_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn unmap_event(&self, _event_flag: u16) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn failed_event_unmap_retains_mapping() {
         let mut synic = SynicState {
@@ -1864,6 +1909,13 @@ mod tests {
     }
 
     fn test_init(driver: &DefaultDriver) -> (TestServer, VmbusClient) {
+        test_init_with_event_client(driver, NoopSynicEvents)
+    }
+
+    fn test_init_with_event_client(
+        driver: &DefaultDriver,
+        event_client: impl SynicEventClient + 'static,
+    ) -> (TestServer, VmbusClient) {
         let (msg_send, msg_recv) = mesh::channel();
         let (synic_send, synic_recv) = mesh::channel();
         let server = TestServer {
@@ -1871,7 +1923,7 @@ mod tests {
             send: msg_send,
         };
         let mut client = VmbusClientBuilder::new(
-            NoopSynicEvents,
+            event_client,
             TestMessageSource {
                 msg_recv,
                 paused: false,
@@ -2893,6 +2945,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[async_test]
+    async fn unsupported_redirected_open_does_not_map_event(driver: DefaultDriver) {
+        let map_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut server, mut client) = test_init_with_event_client(
+            &driver,
+            CountingSynicEvents {
+                map_count: map_count.clone(),
+            },
+        );
+        let connection = server
+            .get_channels_with_features(&mut client, 1, FeatureFlags::new())
+            .await;
+        let [channel] = connection.offers.try_into().unwrap();
+
+        let error = channel
+            .request_send
+            .call_failable(
+                ChannelRequest::Open,
+                OpenRequest {
+                    open_data: OpenData {
+                        target_vp: Some(0),
+                        ring_offset: 0,
+                        ring_gpadl_id: GpadlId(0),
+                        event_flag: 0,
+                        connection_id: 0,
+                        user_data: UserDefinedData::new_zeroed(),
+                    },
+                    incoming_event: Some(Event::new()),
+                    use_vtl2_connection_id: false,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(map_count.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            error.to_string(),
+            "host does not support redirecting interrupts"
+        );
     }
 
     #[async_test]
