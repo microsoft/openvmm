@@ -40,8 +40,8 @@ impl StateUnits {
     /// snapshot vCPU boundary.
     ///
     /// Stopped units are skipped, and terminal lifecycle states fail the
-    /// transaction.
-    pub async fn quiesce_input_for_save(&self, timeout: Duration) -> anyhow::Result<()> {
+    /// transaction. Exclusive access serializes this with input resume.
+    pub async fn quiesce_input_for_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("quiesce_input", timeout, StateRequest::QuiesceInput)
             .await
     }
@@ -50,14 +50,14 @@ impl StateUnits {
     /// snapshot boundary.
     ///
     /// Stopped units are skipped, and terminal lifecycle states fail the
-    /// transaction.
-    pub async fn resume_input_after_save(&self, timeout: Duration) -> anyhow::Result<()> {
+    /// transaction. Exclusive access serializes this with input quiesce.
+    pub async fn resume_input_after_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("resume_input", timeout, StateRequest::ResumeInput)
             .await
     }
 
     async fn run_input_op(
-        &self,
+        &mut self,
         operation: &'static str,
         timeout: Duration,
         request: impl Copy + FnOnce(FailableRpc<(), ()>) -> StateRequest,
