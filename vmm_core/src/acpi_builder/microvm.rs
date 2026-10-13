@@ -24,7 +24,7 @@ pub(super) fn extend_madt_level_triggered_irqs(arch: &AcpiArchConfig, madt_extra
             assert!(irq < 16, "legacy IRQ should be in range");
             assert_ne!(irq, acpi_irq, "level-triggered IRQ duplicates ACPI IRQ");
             assert!(
-                !with_pit || irq != 0,
+                !with_pit || (irq != 0 && irq != 2),
                 "level-triggered IRQ conflicts with PIT override"
             );
             let bit = 1u16 << irq;
