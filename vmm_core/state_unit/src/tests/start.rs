@@ -278,8 +278,23 @@ async fn test_initial_uncertain_start_is_cleaned(driver: DefaultDriver) {
 #[async_test]
 async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDriver) {
     let mut units = StateUnits::new();
+    let dependency_stopped = Arc::new(AtomicBool::new(false));
+    let dependency = units
+        .add("dependency")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StartResultUnit {
+                    started: Arc::new(AtomicBool::new(false)),
+                    stopped: dependency_stopped.clone(),
+                    fail: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
     let _exited = units
         .add("exited")
+        .depends_on(dependency.handle())
         .spawn(&driver, |mut recv| async move {
             let unit = StartResultUnit {
                 started: Arc::new(AtomicBool::new(true)),
@@ -314,6 +329,7 @@ async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDri
             .to_string()
             .contains("failed_start_rollback stop failed")
     );
+    assert!(!dependency_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
     let retry_error = units.start().await.unwrap_err();
     assert!(retry_error.to_string().contains("terminal state"));
