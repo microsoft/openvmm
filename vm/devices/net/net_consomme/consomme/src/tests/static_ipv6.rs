@@ -214,29 +214,69 @@ async fn the_gateway_answers_neighbor_solicitations_for_its_subnet_only(driver: 
 }
 
 #[pal_async::async_test]
-async fn the_gateway_answers_neighbor_solicitations_for_host_peers(driver: DefaultDriver) {
+async fn host_peers_appear_inside_the_static_subnet(driver: DefaultDriver) {
     let mut consomme = Consomme::new(dual_stack_params());
     let mut client = CapturingClient::new(driver);
-    // A host peer on IPv6 loopback reaches the guest from a link-local address
-    // at which the gateway presents it, so the guest must resolve that address
-    // to answer.
-    let peer = consomme
+    // A host peer on IPv6 loopback reaches the guest's address in the static
+    // subnet from an address in that subnet, as IPv4 host peers do, so the
+    // guest answers from its address in the subnet and resolves the peer like
+    // any other neighbor there.
+    let flow = consomme
         .state
         .try_ft_from_remote_address(&"[::1]:50000".parse().unwrap(), 8080)
-        .unwrap()
-        .src
-        .ip();
-    let IpAddr::V6(peer) = peer else {
-        panic!("host peer {peer} is not presented at an IPv6 address");
+        .unwrap();
+    assert_eq!(flow.dst, SocketAddr::from((GUEST_IPV6, 8080)));
+    let IpAddr::V6(peer) = flow.src.ip() else {
+        panic!("host peer {} is not presented at an IPv6 address", flow.src);
     };
-    assert!(peer.is_unicast_link_local());
-    for target in [peer, "fe80::ff:fe00:99:1".parse().unwrap()] {
+    assert_eq!(peer, "fd00::a00:ff".parse::<Ipv6Addr>().unwrap());
+    assert_eq!(flow.src.port(), 50000);
+    assert_eq!(
+        consomme.state.resolve_destination(&flow.src),
+        "[::1]:50000".parse().unwrap()
+    );
+    // An explicit virtual address of another host destination lies there too.
+    assert_eq!(
+        consomme.create_virtual_address("2001:db8::7".parse().unwrap()),
+        Some("fd00::a00:fe".parse().unwrap())
+    );
+    for target in [peer, "fe80::ff:fe00:1:1".parse().unwrap()] {
         consomme
             .access(&mut client)
             .send(&solicitation(target), &ChecksumState::NONE)
             .unwrap();
     }
     assert_eq!(advertised_targets(&client.received), [peer]);
+}
+
+#[test]
+fn the_smallest_static_subnet_presents_a_host_peer() {
+    // A /30 IPv4 network, whose static IPv6 subnet is a /126, leaves the
+    // subnet's last IPv6 address for a host peer beside the gateway and the
+    // guest, and the guest's replies there reach the host peer.
+    let mut params = ConsommeParams::new().unwrap();
+    params.client_mac = GUEST_MAC;
+    params
+        .set_static_ipv4(
+            Ipv4Addr::new(10, 0, 0, 2),
+            30,
+            Ipv4Addr::new(10, 0, 0, 1),
+            GATEWAY_MAC,
+        )
+        .unwrap();
+    params
+        .set_static_ipv6(GUEST_IPV6, 126, GATEWAY_IPV6)
+        .unwrap();
+    let mut consomme = Consomme::new(params);
+    let flow = consomme
+        .state
+        .try_ft_from_remote_address(&"[::1]:50000".parse().unwrap(), 8080)
+        .unwrap();
+    assert_eq!(flow.src, "[fd00::a00:3]:50000".parse().unwrap());
+    assert_eq!(
+        consomme.state.resolve_destination(&flow.src),
+        "[::1]:50000".parse().unwrap()
+    );
 }
 
 #[pal_async::async_test]
