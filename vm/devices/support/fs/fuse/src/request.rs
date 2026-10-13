@@ -131,12 +131,14 @@ impl Request {
     }
 
     fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
-        if header.len as usize > reader.remaining_len() + size_of_val(header) {
+        let header_size = size_of_val(header);
+        let available_len = reader.remaining_len().saturating_add(header_size);
+        if header.len as usize > available_len || (header.len as usize) < header_size {
             tracelimit::error_ratelimited!(
                 opcode = header.opcode,
                 unique = header.unique,
                 header_len = header.len,
-                len = reader.remaining_len() + size_of_val(header),
+                len = available_len,
                 "Invalid message length",
             );
             return FuseOperation::Invalid;
@@ -218,7 +220,11 @@ pub trait RequestReader: io::Read {
 
     /// Consume the next `count` bytes.
     fn read_count(&mut self, count: usize) -> lx::Result<Box<[u8]>> {
-        let mut buffer = vec![0u8; count];
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(count)
+            .map_err(|_| lx::Error::ENOMEM)?;
+        buffer.resize(count, 0);
         self.read_exact(&mut buffer)?;
         Ok(buffer.into_boxed_slice())
     }
@@ -256,7 +262,11 @@ impl RequestReader for &[u8] {
             .position(|&c| c == byte)
             .ok_or(lx::Error::EINVAL)?;
 
-        let result = Vec::from(&self[..length]);
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(length)
+            .map_err(|_| lx::Error::ENOMEM)?;
+        result.extend_from_slice(&self[..length]);
         *self = &self[length + 1..];
         Ok(result)
     }
@@ -303,6 +313,23 @@ pub(crate) mod tests {
         data.extend_from_slice(header.as_bytes());
         data.extend_from_slice(&[7, 0, 0, 0, 27, 0, 0, 0]); // only major + minor
         let request = Request::new(data.as_slice()).unwrap();
+        assert!(matches!(request.operation, FuseOperation::Invalid));
+    }
+
+    #[test]
+    fn parse_init_length_smaller_than_header_is_invalid() {
+        let header = fuse_in_header {
+            len: 0,
+            opcode: FUSE_INIT,
+            unique: 1,
+            nodeid: 0,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+
+        let request = Request::new(header.as_bytes()).unwrap();
         assert!(matches!(request.operation, FuseOperation::Invalid));
     }
 
