@@ -72,9 +72,15 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(Debug, MeshPayload)]
 pub enum StateRequest {
     /// Start asynchronous operations.
+    ///
+    /// Once this request is delivered, a [`StateRequest::Stop`] may follow
+    /// even if start returns an error or its response is not observed.
     Start(FailableRpc<(), ()>),
 
     /// Stop asynchronous operations.
+    ///
+    /// The handler must be safe after any delivered start attempt and
+    /// idempotent when a previous stop response was not observed.
     Stop(Rpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
@@ -98,9 +104,16 @@ pub enum StateRequest {
 #[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
+    ///
+    /// Once this method is entered, [`StateUnit::stop`] may be called even if
+    /// it returns an error.
     async fn start(&mut self) -> anyhow::Result<()>;
 
     /// Stop asynchronous processing.
+    ///
+    /// This must be safe after a failed or partially completed
+    /// [`StateUnit::start`] and idempotent if a previous stop response was not
+    /// observed.
     async fn stop(&mut self);
 
     /// Reset to initial state.
