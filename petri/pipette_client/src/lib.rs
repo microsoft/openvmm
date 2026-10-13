@@ -30,6 +30,8 @@ use mesh_remote::PointToPointMesh;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pipette_protocol::DiagnosticFile;
+use pipette_protocol::ListDirRequest;
+use pipette_protocol::ListDirResponse;
 use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
 use pipette_protocol::ReadFileRequest;
@@ -277,6 +279,22 @@ impl PipetteClient {
 
         tracing::debug!("file write complete");
         Ok(())
+    }
+
+    /// List the contents of a directory
+    pub async fn list_dir(&self, path: impl AsRef<str>) -> anyhow::Result<Vec<String>> {
+        let ListDirResponse { files } = self
+            .send
+            .call_failable(
+                PipetteRequest::ListDir,
+                ListDirRequest {
+                    path: path.as_ref().to_string(),
+                },
+            )
+            .await?;
+
+        tracing::debug!("list dir complete");
+        Ok(files)
     }
 
     /// Waits for the agent to exit.

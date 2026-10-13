@@ -124,7 +124,10 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         Ok(None) // TODO #2403
     }
 
-    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
+    fn build_custom_init_script(
+        _pipette_path: &str,
+        _mount_shares: Vec<(String, String)>,
+    ) -> Option<String> {
         None
     }
 
@@ -143,7 +146,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let mut config =
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
