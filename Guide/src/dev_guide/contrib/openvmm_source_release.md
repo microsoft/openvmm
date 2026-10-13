@@ -48,10 +48,10 @@ version.
 ## Running the workflow
 
 Resolve the commit to release, then request the release with a repository
-dispatch:
+dispatch. Replace `github/main` below with the intended release ref:
 
 ```bash
-REF=<REF>
+REF=github/main
 REVISION=$(git rev-parse "$REF^{commit}")
 gh api repos/microsoft/openvmm/dispatches \
   -f event_type=openvmm-source-release \
