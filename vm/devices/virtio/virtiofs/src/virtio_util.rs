@@ -9,6 +9,8 @@ use std::io::Write;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::VirtioQueuePayload;
 
+const READ_UNTIL_CHUNK_SIZE: usize = 4096;
+
 /// An implementation of `Read` that allows reading data from a virtio payload that may use
 /// multiple buffers.
 pub struct VirtioPayloadReader<'payload, 'mem> {
@@ -103,13 +105,17 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
         let mut buffer: Vec<u8> = Vec::new();
         let mut buffer_offset = 0;
         loop {
-            // Read the rest of the current payload buffer.
-            let len = self.get_current_remaining_len();
+            // Bound each scan so a large descriptor with an early terminator does not require an
+            // allocation for the entire descriptor.
+            let len = self.get_current_remaining_len().min(READ_UNTIL_CHUNK_SIZE);
             if len == 0 {
                 return Err(lx::Error::EINVAL);
             }
 
             let new_len = buffer.len().checked_add(len).ok_or(lx::Error::E2BIG)?;
+            if new_len > crate::MAX_GUEST_BUFFER_SIZE {
+                return Err(lx::Error::E2BIG);
+            }
             buffer
                 .try_reserve_exact(len)
                 .map_err(|_| lx::Error::ENOMEM)?;
@@ -133,6 +139,15 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
                 buffer_offset += len;
             }
         }
+    }
+
+    fn read_count(&mut self, count: usize) -> lx::Result<Box<[u8]>> {
+        if count > crate::MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
+        let mut buffer = crate::guest_buffer(count as u32)?;
+        self.read_exact(&mut buffer)?;
+        Ok(buffer.into_boxed_slice())
     }
 
     fn remaining_len(&self) -> usize {
@@ -209,5 +224,165 @@ impl Write for VirtioPayloadWriter<'_, '_> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fuse::FuseOperation;
+    use fuse::Request;
+    use fuse::protocol::FUSE_SETXATTR;
+    use fuse::protocol::FUSE_WRITE;
+    use fuse::protocol::fuse_in_header;
+    use fuse::protocol::fuse_setxattr_in;
+    use fuse::protocol::fuse_write_in;
+    use std::mem::size_of;
+    use test_with_tracing::test;
+    use zerocopy::IntoBytes;
+
+    fn test_reader<'payload, 'mem>(
+        mem: &'mem GuestMemory,
+        payload: &'payload [VirtioQueuePayload],
+    ) -> VirtioPayloadReader<'payload, 'mem> {
+        let mut reader = VirtioPayloadReader {
+            guest_memory: mem,
+            payload: payload.iter(),
+            current: None,
+            offset: 0,
+            position: 0,
+            len: payload
+                .iter()
+                .filter(|entry| !entry.writeable)
+                .map(|entry| entry.length as usize)
+                .sum(),
+        };
+        reader.next_payload();
+        reader
+    }
+
+    fn parse_payload_request(
+        opcode: u32,
+        arg: &[u8],
+        name: &[u8],
+        payload_len: usize,
+        materialize_payload: bool,
+    ) -> Request {
+        let prefix_len = size_of::<fuse_in_header>() + arg.len() + name.len();
+        let request_len = prefix_len + payload_len;
+        let header = fuse_in_header {
+            len: request_len as u32,
+            opcode,
+            unique: 1,
+            nodeid: 1,
+            uid: 0,
+            gid: 0,
+            pid: 0,
+            padding: 0,
+        };
+        let memory_len = if materialize_payload {
+            request_len
+        } else {
+            prefix_len
+        };
+        let mem = GuestMemory::allocate(memory_len);
+        mem.write_at(0, header.as_bytes()).unwrap();
+        mem.write_at(size_of::<fuse_in_header>() as u64, arg)
+            .unwrap();
+        if !name.is_empty() {
+            mem.write_at((size_of::<fuse_in_header>() + arg.len()) as u64, name)
+                .unwrap();
+        }
+        if materialize_payload {
+            mem.write_at(prefix_len as u64, &vec![0; payload_len])
+                .unwrap();
+        }
+
+        let payload = [
+            VirtioQueuePayload {
+                writeable: false,
+                address: 0,
+                length: prefix_len as u32,
+            },
+            VirtioQueuePayload {
+                writeable: false,
+                address: prefix_len as u64,
+                length: payload_len as u32,
+            },
+        ];
+        Request::new(test_reader(&mem, &payload)).unwrap()
+    }
+
+    fn write_arg(size: usize) -> fuse_write_in {
+        fuse_write_in {
+            fh: 0,
+            offset: 0,
+            size: size as u32,
+            write_flags: 0,
+            lock_owner: 0,
+            flags: 0,
+            padding: 0,
+        }
+    }
+
+    #[test]
+    fn parsed_write_payload_is_bounded() {
+        let arg = write_arg(crate::MAX_GUEST_BUFFER_SIZE);
+        let request = parse_payload_request(
+            FUSE_WRITE,
+            arg.as_bytes(),
+            &[],
+            crate::MAX_GUEST_BUFFER_SIZE,
+            true,
+        );
+        assert!(matches!(
+            request.operation(),
+            FuseOperation::Write { data, .. } if data.len() == crate::MAX_GUEST_BUFFER_SIZE
+        ));
+
+        let oversized = crate::MAX_GUEST_BUFFER_SIZE + 1;
+        let arg = write_arg(oversized);
+        let request = parse_payload_request(FUSE_WRITE, arg.as_bytes(), &[], oversized, false);
+        assert!(matches!(
+            request.operation(),
+            FuseOperation::Error(err) if *err == lx::Error::E2BIG
+        ));
+    }
+
+    #[test]
+    fn parsed_xattr_payload_is_bounded() {
+        let arg = fuse_setxattr_in {
+            size: crate::MAX_GUEST_BUFFER_SIZE as u32,
+            flags: 0,
+        };
+        let request = parse_payload_request(
+            FUSE_SETXATTR,
+            arg.as_bytes(),
+            b"user.test\0",
+            crate::MAX_GUEST_BUFFER_SIZE,
+            true,
+        );
+        assert!(matches!(
+            request.operation(),
+            FuseOperation::SetXAttr { value, .. }
+                if value.len() == crate::MAX_GUEST_BUFFER_SIZE
+        ));
+
+        let oversized = crate::MAX_GUEST_BUFFER_SIZE + 1;
+        let arg = fuse_setxattr_in {
+            size: oversized as u32,
+            flags: 0,
+        };
+        let request = parse_payload_request(
+            FUSE_SETXATTR,
+            arg.as_bytes(),
+            b"user.test\0",
+            oversized,
+            false,
+        );
+        assert!(matches!(
+            request.operation(),
+            FuseOperation::Error(err) if *err == lx::Error::E2BIG
+        ));
     }
 }
