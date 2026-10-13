@@ -44,9 +44,8 @@ zerocopy.workspace = true
 [dev-dependencies]
 acpi_spec.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
-signature.workspace = true
 test_with_tracing.workspace = true
-x509-cert = { workspace = true, features = ["pem", "builder"] }
+x509-cert = { workspace = true, features = ["pem"] }
 
 [lints]
 workspace = true

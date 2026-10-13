@@ -18,9 +18,14 @@ use rsa::RsaPublicKey;
 use rsa::rand_core;
 use rsa::rand_core::UnwrapErr;
 use rsa::traits::PublicKeyParts;
+use sha2::Digest;
 
 const fn rng() -> impl rand_core::CryptoRng {
     UnwrapErr(SysRng)
+}
+
+fn sha1_unsupported(operation: &'static str) -> RsaError {
+    RsaError(rsa::Error::InvalidArguments, operation)
 }
 
 #[repr(transparent)] // Needed for the transmute in as_pub.
@@ -76,8 +81,9 @@ impl RsaKeyPairInner {
     ) -> Result<Vec<u8>, RsaError> {
         match hash_algorithm {
             HashAlgorithm::Sha1 => {
-                self.0
-                    .decrypt_blinded(&mut rng(), Oaep::<sha1::Sha1>::new(), input)
+                return Err(sha1_unsupported(
+                    "rejecting unsupported SHA-1 RSA-OAEP decryption",
+                ));
             }
             HashAlgorithm::Sha256 => {
                 self.0
@@ -100,24 +106,24 @@ impl RsaKeyPairInner {
         data: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
-        // rsa's `sign` expects the caller-supplied buffer to already
-        // be the hash digest of the message. Other backends take the raw
-        // message and hash internally. Do the hash here before handing off.
-        let data = hash_algorithm.hash(data);
         match hash_algorithm {
             HashAlgorithm::Sha1 => {
-                self.0
-                    .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha1::Sha1>(), &data)
+                return Err(sha1_unsupported(
+                    "rejecting unsupported SHA-1 PKCS#1 v1.5 signing",
+                ));
             }
             HashAlgorithm::Sha256 => {
+                let data = sha2::Sha256::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha256>(), &data)
             }
             HashAlgorithm::Sha384 => {
+                let data = sha2::Sha384::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha384>(), &data)
             }
             HashAlgorithm::Sha512 => {
+                let data = sha2::Sha512::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha512>(), &data)
             }
@@ -130,25 +136,22 @@ impl RsaKeyPairInner {
         data: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
-        // rsa's PSS signing expects a pre-hashed digest, just like the
-        // PKCS#1 v1.5 path above. `Pss::<H>::new()` defaults the salt
-        // length to the digest output size, matching the COSE/JWS
-        // convention (RFC 8230 section 2).
-        let data = hash_algorithm.hash(data);
         match hash_algorithm {
             HashAlgorithm::Sha1 => {
-                self.0
-                    .sign_with_rng(&mut rng(), Pss::<sha1::Sha1>::new(), &data)
+                return Err(sha1_unsupported("rejecting unsupported SHA-1 PSS signing"));
             }
             HashAlgorithm::Sha256 => {
+                let data = sha2::Sha256::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pss::<sha2::Sha256>::new(), &data)
             }
             HashAlgorithm::Sha384 => {
+                let data = sha2::Sha384::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pss::<sha2::Sha384>::new(), &data)
             }
             HashAlgorithm::Sha512 => {
+                let data = sha2::Sha512::digest(data);
                 self.0
                     .sign_with_rng(&mut rng(), Pss::<sha2::Sha512>::new(), &data)
             }
@@ -181,7 +184,11 @@ impl RsaPublicKeyInner {
         hash_algorithm: HashAlgorithm,
     ) -> Result<Vec<u8>, RsaError> {
         match hash_algorithm {
-            HashAlgorithm::Sha1 => self.0.encrypt(&mut rng(), Oaep::<sha1::Sha1>::new(), input),
+            HashAlgorithm::Sha1 => {
+                return Err(sha1_unsupported(
+                    "rejecting unsupported SHA-1 RSA-OAEP encryption",
+                ));
+            }
             HashAlgorithm::Sha256 => self
                 .0
                 .encrypt(&mut rng(), Oaep::<sha2::Sha256>::new(), input),
@@ -201,24 +208,24 @@ impl RsaPublicKeyInner {
         signature: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<bool, RsaError> {
-        // rsa's `pkcs1_verify` expects the caller-supplied buffer to already
-        // be the hash digest of the message. Other backends take the raw
-        // message and hash internally. Do the hash here before handing off.
-        let data = hash_algorithm.hash(data);
         let result = match hash_algorithm {
             HashAlgorithm::Sha1 => {
-                self.0
-                    .verify(Pkcs1v15Sign::new::<sha1::Sha1>(), &data, signature)
+                return Err(sha1_unsupported(
+                    "rejecting unsupported SHA-1 PKCS#1 v1.5 verification",
+                ));
             }
             HashAlgorithm::Sha256 => {
+                let data = sha2::Sha256::digest(data);
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha256>(), &data, signature)
             }
             HashAlgorithm::Sha384 => {
+                let data = sha2::Sha384::digest(data);
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha384>(), &data, signature)
             }
             HashAlgorithm::Sha512 => {
+                let data = sha2::Sha512::digest(data);
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha512>(), &data, signature)
             }
@@ -236,16 +243,24 @@ impl RsaPublicKeyInner {
         signature: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<bool, RsaError> {
-        // PSS verification follows the same pre-hash convention as the
-        // PKCS#1 v1.5 path; `Pss::<H>::new()` uses a salt length equal
-        // to the digest output size (COSE/JWS convention, RFC 8230
-        // section 2).
-        let data = hash_algorithm.hash(data);
         let result = match hash_algorithm {
-            HashAlgorithm::Sha1 => self.0.verify(Pss::<sha1::Sha1>::new(), &data, signature),
-            HashAlgorithm::Sha256 => self.0.verify(Pss::<sha2::Sha256>::new(), &data, signature),
-            HashAlgorithm::Sha384 => self.0.verify(Pss::<sha2::Sha384>::new(), &data, signature),
-            HashAlgorithm::Sha512 => self.0.verify(Pss::<sha2::Sha512>::new(), &data, signature),
+            HashAlgorithm::Sha1 => {
+                return Err(sha1_unsupported(
+                    "rejecting unsupported SHA-1 PSS verification",
+                ));
+            }
+            HashAlgorithm::Sha256 => {
+                let data = sha2::Sha256::digest(data);
+                self.0.verify(Pss::<sha2::Sha256>::new(), &data, signature)
+            }
+            HashAlgorithm::Sha384 => {
+                let data = sha2::Sha384::digest(data);
+                self.0.verify(Pss::<sha2::Sha384>::new(), &data, signature)
+            }
+            HashAlgorithm::Sha512 => {
+                let data = sha2::Sha512::digest(data);
+                self.0.verify(Pss::<sha2::Sha512>::new(), &data, signature)
+            }
         };
         match result {
             Ok(()) => Ok(true),

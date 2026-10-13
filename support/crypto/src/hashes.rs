@@ -35,17 +35,6 @@ impl HashAlgorithm {
         }
     }
 
-    #[cfg(rust)]
-    pub(crate) fn hash(self, data: &[u8]) -> Vec<u8> {
-        use sha2::Digest;
-        match self {
-            HashAlgorithm::Sha1 => sha1::Sha1::digest(data).to_vec(),
-            HashAlgorithm::Sha256 => sha2::Sha256::digest(data).to_vec(),
-            HashAlgorithm::Sha384 => sha2::Sha384::digest(data).to_vec(),
-            HashAlgorithm::Sha512 => sha2::Sha512::digest(data).to_vec(),
-        }
-    }
-
     #[cfg(all(native, windows))]
     pub(crate) fn hash(self, data: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; self.output_size()];

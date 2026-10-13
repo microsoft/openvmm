@@ -205,9 +205,7 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use x509_cert::builder::Builder;
-
-        let (builder, _pkcs1_der) = super::builder::self_signed_builder(
+        let cert = super::builder::build_self_signed(
             key,
             country,
             state,
@@ -215,16 +213,6 @@ impl X509CertificateInner {
             organization,
             common_name,
         )?;
-
-        #[cfg(symcrypt)]
-        let cert = builder.build(&super::builder::rsa_keypair_signer::RsaKeyPairSigner {
-            key,
-            pkcs1_der: _pkcs1_der,
-        })?;
-        #[cfg(rust)]
-        let cert = builder.build(&rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(
-            key.0.0.clone(),
-        ))?;
         Ok(Self(cert))
     }
 

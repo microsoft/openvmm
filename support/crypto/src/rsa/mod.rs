@@ -288,12 +288,10 @@ mod tests {
 
     /// OAEP encrypt/decrypt round-trip with every supported hash algorithm.
     #[test]
-    #[expect(deprecated)]
     fn oaep_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let payload = b"a secret message";
         for alg in [
-            HashAlgorithm::Sha1,
             HashAlgorithm::Sha256,
             HashAlgorithm::Sha384,
             HashAlgorithm::Sha512,
@@ -302,6 +300,20 @@ mod tests {
             let pt = key.oaep_decrypt(&ct, alg).unwrap();
             assert_eq!(pt, payload);
         }
+    }
+
+    #[cfg(rust)]
+    #[test]
+    #[expect(deprecated)]
+    fn rust_backend_rejects_sha1() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let payload = b"a secret message";
+        assert!(key.oaep_encrypt(payload, HashAlgorithm::Sha1).is_err());
+        assert!(key.oaep_decrypt(payload, HashAlgorithm::Sha1).is_err());
+        assert!(key.pkcs1_sign(payload, HashAlgorithm::Sha1).is_err());
+        assert!(key.pkcs1_verify(payload, &[], HashAlgorithm::Sha1).is_err());
+        assert!(key.pss_sign(payload, HashAlgorithm::Sha1).is_err());
+        assert!(key.pss_verify(payload, &[], HashAlgorithm::Sha1).is_err());
     }
 
     /// PSS sign/verify round-trip with SHA-384. Each signature contains

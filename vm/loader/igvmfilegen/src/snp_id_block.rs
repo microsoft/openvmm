@@ -665,97 +665,29 @@ mod tests {
         .unwrap()
     }
 
-    /// A minimal self-signed `BuilderProfile` (issuer == subject, no
-    /// extensions).
-    struct SelfSignedProfile {
-        name: x509_cert::name::Name,
+    #[derive(der::Sequence)]
+    struct TbsCertificate {
+        #[asn1(context_specific = "0", default = "Default::default")]
+        version: x509_cert::Version,
+        serial_number: x509_cert::serial_number::SerialNumber,
+        signature: x509_cert::spki::AlgorithmIdentifierOwned,
+        issuer: x509_cert::name::Name,
+        validity: x509_cert::time::Validity,
+        subject: x509_cert::name::Name,
+        subject_public_key_info: x509_cert::spki::SubjectPublicKeyInfoOwned,
+        #[asn1(context_specific = "1", tag_mode = "IMPLICIT", optional = "true")]
+        issuer_unique_id: Option<der::asn1::BitString>,
+        #[asn1(context_specific = "2", tag_mode = "IMPLICIT", optional = "true")]
+        subject_unique_id: Option<der::asn1::BitString>,
+        #[asn1(context_specific = "3", tag_mode = "EXPLICIT", optional = "true")]
+        extensions: Option<Vec<x509_cert::ext::Extension>>,
     }
 
-    impl x509_cert::builder::profile::BuilderProfile for SelfSignedProfile {
-        fn get_issuer(&self, _subject: &x509_cert::name::Name) -> x509_cert::name::Name {
-            self.name.clone()
-        }
-
-        fn get_subject(&self) -> x509_cert::name::Name {
-            self.name.clone()
-        }
-
-        fn build_extensions(
-            &self,
-            _spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-            _issuer_spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
-            _tbs: &x509_cert::TbsCertificate,
-        ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
-            Ok(Vec::new())
-        }
-    }
-
-    /// `signature`/`spki` adapter over a P-384 [`crypto::ecdsa::EcdsaKeyPair`]
-    /// so the `x509-cert` builder can produce a self-signed ECDSA certificate.
-    /// Only the embedded `SubjectPublicKeyInfo` is consumed by
-    /// [`parse_p384_public_key`]; the self-signature is real but its
-    /// verification is not part of this path.
-    struct EcdsaCertSigner<'a> {
-        key: &'a crypto::ecdsa::EcdsaKeyPair,
-        point: Vec<u8>,
-    }
-
-    #[derive(Clone)]
-    struct EcdsaVerifyingKey(Vec<u8>);
-
-    struct EcdsaDerSignature(Vec<u8>);
-
-    impl signature::Keypair for EcdsaCertSigner<'_> {
-        type VerifyingKey = EcdsaVerifyingKey;
-
-        fn verifying_key(&self) -> Self::VerifyingKey {
-            EcdsaVerifyingKey(self.point.clone())
-        }
-    }
-
-    impl x509_cert::spki::DynSignatureAlgorithmIdentifier for EcdsaCertSigner<'_> {
-        fn signature_algorithm_identifier(
-            &self,
-        ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-            Ok(x509_cert::spki::AlgorithmIdentifierOwned {
-                // ecdsa-with-SHA384
-                oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3"),
-                parameters: None,
-            })
-        }
-    }
-
-    impl signature::Signer<EcdsaDerSignature> for EcdsaCertSigner<'_> {
-        fn try_sign(&self, msg: &[u8]) -> Result<EcdsaDerSignature, signature::Error> {
-            let raw = self
-                .key
-                .sign(msg, crypto::HashAlgorithm::Sha384)
-                .map_err(|_| signature::Error::new())?;
-            Ok(EcdsaDerSignature(ecdsa_raw_to_der(&raw)))
-        }
-    }
-
-    impl x509_cert::spki::EncodePublicKey for EcdsaVerifyingKey {
-        fn to_public_key_der(&self) -> x509_cert::spki::Result<der::Document> {
-            use der::Encode;
-
-            let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
-                    parameters: Some(der::Any::from(der::asn1::ObjectIdentifier::new_unwrap(
-                        "1.3.132.0.34",
-                    ))),
-                },
-                subject_public_key: der::asn1::BitString::from_bytes(&self.0)?,
-            };
-            Ok(der::Document::try_from(spki.to_der()?)?)
-        }
-    }
-
-    impl x509_cert::spki::SignatureBitStringEncoding for EcdsaDerSignature {
-        fn to_bitstring(&self) -> der::Result<der::asn1::BitString> {
-            der::asn1::BitString::from_bytes(&self.0)
-        }
+    #[derive(der::Sequence)]
+    struct Certificate {
+        tbs_certificate: TbsCertificate,
+        signature_algorithm: x509_cert::spki::AlgorithmIdentifierOwned,
+        signature: der::asn1::BitString,
     }
 
     /// Build a self-signed P-384 certificate (DER) whose
@@ -763,7 +695,6 @@ mod tests {
     fn self_signed_p384_cert_der(key: &crypto::ecdsa::EcdsaKeyPair) -> Vec<u8> {
         use core::str::FromStr;
         use der::Encode;
-        use x509_cert::builder::Builder;
 
         let point = uncompressed_point(key);
         let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
@@ -777,24 +708,41 @@ mod tests {
         };
 
         let name = x509_cert::name::Name::from_str("CN=snp-id-block-test").unwrap();
-        let serial = x509_cert::serial_number::SerialNumber::from(1u32);
-        let validity = x509_cert::time::Validity::new(
-            der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))
-                .unwrap()
-                .into(),
-            x509_cert::time::Time::INFINITY,
-        );
-
-        let builder = x509_cert::builder::CertificateBuilder::new(
-            SelfSignedProfile { name },
-            serial,
-            validity,
-            spki,
-        )
-        .unwrap();
-
-        let signer = EcdsaCertSigner { key, point };
-        builder.build(&signer).unwrap().to_der().unwrap()
+        let signature_algorithm = x509_cert::spki::AlgorithmIdentifierOwned {
+            // ecdsa-with-SHA384
+            oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3"),
+            parameters: None,
+        };
+        let tbs_certificate = TbsCertificate {
+            version: x509_cert::Version::V3,
+            serial_number: x509_cert::serial_number::SerialNumber::from(1u32),
+            signature: signature_algorithm.clone(),
+            issuer: name.clone(),
+            validity: x509_cert::time::Validity::new(
+                der::asn1::UtcTime::from_unix_duration(std::time::Duration::ZERO)
+                    .unwrap()
+                    .into(),
+                x509_cert::time::Time::INFINITY,
+            ),
+            subject: name,
+            subject_public_key_info: spki,
+            issuer_unique_id: None,
+            subject_unique_id: None,
+            extensions: None,
+        };
+        let raw_signature = key
+            .sign(
+                &tbs_certificate.to_der().unwrap(),
+                crypto::HashAlgorithm::Sha384,
+            )
+            .unwrap();
+        Certificate {
+            tbs_certificate,
+            signature_algorithm,
+            signature: der::asn1::BitString::from_bytes(&ecdsa_raw_to_der(&raw_signature)).unwrap(),
+        }
+        .to_der()
+        .unwrap()
     }
 
     /// Pin the SNP ID block identity constants to their exact byte values.

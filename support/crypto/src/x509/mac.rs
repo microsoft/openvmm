@@ -240,10 +240,7 @@ impl X509CertificateInner {
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use super::builder::rsa_keypair_signer::RsaKeyPairSigner;
-        use x509_cert::builder::Builder;
-
-        let (builder, pkcs1_der) = super::builder::self_signed_builder(
+        let cert = super::builder::build_self_signed(
             key,
             country,
             state,
@@ -251,7 +248,6 @@ impl X509CertificateInner {
             organization,
             common_name,
         )?;
-        let cert = builder.build(&RsaKeyPairSigner { key, pkcs1_der })?;
         Ok(Self::from_der(&cert.to_der()?)?)
     }
 }

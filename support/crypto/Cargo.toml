@@ -11,7 +11,7 @@ rust-version.workspace = true
 export_private = []
 
 # Enable test-only helper functions.
-test_helpers = ["export_private", "x509-cert?/builder"]
+test_helpers = ["export_private"]
 
 # If the chosen backend supports it, vendor it.
 # If the chosen backend is natively available, this feature is a no-op.
@@ -37,13 +37,13 @@ symcrypt = [
     "dep:der",
     "dep:pkcs1",
     "dep:pkcs8",
-    "dep:signature",
     "dep:x509-cert",
 ]
 
 # Use RustCrypto crates.
 # Note that some of these crates have known security issues.
 # This backend should not be used in production scenarios.
+# SHA-1 operations are not supported by this backend.
 rust = [
     "dep:cms",
     "dep:der",
@@ -51,7 +51,6 @@ rust = [
     "dep:pkcs1",
     "dep:pkcs8",
     "dep:rsa",
-    "dep:sha1",
     "dep:sha2",
     "dep:x509-cert",
 ]
@@ -68,9 +67,7 @@ getrandom = { workspace = true, optional = true, features = ["sys_rng"] }
 pkcs1 = { workspace = true, optional = true }
 pkcs8 = { workspace = true, optional = true, features = ["alloc"] }
 rsa = { workspace = true, optional = true, features = ["encoding", "sha2"] }
-sha1 = { workspace = true, optional = true, features = ["oid"] }
 sha2 = { workspace = true, optional = true }
-signature = { workspace = true, optional = true, features = ["alloc"] }
 x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
@@ -91,7 +88,6 @@ cms.workspace = true
 der.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
-signature = { workspace = true, features = ["alloc"] }
 x509-cert.workspace = true
 
 # Default to OpenSSL on Linux since there is no native backend available,
@@ -106,7 +102,6 @@ cms.workspace = true
 der.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
-signature = { workspace = true, features = ["alloc"] }
 x509-cert.workspace = true
 
 [dev-dependencies]
@@ -114,7 +109,7 @@ der = { workspace = true, features = ["derive", "alloc"] }
 hex.workspace = true
 pkcs1.workspace = true
 pkcs8 = { workspace = true, features = ["alloc"] }
-x509-cert = { workspace = true, features = ["builder"] }
+x509-cert.workspace = true
 
 [lints]
 workspace = true
