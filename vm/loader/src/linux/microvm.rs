@@ -107,6 +107,21 @@ fn overlaps_fixed_boot_data(range: &MemoryRange) -> bool {
         .any(|(start, end)| overlaps_range(range, start, end))
 }
 
+fn validate_image_not_in_reserved_range(
+    image: &MemoryRange,
+    reserved: &MemoryRange,
+) -> Result<(), Error> {
+    if image.overlaps(reserved) {
+        return Err(Error::MpTableImageOverlap {
+            image_start: image.start(),
+            image_end: image.end(),
+            reserved_start: reserved.start(),
+            reserved_end: reserved.end(),
+        });
+    }
+    Ok(())
+}
+
 /// Returns the pages that hold `size` bytes starting at `gpa`, or `None` if
 /// the range is empty or not representable. Images, such as an initrd, need
 /// not end on a page boundary.
@@ -134,6 +149,8 @@ fn validate_loaded_ranges(
     {
         return Err(Error::InvalidMpTableMemoryLayout);
     }
+    let isa_hole = MemoryRange::new(MPTABLE_ISA_HOLE_BASE..MPTABLE_ISA_HOLE_END);
+    validate_image_not_in_reserved_range(&kernel_range, &isa_hole)?;
 
     let initrd_range = load_info
         .initrd
@@ -147,6 +164,7 @@ fn validate_loaded_ranges(
             {
                 return Err(Error::InvalidMpTableMemoryLayout);
             }
+            validate_image_not_in_reserved_range(&range, &isa_hole)?;
             Ok(range)
         })
         .transpose()?;
@@ -1212,6 +1230,121 @@ mod tests {
         let boot_params = imported_zero_page(&importer);
         assert_eq!(u32::from(boot_params.hdr.ramdisk_image), initrd_base as u32);
         assert_eq!(u32::from(boot_params.hdr.ramdisk_size), initrd_size as u32);
+    }
+
+    #[test]
+    fn mptable_config_rejects_images_overlapping_isa_hole() {
+        let kernel_above_hole = || KernelInfo {
+            gpa: 2 * MB,
+            size: HV_PAGE_SIZE,
+            entrypoint: 2 * MB,
+        };
+        let invalid_load_info = [
+            (
+                LoadInfo {
+                    kernel: KernelInfo {
+                        gpa: MPTABLE_ISA_HOLE_BASE,
+                        size: HV_PAGE_SIZE,
+                        entrypoint: MPTABLE_ISA_HOLE_BASE,
+                    },
+                    ..Default::default()
+                },
+                MPTABLE_ISA_HOLE_BASE,
+                MPTABLE_ISA_HOLE_BASE + HV_PAGE_SIZE,
+            ),
+            (
+                LoadInfo {
+                    kernel: kernel_above_hole(),
+                    initrd: Some(InitrdInfo {
+                        gpa: MPTABLE_ISA_HOLE_BASE,
+                        size: HV_PAGE_SIZE,
+                    }),
+                    ..Default::default()
+                },
+                MPTABLE_ISA_HOLE_BASE,
+                MPTABLE_ISA_HOLE_BASE + HV_PAGE_SIZE,
+            ),
+            (
+                LoadInfo {
+                    kernel: kernel_above_hole(),
+                    initrd: Some(InitrdInfo {
+                        gpa: MPTABLE_ISA_HOLE_BASE - HV_PAGE_SIZE,
+                        size: 2 * HV_PAGE_SIZE,
+                    }),
+                    ..Default::default()
+                },
+                MPTABLE_ISA_HOLE_BASE - HV_PAGE_SIZE,
+                MPTABLE_ISA_HOLE_BASE + HV_PAGE_SIZE,
+            ),
+            (
+                LoadInfo {
+                    kernel: kernel_above_hole(),
+                    initrd: Some(InitrdInfo {
+                        gpa: MPTABLE_ISA_HOLE_END - HV_PAGE_SIZE,
+                        size: 2 * HV_PAGE_SIZE,
+                    }),
+                    ..Default::default()
+                },
+                MPTABLE_ISA_HOLE_END - HV_PAGE_SIZE,
+                MPTABLE_ISA_HOLE_END + HV_PAGE_SIZE,
+            ),
+        ];
+
+        for (load_info, image_start, image_end) in invalid_load_info {
+            let mut importer = RecordingImporter::default();
+            let error = import_mptable_config(
+                &mut importer,
+                &load_info,
+                &CString::new("").unwrap(),
+                &make_mptable_layout(256 * MB),
+                &mptable_config(&[0]),
+                &[],
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::MpTableImageOverlap {
+                    image_start: actual_start,
+                    image_end: actual_end,
+                    reserved_start: MPTABLE_ISA_HOLE_BASE,
+                    reserved_end: MPTABLE_ISA_HOLE_END,
+                } if actual_start == image_start && actual_end == image_end
+            ));
+            assert!(importer.imports.is_empty());
+        }
+    }
+
+    #[test]
+    fn mptable_config_accepts_initrd_just_above_isa_hole() {
+        let load_info = LoadInfo {
+            kernel: KernelInfo {
+                gpa: 2 * MB,
+                size: HV_PAGE_SIZE,
+                entrypoint: 2 * MB,
+            },
+            initrd: Some(InitrdInfo {
+                gpa: MPTABLE_ISA_HOLE_END,
+                size: HV_PAGE_SIZE,
+            }),
+            ..Default::default()
+        };
+        let mut importer = RecordingImporter::default();
+        import_mptable_config(
+            &mut importer,
+            &load_info,
+            &CString::new("").unwrap(),
+            &make_mptable_layout(256 * MB),
+            &mptable_config(&[0]),
+            &[],
+        )
+        .unwrap();
+
+        let boot_params = imported_zero_page(&importer);
+        assert_eq!(
+            u32::from(boot_params.hdr.ramdisk_image),
+            MPTABLE_ISA_HOLE_END as u32
+        );
+        assert_eq!(u32::from(boot_params.hdr.ramdisk_size), HV_PAGE_SIZE as u32);
     }
 
     #[test]

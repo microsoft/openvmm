@@ -234,6 +234,15 @@ pub enum Error {
     MpTableOverlap { table_end: usize, gdt_addr: u64 },
     #[error("invalid MP-table reserved memory range {start:#x}..{end:#x}")]
     InvalidReservedMemoryRange { start: u64, end: u64 },
+    #[error(
+        "MP-table boot image range {image_start:#x}..{image_end:#x} overlaps reserved range {reserved_start:#x}..{reserved_end:#x}"
+    )]
+    MpTableImageOverlap {
+        image_start: u64,
+        image_end: u64,
+        reserved_start: u64,
+        reserved_end: u64,
+    },
     #[error("the memory layout cannot represent the fixed MP-table platform ranges")]
     InvalidMpTableMemoryLayout,
 }
