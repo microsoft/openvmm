@@ -684,6 +684,12 @@ impl VirtioFs {
 }
 
 fn guest_buffer(size: u32) -> lx::Result<Vec<u8>> {
+    let mut buffer = guest_buffer_with_capacity(size)?;
+    buffer.resize(size as usize, 0);
+    Ok(buffer)
+}
+
+fn guest_buffer_with_capacity(size: u32) -> lx::Result<Vec<u8>> {
     let size = size as usize;
     if size > MAX_GUEST_BUFFER_SIZE {
         return Err(lx::Error::E2BIG);
@@ -692,7 +698,6 @@ fn guest_buffer(size: u32) -> lx::Result<Vec<u8>> {
     buffer
         .try_reserve_exact(size)
         .map_err(|_| lx::Error::ENOMEM)?;
-    buffer.resize(size, 0);
     Ok(buffer)
 }
 

@@ -262,7 +262,7 @@ impl VirtioFs {
         let Some(aggregate) = self.inner.aggregate() else {
             return Ok(Vec::new());
         };
-        let mut buffer = Vec::with_capacity(size as usize);
+        let mut buffer = crate::guest_buffer_with_capacity(size)?;
         // `offset` is the cookie of the next entry to emit (0 at start of stream).
         // Entry 0 => ".", 1 => "..", 2.. => children[index - 2].
         let mut index = offset;
