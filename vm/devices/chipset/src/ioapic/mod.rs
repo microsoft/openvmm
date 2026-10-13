@@ -433,6 +433,10 @@ mod save_restore {
     #[error("wrong number of redirection entries")]
     struct WrongNumberOfRedirectionEntries;
 
+    #[derive(Error, Debug)]
+    #[error("wrong number of line levels")]
+    struct WrongNumberOfLineLevels;
+
     impl SaveRestore for IoApicDevice {
         type SavedState = state::SavedState;
 
@@ -469,7 +473,7 @@ mod save_restore {
             } else if line_levels.len() == self.irqs.len() {
                 line_levels
             } else {
-                return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
+                return Err(RestoreError::Other(WrongNumberOfLineLevels.into()));
             };
             for (n, ((state, line_level), irq)) in redirection_entries
                 .into_iter()
@@ -487,6 +491,105 @@ mod save_restore {
             self.id = id;
             self.index = IndexRegister(index);
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use chipset_device::interrupt::LineInterruptTarget;
+        use chipset_resources::ioapic::IoApicRouting;
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use test_with_tracing::test;
+
+        const ENTRY_COUNT: u8 = 2;
+        const IRQ: u8 = 1;
+        const VECTOR: u8 = 0x30;
+
+        #[derive(Clone, Default)]
+        struct RecordingRouting {
+            assertions: Arc<Mutex<Vec<u8>>>,
+        }
+
+        impl IoApicRouting for RecordingRouting {
+            fn assert(&self, irq: u8) {
+                self.assertions
+                    .lock()
+                    .expect("recording routing lock is not poisoned")
+                    .push(irq);
+            }
+
+            fn set_route(&self, _irq: u8, _request: Option<(u64, u32)>) {}
+        }
+
+        fn device() -> (IoApicDevice, RecordingRouting) {
+            let routing = RecordingRouting::default();
+            (
+                IoApicDevice::new(ENTRY_COUNT, Box::new(routing.clone())),
+                routing,
+            )
+        }
+
+        fn set_level_entry(device: &mut IoApicDevice, masked: bool) {
+            let entry = RedirectionEntry::new()
+                .with_vector(VECTOR)
+                .with_trigger_mode_level(true)
+                .with_masked(masked);
+            device.write_redirection_register(IRQ * 2, u64::from(entry) as u32);
+        }
+
+        #[test]
+        fn restore_preserves_asserted_level_until_unmasked() {
+            let (mut source, _) = device();
+            set_level_entry(&mut source, true);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            set_level_entry(&mut restored, false);
+
+            assert_eq!(
+                *routing
+                    .assertions
+                    .lock()
+                    .expect("recording routing lock is not poisoned"),
+                [IRQ]
+            );
+        }
+
+        #[test]
+        fn restore_defaults_absent_line_levels_to_deasserted() {
+            let (mut source, _) = device();
+            set_level_entry(&mut source, true);
+            source.set_irq(IRQ.into(), true);
+            let mut state = source.save().expect("save succeeds");
+            state.line_levels.clear();
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            set_level_entry(&mut restored, false);
+
+            assert!(
+                routing
+                    .assertions
+                    .lock()
+                    .expect("recording routing lock is not poisoned")
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn restore_rejects_wrong_number_of_line_levels() {
+            let (mut source, _) = device();
+            let mut state = source.save().expect("save succeeds");
+            state.line_levels.pop();
+
+            let (mut restored, _) = device();
+            let error = restored.restore(state).expect_err("restore must fail");
+
+            assert_eq!(error.to_string(), "wrong number of line levels");
         }
     }
 }
