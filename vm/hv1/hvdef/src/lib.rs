@@ -550,7 +550,11 @@ pub struct HvFeatures {
     pub supervisor_shadow_stack_available: bool,
     pub arch_pmu_available: bool,
     pub exception_trap_intercept_available: bool,
-    #[bits(23)]
+    /// CPUID leaf 0x40000003 (HvFeatures), ECX bit 9.
+    pub vp_dispatch_interrupt_injection_available: bool,
+    /// CPUID leaf 0x40000003 (HvFeatures), ECX bit 10.
+    pub vp_ghcb_root_mapping_available: bool,
+    #[bits(21)]
     reserved: u32,
 
     pub mwait_available_deprecated: bool,
