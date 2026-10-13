@@ -52,6 +52,7 @@ impl StateUnits {
         let mut operations = Vec::new();
         let mut failures = Vec::new();
         let mut uncertain = false;
+        let mut quiesced_units = Vec::new();
         let ready_set;
         {
             let mut inner = self.inner.lock();
@@ -90,6 +91,7 @@ impl StateUnits {
                         continue;
                     }
                 }
+                quiesced_units.push(id);
                 let name = unit.name.clone();
                 let dependencies = unit.dependents.clone();
                 let ready_set = ready_set.clone();
@@ -159,6 +161,7 @@ impl StateUnits {
 
         if failures.is_empty() {
             self.running = false;
+            self.save_quiesced_units = Some(quiesced_units);
             Ok(())
         } else {
             Err(QuiesceForSaveError {
@@ -172,6 +175,10 @@ impl StateUnits {
     /// successful quiesce but before publication committed.
     pub async fn resume_after_failed_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running, "VM was not successfully quiesced for save");
+        let quiesced_units = self
+            .save_quiesced_units
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("VM was not successfully quiesced for save"))?;
         anyhow::ensure!(
             self.inner
                 .lock()
@@ -196,6 +203,10 @@ impl StateUnits {
             let mut inner = self.inner.lock();
             ready_set = inner.ready_set(None);
             for (&id, unit) in &mut inner.units {
+                if !quiesced_units.contains(&id) {
+                    ready_set.done(id, true);
+                    continue;
+                }
                 let name = unit.name.clone();
                 let dependencies = unit.dependencies.clone();
                 let ready_set = ready_set.clone();
@@ -268,6 +279,7 @@ impl StateUnits {
             failures.join("; ")
         );
         self.running = true;
+        self.save_quiesced_units = None;
         Ok(())
     }
 }
