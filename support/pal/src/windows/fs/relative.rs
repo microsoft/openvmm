@@ -20,6 +20,7 @@ use std::ptr::null_mut;
 use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NO_MORE_FILES;
+use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
@@ -41,6 +42,28 @@ pub struct FileIdentity {
     pub volume_serial_number: u64,
     pub file_id: [u8; 16],
     pub end_of_file: u64,
+}
+
+fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
+    let mut mode = ntioapi::FILE_MODE_INFORMATION::default();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    chk_status(unsafe {
+        ntioapi::NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut io_status,
+            (&raw mut mode).cast(),
+            size_of::<ntioapi::FILE_MODE_INFORMATION>() as u32,
+            ntioapi::FileModeInformation,
+        )
+    })?;
+    if mode.Mode & (ntioapi::FILE_SYNCHRONOUS_IO_ALERT | ntioapi::FILE_SYNCHRONOUS_IO_NONALERT) == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "relative file operation requires a synchronous handle",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io::Result<Vec<u16>> {
@@ -99,11 +122,14 @@ pub fn open_relative_for_identity(
 }
 
 /// Creates a new file relative to an opened directory.
+///
+/// The returned handle supports writing, identity queries, and hard-link
+/// creation.
 pub fn create_relative_new(directory: &fs::File, name: &std::ffi::OsStr) -> io::Result<fs::File> {
     open_relative_file(
         directory,
         name,
-        FILE_GENERIC_WRITE,
+        FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | DELETE,
         FILE_SHARE_READ,
         ntioapi::FILE_CREATE,
         "create",
@@ -156,11 +182,14 @@ fn open_relative_file(
 }
 
 /// Creates a hard link to `source` relative to an exact opened directory.
+///
+/// `source` must have been opened for synchronous I/O and with delete access.
 pub fn hard_link_relative(
     source: &fs::File,
     directory: &fs::File,
     name: &std::ffi::OsStr,
 ) -> io::Result<()> {
+    ensure_synchronous(source)?;
     let name = validate_relative_component(name, "hard-link")?;
 
     let name_bytes = name
@@ -205,10 +234,13 @@ pub fn hard_link_relative(
 }
 
 /// Enumerates names relative to an opened directory handle.
+///
+/// The directory must have been opened for synchronous I/O.
 pub fn directory_entry_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
     const BUFFER_SIZE: usize = 4096;
     const BUFFER_WORDS: usize = BUFFER_SIZE / size_of::<u64>();
 
+    ensure_synchronous(directory)?;
     let mut names = Vec::new();
     let mut restart_scan = true;
     loop {
@@ -312,7 +344,52 @@ pub fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::path::Path;
+    use std::path::PathBuf;
     use test_with_tracing::test;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            loop {
+                let mut id = [0; 16];
+                getrandom::fill(&mut id).unwrap();
+                let path = std::env::temp_dir()
+                    .join(format!("pal-relative-{:032x}", u128::from_ne_bytes(id)));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("failed to create test directory: {error}"),
+                }
+            }
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn open_directory(path: &Path, overlapped: bool) -> fs::File {
+        let flags = FILE_FLAG_BACKUP_SEMANTICS | if overlapped { FILE_FLAG_OVERLAPPED } else { 0 };
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open(path)
+            .unwrap()
+    }
 
     #[test]
     fn relative_name_must_be_one_non_special_component() {
@@ -335,5 +412,68 @@ mod tests {
                 "{name:?}"
             );
         }
+    }
+
+    #[test]
+    fn relative_file_lifecycle_uses_the_opened_directory() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        let mut source = create_relative_new(&directory, "source".as_ref()).unwrap();
+        source.write_all(b"contents").unwrap();
+        let source_identity = file_identity(&source).unwrap();
+
+        hard_link_relative(&source, &directory, "link".as_ref()).unwrap();
+        drop(source);
+        let mut link = open_relative_read_only(&directory, "link".as_ref()).unwrap();
+        let mut contents = Vec::new();
+        link.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"contents");
+        assert_eq!(file_identity(&link).unwrap(), source_identity);
+        assert_eq!(
+            file_identity(&open_relative_for_identity(&directory, "source".as_ref()).unwrap())
+                .unwrap(),
+            source_identity
+        );
+
+        let mut names: Vec<_> = directory_entry_names(&directory)
+            .unwrap()
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["link".to_owned(), "source".to_owned()]);
+        assert_eq!(
+            create_relative_new(&directory, "source".as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn pending_native_operations_are_rejected() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        let asynchronous_directory = open_directory(root.path(), true);
+        let asynchronous_source = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED)
+            .open(root.path().join("asynchronous"))
+            .unwrap();
+
+        assert_eq!(
+            hard_link_relative(&asynchronous_source, &directory, "link".as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            directory_entry_names(&asynchronous_directory)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }
