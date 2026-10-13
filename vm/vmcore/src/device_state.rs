@@ -28,11 +28,17 @@ pub trait ChangeDeviceState {
     fn start(&mut self);
 
     /// Stops accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// [`ChangeDeviceState::resume_input`] may be called even if this method
+    /// returns an error or its completion is not observed.
     fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
         async { Ok(()) }
     }
 
     /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`ChangeDeviceState::quiesce_input`]
+    /// completed and idempotent across repeated recovery attempts.
     fn resume_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
         async { Ok(()) }
     }
