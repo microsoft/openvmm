@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 vhdx.workspace = true
+guid.workspace = true
 parking_lot.workspace = true
 pal_async.workspace = true
 xtask_fuzz.workspace = true

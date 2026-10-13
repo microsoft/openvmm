@@ -2823,6 +2823,7 @@ name = "fuzz_vhdx_open"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "guid",
  "libfuzzer-sys",
  "pal_async",
  "parking_lot",
