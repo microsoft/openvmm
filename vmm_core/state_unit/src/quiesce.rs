@@ -23,9 +23,11 @@ pub struct QuiesceForSaveError {
 }
 
 impl QuiesceForSaveError {
-    /// Returns whether any unit may have partially changed ownership or state.
+    /// Returns whether any unit changed state or may have partially changed
+    /// ownership or state.
     ///
     /// When true, the VM cannot be resumed safely and must be terminated.
+    /// When false, no unit changed state during the failed transaction.
     pub fn has_uncertain_state(&self) -> bool {
         self.uncertain
     }
@@ -37,7 +39,9 @@ impl StateUnits {
     /// A timeout or communication failure after a stop request is sent leaves
     /// ownership uncertain. The returned error reports this via
     /// [`QuiesceForSaveError::has_uncertain_state`]; callers must terminate the
-    /// VM rather than attempt rollback in that case.
+    /// VM rather than attempt rollback in that case. A completed stop followed
+    /// by another unit's failure is also classified as uncertain, so a clean
+    /// error guarantees that no unit changed state.
     pub async fn quiesce_for_save(&mut self, timeout: Duration) -> Result<(), QuiesceForSaveError> {
         assert!(self.running);
 
@@ -52,6 +56,7 @@ impl StateUnits {
         let mut operations = Vec::new();
         let mut failures = Vec::new();
         let mut uncertain = false;
+        let mut stopped_any = false;
         let mut quiesced_units = Vec::new();
         let ready_set;
         {
@@ -134,6 +139,7 @@ impl StateUnits {
 
         let mut inner = self.inner.lock();
         for (name, id, result) in results {
+            stopped_any |= matches!(&result, UnitResult::Stopped);
             let Some(unit) = inner.units.get_mut(&id) else {
                 continue;
             };
@@ -164,6 +170,7 @@ impl StateUnits {
             self.save_quiesced_units = Some(quiesced_units);
             Ok(())
         } else {
+            uncertain |= stopped_any;
             Err(QuiesceForSaveError {
                 failures,
                 uncertain,

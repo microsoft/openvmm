@@ -257,6 +257,52 @@ async fn test_quiesce_readiness_timeout_is_bounded(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_quiesce_partial_success_is_uncertain(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let a = units
+        .add("a")
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start().await.unwrap();
+    let _b = units
+        .add("b")
+        .depends_on(a.handle())
+        .dependency_of(a.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    let stops = Arc::new(AtomicUsize::new(0));
+    let _independent = units
+        .add("independent")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StopCountingUnit {
+                    stops: stops.clone(),
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    units.start_stopped_units().await.unwrap();
+
+    let started = std::time::Instant::now();
+    let error = units
+        .quiesce_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(error.has_uncertain_state());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .any(|unit| unit.name.as_ref() == "independent" && unit.state == State::Stopped)
+    );
+}
+
+#[async_test]
 async fn test_rollback_start_timeout_is_bounded(driver: DefaultDriver) {
     let mut units = StateUnits::new();
     let _unit = units
