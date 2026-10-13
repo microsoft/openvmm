@@ -4,24 +4,25 @@
 //! Sparse-file helpers: marking a file sparse, querying its allocation,
 //! block-cloning its extents, enumerating its allocated ranges, and
 //! deallocating zeroed ranges.
+//! Device controls wait for event-backed completion when used with an
+//! overlapped handle.
 
-use crate::windows::chk_status;
+use crate::windows::Overlapped;
+use std::ffi::c_void;
 use std::fs;
 use std::io;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::OwnedHandle;
 use std::ptr;
 use std::ptr::null_mut;
-use windows_sys::Wdk::Storage::FileSystem::FILE_MODE_INFORMATION;
-use windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_ALERT;
-use windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT;
-use windows_sys::Wdk::Storage::FileSystem::FileModeInformation;
-use windows_sys::Wdk::Storage::FileSystem::NtQueryInformationFile;
+use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
 use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_STANDARD_INFO;
 use windows_sys::Win32::Storage::FileSystem::FileStandardInfo;
 use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
 use windows_sys::Win32::System::IO::DeviceIoControl;
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::IO::GetOverlappedResult;
 use windows_sys::Win32::System::Ioctl::DUPLICATE_EXTENTS_DATA;
 use windows_sys::Win32::System::Ioctl::FILE_ALLOCATED_RANGE_BUFFER;
 use windows_sys::Win32::System::Ioctl::FILE_ZERO_DATA_INFORMATION;
@@ -29,30 +30,82 @@ use windows_sys::Win32::System::Ioctl::FSCTL_DUPLICATE_EXTENTS_TO_FILE;
 use windows_sys::Win32::System::Ioctl::FSCTL_QUERY_ALLOCATED_RANGES;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_ZERO_DATA;
+use windows_sys::Win32::System::Threading::CreateEventW;
 
 // This is aligned to every supported ReFS cluster size and remains below its
 // exclusive 4-GiB block-clone limit.
 const DUPLICATE_EXTENTS_CHUNK_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
-fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
-    let mut mode = FILE_MODE_INFORMATION::default();
-    let mut io_status = IO_STATUS_BLOCK::default();
-    chk_status(unsafe {
-        NtQueryInformationFile(
+struct DeviceIoControlError {
+    error: io::Error,
+    returned: u32,
+}
+
+/// # Safety
+///
+/// `input` and `output` must describe buffers valid for their corresponding
+/// sizes. This function waits for pending I/O before returning.
+unsafe fn device_io_control(
+    file: &fs::File,
+    control_code: u32,
+    input: *const c_void,
+    input_size: u32,
+    output: *mut c_void,
+    output_size: u32,
+) -> Result<u32, DeviceIoControlError> {
+    // SAFETY: all CreateEventW pointer arguments are null as documented.
+    let event = unsafe {
+        let event = CreateEventW(null_mut(), true.into(), false.into(), ptr::null());
+        if event.is_null() {
+            return Err(DeviceIoControlError {
+                error: io::Error::last_os_error(),
+                returned: 0,
+            });
+        }
+        OwnedHandle::from_raw_handle(event)
+    };
+    let mut overlapped = Overlapped::new();
+    overlapped.set_event(event.as_raw_handle());
+    let mut returned = 0;
+    // SAFETY: the caller guarantees the buffer contracts, and `overlapped`
+    // and its event remain live until completion below.
+    let result = unsafe {
+        DeviceIoControl(
             file.as_raw_handle(),
-            &mut io_status,
-            (&raw mut mode).cast(),
-            size_of::<FILE_MODE_INFORMATION>() as u32,
-            FileModeInformation,
+            control_code,
+            input,
+            input_size,
+            output,
+            output_size,
+            &mut returned,
+            overlapped.as_ptr(),
         )
-    })?;
-    if mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "sparse-file operation requires a synchronous file handle",
-        ));
+    };
+    if result != 0 {
+        return Ok(returned);
     }
-    Ok(())
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+        return Err(DeviceIoControlError { error, returned });
+    }
+    // SAFETY: this is the same live file and event-backed OVERLAPPED passed
+    // to the pending operation above.
+    if unsafe {
+        GetOverlappedResult(
+            file.as_raw_handle(),
+            overlapped.as_ptr(),
+            &mut returned,
+            true.into(),
+        )
+    } == 0
+    {
+        return Err(DeviceIoControlError {
+            error: io::Error::last_os_error(),
+            returned,
+        });
+    }
+    Ok(returned)
 }
 
 fn duplicate_extent_chunks(length: u64) -> impl Iterator<Item = (u64, u64)> {
@@ -69,28 +122,11 @@ fn duplicate_extent_chunks(length: u64) -> impl Iterator<Item = (u64, u64)> {
 }
 
 /// Marks a file as sparse.
-///
-/// The file must have been opened for synchronous I/O.
 pub fn set_sparse(file: &fs::File) -> io::Result<()> {
-    ensure_synchronous(file)?;
-    let mut returned = 0;
-    let result = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
-            FSCTL_SET_SPARSE,
-            ptr::null(),
-            0,
-            null_mut(),
-            0,
-            &mut returned,
-            null_mut(),
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    // SAFETY: this request has no input or output buffer.
+    unsafe { device_io_control(file, FSCTL_SET_SPARSE, ptr::null(), 0, null_mut(), 0) }
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 /// Returns the physical allocation charged to a file.
@@ -117,9 +153,7 @@ pub fn allocation_size(file: &fs::File) -> io::Result<u64> {
 ///
 /// `length` must end at a file-system cluster boundary. If a later chunk
 /// fails, chunks already cloned into the destination are not rolled back.
-/// The destination must have been opened for synchronous I/O.
 pub fn duplicate_extents(source: &fs::File, destination: &fs::File, length: u64) -> io::Result<()> {
-    ensure_synchronous(destination)?;
     i64::try_from(length)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file is too large"))?;
 
@@ -134,22 +168,18 @@ pub fn duplicate_extents(source: &fs::File, destination: &fs::File, length: u64)
             TargetFileOffset: offset,
             ByteCount: byte_count,
         };
-        let mut returned = 0;
-        let result = unsafe {
-            DeviceIoControl(
-                destination.as_raw_handle(),
+        // SAFETY: `input` remains live, and the helper waits for completion.
+        unsafe {
+            device_io_control(
+                destination,
                 FSCTL_DUPLICATE_EXTENTS_TO_FILE,
                 (&raw const input).cast(),
                 size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
                 null_mut(),
                 0,
-                &mut returned,
-                null_mut(),
             )
-        };
-        if result == 0 {
-            return Err(io::Error::last_os_error());
         }
+        .map_err(|error| error.error)?;
     }
     Ok(())
 }
@@ -190,12 +220,9 @@ fn append_allocated_ranges(
 }
 
 /// Returns allocated file ranges clipped to `[0, length)`.
-///
-/// The file must have been opened for synchronous I/O.
 pub fn allocated_ranges(file: &fs::File, length: u64) -> io::Result<Vec<(u64, u64)>> {
     const RANGE_CAPACITY: usize = 64;
 
-    ensure_synchronous(file)?;
     let mut ranges = Vec::new();
     let mut cursor = 0_u64;
     while cursor < length {
@@ -208,25 +235,26 @@ pub fn allocated_ranges(file: &fs::File, length: u64) -> io::Result<Vec<(u64, u6
             })?,
         };
         let mut output = [FILE_ALLOCATED_RANGE_BUFFER::default(); RANGE_CAPACITY];
-        let mut returned = 0_u32;
-        let result = unsafe {
-            DeviceIoControl(
-                file.as_raw_handle(),
+        // SAFETY: both buffers remain live, and the helper waits for
+        // completion before returning.
+        let (result, returned) = match unsafe {
+            device_io_control(
+                file,
                 FSCTL_QUERY_ALLOCATED_RANGES,
                 (&raw const input).cast(),
                 size_of::<FILE_ALLOCATED_RANGE_BUFFER>() as u32,
                 output.as_mut_ptr().cast(),
                 size_of_val(&output) as u32,
-                &mut returned,
-                null_mut(),
             )
-        };
-        if result == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
-                return Err(error);
+        } {
+            Ok(returned) => (true, returned),
+            Err(error) => {
+                if error.error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
+                    return Err(error.error);
+                }
+                (false, error.returned)
             }
-        }
+        };
         if !(returned as usize).is_multiple_of(size_of::<FILE_ALLOCATED_RANGE_BUFFER>()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -241,7 +269,7 @@ pub fn allocated_ranges(file: &fs::File, length: u64) -> io::Result<Vec<(u64, u6
             ));
         }
         append_allocated_ranges(&output[..count], length, &mut cursor, &mut ranges)?;
-        if result != 0 {
+        if result {
             break;
         }
         if count == 0 {
@@ -255,10 +283,7 @@ pub fn allocated_ranges(file: &fs::File, length: u64) -> io::Result<Vec<(u64, u6
 }
 
 /// Deallocates a range in a sparse file and makes reads return zeroes.
-///
-/// The file must have been opened for synchronous I/O.
 pub fn zero_range(file: &fs::File, start: u64, end: u64) -> io::Result<()> {
-    ensure_synchronous(file)?;
     if start >= end {
         return Ok(());
     }
@@ -270,24 +295,19 @@ pub fn zero_range(file: &fs::File, start: u64, end: u64) -> io::Result<()> {
             io::Error::new(io::ErrorKind::InvalidInput, "zero range end exceeds i64")
         })?,
     };
-    let mut returned = 0;
-    let result = unsafe {
-        DeviceIoControl(
-            file.as_raw_handle(),
+    // SAFETY: `input` remains live, and the helper waits for completion.
+    unsafe {
+        device_io_control(
+            file,
             FSCTL_SET_ZERO_DATA,
             (&raw const input).cast(),
             size_of::<FILE_ZERO_DATA_INFORMATION>() as u32,
             null_mut(),
             0,
-            &mut returned,
-            null_mut(),
         )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
     }
+    .map(|_| ())
+    .map_err(|error| error.error)
 }
 
 #[cfg(test)]
@@ -449,7 +469,9 @@ mod tests {
     }
 
     #[test]
-    fn overlapped_handles_are_rejected() {
+    fn overlapped_handles_are_supported() {
+        const FILE_LENGTH: u64 = 64 * 1024;
+
         let root = TestDirectory::new();
         let source = OpenOptions::new()
             .read(true)
@@ -457,31 +479,30 @@ mod tests {
             .create_new(true)
             .open(root.join("source"))
             .unwrap();
-        let destination = OpenOptions::new()
+        let destination_path = root.join("destination");
+        OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
+            .open(&destination_path)
+            .unwrap()
+            .set_len(FILE_LENGTH)
+            .unwrap();
+        let destination = OpenOptions::new()
+            .read(true)
+            .write(true)
             .custom_flags(FILE_FLAG_OVERLAPPED)
-            .open(root.join("destination"))
+            .open(destination_path)
             .unwrap();
 
-        assert_eq!(
-            set_sparse(&destination).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
+        set_sparse(&destination).unwrap();
+        allocated_ranges(&destination, FILE_LENGTH).unwrap();
+        zero_range(&destination, 0, FILE_LENGTH).unwrap();
+        assert!(
+            allocated_ranges(&destination, FILE_LENGTH)
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(
-            duplicate_extents(&source, &destination, 0)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(
-            allocated_ranges(&destination, 1).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(
-            zero_range(&destination, 0, 1).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
+        duplicate_extents(&source, &destination, 0).unwrap();
     }
 }
