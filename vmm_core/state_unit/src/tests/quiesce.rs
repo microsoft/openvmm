@@ -303,6 +303,15 @@ async fn test_input_hook_closed_channel_is_reported(driver: DefaultDriver) {
 #[async_test]
 async fn test_input_hook_timeout_is_bounded(driver: DefaultDriver) {
     let mut units = StateUnits::new();
+    let failing_counts = Arc::new(InputCounts::default());
+    let _failing = units
+        .add("failing")
+        .spawn(&driver, |recv| {
+            let mut unit = input_unit(&driver, failing_counts.clone());
+            unit.fail_quiesce = true;
+            run_unit(unit, recv)
+        })
+        .unwrap();
     let counts = Arc::new(InputCounts::default());
     let _slow = units
         .add("slow")
@@ -319,8 +328,11 @@ async fn test_input_hook_timeout_is_bounded(driver: DefaultDriver) {
         .quiesce_input_for_save(Duration::from_millis(10))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("quiesce_input timed out"));
+    let error = error.to_string();
+    assert!(error.contains("failing: intentional input quiesce failure"));
+    assert!(error.contains("slow: quiesce_input timed out"));
     assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(failing_counts.quiesces.load(Ordering::Relaxed), 1);
     assert_eq!(counts.quiesces.load(Ordering::Relaxed), 1);
 }
 

@@ -9,7 +9,6 @@ use super::State;
 use super::StateRequest;
 use super::StateUnits;
 use super::state_change;
-use anyhow::Context as _;
 use futures::future::join_all;
 use mesh::CancelContext;
 use mesh::rpc::FailableRpc;
@@ -61,6 +60,7 @@ impl StateUnits {
         timeout: Duration,
         request: impl Copy + FnOnce(FailableRpc<(), ()>) -> StateRequest,
     ) -> anyhow::Result<()> {
+        let context = CancelContext::new().with_timeout(timeout);
         let (operations, mut failures) = {
             let inner = self.inner.lock();
             let mut failures = Vec::new();
@@ -70,8 +70,12 @@ impl StateUnits {
                 .filter_map(|unit| match unit.state {
                     State::Running => {
                         let name = unit.name.clone();
-                        let operation = state_change(name.clone(), unit, request, Some(()));
-                        Some(async move { (name, operation.await) })
+                        let request = state_change(name.clone(), unit, request, Some(()));
+                        let mut context = context.clone();
+                        Some(async move {
+                            let result = context.until_cancelled(request).await;
+                            (name, result)
+                        })
                     }
                     State::Stopped => None,
                     State::StartUncertain | State::StartFailedStopped | State::QuiesceUncertain => {
@@ -92,17 +96,14 @@ impl StateUnits {
                 .collect::<Vec<_>>();
             (operations, failures)
         };
-        let mut context = CancelContext::new().with_timeout(timeout);
-        let results = context
-            .until_cancelled(join_all(operations))
-            .await
-            .with_context(|| format!("{operation} timed out"))?;
+        let results = join_all(operations).await;
         for (name, result) in results {
             match result {
-                Ok(Some(Ok(()))) => {}
-                Ok(Some(Err(error))) => failures.push(format!("{name}: {error}")),
-                Ok(None) => failures.push(format!("{name}: request was not sent")),
-                Err(error) => failures.push(format!("{name}: {error}")),
+                Ok(Ok(Some(Ok(())))) => {}
+                Ok(Ok(Some(Err(error)))) => failures.push(format!("{name}: {error}")),
+                Ok(Ok(None)) => failures.push(format!("{name}: request was not sent")),
+                Ok(Err(error)) => failures.push(format!("{name}: {error}")),
+                Err(reason) => failures.push(format!("{name}: {operation} timed out: {reason}")),
             }
         }
         anyhow::ensure!(
