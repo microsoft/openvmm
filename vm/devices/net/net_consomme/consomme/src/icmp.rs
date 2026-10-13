@@ -5,6 +5,8 @@
 #![expect(unsafe_code)]
 
 mod limits;
+#[cfg(test)]
+mod tests;
 
 use super::Access;
 use super::Client;
@@ -46,18 +48,22 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
+use std::time::Instant;
 
 const ICMPV4_HEADER_LEN: usize = 8;
 
 pub(crate) struct Icmp {
     connections: HashMap<SocketAddrV4, IcmpConnection>,
+    timeout: Duration,
     max_connections: usize,
 }
 
 impl Icmp {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
+            timeout,
             max_connections: crate::limits::DEFAULT_MAX_ACTIVE_ICMP_FLOWS,
         }
     }
@@ -81,6 +87,8 @@ struct IcmpConnection {
     #[inspect(display)]
     guest_mac: EthernetAddress,
     stats: Stats,
+    #[inspect(debug)]
+    last_activity: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -98,7 +106,7 @@ impl IcmpConnection {
         dst_addr: &SocketAddrV4,
         state: &mut ConsommeState,
         client: &mut impl Client,
-    ) {
+    ) -> bool {
         let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
         loop {
             match self
@@ -126,6 +134,7 @@ impl IcmpConnection {
                     let len = ETHERNET_HEADER_LEN + n;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
                     self.stats.rx_packets.increment();
+                    self.last_activity = Instant::now();
                 }
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
@@ -133,9 +142,9 @@ impl IcmpConnection {
                         guest_ip = %dst_addr.ip(),
                         "icmp recv error"
                     );
-                    break;
+                    break false;
                 }
-                Poll::Pending => break,
+                Poll::Pending => break true,
             }
         }
     }
@@ -165,9 +174,19 @@ impl IcmpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_icmp(&mut self, cx: &mut Context<'_>) {
-        for (dst_addr, conn) in &mut self.inner.icmp.connections {
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client);
-        }
+        let timeout = self.inner.icmp.timeout;
+        let now = Instant::now();
+        self.inner.icmp.connections.retain(|dst_addr, conn| {
+            if now.duration_since(conn.last_activity) > timeout {
+                tracing::debug!(
+                    guest = %dst_addr,
+                    "ICMP connection timed out"
+                );
+                return false;
+            }
+
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+        });
     }
 
     /// Handle an ICMP echo request destined for the gateway IP by
@@ -283,6 +302,7 @@ impl<T: Client> Access<'_, T> {
                     socket,
                     guest_mac: frame.src_addr,
                     stats: Default::default(),
+                    last_activity: Instant::now(),
                 };
                 e.insert(conn)
             }
@@ -292,6 +312,7 @@ impl<T: Client> Access<'_, T> {
         match conn.send_to(addresses.dst_addr, send_buffer, hop_limit) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
+                conn.last_activity = Instant::now();
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
