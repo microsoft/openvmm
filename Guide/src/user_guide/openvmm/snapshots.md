@@ -100,30 +100,39 @@ emulated device saves its state under a unique name (e.g. `"pit"`,
 `"vmbus"`, `"ide"`), and restore matches saved-state entries to the
 currently instantiated devices by name.
 
-The rules are:
+Current snapshots record the complete set of state-unit names, including
+units that have no mutable state to save. Before restoring any device state,
+OpenVMM compares the saved and current inventories as unordered exact sets.
+The rules for current snapshots are:
 
 | Scenario | Result |
 |---|---|
-| Device set matches exactly | Restore succeeds |
-| Snapshot contains a device not in current config | **Restore fails** — unknown unit name |
-| Current config has a device not in snapshot | Restore succeeds — device starts in its default/initial state |
+| Exact state-unit set | Restore continues |
+| Saved unit missing in current config | **Fails** — inventory mismatch |
+| Current unit missing from snapshot | **Fails** — inventory mismatch |
+| Duplicate saved inventory name | **Fails** — inventory mismatch |
 
 In practice this means:
 
 - You must pass the **same device flags** on restore as you did on save.
-  Removing a device that was present at save time will cause restore to
-  fail.
-- Adding a *new* device that was not present at save time is technically
-  allowed — the new device will start in its power-on default state.
-  This is not tested and the device may not be functional, since the
-  guest OS will not have enumerated or initialised it during boot.
-  The supported path is to use the same device flags on save and restore.
+  Adding or removing a state unit causes inventory validation to fail.
+- Unit registration order may differ between otherwise identical VMs and
+  does not affect compatibility.
+
+```admonish note
+Snapshots created before the state-unit inventory was added do not have this
+exact-set check. For these legacy snapshots, a saved-state entry without a
+matching current unit still fails, but an extra current unit is accepted and
+keeps its initial state. This exception exists only for backward
+compatibility; changing device flags is not a supported restore path.
+```
 
 ```admonish warning
-There is no single error message that tells you "your device configuration
-changed". Instead you will see errors like `restore failed: unknown unit
-name` when saved-state entries cannot be matched. If you see this, compare
-your restore command line with the one used at save time.
+Current snapshots report a `saved state-unit inventory does not match`
+error with the saved and current name lists when the configurations differ.
+Legacy snapshots may instead report `restore failed: unknown unit name`.
+In either case, compare the restore command line with the one used at save
+time.
 ```
 
 ## Device save/restore support
