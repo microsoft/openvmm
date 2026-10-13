@@ -57,6 +57,7 @@ async fn boot_tpm<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resu
 }
 
 /// 1.38 variant of [`super::tpm::tpm_ak_cert_persisted`].
+#[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
@@ -70,6 +71,7 @@ async fn ged_ak_persist<T>(
 }
 
 /// 1.38 variant of [`super::tpm::tpm_ak_cert_renewal`].
+#[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]

@@ -37,8 +37,10 @@ use vmm_test_macros::vmm_test_with;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
+#[cfg(windows)]
 const AK_CERT_NO_RENEWAL: &str =
     "Host indicated that the existing AK certificate does not need renewal";
+#[cfg(windows)]
 const AK_CERT_EMPTY: &str = "The requested TPM AK cert is empty";
 
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
@@ -369,6 +371,7 @@ pub(crate) async fn boot_with_tpm_impl<T: PetriVmmBackend>(
 }
 
 /// Verify bit 5 preserves A despite poison bytes, then retains A when unavailable.
+#[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
@@ -381,6 +384,7 @@ async fn tpm_ak_cert_persisted<T>(
     tpm_ak_cert_persisted_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
 }
 
+#[cfg(windows)]
 pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
@@ -460,6 +464,7 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
 
 /// Replace A with distinct B, then validate B's metadata and retain B while unavailable.
 /// The policy is deterministic and does not depend on certificate expiry.
+#[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
@@ -472,6 +477,7 @@ async fn tpm_ak_cert_renewal<T>(
     tpm_ak_cert_renewal_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
 }
 
+#[cfg(windows)]
 pub(crate) async fn tpm_ak_cert_renewal_impl<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
@@ -486,6 +492,7 @@ pub(crate) async fn tpm_ak_cert_renewal_impl<T>(
 }
 
 /// Shared by the renewal test and the existing Hyper-V cache matrices.
+#[cfg(windows)]
 async fn ak_cert_renewal_impl<U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     host_binary_path: &Path,
@@ -626,6 +633,7 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
     Ok(())
 }
 
+#[cfg(windows)]
 fn ak_cert_hex(cert: &[u8]) -> String {
     use std::fmt::Write as _;
 
@@ -641,6 +649,7 @@ fn ak_cert_hex(cert: &[u8]) -> String {
 
 /// Wait for proof that the TPM consumed the expected response on this boot.
 /// An unchanged cached certificate alone could also mean the request failed.
+#[cfg(windows)]
 async fn wait_for_ak_cert_event<U: PetriVmmBackend>(
     vm: &petri::PetriVm<U>,
     driver: &pal_async::DefaultDriver,
