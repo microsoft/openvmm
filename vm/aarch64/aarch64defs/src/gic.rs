@@ -66,6 +66,20 @@ impl GicdRegister {
     pub const IROUTER: Range<u16> = Self::IROUTER0.0..Self::IROUTER0.0 + 0x2000;
 }
 
+/// `GICD_IROUTER<n>` — Interrupt Routing Register.
+#[bitfield(u64)]
+pub struct GicdIrouter {
+    pub aff0: u8,
+    pub aff1: u8,
+    pub aff2: u8,
+    #[bits(7)]
+    _res24_30: u8,
+    pub irm: bool,
+    pub aff3: u8,
+    #[bits(24)]
+    _res40_63: u32,
+}
+
 #[bitfield(u32)]
 pub struct GicdTyper {
     #[bits(5)]
@@ -115,6 +129,38 @@ pub struct GicdCtlr {
     #[bits(22)]
     _res_9_30: u32,
     pub rwp: bool,
+}
+
+/// ICC_CTLR_EL1 — GICv3 CPU interface control register (AArch64 EL1 view).
+#[bitfield(u64)]
+pub struct IccCtlrEl1 {
+    /// Common Binary Point Register.
+    pub cbpr: bool,
+    /// EOI mode (split priority-drop / deactivate).
+    pub eoi_mode: bool,
+    #[bits(4)]
+    _res2_5: u8,
+    /// Priority Mask Hint Enable.
+    pub pmhe: bool,
+    _res7: bool,
+    /// Number of priority bits implemented, minus one. Read-only.
+    #[bits(3)]
+    pub pri_bits: u8,
+    /// Identifier bits: 0 = 16-bit INTIDs, 1 = 24-bit INTIDs. Read-only.
+    #[bits(3)]
+    pub id_bits: u8,
+    /// SEI support. Read-only.
+    pub seis: bool,
+    /// Affinity 3 valid. Read-only.
+    pub a3v: bool,
+    #[bits(2)]
+    _res16_17: u8,
+    /// Range Selector support. Read-only.
+    pub rss: bool,
+    /// Extended INTID range support. Read-only.
+    pub ext_range: bool,
+    #[bits(44)]
+    _res20_63: u64,
 }
 
 open_enum! {
