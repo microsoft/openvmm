@@ -743,8 +743,12 @@ mod tests {
         defs::boot_params::read_from_bytes(data).unwrap()
     }
 
-    fn elf_without_load_segments() -> Cursor<[u8; 64]> {
-        let mut image = [0; 64];
+    fn test_elf(entrypoint: u64, load_segments: &[(u64, u64)]) -> Cursor<Vec<u8>> {
+        const ELF_HEADER_SIZE: usize = 64;
+        const PROGRAM_HEADER_SIZE: usize = 56;
+
+        assert!(load_segments.len() <= u16::MAX as usize);
+        let mut image = vec![0; ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE * load_segments.len()];
         image[..4].copy_from_slice(b"\x7fELF");
         image[4] = 2;
         image[5] = 1;
@@ -752,11 +756,21 @@ mod tests {
         image[16..18].copy_from_slice(&2u16.to_le_bytes());
         image[18..20].copy_from_slice(&62u16.to_le_bytes());
         image[20..24].copy_from_slice(&1u32.to_le_bytes());
-        image[24..32].copy_from_slice(&KERNEL_BASE.to_le_bytes());
-        image[32..40].copy_from_slice(&64u64.to_le_bytes());
-        image[52..54].copy_from_slice(&64u16.to_le_bytes());
-        image[54..56].copy_from_slice(&56u16.to_le_bytes());
-        image[58..60].copy_from_slice(&64u16.to_le_bytes());
+        image[24..32].copy_from_slice(&entrypoint.to_le_bytes());
+        image[32..40].copy_from_slice(&(ELF_HEADER_SIZE as u64).to_le_bytes());
+        image[52..54].copy_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes());
+        image[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_le_bytes());
+        image[56..58].copy_from_slice(&(load_segments.len() as u16).to_le_bytes());
+        image[58..60].copy_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes());
+        for (index, &(paddr, memsz)) in load_segments.iter().enumerate() {
+            let offset = ELF_HEADER_SIZE + index * PROGRAM_HEADER_SIZE;
+            image[offset..offset + 4].copy_from_slice(&1u32.to_le_bytes());
+            image[offset + 4..offset + 8].copy_from_slice(&5u32.to_le_bytes());
+            image[offset + 16..offset + 24].copy_from_slice(&paddr.to_le_bytes());
+            image[offset + 24..offset + 32].copy_from_slice(&paddr.to_le_bytes());
+            image[offset + 40..offset + 48].copy_from_slice(&memsz.to_le_bytes());
+            image[offset + 48..offset + 56].copy_from_slice(&HV_PAGE_SIZE.to_le_bytes());
+        }
         Cursor::new(image)
     }
 
@@ -972,7 +986,7 @@ mod tests {
     #[test]
     fn elf_without_load_segments_is_rejected() {
         let mut importer = RecordingImporter::default();
-        let mut kernel_image = elf_without_load_segments();
+        let mut kernel_image = test_elf(KERNEL_BASE, &[]);
         let mut buffer = ChunkBuf::new();
         let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
             &mut importer,
@@ -985,6 +999,52 @@ mod tests {
         assert!(matches!(
             error,
             Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_with_only_empty_load_segment_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE + 1, &[(KERNEL_BASE + 1, 0)]);
+        let mut buffer = ChunkBuf::new();
+        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+            &mut importer,
+            &mut kernel_image,
+            KERNEL_BASE,
+            None,
+            &mut buffer,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_entrypoint_outside_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(
+            KERNEL_BASE + HV_PAGE_SIZE,
+            &[
+                (KERNEL_BASE, HV_PAGE_SIZE),
+                (KERNEL_BASE + 2 * HV_PAGE_SIZE, HV_PAGE_SIZE),
+            ],
+        );
+        let mut buffer = ChunkBuf::new();
+        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+            &mut importer,
+            &mut kernel_image,
+            KERNEL_BASE,
+            None,
+            &mut buffer,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::EntryPointNotInLoadableSegment { .. })
         ));
         assert!(importer.imports.is_empty());
     }
