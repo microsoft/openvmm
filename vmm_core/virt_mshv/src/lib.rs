@@ -1104,6 +1104,7 @@ struct MshvMemoryRangeState {
 }
 
 impl MshvMemoryRangeState {
+    #[cfg(guest_arch = "x86_64")]
     fn guest_memory_attached(&self) -> bool {
         self.ranges.iter().flatten().any(|range| range.guest_memory)
     }
@@ -1113,6 +1114,9 @@ impl MshvMemoryRangeState {
 struct MshvMemoryRange {
     region: mshv_user_mem_region,
     mapped: bool,
+    /// Whether this range maps guest RAM rather than an internal mapping,
+    /// such as the SNP VMSA. Only x86_64 memory finalization consumes it.
+    #[cfg(guest_arch = "x86_64")]
     guest_memory: bool,
 }
 
@@ -1206,6 +1210,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         state.ranges[slot_to_use] = Some(MshvMemoryRange {
             region: mem_region,
             mapped,
+            #[cfg(guest_arch = "x86_64")]
             guest_memory: true,
         });
         Ok(())
