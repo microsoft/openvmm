@@ -5,8 +5,24 @@
 
 use petri_artifacts_core::ArtifactHandle;
 use petri_artifacts_core::ArtifactId;
-use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
+
+/// Petri VMM tests environment variables
+pub mod env {
+    /// Where petri should look for test artifacts (that aren't images)
+    pub const VMM_TESTS_CONTENT_DIR: &str = "VMM_TESTS_CONTENT_DIR";
+    /// Where petri should put test logs
+    pub const TEST_OUTPUT_PATH: &str = "TEST_OUTPUT_PATH";
+    /// Where petri should look for test images
+    pub const VMM_TEST_IMAGES: &str = "VMM_TEST_IMAGES";
+    /// Whether prep_steps should reuse prepped vhds (vs always recreating them)
+    pub const PETRI_REUSE_PREPPED_VHDS: &str = "PETRI_REUSE_PREPPED_VHDS";
+    /// Whether tests requiring 2MB HugeTLB should fail if not available or
+    /// be silently skipped.
+    pub const OPENVMM_REQUIRE_2MB_HUGETLB: &str = "OPENVMM_REQUIRE_2MB_HUGETLB";
+    /// The name of a nested test's parent to store logs in
+    pub const PETRI_NESTED_TEST_PARENT: &str = "PETRI_NESTED_TEST_PARENT";
+}
 
 /// A type-erased artifact that holds references to information about a certain
 /// test image that implements `IsHostedOnHvliteAzureBlobStore`
@@ -106,10 +122,9 @@ impl ErasedVmmTestImage {
     }
 }
 
-impl<T: ArtifactId + tags::IsHostedOnHvliteAzureBlobStore> From<ArtifactHandle<T>>
-    for ErasedVmmTestImage
-{
-    fn from(_value: ArtifactHandle<T>) -> Self {
+impl ErasedVmmTestImage {
+    /// Create a new `ErasedVmmTestImage`
+    pub const fn new<T: ArtifactId + tags::IsHostedOnHvliteAzureBlobStore>() -> Self {
         Self {
             artifact_id_str: T::GLOBAL_UNIQUE_ID,
             filename: T::FILENAME,
@@ -117,6 +132,14 @@ impl<T: ArtifactId + tags::IsHostedOnHvliteAzureBlobStore> From<ArtifactHandle<T
             size: T::SIZE,
             download_name: T::DOWNLOAD_NAME,
         }
+    }
+}
+
+impl<T: ArtifactId + tags::IsHostedOnHvliteAzureBlobStore> From<ArtifactHandle<T>>
+    for ErasedVmmTestImage
+{
+    fn from(_value: ArtifactHandle<T>) -> Self {
+        Self::new::<T>()
     }
 }
 
@@ -168,7 +191,7 @@ macro_rules! declare_vmm_test_images {
             $name(
                 $crate::artifacts::blob_disk::$blob_storage,
                 $filename,
-                ANY
+                IMAGE
             ),
         )*);
 
@@ -179,20 +202,12 @@ macro_rules! declare_vmm_test_images {
 
         const _: () = {
             use $crate::vmm_test_images_macro_support::linkme;
-            use $crate::tags::IsHostedOnHvliteAzureBlobStore;
-            use ::petri_artifacts_core::ArtifactId;
 
             // UNSAFETY: Needed for linkme.
             #[expect(unsafe_code)]
             #[linkme::distributed_slice($crate::vmm_test_images_macro_support::VMM_TEST_IMAGES)]
             #[linkme(crate = linkme)]
-            static IMAGE: $crate::ErasedVmmTestImage = $crate::ErasedVmmTestImage {
-                artifact_id_str: $name::GLOBAL_UNIQUE_ID,
-                filename: $name::FILENAME,
-                url_fn: $name::url,
-                size: $name::SIZE,
-                download_name: $name::DOWNLOAD_NAME,
-            };
+            static IMAGE: $crate::ErasedVmmTestImage = $crate::ErasedVmmTestImage::new::<$name>();
         };)*
     };
 }
@@ -207,7 +222,7 @@ macro_rules! declare_prepped_vmm_test_images {
     ) => {
         ::petri_artifacts_core::declare_artifacts_inner!($(
             $(#[$doc])*
-            $name(::petri_artifacts_core::DOES_NOT_SUPPORT_BLOB_DISK, $filename, ANY),
+            $name(::petri_artifacts_core::DOES_NOT_SUPPORT_BLOB_DISK, $filename, IMAGE),
         )*);
     };
 }
@@ -311,6 +326,7 @@ pub mod artifacts {
     /// Host-side tools used by the VMM tests.
     pub mod host_tools {
         use petri_artifacts_core::declare_artifacts;
+        use petri_artifacts_core::tags::IsNextestArchive;
 
         declare_artifacts! {
             /// Windows x86_64 build of the `test_igvm_agent_rpc_server` executable.
@@ -324,8 +340,6 @@ pub mod artifacts {
             FLOWEY_HVLITE_LINUX_X64("flowey_hvlite", LINUX_X64),
             /// Windows aarch64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_WINDOWS_AARCH64("flowey_hvlite.exe", WINDOWS_AARCH64),
-            /// Linux x86_64 build of the `incubator` binary.
-            INCUBATOR_LINUX_X64("incubator", LINUX_X64),
             /// Windows x86_64 build of the `prep_steps` binary.
             PREP_STEPS_WINDOWS_X64("prep_steps.exe", WINDOWS_X64),
             /// Linux x86_64 build of the `prep_steps` binary.
@@ -349,6 +363,12 @@ pub mod artifacts {
                 LINUX_AARCH64_MUSL
             ),
         }
+
+        impl IsNextestArchive for NEXTEST_VMM_TESTS_ARCHIVE_WINDOWS_X64 {}
+        impl IsNextestArchive for NEXTEST_VMM_TESTS_ARCHIVE_WINDOWS_AARCH64 {}
+        impl IsNextestArchive for NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64 {}
+        impl IsNextestArchive for NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL {}
+        impl IsNextestArchive for NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL {}
     }
 
     /// Loadable artifacts
@@ -399,6 +419,8 @@ pub mod artifacts {
             LINUX_DIRECT_TEST_INITRD_X64("initrd", X64),
             /// Test linux direct kernel for aarch64 (from OpenVMM deps)
             LINUX_DIRECT_TEST_KERNEL_AARCH64("Image", AARCH64),
+            /// Test linux direct kernel for aarch64 CCA (from OpenVMM deps)
+            LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64("ImageCCA", AARCH64),
             /// Test linux direct initrd for arch64 (from OpenVMM deps)
             LINUX_DIRECT_TEST_INITRD_AARCH64("initrd", AARCH64),
             /// Test linux direct bzImage kernel for x64 (from OpenVMM deps)
@@ -422,6 +444,10 @@ pub mod artifacts {
         }
 
         impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_AARCH64 {
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsLoadable for LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
 

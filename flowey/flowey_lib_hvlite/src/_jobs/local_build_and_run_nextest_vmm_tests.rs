@@ -4,7 +4,6 @@
 //! A local-only job that builds everything needed and runs the VMM tests
 
 use crate::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
-use crate::build_incubator::IncubatorProfileNameOrPath;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
@@ -23,6 +22,7 @@ use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
 use petri_artifacts_core::ArtifactId;
 use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::env::VMM_TEST_IMAGES;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -90,10 +90,6 @@ flowey_request! {
 
         pub repetitions: NonZeroU64,
 
-        /// Optional: incubator profile path. When set, tests run inside
-        /// an emulated VM instead of on the host.
-        pub incubator_profile: Option<IncubatorProfileNameOrPath>,
-
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -105,7 +101,6 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_guest_test_uefi::Node>();
-        ctx.import::<crate::build_incubator::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
@@ -142,7 +137,6 @@ impl SimpleFlowNode for Node {
             petri_params,
             disable_secure_avic,
             repetitions,
-            incubator_profile,
             done,
         } = request;
 
@@ -590,32 +584,6 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        let mut build_incubator = |target| {
-            let output = ctx.reqv(|v| crate::build_incubator::Request {
-                target: CommonTriple::Custom(modify_and_validate_target(target)),
-                profile: if release {
-                    CommonProfile::Release
-                } else {
-                    CommonProfile::Debug
-                },
-                incubator: v,
-            });
-            if copy_extras {
-                copy_to_dir.push((
-                    extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        let crate::build_incubator::IncubatorOutput { bin: _, dbg } = x;
-                        dbg
-                    }),
-                ));
-            }
-            output
-        };
-
-        let incubator_linux_x64 = build
-            .incubator_linux_x64
-            .then(|| build_incubator(VmmTestsBuiltArtifacts::incubator_linux_x64_target()));
-
         let mut build_vmm_tests_nextest_archive = |target| {
             ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
                 target,
@@ -698,7 +666,6 @@ impl SimpleFlowNode for Node {
             nextest_vmm_tests_archive_linux_x64,
             nextest_vmm_tests_archive_linux_musl_x64,
             nextest_vmm_tests_archive_linux_musl_aarch64,
-            incubator_linux_x64,
             prep_steps_windows_x64,
             prep_steps_linux_musl_x64,
             test_igvm_agent_rpc_server_windows_x64,
@@ -786,7 +753,6 @@ impl SimpleFlowNode for Node {
                 prebuilt_artifacts,
                 uefi_firmware_flavor: None,
                 is_repo_root: true,
-                needs_incubator_profiles: incubator_profile.is_some(),
                 needs_virtio_win_drivers,
                 needs_release_igvm,
                 done: v,
@@ -885,11 +851,6 @@ impl SimpleFlowNode for Node {
                         run_target_args.push("--needs-igvm-agent".into());
                     }
 
-                    if let Some(profile) = &incubator_profile {
-                        run_target_args.push("--incubator".into());
-                        run_target_args.push(profile.to_string().into());
-                    }
-
                     let dst = test_content_dir.join(script_name);
 
                     fs_err::write(
@@ -939,7 +900,6 @@ impl SimpleFlowNode for Node {
                     downloaded_artifacts,
                     prep_steps_variants,
                     external_deps,
-                    incubator_profile,
                     upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions,
@@ -975,7 +935,8 @@ pub(crate) fn init_artifacts_dir(
     test_content_dir: &Path,
     skip_vhd_prompt: bool,
 ) -> anyhow::Result<()> {
-    let vmm_test_artifacts_dir = test_content_dir.join("images");
+    let vmm_test_artifacts_dir = std::env::var(VMM_TEST_IMAGES)
+        .map_or_else(|_| test_content_dir.join("images"), PathBuf::from);
     ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
         custom_cache_dir: Some(vmm_test_artifacts_dir.clone()),
         skip_prompt: Some(skip_vhd_prompt),

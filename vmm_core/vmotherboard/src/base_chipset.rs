@@ -1051,6 +1051,11 @@ pub mod options {
         pub with_guest_watchdog: bool,
         /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
         pub with_i440bx_host_pci_bridge: bool,
+        /// COM1 through COM4 ports to describe in the device tree. Device
+        /// attachment does not depend on these values.
+        pub dt_com_ports: [bool; 4],
+        /// Whether to describe both ARM64 PL011 UARTs in the device tree.
+        pub dt_pl011_uarts: bool,
     }
 
     /// Device specific dependencies
