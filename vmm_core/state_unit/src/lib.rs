@@ -474,7 +474,7 @@ impl StateUnits {
                 .filter(|unit| {
                     matches!(
                         unit.state,
-                        State::StartUncertain | State::StartFailedStopped
+                        State::StartUncertain | State::StartFailedStopped | State::QuiesceUncertain
                     )
                 })
                 .map(|unit| {
