@@ -226,6 +226,7 @@ impl Timer {
         while ticks > 0 {
             if self.state.state == CountState::Active
                 && self.state.ce == self.state.cr
+                && !self.state.null
                 && self.state.gate
                 && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
             {
@@ -948,6 +949,15 @@ mod tests {
         timer.write((cr >> 8) as u8);
     }
 
+    fn set_low_byte_timer(timer: &mut Timer, mode: Mode, cr: u8) {
+        timer.set_control(
+            ControlWord::new()
+                .with_mode(mode as u8)
+                .with_rw(RwMode::LOW.0),
+        );
+        timer.write(cr);
+    }
+
     fn check_invert(timer: &mut Timer, initial_out: bool, expected_next: u64) {
         let mode = Mode::from(timer.state.control.mode());
         assert_eq!(timer.state.out, initial_out, "{mode:?}");
@@ -1133,6 +1143,44 @@ mod tests {
             assert_eq!(timer.state, active_state, "bcd={bcd}");
             assert!(target.0.lock().is_empty(), "bcd={bcd}");
         }
+    }
+
+    #[test]
+    fn reprogrammed_periodic_count_loads_before_fast_forward() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            let mut elapsed = Timer::new(true, None);
+            let mut incremental = Timer::new(true, None);
+            set_low_byte_timer(&mut elapsed, mode, 100);
+            set_low_byte_timer(&mut incremental, mode, 100);
+            elapsed.evaluate(1);
+            incremental.evaluate(1);
+            elapsed.write(100);
+            incremental.write(100);
+
+            elapsed.evaluate(100);
+            for _ in 0..100 {
+                incremental.evaluate(1);
+            }
+
+            assert_eq!(elapsed.state, incremental.state, "{mode:?}");
+            assert!(!elapsed.state.null, "{mode:?}");
+        }
+
+        let target = Arc::new(RecordingTarget::default());
+        let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
+        let mut timer = Timer::new(true, Some(interrupt));
+        set_low_byte_timer(&mut timer, Mode::RateGenerator, 4);
+        timer.evaluate(4);
+        timer.write(1);
+        target.0.lock().clear();
+        assert!(timer.state.null);
+        assert!(!timer.state.out);
+
+        timer.evaluate(u64::MAX);
+
+        assert!(!timer.state.null);
+        assert!(timer.state.out);
+        assert_eq!(*target.0.lock(), [true]);
     }
 
     #[test]
