@@ -1073,9 +1073,16 @@ impl VmService {
             ));
         }
         let layout_config = chipset_builder.layout_config();
-        let chipset = chipset_builder
+        let mut chipset = chipset_builder
             .build()
             .context("failed to build vm configuration")?;
+        // Linux direct boot has no firmware to provide a VM Generation ID, so
+        // OpenVMM provides one (see `direct_boot_generation_id_device`).
+        if cfg!(guest_arch = "x86_64") && matches!(load_mode, LoadMode::Linux { .. }) {
+            chipset
+                .chipset_devices
+                .push(crate::direct_boot_generation_id_device());
+        }
 
         // Build the NUMA topology. A `MemoryConfig` and an explicit
         // `NumaConfig` are mutually exclusive (mirrors the CLI `--memory` vs
