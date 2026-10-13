@@ -240,8 +240,8 @@ Guest-visible Hyper-V facilities require the relevant enlightenments.
 | MSHV, x86 or Arm | Hyper-V partition `ReferenceTime` property | Yes, through `TimeFreeze`. |
 | WHP, offloaded Hyper-V | Native WHP reference time | Yes, separately for each backing partition. |
 | WHP, emulated Hyper-V on x86 | Software `VmTime` | Yes for native WHP time; `VmTime` stops separately. |
-| KVM, non-isolated x86 with stable TSC and offset access | KVM clock, converted from ns to 100 ns | Yes, through software clock rebasing and LAPIC timer staging. |
-| KVM, other x86 configurations | KVM clock, converted from ns to 100 ns | No. |
+| KVM, non-isolated x86 | KVM clock, converted from ns to 100 ns | Yes, through software clock rebasing and LAPIC timer staging, with per-VP fallback when stable clock correlation or offset access is unavailable. |
+| KVM, isolated x86 | KVM clock, converted from ns to 100 ns | No. |
 | KVM, Arm | No Hyper-V reference-time source exposed | No; architectural timers remain KVM-owned. |
 | HVF, Arm | Software `VmTime` | No architectural-counter freeze; software time still stops. |
 
