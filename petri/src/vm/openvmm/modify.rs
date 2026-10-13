@@ -139,6 +139,7 @@ impl PetriVmConfigOpenVmm {
             map_gateway_to_host_loopback: None,
             gateway_loopback_proxy_port: None,
             private_network_ingress: None,
+            host_loopback_ingress: false,
         }
         .into_resource();
         if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
@@ -210,6 +211,7 @@ impl PetriVmConfigOpenVmm {
                     map_gateway_to_host_loopback: None,
                     gateway_loopback_proxy_port: None,
                     private_network_ingress: None,
+                    host_loopback_ingress: false,
                 }
                 .into_resource(),
             })
@@ -246,6 +248,7 @@ impl PetriVmConfigOpenVmm {
             map_gateway_to_host_loopback: None,
             gateway_loopback_proxy_port: None,
             private_network_ingress: None,
+            host_loopback_ingress: false,
         }
         .into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
@@ -305,6 +308,7 @@ impl PetriVmConfigOpenVmm {
             map_gateway_to_host_loopback: None,
             gateway_loopback_proxy_port: None,
             private_network_ingress: None,
+            host_loopback_ingress: false,
         }
         .into_resource();
 
@@ -354,6 +358,7 @@ impl PetriVmConfigOpenVmm {
             map_gateway_to_host_loopback: None,
             gateway_loopback_proxy_port: None,
             private_network_ingress: None,
+            host_loopback_ingress: false,
         }
         .into_resource();
         self.push_virtio_nic(

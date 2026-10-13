@@ -141,6 +141,14 @@ pub mod consomme {
         /// Publishes the ports that the guest announces to the host's private
         /// networks.
         pub private_network_ingress: Option<PrivateNetworkIngress>,
+        /// Publishes the ports that the guest announces on host loopback
+        /// alone, for the host itself, when `private_network_ingress`, whose
+        /// listeners can also admit the host, is `None`.
+        ///
+        /// The endpoint listens on host IPv4 and IPv6 loopback at the guest's
+        /// port numbers, never displacing a host listener that already holds
+        /// the port, and admits only the host.
+        pub host_loopback_ingress: bool,
     }
 
     impl ResourceId<NetEndpointHandleKind> for ConsommeHandle {

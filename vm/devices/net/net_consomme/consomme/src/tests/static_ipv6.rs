@@ -152,25 +152,10 @@ fn static_ipv6_identity_rejects_inconsistent_values() {
     assert_eq!(params.gateway_ipv6, None);
 }
 
-#[pal_async::async_test]
-async fn the_gateway_answers_neighbor_solicitations_for_its_subnet_only(driver: DefaultDriver) {
-    let mut consomme = Consomme::new(dual_stack_params());
-    let mut client = CapturingClient::new(driver);
-    for target in [
-        GATEWAY_IPV6,
-        "fd00::a00:9".parse().unwrap(),
-        GUEST_IPV6,
-        "2001:db8::1".parse().unwrap(),
-    ] {
-        consomme
-            .access(&mut client)
-            .send(&solicitation(target), &ChecksumState::NONE)
-            .unwrap();
-    }
-    // The gateway advertises itself for its address and its other on-link
-    // neighbors, never for the guest or an off-link address.
-    let targets = client
-        .received
+/// Returns the targets of the Neighbor Advertisements that the gateway sent to
+/// the guest.
+fn advertised_targets(received: &[Vec<u8>]) -> Vec<Ipv6Addr> {
+    received
         .iter()
         .map(|frame| {
             let eth = EthernetFrame::new_checked(&frame[..]).unwrap();
@@ -202,11 +187,56 @@ async fn the_gateway_answers_neighbor_solicitations_for_its_subnet_only(driver: 
                 other => panic!("unexpected reply {other:?}"),
             }
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+#[pal_async::async_test]
+async fn the_gateway_answers_neighbor_solicitations_for_its_subnet_only(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(dual_stack_params());
+    let mut client = CapturingClient::new(driver);
+    for target in [
+        GATEWAY_IPV6,
+        "fd00::a00:9".parse().unwrap(),
+        GUEST_IPV6,
+        "2001:db8::1".parse().unwrap(),
+    ] {
+        consomme
+            .access(&mut client)
+            .send(&solicitation(target), &ChecksumState::NONE)
+            .unwrap();
+    }
+    // The gateway advertises itself for its address and its other on-link
+    // neighbors, never for the guest or an off-link address.
     assert_eq!(
-        targets,
+        advertised_targets(&client.received),
         [GATEWAY_IPV6, "fd00::a00:9".parse::<Ipv6Addr>().unwrap()]
     );
+}
+
+#[pal_async::async_test]
+async fn the_gateway_answers_neighbor_solicitations_for_host_peers(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(dual_stack_params());
+    let mut client = CapturingClient::new(driver);
+    // A host peer on IPv6 loopback reaches the guest from a link-local address
+    // at which the gateway presents it, so the guest must resolve that address
+    // to answer.
+    let peer = consomme
+        .state
+        .try_ft_from_remote_address(&"[::1]:50000".parse().unwrap(), 8080)
+        .unwrap()
+        .src
+        .ip();
+    let IpAddr::V6(peer) = peer else {
+        panic!("host peer {peer} is not presented at an IPv6 address");
+    };
+    assert!(peer.is_unicast_link_local());
+    for target in [peer, "fe80::ff:fe00:99:1".parse().unwrap()] {
+        consomme
+            .access(&mut client)
+            .send(&solicitation(target), &ChecksumState::NONE)
+            .unwrap();
+    }
+    assert_eq!(advertised_targets(&client.received), [peer]);
 }
 
 #[pal_async::async_test]

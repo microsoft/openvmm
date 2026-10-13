@@ -6,12 +6,14 @@
 //! An explicit port forward admits every peer. A listener that publishes a
 //! guest port to the host's private networks admits only peers whose
 //! addresses are not globally reachable, and the host itself only when the
-//! host may reach the guest. The host is a peer on loopback, at the address
-//! that it connected to, or at one of the host's own unicast addresses. It
-//! refuses peers that the guest could not answer unambiguously: those in the
-//! guest's own networks, which the guest takes for its gateway or its
-//! neighbors, and IPv6 link-local peers, whose replies would leave from the
-//! guest's link-local address and lose their interface scope.
+//! host may reach the guest. A listener that publishes a guest port on host
+//! loopback alone admits only the host. The host is a peer on loopback, at
+//! the address that it connected to, or at one of the host's own unicast
+//! addresses. Admission refuses peers that the guest could not answer
+//! unambiguously: those in the guest's own networks, which the guest takes for
+//! its gateway or its neighbors, and IPv6 link-local peers, whose replies
+//! would leave from the guest's link-local address and lose their interface
+//! scope.
 
 use crate::ConsommeParams;
 #[cfg(unix)]
@@ -39,13 +41,16 @@ pub enum InboundAdmission {
         /// Whether to admit the host itself.
         host: bool,
     },
+    /// The host alone, as for a listener bound to host loopback that publishes
+    /// a guest port: the guest's datagrams from that port leave through it.
+    Host,
 }
 
 impl InboundAdmission {
-    /// Returns whether the listener publishes a guest port to the host's
-    /// private networks.
+    /// Returns whether the listener publishes a guest port, to the host's
+    /// private networks or to the host alone.
     pub(crate) fn publishes_guest_port(self) -> bool {
-        matches!(self, Self::PrivateNetwork { .. })
+        matches!(self, Self::PrivateNetwork { .. } | Self::Host)
     }
 
     /// Returns whether to admit `peer`, which reached the listener at
@@ -57,8 +62,10 @@ impl InboundAdmission {
         params: &ConsommeParams,
         host_addresses: &mut HostAddresses,
     ) -> bool {
-        let Self::PrivateNetwork { host } = self else {
-            return true;
+        let (private_networks, host) = match self {
+            Self::Any => return true,
+            Self::PrivateNetwork { host } => (true, host),
+            Self::Host => (false, true),
         };
         let peer = unmapped(peer);
         if params.is_guest_network_address(peer)
@@ -71,10 +78,10 @@ impl InboundAdmission {
         }
         match host_addresses.contains(peer) {
             Some(true) => host,
-            Some(false) => is_private_network_address(peer),
+            Some(false) => private_networks && is_private_network_address(peer),
             // Any peer might be the host, so a private-network peer is
             // admitted only when the host would be.
-            None => host && is_private_network_address(peer),
+            None => private_networks && host && is_private_network_address(peer),
         }
     }
 }
@@ -362,6 +369,54 @@ mod tests {
         // Loopback and the address that a peer connected to remain the host.
         assert!(lan_and_host.admits(address("127.0.0.1"), None, &params, &mut unknown));
         assert!(!lan.admits(address("127.0.0.1"), None, &params, &mut unknown));
+    }
+
+    #[test]
+    fn host_admission_admits_the_host_alone() {
+        let params = guest_params();
+        let mut host_addresses = HostAddresses {
+            addresses: Some(vec![address("192.168.1.10"), address("fd12::10")]),
+            listed: Some(Instant::now()),
+        };
+        assert!(InboundAdmission::Host.publishes_guest_port());
+        for (peer, local, from_host) in [
+            ("127.0.0.1", "127.0.0.1", true),
+            ("127.0.0.2", "127.0.0.1", true),
+            ("::ffff:127.0.0.1", "::ffff:127.0.0.1", true),
+            ("::1", "::1", true),
+            ("192.168.1.10", "127.0.0.1", true),
+            ("fd12::10", "::1", true),
+            ("192.168.1.50", "127.0.0.1", false),
+            ("fd12::50", "::1", false),
+            ("8.8.8.8", "127.0.0.1", false),
+            ("2001:4860::8888", "::1", false),
+            ("10.0.0.77", "127.0.0.1", false),
+            ("fe80::10", "::1", false),
+        ] {
+            assert_eq!(
+                InboundAdmission::Host.admits(
+                    address(peer),
+                    Some(address(local)),
+                    &params,
+                    &mut host_addresses
+                ),
+                from_host,
+                "{peer}"
+            );
+        }
+
+        // Without the host's addresses, only loopback remains the host.
+        let mut unknown = HostAddresses {
+            addresses: None,
+            listed: Some(Instant::now()),
+        };
+        assert!(InboundAdmission::Host.admits(address("::1"), None, &params, &mut unknown));
+        for peer in ["192.168.1.50", "fd12::50", "8.8.8.8"] {
+            assert!(
+                !InboundAdmission::Host.admits(address(peer), None, &params, &mut unknown),
+                "{peer}"
+            );
+        }
     }
 
     #[test]

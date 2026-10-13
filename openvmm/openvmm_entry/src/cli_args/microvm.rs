@@ -398,12 +398,16 @@ pub struct MicrovmCli {
     )]
     pub network_egress_deny: Vec<net_backend_resources::egress::EgressRule>,
 
-    /// Deny host-loopback access, or allow it with explicit localhost forwards.
+    /// Deny or allow bidirectional host-loopback access.
     ///
-    /// Explicit `allow` without forwards needs `--network-ingress allow`,
-    /// whose published listeners then also admit the host: otherwise the
-    /// portable NAT cannot provide generic bidirectional host-loopback
-    /// connectivity.
+    /// Explicit `allow` lets the guest reach host loopback services through
+    /// its gateway, subject to the egress policy, and publishes every TCP and
+    /// UDP port on which the guest listens on host loopback for the host
+    /// alone, without a port list: the guest announces its listeners, and
+    /// replies to the host pass regardless of the egress policy. With
+    /// `--network-ingress allow`, the listeners published to the host's
+    /// private networks admit the host instead. Explicit forwards may publish
+    /// further ports. Snapshots do not support explicit `allow`.
     #[clap(long, value_enum, value_name = "ACTION")]
     pub host_loopback: Option<MicrovmNetworkActionCli>,
 
@@ -727,9 +731,8 @@ impl Options {
         anyhow::ensure!(
             self.machine != MachineProfileCli::Microvm
                 || self.microvm.host_loopback != Some(MicrovmNetworkActionCli::Allow)
-                || !self.microvm.host_loopback_forward.is_empty()
-                || self.microvm.network_ingress == Some(MicrovmNetworkActionCli::Allow),
-            "the portable microVM network profile does not support generic host-loopback connectivity without private-network ingress; explicit --host-loopback allow requires --host-loopback-forward for deliberate port publishing or --network-ingress allow"
+                || (self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none()),
+            "microVM snapshots do not support --host-loopback allow, whose published guest listeners are live host attachments"
         );
         Ok(())
     }
@@ -1377,6 +1380,12 @@ impl Options {
                         .network_ingress
                         .unwrap_or(MicrovmNetworkActionCli::Deny)
                         .into(),
+                )
+                .with_host_loopback_ingress(
+                    self.microvm
+                        .host_loopback
+                        .unwrap_or(MicrovmNetworkActionCli::Deny)
+                        .into(),
                 ))
         })
     }
@@ -1902,7 +1911,7 @@ mod tests {
                 &network,
                 openvmm_defs::microvm::MICROVM_VIRTIO_NET_KVM_IRQ,
                 None,
-                false,
+                None,
             )),
             false,
             &[],
@@ -1926,7 +1935,7 @@ mod tests {
                     &network,
                     openvmm_defs::microvm::MICROVM_VIRTIO_NET_WHP_IRQ,
                     Some(server.parse().unwrap()),
-                    false,
+                    None,
                 )),
                 false,
                 &[],
@@ -2272,7 +2281,10 @@ mod tests {
     }
 
     #[test]
-    fn test_microvm_host_loopback_generic_allow_is_rejected() {
+    fn test_microvm_host_loopback_allow_publishes_guest_listeners() {
+        use net_backend_resources::egress::EgressAction;
+
+        let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         let common = [
             "openvmm",
             "--machine",
@@ -2282,18 +2294,65 @@ mod tests {
             "--host-loopback",
             "allow",
         ];
+        // Explicit allow needs neither a forward nor private-network ingress.
         for extra in [
             vec!["--net", "10.0.0.2/24"],
+            vec!["--net", "10.0.0.2/24", "--network-egress", "deny"],
+            vec![
+                "--net",
+                "10.0.0.2/24",
+                "--network-ingress",
+                "deny",
+                "--network-proxy",
+                "10.0.0.1:3128",
+            ],
+        ] {
+            let options = Options::try_parse_from(common.into_iter().chain(extra)).unwrap();
+            options.validate_microvm_options().unwrap();
+            let policy = options.microvm_egress_policy(&network).unwrap();
+            assert_eq!(policy.ingress_action(), EgressAction::Deny);
+            assert_eq!(policy.host_loopback_ingress_action(), EgressAction::Allow);
+            assert_eq!(options.microvm_private_network_ingress(), None);
+        }
+        // Snapshots cannot carry published listeners.
+        for extra in [
             vec!["--net", "10.0.0.2/24", "--snapshot-destination", "snapshot"],
             vec!["--restore-snapshot", "snapshot"],
         ] {
             let options = Options::try_parse_from(common.into_iter().chain(extra)).unwrap();
             let error = options.validate_microvm_options().unwrap_err();
             assert!(
-                error
-                    .to_string()
-                    .contains("generic host-loopback connectivity"),
+                error.to_string().contains("--host-loopback allow"),
                 "{error}"
+            );
+        }
+        // Omitted or denied host loopback publishes nothing.
+        for host_loopback in [None, Some("deny")] {
+            let options = Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--network-profile",
+                    "portable",
+                    "--net",
+                    "10.0.0.2/24",
+                ]
+                .into_iter()
+                .chain(
+                    host_loopback
+                        .into_iter()
+                        .flat_map(|action| ["--host-loopback", action]),
+                ),
+            )
+            .unwrap();
+            options.validate_microvm_options().unwrap();
+            assert_eq!(
+                options
+                    .microvm_egress_policy(&network)
+                    .unwrap()
+                    .host_loopback_ingress_action(),
+                EgressAction::Deny
             );
         }
         let forwarded = Options::try_parse_from(common.into_iter().chain([

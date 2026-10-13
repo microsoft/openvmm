@@ -199,9 +199,12 @@ impl Endpoint for TapEndpoint {
 
     fn set_egress_policy(&mut self, policy: EgressPolicy) -> anyhow::Result<()> {
         // A TAP device has no flows to admit the replies of private-network
-        // ingress by, so it cannot enforce a policy that allows it.
+        // or host-loopback ingress by, so it cannot enforce a policy that
+        // allows either.
         anyhow::ensure!(
-            policy.ingress_action() == net_backend_resources::egress::EgressAction::Deny,
+            policy.ingress_action() == net_backend_resources::egress::EgressAction::Deny
+                && policy.host_loopback_ingress_action()
+                    == net_backend_resources::egress::EgressAction::Deny,
             "the TAP backend does not support egress policies that allow ingress"
         );
         self.egress_policy = Some(policy);

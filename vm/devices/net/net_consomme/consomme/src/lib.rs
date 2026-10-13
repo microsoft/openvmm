@@ -992,6 +992,14 @@ impl Consomme {
         }
     }
 
+    /// Returns the host address to which guest traffic sent to `address` is
+    /// routed, when `address` is a virtual address: one that
+    /// [`Self::create_virtual_address`] allocated, or one at which Consomme
+    /// presents a host-local peer, such as host loopback, to the guest.
+    pub fn virtual_address_destination(&self, address: IpAddr) -> Option<IpAddr> {
+        self.state.local_addr_map.resolve_virtual(&address)
+    }
+
     /// Pairs the client with this instance to operate on the consomme instance.
     pub fn access<'a, T: Client>(&'a mut self, client: &'a mut T) -> Access<'a, T> {
         Access {

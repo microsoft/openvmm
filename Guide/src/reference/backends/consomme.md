@@ -101,14 +101,31 @@ fragments to bypass transport checks, and rule policies reject IPv6 extension
 headers, including fragments. The legacy `--allow-host`, `--block-host`, and
 `--allow-endpoint` forms are IPv4 policies that deny all IPv6.
 
-The portable profile does not provide generic bidirectional host-loopback
-connectivity on its own. Explicit `--host-loopback allow` without any
-`--host-loopback-forward` is rejected before VM resources are opened unless
-ingress is `allow`, whose published listeners then also admit the host.
-With deliberate TCP/UDP forwards, `allow` maps the guest-visible gateway to
-host loopback, permits host-local destinations subject to egress policy, and
-publishes only the specified localhost-to-guest ports. This is port publishing,
-not a generic bidirectional allow contract.
+The portable profile provides generic bidirectional host-loopback connectivity
+with explicit `--host-loopback allow`, which needs no port list. The
+guest-visible gateway then maps to host loopback, and the guest may reach
+host-local destinations subject to the egress policy. Consomme presents host
+peers to the guest at virtual addresses, and the endpoint's egress policy
+evaluates the guest's traffic to such an address at the host address to which
+Consomme routes it, and for host loopback at the gateway of its family, so a
+peer's virtual address reaches no host-loopback port that the rules deny at
+the gateway. Without ingress `allow`, OpenVMM appends
+`virtnet_ingress=host-loopback` to the microVM command line, and the guest
+announces its listeners as it does for ingress `allow`. The endpoint keeps one
+host listener per announced port and address family, bound to the family's
+loopback address alone at the guest's port number, so that neither the host's
+private networks nor the internet can reach it, and admits only the host. A
+host listener that already holds the port, including one bound to every host
+address, keeps it. A host listener that binds every host address later fails
+on Linux; on Windows, unless it asks for exclusive use of the port, it
+succeeds, and the publication keeps the port's loopback traffic, as a loopback
+listener of any host process would. Replies to the host pass regardless of the
+egress policy, as they do for ingress `allow`. A guest listener bound to guest
+loopback alone is never announced and remains private to the guest. With
+ingress `allow`, the listeners published to the host's private networks admit
+the host instead. Deliberate TCP/UDP forwards publish further
+localhost-to-guest ports, possibly remapped to other guest ports. Snapshots
+reject explicit `--host-loopback allow`.
 
 Omitting `--host-loopback` preserves the existing guest-to-host mapping but
 does not publish guest ports. `deny` rejects general gateway socket traffic

@@ -7,12 +7,21 @@
 //! dual-stack link, an IPv6 identity. Rules name IPv4 or IPv6 destinations,
 //! and each rule matches only packets of its own address family.
 //!
-//! A policy that allows ingress also admits, whatever its rules, the guest's
+//! A policy that allows ingress, from the host's private networks or from host
+//! loopback alone, also admits, whatever its rules, the guest's
 //! [listener announcements](crate::ingress), neighbor resolution within the
 //! guest's subnets, and [reply candidates](crate::ingress::ReplyCandidate).
 //! [`EgressPolicy::authorize_frame`] admits every candidate, and
 //! [`EgressPolicy::authorize_frame_with_flows`] only those whose flow the
 //! endpoint already carries.
+//!
+//! An endpoint may present host-local peers, such as host loopback, at
+//! virtual addresses that it routes to their host addresses.
+//! [`EgressPolicy::authorize_frame_with_flows`] evaluates the rules for the
+//! guest's traffic to such an address at that host address, and at the
+//! gateway of its family for host loopback, which the gateway stands for, so
+//! that a peer's virtual address grants the guest no access that the rules
+//! deny it at the gateway.
 
 mod ipv6;
 
@@ -31,8 +40,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Encoding version of a policy that allows ingress, which no snapshot
-/// records.
+/// Encoding version of a policy that allows ingress, from the host's private
+/// networks or from host loopback alone, which no snapshot records.
 pub const INGRESS_EGRESS_POLICY_ENCODING_VERSION: u32 = 5;
 /// Current encoding version used for snapshot egress-policy digests, which a
 /// policy with an IPv6 identity or IPv6 rules requires.
@@ -600,6 +609,7 @@ pub struct EgressPolicy {
     proxy_endpoint: Option<TcpEndpoint>,
     ipv6: Option<EgressIpv6Link>,
     ingress: EgressAction,
+    host_loopback_ingress: EgressAction,
 }
 
 impl EgressPolicy {
@@ -726,6 +736,7 @@ impl EgressPolicy {
             proxy_endpoint: None,
             ipv6: None,
             ingress: EgressAction::Deny,
+            host_loopback_ingress: EgressAction::Deny,
         })
     }
 
@@ -782,6 +793,19 @@ impl EgressPolicy {
         self
     }
 
+    /// Applies the action for new inbound connections from host loopback,
+    /// which explicit host-loopback access requests.
+    ///
+    /// With [`EgressAction::Allow`] and ingress denied, the endpoint publishes
+    /// the guest's announced listeners on host loopback alone, and the policy
+    /// admits the same frames regardless of its egress rules as a policy that
+    /// allows ingress does. A policy that allows ingress already admits them,
+    /// so this action changes neither its behavior nor its encoding.
+    pub fn with_host_loopback_ingress(mut self, host_loopback_ingress: EgressAction) -> Self {
+        self.host_loopback_ingress = host_loopback_ingress;
+        self
+    }
+
     /// Revalidates canonical fields after a serialized policy crosses a boundary.
     pub fn validate(&self) -> Result<(), InvalidEgressPolicy> {
         let mut rebound = Self::bind(
@@ -796,7 +820,8 @@ impl EgressPolicy {
         }
         let rebound = rebound
             .with_host_loopback(self.host_loopback, self.proxy_endpoint)?
-            .with_ingress(self.ingress);
+            .with_ingress(self.ingress)
+            .with_host_loopback_ingress(self.host_loopback_ingress);
         if rebound.mode != self.mode {
             return Err(InvalidEgressPolicy::NonCanonicalRules);
         }
@@ -849,13 +874,22 @@ impl EgressPolicy {
         self.ingress
     }
 
+    /// Returns the action for new inbound connections from host loopback.
+    pub fn host_loopback_ingress_action(&self) -> EgressAction {
+        self.host_loopback_ingress
+    }
+
+    /// Returns whether the policy allows ingress, from the host's private
+    /// networks or from host loopback alone, and so admits the frames that
+    /// the publication of the guest's listeners needs.
     fn allows_ingress(&self) -> bool {
-        self.ingress == EgressAction::Allow
+        self.ingress == EgressAction::Allow || self.host_loopback_ingress == EgressAction::Allow
     }
 
     /// Returns the range of a listener announcement's payload within a guest
-    /// frame, or `None` when the policy denies ingress or the frame is no
-    /// announcement. See [`crate::ingress::listener_announcement_payload`].
+    /// frame, or `None` when the policy denies ingress, including from host
+    /// loopback, or the frame is no announcement. See
+    /// [`crate::ingress::listener_announcement_payload`].
     pub fn listener_announcement(
         &self,
         frame_prefix: &[u8],
@@ -1049,9 +1083,9 @@ impl EgressPolicy {
     }
 
     /// Returns the encoding version of [`Self::canonical_bytes`]: the ingress
-    /// version for a policy that allows ingress, the current version for a
-    /// policy with IPv6, and otherwise the previous one, so that IPv4 policies
-    /// keep their digests.
+    /// version for a policy that allows ingress, including from host loopback
+    /// alone, the current version for a policy with IPv6, and otherwise the
+    /// previous one, so that IPv4 policies keep their digests.
     pub fn encoding_version(&self) -> u32 {
         if self.allows_ingress() {
             INGRESS_EGRESS_POLICY_ENCODING_VERSION
@@ -1146,13 +1180,15 @@ impl EgressPolicy {
     }
 
     /// Encodes the version 4 fields under the version 5 marker, followed by
-    /// the ingress action.
+    /// the ingress action: 0 allows ingress, 1 denies it, and 2 allows it from
+    /// host loopback alone.
     fn canonical_bytes_v5(&self) -> Vec<u8> {
         let mut bytes = self.canonical_bytes_v4();
         bytes[0] = INGRESS_EGRESS_POLICY_ENCODING_VERSION as u8;
-        bytes.push(match self.ingress {
-            EgressAction::Allow => 0,
-            EgressAction::Deny => 1,
+        bytes.push(match (self.ingress, self.host_loopback_ingress) {
+            (EgressAction::Allow, _) => 0,
+            (EgressAction::Deny, EgressAction::Deny) => 1,
+            (EgressAction::Deny, EgressAction::Allow) => 2,
         });
         bytes
     }
@@ -1187,20 +1223,29 @@ impl EgressPolicy {
     /// Validates and authorizes an Ethernet frame like
     /// [`Self::authorize_frame`], but admits a reply candidate that the rules
     /// deny only when `carried` reports that the endpoint carries its flow.
+    /// `routed` returns the host address to which the endpoint routes the
+    /// guest's traffic to a virtual address, and the rules evaluate that
+    /// traffic at the host address, or at the gateway of its family for host
+    /// loopback.
     pub fn authorize_frame_with_flows(
         &self,
         frame_prefix: &[u8],
         frame_length: usize,
         carried: &mut dyn FnMut(&ReplyCandidate) -> bool,
+        routed: &dyn Fn(IpAddr) -> Option<IpAddr>,
     ) -> Result<(), EgressDenied> {
-        self.authorize(frame_prefix, frame_length, Some(carried))
+        self.authorize(
+            frame_prefix,
+            frame_length,
+            Some(Endpoint { carried, routed }),
+        )
     }
 
     fn authorize(
         &self,
         frame_prefix: &[u8],
         frame_length: usize,
-        carried: Option<&mut dyn FnMut(&ReplyCandidate) -> bool>,
+        endpoint: Option<Endpoint<'_>>,
     ) -> Result<(), EgressDenied> {
         if !self.is_active() {
             return Ok(());
@@ -1232,9 +1277,9 @@ impl EgressPolicy {
 
         match ether_type {
             0x0806 => self.authorize_arp(frame_prefix, frame_length, l3_offset),
-            0x0800 => self.authorize_ipv4(frame_prefix, frame_length, l3_offset, carried),
+            0x0800 => self.authorize_ipv4(frame_prefix, frame_length, l3_offset, endpoint),
             ipv6::ETHER_TYPE_IPV6 => {
-                self.authorize_ipv6(frame_prefix, frame_length, l3_offset, carried)
+                self.authorize_ipv6(frame_prefix, frame_length, l3_offset, endpoint)
             }
             other => Err(EgressDenied::UnsupportedEtherType(other)),
         }
@@ -1285,7 +1330,7 @@ impl EgressPolicy {
         frame: &[u8],
         frame_length: usize,
         offset: usize,
-        carried: Option<&mut dyn FnMut(&ReplyCandidate) -> bool>,
+        endpoint: Option<Endpoint<'_>>,
     ) -> Result<(), EgressDenied> {
         ensure_available(frame, frame_length, offset + 20, "IPv4 header")?;
         let version_ihl = frame[offset];
@@ -1334,6 +1379,14 @@ impl EgressPolicy {
                 return Ok(());
             }
         }
+        let rule_destination = match endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.route(IpAddr::V4(destination)))
+        {
+            Some(IpAddr::V4(routed)) if routed.is_loopback() => self.gateway_ipv4,
+            Some(IpAddr::V4(routed)) => routed,
+            _ => destination,
+        };
         let packet = Ipv4Packet {
             frame,
             frame_length,
@@ -1342,15 +1395,18 @@ impl EgressPolicy {
             total_length,
             fragments,
             destination,
+            rule_destination,
         };
         match self.authorize_ipv4_destination(&packet) {
             Err(
                 denied @ (EgressDenied::DestinationDenied
                 | EgressDenied::AllTrafficDenied
                 | EgressDenied::EndpointDenied),
-            ) if self.allows_ingress() => {
-                Self::admit_reply(packet.reply_candidate()?, carried, denied)
-            }
+            ) if self.allows_ingress() => Self::admit_reply(
+                packet.reply_candidate()?,
+                endpoint.map(|endpoint| endpoint.carried),
+                denied,
+            ),
             verdict => verdict,
         }
     }
@@ -1364,7 +1420,8 @@ impl EgressPolicy {
             header_length,
             total_length,
             fragments,
-            destination,
+            destination: _,
+            rule_destination: destination,
         } = *packet;
         match &self.mode {
             EgressPolicyMode::AllowAll => Ok(()),
@@ -1451,6 +1508,25 @@ struct Ipv4Packet<'a> {
     total_length: usize,
     fragments: u16,
     destination: Ipv4Addr,
+    /// The address at which the rules evaluate the packet.
+    rule_destination: Ipv4Addr,
+}
+
+/// What the endpoint that applies a policy knows about the guest's traffic.
+struct Endpoint<'a> {
+    /// Reports whether the endpoint carries a reply candidate's flow.
+    carried: &'a mut dyn FnMut(&ReplyCandidate) -> bool,
+    /// Returns the host address to which the endpoint routes the guest's
+    /// traffic to a virtual address.
+    routed: &'a dyn Fn(IpAddr) -> Option<IpAddr>,
+}
+
+impl Endpoint<'_> {
+    /// Returns the host address to which the endpoint routes the guest's
+    /// traffic to `destination`, when that is a virtual address.
+    fn route(&self, destination: IpAddr) -> Option<IpAddr> {
+        (self.routed)(destination)
+    }
 }
 
 impl Ipv4Packet<'_> {
@@ -2914,10 +2990,15 @@ mod tests {
         carried: bool,
     ) -> (Result<(), EgressDenied>, Vec<ReplyCandidate>) {
         let mut seen = Vec::new();
-        let result = policy.authorize_frame_with_flows(frame, frame.len(), &mut |candidate| {
-            seen.push(*candidate);
-            carried
-        });
+        let result = policy.authorize_frame_with_flows(
+            frame,
+            frame.len(),
+            &mut |candidate| {
+                seen.push(*candidate);
+                carried
+            },
+            &|_| None,
+        );
         (result, seen)
     }
 
@@ -3108,5 +3189,190 @@ mod tests {
         }
         allowed.validate().unwrap();
         assert_ne!(allowed, denied);
+    }
+
+    #[test]
+    fn host_loopback_ingress_admits_what_ingress_admits() {
+        use crate::ingress::LISTENER_ANNOUNCEMENT_PORT;
+        use crate::ingress::ListenerAnnouncement;
+        use crate::ingress::tests::announcement_frame;
+
+        let peer = Ipv4Addr::new(10, 0, 0, 77);
+        let without = bind(EgressPolicyMode::DenyAll);
+        let with = bind(EgressPolicyMode::DenyAll).with_host_loopback_ingress(EgressAction::Allow);
+        assert_eq!(with.ingress_action(), EgressAction::Deny);
+        assert_eq!(with.host_loopback_ingress_action(), EgressAction::Allow);
+
+        // Replies need a flow that the endpoint carries; new connections are
+        // still denied.
+        let reply = with_tcp_flags(tcp_frame(peer, 51000), SYN | ACK);
+        assert_eq!(
+            without.authorize_frame(&reply, reply.len()),
+            Err(EgressDenied::AllTrafficDenied)
+        );
+        assert_eq!(
+            admitted_with(&with, &reply, false).0,
+            Err(EgressDenied::AllTrafficDenied)
+        );
+        assert_eq!(admitted_with(&with, &reply, true).0, Ok(()));
+        let datagram = udp_frame(peer, 51000);
+        assert_eq!(admitted_with(&with, &datagram, true).0, Ok(()));
+        let opening = with_tcp_flags(tcp_frame(peer, 51000), SYN);
+        assert_eq!(
+            admitted_with(&with, &opening, true),
+            (Err(EgressDenied::AllTrafficDenied), Vec::new())
+        );
+
+        // The guest announces its listeners and resolves the addresses at
+        // which the gateway presents the host.
+        let payload = ListenerAnnouncement::default().to_bytes();
+        let announcement =
+            announcement_frame(1023, GATEWAY_IPV4, LISTENER_ANNOUNCEMENT_PORT, &payload);
+        assert_eq!(
+            with.listener_announcement(&announcement, announcement.len()),
+            Some(42..42 + payload.len())
+        );
+        assert_eq!(
+            admitted_with(&with, &announcement, false),
+            (Ok(()), Vec::new())
+        );
+        let arp = arp_request(peer, ETHERNET_BROADCAST, ETHERNET_UNSPECIFIED);
+        with.authorize_frame(&arp, arp.len()).unwrap();
+        assert_eq!(
+            without.authorize_frame(&arp, arp.len()),
+            Err(EgressDenied::AllTrafficDenied)
+        );
+    }
+
+    #[test]
+    fn rules_evaluate_virtual_addresses_where_the_endpoint_routes_them() {
+        // The endpoint presents a host-loopback peer and another host-local
+        // peer at virtual addresses in the guest's subnet.
+        let loopback_peer = Ipv4Addr::new(10, 0, 0, 254);
+        let other_peer = Ipv4Addr::new(10, 0, 0, 253);
+        let routed = |address: IpAddr| match address {
+            IpAddr::V4(address) if address == loopback_peer => {
+                Some(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            }
+            IpAddr::V4(address) if address == other_peer => {
+                Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)))
+            }
+            _ => None,
+        };
+        let authorize = |policy: &EgressPolicy, frame: &[u8], carried: bool| {
+            policy.authorize_frame_with_flows(frame, frame.len(), &mut |_| carried, &routed)
+        };
+        let policy = rule_policy(
+            EgressAction::Allow,
+            &[],
+            &[
+                "10.0.0.1/32:tcp:2375",
+                "10.0.0.1/32:udp:2375",
+                "192.0.2.7/32",
+            ],
+        )
+        .with_host_loopback_ingress(EgressAction::Allow);
+
+        // Host loopback is evaluated at the gateway, which stands for it, so
+        // the peer's address opens nothing that the gateway's rules deny.
+        for destination in [GATEWAY_IPV4, loopback_peer] {
+            for frame in [
+                with_tcp_flags(tcp_frame(destination, 2375), SYN),
+                udp_frame(destination, 2375),
+            ] {
+                assert_eq!(
+                    authorize(&policy, &frame, false),
+                    Err(EgressDenied::DestinationDenied)
+                );
+            }
+            let allowed = with_tcp_flags(tcp_frame(destination, 8080), SYN);
+            authorize(&policy, &allowed, false).unwrap();
+        }
+        // The prefilter, which knows no virtual addresses, leaves them to the
+        // endpoint.
+        let opening = with_tcp_flags(tcp_frame(loopback_peer, 2375), SYN);
+        policy.authorize_frame(&opening, opening.len()).unwrap();
+
+        // Replies to the peer pass for the flows that the endpoint carries.
+        for frame in [
+            with_tcp_flags(tcp_frame(loopback_peer, 2375), ACK),
+            udp_frame(loopback_peer, 2375),
+        ] {
+            authorize(&policy, &frame, true).unwrap();
+            assert_eq!(
+                authorize(&policy, &frame, false),
+                Err(EgressDenied::DestinationDenied)
+            );
+        }
+
+        // Another host address is evaluated as itself.
+        let datagram = udp_frame(other_peer, 53);
+        assert_eq!(
+            authorize(&policy, &datagram, false),
+            Err(EgressDenied::DestinationDenied)
+        );
+        policy.authorize_frame(&datagram, datagram.len()).unwrap();
+
+        // Legacy modes evaluate the same address.
+        let blocked = bind(EgressPolicyMode::BlockList(vec![
+            "10.0.0.1/32".parse().unwrap(),
+        ]));
+        let opening = with_tcp_flags(tcp_frame(loopback_peer, 8080), SYN);
+        assert_eq!(
+            authorize(&blocked, &opening, false),
+            Err(EgressDenied::DestinationDenied)
+        );
+        blocked.authorize_frame(&opening, opening.len()).unwrap();
+    }
+
+    #[test]
+    fn host_loopback_ingress_has_its_own_ingress_encoding() {
+        let denied = rule_policy(EgressAction::Deny, &["192.0.2.0/24:tcp:443"], &[]);
+        let host_loopback = denied
+            .clone()
+            .with_host_loopback_ingress(EgressAction::Allow);
+        let ingress = denied.clone().with_ingress(EgressAction::Allow);
+        assert_eq!(
+            denied
+                .clone()
+                .with_host_loopback_ingress(EgressAction::Deny)
+                .canonical_bytes(),
+            denied.canonical_bytes()
+        );
+        assert_eq!(
+            host_loopback.encoding_version(),
+            INGRESS_EGRESS_POLICY_ENCODING_VERSION
+        );
+        let bytes = host_loopback.canonical_bytes();
+        assert_eq!(
+            bytes[..bytes.len() - 1],
+            ingress.canonical_bytes()[..bytes.len() - 1]
+        );
+        assert_eq!(bytes.last(), Some(&2));
+        assert_eq!(
+            denied
+                .canonical_bytes_for_version(INGRESS_EGRESS_POLICY_ENCODING_VERSION)
+                .unwrap()
+                .last(),
+            Some(&1)
+        );
+        // Ingress already admits the host's publications' frames.
+        assert_eq!(
+            ingress
+                .clone()
+                .with_host_loopback_ingress(EgressAction::Allow)
+                .canonical_bytes(),
+            ingress.canonical_bytes()
+        );
+        for version in [
+            LEGACY_EGRESS_POLICY_ENCODING_VERSION,
+            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION,
+            IPV4_EGRESS_POLICY_ENCODING_VERSION,
+            EGRESS_POLICY_ENCODING_VERSION,
+        ] {
+            assert_eq!(host_loopback.canonical_bytes_for_version(version), None);
+        }
+        host_loopback.validate().unwrap();
+        assert_ne!(host_loopback, denied);
     }
 }
