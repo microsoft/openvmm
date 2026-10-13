@@ -4,12 +4,16 @@
 //! Tests for snapshot quiesce and for restart after a failed save.
 
 use super::TestUnit;
+use crate::State;
 use crate::StateUnit;
 use crate::StateUnits;
 use crate::run_unit;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
@@ -88,6 +92,38 @@ impl InspectMut for SlowRollbackStartUnit {
     }
 }
 
+struct StopCountingUnit {
+    stops: Arc<AtomicUsize>,
+}
+
+impl StateUnit for StopCountingUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for StopCountingUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
 #[async_test]
 async fn test_quiesce_and_resume_after_failed_save(driver: DefaultDriver) {
     let mut units = StateUnits::new();
@@ -108,6 +144,43 @@ async fn test_quiesce_and_resume_after_failed_save(driver: DefaultDriver) {
         .await
         .unwrap();
     assert!(units.is_running());
+}
+
+#[async_test]
+async fn test_quiesce_skips_stopped_units(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let _running = units
+        .add("running")
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start().await.unwrap();
+
+    let stops = Arc::new(AtomicUsize::new(0));
+    let _stopped = units
+        .add("stopped")
+        .spawn(&driver, |recv| {
+            run_unit(
+                StopCountingUnit {
+                    stops: stops.clone(),
+                },
+                recv,
+            )
+        })
+        .unwrap();
+
+    units
+        .quiesce_for_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(stops.load(Ordering::Relaxed), 0);
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .all(|unit| unit.state == State::Stopped)
+    );
 }
 
 #[async_test]
@@ -146,6 +219,40 @@ async fn test_quiesce_timeout_is_uncertain(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_quiesce_readiness_timeout_is_bounded(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let a = units
+        .add("a")
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start().await.unwrap();
+    let _b = units
+        .add("b")
+        .depends_on(a.handle())
+        .dependency_of(a.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start_stopped_units().await.unwrap();
+
+    let started = std::time::Instant::now();
+    let error = units
+        .quiesce_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(!error.has_uncertain_state());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(units.is_running());
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .all(|unit| unit.state == State::Running)
+    );
+}
+
+#[async_test]
 async fn test_rollback_start_timeout_is_bounded(driver: DefaultDriver) {
     let mut units = StateUnits::new();
     let _unit = units
@@ -169,4 +276,41 @@ async fn test_rollback_start_timeout_is_bounded(driver: DefaultDriver) {
     assert!(error.to_string().contains("snapshot rollback"));
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(!units.is_running());
+}
+
+#[async_test]
+async fn test_rollback_readiness_timeout_is_bounded(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let a = units
+        .add("a")
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    units.start().await.unwrap();
+    units
+        .quiesce_for_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+    let _b = units
+        .add("b")
+        .depends_on(a.handle())
+        .dependency_of(a.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let error = units
+        .resume_after_failed_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("snapshot rollback"));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(!units.is_running());
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .all(|unit| unit.state == State::Stopped)
+    );
 }

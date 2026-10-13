@@ -44,29 +44,69 @@ impl StateUnits {
         enum UnitResult {
             Stopped,
             DependencyFailed,
+            NotSent(anyhow::Error),
             Uncertain(anyhow::Error),
         }
 
         let context = CancelContext::new().with_timeout(timeout);
         let mut operations = Vec::new();
+        let mut failures = Vec::new();
+        let mut uncertain = false;
         let ready_set;
         {
             let mut inner = self.inner.lock();
             ready_set = inner.ready_set(None);
             for (&id, unit) in &mut inner.units {
-                assert_eq!(
-                    unit.state,
-                    State::Running,
-                    "unit {} is not running before save quiesce",
-                    unit.name,
-                );
+                match unit.state {
+                    State::Stopped => {
+                        ready_set.done(id, true);
+                        continue;
+                    }
+                    State::Running => {}
+                    State::StartFailedStopped => {
+                        ready_set.done(id, false);
+                        failures.push((
+                            unit.name.to_string(),
+                            "unit is in terminal state StartFailedStopped".to_owned(),
+                        ));
+                        continue;
+                    }
+                    State::StartUncertain | State::QuiesceUncertain => {
+                        ready_set.done(id, false);
+                        uncertain = true;
+                        failures.push((
+                            unit.name.to_string(),
+                            format!("unit is in terminal state {:?}", unit.state),
+                        ));
+                        continue;
+                    }
+                    state => {
+                        ready_set.done(id, false);
+                        uncertain = true;
+                        failures.push((
+                            unit.name.to_string(),
+                            format!("unit is in unexpected state {state:?}"),
+                        ));
+                        continue;
+                    }
+                }
                 let name = unit.name.clone();
                 let dependencies = unit.dependents.clone();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
                 let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
                 operations.push(async move {
-                    if !ready_set.wait("quiesce_for_save", id, &dependencies).await {
+                    let ready = match context
+                        .until_cancelled(ready_set.wait("quiesce_for_save", id, &dependencies))
+                        .await
+                    {
+                        Ok(ready) => ready,
+                        Err(reason) => {
+                            ready_set.done(id, false);
+                            return (name, id, UnitResult::NotSent(reason.into()));
+                        }
+                    };
+                    if !ready {
                         ready_set.done(id, false);
                         return (name, id, UnitResult::DependencyFailed);
                     }
@@ -90,8 +130,6 @@ impl StateUnits {
         let results = join_all(operations).await;
         tracing::info!(duration = ?Instant::now() - start, "save quiesce complete");
 
-        let mut failures = Vec::new();
-        let mut uncertain = false;
         let mut inner = self.inner.lock();
         for (name, id, result) in results {
             let Some(unit) = inner.units.get_mut(&id) else {
@@ -105,6 +143,10 @@ impl StateUnits {
                         name.to_string(),
                         "a dependent unit did not quiesce".to_owned(),
                     ));
+                }
+                UnitResult::NotSent(error) => {
+                    unit.state = State::Running;
+                    failures.push((name.to_string(), format!("{error:#}")));
                 }
                 UnitResult::Uncertain(error) => {
                     unit.state = State::QuiesceUncertain;
@@ -142,6 +184,7 @@ impl StateUnits {
         enum StartResult {
             Started,
             DependencyFailed,
+            NotSent(anyhow::Error),
             Failed(anyhow::Error),
             Uncertain(anyhow::Error),
         }
@@ -159,7 +202,17 @@ impl StateUnits {
                 let mut context = context.clone();
                 let start = state_change(name.clone(), unit, StateRequest::Start, Some(()));
                 operations.push(async move {
-                    if !ready_set.wait("snapshot_rollback", id, &dependencies).await {
+                    let ready = match context
+                        .until_cancelled(ready_set.wait("snapshot_rollback", id, &dependencies))
+                        .await
+                    {
+                        Ok(ready) => ready,
+                        Err(reason) => {
+                            ready_set.done(id, false);
+                            return (name, id, StartResult::NotSent(reason.into()));
+                        }
+                    };
+                    if !ready {
                         ready_set.done(id, false);
                         return (name, id, StartResult::DependencyFailed);
                     }
@@ -192,6 +245,10 @@ impl StateUnits {
                 StartResult::DependencyFailed => {
                     unit.state = State::Stopped;
                     failures.push(format!("{name}: a dependency did not restart"));
+                }
+                StartResult::NotSent(error) => {
+                    unit.state = State::Stopped;
+                    failures.push(format!("{name}: {error:#}"));
                 }
                 StartResult::Failed(error) => {
                     unit.state = State::QuiesceUncertain;
