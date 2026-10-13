@@ -51,9 +51,9 @@ fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io:
         || name.contains(&0)
         || name.as_slice() == ['.' as u16]
         || name.as_slice() == ['.' as u16, '.' as u16]
-        || name
-            .iter()
-            .any(|character| *character == b'/' as u16 || *character == b'\\' as u16)
+        || name.iter().any(|character| {
+            *character == b'/' as u16 || *character == b'\\' as u16 || *character == b':' as u16
+        })
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -316,7 +316,15 @@ mod tests {
 
     #[test]
     fn relative_name_must_be_one_non_special_component() {
-        for name in ["", ".", "..", "dir\\file", "dir/file", "nul\0name"] {
+        for name in [
+            "",
+            ".",
+            "..",
+            "dir\\file",
+            "dir/file",
+            "file:stream",
+            "nul\0name",
+        ] {
             let error = validate_relative_component(name.as_ref(), "file").unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name:?}");
         }
