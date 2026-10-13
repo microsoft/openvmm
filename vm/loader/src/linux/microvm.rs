@@ -45,6 +45,11 @@ const MPTABLE_MMIO_GAP_END: u64 = 0x1_0000_0000;
 const MPTABLE_LOAD_CHUNK_SIZE: usize = 1024 * 1024;
 const MPTABLE_PAGE_TABLE_COUNT: usize = 6;
 const MPTABLE_PAGE_TABLE_END: u64 = CR3_BASE + MPTABLE_PAGE_TABLE_COUNT as u64 * HV_PAGE_SIZE;
+const MPTABLE_FIXED_BOOT_DATA_RANGES: [(u64, u64); 3] = [
+    (0, ZERO_PAGE_BASE + HV_PAGE_SIZE),
+    (CR3_BASE, MPTABLE_PAGE_TABLE_END),
+    (MPTABLE_CMDLINE_BASE, MPTABLE_CMDLINE_END),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct E820Range {
@@ -73,10 +78,24 @@ fn build_setup_header(cmdline: &CString, initrd_base: u64, initrd_size: u64) -> 
 }
 
 fn range_is_in_ram(mem_layout: &MemoryLayout, range: MemoryRange) -> bool {
-    mem_layout
-        .ram()
-        .iter()
-        .any(|ram| range.start() >= ram.range.start() && range.end() <= ram.range.end())
+    if range.is_empty() {
+        return false;
+    }
+
+    let mut next = range.start();
+    for ram in mem_layout.ram() {
+        if ram.range.end() <= next {
+            continue;
+        }
+        if ram.range.start() > next {
+            return false;
+        }
+        if ram.range.end() >= range.end() {
+            return true;
+        }
+        next = ram.range.end();
+    }
+    false
 }
 
 fn overlaps_range(range: &MemoryRange, start: u64, end: u64) -> bool {
@@ -84,13 +103,9 @@ fn overlaps_range(range: &MemoryRange, start: u64, end: u64) -> bool {
 }
 
 fn overlaps_fixed_boot_data(range: &MemoryRange) -> bool {
-    [
-        (0, ZERO_PAGE_BASE + HV_PAGE_SIZE),
-        (CR3_BASE, MPTABLE_PAGE_TABLE_END),
-        (MPTABLE_CMDLINE_BASE, MPTABLE_CMDLINE_END),
-    ]
-    .into_iter()
-    .any(|(start, end)| overlaps_range(range, start, end))
+    MPTABLE_FIXED_BOOT_DATA_RANGES
+        .into_iter()
+        .any(|(start, end)| overlaps_range(range, start, end))
 }
 
 /// Returns the pages that hold `size` bytes starting at `gpa`, or `None` if
@@ -144,6 +159,13 @@ fn build_mptable_e820(
     mem_layout: &MemoryLayout,
     reserved_memory_ranges: &[MemoryRange],
 ) -> Result<Vec<E820Range>, Error> {
+    if MPTABLE_FIXED_BOOT_DATA_RANGES
+        .into_iter()
+        .any(|(start, end)| !range_is_in_ram(mem_layout, MemoryRange::new(start..end)))
+    {
+        return Err(Error::InvalidMpTableMemoryLayout);
+    }
+
     let mut previous_end = 0;
     for range in reserved_memory_ranges {
         let valid = !range.is_empty()
@@ -182,22 +204,25 @@ fn build_mptable_e820(
     let mut entries = Vec::with_capacity(mem_layout.ram().len() + reservations.len() * 2 + 1);
     for ram in mem_layout.ram() {
         let mut next = ram.range.start();
-        for reserved in reservations.iter().filter(|reserved| {
-            reserved.start() >= ram.range.start() && reserved.end() <= ram.range.end()
-        }) {
-            if next < reserved.start() {
+        for reserved in reservations
+            .iter()
+            .filter(|reserved| reserved.overlaps(&ram.range))
+        {
+            let reserved_start = reserved.start().max(ram.range.start());
+            let reserved_end = reserved.end().min(ram.range.end());
+            if next < reserved_start {
                 entries.push(E820Range {
                     start: next,
-                    end: reserved.start(),
+                    end: reserved_start,
                     entry_type: defs::E820_RAM,
                 });
             }
             entries.push(E820Range {
-                start: reserved.start(),
-                end: reserved.end(),
+                start: reserved_start,
+                end: reserved_end,
                 entry_type: defs::E820_RESERVED,
             });
-            next = reserved.end();
+            next = reserved_end;
         }
         if next < ram.range.end() {
             entries.push(E820Range {
@@ -530,6 +555,7 @@ mod tests {
     use crate::importer::IsolationConfig;
     use crate::importer::ParameterAreaIndex;
     use crate::importer::StartupMemoryType;
+    use std::io::Cursor;
     use test_with_tracing::test;
     use zerocopy::FromBytes;
 
@@ -717,6 +743,23 @@ mod tests {
         defs::boot_params::read_from_bytes(data).unwrap()
     }
 
+    fn elf_without_load_segments() -> Cursor<[u8; 64]> {
+        let mut image = [0; 64];
+        image[..4].copy_from_slice(b"\x7fELF");
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&2u16.to_le_bytes());
+        image[18..20].copy_from_slice(&62u16.to_le_bytes());
+        image[20..24].copy_from_slice(&1u32.to_le_bytes());
+        image[24..32].copy_from_slice(&KERNEL_BASE.to_le_bytes());
+        image[32..40].copy_from_slice(&64u64.to_le_bytes());
+        image[52..54].copy_from_slice(&64u16.to_le_bytes());
+        image[54..56].copy_from_slice(&56u16.to_le_bytes());
+        image[58..60].copy_from_slice(&64u16.to_le_bytes());
+        Cursor::new(image)
+    }
+
     #[test]
     fn mptable_config_places_boot_data_without_firmware_tables() {
         let apic_ids = [0, 1, 2, 3];
@@ -836,6 +879,113 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, Error::CommandLineTooLong(65_537, 65_536)));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn mptable_config_rejects_fixed_boot_data_outside_ram() {
+        let layout = MemoryLayout::new(
+            256 * MB,
+            &[MemoryRange::new(0..HV_PAGE_SIZE)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        let mut importer = RecordingImporter::default();
+        let error = import_mptable_config(
+            &mut importer,
+            &test_load_info(),
+            &CString::new("").unwrap(),
+            &layout,
+            &mptable_config(&[0]),
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidMpTableMemoryLayout));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn mptable_config_accepts_ranges_spanning_numa_nodes() {
+        let layout = MemoryLayout::new_with_numa(
+            &[KERNEL_BASE + HV_PAGE_SIZE, 3 * HV_PAGE_SIZE, 2 * MB],
+            &[],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        let load_info = LoadInfo {
+            kernel: KernelInfo {
+                gpa: KERNEL_BASE,
+                size: 2 * HV_PAGE_SIZE,
+                entrypoint: KERNEL_BASE,
+            },
+            ..Default::default()
+        };
+        let reserved =
+            MemoryRange::new(KERNEL_BASE + 3 * HV_PAGE_SIZE..KERNEL_BASE + 5 * HV_PAGE_SIZE);
+        let mut importer = RecordingImporter::default();
+        import_mptable_config(
+            &mut importer,
+            &load_info,
+            &CString::new("").unwrap(),
+            &layout,
+            &mptable_config(&[0]),
+            &[reserved],
+        )
+        .unwrap();
+
+        assert_eq!(
+            build_mptable_e820(&layout, &[reserved]).unwrap(),
+            [
+                E820Range {
+                    start: 0,
+                    end: MPTABLE_ISA_HOLE_BASE,
+                    entry_type: defs::E820_RAM,
+                },
+                E820Range {
+                    start: MPTABLE_ISA_HOLE_BASE,
+                    end: MPTABLE_ISA_HOLE_END,
+                    entry_type: defs::E820_RESERVED,
+                },
+                E820Range {
+                    start: MPTABLE_ISA_HOLE_END,
+                    end: reserved.start(),
+                    entry_type: defs::E820_RAM,
+                },
+                E820Range {
+                    start: reserved.start(),
+                    end: reserved.end(),
+                    entry_type: defs::E820_RESERVED,
+                },
+                E820Range {
+                    start: reserved.end(),
+                    end: layout.end_of_ram(),
+                    entry_type: defs::E820_RAM,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn elf_without_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = elf_without_load_segments();
+        let mut buffer = ChunkBuf::new();
+        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+            &mut importer,
+            &mut kernel_image,
+            KERNEL_BASE,
+            None,
+            &mut buffer,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
         assert!(importer.imports.is_empty());
     }
 
