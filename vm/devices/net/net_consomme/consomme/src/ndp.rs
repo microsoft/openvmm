@@ -331,19 +331,12 @@ impl<T: Client> Access<'_, T> {
 
         // For any addresses in the subnet given to the guest, provide the gateway MAC address.
         // This is the standard mechanism to indicate all traffic flows through the gateway, even
-        // local subnet traffic. A static IPv6 identity's subnet is on link, as are the gateway's
-        // link-local address and the link-local addresses at which the gateway presents host
-        // peers to the guest.
+        // local subnet traffic. A static IPv6 identity's subnet is on link, as is the gateway's
+        // link-local address.
         let params = &self.inner.state.params;
         let on_link = if params.gateway_ipv6.is_some() {
             target_addr == params.gateway_link_local_ipv6
                 || crate::static_ipv6::is_static_ipv6_neighbor(params, target_addr)
-                || self
-                    .inner
-                    .state
-                    .local_addr_map
-                    .resolve_virtual(&std::net::IpAddr::V6(target_addr))
-                    .is_some()
         } else {
             is_same_ipv6_subnet(
                 params.gateway_link_local_ipv6,

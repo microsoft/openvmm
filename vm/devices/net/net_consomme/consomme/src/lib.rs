@@ -542,18 +542,32 @@ impl ConsommeState {
                 }
             }
             SocketAddr::V6(v6) if params.is_local_address(remote_addr) && !is_loopback_adapter => {
-                let virtual_ip = local_addr_map.get_or_allocate_v6(
-                    *v6.ip(),
-                    params.gateway_link_local_ipv6,
-                    params.client_ip_ipv6,
-                    params.client_ip_ipv6_routable,
-                );
+                // A static IPv6 identity's subnet is on link, as the IPv4
+                // subnet is, so a host peer presented there is answered from
+                // the guest's address in it, which a link-local peer would
+                // not be.
+                let virtual_ip = match (params.gateway_ipv6, params.client_ip_ipv6_routable) {
+                    (Some(gateway), Some(client)) => local_addr_map.get_or_allocate_v6_in_subnet(
+                        *v6.ip(),
+                        gateway,
+                        params.prefix_len_ipv6,
+                        client,
+                    ),
+                    _ => local_addr_map.get_or_allocate_v6(
+                        *v6.ip(),
+                        params.gateway_link_local_ipv6,
+                        params.client_ip_ipv6,
+                        params.client_ip_ipv6_routable,
+                    ),
+                };
                 match virtual_ip {
                     Some(ip) => SocketAddr::V6(SocketAddrV6::new(ip, v6.port(), 0, 0)),
                     None => {
-                        // Pool exhausted, fall back to gateway link-local.
+                        // Pool exhausted, fall back to the gateway.
                         SocketAddr::V6(SocketAddrV6::new(
-                            params.gateway_link_local_ipv6,
+                            params
+                                .gateway_ipv6
+                                .unwrap_or(params.gateway_link_local_ipv6),
                             v6.port(),
                             0,
                             0,
@@ -966,7 +980,9 @@ impl Consomme {
     }
 
     /// Allocates a virtual address within this endpoint's subnet and routes
-    /// guest traffic sent to it to `destination` on the host.
+    /// guest traffic sent to it to `destination` on the host. An IPv6 address
+    /// lies in the static IPv6 subnet when the endpoint has one, and is
+    /// link-local otherwise.
     /// Returns `None` if the subnet's virtual address pool is exhausted.
     pub fn create_virtual_address(&mut self, destination: IpAddr) -> Option<IpAddr> {
         match destination {
@@ -981,13 +997,30 @@ impl Consomme {
                     .map(IpAddr::V4)
             }
             IpAddr::V6(destination) => {
-                let gateway_ll = self.state.params.gateway_link_local_ipv6;
-                let client_ll = self.state.params.client_ip_ipv6;
-                let client_routable = self.state.params.client_ip_ipv6_routable;
-                self.state
-                    .local_addr_map
-                    .get_or_allocate_v6(destination, gateway_ll, client_ll, client_routable)
-                    .map(IpAddr::V6)
+                let params = &self.state.params;
+                match (params.gateway_ipv6, params.client_ip_ipv6_routable) {
+                    (Some(gateway), Some(client)) => {
+                        let prefix_len = params.prefix_len_ipv6;
+                        self.state.local_addr_map.get_or_allocate_v6_in_subnet(
+                            destination,
+                            gateway,
+                            prefix_len,
+                            client,
+                        )
+                    }
+                    _ => {
+                        let gateway_ll = params.gateway_link_local_ipv6;
+                        let client_ll = params.client_ip_ipv6;
+                        let client_routable = params.client_ip_ipv6_routable;
+                        self.state.local_addr_map.get_or_allocate_v6(
+                            destination,
+                            gateway_ll,
+                            client_ll,
+                            client_routable,
+                        )
+                    }
+                }
+                .map(IpAddr::V6)
             }
         }
     }

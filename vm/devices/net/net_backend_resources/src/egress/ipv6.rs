@@ -346,16 +346,12 @@ impl EgressPolicy {
                 && ethernet_destination[0] & 1 == 0
                 && ethernet_destination != ETHERNET_UNSPECIFIED
         };
-        // Ingress also lets the guest resolve the peers that the gateway
-        // presents at link-local addresses, such as the host's IPv6 loopback.
-        let resolvable = if link.contains(target) {
-            self.allows_ingress()
-                || self.rules_allow_neighbor(IpAddr::V6(target), IpAddr::V6(link.gateway))
-        } else {
-            self.allows_ingress()
-                && is_link_local(target)
-                && target != link_local_address(self.guest_mac)
-        };
+        // Ingress also lets the guest resolve its on-link neighbors, among
+        // which the gateway presents host peers, such as the host's IPv6
+        // loopback.
+        let resolvable = link.contains(target)
+            && (self.allows_ingress()
+                || self.rules_allow_neighbor(IpAddr::V6(target), IpAddr::V6(link.gateway)));
         if !(source == link.guest || source == link_local_address(self.guest_mac))
             || !addressed
             || target == link.guest

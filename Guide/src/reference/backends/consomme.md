@@ -105,11 +105,13 @@ The portable profile provides generic bidirectional host-loopback connectivity
 with explicit `--host-loopback allow`, which needs no port list. The
 guest-visible gateway then maps to host loopback, and the guest may reach
 host-local destinations subject to the egress policy. Consomme presents host
-peers to the guest at virtual addresses, and the endpoint's egress policy
-evaluates the guest's traffic to such an address at the host address to which
-Consomme routes it, and for host loopback at the gateway of its family, so a
-peer's virtual address reaches no host-loopback port that the rules deny at
-the gateway. Without ingress `allow`, OpenVMM appends
+peers to the guest at virtual addresses inside the guest's subnet of their
+family, allocated downward from its high end, so that the guest answers them
+from its address in that subnet. The endpoint's egress policy evaluates the
+guest's traffic to such an address at the host address to which Consomme
+routes it, and for host loopback at the gateway of its family, so a peer's
+virtual address reaches no host-loopback port that the rules deny at the
+gateway. Without ingress `allow`, OpenVMM appends
 `virtnet_ingress=host-loopback` to the microVM command line, and the guest
 announces its listeners as it does for ingress `allow`. The endpoint keeps one
 host listener per announced port and address family, bound to the family's
