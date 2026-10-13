@@ -525,8 +525,9 @@ impl StateUnits {
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
-        // Make uncertain starts receive Stop and already-cleaned failures skip
-        // it, then restore both terminal markers after the ordered operation.
+        // Make uncertain transitions receive Stop and already-cleaned start
+        // failures skip it, then restore the terminal markers after the
+        // ordered operation.
         let terminal_states = {
             let mut inner = self.inner.lock();
             inner
@@ -535,7 +536,9 @@ impl StateUnits {
                 .filter_map(|(&id, unit)| {
                     let state = unit.state;
                     match state {
-                        State::StartUncertain => unit.state = State::Running,
+                        State::StartUncertain | State::QuiesceUncertain => {
+                            unit.state = State::Running
+                        }
                         State::StartFailedStopped => unit.state = State::Stopped,
                         _ => return None,
                     }
