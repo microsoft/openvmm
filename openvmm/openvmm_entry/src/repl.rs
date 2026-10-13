@@ -605,11 +605,11 @@ pub(crate) async fn run_repl(
                 }
 
                 loop {
-                    let line = rl.readline("openvmm> ");
-                    if line.is_err() {
-                        break;
-                    }
-                    let line = line.unwrap();
+                    let line = match rl.readline("openvmm> ") {
+                        Ok(line) => line,
+                        Err(rustyline::error::ReadlineError::Eof) if !terminal => return,
+                        Err(_) => break,
+                    };
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
                         continue;
