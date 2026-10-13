@@ -5,9 +5,11 @@
 
 use super::TestUnit;
 use crate::State;
+use crate::StateRequest;
 use crate::StateUnit;
 use crate::StateUnits;
 use crate::run_unit;
+use futures::StreamExt;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -219,6 +221,59 @@ async fn test_quiesce_timeout_is_uncertain(driver: DefaultDriver) {
             .resume_after_failed_save(Duration::from_secs(1))
             .await
             .is_err()
+    );
+}
+
+#[async_test]
+async fn test_stop_cleans_up_uncertain_quiesce(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let stops = Arc::new(AtomicUsize::new(0));
+    let stop_requests = Arc::new(AtomicUsize::new(0));
+    let _unit = units
+        .add("uncertain")
+        .spawn(&driver, |mut recv| {
+            let stop_requests = stop_requests.clone();
+            let mut unit = StopCountingUnit {
+                stops: stops.clone(),
+            };
+            async move {
+                while let Some(request) = recv.next().await {
+                    match request {
+                        StateRequest::Stop(response) => {
+                            if stop_requests.fetch_add(1, Ordering::Relaxed) == 0 {
+                                drop(response);
+                            } else {
+                                StateRequest::Stop(response).apply(&mut unit).await;
+                            }
+                        }
+                        request => request.apply(&mut unit).await,
+                    }
+                }
+                unit
+            }
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let error = units
+        .quiesce_for_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(error.has_uncertain_state());
+    assert_eq!(stop_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(stops.load(Ordering::Relaxed), 0);
+
+    units.stop().await;
+    assert_eq!(stop_requests.load(Ordering::Relaxed), 2);
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
+    assert!(!units.is_running());
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .any(|unit| unit.state == State::QuiesceUncertain)
     );
 }
 
