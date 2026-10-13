@@ -43,6 +43,26 @@ pub struct FileIdentity {
     pub end_of_file: u64,
 }
 
+fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io::Result<Vec<u16>> {
+    let name: Vec<u16> = name.encode_wide().collect();
+    // Native relative opens do not apply Win32 dot-component normalization,
+    // but dot names still violate this API's single-component contract.
+    if name.is_empty()
+        || name.contains(&0)
+        || name.as_slice() == ['.' as u16]
+        || name.as_slice() == ['.' as u16, '.' as u16]
+        || name
+            .iter()
+            .any(|character| *character == b'/' as u16 || *character == b'\\' as u16)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{description} name must be one non-special path component"),
+        ));
+    }
+    Ok(name)
+}
+
 /// Opens an existing regular file relative to an opened directory.
 ///
 /// The resulting handle allows read sharing only, so writers and
@@ -99,7 +119,8 @@ fn open_relative_file(
     operation: &str,
 ) -> io::Result<fs::File> {
     let name_string = name.to_string_lossy();
-    let name = UnicodeString::try_from(name)
+    let name = validate_relative_component(name, "file")?;
+    let name = UnicodeString::new(&name)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
     let mut attributes = ObjectAttributes::new();
     attributes
@@ -140,20 +161,7 @@ pub fn hard_link_relative(
     directory: &fs::File,
     name: &std::ffi::OsStr,
 ) -> io::Result<()> {
-    let name: Vec<u16> = name.encode_wide().collect();
-    if name.is_empty()
-        || name.contains(&0)
-        || name.as_slice() == ['.' as u16]
-        || name.as_slice() == ['.' as u16, '.' as u16]
-        || name
-            .iter()
-            .any(|character| *character == b'/' as u16 || *character == b'\\' as u16)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "hard-link name must be one non-special path component",
-        ));
-    }
+    let name = validate_relative_component(name, "hard-link")?;
 
     let name_bytes = name
         .len()
@@ -299,4 +307,25 @@ pub fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
         file_id: identity.FileId.Identifier,
         end_of_file,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn relative_name_must_be_one_non_special_component() {
+        for name in ["", ".", "..", "dir\\file", "dir/file", "nul\0name"] {
+            let error = validate_relative_component(name.as_ref(), "file").unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name:?}");
+        }
+
+        for name in ["file", ".file", "..."] {
+            assert!(
+                validate_relative_component(name.as_ref(), "file").is_ok(),
+                "{name:?}"
+            );
+        }
+    }
 }
