@@ -97,17 +97,21 @@ impl Read for VirtioPayloadReader<'_, '_> {
 }
 
 impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
-    fn read_until(&mut self, byte: u8) -> lx::Result<Vec<u8>> {
+    fn read_until_count(&mut self, byte: u8, count: usize) -> lx::Result<Vec<u8>> {
         // Unlike with a simple slice, we can't just scan ahead for the desired byte. Instead,
         // repeatedly read some data and see if it contains the byte. It is expected that in most
         // cases, the string will be contained in the remainder of the current payload buffer,
         // in which case this loop only has one iteration.
         let mut buffer: Vec<u8> = Vec::new();
         let mut buffer_offset = 0;
+        let mut remaining = count;
         loop {
             // Bound each scan so a large descriptor with an early terminator does not require an
             // allocation for the entire descriptor.
-            let len = self.get_current_remaining_len().min(READ_UNTIL_CHUNK_SIZE);
+            let len = self
+                .get_current_remaining_len()
+                .min(READ_UNTIL_CHUNK_SIZE)
+                .min(remaining);
             if len == 0 {
                 return Err(lx::Error::EINVAL);
             }
@@ -137,6 +141,7 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
                 return Ok(buffer);
             } else {
                 buffer_offset += len;
+                remaining -= len;
             }
         }
     }
