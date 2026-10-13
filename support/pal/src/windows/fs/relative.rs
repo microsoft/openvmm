@@ -5,7 +5,6 @@
 //! hard-linking, and enumerating files relative to an opened directory, and
 //! querying the identity of an opened file.
 
-use crate::windows::BorrowedHandleExt;
 use crate::windows::ObjectAttributes;
 use crate::windows::UnicodeString;
 use crate::windows::chk_status;
@@ -25,8 +24,6 @@ use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NO_MORE_FILES;
 use windows_sys::Win32::Foundation::STATUS_PENDING;
-use windows_sys::Win32::Foundation::WAIT_FAILED;
-use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
@@ -42,8 +39,6 @@ use windows_sys::Win32::Storage::FileSystem::FileStandardInfo;
 use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
-use windows_sys::Win32::System::Threading::INFINITE;
-use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 /// Stable identity and EOF for one opened file generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,17 +70,13 @@ impl PendingIoStatus {
 }
 
 fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
-    // A synchronous file object necessarily grants SYNCHRONIZE. Duplicating
-    // that access before starting the query also makes every pending query
-    // waitable, including the asynchronous objects this function rejects.
-    let file = file.as_handle().duplicate(false, Some(SYNCHRONIZE))?;
-    let mut mode = Box::new(ntioapi::FILE_MODE_INFORMATION::default());
-    let io_status = Box::new(PendingIoStatus::new());
+    let mut mode = ntioapi::FILE_MODE_INFORMATION::default();
+    let io_status = PendingIoStatus::new();
     let mut status = unsafe {
         ntioapi::NtQueryInformationFile(
             file.as_raw_handle(),
             io_status.as_ptr(),
-            (&raw mut *mode).cast(),
+            (&raw mut mode).cast(),
             size_of::<ntioapi::FILE_MODE_INFORMATION>() as u32,
             ntioapi::FileModeInformation,
         )
@@ -96,18 +87,8 @@ fn ensure_synchronous(file: &fs::File) -> io::Result<()> {
                 status = completion_status;
                 break;
             }
-            let wait = unsafe { WaitForSingleObject(file.as_raw_handle(), INFINITE) };
-            if wait != WAIT_OBJECT_0 {
-                let error = if wait == WAIT_FAILED {
-                    io::Error::last_os_error()
-                } else {
-                    io::Error::other(format!("unexpected file wait result {wait:#x}"))
-                };
-                // The query may still own both output buffers.
-                let _ = Box::leak(mode);
-                let _ = Box::leak(io_status);
-                return Err(error);
-            }
+            // FILE_SKIP_SET_EVENT_ON_HANDLE can suppress file-object signaling.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
     chk_status(status)?;
