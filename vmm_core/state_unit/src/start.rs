@@ -165,10 +165,13 @@ impl StateUnits {
                 let ready_set = ready_set.clone();
                 let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
                 operations.push(async move {
-                    ready_set.wait(op, id, &dependents).await;
+                    if !ready_set.wait(op, id, &dependents).await {
+                        ready_set.done(id, false);
+                        return (name, id, None);
+                    }
                     let result = stop.await;
-                    ready_set.done(id, true);
-                    (name, id, result)
+                    ready_set.done(id, matches!(&result, Ok(Some(()))));
+                    (name, id, Some(result))
                 });
                 unit.state = State::Stopping;
             }
@@ -183,14 +186,20 @@ impl StateUnits {
             };
             assert_eq!(unit.state, State::Stopping);
             match result {
-                Ok(Some(())) => unit.state = stopped_state,
-                Ok(None) => {
+                Some(Ok(Some(()))) => unit.state = stopped_state,
+                Some(Ok(None)) => {
                     unit.state = State::StartUncertain;
                     failures.push(format!("{name}: {op} stop request was not sent"));
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     unit.state = State::StartUncertain;
                     failures.push(format!("{name}: {op} stop failed: {error:#}"));
+                }
+                None => {
+                    unit.state = State::StartUncertain;
+                    failures.push(format!(
+                        "{name}: {op} stop skipped because a dependent was not stopped"
+                    ));
                 }
             }
         }

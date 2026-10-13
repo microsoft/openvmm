@@ -211,6 +211,7 @@ impl StateRequest {
 pub struct StateUnits {
     inner: Arc<Mutex<Inner>>,
     running: bool,
+    save_quiesced_units: Option<Vec<u64>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Inspect)]
@@ -448,6 +449,7 @@ impl StateUnits {
                 names: HashMap::new(),
             })),
             running: false,
+            save_quiesced_units: None,
         }
     }
 
@@ -518,7 +520,9 @@ impl StateUnits {
 
     /// Starts all the state units.
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        self.start_with_rollback().await
+        self.start_with_rollback().await?;
+        self.save_quiesced_units = None;
+        Ok(())
     }
 
     /// Stops all the state units.
