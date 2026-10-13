@@ -9,6 +9,7 @@ use super::EgressDenied;
 use super::EgressPolicy;
 use super::EgressPolicyMode;
 use super::EgressTransport;
+use super::Endpoint;
 use super::InvalidEgressPolicy;
 use super::PacketTransport;
 use super::ensure_available;
@@ -189,7 +190,7 @@ impl EgressPolicy {
         frame: &[u8],
         frame_length: usize,
         offset: usize,
-        carried: Option<&mut dyn FnMut(&ReplyCandidate) -> bool>,
+        endpoint: Option<Endpoint<'_>>,
     ) -> Result<(), EgressDenied> {
         let Some(link) = self.ipv6 else {
             return Err(EgressDenied::UnsupportedEtherType(ETHER_TYPE_IPV6));
@@ -268,9 +269,17 @@ impl EgressPolicy {
             }
             _ => None,
         };
+        let rule_destination = match endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.route(IpAddr::V6(destination)))
+        {
+            Some(IpAddr::V6(routed)) if routed.is_loopback() => link.gateway,
+            Some(IpAddr::V6(routed)) => routed,
+            _ => destination,
+        };
         let denied = if !rules {
             EgressDenied::UnsupportedEtherType(ETHER_TYPE_IPV6)
-        } else if self.rules_allow_destination(IpAddr::V6(destination), packet) {
+        } else if self.rules_allow_destination(IpAddr::V6(rule_destination), packet) {
             return Ok(());
         } else {
             EgressDenied::DestinationDenied
@@ -291,7 +300,11 @@ impl EgressPolicy {
             guest: SocketAddr::from((link.guest, read_u16(frame, payload_offset))),
             peer: SocketAddr::from((destination, read_u16(frame, payload_offset + 2))),
         };
-        Self::admit_reply(Some(candidate), carried, denied)
+        Self::admit_reply(
+            Some(candidate),
+            endpoint.map(|endpoint| endpoint.carried),
+            denied,
+        )
     }
 
     /// Authorizes Neighbor Discovery, which admits only the guest's Neighbor

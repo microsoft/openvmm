@@ -224,6 +224,22 @@ struct IngressHarness {
 
 impl IngressHarness {
     async fn new(driver: DefaultDriver) -> (ConsommeEndpoint, Self) {
+        Self::with(
+            driver,
+            ingress::ListenerPublisher::new(PrivateNetworkIngress { admit_host: true }, false)
+                .on_loopback(),
+            |policy| policy.with_ingress(net_backend_resources::egress::EgressAction::Allow),
+        )
+        .await
+    }
+
+    /// Starts an endpoint whose `publisher` publishes the guest's ports under
+    /// the egress policy that `policy` makes of one that denies everything.
+    async fn with(
+        driver: DefaultDriver,
+        publisher: ingress::ListenerPublisher,
+        policy: impl FnOnce(EgressPolicy) -> EgressPolicy,
+    ) -> (ConsommeEndpoint, Self) {
         let mut params = ConsommeParams::new().unwrap();
         params
             .set_static_ipv4(GUEST_IPV4, 24, GATEWAY_IPV4, GATEWAY_MAC)
@@ -232,15 +248,9 @@ impl IngressHarness {
         params.allow_host_local_access = true;
         params.map_gateway_to_host_loopback = true;
         let mut endpoint = ConsommeEndpoint::new(params);
-        endpoint.endpoint_state.lock().as_mut().unwrap().publisher = Some(
-            ingress::PrivateNetworkPublisher::new(
-                PrivateNetworkIngress { admit_host: true },
-                false,
-            )
-            .on_loopback(),
-        );
+        endpoint.endpoint_state.lock().as_mut().unwrap().publisher = Some(publisher);
         endpoint
-            .set_egress_policy(
+            .set_egress_policy(policy(
                 EgressPolicy::bind(
                     GUEST_IPV4,
                     24,
@@ -248,9 +258,8 @@ impl IngressHarness {
                     GATEWAY_IPV4,
                     EgressPolicyMode::DenyAll,
                 )
-                .unwrap()
-                .with_ingress(net_backend_resources::egress::EgressAction::Allow),
-            )
+                .unwrap(),
+            ))
             .unwrap();
 
         let layout = net_backend::tests::test_layout();
@@ -436,5 +445,172 @@ async fn endpoint_publishes_announced_ports_and_admits_their_replies(driver: Def
         .unwrap()
         .published();
     assert!(published.is_empty());
+    endpoint.stop().await;
+}
+
+/// Test that host-loopback ingress alone publishes the announced ports on
+/// host loopback, for the host, and admits the guest's replies under an
+/// egress posture that denies everything else.
+#[pal_async::async_test]
+async fn endpoint_publishes_announced_ports_on_host_loopback(driver: DefaultDriver) {
+    const SYN: u8 = 0x02;
+    const ACK: u8 = 0x10;
+    let port = {
+        let probe = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let (mut endpoint, mut harness) = IngressHarness::with(
+        driver,
+        ingress::ListenerPublisher::host_loopback(false),
+        |policy| {
+            policy.with_host_loopback_ingress(net_backend_resources::egress::EgressAction::Allow)
+        },
+    )
+    .await;
+
+    assert!(harness.transmit(&announcement(&[port])).await.is_empty());
+    let mut client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    let syn = harness
+        .receive_tcp(port, |frame| frame[47] & (SYN | ACK) == SYN)
+        .await;
+    let peer = SocketAddrV4::new(
+        Ipv4Addr::new(syn[26], syn[27], syn[28], syn[29]),
+        u16::from_be_bytes([syn[34], syn[35]]),
+    );
+    let peer_seq = u32::from_be_bytes([syn[38], syn[39], syn[40], syn[41]]);
+    harness
+        .transmit(&tcp_segment(
+            port,
+            peer,
+            1000,
+            peer_seq.wrapping_add(1),
+            SYN | ACK,
+        ))
+        .await;
+    std::io::Write::write_all(&mut client, b"hello").unwrap();
+    harness
+        .receive_tcp(port, |frame| frame.ends_with(b"hello"))
+        .await;
+
+    drop(harness);
+    let published = endpoint
+        .endpoint_state
+        .lock()
+        .as_ref()
+        .unwrap()
+        .publisher
+        .as_ref()
+        .unwrap()
+        .published();
+    assert_eq!(
+        published,
+        [(
+            net_backend_resources::ingress::IngressTransport::Tcp,
+            false,
+            port
+        )]
+    );
+    endpoint.stop().await;
+}
+
+/// Test that the gateway's rules govern the guest's own connections to the
+/// virtual address at which the endpoint presents a host-loopback peer, so
+/// that the address reaches no host-loopback port that they deny.
+#[pal_async::async_test]
+async fn endpoint_applies_the_gateways_rules_to_host_loopback_peers(driver: DefaultDriver) {
+    use net_backend_resources::egress::EgressAction;
+    const SYN: u8 = 0x02;
+    const ACK: u8 = 0x10;
+    let port = {
+        let probe = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let denied = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let allowed = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    denied.set_nonblocking(true).unwrap();
+    allowed.set_nonblocking(true).unwrap();
+    let denied_port = denied.local_addr().unwrap().port();
+    let allowed_port = allowed.local_addr().unwrap().port();
+    let (mut endpoint, mut harness) = IngressHarness::with(
+        driver,
+        ingress::ListenerPublisher::host_loopback(false),
+        |_| {
+            EgressPolicy::bind(
+                GUEST_IPV4,
+                24,
+                MacAddress::new(GUEST_MAC),
+                GATEWAY_IPV4,
+                EgressPolicyMode::Rules {
+                    default_action: EgressAction::Allow,
+                    allow: Vec::new(),
+                    deny: vec![
+                        format!("{GATEWAY_IPV4}/32:tcp:{denied_port}")
+                            .parse()
+                            .unwrap(),
+                    ],
+                },
+            )
+            .unwrap()
+            .with_host_loopback_ingress(EgressAction::Allow)
+        },
+    )
+    .await;
+
+    // A host client of the published port shows the guest the address at
+    // which the endpoint presents host loopback.
+    assert!(harness.transmit(&announcement(&[port])).await.is_empty());
+    let _client = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    let syn = harness
+        .receive_tcp(port, |frame| frame[47] & (SYN | ACK) == SYN)
+        .await;
+    let peer = Ipv4Addr::new(syn[26], syn[27], syn[28], syn[29]);
+    assert_ne!(peer, GATEWAY_IPV4);
+
+    // Neither the gateway nor that address reaches the port that the rules
+    // deny at the gateway, while the address reaches another one.
+    for (guest_port, destination) in [(40000, GATEWAY_IPV4), (40001, peer)] {
+        harness
+            .transmit(&tcp_segment(
+                guest_port,
+                SocketAddrV4::new(destination, denied_port),
+                1000,
+                0,
+                SYN,
+            ))
+            .await;
+    }
+    harness
+        .transmit(&tcp_segment(
+            40002,
+            SocketAddrV4::new(peer, allowed_port),
+            1000,
+            0,
+            SYN,
+        ))
+        .await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match allowed.accept() {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for the allowed connection"
+                );
+                pal_async::timer::PolledTimer::new(&harness.driver)
+                    .sleep(std::time::Duration::from_millis(10))
+                    .await;
+            }
+            Err(error) => panic!("accepting the allowed connection failed: {error}"),
+        }
+    }
+    // Consomme opens host connections in the order that the guest asks for
+    // them, so a denied one would have reached its listener first.
+    assert_eq!(
+        denied.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    drop(harness);
     endpoint.stop().await;
 }
