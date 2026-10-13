@@ -625,6 +625,7 @@ impl MshvPartitionInner {
         self.memory.lock().ranges.push(Some(crate::MshvMemoryRange {
             region,
             mapped: false,
+            guest_memory: false,
         }));
         Ok(())
     }
@@ -690,8 +691,7 @@ impl MshvPartitionInner {
             let mut memory = self.memory.lock();
             for range in memory.ranges.iter_mut().flatten() {
                 if !range.mapped {
-                    self.vmfd
-                        .map_user_memory(range.region)
+                    crate::timing::map_user_memory(&self.vmfd, range.region)
                         .map_err(|e| SnpError::MapGuestMemory(e.into()))?;
                     range.mapped = true;
                 }

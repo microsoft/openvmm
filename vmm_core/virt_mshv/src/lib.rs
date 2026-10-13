@@ -278,7 +278,7 @@ impl MshvIsolationState {
     fn map_user_memory(&self, vmfd: &VmFd, region: mshv_user_mem_region) -> anyhow::Result<bool> {
         match self {
             Self::None => {
-                vmfd.map_user_memory(region)?;
+                crate::timing::map_user_memory(vmfd, region)?;
                 Ok(true)
             }
             #[cfg(guest_arch = "x86_64")]
@@ -290,7 +290,7 @@ impl MshvIsolationState {
                     anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
                 }
                 arch::SnpLaunchState::Finished => {
-                    vmfd.map_user_memory(region)?;
+                    crate::timing::map_user_memory(vmfd, region)?;
                     Ok(true)
                 }
                 arch::SnpLaunchState::Failed => {
@@ -313,6 +313,9 @@ struct MshvPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     #[inspect(rename = "memory_finalized", with = "|x| x.get().is_some()")]
     finalized: std::sync::OnceLock<arch::finalize::MshvFinalizedPartition>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    finalize_lock: Mutex<()>,
     #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
@@ -923,10 +926,17 @@ struct MshvMemoryRangeState {
     ranges: Vec<Option<MshvMemoryRange>>,
 }
 
+impl MshvMemoryRangeState {
+    fn guest_memory_attached(&self) -> bool {
+        self.ranges.iter().flatten().any(|range| range.guest_memory)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 struct MshvMemoryRange {
     region: mshv_user_mem_region,
     mapped: bool,
+    guest_memory: bool,
 }
 
 impl virt::PartitionMemoryMapper for MshvPartition {
@@ -1015,10 +1025,11 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             exec,
         )
         .entered();
-        let mapped = self.isolation.map_memory_timed(&self.vmfd, mem_region)?;
+        let mapped = self.isolation.map_user_memory(&self.vmfd, mem_region)?;
         state.ranges[slot_to_use] = Some(MshvMemoryRange {
             region: mem_region,
             mapped,
+            guest_memory: true,
         });
         Ok(())
     }

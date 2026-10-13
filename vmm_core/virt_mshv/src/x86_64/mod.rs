@@ -538,6 +538,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
             finalized: Default::default(),
+            finalize_lock: Default::default(),
             memory: Default::default(),
             gm: config.guest_memory.clone(),
             mem_layout: config.mem_layout.clone(),
