@@ -39,7 +39,7 @@ pub(crate) struct KeyReleaseResponse {
     /// composite RSA+AES key-wrap scheme (`RSA_AES_KEY_WRAP_384`). When `false`,
     /// the default scheme is used (inner RSA-OAEP using SHA-1).
     pub rsa_aes_key_wrap_384_used: bool,
-    /// Unverified host-provided SHA-256 context hash, available only with V3.
+    /// Unverified host-provided SHA-256 context hash from an extended payload.
     pub key_release_context_hash: Option<[u8; 32]>,
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn parse_response_requiring_context(
     // The `rsa_aes_key_wrap_384_used` signal is only present in the version 2+
     // response header. When absent, fall back to the default (SHA-1) scheme.
     let rsa_aes_key_wrap_384_used = match parsed.header.version {
-        IgvmAttestResponseVersion::VERSION_2 | IgvmAttestResponseVersion::VERSION_3 => {
+        IgvmAttestResponseVersion::VERSION_2 => {
             let full_header = IgvmAttestKeyReleaseResponseHeader::read_from_prefix(response)
                 .map_err(|_| {
                     KeyReleaseError::ParseHeader(CommonError::ResponseHeaderInvalidFormat {
@@ -188,8 +188,8 @@ mod tests {
 
     #[test]
     fn parse_json_all_versions_preserves_key_wrap_signal_and_context() {
+        use crate::igvm_attest::tests::extended_response;
         use crate::igvm_attest::tests::frame_response;
-        use crate::igvm_attest::tests::v3_response;
         use base64::Engine;
 
         let wrapped_key = vec![42; 520];
@@ -197,10 +197,10 @@ mod tests {
             "ciphertext": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&wrapped_key)
         })
         .to_string();
-        for version in [
-            IgvmAttestResponseVersion::VERSION_1,
-            IgvmAttestResponseVersion::VERSION_2,
-            IgvmAttestResponseVersion::VERSION_3,
+        for (version, extended_payload) in [
+            (IgvmAttestResponseVersion::VERSION_1, false),
+            (IgvmAttestResponseVersion::VERSION_2, false),
+            (IgvmAttestResponseVersion::VERSION_2, true),
         ] {
             for sha384 in [false, true] {
                 for context_hash in [None, Some([7; 32])] {
@@ -210,8 +210,8 @@ mod tests {
                             .with_corim_endorsement_requested(true),
                         ..Default::default()
                     };
-                    let response = if version == IgvmAttestResponseVersion::VERSION_3 {
-                        v3_response(
+                    let response = if extended_payload {
+                        extended_response(
                             IgvmAttestResponseRequestType::KeyRelease,
                             &payload,
                             context_hash,
@@ -228,11 +228,7 @@ mod tests {
                     );
                     assert_eq!(
                         parsed.key_release_context_hash,
-                        if version == IgvmAttestResponseVersion::VERSION_3 {
-                            context_hash
-                        } else {
-                            None
-                        }
+                        if extended_payload { context_hash } else { None }
                     );
                 }
             }
@@ -241,10 +237,10 @@ mod tests {
 
     #[test]
     fn required_context_is_checked_before_invalid_service_payload() {
+        use crate::igvm_attest::tests::extended_response;
         use crate::igvm_attest::tests::frame_response;
-        use crate::igvm_attest::tests::v3_response;
 
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             "x",
             None,
@@ -268,7 +264,7 @@ mod tests {
                 ))
             ));
         }
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             "x",
             Some([2; 32]),
@@ -282,7 +278,7 @@ mod tests {
 
     #[test]
     fn invalid_context_metadata_is_rejected_before_service_payload() {
-        use crate::igvm_attest::tests::frame_response;
+        use crate::igvm_attest::tests::frame_extended_response;
 
         for extensions in [
             r#"{"key_release_context_hash":null}"#,
@@ -297,11 +293,7 @@ mod tests {
             let envelope = format!(
                 r#"{{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{extensions}}}"#
             );
-            let response = frame_response(
-                IgvmAttestResponseVersion::VERSION_3,
-                envelope.as_bytes(),
-                IgvmErrorInfo::default(),
-            );
+            let response = frame_extended_response(envelope.as_bytes(), IgvmErrorInfo::default());
             for require_context in [false, true] {
                 assert!(
                     matches!(
@@ -318,14 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn v3_jwt_still_verifies_signature() {
-        use crate::igvm_attest::tests::v3_response;
+    fn extended_jwt_still_verifies_signature() {
+        use crate::igvm_attest::tests::extended_response;
 
         let rsa_key = RsaKeyPair::generate(2048).unwrap();
         let (header, body, signature) =
             crate::test_helpers::generate_base64_encoded_jwt_components(&rsa_key);
         let jwt = format!("{header}.{body}.{signature}");
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             &jwt,
             Some([1; 32]),
@@ -337,7 +329,7 @@ mod tests {
 
         let changed = if signature.starts_with('A') { "B" } else { "A" };
         let jwt = format!("{header}.{body}.{changed}{}", &signature[1..]);
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             &jwt,
             None,
@@ -351,8 +343,8 @@ mod tests {
     }
 
     #[test]
-    fn v3_does_not_recursively_unwrap_payload() {
-        use crate::igvm_attest::tests::v3_response;
+    fn extended_does_not_recursively_unwrap_payload() {
+        use crate::igvm_attest::tests::extended_response;
 
         let payload = serde_json::to_string(&akv::AkvKeyReleaseKeyBlob {
             ciphertext: vec![42; 520],
@@ -365,7 +357,7 @@ mod tests {
             "extensions": {}
         })
         .to_string();
-        let response = v3_response(
+        let response = extended_response(
             IgvmAttestResponseRequestType::KeyRelease,
             &nested,
             None,
@@ -375,22 +367,20 @@ mod tests {
     }
 
     #[test]
-    fn v3_errors_preserve_attestation_pattern_and_signals() {
+    fn extended_errors_preserve_attestation_pattern_and_signals() {
         use crate::igvm_attest::tests::frame_response;
 
-        for version in [
-            IgvmAttestResponseVersion::VERSION_2,
-            IgvmAttestResponseVersion::VERSION_3,
-        ] {
+        for extended_payload in [false, true] {
             for retry in [false, true] {
                 for skip in [false, true] {
                     let response = frame_response(
-                        version,
+                        IgvmAttestResponseVersion::VERSION_2,
                         b"",
                         IgvmErrorInfo {
                             error_code: 1103,
                             http_status_code: 403,
                             igvm_signal: IgvmSignal::new()
+                                .with_extended_payload(extended_payload)
                                 .with_retry(retry)
                                 .with_skip_hw_unsealing(skip),
                             ..Default::default()
