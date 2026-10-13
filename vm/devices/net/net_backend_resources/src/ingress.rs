@@ -1,16 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Private-network ingress of a static microVM link.
+//! Private-network and host-loopback ingress of a static microVM link.
 //!
 //! The portable profile's NAT owns no listener for new inbound connections,
-//! and the caller's ingress policy names no ports. With ingress allowed, a
-//! guest agent therefore announces the TCP and UDP ports on which the workload
+//! and the caller's ingress policy names no ports. With ingress allowed, from
+//! the host's private networks or from host loopback alone, a guest agent
+//! therefore announces the TCP and UDP ports on which the workload
 //! listens. It sends each announcement as one UDP datagram from a privileged
 //! source port to [`LISTENER_ANNOUNCEMENT_PORT`] on the IPv4 gateway, so a
 //! workload without the privilege to bind such a port cannot forge one. The
 //! endpoint consumes announcements instead of forwarding them, and publishes
-//! the announced ports on the host.
+//! the announced ports on the host: on every host address for private-network
+//! ingress, and on host loopback alone otherwise.
 //!
 //! An announcement's payload is the magic `NVXL`, a version byte, a flags
 //! byte, a big-endian entry count, and that many four-byte entries in strictly

@@ -18,6 +18,7 @@ use super::filesystem::effective_microvm_filesystem;
 use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
+use super::network::microvm_ingress;
 use super::network::microvm_network_endpoint;
 use super::output::MicrovmOutputDrain;
 use super::output::OutputCompletion;
@@ -802,10 +803,10 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|_| openvmm_defs::microvm::microvm_virtio_net_irq(requested_hypervisor))
                 .transpose()?;
-            let ingress = self.network.as_ref().is_some_and(|network| {
-                network.policy.ingress_action()
-                    == net_backend_resources::egress::EgressAction::Allow
-            });
+            let ingress = self
+                .network
+                .as_ref()
+                .and_then(|network| microvm_ingress(&network.policy));
             let network = cfg
                 .microvm
                 .network
