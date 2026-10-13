@@ -2,9 +2,13 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vtpm-util"
+name = "vtpm_util"
 edition.workspace = true
 rust-version.workspace = true
+
+[[bin]]
+name = "vtpm-util"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true

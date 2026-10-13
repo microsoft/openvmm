@@ -3,9 +3,9 @@
 
 //! RSA key generation and TPM 2.0 import-blob serialization.
 
+use crate::create_sensitive_file;
 use crate::marshal;
 use crate::marshal::TpmtSensitive;
-use crate::create_sensitive_file;
 use crate::print_sha256_hash;
 use anyhow::Context;
 use crypto::rsa::RsaKeyPair;

@@ -3823,7 +3823,7 @@ mod tests {
             0, 0, // empty auth policy
             0, 16, // symmetric algorithm: NULL
             0, 20, // scheme: RSASSA
-            0, // truncated hash algorithm
+            0,  // truncated hash algorithm
         ];
 
         assert!(Tpm2bPublic::deserialize(&bytes).is_none());

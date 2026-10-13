@@ -11283,7 +11283,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vtpm-util"
+name = "vtpm_util"
 version = "0.0.0"
 dependencies = [
  "anyhow",

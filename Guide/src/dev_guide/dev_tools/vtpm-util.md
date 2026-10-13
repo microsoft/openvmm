@@ -25,10 +25,10 @@ restricted to the intended user.
 Build the tool from the repository root:
 
 ```bash
-cargo build -p vtpm-util
+cargo build -p vtpm_util
 ```
 
-Use `cargo run -p vtpm-util --` in place of the binary name in the examples
+Use `cargo run -p vtpm_util --` in place of the binary name in the examples
 below. Pass `--help` to see the current command interface.
 
 ## Creating a vTPM blob
@@ -36,7 +36,7 @@ below. Pass `--help` to see the current command interface.
 Create a new vTPM and write its serialized state to a file:
 
 ```bash
-cargo run -p vtpm-util -- create-vtpm-blob path/to/vtpm.blob
+cargo run -p vtpm_util -- create-vtpm-blob path/to/vtpm.blob
 ```
 
 The command creates an RSA storage root key (SRK) and persists it at the
@@ -47,14 +47,14 @@ standard SRK handle before saving the vTPM state.
 Export the persisted SRK public area as a `TPM2B_PUBLIC` structure:
 
 ```bash
-cargo run -p vtpm-util -- write-srk \
+cargo run -p vtpm_util -- write-srk \
     path/to/vtpm.blob path/to/srk.tpm2b
 ```
 
 Print the TPM key name for an exported SRK:
 
 ```bash
-cargo run -p vtpm-util -- print-key-name path/to/srk.tpm2b
+cargo run -p vtpm_util -- print-key-name path/to/srk.tpm2b
 ```
 
 The printed name consists of the public area's name-algorithm identifier
@@ -67,7 +67,7 @@ Generate an RSA-2048 key pair, write its public key in DER PKCS#1 format, and
 write its private material in TPM 2.0 import format:
 
 ```bash
-cargo run -p vtpm-util -- \
+cargo run -p vtpm_util -- \
     create-random-key-in-tpm2-import-blob-format rsa \
     path/to/public.der path/to/private.tpm2b
 ```
