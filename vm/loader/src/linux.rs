@@ -33,7 +33,7 @@ use page_table::x64::IdentityMapBuilder;
 use page_table::x64::PAGE_TABLE_MAX_BYTES;
 use page_table::x64::PAGE_TABLE_MAX_COUNT;
 use page_table::x64::PageTable;
-use page_table::x64::align_up_to_large_page_size;
+use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
 use std::io::Read;
@@ -210,6 +210,8 @@ pub enum Error {
     Importer(#[source] anyhow::Error),
     #[error("failed to import initrd")]
     ImportInitrd(#[source] ImportFileRegionError),
+    #[error("initrd address after kernel {0:#x} cannot be aligned to 2 MiB")]
+    InitrdAddressTooHigh(u64),
     #[error("failed to import bzImage payload")]
     ImportBzImage(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
@@ -463,6 +465,12 @@ fn check_address_alignment(address: u64) -> Result<(), Error> {
     }
 }
 
+fn align_initrd_after_kernel(next_addr: u64) -> Result<u64, Error> {
+    next_addr
+        .checked_next_multiple_of(X64_LARGE_PAGE_SIZE)
+        .ok_or(Error::InitrdAddressTooHigh(next_addr))
+}
+
 /// Import initrd
 fn import_initrd<R: GuestArch>(
     initrd: Option<InitrdConfig<'_>>,
@@ -472,7 +480,7 @@ fn import_initrd<R: GuestArch>(
     let initrd_info = match initrd {
         Some(cfg) => {
             let initrd_address = match cfg.initrd_address {
-                InitrdAddressType::AfterKernel => align_up_to_large_page_size(next_addr),
+                InitrdAddressType::AfterKernel => align_initrd_after_kernel(next_addr)?,
                 InitrdAddressType::Address(addr) => addr,
             };
 

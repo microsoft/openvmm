@@ -27,7 +27,6 @@ use memory_range::MemoryRange;
 use page_table::IdentityMapSize;
 use page_table::x64::IdentityMapBuilder;
 use page_table::x64::PageTable;
-use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
 use std::io::Read;
@@ -293,7 +292,7 @@ fn import_initrd_with_buffer(
     let initrd_info = match initrd {
         Some(cfg) => {
             let initrd_address = match cfg.initrd_address {
-                InitrdAddressType::AfterKernel => align_up_to_large_page_size(next_addr),
+                InitrdAddressType::AfterKernel => super::align_initrd_after_kernel(next_addr)?,
                 InitrdAddressType::Address(addr) => addr,
             };
 
@@ -1046,6 +1045,26 @@ mod tests {
             error,
             Error::ElfLoader(crate::elf::Error::EntryPointNotInLoadableSegment { .. })
         ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn initrd_after_kernel_alignment_overflow_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut initrd = Cursor::new([0]);
+        let mut buffer = ChunkBuf::new();
+        let error = import_initrd_with_buffer(
+            Some(InitrdConfig {
+                initrd_address: InitrdAddressType::AfterKernel,
+                initrd: &mut initrd,
+                size: 1,
+            }),
+            u64::MAX - HV_PAGE_SIZE + 1,
+            &mut importer,
+            &mut buffer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InitrdAddressTooHigh(_)));
         assert!(importer.imports.is_empty());
     }
 
