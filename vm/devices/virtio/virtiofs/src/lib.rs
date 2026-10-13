@@ -199,6 +199,9 @@ impl Fuse for VirtioFs {
     }
 
     fn forget(&self, node_id: u64, lookup_count: u64) {
+        if node_id == FUSE_ROOT_ID {
+            return;
+        }
         // This must be done under lock so an inode can't be resurrected between the lookup count
         // reaching zero and removing it from the list.
         let mut inodes = self.inner.inodes.write();
@@ -994,7 +997,21 @@ impl InodeMap {
 #[cfg(test)]
 mod tests {
     use super::HandleMap;
+    use super::VirtioFs;
+    use fuse::Fuse;
+    use fuse::protocol::FUSE_ROOT_ID;
     use test_with_tracing::test;
+
+    #[test]
+    fn direct_root_ignores_forget_across_destroy() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+
+        fs.forget(FUSE_ROOT_ID, 1);
+        fs.destroy();
+
+        assert!(fs.get_inode(FUSE_ROOT_ID).is_ok());
+    }
 
     #[test]
     fn handle_map_stops_after_max_handle() {
