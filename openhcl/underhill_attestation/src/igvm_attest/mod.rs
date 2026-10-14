@@ -397,8 +397,8 @@ mod tests {
             vm_unique_id: String::new(),
             vmgs_provisioner: None,
         };
-        let mut metadata =
-            ak_cert::parse_metadata(include_bytes!("../../test_data/test_ak_cert.der")).unwrap();
+        let certificate = test_igvm_agent_lib::ak_cert::certificate();
+        let mut metadata = ak_cert::parse_metadata(&certificate).unwrap();
         metadata.subject = "AK \"subject\"\\\n".to_owned();
         for tee in [
             Some(TeeType::Snp),

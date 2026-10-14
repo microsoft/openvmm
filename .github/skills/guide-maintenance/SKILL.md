@@ -107,26 +107,3 @@ grep -r "crate_name" Guide/src/
 # Find placeholder topics (empty links) in SUMMARY.md
 grep '()\s*$' Guide/src/SUMMARY.md
 ```
-
----
-
-## Attestation Documentation
-
-Keep `reference/architecture/openhcl/attestation.md` as the attestation
-navigation root. The paths below are relative to `Guide/src/`.
-
-| Code path | Guide page |
-| --- | --- |
-| `openhcl/openhcl_attestation_protocol/src/igvm_attest/` | `reference/architecture/openhcl/attestation_protocol.md` |
-| `openhcl/underhill_attestation/src/igvm_attest/` | `reference/architecture/openhcl/attestation_protocol.md`, `reference/architecture/openhcl/ak_cert.md` |
-| `openhcl/underhill_core/src/emuplat/tpm.rs` | `reference/architecture/openhcl/ak_cert.md` |
-| `vm/devices/tpm/tpm_device/` | `reference/architecture/openhcl/ak_cert.md` for AK renewal changes |
-| `vm/devices/tpm_resources/` | `reference/architecture/openhcl/ak_cert.md` for AK request/response interface changes |
-
-- Put wire schemas, encodings, versions, signals, and response validation in
-  the protocol reference, not in a second specification on a lifecycle page.
-- Put AK storage, renewal eligibility, scheduling, and guest compatibility in
-  the AK certificate page, linking to the protocol contract.
-- Add other substantial attestation lifecycle topics as child pages when their
-  implementations land. Link to shared contracts rather than duplicating them;
-  do not document unimplemented behavior or create placeholder links.

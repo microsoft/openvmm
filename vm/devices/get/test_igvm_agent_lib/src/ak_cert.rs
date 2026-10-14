@@ -6,7 +6,12 @@
 //! certificate trust, or the relationship to the TPM AK.
 
 use crate::Error;
-use base64::Engine;
+use der::Encode;
+use der::Tag;
+use der::TagNumber;
+use der::asn1::AnyRef;
+use der::asn1::BitStringRef;
+use der::asn1::ObjectIdentifier;
 use get_resources::ged::IgvmAttestTestConfig;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
@@ -16,48 +21,107 @@ use serde_json::Value;
 use serde_json::json;
 use zerocopy::IntoBytes;
 
-// Base64 copy of openhcl/underhill_attestation/test_data/test_ak_cert.der.
-// A self-signed synthetic certificate whose private key was discarded. Keeping
-// the bytes here avoids a build-time dependency on another crate's test files.
-const ORIGINAL_CERTIFICATE: &str = concat!(
-    "MIIBejCCASCgAwIBAgIBATAKBggqhkjOPQQDAjAbMRkwFwYDVQQDDBBUZXN0ICJB",
-    "SyIgaXNzdWVyMCAXDTI2MTAwOTE4MDIzMloYDzIwNTYxMTIwMTgwMjMyWjAbMRkw",
-    "FwYDVQQDDBBUZXN0ICJBSyIgaXNzdWVyMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD",
-    "QgAElNGyj/7RNNRgVpX/gAqOhXS3P0vwp0z4Qd/7KwgUBdMSlsvggYDyHXAIzJwu",
-    "tm7Qtir4XnJ+ru850LuUBFaQYqNTMFEwHQYDVR0OBBYEFJ/zk1wsg9hPHbUkKg59",
-    "PJsdGR07MA8GA1UdEwEB/wQFMAMBAf8wHwYDVR0jBBgwFoAUn/OTXCyD2E8dtSQq",
-    "Dn08mx0ZHTswCgYIKoZIzj0EAwIDSAAwRQIhAIyEp0ogiSzqgyk1L1gJUNY954lR",
-    "wWkr7LwygxyjWyQ1AiAmgokipzeZDnWBh7qV6b4+TsnvVLqvDYdXicJYaiC18g==",
-);
+// Public dummy identifier retained solely for the expected metadata contract.
+// It is not a secret or derived from a key used by these fixtures.
+const DUMMY_AUTHORITY: [u8; 20] = [
+    0x9f, 0xf3, 0x93, 0x5c, 0x2c, 0x83, 0xd8, 0x4f, 0x1d, 0xb5, 0x24, 0x2a, 0x0e, 0x7d, 0x3c, 0x9b,
+    0x1d, 0x19, 0x1d, 0x3b,
+];
 
-/// Return the synthetic DER certificate for E2E tests.
+/// Construct certificate-shaped DER at runtime for parser-only E2E tests.
 ///
-/// These tests only decode metadata; the fixture does not certify the VM's AK.
+/// This is not a cryptographic certificate: the public key and signature are
+/// each a dummy zero byte. It does not certify the VM's AK or establish trust.
 pub fn certificate() -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .decode(ORIGINAL_CERTIFICATE)
-        .expect("constant certificate fixture must be valid base64")
+    encode_certificate("Test \"AK\" issuer").expect("fixed parser fixture must encode")
 }
 
-/// Return the synthetic replacement DER certificate for metadata-only tests.
+/// Construct replacement certificate-shaped DER for parser-only tests.
 ///
-/// Both issuer and subject replace `Test "AK" issuer` with the same-length
-/// `Next "AK" issuer`, preserving DER lengths and all other bytes. This makes
-/// the signature invalid, which is irrelevant to these metadata-only tests.
-/// Replacement is scripted and makes no assumptions about certificate expiry.
+/// Only the issuer and subject names differ. Like [`certificate`], this has no
+/// usable key or signature. Replacement is scripted, not based on expiry.
 pub fn replacement_certificate() -> Vec<u8> {
-    let mut cert = certificate();
-    let original = b"Test \"AK\" issuer";
-    let replacement = b"Next \"AK\" issuer";
-    let mut replaced = 0;
-    for start in 0..=cert.len() - original.len() {
-        if &cert[start..start + original.len()] == original {
-            cert[start..start + original.len()].copy_from_slice(replacement);
-            replaced += 1;
-        }
-    }
-    assert_eq!(replaced, 2, "fixture must contain issuer and subject names");
-    cert
+    encode_certificate("Next \"AK\" issuer").expect("fixed parser fixture must encode")
+}
+
+fn der_value(tag: Tag, value: &[u8]) -> der::Result<Vec<u8>> {
+    AnyRef::new(tag, value)?.to_der()
+}
+
+// Encode only the X.509 envelope needed by the metadata parser. All TLV lengths
+// come from der, including when a different name changes enclosing lengths.
+fn encode_certificate(name: &str) -> der::Result<Vec<u8>> {
+    let signature_algorithm = der_value(
+        Tag::Sequence,
+        &ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2").to_der()?, // ecdsaWithSHA256
+    )?;
+    let name = der_value(
+        Tag::Sequence,
+        &der_value(
+            Tag::Set,
+            &der_value(
+                Tag::Sequence,
+                &[
+                    ObjectIdentifier::new_unwrap("2.5.4.3").to_der()?, // commonName
+                    der_value(Tag::Utf8String, name.as_bytes())?,
+                ]
+                .concat(),
+            )?,
+        )?,
+    )?;
+    let validity = der_value(
+        Tag::Sequence,
+        &[
+            der_value(Tag::UtcTime, b"261009180232Z")?,
+            der_value(Tag::GeneralizedTime, b"20561120180232Z")?,
+        ]
+        .concat(),
+    )?;
+    let dummy_bits = BitStringRef::from_bytes(&[0])?.to_der()?;
+    let spki = der_value(
+        Tag::Sequence,
+        &[
+            der_value(
+                Tag::Sequence,
+                &ObjectIdentifier::new_unwrap("1.2.840.10045.2.1").to_der()?, // id-ecPublicKey
+            )?,
+            dummy_bits.clone(),
+        ]
+        .concat(),
+    )?;
+    let authority = der_value(
+        Tag::Sequence,
+        &der_value(TagNumber(0).context_specific(false), &DUMMY_AUTHORITY)?,
+    )?;
+    let extension = der_value(
+        Tag::Sequence,
+        &[
+            ObjectIdentifier::new_unwrap("2.5.29.35").to_der()?, // authorityKeyIdentifier
+            der_value(Tag::OctetString, &authority)?,
+        ]
+        .concat(),
+    )?;
+    let tbs = der_value(
+        Tag::Sequence,
+        &[
+            der_value(TagNumber(0).context_specific(true), &2u8.to_der()?)?,
+            1u8.to_der()?,
+            signature_algorithm.clone(),
+            name.clone(),
+            validity,
+            name,
+            spki,
+            der_value(
+                TagNumber(3).context_specific(true),
+                &der_value(Tag::Sequence, &extension)?,
+            )?,
+        ]
+        .concat(),
+    )?;
+    der_value(
+        Tag::Sequence,
+        &[tbs, signature_algorithm, dummy_bits].concat(),
+    )
 }
 
 // Deliberately independent of production metadata extraction and serialization.
@@ -187,6 +251,14 @@ mod tests {
     use crate::IgvmAgentAction;
     use crate::IgvmAgentTestSetting;
     use crate::TestIgvmAgent;
+    use der::Decode;
+    use der::Reader;
+    use der::SliceReader;
+    use der::Tagged;
+    use der::asn1::GeneralizedTime;
+    use der::asn1::OctetStringRef;
+    use der::asn1::UtcTime;
+    use der::asn1::Utf8StringRef;
     use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
@@ -397,39 +469,122 @@ mod tests {
         }
     }
 
+    fn der_children(value: AnyRef<'_>, tag: Tag) -> Vec<AnyRef<'_>> {
+        assert_eq!(value.tag(), tag);
+        let mut reader = SliceReader::new(value.value()).unwrap();
+        let mut children = Vec::new();
+        while !reader.is_finished() {
+            children.push(reader.decode().unwrap());
+        }
+        reader.finish().unwrap();
+        children
+    }
+
+    fn check_algorithm(value: AnyRef<'_>, oid: &str) {
+        let fields = der_children(value, Tag::Sequence);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0].decode_as::<ObjectIdentifier>().unwrap(),
+            ObjectIdentifier::new_unwrap(oid)
+        );
+    }
+
+    fn check_dummy_bits(value: AnyRef<'_>) {
+        let bits = value.decode_as::<BitStringRef<'_>>().unwrap();
+        assert_eq!(bits.unused_bits(), 0);
+        assert_eq!(bits.as_bytes(), Some([0].as_slice()));
+    }
+
+    fn check_certificate(data: &[u8], name: &str) {
+        // This validates runtime encoding for a metadata parser, not a
+        // cryptographic certificate. No key or signature verification occurs.
+        let cert = der_children(AnyRef::from_der(data).unwrap(), Tag::Sequence);
+        assert_eq!(cert.len(), 3);
+        check_algorithm(cert[1], "1.2.840.10045.4.3.2");
+        check_dummy_bits(cert[2]);
+
+        let tbs = der_children(cert[0], Tag::Sequence);
+        assert_eq!(tbs.len(), 8);
+        let version = der_children(tbs[0], TagNumber(0).context_specific(true));
+        assert_eq!(version.len(), 1);
+        assert_eq!(version[0].decode_as::<u8>().unwrap(), 2);
+        assert_eq!(tbs[1].decode_as::<u8>().unwrap(), 1);
+        assert_eq!(tbs[2], cert[1]);
+        for index in [3, 5] {
+            let rdns = der_children(tbs[index], Tag::Sequence);
+            assert_eq!(rdns.len(), 1);
+            let attributes = der_children(rdns[0], Tag::Set);
+            assert_eq!(attributes.len(), 1);
+            let attribute = der_children(attributes[0], Tag::Sequence);
+            assert_eq!(attribute.len(), 2);
+            assert_eq!(
+                attribute[0].decode_as::<ObjectIdentifier>().unwrap(),
+                ObjectIdentifier::new_unwrap("2.5.4.3")
+            );
+            assert_eq!(
+                attribute[1]
+                    .decode_as::<Utf8StringRef<'_>>()
+                    .unwrap()
+                    .as_str(),
+                name
+            );
+        }
+        let validity = der_children(tbs[4], Tag::Sequence);
+        assert_eq!(validity.len(), 2);
+        validity[0].decode_as::<UtcTime>().unwrap();
+        validity[1].decode_as::<GeneralizedTime>().unwrap();
+        assert_eq!(validity[0].value(), b"261009180232Z");
+        assert_eq!(validity[1].value(), b"20561120180232Z");
+
+        let spki = der_children(tbs[6], Tag::Sequence);
+        assert_eq!(spki.len(), 2);
+        check_algorithm(spki[0], "1.2.840.10045.2.1");
+        check_dummy_bits(spki[1]);
+
+        let explicit = der_children(tbs[7], TagNumber(3).context_specific(true));
+        assert_eq!(explicit.len(), 1);
+        let extensions = der_children(explicit[0], Tag::Sequence);
+        assert_eq!(extensions.len(), 1);
+        let extension = der_children(extensions[0], Tag::Sequence);
+        assert_eq!(extension.len(), 2);
+        assert_eq!(
+            extension[0].decode_as::<ObjectIdentifier>().unwrap(),
+            ObjectIdentifier::new_unwrap("2.5.29.35")
+        );
+        let value = extension[1].decode_as::<&OctetStringRef>().unwrap();
+        let aki = der_children(AnyRef::from_der(value.as_bytes()).unwrap(), Tag::Sequence);
+        assert_eq!(aki.len(), 1);
+        assert_eq!(aki[0].tag(), TagNumber(0).context_specific(false));
+        assert_eq!(aki[0].value(), DUMMY_AUTHORITY);
+    }
+
     #[test]
     fn certificate_fixture() {
         let cert = certificate();
-        assert_eq!(cert.len(), 382);
-        assert_eq!(&cert[..4], &[0x30, 0x82, 0x01, 0x7a]);
         let replacement = replacement_certificate();
-        assert_eq!(replacement.len(), cert.len());
-        assert_ne!(replacement, cert);
-        // The only changed bytes are the two names; DER structure, dates,
-        // public key, authority identifier and signature bytes stay unchanged.
-        let name = b"Test \"AK\" issuer";
-        let positions: Vec<_> = cert
-            .windows(name.len())
-            .enumerate()
-            .filter_map(|(index, bytes)| (bytes == name).then_some(index))
-            .collect();
-        assert_eq!(positions.len(), 2);
-        let mut restored = replacement.clone();
-        for index in positions {
-            assert_eq!(
-                &replacement[index..index + name.len()],
-                b"Next \"AK\" issuer"
-            );
-            restored[index..index + name.len()].copy_from_slice(name);
+        assert_eq!(cert, certificate());
+        assert_eq!(replacement, replacement_certificate());
+        assert_ne!(cert, replacement);
+        check_certificate(&cert, "Test \"AK\" issuer");
+        check_certificate(&replacement, "Next \"AK\" issuer");
+
+        let original = der_children(AnyRef::from_der(&cert).unwrap(), Tag::Sequence);
+        let replaced = der_children(AnyRef::from_der(&replacement).unwrap(), Tag::Sequence);
+        assert_eq!(original[1..], replaced[1..]);
+        let original_tbs = der_children(original[0], Tag::Sequence);
+        let replaced_tbs = der_children(replaced[0], Tag::Sequence);
+        // Only the issuer and subject differ; compare decoded fields rather
+        // than relying on byte offsets or a particular total DER length.
+        for (index, (a, b)) in original_tbs.iter().zip(&replaced_tbs).enumerate() {
+            assert_eq!(a != b, matches!(index, 3 | 5));
         }
-        assert_eq!(restored, cert);
-        for (der, name) in [
-            (&cert, "Test \"AK\" issuer"),
-            (&replacement, "Next \"AK\" issuer"),
-        ] {
-            let parsed = crypto::x509::X509Certificate::from_der(der).unwrap();
-            assert_eq!(parsed.subject_common_name().unwrap().as_deref(), Some(name));
-        }
+    }
+
+    #[test]
+    fn certificate_name_controls_encoding_lengths() {
+        // Cross DER's short/long length boundary without patching any bytes.
+        let name = "Parser-only AK name ".repeat(16);
+        check_certificate(&encode_certificate(&name).unwrap(), &name);
     }
 
     // Exercise dispatch without a VM or a hardware attestation report.

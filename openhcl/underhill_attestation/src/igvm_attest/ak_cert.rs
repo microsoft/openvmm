@@ -13,13 +13,17 @@ use der::TagNumber;
 use der::Tagged;
 use der::asn1::AnyRef;
 use der::asn1::BitStringRef;
+use der::asn1::BmpString;
+use der::asn1::GeneralizedTime;
 use der::asn1::IntRef;
 use der::asn1::ObjectIdentifier;
 use der::asn1::OctetStringRef;
+use der::asn1::PrintableStringRef;
+use der::asn1::TeletexStringRef;
+use der::asn1::UtcTime;
+use der::asn1::Utf8StringRef;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata;
 use thiserror::Error;
-use x509_cert::ext::pkix::name::DirectoryString;
-use x509_cert::time::Time;
 use zerocopy::FromBytes;
 
 /// The certificate or renewal decision returned by the host.
@@ -68,7 +72,10 @@ pub fn parse_metadata(data: &[u8]) -> Result<AkCertMetadata, AkCertMetadataError
             skip_algorithm(tbs)?;
             let issuer = common_name(tbs, "issuer")?;
             let (not_before, not_after) = tbs.sequence(|validity| {
-                Ok::<_, der::Error>((validity.decode::<Time>()?, validity.decode::<Time>()?))
+                Ok::<_, der::Error>((
+                    time_content(validity.decode()?)?,
+                    time_content(validity.decode()?)?,
+                ))
             })?;
             let subject = common_name(tbs, "subject")?;
             // SPKI: validate the envelope without decoding the key itself.
@@ -98,8 +105,8 @@ pub fn parse_metadata(data: &[u8]) -> Result<AkCertMetadata, AkCertMetadataError
             Ok::<_, AkCertMetadataError>(AkCertMetadata {
                 issuer,
                 subject,
-                not_before: time_content(not_before),
-                not_after: time_content(not_after),
+                not_before,
+                not_after,
                 authority: authority.map(hex::encode_upper).unwrap_or_default(),
             })
         })?;
@@ -176,14 +183,27 @@ fn common_name(
         }
         Ok::<_, der::Error>(())
     })?;
-    // DirectoryString is owned in x509-cert 0.3; only the selected CN is
-    // decoded. This validates string encodings and retains legacy BMP/Teletex
-    // support as well as UTF8String and PrintableString.
-    Ok(cn
-        .ok_or(AkCertMetadataError::MissingCommonName(name))?
-        .decode_as::<DirectoryString>()?
-        .value()
-        .into_owned())
+    Ok(directory_string(
+        cn.ok_or(AkCertMetadataError::MissingCommonName(name))?,
+    )?)
+}
+
+fn directory_string(value: AnyRef<'_>) -> der::Result<String> {
+    // Match the previous DirectoryString's supported encodings, including der's
+    // ASCII-only Teletex support. Only the selected CN is decoded/allocated.
+    match value.tag() {
+        Tag::Utf8String => Ok(value.decode_as::<Utf8StringRef<'_>>()?.as_str().to_owned()),
+        Tag::PrintableString => Ok(value
+            .decode_as::<PrintableStringRef<'_>>()?
+            .as_str()
+            .to_owned()),
+        Tag::TeletexString => Ok(value
+            .decode_as::<TeletexStringRef<'_>>()?
+            .as_str()
+            .to_owned()),
+        Tag::BmpString => Ok(value.decode_as::<BmpString>()?.to_string()),
+        tag => Err(tag.value_error().into()),
+    }
 }
 
 fn authority_key_identifier(extensions: &[u8]) -> der::Result<Option<&[u8]>> {
@@ -251,20 +271,21 @@ fn decode_authority_key_identifier(data: &[u8]) -> der::Result<Option<&[u8]>> {
     })
 }
 
-fn time_content(time: Time) -> String {
-    let date = time.to_date_time();
-    let year = match time {
-        Time::UtcTime(_) => format!("{:02}", date.year() % 100),
-        Time::GeneralTime(_) => format!("{:04}", date.year()),
-    };
-    format!(
-        "{year}{:02}{:02}{:02}{:02}{:02}Z",
-        date.month(),
-        date.day(),
-        date.hour(),
-        date.minutes(),
-        date.seconds()
-    )
+fn time_content(time: AnyRef<'_>) -> der::Result<String> {
+    match time.tag() {
+        Tag::UtcTime => {
+            time.decode_as::<UtcTime>()?;
+        }
+        Tag::GeneralizedTime => {
+            time.decode_as::<GeneralizedTime>()?;
+        }
+        tag => return Err(tag.value_error().into()),
+    }
+    // The DER time decoders validate the date and require ASCII digits followed
+    // by Z. Preserve that exact content, including the original year width.
+    Ok(core::str::from_utf8(time.value())
+        .map_err(|_| time.tag().value_error())?
+        .to_owned())
 }
 
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
@@ -335,17 +356,14 @@ mod tests {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
+    use test_igvm_agent_lib::ak_cert::certificate;
     use test_with_tracing::test;
-    use zerocopy::FromBytes;
     use zerocopy::IntoBytes;
-
-    // Self-signed synthetic certificate. The private key was discarded.
-    // Includes a quoted CN, UTCTime notBefore, GeneralizedTime notAfter, and AKI.
-    const TEST_CERT: &[u8] = include_bytes!("../../test_data/test_ak_cert.der");
 
     #[test]
     fn test_certificate_metadata() {
-        let metadata = parse_metadata(TEST_CERT).unwrap();
+        let cert = certificate();
+        let metadata = parse_metadata(&cert).unwrap();
         assert_eq!(metadata.issuer, "Test \"AK\" issuer");
         assert_eq!(metadata.subject, "Test \"AK\" issuer");
         assert_eq!(metadata.not_before, "261009180232Z");
@@ -355,37 +373,30 @@ mod tests {
             "9FF3935C2C83D84F1DB5242A0E7D3C9B1D191D3B"
         );
 
-        let mut padded = TEST_CERT.to_vec();
+        let mut padded = cert.clone();
         padded.resize(4096, 0);
         assert_eq!(parse_metadata(&padded).unwrap(), metadata);
-        padded[TEST_CERT.len()..].fill(0xa5);
+        padded[cert.len()..].fill(0xa5);
         assert_eq!(parse_metadata(&padded).unwrap(), metadata);
     }
 
     #[test]
     fn test_certificate_without_authority_key_identifier() {
         // Changing the extension OID leaves valid DER, but no AKI extension.
-        let mut cert = TEST_CERT.to_vec();
-        let offset = cert
-            .windows(3)
-            .position(|w| w == [0x55, 0x1d, 0x23])
-            .unwrap();
-        cert[offset + 2] = 0x24;
+        let cert = with_aki(&[der_value(TagNumber(0).context_specific(false), &[1])]);
+        assert_eq!(parse_metadata(&cert).unwrap().authority, "01");
+        let cert = edit_children(&cert, &[0, 7, 0, 0], |extension| {
+            extension[0] = ObjectIdentifier::new_unwrap("2.5.29.36").to_der().unwrap();
+        });
         assert_eq!(parse_metadata(&cert).unwrap().authority, "");
     }
 
     #[test]
     fn test_certificate_missing_common_name() {
-        for name_index in [0, 1] {
-            let mut cert = TEST_CERT.to_vec();
-            let offset = cert
-                .windows(3)
-                .enumerate()
-                .filter(|(_, w)| *w == [0x55, 0x04, 0x03])
-                .nth(name_index)
-                .unwrap()
-                .0;
-            cert[offset + 2] = 0x0a;
+        for name_index in [3, 5] {
+            let cert = edit_children(&certificate(), &[0, name_index, 0, 0], |attribute| {
+                attribute[0] = ObjectIdentifier::new_unwrap("2.5.4.10").to_der().unwrap();
+            });
             assert!(matches!(
                 parse_metadata(&cert),
                 Err(AkCertMetadataError::MissingCommonName(_))
@@ -395,16 +406,13 @@ mod tests {
 
     #[test]
     fn test_invalid_certificate_metadata() {
-        for size in 0..TEST_CERT.len() {
-            assert!(parse_metadata(&TEST_CERT[..size]).is_err());
+        let cert = certificate();
+        for size in 0..cert.len() {
+            assert!(parse_metadata(&cert[..size]).is_err());
         }
         assert!(parse_metadata(&[0; 4096]).is_err());
-        let mut cert = TEST_CERT.to_vec();
-        let offset = cert
-            .windows(4)
-            .position(|w| w == [0x30, 0x16, 0x80, 0x14])
-            .unwrap();
-        cert[offset + 3] = 0x15;
+        // Truncated key identifier inside a fully bounded AKI sequence.
+        let cert = with_aki(&[vec![0x80, 2, 1]]);
         assert!(parse_metadata(&cert).is_err());
     }
 
@@ -447,7 +455,7 @@ mod tests {
             ]
             .concat(),
         );
-        edit_children(TEST_CERT, &[0], |tbs| {
+        edit_children(&certificate(), &[0], |tbs| {
             tbs.truncate(7);
             tbs.push(der_value(
                 TagNumber(3).context_specific(true),
@@ -458,13 +466,14 @@ mod tests {
 
     #[test]
     fn test_metadata_without_optional_fields() {
+        let fixture = certificate();
         let expected = AkCertMetadata {
             authority: String::new(),
-            ..parse_metadata(TEST_CERT).unwrap()
+            ..parse_metadata(&fixture).unwrap()
         };
         // v3 without extensions, and v1 with its default version omitted.
         for omit_version in [false, true] {
-            let cert = edit_children(TEST_CERT, &[0], |tbs| {
+            let cert = edit_children(&fixture, &[0], |tbs| {
                 tbs.truncate(7);
                 if omit_version {
                     tbs.remove(0);
@@ -551,6 +560,7 @@ mod tests {
 
     #[test]
     fn test_metadata_optional_field_order_and_tags() {
+        let fixture = certificate();
         let issuer_uid = der_value(TagNumber(1).context_specific(false), &[0, 0x80]);
         let subject_uid = der_value(TagNumber(2).context_specific(false), &[0, 0x40]);
         for uids in [
@@ -558,12 +568,12 @@ mod tests {
             vec![subject_uid.clone()],
             vec![issuer_uid.clone(), subject_uid.clone()],
         ] {
-            let cert = edit_children(TEST_CERT, &[0], |tbs| {
+            let cert = edit_children(&fixture, &[0], |tbs| {
                 tbs.splice(7..7, uids);
             });
             assert_eq!(
                 parse_metadata(&cert).unwrap(),
-                parse_metadata(TEST_CERT).unwrap()
+                parse_metadata(&fixture).unwrap()
             );
         }
         for uids in [
@@ -574,24 +584,24 @@ mod tests {
             vec![der_value(TagNumber(2).context_specific(false), &[8, 0])],
             vec![der_value(TagNumber(4).context_specific(false), &[])],
         ] {
-            let cert = edit_children(TEST_CERT, &[0], |tbs| {
+            let cert = edit_children(&fixture, &[0], |tbs| {
                 tbs.splice(7..7, uids);
             });
             assert!(parse_metadata(&cert).is_err());
         }
         for index in [0, 7] {
-            let cert = edit_children(TEST_CERT, &[0], |tbs| {
+            let cert = edit_children(&fixture, &[0], |tbs| {
                 tbs.insert(index, tbs[index].clone());
             });
             assert!(parse_metadata(&cert).is_err());
         }
         for version in [0u8, 1, 3, 255] {
-            let cert = edit_children(TEST_CERT, &[0, 0], |fields| {
+            let cert = edit_children(&fixture, &[0, 0], |fields| {
                 fields[0] = version.to_der().unwrap();
             });
             assert!(parse_metadata(&cert).is_err());
         }
-        let cert = edit_children(TEST_CERT, &[0], |tbs| {
+        let cert = edit_children(&fixture, &[0], |tbs| {
             tbs.push(der_value(TagNumber(1).context_specific(false), &[0]));
         });
         assert!(parse_metadata(&cert).is_err());
@@ -599,6 +609,7 @@ mod tests {
 
     #[test]
     fn test_metadata_nested_sequences_are_fully_consumed() {
+        let fixture = certificate();
         // Certificate, TBS, version wrapper, algorithms, Name attribute,
         // validity, SPKI, extensions wrapper, and an individual extension.
         for path in [
@@ -615,86 +626,192 @@ mod tests {
             vec![0, 7],
             vec![0, 7, 0, 0],
         ] {
-            let cert = edit_children(TEST_CERT, &path, |fields| {
+            let cert = edit_children(&fixture, &path, |fields| {
                 // One added field could be valid optional algorithm parameters.
                 fields.push(der_value(Tag::Null, &[]));
                 fields.push(der_value(Tag::Null, &[]));
             });
             assert!(parse_metadata(&cert).is_err(), "extra field at {path:?}");
-            let cert = edit_children(TEST_CERT, &path, |fields| {
+            let mut missing_optional = path == [0];
+            let cert = edit_children(&fixture, &path, |fields| {
                 fields.pop().unwrap();
+                // Only the second AlgorithmIdentifier field is optional.
+                if [vec![0, 2], vec![1], vec![0, 6, 0]].contains(&path) {
+                    missing_optional = fields.len() == 1;
+                }
             });
-            // Algorithm parameters are optional, and TBS extensions are optional.
-            if ![vec![0], vec![0, 2], vec![1], vec![0, 6, 0]].contains(&path) {
+            if missing_optional {
+                assert!(parse_metadata(&cert).is_ok(), "optional field at {path:?}");
+            } else {
                 assert!(parse_metadata(&cert).is_err(), "missing field at {path:?}");
             }
         }
         for index in 0..3 {
-            let cert = edit_children(TEST_CERT, &[], |fields| {
+            let cert = edit_children(&fixture, &[], |fields| {
                 fields[index] = der_value(Tag::Null, &[]);
             });
             assert!(parse_metadata(&cert).is_err());
         }
         for index in 0..8 {
-            let cert = edit_children(TEST_CERT, &[0], |fields| {
+            let cert = edit_children(&fixture, &[0], |fields| {
                 fields[index] = der_value(Tag::Null, &[]);
             });
             assert!(parse_metadata(&cert).is_err());
         }
-        let cert = edit_children(TEST_CERT, &[0, 3], |rdns| {
+        let cert = edit_children(&fixture, &[0, 3], |rdns| {
             rdns[0] = der_value(Tag::Set, &[]);
         });
         assert!(parse_metadata(&cert).is_err());
-        let cert = edit_children(TEST_CERT, &[0, 3, 0], |attributes| {
+        let cert = edit_children(&fixture, &[0, 3, 0], |attributes| {
             attributes.push(vec![0x30, 2, 0x06]);
         });
         assert!(parse_metadata(&cert).is_err());
     }
 
     #[test]
-    fn test_metadata_string_and_time_validation() {
+    fn test_metadata_directory_strings() {
+        let fixture = certificate();
         for name in [3, 5] {
-            let cert = edit_children(TEST_CERT, &[0, name, 0, 0], |attribute| {
-                attribute[1] = der_value(Tag::PrintableString, b"Printable AK CN");
-            });
-            let metadata = parse_metadata(&cert).unwrap();
-            assert_eq!(
-                if name == 3 {
-                    metadata.issuer
-                } else {
-                    metadata.subject
-                },
-                "Printable AK CN"
-            );
+            for (tag, content, expected) in [
+                (Tag::Utf8String, "AK é 水 😀".as_bytes(), "AK é 水 😀"),
+                (
+                    Tag::PrintableString,
+                    b"AZaz09 '()+,-./:=?".as_slice(),
+                    "AZaz09 '()+,-./:=?",
+                ),
+                (Tag::BmpString, b"\x00A\x00K\x00 \x00\xe9\x6c\x34", "AK é水"),
+                (
+                    Tag::TeletexString,
+                    b"Test \"AK\" @issuer\x7f",
+                    "Test \"AK\" @issuer\x7f",
+                ),
+                // Preserve the previous decoder's acceptance of empty strings.
+                (Tag::Utf8String, b"", ""),
+                (Tag::PrintableString, b"", ""),
+                (Tag::BmpString, b"", ""),
+                (Tag::TeletexString, b"", ""),
+            ] {
+                let cert = edit_children(&fixture, &[0, name, 0, 0], |attribute| {
+                    attribute[1] = der_value(tag, content);
+                });
+                let metadata = parse_metadata(&cert).unwrap();
+                assert_eq!(
+                    if name == 3 {
+                        metadata.issuer
+                    } else {
+                        metadata.subject
+                    },
+                    expected,
+                    "{tag:?} at name {name}"
+                );
+            }
             for value in [
                 der_value(Tag::Utf8String, &[0xff]),
+                der_value(Tag::Utf8String, &[0xc0, 0xaf]),
+                der_value(Tag::Utf8String, &[0xe2, 0x82]),
                 der_value(Tag::PrintableString, b"invalid@CN"),
+                der_value(Tag::PrintableString, "é".as_bytes()),
+                der_value(Tag::PrintableString, b"invalid\0CN"),
+                der_value(Tag::BmpString, &[0]),
+                der_value(Tag::BmpString, &[0xd8, 0x00]),
+                der_value(Tag::BmpString, &[0xdc, 0x00]),
+                // A valid UTF-16 surrogate pair is not a BMP character.
+                der_value(Tag::BmpString, &[0xd8, 0x3d, 0xde, 0x00]),
+                der_value(Tag::BmpString, &[0xff, 0xff]),
+                // der's TeletexString supports ASCII, not Latin-1 or UTF-8.
+                der_value(Tag::TeletexString, &[0x80]),
+                der_value(Tag::TeletexString, &[0xe9]),
+                der_value(Tag::TeletexString, "é".as_bytes()),
                 der_value(Tag::OctetString, b"not a DirectoryString"),
+                der_value(Tag::Ia5String, b"not a DirectoryString"),
+                der_value(Tag::Integer, &[1]),
+                der_value(Tag::Null, &[]),
+                der_value(Tag::Sequence, &[]),
+                der_value(TagNumber(0).context_specific(false), b"CN"),
+                // UniversalString was not supported by DirectoryString either.
+                vec![0x1c, 4, 0, 0, 0, b'A'],
             ] {
-                let cert = edit_children(TEST_CERT, &[0, name, 0, 0], |attribute| {
-                    attribute[1] = value;
+                let cert = edit_children(&fixture, &[0, name, 0, 0], |attribute| {
+                    attribute[1] = value.clone();
                 });
-                assert!(parse_metadata(&cert).is_err());
+                assert!(parse_metadata(&cert).is_err(), "{value:?} at name {name}");
             }
         }
-        for (index, tag, valid, invalid) in [
-            (0, Tag::UtcTime, "261009180232Z", "261309180232Z"),
-            (
-                1,
-                Tag::GeneralizedTime,
-                "20561120180232Z",
-                "20561132180232Z",
-            ),
-        ] {
-            for value in [
-                der_value(tag, invalid.as_bytes()),
-                der_value(tag, &valid.as_bytes()[..valid.len() - 1]),
-                der_value(Tag::Utf8String, valid.as_bytes()),
+    }
+
+    #[test]
+    fn test_metadata_times() {
+        let fixture = certificate();
+        for index in [0, 1] {
+            // Both validity fields accept either time encoding. Preserve the
+            // exact content, including leading zeroes and generalized years
+            // that could also have been represented as UTCTime.
+            for (tag, content) in [
+                (Tag::UtcTime, "700101000000Z"),
+                (Tag::UtcTime, "991231235959Z"),
+                (Tag::UtcTime, "000229000000Z"),
+                (Tag::UtcTime, "261009180232Z"),
+                (Tag::UtcTime, "491231235959Z"),
+                (Tag::GeneralizedTime, "19700101000000Z"),
+                (Tag::GeneralizedTime, "20000229000000Z"),
+                (Tag::GeneralizedTime, "20561120180232Z"),
+                (Tag::GeneralizedTime, "99991231235959Z"),
             ] {
-                let cert = edit_children(TEST_CERT, &[0, 4], |validity| {
-                    validity[index] = value;
+                let cert = edit_children(&fixture, &[0, 4], |validity| {
+                    validity[index] = der_value(tag, content.as_bytes());
                 });
-                assert!(parse_metadata(&cert).is_err());
+                let metadata = parse_metadata(&cert).unwrap();
+                assert_eq!(
+                    if index == 0 {
+                        metadata.not_before
+                    } else {
+                        metadata.not_after
+                    },
+                    content
+                );
+            }
+            for (tag, content) in [
+                (Tag::UtcTime, b"261309180232Z".as_slice()),
+                (Tag::UtcTime, b"260009180232Z"),
+                (Tag::UtcTime, b"260229180232Z"),
+                (Tag::UtcTime, b"261009240232Z"),
+                (Tag::UtcTime, b"261009186032Z"),
+                (Tag::UtcTime, b"261009180260Z"),
+                (Tag::UtcTime, b"261009180232"),
+                (Tag::UtcTime, b"2610091802Z"),
+                (Tag::UtcTime, b"261009180232+0000"),
+                (Tag::UtcTime, b"261009180232z"),
+                (Tag::UtcTime, b"261009180232.0Z"),
+                (Tag::UtcTime, b"26100918023\xffZ"),
+                // Retain der's existing rejection of pre-UNIX-epoch dates.
+                (Tag::UtcTime, b"691231235959Z"),
+                (Tag::GeneralizedTime, b"19691231235959Z"),
+                (Tag::GeneralizedTime, b"20561132180232Z"),
+                (Tag::GeneralizedTime, b"20561320180232Z"),
+                (Tag::GeneralizedTime, b"21000229180232Z"),
+                (Tag::GeneralizedTime, b"20561120240232Z"),
+                (Tag::GeneralizedTime, b"20561120186032Z"),
+                (Tag::GeneralizedTime, b"20561120180260Z"),
+                (Tag::GeneralizedTime, b"20561120180232"),
+                (Tag::GeneralizedTime, b"205611201802Z"),
+                (Tag::GeneralizedTime, b"20561120180232+0000"),
+                (Tag::GeneralizedTime, b"20561120180232z"),
+                (Tag::GeneralizedTime, b"20561120180232.0Z"),
+                (Tag::GeneralizedTime, b"2056112018023\xffZ"),
+                (Tag::UtcTime, b"20561120180232Z"),
+                (Tag::GeneralizedTime, b"261009180232Z"),
+                (Tag::Utf8String, b"261009180232Z"),
+                (Tag::OctetString, b"20561120180232Z"),
+                (Tag::Null, b""),
+                (Tag::Sequence, b""),
+            ] {
+                let cert = edit_children(&fixture, &[0, 4], |validity| {
+                    validity[index] = der_value(tag, content);
+                });
+                assert!(
+                    parse_metadata(&cert).is_err(),
+                    "{tag:?} {content:?} at {index}"
+                );
             }
         }
     }
@@ -801,28 +918,21 @@ mod tests {
         );
     }
 
+    fn v1_response(payload: &[u8]) -> Vec<u8> {
+        let data_size = (size_of::<IgvmAttestCommonResponseHeader>() + payload.len()) as u32;
+        let mut response = data_size.to_le_bytes().to_vec();
+        response.extend_from_slice(&IgvmAttestResponseVersion::VERSION_1.0.to_le_bytes());
+        response.extend_from_slice(payload);
+        response
+    }
+
     #[test]
     fn test_valid_response_size_match() {
-        const VALID_RESPONSE: [u8; 56] = [
-            0x38, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
-            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
-            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
-            0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x25,
-        ];
-
-        const HEADER_SIZE: usize = size_of::<IgvmAttestCommonResponseHeader>();
-        let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_ok());
-
-        let result = parse_response(&VALID_RESPONSE);
-        assert!(result.is_ok());
-
-        let AkCertResponse::Certificate(payload) = result.unwrap() else {
-            panic!("expected a certificate");
-        };
-        let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
-        assert_eq!(payload.len(), data_size - HEADER_SIZE);
-        assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
+        let cert = certificate();
+        assert_eq!(
+            parse_response(&v1_response(&cert)).unwrap(),
+            AkCertResponse::Certificate(cert)
+        );
     }
 
     #[test]
@@ -838,26 +948,13 @@ mod tests {
 
     #[test]
     fn test_valid_response_size_smaller_than_specified() {
-        const VALID_RESPONSE: [u8; 56] = [
-            0x37, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
-            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
-            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
-            0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x25,
-        ];
-
-        const HEADER_SIZE: usize = size_of::<IgvmAttestCommonResponseHeader>();
-
-        let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_ok());
-
-        let result = parse_response(&VALID_RESPONSE);
-        assert!(result.is_ok());
-
-        let AkCertResponse::Certificate(payload) = result.unwrap() else {
-            panic!("expected a certificate");
-        };
-        let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
-        assert_eq!(payload.len(), data_size - HEADER_SIZE);
-        assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
+        let cert = certificate();
+        let mut response = v1_response(&cert);
+        // Bytes beyond the declared response size must not become payload.
+        response.extend_from_slice(b"trailing bytes");
+        assert_eq!(
+            parse_response(&response).unwrap(),
+            AkCertResponse::Certificate(cert)
+        );
     }
 }
