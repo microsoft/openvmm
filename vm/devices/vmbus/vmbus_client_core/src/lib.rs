@@ -183,7 +183,10 @@ pub enum ChannelPhase {
 pub enum GpadlPhase {
     /// The client has posted `GpadlHeader` + `GpadlBody` messages and
     /// is waiting for `GpadlCreated`.
-    Offered { request_id: RequestId },
+    Offered {
+        request_id: RequestId,
+        teardown_request_ids: alloc::vec::Vec<RequestId>,
+    },
     /// The host has acknowledged the GPADL with `GpadlCreated`.
     Created,
     /// The client has posted `GpadlTeardown` and is waiting for
@@ -2231,9 +2234,13 @@ impl ClientCore {
             });
             return;
         }
-        entry
-            .gpadls
-            .insert(gpadl_id, GpadlPhase::Offered { request_id });
+        entry.gpadls.insert(
+            gpadl_id,
+            GpadlPhase::Offered {
+                request_id,
+                teardown_request_ids: alloc::vec::Vec::new(),
+            },
+        );
         self.outstanding.insert(
             request_id,
             PendingRequest::EstablishGpadl {
@@ -2287,17 +2294,40 @@ impl ClientCore {
         // Only Offered can be promoted; a stale GpadlCreated for a
         // gpadl in Created or TearingDown is dropped without state
         // change. Never panic on host input.
-        let GpadlPhase::Offered { request_id } = *gpadl_state else {
-            return;
+        let (request_id, teardown_request_ids) = match gpadl_state {
+            GpadlPhase::Offered {
+                request_id,
+                teardown_request_ids,
+            } => (*request_id, core::mem::take(teardown_request_ids)),
+            _ => return,
         };
         let succeeded = created.status == vmbus_core::protocol::STATUS_SUCCESS;
         self.outstanding.remove(&request_id);
         if succeeded {
-            *gpadl_state = GpadlPhase::Created;
+            *gpadl_state = if teardown_request_ids.is_empty() {
+                GpadlPhase::Created
+            } else {
+                GpadlPhase::TearingDown {
+                    request_ids: teardown_request_ids,
+                }
+            };
             sink.emit(Action::Complete {
                 request_id,
                 result: CompletionResult::EstablishGpadl(Ok(())),
             });
+            if matches!(gpadl_state, GpadlPhase::TearingDown { .. })
+                && let alloc::collections::btree_map::Entry::Vacant(entry) =
+                    self.teardown_gpadls.entry(gpadl_id)
+            {
+                entry.insert(channel_id);
+                self.post_message(
+                    &vmbus_core::protocol::GpadlTeardown {
+                        channel_id,
+                        gpadl_id,
+                    },
+                    sink,
+                );
+            }
         } else {
             entry.gpadls.remove(&gpadl_id);
             sink.emit(Action::Complete {
@@ -2306,6 +2336,13 @@ impl ClientCore {
                     created.status,
                 ))),
             });
+            for request_id in teardown_request_ids {
+                self.outstanding.remove(&request_id);
+                sink.emit(Action::Complete {
+                    request_id,
+                    result: CompletionResult::TeardownGpadl,
+                });
+            }
         }
         self.try_release_channel(channel_id, sink);
     }
@@ -2313,8 +2350,8 @@ impl ClientCore {
     /// Handle [`Event::TeardownGpadl`] — post `GpadlTeardown` if the
     /// gpadl is in [`GpadlPhase::Created`]; queue on the pending list
     /// if a teardown is already in flight; complete immediately with
-    /// no-op on unknown/offered gpadls (matches `vmbus_client`'s
-    /// warn-and-drop semantics).
+    /// no-op on unknown gpadls. If establishment is still in flight,
+    /// retain the request until the host accepts or rejects the GPADL.
     fn handle_teardown_gpadl(
         &mut self,
         request_id: RequestId,
@@ -2339,14 +2376,18 @@ impl ClientCore {
             return;
         };
         match gpadl_state {
-            GpadlPhase::Offered { .. } => {
-                // vmbus_client warns and drops; do the same so a
-                // caller that races teardown with creation doesn't
-                // deadlock.
-                sink.emit(Action::Complete {
+            GpadlPhase::Offered {
+                teardown_request_ids,
+                ..
+            } => {
+                teardown_request_ids.push(request_id);
+                self.outstanding.insert(
                     request_id,
-                    result: CompletionResult::TeardownGpadl,
-                });
+                    PendingRequest::TeardownGpadl {
+                        channel_id,
+                        gpadl_id,
+                    },
+                );
             }
             GpadlPhase::Created => {
                 let request_ids = alloc::vec![request_id];
@@ -4043,6 +4084,7 @@ mod step_tests {
             entry.gpadls[&gid],
             GpadlPhase::Offered {
                 request_id: RequestId(700),
+                ..
             }
         ));
     }
@@ -4247,6 +4289,129 @@ mod step_tests {
                 .gpadls
                 .contains_key(&gid)
         );
+    }
+
+    #[test]
+    fn teardown_waits_for_in_flight_gpadl_creation() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 41);
+        let (gpadl_id, request) = small_gpadl(15);
+        core.step(
+            Event::EstablishGpadl {
+                request_id: RequestId(1110),
+                channel_id: vmbus_core::protocol::ChannelId(41),
+                gpadl_id,
+                request,
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1111),
+                channel_id: vmbus_core::protocol::ChannelId(41),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+        assert!(sink.actions.is_empty());
+
+        core.step(
+            Event::HostMessage(&make_host_message(&vmbus_core::protocol::GpadlCreated {
+                channel_id: vmbus_core::protocol::ChannelId(41),
+                gpadl_id,
+                status: vmbus_core::protocol::STATUS_SUCCESS,
+            })),
+            &mut sink,
+        );
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [
+                Action::Complete {
+                    request_id: RequestId(1110),
+                    result: CompletionResult::EstablishGpadl(Ok(())),
+                },
+                Action::PostMessage(_),
+            ]
+        ));
+        assert!(matches!(
+            core.channels()[&vmbus_core::protocol::ChannelId(41)].gpadls[&gpadl_id],
+            GpadlPhase::TearingDown { .. }
+        ));
+        sink.actions.clear();
+
+        core.step(
+            Event::HostMessage(&make_host_message(&vmbus_core::protocol::GpadlTorndown {
+                gpadl_id,
+            })),
+            &mut sink,
+        );
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(1111),
+                result: CompletionResult::TeardownGpadl,
+            }]
+        ));
+    }
+
+    #[test]
+    fn failed_gpadl_creation_completes_queued_teardown() {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        connect_and_offer(&mut core, &mut sink, 42);
+        let (gpadl_id, request) = small_gpadl(16);
+        core.step(
+            Event::EstablishGpadl {
+                request_id: RequestId(1120),
+                channel_id: vmbus_core::protocol::ChannelId(42),
+                gpadl_id,
+                request,
+            },
+            &mut sink,
+        );
+        sink.actions.clear();
+
+        core.step(
+            Event::TeardownGpadl {
+                request_id: RequestId(1121),
+                channel_id: vmbus_core::protocol::ChannelId(42),
+                gpadl_id,
+            },
+            &mut sink,
+        );
+        core.step(
+            Event::HostMessage(&make_host_message(&vmbus_core::protocol::GpadlCreated {
+                channel_id: vmbus_core::protocol::ChannelId(42),
+                gpadl_id,
+                status: -1,
+            })),
+            &mut sink,
+        );
+
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [
+                Action::Complete {
+                    request_id: RequestId(1120),
+                    result: CompletionResult::EstablishGpadl(Err(
+                        EstablishGpadlError::HostRejected(-1)
+                    )),
+                },
+                Action::Complete {
+                    request_id: RequestId(1121),
+                    result: CompletionResult::TeardownGpadl,
+                },
+            ]
+        ));
+        assert!(
+            !core.channels()[&vmbus_core::protocol::ChannelId(42)]
+                .gpadls
+                .contains_key(&gpadl_id)
+        );
+        assert!(!core.outstanding.contains_key(&RequestId(1121)));
     }
 
     #[test]
