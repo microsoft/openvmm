@@ -1285,6 +1285,10 @@ impl Tpm {
 
     /// Poll the AK cert request made by `get_ak_cert`. This function is called by [`PollDevice::poll_device`].
     fn poll_ak_cert_request(&mut self, cx: &mut std::task::Context<'_>) {
+        // get_ak_cert takes this waker to schedule the next request. Refresh it
+        // before polling so even an immediately ready result and early return
+        // leave a waker available for the following renewal.
+        self.waker = Some(cx.waker().clone());
         if let Some(async_ak_cert_request) = self.async_ak_cert_request.as_mut() {
             let is_renew = async_ak_cert_request.is_renew;
             let has_cert = async_ak_cert_request.has_cert;
@@ -1394,7 +1398,6 @@ impl Tpm {
                 );
             }
         }
-        self.waker = Some(cx.waker().clone());
     }
 
     /// Renew device attestation data (i.e., attestation report and AK cert) on NV_Read if needed
@@ -2340,6 +2343,8 @@ mod tests {
     }
 
     fn complete_ak_cert_request(tpm: &mut Tpm, has_cert: bool, response: AkCertResponse) {
+        // Model get_ak_cert consuming the previously registered waker.
+        tpm.waker = None;
         tpm.async_ak_cert_request = Some(Box::pin(AkCertRequest {
             is_renew: true,
             start_time: std::time::SystemTime::now(),
@@ -2348,6 +2353,70 @@ mod tests {
         }));
         tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(Waker::noop()));
         assert!(tpm.async_ak_cert_request.is_none());
+        assert!(tpm.waker.is_some());
+    }
+
+    #[async_test]
+    async fn test_ready_ak_cert_response_wakes_next_request() {
+        #[derive(Default)]
+        struct WakeCounter(AtomicUsize);
+
+        impl std::task::Wake for WakeCounter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            tpm.ak_cert_type =
+                TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), Some(true));
+            tpm.allow_ak_cert_renewal = true;
+
+            for (has_cert, result) in [
+                (true, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::Certificate(Vec::new()))),
+                (
+                    false,
+                    Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                        std::io::Error::other("test request failure"),
+                    )),
+                ),
+            ] {
+                // Starting a request consumes the stored waker. A different
+                // poll waker must replace it, including on all early returns.
+                let previous = Arc::new(WakeCounter::default());
+                tpm.waker = Some(Waker::from(previous.clone()));
+                tpm.get_ak_cert(true).unwrap();
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                assert!(tpm.waker.is_none());
+                let request = tpm.async_ak_cert_request.as_mut().unwrap();
+                request.has_cert = has_cert;
+                request.fut = Box::pin(std::future::ready(result));
+
+                let next = Arc::new(WakeCounter::default());
+                let waker = Waker::from(next.clone());
+                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+                assert!(tpm.waker.as_ref().unwrap().will_wake(&waker));
+
+                tpm.get_ak_cert(true).unwrap();
+                assert!(tpm.async_ak_cert_request.is_some());
+                assert_eq!(next.0.load(Ordering::Relaxed), 1);
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+            }
+        }
     }
 
     #[async_test]

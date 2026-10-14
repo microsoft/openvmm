@@ -662,17 +662,26 @@ async fn wait_for_ak_cert_event<U: PetriVmmBackend>(
 
     let mut timer = PolledTimer::new(driver);
     let completion = async {
-        let mut stream = vm.kmsg().await?;
-        while let Some(data) = stream.next().await {
-            let data = data.context("reading OpenHCL AK certificate completion")?;
-            let entry = kmsg::KmsgParsedEntry::new(&data).map_err(|error| {
-                anyhow::anyhow!("parsing OpenHCL AK certificate completion: {error}")
-            })?;
-            if entry.message.as_raw().contains(marker) {
-                return Ok(());
+        let mut retry_timer = PolledTimer::new(driver);
+        loop {
+            {
+                let mut stream = vm.kmsg().await?;
+                while let Some(data) = stream.next().await {
+                    let data = data.context("reading OpenHCL AK certificate completion")?;
+                    let entry = kmsg::KmsgParsedEntry::new(&data).map_err(|error| {
+                        anyhow::anyhow!("parsing OpenHCL AK certificate completion: {error}")
+                    })?;
+                    if entry.message.as_raw().contains(marker) {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
             }
+            // kmsg(false) is a snapshot: EOF means no more records *yet*,
+            // not that OpenHCL stopped. Reopen after a short delay to observe
+            // asynchronous responses. The outer timeout bounds all attempts,
+            // including opening/reading each snapshot; real I/O errors propagate.
+            retry_timer.sleep(Duration::from_millis(200)).await;
         }
-        anyhow::bail!("OpenHCL log ended without AK certificate completion")
     };
     match futures::future::select(
         Box::pin(completion),
