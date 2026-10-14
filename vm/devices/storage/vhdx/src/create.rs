@@ -405,16 +405,7 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
     let alt_start = format::ALT_REGION_TABLE_OFFSET as usize;
     buf_bytes.copy_within(rt_start..rt_end, alt_start);
 
-    // Write the header area.
-    file.write_from(0, buf).await.map_err(CreateError::Write)?;
-
-    // --- Zero the log region ---
-
-    file.zero_range(log_offset, log_length as u64)
-        .await
-        .map_err(CreateError::Write)?;
-
-    // --- Build and write the metadata table ---
+    // --- Build the metadata table ---
 
     let mut meta_buf = file.alloc_buffer(metadata_length as usize);
     let meta_bytes = meta_buf.as_mut();
@@ -636,6 +627,13 @@ pub async fn create(file: &impl AsyncFile, params: &mut CreateParams) -> Result<
         let offset = offset as usize;
         meta_bytes[offset..offset + locator.len()].copy_from_slice(&locator);
     }
+
+    // All parameter validation is complete. Writes from this point onward can
+    // leave a partial image if an I/O operation fails.
+    file.write_from(0, buf).await.map_err(CreateError::Write)?;
+    file.zero_range(log_offset, log_length as u64)
+        .await
+        .map_err(CreateError::Write)?;
 
     // Write the metadata region.
     file.write_from(metadata_offset, meta_buf)
@@ -1131,7 +1129,8 @@ mod tests {
 
     #[async_test]
     async fn create_rejects_oversized_parent_locator() {
-        let file = InMemoryFile::new(0);
+        let original = vec![0xa5; 4096];
+        let file = InMemoryFile::from_snapshot(original.clone());
         let parent = VhdxParent::unlinked()
             .with_relative_path("a".repeat(format::MAX_HOSTING_SECTOR_SIZE as usize))
             .unwrap();
@@ -1147,6 +1146,7 @@ mod tests {
                 InvalidFormatReason::ParentLocatorTooLarge
             ))
         ));
+        assert_eq!(file.snapshot(), original);
     }
 
     #[async_test]
