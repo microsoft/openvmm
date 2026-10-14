@@ -106,8 +106,8 @@ particular strategy.
 
 The Rust chain opener and `openvmm-img check` interpret parent metadata through
 `ParentLocator::vhdx_parent()`. This validates the locator type and requires a
-nonzero parent linkage GUID. Both verify that the selected parent's data-write
-GUID matches the child's recorded linkage.
+parseable parent linkage GUID. Both verify that the selected parent's
+data-write GUID matches the child's recorded linkage.
 
 Both callers use `VhdxParent::candidate_paths()` to enumerate paths. On Windows,
 the order is relative path, volume GUID path, then absolute Win32 path, as
