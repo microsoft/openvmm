@@ -303,10 +303,15 @@ impl VirtioPciDevice {
 
         let shared_memory_size = traits.shared_memory.size;
         if shared_memory_size > 0 {
+            // A PCI BAR must be a power of two, but the usable length of the
+            // shared memory region need not be. Round the BAR up and report the
+            // real length through the capability so that the guest does not
+            // access the unbacked tail of the BAR.
+            let bar_size = shared_memory_size.next_power_of_two();
             let (control, region) = shared_mem_mapper
                 .expect("must provide mapper for shmem")
                 .new_region(
-                    shared_memory_size.try_into().expect("region too big"),
+                    bar_size.try_into().expect("region too big"),
                     "virtio-pci-shmem".into(),
                 )?;
 
@@ -321,7 +326,7 @@ impl VirtioPciDevice {
                 ),
             )));
 
-            bars = bars.bar4(shared_memory_size, BarMemoryKind::SharedMem(control));
+            bars = bars.bar4(bar_size, BarMemoryKind::SharedMem(control));
 
             device
                 .set_shared_memory_region(&region)

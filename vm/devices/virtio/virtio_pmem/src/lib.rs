@@ -33,7 +33,10 @@ pub struct Device {
     driver: VmTaskDriver,
     #[inspect(skip)]
     mappable: sparse_mmap::Mappable,
-    len: u64,
+    #[inspect(skip)]
+    padding: Option<sparse_mmap::Mappable>,
+    file_len: usize,
+    len: usize,
     writable: bool,
     #[inspect(mut)]
     worker: TaskControl<PmemWorker, PmemQueue>,
@@ -45,14 +48,49 @@ impl Device {
         file: fs::File,
         writable: bool,
     ) -> anyhow::Result<Self> {
+        // Linux requires PMEM namespaces to satisfy memremap_pages' 2 MB
+        // subsection alignment.
+        const PMEM_ALIGNMENT: u64 = 0x200000;
+
         let metadata = file.metadata().context("failed to get metadata")?;
-        let len = metadata.len();
-        let mappable = sparse_mmap::new_mappable_from_file(&file, writable, true)
+        let file_len = metadata.len();
+        let len = file_len
+            .checked_add(PMEM_ALIGNMENT - 1)
+            .context("persistent memory file is too large")?
+            & !(PMEM_ALIGNMENT - 1);
+        let mut mapped_file_len = file_len;
+        let padding = if file_len == len {
+            None
+        } else if writable {
+            file.set_len(len)
+                .context("failed to align persistent memory file")?;
+            mapped_file_len = len;
+            None
+        } else {
+            Some(
+                sparse_mmap::alloc_shared_memory(
+                    (len - file_len)
+                        .try_into()
+                        .context("persistent memory padding is too large")?,
+                    "virtio-pmem-padding",
+                )
+                .context("failed to allocate persistent memory padding")?,
+            )
+        };
+        let file_len = mapped_file_len
+            .try_into()
+            .context("persistent memory file is too large")?;
+        let len = len
+            .try_into()
+            .context("persistent memory region is too large")?;
+        let mappable = sparse_mmap::new_mappable_from_file(&file, writable, false)
             .context("failed to create file mapping")?;
         Ok(Self {
             driver: driver_source.simple(),
             worker: TaskControl::new(PmemWorker { writable, file }),
             mappable,
+            padding,
+            file_len,
             len,
             writable,
         })
@@ -65,19 +103,27 @@ struct PmemConfig {
     size: u64,
 }
 
+/// The device reports its memory range via the shared memory capability rather
+/// than via device configuration space.
+const VIRTIO_PMEM_F_SHMEM_REGION: u32 = 0;
+
+/// Shared memory region ID used by virtio-pmem for its memory range.
+const VIRTIO_PMEM_SHMEM_REGION_ID: u8 = 0;
+
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::PMEM,
             device_features: VirtioDeviceFeatures::new()
+                .with_device_specific_low(1 << VIRTIO_PMEM_F_SHMEM_REGION)
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true),
             max_queues: 1,
             device_register_length: size_of::<PmemConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory {
-                id: 0,
-                size: self.len.next_power_of_two().max(0x200000),
+                id: VIRTIO_PMEM_SHMEM_REGION_ID,
+                size: self.len as u64,
             },
         }
     }
@@ -95,8 +141,19 @@ impl VirtioDevice for Device {
         region: &std::sync::Arc<dyn guestmem::MappedMemoryRegion>,
     ) -> anyhow::Result<()> {
         region
-            .map(0, &self.mappable, 0, self.len as usize, self.writable)
-            .context("failed to map shared memory region")?;
+            .map(0, &self.mappable, 0, self.file_len, self.writable)
+            .context("failed to map persistent memory file")?;
+        if let Some(padding) = &self.padding {
+            region
+                .map(
+                    self.file_len,
+                    padding,
+                    0,
+                    self.len - self.file_len,
+                    self.writable,
+                )
+                .context("failed to map persistent memory padding")?;
+        }
 
         Ok(())
     }
