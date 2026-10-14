@@ -2,10 +2,10 @@
 
 `vtpm-util` creates and inspects file-backed vTPM provisioning artifacts.
 
-The tool currently uses the Microsoft TPM 2.0 reference implementation version
-1.38. A vTPM blob contains the serialized nonvolatile state of that TPM,
-including persistent objects created during provisioning. The commands in this
-tool do not seal or unseal guest data.
+The tool supports Microsoft TPM 2.0 reference implementation versions 1.38 and
+1.85. Version 1.38 is used by default. A vTPM blob contains the serialized
+nonvolatile state of that TPM, including persistent objects created during
+provisioning. The commands in this tool do not seal or unseal guest data.
 
 ```admonish warning
 Treat vTPM blobs and TPM import blobs as security-sensitive files. An import
@@ -39,6 +39,13 @@ Create a new vTPM and write its serialized state to a file:
 cargo run -p vtpm_util -- create-vtpm-blob path/to/vtpm.blob
 ```
 
+Select version 1.85 with `--tpm-version`:
+
+```bash
+cargo run -p vtpm_util -- create-vtpm-blob \
+    path/to/vtpm-185.blob --tpm-version 1.85
+```
+
 The command creates an RSA storage root key (SRK) and persists it at the
 standard SRK handle before saving the vTPM state.
 
@@ -50,6 +57,9 @@ Export the persisted SRK public area as a `TPM2B_PUBLIC` structure:
 cargo run -p vtpm_util -- write-srk \
     path/to/vtpm.blob path/to/srk.tpm2b
 ```
+
+When reading a version 1.85 blob, pass `--tpm-version 1.85` to `write-srk` as
+well.
 
 Print the TPM key name for an exported SRK:
 

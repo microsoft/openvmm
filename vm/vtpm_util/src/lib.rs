@@ -29,6 +29,25 @@ use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmtPublic;
 
+/// Microsoft TPM reference implementation version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TpmVersion {
+    /// TPM reference implementation version 1.38.
+    #[default]
+    V138,
+    /// TPM reference implementation version 1.85.
+    V185,
+}
+
+impl TpmVersion {
+    const fn nvram_size(self) -> usize {
+        match self {
+            Self::V138 => 32 * 1024,
+            Self::V185 => 128 * 1024,
+        }
+    }
+}
+
 pub(crate) fn create_sensitive_file(path: &str) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -50,8 +69,13 @@ fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
 
 /// Creates a vTPM blob and writes it to `path`.
 pub fn create_vtpm_blob_file(path: &str) -> anyhow::Result<()> {
+    create_vtpm_blob_file_with_version(path, TpmVersion::default())
+}
+
+/// Creates a vTPM blob using `version` and writes it to `path`.
+pub fn create_vtpm_blob_file_with_version(path: &str, version: TpmVersion) -> anyhow::Result<()> {
     tracing::info!("Creating vTPM blob and saving to file: {}", path);
-    let (mut tpm_engine_helper, nv_blob_accessor) = create_tpm_engine_helper();
+    let (mut tpm_engine_helper, nv_blob_accessor) = create_tpm_engine_helper(version)?;
     tpm_engine_helper
         .initialize_tpm_engine()
         .context("failed to initialize TPM engine")?;
@@ -66,8 +90,17 @@ pub fn create_vtpm_blob_file(path: &str) -> anyhow::Result<()> {
 
 /// Writes the SRK public key from a vTPM blob in TPM2B format.
 pub fn write_srk(vtpm_blob_path: &str, srk_out_path: &str) -> anyhow::Result<()> {
+    write_srk_with_version(vtpm_blob_path, srk_out_path, TpmVersion::default())
+}
+
+/// Writes the SRK public key from a versioned vTPM blob in TPM2B format.
+pub fn write_srk_with_version(
+    vtpm_blob_path: &str,
+    srk_out_path: &str,
+    version: TpmVersion,
+) -> anyhow::Result<()> {
     let vtpm_blob_content = fs::read(vtpm_blob_path).context("failed to read vTPM blob file")?;
-    let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
+    let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper(version)?;
 
     vtpm_engine_helper
         .tpm_engine
@@ -259,10 +292,13 @@ pub(crate) fn print_sha256_hash(data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use super::TpmVersion;
     use super::create_vtpm_blob_file;
+    use super::create_vtpm_blob_file_with_version;
     use super::print_key_name;
     use super::write_sensitive_file;
     use super::write_srk;
+    use super::write_srk_with_version;
     use std::fs;
     use test_with_tracing::test;
     use tpm_protocol::tpm20proto::AlgIdEnum;
@@ -346,6 +382,24 @@ mod tests {
         assert_eq!(error.to_string(), "failed to create SRK output file");
         assert_eq!(fs::read(&blob_path).unwrap(), original_blob);
         assert_eq!(fs::read(&alias_path).unwrap(), original_blob);
+    }
+
+    #[test]
+    fn tpm_185_blob_can_export_srk() {
+        let directory = tempfile::tempdir().unwrap();
+        let blob_path = directory.path().join("vtpm-185.blob");
+        let srk_path = directory.path().join("srk-185.tpm2b");
+
+        create_vtpm_blob_file_with_version(blob_path.to_str().unwrap(), TpmVersion::V185).unwrap();
+        assert_eq!(fs::metadata(&blob_path).unwrap().len(), 128 * 1024);
+
+        write_srk_with_version(
+            blob_path.to_str().unwrap(),
+            srk_path.to_str().unwrap(),
+            TpmVersion::V185,
+        )
+        .unwrap();
+        Tpm2bPublic::deserialize(&fs::read(srk_path).unwrap()).unwrap();
     }
 
     #[cfg(unix)]

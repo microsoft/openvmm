@@ -11293,6 +11293,7 @@ dependencies = [
  "der",
  "getrandom 0.4.2",
  "hex",
+ "ms-tcg-tpm-sys",
  "ms-tpm-20-ref",
  "parking_lot",
  "pkcs1",
