@@ -51,6 +51,7 @@ features = [
 [dev-dependencies]
 pal.workspace = true
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
