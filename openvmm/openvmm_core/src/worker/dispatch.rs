@@ -31,6 +31,9 @@ use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
+use chipset_resources::generation_id::GENERATION_ID_PAGE_SIZE;
+use chipset_resources::generation_id::GenerationIdDeviceHandle;
+use chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA;
 use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
@@ -120,6 +123,7 @@ use vm_loader::InitialLoad;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -240,6 +244,7 @@ impl Manifest {
             chipset_capabilities: config.chipset_capabilities,
             layout: config.layout,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
+            generation_id_send: config.generation_id_send,
         }
     }
 }
@@ -284,6 +289,7 @@ pub struct Manifest {
     chipset_capabilities: VmChipsetCapabilities,
     layout: vmm_core_defs::LayoutConfig,
     rtc_delta_milliseconds: i64,
+    generation_id_send: Option<mesh::Sender<[u8; 16]>>,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -341,7 +347,8 @@ impl Worker for VmWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         let (device_thread, device_driver) = new_device_thread();
 
-        let manifest = Manifest::from_config(parameters.cfg);
+        let mut manifest = Manifest::from_config(parameters.cfg);
+        let generation_id_send = manifest.generation_id_send.take();
 
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
             .context("failed to resolve hypervisor backend")?;
@@ -362,7 +369,17 @@ impl Worker for VmWorker {
             .transpose()
             .context("failed to decode saved state")?;
 
+        let restoring = saved_state.is_some();
         let vm = block_with_io(|_| vm.load(saved_state, parameters.notify))?;
+
+        // A VM created from saved state may be one of several clones of a
+        // snapshot: start a new VM generation so the guest reseeds its RNG.
+        // The device applies the new ID and notifies the guest when it starts.
+        if restoring && let Some(generation_id_send) = &generation_id_send {
+            let mut generation_id = [0; 16];
+            getrandom::fill(&mut generation_id).expect("rng failure");
+            generation_id_send.send(generation_id);
+        }
 
         LOADED_VM.store(&vm);
 
@@ -927,7 +944,8 @@ struct LoadedVmInner {
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
     /// GPA of the standalone generation ID buffer, if that device is present.
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-    generation_id_gpa: Option<u64>,
+    generation_id_gpa: Option<u32>,
+    _generation_id_page: Option<GenerationIdPage>,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
     load_mode: LoadMode,
@@ -2104,19 +2122,22 @@ impl InitializedVm {
             }
         };
 
-        // A standalone generation ID device (Linux direct boot) has no
-        // firmware to describe it to the guest, so the DSDT built by the
-        // direct-boot loader must.
+        // The standalone generation ID device (x86 Linux direct boot) has no
+        // firmware to provide its buffer, so map a dedicated host page for it
+        // and describe it in the DSDT.
         let generation_id_gpa = cfg
             .chipset_devices
             .iter()
-            .any(|dev| {
-                dev.resource.id()
-                    == <chipset_resources::generation_id::GenerationIdDeviceHandle as vm_resource::ResourceId<
-                        vm_resource::kind::ChipsetDeviceHandleKind,
-                    >>::ID
-            })
-            .then_some(chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA);
+            .any(|dev| dev.resource.id() == GenerationIdDeviceHandle::ID)
+            .then_some(X86_DIRECT_BOOT_GENERATION_ID_GPA);
+        let generation_id_page = generation_id_gpa
+            .map(|gpa| map_generation_id_page(&mapper, gpa))
+            .transpose()?;
+        if let Some(page) = &generation_id_page {
+            resolver.add_resolver(generation_id::resolver::GenerationIdResolver::new(
+                page.buffer.clone(),
+            ));
+        }
 
         let BaseChipsetBuilderOutput {
             chipset_builder,
@@ -3232,6 +3253,7 @@ impl InitializedVm {
                 chipset_mmio,
                 pci_legacy_interrupts,
                 generation_id_gpa,
+                _generation_id_page: generation_id_page,
                 igvm_file,
                 next_igvm_file: None,
                 _vmgs_task: vmgs_task,
@@ -4381,6 +4403,7 @@ impl LoadedVm {
                 vtl2_chipset_mmio_size: 0,
             }, // TODO
             rtc_delta_milliseconds: 0, // TODO
+            generation_id_send: None,  // TODO
         };
         #[expect(unreachable_code, reason = "TODO")]
         RestartState {
@@ -4427,7 +4450,7 @@ fn add_devices_to_dsdt_x64(
     virtio_mmio_region: MemoryRange,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
-    generation_id_gpa: Option<u64>,
+    generation_id_gpa: Option<u32>,
 ) {
     dsdt.add_apic();
 
@@ -4481,8 +4504,55 @@ fn add_devices_to_dsdt_x64(
     dsdt.add_rtc();
 
     if let Some(gpa) = generation_id_gpa {
-        dsdt.add_generation_id(gpa, generation_id::resolver::GPE0_LINE_GENERATION_ID as u8);
+        dsdt.add_generation_id(
+            gpa,
+            GENERATION_ID_PAGE_SIZE,
+            generation_id::resolver::GPE0_LINE_GENERATION_ID as u8,
+        );
     }
+}
+
+/// The host page backing the standalone generation ID buffer.
+struct GenerationIdPage {
+    /// Keeps the page mapped into the guest.
+    _guest_mapping: Box<dyn guestmem::MappableGuestMemory>,
+    /// Host view of the page; the ID lives at offset 0.
+    buffer: GuestMemory,
+}
+
+/// Maps a dedicated host page at `gpa` for the standalone generation ID
+/// buffer, as `rom.rs` does for ROMs. The guest mapping is read-only; the
+/// device writes the ID through a separate host mapping of the same memory.
+fn map_generation_id_page(
+    mapper: &membacking::DeviceMemoryMapper,
+    gpa: u32,
+) -> anyhow::Result<GenerationIdPage> {
+    use guestmem::MemoryMapper;
+
+    let len = GENERATION_ID_PAGE_SIZE as usize;
+    let backing = sparse_mmap::alloc_shared_memory(len, "generation-id")
+        .context("failed to allocate generation ID page")?;
+
+    let host_mapping =
+        sparse_mmap::SparseMapping::new(len).context("failed to reserve generation ID page")?;
+    host_mapping
+        .map_file(0, len, &backing, 0, true)
+        .context("failed to map generation ID page on the host")?;
+
+    let (mut guest_mapping, region) = mapper
+        .new_region(len, "generation-id".into())
+        .context("failed to create generation ID region")?;
+    region
+        .map(0, &backing, 0, len, false)
+        .context("failed to map generation ID page")?;
+    guest_mapping
+        .map_to_guest(gpa.into(), false)
+        .context("failed to map generation ID page into the guest")?;
+
+    Ok(GenerationIdPage {
+        _guest_mapping: guest_mapping,
+        buffer: GuestMemory::new("generation-id", host_mapping),
+    })
 }
 
 #[cfg(guest_arch = "aarch64")]

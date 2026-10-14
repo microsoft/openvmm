@@ -230,26 +230,6 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .collect()
 }
 
-/// The VM Generation ID device for x86_64 Linux direct boot, where no firmware
-/// provides one. Every restore starts a new VM generation (new ID plus a guest
-/// notification), so VMs restored from the same snapshot reseed their kernel
-/// RNGs differently. The direct-boot DSDT describes the device at
-/// [`X86_DIRECT_BOOT_GENERATION_ID_GPA`](chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA).
-pub(crate) fn direct_boot_generation_id_device() -> ChipsetDeviceHandle {
-    let mut initial_generation_id = [0; 16];
-    getrandom::fill(&mut initial_generation_id).expect("rng failure");
-    ChipsetDeviceHandle {
-        name: "generation_id".to_string(),
-        resource: chipset_resources::generation_id::GenerationIdDeviceHandle {
-            gpa: chipset_resources::generation_id::X86_DIRECT_BOOT_GENERATION_ID_GPA,
-            initial_generation_id,
-            new_generation_on_restore: true,
-            generation_id_recv: mesh::channel().1,
-        }
-        .into_resource(),
-    }
-}
-
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
     if let Some(igvm) = &opt.igvm {
         match igvm.personality {
@@ -1350,6 +1330,17 @@ async fn vm_config_from_command_line(
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
 
+    // The VM worker sends a new generation ID on this channel when the VM is
+    // created from a snapshot, so the guest reseeds its RNG. IGVM guests build
+    // their own platform description, so they are excluded.
+    let generation_id_send = if opt.igvm.is_none() {
+        let (send, recv) = mesh::channel();
+        chipset = chipset.with_generation_id(recv);
+        Some(send)
+    } else {
+        None
+    };
+
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
         chipset,
@@ -1726,18 +1717,6 @@ async fn vm_config_from_command_line(
             }
             .into_resource(),
         });
-    }
-
-    // Linux direct boot has no firmware to provide a VM Generation ID (UEFI
-    // guests get one from the firmware), so OpenVMM always provides one. Not
-    // for isolated VMs: the host cannot write the ID into private memory.
-    if cfg!(guest_arch = "x86_64")
-        && opt.uefi.is_none()
-        && !opt.pcat
-        && opt.igvm.is_none()
-        && opt.isolation.is_none()
-    {
-        chipset_devices.push(direct_boot_generation_id_device());
     }
 
     let vga_firmware = if opt.pcat {
@@ -2248,6 +2227,7 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
+        generation_id_send,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;

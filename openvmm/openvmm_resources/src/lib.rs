@@ -33,8 +33,6 @@ vm_resource::register_static_resolvers! {
     chipset::pm::resolver::HyperVPowerManagementResolver,
     chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver,
     firmware_uefi::resolver::UefiDeviceResolver,
-    #[cfg(guest_arch = "x86_64")]
-    generation_id::resolver::GenerationIdResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,

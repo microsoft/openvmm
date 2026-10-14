@@ -236,27 +236,41 @@ pub mod generation_id {
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
     /// Guest physical address of the generation ID buffer for x86 Linux
-    /// direct boot.
-    ///
-    /// This lies in the legacy BIOS area `[0xe0000, 0x100000)`, which the
-    /// direct-boot loader reports as E820 reserved. That satisfies the VM
-    /// Generation ID specification: the buffer is 8-byte aligned, not in
-    /// AddressRangeMemory/AddressRangeACPI, and cacheable. It sits between
-    /// the RSDP (0xe0000) and the SMBIOS anchor (0xf0000).
-    pub const X86_DIRECT_BOOT_GENERATION_ID_GPA: u64 = 0xef000;
+    /// direct boot: a dedicated host page that the VMM maps into the guest in
+    /// the x86 architectural reserved zone `[0xfe00_0000, 4 GiB)`, alongside
+    /// the other fixed-address platform devices. It is not guest RAM, so it
+    /// needs no memory-map entry.
+    pub const X86_DIRECT_BOOT_GENERATION_ID_GPA: u32 = 0xfed3_e000;
 
-    /// A handle to a standalone VM Generation ID device.
+    /// Size of the page that backs the generation ID buffer. Only the first 16
+    /// bytes are used.
+    pub const GENERATION_ID_PAGE_SIZE: u32 = 0x1000;
+
+    // Keep the page in the x86 architectural reserved zone and clear of the
+    // other fixed-address platform devices in it.
+    const _: () = {
+        const START: u64 = X86_DIRECT_BOOT_GENERATION_ID_GPA as u64;
+        const END: u64 = START + GENERATION_ID_PAGE_SIZE as u64;
+        const fn overlaps(base: u64, len: u64) -> bool {
+            START < base + len && base < END
+        }
+        assert!(START.is_multiple_of(GENERATION_ID_PAGE_SIZE as u64));
+        assert!(START >= 0xfe00_0000 && END <= 0x1_0000_0000);
+        assert!(!overlaps(0xfeb0_0000, 0x1000)); // PSP
+        assert!(!overlaps(0xfec0_0000, 0x1000)); // IOAPIC
+        assert!(!overlaps(0xfed0_0000, 0x1000)); // HPET
+        assert!(!overlaps(0xfed3_f000, 0x1000)); // battery
+        assert!(!overlaps(0xfed4_0000, 0x5000)); // TPM
+        assert!(!overlaps(0xfee0_0000, 0x10_0000)); // LAPIC
+    };
+
+    /// A handle to a standalone VM Generation ID device. The platform maps its
+    /// buffer, describes it in the ACPI tables, and gives the device's resolver
+    /// a host view of it.
     #[derive(MeshPayload)]
     pub struct GenerationIdDeviceHandle {
-        /// Guest physical address of the 16-byte generation ID buffer. The
-        /// platform's ACPI tables must describe the same address.
-        pub gpa: u64,
         /// The generation ID for a fresh boot.
         pub initial_generation_id: [u8; 16],
-        /// Whether restoring saved state starts a new VM generation (new ID
-        /// plus guest notification). Enable this for snapshot restore, so
-        /// each clone reseeds its RNG differently.
-        pub new_generation_on_restore: bool,
         /// Channel to receive host-requested generation ID updates.
         pub generation_id_recv: mesh::Receiver<[u8; 16]>,
     }

@@ -89,12 +89,14 @@ validation error and refuse to start.
 
 A snapshot captures the guest kernel's random number generator state, so
 every VM restored from the same snapshot would otherwise produce the same
-random numbers until its next periodic reseed. To prevent this, x86_64 Linux
-direct-boot VMs get a VM Generation ID device: each restore installs a new
-generation ID and notifies the guest, and the guest's `vmgenid` driver
-(Linux 5.18+, `CONFIG_VMGENID`) reseeds the kernel RNG immediately. This
-reseeds only the kernel RNG; secrets generated before the snapshot and
-user-space RNG state are still shared.
+random numbers until its next periodic reseed. To prevent this, every VM
+created with `--restore-snapshot` starts a new *VM generation*: OpenVMM
+installs a new VM Generation ID and notifies the guest, and the guest's
+`vmgenid` driver (Linux 5.18+, `CONFIG_VMGENID`) reseeds the kernel RNG
+immediately. UEFI guests get the VM Generation ID device from the firmware;
+x86_64 Linux direct-boot guests get it from OpenVMM. This reseeds only the
+kernel RNG; secrets generated before the snapshot and user-space RNG state are
+still shared.
 
 ## Device configuration on restore
 

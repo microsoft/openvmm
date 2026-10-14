@@ -6221,7 +6221,6 @@ dependencies = [
  "disklayer_vhdx",
  "firmware_uefi",
  "gdma",
- "generation_id",
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",

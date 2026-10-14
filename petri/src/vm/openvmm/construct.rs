@@ -730,6 +730,7 @@ impl PetriVmConfigOpenVmm {
             vpci_resources: vec![],
             debugger_rpc: None,
             rtc_delta_milliseconds: 0,
+            generation_id_send: None,
         };
 
         // Make the pipette connection listener.
