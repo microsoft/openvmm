@@ -61,7 +61,10 @@ async fn crash_dump_on_triple_fault(
     let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
     let dump_path = dump_dir.path().join("crash.vmrs");
 
+    // The template provides the `db` variable, which `test_dbdefault` needs
+    // to pass before the image reaches its watchdog test.
     let mut vm = config
+        .with_windows_secure_boot_template()
         .with_memory(petri::MemoryConfig {
             startup_bytes: 256 * 1024 * 1024,
             ..Default::default()

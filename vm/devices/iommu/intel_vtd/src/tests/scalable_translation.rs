@@ -5,6 +5,9 @@ use super::*;
 use iommu_common::IommuTranslator;
 use test_with_tracing::test;
 
+#[path = "accessed_dirty.rs"]
+mod accessed_dirty;
+
 const ROOT: u64 = 0x1000;
 const LOWER: u64 = 0x2000;
 const UPPER: u64 = 0x3000;
@@ -32,9 +35,13 @@ fn put(gm: &GuestMemory, address: u64, words: &[u64]) {
 }
 
 fn walk(gm: &GuestMemory, levels: u8, leaf: u8, iova: u64, gpa: u64) -> Vec<u64> {
+    walk_at(gm, SL_ROOT, levels, leaf, iova, gpa)
+}
+
+fn walk_at(gm: &GuestMemory, root: u64, levels: u8, leaf: u8, iova: u64, gpa: u64) -> Vec<u64> {
     let mut entries = Vec::new();
     for level in (leaf..=levels).rev() {
-        let table = SL_ROOT + u64::from(levels - level) * 4096;
+        let table = root + u64::from(levels - level) * 4096;
         // Deliberately independent of SlPte's index/address helpers.
         let index = (iova >> (12 + 9 * (level - 1))) & 511;
         let address = table + index * 8;
@@ -100,7 +107,7 @@ impl Fixture {
     }
 
     fn word(&self, address: u64) -> u64 {
-        self.gm.read_plain(address).unwrap()
+        u64::from_le(self.gm.read_plain(address).unwrap())
     }
 
     fn fpd(&self, mask: u8) {
@@ -612,8 +619,8 @@ fn zero_capability_reserved_fields_preserve_supported_translations() {
 }
 
 #[test]
-fn ad_enabled_dma_is_not_reported_as_tracked_before_atomic_updates() {
-    let mut f = Fixture::new(0, 0, 0);
+fn ad_enabled_dma_marks_validated_entries() {
+    let f = Fixture::new(0, 0, 0);
     let addresses = walk(&f.gm, 4, 1, IOVA, GPA);
     let before: Vec<_> = addresses.iter().map(|address| f.word(*address)).collect();
     put(
@@ -621,14 +628,13 @@ fn ad_enabled_dma_is_not_reported_as_tracked_before_atomic_updates() {
         f.entries[3],
         &[f.word(f.entries[3]) | (1 << 9), 1 << 23],
     );
-    f.assert_fault(IOVA, true, 0x7d, false);
-    assert_eq!(
-        before,
-        addresses
-            .iter()
-            .map(|address| f.word(*address))
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(f.translate(IOVA, true).unwrap(), GPA | 0xabc);
+    for (index, address) in addresses.iter().copied().enumerate() {
+        assert_eq!(
+            f.word(address),
+            before[index] | if index == 3 { 0x300 } else { 0x100 }
+        );
+    }
 }
 
 #[test]
@@ -1484,7 +1490,7 @@ fn all_lookup_bytes_must_be_readable_before_using_entry_fields() {
             .unwrap_err();
         let reason = [0x38, 0x40, 0x50, 0x58][stage];
         assert_eq!(fault.error.fault_reason().0, reason);
-        assert_eq!(read64(&mut dev, 0x120), IOVA & !0xfff);
+        assert_eq!(read64(&mut dev, 0x120), IOVA & 0x0000_ffff_ffff_f000);
         assert_eq!(
             read64(&mut dev, 0x128),
             (3 << 62) | (u64::from(reason) << 32)

@@ -11,10 +11,16 @@
 //! device discovered via the ACPI DMAR table. It has no PCI config space.
 //!
 //! Scalable RID-derived PASID lookup is implemented internally, but remains
-//! gated by the unadvertised SMTS capability. Second-stage A/D metadata is
-//! resolved without mutation; SSADE-enabled DMA fails closed until atomic
-//! updates are implemented. Explicit PASID and first-stage/nested walks are
-//! not supported.
+//! gated by the unadvertised SMTS capability. SSADE-enabled second-stage walks
+//! atomically set accessed flags and, for accepted writes, the leaf dirty flag
+//! before the DMA operation (§§3.7.2, 9.8). Updates require snooping (§7.1.3).
+//! Explicit PASID and first-stage/nested walks are not supported.
+//!
+//! Walks are uncached, so cleared A/D flags can be set again immediately. This
+//! is an implementation property, not a portable software guarantee: software
+//! must use the invalidation protocol in §6.5.3.3. The state lock drains walks
+//! and DMA operations against invalidation, not guest page-table writes.
+//! Unsynchronized clearing does not provide a race-free dirty snapshot.
 
 #![forbid(unsafe_code)]
 
@@ -25,6 +31,7 @@ use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryError;
 use inspect::InspectMut;
 use parking_lot::RwLock;
 use parking_lot::RwLockWriteGuard;
@@ -96,6 +103,9 @@ const MGAW_BITS: u8 = 48;
 /// second-stage input MGAW/AGAW. SlPte can encode up to 52 address bits.
 const HAW_BITS: u8 = 48;
 const HOST_ADDRESS_MASK: u64 = (1 << HAW_BITS) - 1;
+
+/// Bounds the entire walk, including all CAS-conflict restarts (at most 64 PTEs).
+const MAX_AD_WALK_ATTEMPTS: usize = 16;
 
 /// SAGAW bitmask: supported address widths (39-bit + 48-bit).
 const SAGAW_MASK: u8 = (1 << AddressWidth::AW_39BIT.0) | (1 << AddressWidth::AW_48BIT.0);
@@ -315,6 +325,15 @@ struct TranslationContext {
 }
 
 impl TranslationContext {
+    fn ad_fault(self, error: SecondStageAdError) -> VtdFault {
+        VtdFault::AdUpdate {
+            source_id: self.source_id,
+            iova: self.iova,
+            fpd: self.fpd,
+            error,
+        }
+    }
+
     fn reason(self, legacy: FaultReason, scalable: FaultReason) -> FaultReason {
         if self.mode == TranslationTableMode::LEGACY {
             legacy
@@ -774,20 +793,23 @@ impl VtdSharedState {
         context: TranslationContext,
         reason: FaultReason,
     ) -> Result<T, VtdFault> {
+        let address = Self::translation_entry_address::<T>(base, index)
+            .ok_or_else(|| context.fault(reason))?;
+        self.guest_memory
+            .read_plain(address)
+            .map_err(|_| context.fault(reason))
+    }
+
+    fn translation_entry_address<T>(base: u64, index: u64) -> Option<u64> {
         let size = size_of::<T>() as u64;
-        let address = index
+        index
             .checked_mul(size)
-            .and_then(|offset| base.checked_add(offset));
-        let address = address
+            .and_then(|offset| base.checked_add(offset))
             .filter(|address| {
                 address
                     .checked_add(size - 1)
                     .is_some_and(|end| end <= HOST_ADDRESS_MASK)
             })
-            .ok_or_else(|| context.fault(reason))?;
-        self.guest_memory
-            .read_plain(address)
-            .map_err(|_| context.fault(reason))
     }
 
     fn check_dma_output(context: TranslationContext, gpa: u64) -> Result<u64, VtdFault> {
@@ -800,12 +822,28 @@ impl VtdSharedState {
         Ok(gpa)
     }
 
-    /// Shared second-stage walk (§§3.7, 3.7.1, 9.8). No A/D mutation yet.
+    /// Shared second-stage walk (§§3.7, 3.7.1, 3.7.2, 9.8).
     fn walk_sl_page_table(
         &self,
         translation: &SecondStageTranslation,
         write: bool,
         ecap: EcapReg,
+    ) -> Result<u64, VtdFault> {
+        self.walk_sl_page_table_with_cas(translation, write, ecap, |address, current, new| {
+            self.guest_memory
+                .compare_exchange::<u64>(address, current.to_le(), new.to_le())
+                .map(|result| result.is_ok())
+        })
+    }
+
+    /// The callable operates on decoded little-endian words and reports whether
+    /// the CAS succeeded. A conflict always requires a fresh, validated walk.
+    fn walk_sl_page_table_with_cas(
+        &self,
+        translation: &SecondStageTranslation,
+        write: bool,
+        ecap: EcapReg,
+        mut compare_exchange: impl FnMut(u64, u64, u64) -> Result<bool, GuestMemoryError>,
     ) -> Result<u64, VtdFault> {
         let &SecondStageTranslation {
             context,
@@ -829,77 +867,106 @@ impl VtdSharedState {
                 FaultReason::SCALABLE_ADDRESS_BEYOND_AGAW,
             )));
         }
-        // Fail closed until atomic A/D updates are implemented. Resolving an
-        // SSADE descriptor is supported, completing tracked DMA is not.
-        if ssade {
-            return Err(context.fault(FaultReason::SL_AD_UPDATE_FAILED));
-        }
+        let track_ad = ssade && context.mode == TranslationTableMode::SCALABLE;
 
-        let mut table_addr = root;
-        let mut can_read = true;
-        let mut can_write = true;
-        for level in (1..=levels).rev() {
-            // Table 26 distinguishes SSPTPTR access (LCT.4.3/SSS.4) from
-            // access through a preceding paging entry's ADDR (LSS.1/SSS.1).
-            let reason = if level == levels {
-                context.reason(
-                    FaultReason::INVALID_CONTEXT_ENTRY,
-                    FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR,
-                )
-            } else {
-                context.reason(
-                    FaultReason::SL_PTE_ACCESS_ERROR,
-                    FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR,
-                )
-            };
-            let pte: SlPte = self.read_translation_entry(
-                table_addr,
-                SlPte::iova_index(iova, level) as u64,
-                context,
-                reason,
-            )?;
-            can_read &= pte.r();
-            can_write &= pte.w();
-            let denied = context.reason(
-                if write {
-                    FaultReason::WRITE_ACCESS_DENIED
+        'walk: for _ in 0..MAX_AD_WALK_ATTEMPTS {
+            let mut table_addr = root;
+            let mut can_read = true;
+            let mut can_write = true;
+            for level in (1..=levels).rev() {
+                // Table 26 distinguishes SSPTPTR access (LCT.4.3/SSS.4) from
+                // access through a preceding paging entry's ADDR (LSS.1/SSS.1).
+                let reason = if level == levels {
+                    context.reason(
+                        FaultReason::INVALID_CONTEXT_ENTRY,
+                        FaultReason::SCALABLE_SL_ROOT_ACCESS_ERROR,
+                    )
                 } else {
-                    FaultReason::READ_ACCESS_DENIED
-                },
-                if write {
-                    FaultReason::SCALABLE_WRITE_ACCESS_DENIED
-                } else {
-                    FaultReason::SCALABLE_READ_ACCESS_DENIED
-                },
-            );
-            if !pte.is_present() || (!can_read && !can_write) {
-                return Err(
-                    context.fault(context.reason(denied, FaultReason::SCALABLE_SL_PTE_NOT_PRESENT))
+                    context.reason(
+                        FaultReason::SL_PTE_ACCESS_ERROR,
+                        FaultReason::SCALABLE_SL_PTE_ACCESS_ERROR,
+                    )
+                };
+                let address = Self::translation_entry_address::<u64>(
+                    table_addr,
+                    SlPte::iova_index(iova, level) as u64,
+                )
+                .ok_or_else(|| context.fault(reason))?;
+                let raw = self
+                    .guest_memory
+                    .read_plain::<u64>(address)
+                    .map(u64::from_le)
+                    .map_err(|_| context.fault(reason))?;
+                let pte = SlPte::from(raw);
+                can_read &= pte.r();
+                can_write &= pte.w();
+                let denied = context.reason(
+                    if write {
+                        FaultReason::WRITE_ACCESS_DENIED
+                    } else {
+                        FaultReason::READ_ACCESS_DENIED
+                    },
+                    if write {
+                        FaultReason::SCALABLE_WRITE_ACCESS_DENIED
+                    } else {
+                        FaultReason::SCALABLE_READ_ACCESS_DENIED
+                    },
                 );
-            }
-
-            let leaf = level == 1 || (pte.ps() && matches!(level, 2 | 3));
-            let offset_mask = SlPte::page_size_at_level(level) - 1;
-            let reserved = (1 << 62)
-                | (((1u64 << 52) - 1) & !HOST_ADDRESS_MASK)
-                | if !leaf || !ecap.sc() { 1 << 11 } else { 0 }
-                | if level == 4 { 1 << 7 } else { 0 }
-                | if leaf { offset_mask & !0xfff } else { 0 };
-            if pte.into_bits() & reserved != 0 {
-                return Err(context.fault(context.reason(
-                    FaultReason::SL_PTE_RESERVED_BIT,
-                    FaultReason::SCALABLE_SL_PTE_RESERVED_BIT,
-                )));
-            }
-            if leaf {
-                if (write && !can_write) || (!write && !can_read) {
-                    return Err(context.fault(denied));
+                if !pte.is_present() || (!can_read && !can_write) {
+                    return Err(context
+                        .fault(context.reason(denied, FaultReason::SCALABLE_SL_PTE_NOT_PRESENT)));
                 }
-                return Self::check_dma_output(context, pte.phys_address() | (iova & offset_mask));
+
+                let leaf = level == 1 || (pte.ps() && matches!(level, 2 | 3));
+                let offset_mask = SlPte::page_size_at_level(level) - 1;
+                let reserved = (1 << 62)
+                    | (((1u64 << 52) - 1) & !HOST_ADDRESS_MASK)
+                    | if !leaf || !ecap.sc() { 1 << 11 } else { 0 }
+                    | if level == 4 { 1 << 7 } else { 0 }
+                    | if leaf { offset_mask & !0xfff } else { 0 };
+                if raw & reserved != 0 {
+                    return Err(context.fault(context.reason(
+                        FaultReason::SL_PTE_RESERVED_BIT,
+                        FaultReason::SCALABLE_SL_PTE_RESERVED_BIT,
+                    )));
+                }
+                let output = if leaf {
+                    if (write && !can_write) || (!write && !can_read) {
+                        return Err(context.fault(denied));
+                    }
+                    Some(Self::check_dma_output(
+                        context,
+                        pte.phys_address() | (iova & offset_mask),
+                    )?)
+                } else {
+                    None
+                };
+                // Only validated entries acquire A; D additionally requires an
+                // accepted write translation, including the output-range check.
+                let updated = pte
+                    .with_a(true)
+                    .with_d(pte.d() || (leaf && write))
+                    .into_bits();
+                if track_ad && updated != raw {
+                    if !ecap.smpwcs() || !pwsnp {
+                        return Err(context.ad_fault(SecondStageAdError::NonSnooping));
+                    }
+                    if !compare_exchange(address, raw, updated)
+                        .map_err(|error| context.ad_fault(SecondStageAdError::Memory(error)))?
+                    {
+                        // Restart permissions and geometry from the root, even
+                        // for A/D-only conflicts. Never OR into a stale mapping.
+                        // The attempt budget is shared across every level.
+                        continue 'walk;
+                    }
+                }
+                if let Some(gpa) = output {
+                    return Ok(gpa);
+                }
+                table_addr = pte.phys_address();
             }
-            table_addr = pte.phys_address();
         }
-        unreachable!("a validated second-stage walk always reaches a leaf")
+        Err(context.ad_fault(SecondStageAdError::RetryExhausted))
     }
 
     // =========================================================================
@@ -1121,6 +1188,20 @@ impl VtdSharedState {
 // VtdFault — IOMMU-specific translation/remapping error
 // =============================================================================
 
+/// Failure to atomically mark a second-stage paging entry (§7.1.3, SSS.5/6).
+#[derive(Debug, thiserror::Error)]
+pub enum SecondStageAdError {
+    /// A required update cannot be performed without page-walk snooping.
+    #[error("second-stage A/D update requires page-walk snooping")]
+    NonSnooping,
+    /// Guest memory rejected the atomic access.
+    #[error("second-stage A/D atomic memory access failed")]
+    Memory(#[source] GuestMemoryError),
+    /// Conflicting page-table changes exhausted the per-translation budget.
+    #[error("second-stage A/D walk retry budget exhausted")]
+    RetryExhausted,
+}
+
 /// VT-d translation or interrupt remapping fault.
 ///
 /// Each variant carries the source ID and faulting address/index,
@@ -1128,6 +1209,15 @@ impl VtdSharedState {
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
 pub enum VtdFault {
+    #[error("{error} (source_id={source_id:#06x}, iova={iova:#x})")]
+    AdUpdate {
+        source_id: u16,
+        iova: u64,
+        fpd: bool,
+        #[source]
+        error: SecondStageAdError,
+    },
+
     #[error("DMA fault {reason:?} (source_id={source_id:#06x}, iova={iova:#x})")]
     Dma {
         source_id: u16,
@@ -1216,6 +1306,12 @@ impl VtdFault {
     /// Get the fault reason code for this fault.
     fn fault_reason(&self) -> FaultReason {
         match self {
+            Self::AdUpdate { error, .. } => match error {
+                SecondStageAdError::NonSnooping => FaultReason::SL_AD_UPDATE_NON_SNOOP,
+                SecondStageAdError::Memory(_) | SecondStageAdError::RetryExhausted => {
+                    FaultReason::SL_AD_UPDATE_FAILED
+                }
+            },
             Self::Dma { reason, .. } => *reason,
             Self::RootNotPresent { .. } => FaultReason::ROOT_NOT_PRESENT,
             Self::ContextNotPresent { .. } => FaultReason::CONTEXT_NOT_PRESENT,
@@ -1238,7 +1334,8 @@ impl VtdFault {
     /// Get the source ID from this fault.
     fn source_id(&self) -> u16 {
         match self {
-            Self::Dma { source_id, .. }
+            Self::AdUpdate { source_id, .. }
+            | Self::Dma { source_id, .. }
             | Self::RootNotPresent { source_id, .. }
             | Self::ContextNotPresent { source_id, .. }
             | Self::InvalidContextEntry { source_id, .. }
@@ -1259,7 +1356,8 @@ impl VtdFault {
     /// Get the faulting address (IOVA for DMA, 0 for IR faults).
     fn fault_address(&self) -> u64 {
         match self {
-            Self::Dma { iova, .. }
+            Self::AdUpdate { iova, .. }
+            | Self::Dma { iova, .. }
             | Self::RootNotPresent { iova, .. }
             | Self::ContextNotPresent { iova, .. }
             | Self::InvalidContextEntry { iova, .. }
@@ -1295,7 +1393,8 @@ impl VtdFault {
                         | FaultReason::PASID_TABLE_ACCESS_ERROR
                 )
             }
-            Self::ContextNotPresent { fpd, .. }
+            Self::AdUpdate { fpd, .. }
+            | Self::ContextNotPresent { fpd, .. }
             | Self::AddressBeyondMgaw { fpd, .. }
             | Self::InvalidContextEntry { fpd, .. }
             | Self::AccessDenied { fpd, .. }
@@ -1381,13 +1480,27 @@ impl VtdTranslator {
     ) -> Result<R, iommu_common::TranslationFault<VtdFault>> {
         let bus = (rid >> 8) as u8;
         let devfn = rid as u8;
+        self.translate_with(
+            iova,
+            write,
+            |state| {
+                self.shared
+                    .translate_locked(state, bus, devfn, iova, write, ecap)
+            },
+            op,
+        )
+    }
 
-        // Hold the read lock across translate + op for TOCTOU safety.
+    fn translate_with<R>(
+        &self,
+        iova: u64,
+        write: bool,
+        translate: impl FnOnce(&VtdState) -> Result<u64, VtdFault>,
+        op: impl FnOnce(u64) -> R,
+    ) -> Result<R, iommu_common::TranslationFault<VtdFault>> {
+        // Serialize translate + op against invalidation, not guest PTE writes.
         let state = self.shared.state.read();
-        let gpa = match self
-            .shared
-            .translate_locked(&state, bus, devfn, iova, write, ecap)
-        {
+        let gpa = match translate(&state) {
             Ok(gpa) => gpa,
             Err(fault) => {
                 // Drop the read lock before acquiring write lock for fault recording.
