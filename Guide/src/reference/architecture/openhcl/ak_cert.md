@@ -32,6 +32,11 @@ failures are logged and omit the metadata, allowing normal issuance to proceed.
 The decoder requires issuer and subject common names; the authority key
 identifier is optional.
 
+If including metadata would exceed GET's 4 KiB request limit, OpenHCL omits it
+before hashing the claims and generating the attestation report. This is
+unlikely with ordinary production certificates. A metadata-free request that
+still exceeds the transport limit fails rather than being sent.
+
 Metadata is read for each request, not cached separately. Certificate
 replacement, TPM key refresh, and state restoration therefore do not require
 maintaining a second copy of certificate metadata.

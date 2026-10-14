@@ -22,6 +22,19 @@ pub enum TpmAttestationError {
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create the IgvmAttest AK_CERT request")]
     CreateAkCertRequest(#[source] underhill_attestation::IgvmAttestError),
+    #[error("AK_CERT request size {size} exceeds the GET limit {max_size}")]
+    RequestTooLarge { size: usize, max_size: usize },
+}
+
+fn validate_request_size(
+    size: usize,
+    is_attestation_report: bool,
+) -> Result<(), TpmAttestationError> {
+    let max_size = get_protocol::IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE;
+    if !is_attestation_report && size > max_size {
+        return Err(TpmAttestationError::RequestTooLarge { size, max_size });
+    }
+    Ok(())
 }
 
 /// An implementation of [`RequestAkCert`].
@@ -79,7 +92,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         } else {
             None
         };
-        let has_cert = metadata.is_some();
+        let had_metadata = metadata.is_some();
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
@@ -99,15 +112,6 @@ impl RequestAkCert for TpmRequestAkCertHelper {
                 metadata,
             );
 
-        let attestation_report = if let Some(tee_call) = &self.tee_call {
-            tee_call
-                .get_attestation_report(ak_cert_request_helper.get_runtime_claims_hash())
-                .map_err(TpmAttestationError::GetAttestationReport)?
-                .report
-        } else {
-            vec![]
-        };
-
         let version = if is_attestation_report {
             // If this is an attestation report, use the version 1, the stable structure exposed
             // to the guest via NV index.
@@ -117,13 +121,32 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             IGVM_ATTEST_REQUEST_CURRENT_VERSION
         };
 
+        validate_request_size(
+            ak_cert_request_helper.request_size(version),
+            is_attestation_report,
+        )?;
+        if had_metadata && !ak_cert_request_helper.has_ak_cert_metadata() {
+            tracelimit::warn_ratelimited!(
+                "AK certificate metadata exceeds the GET request limit; requesting a replacement"
+            );
+        }
+
+        let attestation_report = if let Some(tee_call) = &self.tee_call {
+            tee_call
+                .get_attestation_report(ak_cert_request_helper.get_runtime_claims_hash())
+                .map_err(TpmAttestationError::GetAttestationReport)?
+                .report
+        } else {
+            vec![]
+        };
+
         let request = ak_cert_request_helper
             .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
         Ok(AkCertRequest {
             data: request,
-            has_cert,
+            has_cert: ak_cert_request_helper.has_ak_cert_metadata(),
         })
     }
 
@@ -149,6 +172,25 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         };
 
         Ok(payload)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn ak_cert_request_size_limit() {
+        let max_size = get_protocol::IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE;
+        assert!(validate_request_size(max_size, false).is_ok());
+        assert!(matches!(
+            validate_request_size(max_size + 1, false),
+            Err(TpmAttestationError::RequestTooLarge { size, max_size: limit })
+                if size == max_size + 1 && limit == max_size
+        ));
+        // Guest NV reports do not travel over GET and retain their V1 behavior.
+        assert!(validate_request_size(max_size + 1, true).is_ok());
     }
 }
 
