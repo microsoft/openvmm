@@ -378,6 +378,9 @@ pub enum RestoreError {
     #[error("duplicate gpadl id {0}")]
     DuplicateGpadlId(u32),
 
+    #[error("queued gpadl teardown {0} has no in-flight owner")]
+    QueuedGpadlWithoutOwner(u32),
+
     #[error("gpadl for unknown channel id {0}")]
     GpadlForUnknownChannelId(u32),
 

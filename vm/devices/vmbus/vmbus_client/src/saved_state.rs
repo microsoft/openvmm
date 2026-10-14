@@ -185,6 +185,9 @@ impl super::ClientTask {
                 vmbus_client_core::RestoreError::DuplicateGpadlId(gpadl_id) => {
                     RestoreError::DuplicateGpadlId(gpadl_id)
                 }
+                vmbus_client_core::RestoreError::QueuedGpadlWithoutOwner(gpadl_id) => {
+                    RestoreError::QueuedGpadlWithoutOwner(gpadl_id)
+                }
             })?;
         self.runtime_channels.clear();
         self.offer_send = None;
