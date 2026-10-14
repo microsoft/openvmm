@@ -190,6 +190,9 @@ pub struct ConsommeParams {
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     pub allow_host_local_access: bool,
+    /// If true, start the built-in DNS resolver. If false, the guest is given
+    /// the host's DNS servers instead. Static DNS records are still answered.
+    pub internal_dns: bool,
     /// Per-connection TCP receive ring buffer bounds (guest-to-host).
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
@@ -257,6 +260,7 @@ impl ConsommeParams {
             tcp_close_timeout: Duration::from_secs(60),
             skip_ipv6_checks: false,
             allow_host_local_access: false,
+            internal_dns: true,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
         })
@@ -817,7 +821,11 @@ impl Consomme {
                 }
             }
         };
-        let dns =
+        let dns = if !params.internal_dns {
+            dns_resolver::DnsResolver::without_backend(
+                dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+            )
+        } else {
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
@@ -832,7 +840,8 @@ impl Consomme {
                         dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
                     )
                 }
-            };
+            }
+        };
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
         let udp_timeout = params.udp_timeout;

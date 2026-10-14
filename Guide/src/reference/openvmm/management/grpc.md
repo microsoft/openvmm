@@ -53,6 +53,37 @@ Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
+## Consomme NIC modifications
+
+Use `ModifyResource` with `type: UPDATE` and `nic_config.nic_id` to modify
+an existing Consomme NIC. Select `nic_config.consomme` and supply either
+`ports`, `add_dns_record`, or `create_virtual_address`. DNS and virtual-address
+operations cannot be combined with port modifications or used at VM creation.
+They are not supported for other NIC backends.
+
+For example, this protobuf text-format request adds a static DNS A record:
+
+```text
+type: UPDATE
+nic_config {
+    nic_id: "11111111-1111-1111-1111-111111111111"
+    consomme {
+        add_dns_record { name: "host.example" address: "192.0.2.1" }
+    }
+}
+```
+
+To allocate a guest-visible alias for a host IPv4 or IPv6 address, use
+`create_virtual_address { destination: "127.0.0.1" }` instead. The allocated
+address is returned in
+`ModifyResourceResponse.virtual_address.virtual_address`. Repeating the
+operation for the same destination returns the same alias.
+
+DNS and port changes return a `ModifyResourceResponse` without a result.
+Port forwarding retains its existing semantics: `UPDATE` binds the supplied
+ports and `REMOVE` unbinds them. DNS and virtual-address operations only
+support `UPDATE`.
+
 ## VFIO and accelerated SMMU
 
 On Linux, declare named host iommufd contexts in `VMConfig.iommufds`, then

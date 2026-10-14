@@ -634,6 +634,33 @@ fn process_port_request(
                 },
             );
         }
+        ConsommeRequest::AddDnsRecord(rpc) => {
+            rpc.handle_failable_sync(
+                |cfg| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    consomme
+                        .get_mut()
+                        .add_dns_record(StaticDnsRecord::A(cfg.address.octets()), &cfg.name)?;
+                    tracing::info!(name = %cfg.name, address = %cfg.address, "dns record added");
+                    Ok(())
+                },
+            );
+        }
+        ConsommeRequest::CreateVirtualAddress(rpc) => {
+            rpc.handle_failable_sync(
+                |destination| -> Result<
+                    net_backend_resources::consomme::HostIpAddress,
+                    Box<dyn std::error::Error + Send + Sync>,
+                > {
+                    let destination = IpAddr::from(destination);
+                    let virtual_address = consomme
+                        .get_mut()
+                        .create_virtual_address(destination)
+                        .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)?;
+                    tracing::info!(%destination, %virtual_address, "virtual address created");
+                    Ok(virtual_address.into())
+                },
+            );
+        }
     }
 }
 

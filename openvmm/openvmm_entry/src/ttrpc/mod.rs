@@ -49,6 +49,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::DnsRecordConfig;
 use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
@@ -549,8 +550,17 @@ impl VmService {
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
-    consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
+    consomme_rpc: std::collections::HashMap<Guid, mesh::Sender<ConsommeRequest>>,
     iommufds: Arc<IommufdContexts>,
+}
+
+impl Vm {
+    fn consomme_rpc(&self, nic_id: Guid) -> anyhow::Result<mesh::Sender<ConsommeRequest>> {
+        self.consomme_rpc
+            .get(&nic_id)
+            .cloned()
+            .with_context(|| format!("no consomme NIC {nic_id}"))
+    }
 }
 
 #[derive(Default)]
@@ -632,8 +642,11 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                 "SCSI disks require VMBus; use PCIe NVMe or virtio-blk instead"
             );
             anyhow::ensure!(
-                devices.nic_config.is_empty(),
-                "NICConfig requires VMBus; use PCIe virtio-net instead"
+                devices
+                    .nic_config
+                    .iter()
+                    .all(|nic| nic.frontend == vmservice::NicFrontend::Virtio as i32),
+                "VMBus NICConfig requires VMBus; use the virtio frontend instead"
             );
             if cfg!(windows) || cfg!(target_os = "macos") {
                 anyhow::ensure!(
@@ -683,6 +696,20 @@ struct VmService {
     registry: FdRegistry,
 }
 
+/// Maps Consomme port bind/unbind failures to definite gRPC rejections. The
+/// mesh RPC boundary serializes the error, so the cause is recognized by text.
+fn port_error(err: anyhow::Error) -> anyhow::Error {
+    let message = format!("{err:#}");
+    let code = if message.contains("already bound") || message.contains("os error 10048") {
+        Code::AlreadyExists
+    } else if message.contains("not bound") {
+        Code::NotFound
+    } else {
+        return err;
+    };
+    anyhow::Error::new(code).context(message)
+}
+
 fn grpc_error(err: anyhow::Error) -> Status {
     let root_cause = err.root_cause();
     let code = if let Some(code) = root_cause.downcast_ref::<Code>() {
@@ -695,6 +722,7 @@ fn grpc_error(err: anyhow::Error) -> Status {
     } else {
         Code::Unknown
     };
+    tracing::warn!(?code, error = format!("{:#}", err), "ttrpc request failed");
     Status {
         code: code.into(),
         message: format!("{:#}", err),
@@ -1196,7 +1224,7 @@ impl VmService {
         };
 
         let mut scsi_rpc = None;
-        let mut consomme_rpc = None;
+        let mut consomme_rpc = std::collections::HashMap::new();
         if let Some(devices_config) = req_config.devices_config {
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
@@ -1224,19 +1252,37 @@ impl VmService {
                     &nic.backend,
                     Some(vmservice::nic_config::Backend::Consomme(_))
                 );
-                // Only wire the bind/unbind RPC channel to the first consomme
-                // NIC. Additional consomme NICs work but cannot be targeted by
-                // runtime bind/unbind commands.
-                let recv = if is_consomme && consomme_rpc.is_none() {
+                let recv = if is_consomme {
+                    let nic_id: Guid = nic.nic_id.parse().context("invalid NIC ID")?;
                     let (send, recv) = mesh::channel();
-                    consomme_rpc = Some(send);
+                    if consomme_rpc.insert(nic_id, send).is_some() {
+                        bail!("duplicate consomme NIC {nic_id}");
+                    }
                     Some(recv)
                 } else {
                     None
                 };
-                config
-                    .vmbus_devices
-                    .push(parse_nic_config(nic, recv, &registry)?);
+                match parse_nic_config(nic, recv, &registry)? {
+                    NicDevice::Vmbus(resource) => {
+                        config.vmbus_devices.push((DeviceVtl::Vtl0, resource));
+                    }
+                    NicDevice::Virtio {
+                        instance_id,
+                        resource,
+                    } => {
+                        if !req_config.disable_vmbus && (cfg!(windows) || cfg!(target_os = "macos"))
+                        {
+                            config.vpci_devices.push(VpciDeviceConfig {
+                                vtl: DeviceVtl::Vtl0,
+                                instance_id,
+                                resource: VirtioPciDeviceHandle(resource).into_resource(),
+                                vnode: None,
+                            });
+                        } else {
+                            config.virtio_devices.push((VirtioBus::Pci, resource));
+                        }
+                    }
+                }
             }
 
             for virtiofs in devices_config.virtiofs_config {
@@ -1574,7 +1620,9 @@ impl VmService {
     fn modify_resource(
         &self,
         request: vmservice::ModifyResourceRequest,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+    ) -> anyhow::Result<
+        impl Future<Output = anyhow::Result<vmservice::ModifyResourceResponse>> + use<>,
+    > {
         use vmservice::modify_resource_request::Resource;
         let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
@@ -1595,7 +1643,8 @@ impl VmService {
                         scsi_rpc
                             .call_failable(ScsiControllerRequest::AddDevice, config)
                             .await
-                            .map_err(anyhow::Error::from)
+                            .map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
                     }
                     .boxed())
                 } else if request.r#type == vmservice::ModifyType::Remove as i32 {
@@ -1604,7 +1653,11 @@ impl VmService {
                         .as_ref()
                         .context("no scsi controller")?
                         .call_failable(ScsiControllerRequest::RemoveDevice, scsi_path);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                    Ok(async move {
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
+                    }
+                    .boxed())
                 } else {
                     anyhow::bail!("unsupported request type {}", request.r#type);
                 }
@@ -1620,51 +1673,26 @@ impl VmService {
                              configure it at VM creation time"
                         );
                     }
-                    let config = parse_nic_config(nic, None, &self.registry)?;
-                    let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
-                } else if request.r#type == vmservice::ModifyType::Update as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port update only supported for consomme backend"),
+                    let NicDevice::Vmbus(resource) = parse_nic_config(nic, None, &self.registry)?
+                    else {
+                        anyhow::bail!(
+                            "adding a virtio NIC via ModifyResource is not supported; \
+                             configure it at VM creation time"
+                        );
                     };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
+                    let recv = vm
+                        .worker_rpc
+                        .call_failable(VmRpc::AddVmbusDevice, (DeviceVtl::Vtl0, resource));
                     Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Bind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
-                        }
-                        Ok(())
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
                     }
                     .boxed())
-                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port remove only supported for consomme backend"),
-                    };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
-                    Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Unbind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
-                        }
-                        Ok(())
-                    }
-                    .boxed())
+                } else if request.r#type == vmservice::ModifyType::Update as i32
+                    || request.r#type == vmservice::ModifyType::Remove as i32
+                {
+                    let modification = ConsommeNicModification::parse(nic, request.r#type)?;
+                    Ok(modify_consomme_nic(vm, modification)?.boxed())
                 } else {
                     anyhow::bail!("unsupported NIC modify type {}", request.r#type);
                 }
@@ -1676,6 +1704,132 @@ impl VmService {
             }
         }
     }
+}
+
+/// A fully parsed modification to a running consomme NIC.
+struct ConsommeNicModification {
+    nic_id: Guid,
+    action: ConsommeNicAction,
+}
+
+enum ConsommeNicAction {
+    AddDnsRecord(DnsRecordConfig),
+    CreateVirtualAddress(std::net::IpAddr),
+    BindPorts(Vec<HostPortConfig>),
+    UnbindPorts(Vec<HostPortConfig>),
+}
+
+impl ConsommeNicModification {
+    /// Parses an UPDATE or REMOVE `NicConfig` (untrusted input) targeting a
+    /// consomme backend into a modification that needs no further validation.
+    fn parse(nic: vmservice::NicConfig, modify_type: i32) -> anyhow::Result<Self> {
+        use vmservice::consomme_backend::Operation;
+
+        let consomme = match nic.backend.context("missing backend")? {
+            vmservice::nic_config::Backend::Consomme(c) => c,
+            _ => anyhow::bail!("NIC update/remove only supported for consomme backend"),
+        };
+        let is_update = if modify_type == vmservice::ModifyType::Update as i32 {
+            true
+        } else if modify_type == vmservice::ModifyType::Remove as i32 {
+            false
+        } else {
+            anyhow::bail!("unsupported NIC modify type {modify_type}");
+        };
+        let nic_id = nic.nic_id.parse().context("invalid NIC ID")?;
+        let action = match consomme.operation {
+            Some(operation) => {
+                anyhow::ensure!(
+                    is_update,
+                    "DNS and virtual-address operations require NIC UPDATE"
+                );
+                anyhow::ensure!(
+                    consomme.ports.is_empty(),
+                    "cannot combine a consomme operation with port modifications"
+                );
+                match operation {
+                    Operation::AddDnsRecord(request) => {
+                        ConsommeNicAction::AddDnsRecord(DnsRecordConfig {
+                            name: request.name,
+                            address: request
+                                .address
+                                .parse()
+                                .context("invalid IPv4 address for A record")?,
+                        })
+                    }
+                    Operation::CreateVirtualAddress(request) => {
+                        ConsommeNicAction::CreateVirtualAddress(
+                            request
+                                .destination
+                                .parse()
+                                .context("invalid destination address")?,
+                        )
+                    }
+                }
+            }
+            None => {
+                let ports = consomme
+                    .ports
+                    .into_iter()
+                    .map(parse_port_config)
+                    .collect::<anyhow::Result<_>>()?;
+                if is_update {
+                    ConsommeNicAction::BindPorts(ports)
+                } else {
+                    ConsommeNicAction::UnbindPorts(ports)
+                }
+            }
+        };
+        Ok(Self { nic_id, action })
+    }
+}
+
+fn modify_consomme_nic(
+    vm: &Vm,
+    modification: ConsommeNicModification,
+) -> anyhow::Result<impl Future<Output = anyhow::Result<vmservice::ModifyResourceResponse>> + use<>>
+{
+    let ConsommeNicModification { nic_id, action } = modification;
+    let consomme_rpc = vm.consomme_rpc(nic_id)?;
+    Ok(async move {
+        let result = match action {
+            ConsommeNicAction::AddDnsRecord(record) => {
+                consomme_rpc
+                    .call_failable(ConsommeRequest::AddDnsRecord, record)
+                    .await?;
+                None
+            }
+            ConsommeNicAction::CreateVirtualAddress(destination) => {
+                let virtual_address = consomme_rpc
+                    .call_failable(ConsommeRequest::CreateVirtualAddress, destination.into())
+                    .await?;
+                Some(vmservice::modify_resource_response::Result::VirtualAddress(
+                    vmservice::CreateVirtualAddressResponse {
+                        virtual_address: std::net::IpAddr::from(virtual_address).to_string(),
+                    },
+                ))
+            }
+            ConsommeNicAction::BindPorts(ports) => {
+                for cfg in ports {
+                    consomme_rpc
+                        .call_failable(ConsommeRequest::Bind, cfg)
+                        .await
+                        .map_err(|e| port_error(anyhow::Error::from(e)))?;
+                }
+                None
+            }
+            ConsommeNicAction::UnbindPorts(ports) => {
+                for cfg in ports {
+                    consomme_rpc
+                        .call_failable(ConsommeRequest::Unbind, cfg)
+                        .await
+                        .map_err(|e| port_error(anyhow::Error::from(e)))?;
+                }
+                None
+            }
+        };
+        Ok(vmservice::ModifyResourceResponse { result })
+    })
 }
 
 /// Returns the appropriate serial backend open function and a human-readable
@@ -1795,14 +1949,24 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
     })
 }
 
+enum NicDevice {
+    Vmbus(Resource<VmbusDeviceHandleKind>),
+    Virtio {
+        instance_id: Guid,
+        resource: Resource<VirtioDeviceHandle>,
+    },
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
     registry: &FdRegistry,
-) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
+) -> anyhow::Result<NicDevice> {
     use self::vmservice::nic_config::Backend;
     #[cfg(not(target_os = "linux"))]
     let _ = registry;
+    let frontend = vmservice::NicFrontend::from_i32(nic.frontend)
+        .with_context(|| format!("unknown NIC frontend {}", nic.frontend))?;
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -1822,32 +1986,34 @@ fn parse_nic_config(
         .into_resource(),
         #[cfg(target_os = "linux")]
         Backend::Tap(tap) => build_tap_backend(tap, registry)?,
-        Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
-            cidr: if consomme.cidr.is_empty() {
-                None
-            } else {
-                Some(consomme.cidr)
-            },
-            ports: consomme
-                .ports
-                .into_iter()
-                .map(parse_port_config)
-                .collect::<anyhow::Result<_>>()?,
-            recv,
-        }
-        .into_resource(),
+        Backend::Consomme(consomme) => build_consomme_handle(consomme, recv)?.into_resource(),
         _ => anyhow::bail!("unsupported backend"),
     };
-    let cfg = NetvspHandle {
-        instance_id: nic.nic_id.parse().context("invalid instance ID")?,
-        mac_address: nic
-            .mac_address
-            .parse::<MacAddress>()
-            .context("invalid mac address")?,
-        endpoint,
-        max_queues: None,
-    };
-    Ok((DeviceVtl::Vtl0, cfg.into_resource()))
+    let instance_id = nic.nic_id.parse().context("invalid instance ID")?;
+    let mac_address = nic
+        .mac_address
+        .parse::<MacAddress>()
+        .context("invalid mac address")?;
+    Ok(match frontend {
+        vmservice::NicFrontend::Vmbus => NicDevice::Vmbus(
+            NetvspHandle {
+                instance_id,
+                mac_address,
+                endpoint,
+                max_queues: None,
+            }
+            .into_resource(),
+        ),
+        vmservice::NicFrontend::Virtio => NicDevice::Virtio {
+            instance_id,
+            resource: virtio_resources::net::VirtioNetHandle {
+                max_queues: None,
+                mac_address,
+                endpoint,
+            }
+            .into_resource(),
+        },
+    })
 }
 
 async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
@@ -2427,6 +2593,44 @@ async fn build_disk_backend(
     }
 }
 
+/// Builds a consomme endpoint handle from the proto `ConsommeBackend`.
+fn build_consomme_handle(
+    consomme: vmservice::ConsommeBackend,
+    recv: Option<mesh::Receiver<ConsommeRequest>>,
+) -> anyhow::Result<net_backend_resources::consomme::ConsommeHandle> {
+    anyhow::ensure!(
+        consomme.operation.is_none(),
+        "consomme operations require NIC UPDATE via ModifyResource"
+    );
+    fn parse_optional<T: std::str::FromStr>(value: &str, name: &str) -> anyhow::Result<Option<T>>
+    where
+        T::Err: std::error::Error + Send + Sync + 'static,
+    {
+        (!value.is_empty())
+            .then(|| value.parse())
+            .transpose()
+            .with_context(|| format!("invalid {name} '{value}'"))
+    }
+
+    Ok(net_backend_resources::consomme::ConsommeHandle {
+        params: net_backend_resources::consomme::ConsommeParams {
+            client_ip: parse_optional(&consomme.client_ip, "client IP")?,
+            gateway_ip: parse_optional(&consomme.gateway_ip, "gateway IP")?,
+            net_mask: parse_optional(&consomme.net_mask, "net mask")?,
+            client_ip_ipv6: parse_optional(&consomme.client_ip_ipv6, "client IPv6")?,
+            allow_host_local_access: consomme.allow_host_local_access,
+        },
+        cidr: (!consomme.cidr.is_empty()).then_some(consomme.cidr),
+        internal_dns: consomme.internal_dns.unwrap_or(true),
+        ports: consomme
+            .ports
+            .into_iter()
+            .map(parse_port_config)
+            .collect::<anyhow::Result<_>>()?,
+        recv,
+    })
+}
+
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
@@ -2437,17 +2641,7 @@ fn build_nic_backend(
     let _ = registry;
     let vmservice::NicBackend { kind } = backend;
     Ok(match kind.context("missing network backend")? {
-        Kind::Consomme(vmservice::ConsommeBackend { cidr, ports }) => {
-            net_backend_resources::consomme::ConsommeHandle {
-                cidr: (!cidr.is_empty()).then_some(cidr),
-                ports: ports
-                    .into_iter()
-                    .map(parse_port_config)
-                    .collect::<anyhow::Result<_>>()?,
-                recv: None,
-            }
-            .into_resource()
-        }
+        Kind::Consomme(consomme) => build_consomme_handle(consomme, None)?.into_resource(),
         #[cfg(target_os = "linux")]
         Kind::Tap(tap) => build_tap_backend(tap, registry)?,
         #[cfg(windows)]
@@ -2558,6 +2752,451 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(test)]
+mod nic_tests {
+    use super::*;
+    use test_with_tracing::test;
+    use vmservice::consomme_backend::Operation;
+
+    fn nic(frontend: i32) -> vmservice::NicConfig {
+        vmservice::NicConfig {
+            nic_id: "11111111-1111-1111-1111-111111111111".into(),
+            mac_address: "00-15-5D-01-02-03".into(),
+            frontend,
+            backend: Some(vmservice::nic_config::Backend::Consomme(Default::default())),
+            ..Default::default()
+        }
+    }
+
+    fn consomme_vm() -> (Vm, mesh::Receiver<ConsommeRequest>) {
+        let (sender, receiver) = mesh::channel();
+        let (worker_rpc, _) = mesh::channel();
+        let vm = Vm {
+            worker_rpc,
+            scsi_rpc: None,
+            consomme_rpc: [(nic(0).nic_id.parse().unwrap(), sender)].into(),
+            iommufds: Arc::new(IommufdContexts::default()),
+        };
+        (vm, receiver)
+    }
+
+    fn nic_operation(operation: Operation) -> vmservice::NicConfig {
+        vmservice::NicConfig {
+            backend: Some(vmservice::nic_config::Backend::Consomme(
+                vmservice::ConsommeBackend {
+                    operation: Some(operation),
+                    ..Default::default()
+                },
+            )),
+            ..nic(0)
+        }
+    }
+
+    fn modify(
+        vm: &Vm,
+        nic: vmservice::NicConfig,
+        modify_type: i32,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<vmservice::ModifyResourceResponse>>>
+    {
+        modify_consomme_nic(vm, ConsommeNicModification::parse(nic, modify_type)?)
+    }
+
+    #[test]
+    fn dns_update_targets_selected_nic() {
+        let (mut vm, mut receiver) = consomme_vm();
+        let (other_sender, mut other_receiver) = mesh::channel();
+        vm.consomme_rpc.insert(
+            "22222222-2222-2222-2222-222222222222".parse().unwrap(),
+            other_sender,
+        );
+        let config = nic_operation(Operation::AddDnsRecord(vmservice::AddDnsRecordRequest {
+            name: "host.example".into(),
+            address: "192.0.2.1".into(),
+        }));
+        let update = modify(&vm, config, vmservice::ModifyType::Update as i32).unwrap();
+        let (response, ()) = futures::executor::block_on(async {
+            futures::join!(update, async {
+                let ConsommeRequest::AddDnsRecord(rpc) = receiver.recv().await.unwrap() else {
+                    panic!("expected DNS update");
+                };
+                rpc.handle_failable_sync(|record| {
+                    assert_eq!(record.name, "host.example");
+                    assert_eq!(
+                        record.address,
+                        "192.0.2.1".parse::<std::net::Ipv4Addr>().unwrap()
+                    );
+                    Ok::<_, anyhow::Error>(())
+                });
+            })
+        });
+        assert!(response.unwrap().result.is_none());
+        assert!(other_receiver.recv().now_or_never().is_none());
+    }
+
+    #[test]
+    fn virtual_address_update_returns_allocated_address() {
+        for (destination, allocated) in [("127.0.0.1", "192.0.2.2"), ("::1", "2001:db8::2")] {
+            let (vm, mut receiver) = consomme_vm();
+            let config = nic_operation(Operation::CreateVirtualAddress(
+                vmservice::CreateVirtualAddressRequest {
+                    destination: destination.into(),
+                },
+            ));
+            let update = modify(&vm, config, vmservice::ModifyType::Update as i32).unwrap();
+            let (response, ()) = futures::executor::block_on(async {
+                futures::join!(update, async {
+                    let ConsommeRequest::CreateVirtualAddress(rpc) = receiver.recv().await.unwrap()
+                    else {
+                        panic!("expected virtual-address allocation");
+                    };
+                    rpc.handle_failable_sync(|address| {
+                        assert_eq!(std::net::IpAddr::from(address).to_string(), destination);
+                        Ok::<_, anyhow::Error>(
+                            allocated.parse::<std::net::IpAddr>().unwrap().into(),
+                        )
+                    });
+                })
+            });
+            let Some(vmservice::modify_resource_response::Result::VirtualAddress(result)) =
+                response.unwrap().result
+            else {
+                panic!("expected virtual-address result");
+            };
+            assert_eq!(result.virtual_address, allocated);
+        }
+    }
+
+    #[test]
+    fn invalid_operation_addresses_are_rejected() {
+        for (operation, expected) in [
+            (
+                Operation::AddDnsRecord(vmservice::AddDnsRecordRequest {
+                    name: "host.example".into(),
+                    address: "::1".into(),
+                }),
+                "invalid IPv4 address for A record",
+            ),
+            (
+                Operation::CreateVirtualAddress(vmservice::CreateVirtualAddressRequest {
+                    destination: "not-an-ip".into(),
+                }),
+                "invalid destination address",
+            ),
+        ] {
+            let error = ConsommeNicModification::parse(
+                nic_operation(operation),
+                vmservice::ModifyType::Update as i32,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn invalid_ports_are_rejected_before_any_binding() {
+        let (vm, mut receiver) = consomme_vm();
+        let config = vmservice::NicConfig {
+            backend: Some(vmservice::nic_config::Backend::Consomme(
+                vmservice::ConsommeBackend {
+                    ports: vec![
+                        vmservice::PortConfig {
+                            host_port: 8080,
+                            guest_port: 80,
+                            ..Default::default()
+                        },
+                        vmservice::PortConfig {
+                            host_port: 8081,
+                            guest_port: 0x1_0000,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )),
+            ..nic(0)
+        };
+        let error = modify(&vm, config, vmservice::ModifyType::Update as i32)
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "guest port out of range");
+        assert!(receiver.recv().now_or_never().is_none());
+    }
+
+    #[test]
+    fn nic_operations_require_consomme_update() {
+        let (vm, _) = consomme_vm();
+        let operation = Operation::CreateVirtualAddress(vmservice::CreateVirtualAddressRequest {
+            destination: "127.0.0.1".into(),
+        });
+        for modify_type in [
+            vmservice::ModifyType::Add as i32,
+            vmservice::ModifyType::Remove as i32,
+            99,
+        ] {
+            assert!(modify(&vm, nic_operation(operation.clone()), modify_type).is_err());
+        }
+        for (backend, nic_id, expected) in [
+            (None, nic(0).nic_id, "missing backend"),
+            (
+                Some(vmservice::nic_config::Backend::Tap(Default::default())),
+                nic(0).nic_id,
+                "NIC update/remove only supported for consomme backend",
+            ),
+            (nic(0).backend, "not-a-guid".into(), "invalid NIC ID"),
+            (
+                nic(0).backend,
+                "22222222-2222-2222-2222-222222222222".into(),
+                "no consomme NIC",
+            ),
+        ] {
+            let error = modify(
+                &vm,
+                vmservice::NicConfig {
+                    backend,
+                    nic_id,
+                    ..Default::default()
+                },
+                vmservice::ModifyType::Update as i32,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+        let consomme = vmservice::ConsommeBackend {
+            operation: Some(operation),
+            ports: vec![Default::default()],
+            ..Default::default()
+        };
+        assert!(build_consomme_handle(consomme.clone(), None).is_err());
+        let error = modify(
+            &vm,
+            vmservice::NicConfig {
+                backend: Some(vmservice::nic_config::Backend::Consomme(consomme)),
+                ..nic(0)
+            },
+            vmservice::ModifyType::Update as i32,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "cannot combine a consomme operation with port modifications"
+        );
+    }
+
+    #[test]
+    fn port_modifications_keep_empty_response_and_error_codes() {
+        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+            for fail in [false, true] {
+                let (vm, mut receiver) = consomme_vm();
+                let config = vmservice::NicConfig {
+                    backend: Some(vmservice::nic_config::Backend::Consomme(
+                        vmservice::ConsommeBackend {
+                            ports: vec![vmservice::PortConfig {
+                                host_port: 8080,
+                                guest_port: 80,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    )),
+                    ..nic(0)
+                };
+                let update = modify(&vm, config, modify_type as i32).unwrap();
+                let (response, ()) = futures::executor::block_on(async {
+                    futures::join!(update, async {
+                        let rpc = match receiver.recv().await.unwrap() {
+                            ConsommeRequest::Bind(rpc)
+                                if modify_type == vmservice::ModifyType::Update =>
+                            {
+                                rpc
+                            }
+                            ConsommeRequest::Unbind(rpc)
+                                if modify_type == vmservice::ModifyType::Remove =>
+                            {
+                                rpc
+                            }
+                            _ => panic!("unexpected port operation"),
+                        };
+                        rpc.handle_failable_sync(|cfg| {
+                            assert_eq!(cfg.guest_port, 80);
+                            if fail {
+                                if modify_type == vmservice::ModifyType::Update {
+                                    anyhow::bail!("already bound");
+                                }
+                                anyhow::bail!("not bound");
+                            }
+                            Ok(())
+                        });
+                    })
+                });
+                if fail {
+                    let expected = if modify_type == vmservice::ModifyType::Update {
+                        Code::AlreadyExists
+                    } else {
+                        Code::NotFound
+                    };
+                    assert_eq!(grpc_error(response.unwrap_err()).code, expected as i32);
+                } else {
+                    assert!(response.unwrap().result.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nic_operation_backend_errors_are_propagated() {
+        for operation in [
+            Operation::AddDnsRecord(vmservice::AddDnsRecordRequest {
+                name: "host.example".into(),
+                address: "192.0.2.1".into(),
+            }),
+            Operation::CreateVirtualAddress(vmservice::CreateVirtualAddressRequest {
+                destination: "127.0.0.1".into(),
+            }),
+        ] {
+            let (vm, mut receiver) = consomme_vm();
+            let update = modify(
+                &vm,
+                nic_operation(operation),
+                vmservice::ModifyType::Update as i32,
+            )
+            .unwrap();
+            let (response, ()) = futures::executor::block_on(async {
+                futures::join!(update, async {
+                    match receiver.recv().await.unwrap() {
+                        ConsommeRequest::AddDnsRecord(rpc) => {
+                            rpc.handle_failable_sync(|_| -> anyhow::Result<()> {
+                                anyhow::bail!("backend rejected operation")
+                            });
+                        }
+                        ConsommeRequest::CreateVirtualAddress(rpc) => {
+                            rpc.handle_failable_sync(|_| -> anyhow::Result<_> {
+                                anyhow::bail!("backend rejected operation")
+                            });
+                        }
+                        _ => panic!("unexpected operation"),
+                    }
+                })
+            });
+            assert!(format!("{:#}", response.unwrap_err()).contains("backend rejected operation"));
+        }
+    }
+
+    #[test]
+    fn omitted_frontend_retains_vmbus_nic() {
+        let resource = parse_nic_config(
+            nic(vmservice::NicConfig::default().frontend),
+            None,
+            &FdRegistry::default(),
+        )
+        .unwrap();
+        assert!(matches!(resource, NicDevice::Vmbus(_)));
+    }
+
+    #[test]
+    fn virtio_frontend_preserves_instance_id() {
+        let config = nic(vmservice::NicFrontend::Virtio as i32);
+        let expected = config.nic_id.parse::<Guid>().unwrap();
+        let NicDevice::Virtio { instance_id, .. } =
+            parse_nic_config(config, None, &FdRegistry::default()).unwrap()
+        else {
+            panic!("expected virtio-net NIC");
+        };
+        assert_eq!(instance_id, expected);
+    }
+
+    #[test]
+    fn both_frontends_keep_consomme_control_channel() {
+        for frontend in [
+            vmservice::NicFrontend::Vmbus,
+            vmservice::NicFrontend::Virtio,
+        ] {
+            let (sender, receiver) = mesh::channel();
+            let device =
+                parse_nic_config(nic(frontend as i32), Some(receiver), &FdRegistry::default())
+                    .unwrap();
+            assert!(!sender.is_closed());
+            drop(device);
+            assert!(sender.is_closed());
+        }
+    }
+
+    #[test]
+    fn consomme_params_are_parsed() {
+        let handle = build_consomme_handle(
+            vmservice::ConsommeBackend {
+                client_ip: "127.0.0.1".into(),
+                gateway_ip: "169.254.73.249".into(),
+                net_mask: "255.255.255.240".into(),
+                client_ip_ipv6: "2001:db8::1".into(),
+                allow_host_local_access: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let params = handle.params;
+        assert_eq!(params.client_ip, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(params.gateway_ip, Some("169.254.73.249".parse().unwrap()));
+        assert_eq!(params.net_mask, Some("255.255.255.240".parse().unwrap()));
+        assert_eq!(params.client_ip_ipv6, Some("2001:db8::1".parse().unwrap()));
+        assert!(params.allow_host_local_access);
+
+        let defaults = build_consomme_handle(Default::default(), None).unwrap();
+        assert!(defaults.params.client_ip.is_none());
+        assert!(defaults.params.client_ip_ipv6.is_none());
+        assert!(!defaults.params.allow_host_local_access);
+    }
+
+    #[test]
+    fn invalid_consomme_address_is_rejected() {
+        let error = build_consomme_handle(
+            vmservice::ConsommeBackend {
+                gateway_ip: "not-an-ip".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.to_string(), "invalid gateway IP 'not-an-ip'");
+    }
+
+    #[test]
+    fn unknown_frontend_is_rejected() {
+        let error = parse_nic_config(nic(42), None, &FdRegistry::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "unknown NIC frontend 42");
+    }
+
+    #[test]
+    fn only_virtio_nics_are_allowed_without_vmbus() {
+        for frontend in [
+            vmservice::NicFrontend::Vmbus,
+            vmservice::NicFrontend::Virtio,
+        ] {
+            for disable_hv in [false, true] {
+                let config = vmservice::VmConfig {
+                    disable_vmbus: true,
+                    disable_hv,
+                    devices_config: Some(vmservice::DevicesConfig {
+                        nic_config: vec![nic(frontend as i32)],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    validate_platform_config(&config).is_ok(),
+                    frontend == vmservice::NicFrontend::Virtio
+                );
+            }
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
