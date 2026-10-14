@@ -854,6 +854,8 @@ pub enum RestoreError {
     DuplicateChannelId(u32),
     #[error("duplicate gpadl id {0}")]
     DuplicateGpadlId(u32),
+    #[error("queued gpadl teardown {0} has no in-flight owner")]
+    QueuedGpadlWithoutOwner(u32),
 }
 
 /// A caller-initiated request the core is waiting for the host to
@@ -1098,6 +1100,7 @@ impl ClientCore {
         };
         let mut channels = alloc::collections::BTreeMap::new();
         let mut teardown_gpadls = alloc::collections::BTreeMap::new();
+        let mut queued_gpadls = alloc::collections::BTreeSet::new();
         for channel in saved_channels {
             let channel_id = channel.offer.channel_id;
             let mut gpadls = alloc::collections::BTreeMap::new();
@@ -1105,7 +1108,9 @@ impl ClientCore {
                 let phase = match gpadl.phase {
                     SavedGpadlPhase::Created => GpadlPhase::Created,
                     SavedGpadlPhase::TearingDown { queued } => {
-                        if !queued && teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
+                        if queued {
+                            queued_gpadls.insert(gpadl.id);
+                        } else if teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
                             return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
                         }
                         GpadlPhase::TearingDown {
@@ -1137,6 +1142,12 @@ impl ClientCore {
             {
                 return Err(RestoreError::DuplicateChannelId(channel_id.0));
             }
+        }
+        if let Some(gpadl_id) = queued_gpadls
+            .into_iter()
+            .find(|gpadl_id| !teardown_gpadls.contains_key(gpadl_id))
+        {
+            return Err(RestoreError::QueuedGpadlWithoutOwner(gpadl_id.0));
         }
 
         self.phase = match saved.version {
@@ -4587,6 +4598,34 @@ mod step_tests {
                 .iter()
                 .any(|action| matches!(action, Action::PostMessage(_)))
         );
+    }
+
+    #[test]
+    fn restore_rejects_queued_gpadl_teardown_without_owner() {
+        let config = make_redirect_config();
+        let version = VersionInfo {
+            version: Version::Copper,
+            feature_flags: config.supported_feature_flags,
+        };
+        let mut core = ClientCore::new(config);
+        let gpadl_id = vmbus_core::protocol::GpadlId(14);
+
+        let error = core
+            .restore(SavedState {
+                version: Some(version),
+                channels: alloc::vec![SavedChannel {
+                    offer: make_offer(40),
+                    phase: SavedChannelPhase::Opened,
+                    gpadls: alloc::vec![SavedGpadl {
+                        id: gpadl_id,
+                        phase: SavedGpadlPhase::TearingDown { queued: true },
+                    }],
+                }],
+                released_channel_ids: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert_eq!(error, RestoreError::QueuedGpadlWithoutOwner(gpadl_id.0));
     }
 
     #[test]
