@@ -2500,7 +2500,7 @@ fn build_serial_backend(
         }
         vmservice::serial_backend::Kind::File(vmservice::SerialFile { path, append }) => {
             anyhow::ensure!(!path.is_empty(), "serial file path must not be empty");
-            file_serial(path.as_ref(), append, "ttrpc-serial-file")
+            file_serial(path.as_ref(), append)
         }
     }
 }

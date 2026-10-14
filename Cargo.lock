@@ -7794,6 +7794,8 @@ dependencies = [
  "pal_async",
  "serial_core",
  "socket2",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unix_socket",
  "vm_resource",

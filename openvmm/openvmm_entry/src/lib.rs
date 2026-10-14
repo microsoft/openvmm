@@ -367,7 +367,7 @@ async fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
-            SerialConfigCli::File(path) => Some(serial_io::file_serial(&path, false, name)?),
+            SerialConfigCli::File(path) => Some(serial_io::file_serial(&path, false)?),
             SerialConfigCli::None => None,
             SerialConfigCli::Null => Some(NullSerialBackendHandle.into_resource()),
             SerialConfigCli::Pipe(path) => {

@@ -21,7 +21,6 @@ use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::timer::PolledTimer;
 use petri::ResolvedArtifact;
 use petri::TestChild;
 use petri::pipette::cmd;
@@ -330,6 +329,7 @@ async fn test_ttrpc_interface(
     let nvme_disk_path = tempdir.path().join("nvme.img");
     let blk_disk_path = tempdir.path().join("blk.img");
     let scsi_disk_path = tempdir.path().join("scsi.img");
+    let console_file_path = tempdir.path().join("console.log");
     let append_console_path = tempdir.path().join("console-append.log");
     for path in [&nvme_disk_path, &blk_disk_path, &scsi_disk_path] {
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
@@ -338,7 +338,7 @@ async fn test_ttrpc_interface(
     for i in 0..3 {
         let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
         let console_path = if i == 2 {
-            tempdir.path().join(format!("console-{i}.log"))
+            console_file_path.clone()
         } else {
             tempdir.path().join(format!("console-{i}.sock"))
         };
@@ -937,20 +937,6 @@ async fn test_ttrpc_interface(
                         cmd!(sh, "sh -c 'printf ttrpc-console-append-marker > /dev/hvc1'")
                             .run()
                             .await?;
-                        validate_console_file(
-                            &driver,
-                            &console_path,
-                            "ttrpc-console-file-marker",
-                            None,
-                        )
-                        .await?;
-                        validate_console_file(
-                            &driver,
-                            &append_console_path,
-                            "ttrpc-console-append-marker",
-                            Some("stale append contents"),
-                        )
-                        .await?;
                     } else {
                         validate_pcie_config(&agent).await?;
                         #[cfg(windows)]
@@ -1063,6 +1049,12 @@ async fn test_ttrpc_interface(
         "openvmm exited abnormally: {:?}",
         exit_status
     );
+    validate_console_file(&console_file_path, "ttrpc-console-file-marker", None)?;
+    validate_console_file(
+        &append_console_path,
+        "ttrpc-console-append-marker",
+        Some("stale append contents"),
+    )?;
 
     // Verify the pidfile was cleaned up on exit.
     assert!(
@@ -1365,35 +1357,24 @@ fn virtio_device(kind: vmservice::virtio_device::Kind) -> vmservice::PcieDeviceK
     }
 }
 
-async fn validate_console_file(
-    driver: &DefaultDriver,
-    path: &Path,
-    marker: &str,
-    preserved: Option<&str>,
-) -> anyhow::Result<()> {
-    let mut timer = PolledTimer::new(driver);
-    let mut contents = String::new();
-
-    for _ in 0..50 {
-        contents = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read console file '{}'", path.display()))?;
-        if contents.contains(marker) {
-            match preserved {
-                Some(preserved) => anyhow::ensure!(
-                    contents.contains(preserved),
-                    "console file did not preserve {preserved:?}: {contents:?}"
-                ),
-                None => anyhow::ensure!(
-                    !contents.contains("stale console contents"),
-                    "console file was not truncated: {contents:?}"
-                ),
-            }
-            return Ok(());
-        }
-        timer.sleep(Duration::from_millis(20)).await;
+fn validate_console_file(path: &Path, marker: &str, preserved: Option<&str>) -> anyhow::Result<()> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read console file '{}'", path.display()))?;
+    anyhow::ensure!(
+        contents.contains(marker),
+        "console file did not contain {marker:?}: {contents:?}"
+    );
+    match preserved {
+        Some(preserved) => anyhow::ensure!(
+            contents.contains(preserved),
+            "console file did not preserve {preserved:?}: {contents:?}"
+        ),
+        None => anyhow::ensure!(
+            !contents.contains("stale console contents"),
+            "console file was not truncated: {contents:?}"
+        ),
     }
-
-    anyhow::bail!("console file did not contain {marker:?}: {contents:?}")
+    Ok(())
 }
 
 #[cfg(windows)]

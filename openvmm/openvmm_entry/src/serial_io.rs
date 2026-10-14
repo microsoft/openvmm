@@ -10,28 +10,10 @@ use serial_socket::net::OpenSocketSerialConfig;
 use std::io;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::thread;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
-
-#[cfg(unix)]
-fn blocking_serial_pair() -> io::Result<(Resource<SerialBackendHandle>, unix_socket::UnixStream)> {
-    let (left, right) = unix_socket::UnixStream::pair()?;
-    Ok((OpenSocketSerialConfig::from(left).into_resource(), right))
-}
-
-#[cfg(windows)]
-fn blocking_serial_pair() -> io::Result<(Resource<SerialBackendHandle>, std::fs::File)> {
-    use serial_socket::windows::OpenWindowsPipeSerialConfig;
-
-    let (server, client) = pal::windows::pipe::bidirectional_pair(false)?;
-    Ok((
-        OpenWindowsPipeSerialConfig::from(client).into_resource(),
-        server,
-    ))
-}
 
 #[cfg(unix)]
 pub fn anonymous_serial_pair(
@@ -64,35 +46,21 @@ pub fn anonymous_serial_pair(
     ))
 }
 
-pub fn file_serial(
-    path: &Path,
-    append: bool,
-    thread_name: &str,
-) -> anyhow::Result<Resource<SerialBackendHandle>> {
-    let mut file = fs_err::OpenOptions::new()
+pub fn file_serial(path: &Path, append: bool) -> anyhow::Result<Resource<SerialBackendHandle>> {
+    let file = fs_err::OpenOptions::new()
         .create(true)
         .write(true)
         .append(append)
         .truncate(!append)
         .open(path)
         .with_context(|| format!("failed to open serial output file '{}'", path.display()))?;
-    let (config, mut serial) = blocking_serial_pair()?;
-    let path = path.to_owned();
-
-    thread::Builder::new()
-        .name(thread_name.to_owned())
-        .spawn(move || {
-            if let Err(error) = io::copy(&mut serial, &mut file) {
-                tracing::error!(
-                    error = &error as &dyn std::error::Error,
-                    path = %path.display(),
-                    "serial file backend stopped"
-                );
-            }
-        })
-        .context("failed to spawn serial file backend thread")?;
-
-    Ok(config)
+    Ok(
+        serial_socket::file::FileSerialConfig::new(
+            file.into(),
+            path.to_string_lossy().into_owned(),
+        )
+        .into_resource(),
+    )
 }
 
 pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {

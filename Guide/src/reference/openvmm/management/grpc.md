@@ -72,6 +72,16 @@ OpenVMM preserves existing contents and appends new guest output.
 The backend remains open for the console lifetime. OpenVMM does not rotate or
 limit the file, so the management client owns retention. `SerialRelay` remains
 available when the client needs an interactive or externally managed stream.
+The backend writes synchronously to the file, without an intermediate socket,
+named pipe, or background copy task. Successful writes complete before returning
+to the serial device, so there is no background output to drain during teardown.
+A slow or stalled file write can block the calling device thread. After
+`TeardownVM` or `Quit` completes, the management client can read the completed
+output. Writes do not force a disk synchronization and do not guarantee that the
+output survives a host crash or power failure.
+If a write fails, OpenVMM logs the error and disconnects the file backend.
+Further console output is discarded; the backend does not automatically retry
+or reopen the file.
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
