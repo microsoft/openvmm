@@ -528,7 +528,6 @@ mod tests {
     use crate::vhdx::parse_convert_format_options as parse_vhdx_convert_format_options;
     use crate::vhdx::parse_create_format_options as parse_vhdx_create_format_options;
     use crate::vhdx::replay as test_replay;
-    use crate::vhdx::resolve_parent_path;
     use crate::vhdx::visit_map_runs;
     use ::vhdx::CreateParams;
     use ::vhdx::DiskType as VhdxDiskType;
@@ -537,6 +536,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn parent_lookup_ignores_windows_paths() {
+        use crate::vhdx::resolve_parent_path;
+
         let directory = tempfile::tempdir().unwrap();
         let parent_path = directory.path().join("parent.vhdx");
         let child_path = directory.path().join("child.vhdx");
