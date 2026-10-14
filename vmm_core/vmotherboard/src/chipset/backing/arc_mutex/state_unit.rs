@@ -10,6 +10,7 @@ use futures::task::ArcWake;
 use futures::task::WakerRef;
 use futures::task::waker_ref;
 use inspect::InspectMut;
+use state_unit::SpawnedUnit;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
 use std::sync::Arc;
@@ -24,6 +25,21 @@ pub struct ArcMutexChipsetDeviceUnit {
     poll_event: Arc<PollEvent>,
     running: bool,
     omit_saved_state: bool,
+}
+
+/// A unit handle for a dynamically managed device.
+pub struct DynamicDeviceUnit(pub(crate) SpawnedUnit<ArcMutexChipsetDeviceUnit>);
+
+impl DynamicDeviceUnit {
+    /// Removes the dynamically managed device and releases its backing resources.
+    ///
+    /// Waits for the state-unit task to exit before invoking device teardown.
+    /// Resources owned by device-specific background tasks must be released
+    /// before this returns, even if other references to the device remain.
+    pub async fn remove(self) {
+        let unit = self.0.remove().await;
+        unit.device.close().teardown().await;
+    }
 }
 
 impl InspectMut for ArcMutexChipsetDeviceUnit {
@@ -140,13 +156,6 @@ impl ArcMutexChipsetDeviceUnit {
             }
         }
         self
-    }
-
-    /// Releases the device's backing resources. Called after the unit has
-    /// been removed, so that resources are released before removal
-    /// completes.
-    pub async fn teardown(self) {
-        self.device.close().teardown().await;
     }
 }
 
