@@ -94,6 +94,7 @@ trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
+    async fn teardown(&mut self);
 }
 
 #[async_trait]
@@ -108,6 +109,9 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Dy
     }
     async fn reset(&mut self) {
         self.reset().await
+    }
+    async fn teardown(&mut self) {
+        self.teardown().await
     }
 }
 
@@ -138,6 +142,10 @@ impl ChangeDeviceState for ErasedChipsetDevice {
 
     async fn reset(&mut self) {
         self.0.reset().await
+    }
+
+    async fn teardown(&mut self) {
+        self.0.teardown().await
     }
 }
 

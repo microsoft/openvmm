@@ -38,6 +38,7 @@ trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
+    async fn teardown(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
     fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
     fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
@@ -55,6 +56,10 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn reset(&mut self) {
         self.reset().await
+    }
+
+    async fn teardown(&mut self) {
+        self.teardown().await
     }
 
     fn poll_device(&mut self, cx: &mut Context<'_>) {
@@ -135,6 +140,13 @@ impl ArcMutexChipsetDeviceUnit {
             }
         }
         self
+    }
+
+    /// Releases the device's backing resources. Called after the unit has
+    /// been removed, so that resources are released before removal
+    /// completes.
+    pub async fn teardown(self) {
+        self.device.close().teardown().await;
     }
 }
 
