@@ -14,3 +14,33 @@ pub(crate) async fn vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> an
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[vmm_test_macros::vmm_test(qemu_linux_direct_aarch64)]
+async fn shared_directory(
+    config: PetriVmBuilder<petri::qemu::QemuPetriBackend>,
+) -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    fs_err::write(
+        directory.path().join("marker"),
+        b"shared after agent startup",
+    )?;
+    let (vm, agent) = config
+        .with_shared_directory("data", directory.path(), "/shared directory")?
+        .run()
+        .await?;
+    assert_eq!(
+        agent.read_file("/shared directory/marker").await?,
+        b"shared after agent startup",
+    );
+    agent
+        .write_file("/shared directory/result", b"guest write".as_slice())
+        .await?;
+    assert_eq!(
+        fs_err::read(directory.path().join("result"))?,
+        b"guest write"
+    );
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
