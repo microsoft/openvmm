@@ -96,9 +96,9 @@ impl ChipsetDevices {
 pub struct DynamicDeviceUnit(SpawnedUnit<ArcMutexChipsetDeviceUnit>);
 
 impl DynamicDeviceUnit {
-    /// Removes and drops the dynamically managed device.
+    /// Removes the dynamically managed device, tears it down, and drops it.
     pub async fn remove(self) {
-        self.0.remove().await;
+        self.0.remove().await.teardown().await;
     }
 }
 

@@ -424,6 +424,22 @@ impl VirtioTransportCore {
         self.reset_status(ops);
     }
 
+    /// `ChangeDeviceState::teardown()` implementation.
+    pub async fn teardown(&mut self) {
+        let _ = self.state.drain().await;
+        drop(self.pending_status_deferred.take());
+        self.stalled_io.clear();
+        self.doorbells.clear();
+        // Wait for the device task to drop the device so that backing
+        // resources (e.g. disk files) are closed before device removal
+        // completes. Simply dropping `_device_task` would cancel the task
+        // and release them asynchronously at some later point.
+        self.device_sender
+            .call(DeviceCommand::Teardown, ())
+            .await
+            .expect("device task is gone");
+    }
+
     /// Signal a queue notification by index.
     pub fn notify_queue(&self, queue_index: u32) {
         if let Some(qd) = self.queues.get(queue_index as usize) {

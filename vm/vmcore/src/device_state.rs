@@ -42,4 +42,17 @@ pub trait ChangeDeviceState {
     /// Callers must ensure that the device is in a stopped state before calling
     /// this method.
     fn reset(&mut self) -> impl Send + Future<Output = ()>;
+
+    /// Releases the device's backing resources before it is dropped.
+    ///
+    /// This is called when a dynamically added device is removed from a
+    /// running VM. Devices that own host resources (for example, open disk
+    /// files) in background tasks should release them here so that the
+    /// resources are closed by the time removal completes, rather than at
+    /// some later point when the background tasks are reaped.
+    ///
+    /// The device will not be used again after this returns.
+    fn teardown(&mut self) -> impl Send + Future<Output = ()> {
+        async {}
+    }
 }
