@@ -216,8 +216,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     openhcl_agent_image: Option<AgentImage>,
     /// The boot device type for the VM
     boot_device_type: BootDeviceType,
-    /// Override for the PCIe root port the boot NVMe controller is placed on
-    /// when [`BootDeviceType::PcieNvme`] is used. Defaults to `s0rc0rp0`.
+    /// Override for the PCIe root port used for a PCIe boot disk.
+    /// Defaults to `s0rc0rp0`.
     pcie_boot_port: Option<String>,
 
     // Minimal mode: skip default devices, serial, save/restore.
@@ -239,6 +239,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     no_hv: bool,
     // Capture the VM's inspect output on test failure.
     capture_inspect_on_failure: bool,
+    watchdog_timeout: Option<Duration>,
+    external_pipette: bool,
 
     nested_test: Option<ResolvedNestedTestDeps>,
 }
@@ -305,7 +307,16 @@ pub struct PetriVmConfig {
     /// Physical NVMe devices to attach
     pub physical_nvme_devices: HashMap<Guid, PhysicalNvmeDevice>,
     /// Path to share with the guest
-    pub guest_shares: HashMap<String, PathBuf>,
+    pub guest_shares: HashMap<String, GuestShare>,
+}
+
+/// A host directory exposed through a guest filesystem device.
+#[derive(Debug, Clone)]
+pub struct GuestShare {
+    /// Directory on the host.
+    pub host_path: PathBuf,
+    /// Absolute mount point in the Linux guest.
+    pub guest_path: String,
 }
 
 /// PCIe NVMe drive configuration.
@@ -402,7 +413,7 @@ pub struct PetriVmResources {
 #[async_trait]
 pub trait PetriVmmBackend: Debug {
     /// VMM-specific configuration
-    type VmmConfig;
+    type VmmConfig: 'static;
 
     /// Runtime object
     type VmRuntime: PetriVmRuntime;
@@ -446,10 +457,7 @@ pub trait PetriVmmBackend: Debug {
 
     /// Generate an rdinit script that does the necessary configuration to
     /// launch pipette for linux direct
-    fn build_custom_init_script(
-        pipette_path: &str,
-        _mount_shares: Vec<(String, String)>,
-    ) -> Option<String>;
+    fn build_custom_init_script(pipette_path: &str) -> Option<String>;
 
     /// Resolve any artifacts needed to use this backend
     ///
@@ -525,7 +533,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
     properties: PetriVmProperties,
 
     nested_test: Option<ResolvedNestedTestDeps>,
-    guest_shares: HashMap<String, PathBuf>,
+    guest_shares: HashMap<String, GuestShare>,
     name: String,
 }
 
@@ -718,6 +726,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             no_vmbus: !T::SUPPORTS_VMBUS || isolated_without_paravisor,
             no_hv: false,
             capture_inspect_on_failure: false,
+            watchdog_timeout: Some(Duration::from_secs(600)),
+            external_pipette: false,
 
             nested_test: artifacts
                 .nested_test
@@ -731,14 +741,82 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Share a directory over 9p and mount it after Pipette connects.
+    ///
+    /// The backend must attach a filesystem device for the supplied tag.
+    pub fn with_shared_directory(
+        mut self,
+        tag: &str,
+        host_path: impl AsRef<Path>,
+        guest_path: &str,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.os_flavor() == OsFlavor::Linux,
+            "directory sharing requires a Linux guest"
+        );
+        anyhow::ensure!(
+            !tag.is_empty()
+                && !tag.starts_with('-')
+                && tag
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c)),
+            "invalid filesystem share tag"
+        );
+        anyhow::ensure!(
+            guest_path.starts_with('/')
+                && !guest_path.contains('\0')
+                && !guest_path.split('/').any(|c| c == ".."),
+            "guest mount point must be an absolute path without parent traversal"
+        );
+        anyhow::ensure!(
+            !self.config.guest_shares.contains_key(tag),
+            "duplicate filesystem share tag: {tag}"
+        );
+        self.config.guest_shares.insert(
+            tag.into(),
+            GuestShare {
+                host_path: host_path.as_ref().to_path_buf(),
+                guest_path: guest_path.into(),
+            },
+        );
+        Ok(self)
+    }
+
     fn with_capture_inspect_on_failure(mut self) -> Self {
         self.capture_inspect_on_failure = true;
+        self
+    }
+
+    /// Omit the virtio-vsock device when using another Pipette transport.
+    /// Call after [`Self::with_no_vmbus`] to override its Linux default.
+    pub fn without_virtio_vsock(mut self) -> Self {
+        self.use_virtio_vsock = false;
+        #[cfg(target_os = "linux")]
+        {
+            self.vhost_vsock_guest_cid = None;
+        }
         self
     }
 
     /// Whether this builder is in minimal mode.
     pub fn is_minimal(&self) -> bool {
         self.minimal_mode
+    }
+
+    /// Set the diagnostic watchdog deadline. A standalone runner that owns its
+    /// own cancellation policy can disable the test watchdog with `None`.
+    pub fn with_watchdog_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.watchdog_timeout = timeout;
+        self
+    }
+
+    /// Use Pipette supplied and started by the guest image, without adding an
+    /// agent disk or injecting Pipette into a Linux-direct initrd.
+    pub fn with_external_pipette(mut self) -> Self {
+        self.external_pipette = true;
+        self.agent_image = None;
+        self.pipette_binary = None;
+        self
     }
 
     /// Supply a pre-built initrd with pipette already injected.
@@ -769,7 +847,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Prepare an initrd with a custom script
     pub fn prepare_custom_initrd(
         &self,
-        build_custom_init_script: impl FnOnce(&str, Vec<(String, String)>) -> Option<String>,
+        build_custom_init_script: impl FnOnce(&str) -> Option<String>,
     ) -> anyhow::Result<PetriInitrd> {
         const PIPETTE_PATH: &str = "pipette";
         const INIT_SCRIPT_NAME: &str = "custom-init.sh";
@@ -784,8 +862,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .as_ref()
             .context("prepare_initrd requires a pipette binary")?;
 
-        let initrd_gz = std::fs::read(initrd_path)
-            .with_context(|| format!("failed to read initrd at {}", initrd_path.display()))?;
         let pipette_data = std::fs::read(pipette_path.get()).with_context(|| {
             format!(
                 "failed to read pipette binary at {}",
@@ -793,47 +869,23 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
         })?;
 
-        let merged_gz =
-            initrd_cpio::inject_into_initrd(&initrd_gz, PIPETTE_PATH, &pipette_data, 0o100755)
-                .context("failed to inject pipette into initrd")?;
-
-        let mut mount_shares = Vec::new();
-        if self.nested_test.is_some() && T::SUPPORTS_FILE_SHARING {
-            mount_shares.push((
-                NESTED_CONTENT_TAG.into(),
-                self.agent_disk_path(&[NESTED_TEST_CONTENT_DIR.into()]),
-            ));
-            mount_shares.push((
-                NESTED_IMAGES_TAG.into(),
-                self.agent_disk_path(&[NESTED_IMAGES_DIR.into()]),
-            ));
-        }
-
-        let (merged_gz, rdinit) =
-            if let Some(file_data) = build_custom_init_script(PIPETTE_PATH, mount_shares) {
-                (
-                    initrd_cpio::inject_into_initrd(
-                        &merged_gz,
-                        INIT_SCRIPT_NAME,
-                        file_data.as_bytes(),
-                        0o100755, // regular file, rwxr-xr-x
-                    )
-                    .context("failed to inject init script into initrd")?,
-                    format!("/{INIT_SCRIPT_NAME}"),
-                )
-            } else {
-                (merged_gz, format!("/{PIPETTE_PATH}"))
-            };
-
-        let mut tmp = tempfile::NamedTempFile::new()
-            .context("failed to create temp file for pre-built initrd")?;
-        tmp.write_all(&merged_gz)
-            .context("failed to write pre-built initrd")?;
-
-        Ok(PetriInitrd {
-            path: TempOrPersistentPath::Temp(Arc::new(tmp.into_temp_path())),
-            rdinit_param: rdinit,
-        })
+        let mut files = vec![crate::initrd::InitrdFile {
+            name: PIPETTE_PATH,
+            contents: &pipette_data,
+            permissions: 0o755,
+        }];
+        let script = build_custom_init_script(PIPETTE_PATH);
+        let rdinit = if let Some(script) = &script {
+            files.push(crate::initrd::InitrdFile {
+                name: INIT_SCRIPT_NAME,
+                contents: script.as_bytes(),
+                permissions: 0o755,
+            });
+            format!("/{INIT_SCRIPT_NAME}")
+        } else {
+            format!("/{PIPETTE_PATH}")
+        };
+        PetriInitrd::prepare(initrd_path, &files, &rdinit, &std::env::temp_dir())
     }
 
     /// Enable serial port output even in minimal mode.
@@ -1211,7 +1263,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 }
                 BootDeviceType::PcieVirtioBlk => {
                     self.config.pcie_virtio_blk_drives.push(PcieVirtioBlkDrive {
-                        port_name: "s0rc0rp0".into(),
+                        port_name: self
+                            .pcie_boot_port
+                            .clone()
+                            .unwrap_or_else(|| "s0rc0rp0".into()),
                         drive: boot_drive,
                     });
                     self
@@ -1271,7 +1326,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Whether this VM is using pipette in VTL0
     pub fn using_vtl0_pipette(&self) -> bool {
-        self.uses_pipette_as_init()
+        self.external_pipette
+            || self.uses_pipette_as_init()
             || (self.config.firmware.is_isolated_without_paravisor()
                 && self.pipette_binary.is_some())
             || self
@@ -1328,8 +1384,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
             .await?;
         let openhcl_diag_handler = runtime.openhcl_diag();
-        let watchdog_tasks =
-            Self::start_watchdog_tasks(&self.resources, &mut runtime, self.enable_screenshots)?;
+        let watchdog_tasks = Self::start_watchdog_tasks(
+            &self.resources,
+            &mut runtime,
+            self.enable_screenshots,
+            self.watchdog_timeout,
+        )?;
 
         let mut vm = PetriVm {
             runtime: PetriVmRuntimeGuard {
@@ -1391,21 +1451,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
         enable_screenshots: bool,
+        watchdog_timeout: Option<Duration>,
     ) -> anyhow::Result<Vec<Task<()>>> {
         let mut tasks = Vec::new();
 
-        {
-            const TIMEOUT_DURATION_MINUTES: u64 = 10;
-            const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
-
+        if let Some(timeout) = watchdog_timeout {
             // The panic unwinds out of the task pool, which drops the VM and
             // triggers the same inspect capture as any other failure.
             let driver = resources.driver.clone();
             tasks.push(resources.driver.spawn("timer-watchdog", async move {
-                PolledTimer::new(&driver).sleep(TIMER_DURATION).await;
-                tracing::error!(
-                    "Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, aborting."
-                );
+                PolledTimer::new(&driver).sleep(timeout).await;
+                tracing::error!(?timeout, "Test timeout reached, aborting.");
                 panic!("Test timed out");
             }));
         }
@@ -1850,8 +1906,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Override the PCIe root port that the boot NVMe controller is placed on
-    /// when using [`BootDeviceType::PcieNvme`].
+    /// Override the PCIe root port used by [`BootDeviceType::PcieNvme`] or
+    /// [`BootDeviceType::PcieVirtioBlk`].
     ///
     /// The named port must exist in the PCIe topology added via the backend's
     /// `with_pcie_root_topology`. Defaults to `s0rc0rp0`.
@@ -2024,15 +2080,28 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         T::default_servicing_flags()
     }
 
-    /// Get the backend-specific config builder
+    /// Apply a backend-specific modification in registration order.
+    /// May be called multiple times, including around platform presets.
     pub fn modify_backend(
-        mut self,
+        self,
         f: impl FnOnce(T::VmmConfig) -> T::VmmConfig + 'static + Send,
     ) -> Self {
-        if self.modify_vmm_config.is_some() {
-            panic!("only one modify_backend allowed");
-        }
-        self.modify_vmm_config = Some(ModifyFn(Box::new(f)));
+        self.try_modify_backend(move |config| Ok(f(config)))
+    }
+
+    /// Apply a fallible backend modification after previously registered ones.
+    pub fn try_modify_backend(
+        mut self,
+        f: impl FnOnce(T::VmmConfig) -> anyhow::Result<T::VmmConfig> + 'static + Send,
+    ) -> Self {
+        let previous = self.modify_vmm_config.take();
+        self.modify_vmm_config = Some(ModifyFn(Box::new(move |config| {
+            let config = match previous {
+                Some(previous) => previous.0(config)?,
+                None => config,
+            };
+            f(config)
+        })));
         self
     }
 
@@ -2046,13 +2115,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         if T::SUPPORTS_FILE_SHARING {
             self.config.guest_shares.insert(
                 NESTED_CONTENT_TAG.into(),
-                PathBuf::from(
-                    std::env::var(VMM_TESTS_CONTENT_DIR).expect("test content dir not set"),
-                ),
+                GuestShare {
+                    host_path: PathBuf::from(
+                        std::env::var(VMM_TESTS_CONTENT_DIR).expect("test content dir not set"),
+                    ),
+                    guest_path: self.agent_disk_path(&[NESTED_TEST_CONTENT_DIR.into()]),
+                },
             );
             self.config.guest_shares.insert(
                 NESTED_IMAGES_TAG.into(),
-                PathBuf::from(std::env::var(VMM_TEST_IMAGES).expect("test images dir not set")),
+                GuestShare {
+                    host_path: PathBuf::from(
+                        std::env::var(VMM_TEST_IMAGES).expect("test images dir not set"),
+                    ),
+                    guest_path: self.agent_disk_path(&[NESTED_IMAGES_DIR.into()]),
+                },
             );
 
             return self;
@@ -2298,7 +2375,37 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // This is a no-op when the shutdown IC is not configured (e.g.,
         // no VMBus or minimal mode).
         self.runtime.wait_for_enlightened_shutdown_ready().await?;
-        self.runtime.wait_for_agent(false).await
+        let client = self.runtime.wait_for_agent(false).await?;
+        if !self.guest_shares.is_empty() {
+            anyhow::ensure!(
+                self.properties.os_flavor == OsFlavor::Linux,
+                "directory sharing requires a Linux guest"
+            );
+            let mut shares = self.guest_shares.iter().collect::<Vec<_>>();
+            shares.sort_by(|a, b| a.0.cmp(b.0));
+            for (tag, share) in shares {
+                let shell = client.unix_shell();
+                shell
+                    .cmd("mkdir")
+                    .args(["-p", &share.guest_path])
+                    .run()
+                    .await?;
+                shell
+                    .cmd("mount")
+                    .args([
+                        "-t",
+                        "9p",
+                        "-o",
+                        "trans=virtio,version=9p2000.L",
+                        tag,
+                        &share.guest_path,
+                    ])
+                    .run()
+                    .await
+                    .with_context(|| format!("mounting guest share {tag}"))?;
+            }
+        }
+        Ok(client)
     }
 
     /// Wait for a connection from a pipette agent running in VTL 2.
@@ -2542,7 +2649,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         let test_binary_path =
             if let Some(test_content_dir) = self.guest_shares.get(NESTED_CONTENT_TAG) {
-                let test_content_dir = absolute(test_content_dir.as_path())?;
+                let test_content_dir = absolute(&test_content_dir.host_path)?;
                 let local_test_binary_path = absolute(&nested_test.test_binary)?;
 
                 self.convert_guest_path(
@@ -2578,7 +2685,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             cmd.env(k, v);
         }
 
-        if T::SUPPORTS_FILE_SHARING {
+        if !self.guest_shares.is_empty() {
             cmd.env(PETRI_NESTED_TEST_PARENT, &self.name);
         }
 
@@ -2604,7 +2711,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         let output = child.wait_with_output().await?;
 
         // copy the files if we aren't sharing the results folder directly
-        if !T::SUPPORTS_FILE_SHARING {
+        if self.guest_shares.is_empty() {
             let test_results_dir = self.agent_disk_path(&[
                 NESTED_TEST_CONTENT_DIR.into(),
                 NESTED_RESULTS_DIR.into(),
@@ -3441,6 +3548,14 @@ impl Firmware {
 
     fn os_flavor(&self) -> OsFlavor {
         match self {
+            Firmware::Uefi {
+                guest: UefiGuest::Custom { os_flavor, .. },
+                ..
+            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::Custom { os_flavor, .. },
+                ..
+            } => *os_flavor,
             Firmware::LinuxDirect { .. }
             | Firmware::IgvmLinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
@@ -3628,6 +3743,17 @@ impl Firmware {
     }
 
     fn boot_drive(&self) -> Option<Drive> {
+        if let Firmware::Uefi {
+            guest: UefiGuest::Custom { disk, .. },
+            ..
+        }
+        | Firmware::OpenhclUefi {
+            guest: UefiGuest::Custom { disk, .. },
+            ..
+        } = self
+        {
+            return Some(Drive::new(Some(disk.clone()), false));
+        }
         match self {
             Firmware::LinuxDirect { .. }
             | Firmware::IgvmLinuxDirect { .. }
@@ -3693,6 +3819,13 @@ impl PcatGuest {
 /// will be automatically configured.
 #[derive(Debug)]
 pub enum UefiGuest {
+    /// Boot a complete caller-supplied disk, including a temporary raw image.
+    Custom {
+        /// Boot disk and its lifetime.
+        disk: Disk,
+        /// Operating system supplied by the image.
+        os_flavor: OsFlavor,
+    },
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
@@ -3717,6 +3850,7 @@ impl UefiGuest {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
             UefiGuest::None => None,
+            UefiGuest::Custom { .. } => None,
         }
     }
 }
@@ -4043,7 +4177,7 @@ async fn collect_inspect(
 }
 
 /// Wrapper for modification functions with stubbed out debug impl
-pub struct ModifyFn<T>(pub Box<dyn FnOnce(T) -> T + Send>);
+pub struct ModifyFn<T>(pub Box<dyn FnOnce(T) -> anyhow::Result<T> + Send>);
 
 impl<T> Debug for ModifyFn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4451,7 +4585,7 @@ mod tests {
         }
     }
 
-    struct TestRuntime(TestInspectBehavior);
+    struct TestRuntime(TestInspectBehavior, Arc<std::sync::atomic::AtomicUsize>);
 
     #[async_trait::async_trait]
     impl PetriVmRuntime for TestRuntime {
@@ -4459,6 +4593,7 @@ mod tests {
         type VmFramebufferAccess = TestFramebuffer;
 
         async fn teardown(self) -> anyhow::Result<()> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
 
@@ -4544,7 +4679,7 @@ mod tests {
         behavior: TestInspectBehavior,
     ) -> PetriVmRuntimeGuard<TestRuntime> {
         PetriVmRuntimeGuard {
-            runtime: Some(TestRuntime(behavior)),
+            runtime: Some(TestRuntime(behavior, Default::default())),
             driver,
             log_source: log_source.clone(),
             capture_inspect_on_drop: true,
@@ -4604,6 +4739,23 @@ mod tests {
             let error = run_failed_test(&log_source, behavior).unwrap_err();
             assert_eq!(error.to_string(), "original test failure");
             assert_eq!(inspect_attachment_count(&log_source), 1);
+        }
+    }
+
+    #[test]
+    fn implicit_cleanup_does_not_invoke_explicit_teardown() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let logs = PetriLogSource::file_only(temp_dir.path()).unwrap();
+        for capture in [false, true] {
+            let pool = pal_async::DefaultPool::new();
+            let driver = pool.driver();
+            let mut guard = test_runtime_guard(driver.clone(), &logs, TestInspectBehavior::Success);
+            guard.capture_inspect_on_drop = capture;
+            let count = guard.runtime.as_ref().unwrap().1.clone();
+            drop(guard);
+            drop(driver);
+            pool.run();
+            assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
     }
 

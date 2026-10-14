@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Copy this profile outside the checkout and supply absolute local paths.
+[incubator]
+type = "openvmm"
+arch = "x86-64"
+binary = "/path/to/native/openvmm"
+memory = "8G"
+processors = 2
+nested-virt = true
+
+[boot]
+type = "mshv"
+firmware = "/path/to/MSVM.fd"
+boot-artifacts = "/path/to/public-artifacts"

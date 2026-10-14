@@ -28,6 +28,7 @@ use vm_resource::IntoResource;
 impl PetriVmConfigOpenVmm {
     async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let Self {
+            guest_shares,
             runtime_config,
             arch,
             host_log_levels,
@@ -47,6 +48,11 @@ impl PetriVmConfigOpenVmm {
 
             pending_iommu,
         } = self;
+
+        anyhow::ensure!(
+            guest_shares.is_empty(),
+            "guest shares require an explicit device topology"
+        );
 
         // Resolve deferred IOMMU assignments.
         for (name, iommu_config) in &pending_iommu {
