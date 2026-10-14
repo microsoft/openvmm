@@ -5,7 +5,7 @@
 //!
 //! Implements the virtio-rtc device (device ID 17) as specified in the
 //! VIRTIO 1.4 specification, §5.23 "RTC Device". Currently implements
-//! a single UTC clock.
+//! a single UTC-like clock.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
