@@ -23,6 +23,8 @@ use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use std::collections::HashMap;
+use std::collections::hash_map;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
@@ -44,6 +46,7 @@ pub struct HvsockRelay {
     host_send: mesh::Sender<RelayRequest>,
     _relay_task: Task<()>,
     _listener_task: Option<Task<()>>,
+    service_listener_tasks: HashMap<Guid, Task<()>>,
 }
 
 enum RelayRequest {
@@ -87,6 +90,7 @@ impl HvsockRelay {
                     ListenerWorker {
                         inner: inner.clone(),
                         host_send: host_send.clone(),
+                        service_id: None,
                     }
                     .run(listener),
                 ),
@@ -104,7 +108,53 @@ impl HvsockRelay {
             inner,
             _relay_task: task,
             _listener_task,
+            service_listener_tasks: HashMap::new(),
         })
+    }
+
+    /// Relays each connection accepted by `listener` to the guest hvsocket
+    /// service `service_id`.
+    ///
+    /// Unlike the hybrid vsock listener, clients do not send a `CONNECT`
+    /// request or receive an `OK` response, so the stream carries only relayed
+    /// data. This supports clients that cannot perform the hybrid vsock
+    /// handshake.
+    pub fn add_service_listener(
+        &mut self,
+        service_id: Guid,
+        listener: UnixListener,
+    ) -> anyhow::Result<()> {
+        let hash_map::Entry::Vacant(entry) = self.service_listener_tasks.entry(service_id) else {
+            anyhow::bail!("a listener for hvsocket service {service_id} already exists");
+        };
+
+        let listener = PolledSocket::new(self.inner.driver.as_ref(), listener)?;
+        let task = self.inner.driver.spawn(
+            format!("hvsock-listener {service_id}"),
+            ListenerWorker {
+                inner: self.inner.clone(),
+                host_send: self.host_send.clone(),
+                service_id: Some(service_id),
+            }
+            .run(listener),
+        );
+
+        entry.insert(task);
+        Ok(())
+    }
+
+    /// Stops accepting connections for a listener added by
+    /// [`Self::add_service_listener`]. Established connections are not
+    /// affected.
+    pub fn remove_service_listener(&mut self, service_id: Guid) -> anyhow::Result<()> {
+        let task = self
+            .service_listener_tasks
+            .remove(&service_id)
+            .with_context(|| format!("no listener for hvsocket service {service_id}"))?;
+
+        // Dropping the task cancels it, which closes the listener.
+        drop(task);
+        Ok(())
     }
 
     /// Connects to an hvsocket in the guest and returns a Unix socket that is
@@ -147,6 +197,9 @@ impl HvsockRelay {
 struct ListenerWorker {
     inner: Arc<RelayInner>,
     host_send: mesh::Sender<RelayRequest>,
+    /// The guest service for every accepted connection. If `None`, each
+    /// connection selects its service with a hybrid vsock `CONNECT` request.
+    service_id: Option<Guid>,
 }
 
 impl ListenerWorker {
@@ -178,7 +231,13 @@ impl ListenerWorker {
 
     async fn spawn_relay(&self, connection: UnixStream) -> anyhow::Result<Task<()>> {
         let mut socket = PolledSocket::new(self.inner.driver.as_ref(), connection)?;
-        let request = read_hybrid_vsock_connect(&mut socket).await?;
+        let (service_id, request) = match self.service_id {
+            Some(service_id) => (service_id, None),
+            None => {
+                let request = read_hybrid_vsock_connect(&mut socket).await?;
+                (request.id(), Some(request))
+            }
+        };
 
         let instance_id = Guid::new_random();
         let mut offer = Offer::new(
@@ -186,7 +245,7 @@ impl ListenerWorker {
             self.inner.vmbus.as_ref(),
             OfferParams {
                 interface_name: "hvsocket_connect".into(),
-                interface_id: request.id(),
+                interface_id: service_id,
                 instance_id,
                 channel_type: ChannelType::HvSocket {
                     is_connect: true,
@@ -209,7 +268,7 @@ impl ListenerWorker {
 
         let pipe = BytePipe::new(channel).context("failed to create vmbus pipe")?;
 
-        tracing::debug!(service_id = %request.id(), endpoint_id = %instance_id, "connected host to guest");
+        tracing::debug!(%service_id, endpoint_id = %instance_id, "connected host to guest");
 
         let task = self
             .inner
@@ -218,29 +277,31 @@ impl ListenerWorker {
                 // Keep the offer alive until the relay completes.
                 let _offer = offer;
 
-                // Notify the client that connection was successful, using a format that matches the
-                // request.
-                let response = match request {
-                    VsockPortOrId::Port(_) => VsockPortOrId::Port(instance_id.data1),
-                    VsockPortOrId::Id(_) => VsockPortOrId::Id(instance_id),
-                };
-                let s = response.get_ok_response();
-                if let Err(err) = socket.write_all(s.as_bytes()).await {
-                    tracing::error!(
-                        service_id = %request.id(),
-                        error = &err as &dyn std::error::Error,
-                        "failed to write OK response"
-                    );
+                if let Some(request) = request {
+                    // Notify the client that connection was successful, using a format that matches
+                    // the request.
+                    let response = match request {
+                        VsockPortOrId::Port(_) => VsockPortOrId::Port(instance_id.data1),
+                        VsockPortOrId::Id(_) => VsockPortOrId::Id(instance_id),
+                    };
+                    let s = response.get_ok_response();
+                    if let Err(err) = socket.write_all(s.as_bytes()).await {
+                        tracing::error!(
+                            %service_id,
+                            error = &err as &dyn std::error::Error,
+                            "failed to write OK response"
+                        );
+                    }
                 }
 
                 if let Err(err) = relay_connected(pipe, socket).await {
                     tracing::error!(
-                        service_id = %request.id(),
+                        %service_id,
                         error = &err as &dyn std::error::Error,
                         "connection relay failed"
                     );
                 } else {
-                    tracing::debug!(service_id = %request.id(), "connection relay finished");
+                    tracing::debug!(%service_id, "connection relay finished");
                 }
             });
 
@@ -543,19 +604,45 @@ async fn relay_connected<T: RingMem + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use super::HvsockRelay;
     use super::relay_connected;
+    use crate::HvsockRelayChannel;
     use crate::ring::FlatRingMem;
+    use async_trait::async_trait;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
+    use futures::StreamExt;
+    use guid::Guid;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
+    use std::sync::Arc;
+    use unix_socket::UnixListener;
     use unix_socket::UnixStream;
     use vmbus_async::pipe::BytePipe;
     use vmbus_async::pipe::connected_byte_pipes;
+    use vmbus_channel::bus::OfferInput;
+    use vmbus_channel::bus::OfferParams;
+    use vmbus_channel::bus::OfferResources;
+    use vmbus_channel::bus::ParentBus;
+
+    /// A bus that reports each offer and then rejects it.
+    struct OfferRecorder(mesh::Sender<OfferParams>);
+
+    #[async_trait]
+    impl ParentBus for OfferRecorder {
+        async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
+            self.0.send(request.params);
+            anyhow::bail!("offers are not supported")
+        }
+
+        fn clone_bus(&self) -> Box<dyn ParentBus> {
+            Box::new(Self(self.0.clone()))
+        }
+    }
 
     fn setup_relay<T: Driver + Spawn>(
         driver: &T,
@@ -645,5 +732,47 @@ mod tests {
         assert_eq!(s.read(&mut v).await.unwrap(), 0);
         drop(s);
         task.await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_service_listener(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("service");
+        let (offer_send, mut offer_recv) = mesh::channel();
+        let channel = HvsockRelayChannel::new();
+        let _server_half = channel.server_half;
+        let mut relay = HvsockRelay::new(
+            driver.clone(),
+            Arc::new(OfferRecorder(offer_send)),
+            channel.relay_half,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let service_id = Guid::new_random();
+        relay
+            .add_service_listener(service_id, UnixListener::bind(&path).unwrap())
+            .unwrap();
+        relay
+            .add_service_listener(
+                service_id,
+                UnixListener::bind(dir.path().join("duplicate")).unwrap(),
+            )
+            .unwrap_err();
+
+        // The relay offers the service without waiting for a connect request.
+        let _client = UnixStream::connect(&path).unwrap();
+        let params = offer_recv.next().await.unwrap();
+        assert_eq!(params.interface_id, service_id);
+
+        relay.remove_service_listener(service_id).unwrap();
+        relay.remove_service_listener(service_id).unwrap_err();
+        relay
+            .add_service_listener(
+                service_id,
+                UnixListener::bind(dir.path().join("readded")).unwrap(),
+            )
+            .unwrap();
     }
 }
