@@ -53,6 +53,28 @@ Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
+## Concurrent operations
+
+The server admits one kind of VM-changing operation at a time. A request that
+conflicts with an operation already in flight is rejected immediately with
+`ABORTED` and a message naming both operations (for example, `VM busy:
+pause/resume in progress, cannot start teardown`). Requests are never queued,
+so callers decide whether to retry. A rejected request has no side effects.
+
+| Operation | Class | May run alongside |
+|---|---|---|
+| `PauseVM`, `ResumeVM` | Exclusive | Nothing |
+| `TeardownVM` | Exclusive | Nothing |
+| `ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`, `AddVpciDevice`, `RemoveVpciDevice` | Shared | Other shared operations |
+
+Several device additions or removals can therefore be issued concurrently,
+but none can overlap a pause, resume, or teardown. `CreateVM`, `Quit`, and the
+read-only RPCs (`WaitVM`, `CapabilitiesVM`, `PropertiesVM`) are not gated.
+
+The gate is held until the operation finishes, whether it succeeds or fails.
+A client that cancels or disconnects does not release it early, because the
+operation itself keeps running to completion.
+
 ## VFIO and accelerated SMMU
 
 On Linux, declare named host iommufd contexts in `VMConfig.iommufds`, then
