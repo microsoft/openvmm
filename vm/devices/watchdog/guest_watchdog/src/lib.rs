@@ -140,7 +140,6 @@ impl ChangeDeviceState for GuestWatchdogServices {
     }
 
     async fn reset(&mut self) {
-        self.watchdog.finish_timeout_action().await;
         self.watchdog.reset();
         self.state.watchdog_reg = 0;
     }

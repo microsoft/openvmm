@@ -151,8 +151,11 @@ impl WatchdogServices {
     }
 
     pub fn reset(&mut self) {
-        // An in-flight timeout action keeps running: it owns the platform, so
-        // dropping it would lose the platform, and the timeout did happen.
+        // Devices are stopped before reset, and stop finishes the action.
+        assert!(
+            self.timeout_action.is_none(),
+            "reset with a timeout action in flight"
+        );
         self.state = WatchdogServicesState::new();
         // The reset state is unconfigured, so a deadline the guest armed
         // before the reset must not fire after it.
@@ -161,8 +164,8 @@ impl WatchdogServices {
 
     /// Runs an in-flight timeout action to completion.
     ///
-    /// Devices call this when they stop or reset, so a saved state never
-    /// holds a timeout whose action has not finished.
+    /// Devices call this when they stop, so neither a saved state nor a reset
+    /// sees a timeout whose action has not finished.
     pub async fn finish_timeout_action(&mut self) {
         if let Some(action) = self.timeout_action.take() {
             self.platform = Some(action.await);
@@ -474,8 +477,8 @@ mod tests {
         assert!(watchdog.platform.is_some());
     }
 
-    /// Stopping the device finishes an in-flight action, even one a reset
-    /// left running, so no saved state is taken with a timeout still owed.
+    /// Stopping the device finishes an in-flight action, so no saved state is
+    /// taken with a timeout still owed.
     #[async_test]
     async fn finish_runs_the_in_flight_action(driver: DefaultDriver) {
         let TestWatchdog {
@@ -487,7 +490,6 @@ mod tests {
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        watchdog.reset();
         assert!(watchdog.timeout_action.is_some());
 
         permit.send(());
@@ -516,10 +518,26 @@ mod tests {
         assert!(watchdog.timeout_action.is_none());
     }
 
-    /// A reset while the action is in flight must not lose the platform: the
-    /// action still finishes, and the next timeout runs it again.
+    /// Reset relies on stop having finished the action.
     #[async_test]
-    async fn reset_during_action_keeps_the_platform(driver: DefaultDriver) {
+    #[should_panic(expected = "reset with a timeout action in flight")]
+    async fn reset_with_an_in_flight_action_panics(driver: DefaultDriver) {
+        let TestWatchdog {
+            mut watchdog,
+            mut keeper,
+            permit: _permit,
+            acted: _acted,
+        } = test_watchdog(&driver).await;
+
+        arm_and_expire(&mut watchdog, &mut keeper, 2).await;
+        poll_once(&mut watchdog);
+        watchdog.reset();
+    }
+
+    /// A finished action hands the platform back, and the next timeout runs
+    /// it again.
+    #[async_test]
+    async fn next_timeout_runs_the_action_again(driver: DefaultDriver) {
         let TestWatchdog {
             mut watchdog,
             mut keeper,
@@ -529,9 +547,6 @@ mod tests {
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.timeout_action.is_some());
-
-        watchdog.reset();
         assert!(watchdog.timeout_action.is_some());
 
         permit.send(());

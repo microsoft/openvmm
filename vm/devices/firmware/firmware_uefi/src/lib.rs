@@ -350,12 +350,6 @@ impl ChangeDeviceState for UefiDevice {
 
     async fn reset(&mut self) {
         self.address = 0;
-
-        self.service
-            .uefi_watchdog
-            .watchdog
-            .finish_timeout_action()
-            .await;
         self.service.nvram.reset();
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
