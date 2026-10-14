@@ -8,9 +8,12 @@
 // The fd-passing protocol relies on `SCM_RIGHTS` and so exists only on unix.
 #[cfg(unix)]
 mod fd_passing;
+mod operation_gate;
 
 #[cfg(unix)]
 use fd_passing::FdRegistry;
+use operation_gate::VmOperation;
+use operation_gate::VmOperationGate;
 
 /// On non-unix platforms the fd-passing protocol does not exist. The registry
 /// is still threaded through the shared NIC configuration code, so provide an
@@ -374,6 +377,7 @@ impl Worker for TtrpcWorker {
                 wait_vm_response: None,
                 lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
+                operation_gate: VmOperationGate::default(),
                 transport: self.transport,
                 registry: FdRegistry::default(),
             };
@@ -544,6 +548,31 @@ impl VmService {
             Err(err) => response.send(Err(grpc_error(err))),
         }
     }
+
+    /// Like [`Self::start_rpc`], but admits the operation through the
+    /// VM-mutation gate first. `build` runs only after admission, so a rejected
+    /// operation has no side effects, and the gate is held until the operation
+    /// completes or is cancelled.
+    fn start_gated_rpc<F, R>(
+        &mut self,
+        operation: VmOperation,
+        response: mesh::OneshotSender<Result<R, Status>>,
+        build: impl FnOnce(&Self) -> anyhow::Result<F>,
+    ) where
+        F: 'static + Future<Output = anyhow::Result<R>> + Send,
+        R: 'static + MeshPayload + Send,
+    {
+        let gated = self
+            .operation_gate
+            .try_acquire(operation)
+            .and_then(|guard| {
+                build(self).map(|fut| async move {
+                    let _guard = guard;
+                    fut.await
+                })
+            });
+        self.start_rpc(response, gated);
+    }
 }
 
 struct Vm {
@@ -677,6 +706,8 @@ struct VmService {
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
     lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
+    /// Rejects an operation that conflicts with one already in flight.
+    operation_gate: VmOperationGate,
     transport: ResolvedTransport,
     /// Registry of file descriptors passed in over the fd-passing protocol,
     /// resolvable by name (e.g. for tap NIC backends).
@@ -762,24 +793,29 @@ impl VmService {
                 }
             }
             vmservice::Vm::ModifyResource(request, response) => {
-                let r = self.modify_resource(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.modify_resource(request)
+                });
             }
             vmservice::Vm::AddPcieDevice(request, response) => {
-                let r = self.add_pcie_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.add_pcie_device(request)
+                });
             }
             vmservice::Vm::RemovePcieDevice(request, response) => {
-                let r = self.remove_pcie_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.remove_pcie_device(request)
+                });
             }
             vmservice::Vm::AddVpciDevice(request, response) => {
-                let r = self.add_vpci_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.add_vpci_device(request)
+                });
             }
             vmservice::Vm::RemoveVpciDevice(request, response) => {
-                let r = self.remove_vpci_device(request);
-                self.start_rpc(response, r);
+                self.start_gated_rpc(VmOperation::Topology, response, |this| {
+                    this.remove_vpci_device(request)
+                });
             }
         }
         HandleAction::None
@@ -1364,6 +1400,7 @@ impl VmService {
     }
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
+        let _gate = self.operation_gate.try_acquire(VmOperation::Teardown)?;
         let controller = self.vm_controller.take().context("vm not created")?;
         // Drop the VM's device RPC channels before waiting on the controller.
         // A live `ScsiControllerRequest` sender keeps the detached storvsp task
@@ -1428,6 +1465,7 @@ impl VmService {
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
+        let _gate = self.operation_gate.try_acquire(VmOperation::Lifecycle)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Pause, ())
@@ -1441,6 +1479,7 @@ impl VmService {
     }
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
+        let _gate = self.operation_gate.try_acquire(VmOperation::Lifecycle)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Resume, ())
