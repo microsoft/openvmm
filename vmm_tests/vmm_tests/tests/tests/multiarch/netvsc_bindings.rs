@@ -11,7 +11,7 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use pipette_client::shell::WindowsShell;
 use std::time::Duration;
-use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test_with;
 
 async fn wait_for_network(
     sh: &WindowsShell<'_>,
@@ -87,7 +87,11 @@ async fn verify_ms_pacer_binding(
     Ok(())
 }
 
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
+#[vmm_test_with(
+    openvmm,
+    requires(windows_partition_reset),
+    configs(uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+)]
 async fn windows_netvsc_ms_pacer_unbind(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     _: (),
