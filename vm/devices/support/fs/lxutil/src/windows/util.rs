@@ -23,6 +23,7 @@ use std::ffi;
 use std::mem;
 use std::mem::offset_of;
 use std::os::windows::prelude::*;
+use std::path::Component;
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
@@ -88,6 +89,7 @@ file_information_classes!(
 // Open a file using NtCreateFile.
 // Returns the create result from the IO_STATUS_BLOCK along with the handle.
 // N.B. The handle will always be opened synchronously.
+#[expect(clippy::too_many_arguments)]
 pub fn open_relative_file(
     root: Option<&OwnedHandle>,
     path: &Path,
@@ -96,11 +98,23 @@ pub fn open_relative_file(
     file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
     create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
     ea_buffer: Option<&[u8]>,
+    no_follow: bool,
 ) -> lx::Result<(OwnedHandle, usize)> {
+    if no_follow
+        && path
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(lx::Error::EINVAL);
+    }
     let path = dos_to_nt_path(root, path)?;
     let mut oa = windows::ObjectAttributes::new();
-    oa.name(&path)
-        .attributes(Foundation::OBJ_CASE_INSENSITIVE.0);
+    let mut attributes = Foundation::OBJ_CASE_INSENSITIVE.0;
+    if no_follow {
+        // FILE_OPEN_REPARSE_POINT only protects the final component.
+        attributes |= Foundation::OBJ_DONT_REPARSE.0;
+    }
+    oa.name(&path).attributes(attributes);
     if let Some(handle) = root {
         oa.root(handle.as_handle());
     }
@@ -145,6 +159,7 @@ pub fn reopen_file(
         Default::default(),
         FileSystem::FILE_OPEN_REPARSE_POINT,
         None,
+        false,
     )?;
 
     Ok(handle)
@@ -367,6 +382,20 @@ pub fn get_attributes(
         return get_attributes_by_handle(fs_context, state, existing_handle);
     }
 
+    if state.options.no_follow && root_handle.is_some() {
+        let (handle, _) = open_relative_file(
+            root_handle,
+            path,
+            MINIMUM_PERMISSIONS,
+            FileSystem::FILE_OPEN,
+            Default::default(),
+            FileSystem::FILE_OPEN_REPARSE_POINT,
+            None,
+            true,
+        )?;
+        return get_attributes_by_handle(fs_context, state, &handle);
+    }
+
     // If NtQueryInformationByName is supported, use it.
     if fs_context.compatibility_flags.supports_query_by_name() {
         let pathu = dos_to_nt_path(root_handle, path)?;
@@ -385,6 +414,7 @@ pub fn get_attributes(
                 Default::default(),
                 FileSystem::FILE_OPEN_REPARSE_POINT,
                 None,
+                false,
             ) {
                 // Return 0 here on failure to duplicate LxUtil behavior
                 fs::read_link_length(&handle, state).unwrap_or(0)
@@ -413,6 +443,7 @@ pub fn get_attributes(
             Default::default(),
             FileSystem::FILE_OPEN_REPARSE_POINT,
             None,
+            false,
         )?;
 
         get_attributes_by_handle(fs_context, state, &handle)
@@ -841,6 +872,7 @@ pub fn nt_status_to_lx(status: Foundation::NTSTATUS) -> lx::Error {
         | Foundation::STATUS_PRIVILEGE_NOT_HELD
         | Foundation::STATUS_PRIVILEGED_INSTRUCTION => lx::EPERM,
         Foundation::STATUS_IO_REPARSE_TAG_NOT_HANDLED => lx::ENXIO,
+        Foundation::STATUS_REPARSE_POINT_ENCOUNTERED => lx::ELOOP,
         Foundation::STATUS_MAPPED_FILE_SIZE_ZERO => lx::ENOEXEC,
         Foundation::STATUS_DISK_FULL => lx::ENOSPC,
         Foundation::STATUS_NOT_IMPLEMENTED => lx::ENOSYS,
