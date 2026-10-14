@@ -1215,21 +1215,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxl_spec"
+name = "cxl"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bitfield-struct 0.11.0",
  "chipset_device",
+ "cxl_spec",
  "inspect",
  "mesh",
- "open_enum",
  "pci_core",
  "pci_resources",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "cxl_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2345,6 +2354,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2362,6 +2372,7 @@ dependencies = [
  "sysinfo",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "which 8.0.0",
  "xshell",
@@ -2473,6 +2484,7 @@ dependencies = [
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "zerocopy",
 ]
@@ -3445,6 +3457,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "test_with_tracing",
  "tracing",
 ]
 
@@ -4071,6 +4084,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5667,13 +5681,18 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "hcl",
  "hvdef",
  "inspect",
+ "memory_range",
  "parking_lot",
+ "sev_guest_device",
  "tdisp",
  "tdisp_proto",
+ "tracelimit",
  "tracing",
  "virt",
+ "x86defs",
 ]
 
 [[package]]
@@ -5919,6 +5938,8 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "serial_pl011_resources",
+ "serial_uart_resources",
  "smmu",
  "sparse_mmap",
  "state_unit",
@@ -5970,6 +5991,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "serial_uart_resources",
  "smbios_defs",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -5996,6 +6018,7 @@ dependencies = [
  "console_relay",
  "crossterm",
  "crypto",
+ "cxl",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -6181,7 +6204,7 @@ dependencies = [
  "chipset",
  "chipset_legacy",
  "chipset_resources",
- "cxl_spec",
+ "cxl",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -6553,6 +6576,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cxl",
  "cxl_spec",
  "inspect",
  "memory_range",
@@ -6659,6 +6683,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
@@ -6675,6 +6700,7 @@ dependencies = [
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
+ "target-lexicon",
  "tempfile",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -6737,8 +6763,10 @@ name = "petri_artifacts_core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "linkme",
  "paste",
  "serde",
+ "serde_json",
  "target-lexicon",
 ]
 
@@ -7681,6 +7709,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+ "x86defs",
 ]
 
 [[package]]
@@ -7769,6 +7798,14 @@ dependencies = [
  "tracing",
  "unix_socket",
  "vm_resource",
+]
+
+[[package]]
+name = "serial_uart_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "serial_16550_resources",
 ]
 
 [[package]]
@@ -10067,7 +10104,6 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
- "tracing",
  "virtio",
  "virtio_resources",
  "vm_resource",
@@ -10866,6 +10902,7 @@ dependencies = [
  "power_resources",
  "slab",
  "state_unit",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",

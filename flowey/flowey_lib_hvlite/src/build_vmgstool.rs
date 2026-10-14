@@ -6,6 +6,7 @@
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 
@@ -39,9 +40,9 @@ flowey_request! {
     }
 }
 
-new_simple_flow_node!(struct Node);
+new_flow_node!(struct Node);
 
-impl SimpleFlowNode for Node {
+impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
@@ -49,70 +50,67 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
-    fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request {
-            target,
-            profile,
-            with_crypto,
-            with_test_helpers,
-            vmgstool,
-        } = request;
+    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let requests = group_by(requests.into_iter().map(|r| {
+            (
+                (r.target, r.profile, r.with_crypto, r.with_test_helpers),
+                r.vmgstool,
+            )
+        }));
+        for ((target, profile, with_crypto, with_test_helpers), vmgstool) in requests {
+            let mut pre_build_deps = Vec::new();
 
-        let mut pre_build_deps = Vec::new();
-
-        if with_crypto {
-            let ssl_pkgs = match ctx.platform() {
-                FlowPlatform::Linux(
-                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
-                ) => vec!["openssl-devel".into(), "perl".into()],
-                _ => vec!["libssl-dev".into()],
-            };
-            pre_build_deps.push(ctx.reqv(|v| {
-                flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: ssl_pkgs,
-                    done: v,
+            if with_crypto {
+                let ssl_pkgs = crate::common::openssl_dev_packages(ctx.platform())?;
+                if !ssl_pkgs.is_empty() {
+                    pre_build_deps.push(ctx.reqv(|v| {
+                        flowey_lib_common::install_dist_pkg::Request::Install {
+                            package_names: ssl_pkgs,
+                            done: v,
+                        }
+                    }));
                 }
-            }));
-        }
-
-        let mut features = Vec::new();
-        if with_crypto {
-            features.push("encryption".into());
-        }
-        if with_test_helpers {
-            features.push("test_helpers".into());
-        }
-
-        let output = ctx.reqv(|v| crate::run_cargo_build::Request {
-            crate_name: "vmgstool".into(),
-            out_name: "vmgstool".into(),
-            crate_type: CargoCrateType::Bin,
-            profile: profile.into(),
-            features: CargoFeatureSet::Specific(features),
-            target: target.as_triple(),
-            no_split_dbg_info: false,
-            extra_env: None,
-            pre_build_deps,
-            output: v,
-        });
-
-        ctx.emit_minor_rust_step("report built vmgstool", |ctx| {
-            let vmgstool = vmgstool.claim(ctx);
-            let output = output.claim(ctx);
-            move |rt| {
-                let output = match rt.read(output) {
-                    crate::run_cargo_build::CargoBuildOutput::WindowsBin { exe, pdb } => {
-                        VmgstoolOutput::WindowsBin { exe, pdb }
-                    }
-                    crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        VmgstoolOutput::LinuxBin { bin, dbg }
-                    }
-                    _ => unreachable!(),
-                };
-
-                rt.write(vmgstool, &output);
             }
-        });
+
+            let mut features = Vec::new();
+            if with_crypto {
+                features.push("encryption".into());
+            }
+            if with_test_helpers {
+                features.push("test_helpers".into());
+            }
+
+            let output = ctx.reqv(|v| crate::run_cargo_build::Request {
+                crate_name: "vmgstool".into(),
+                out_name: "vmgstool".into(),
+                crate_type: CargoCrateType::Bin,
+                profile: profile.into(),
+                features: CargoFeatureSet::Specific(features),
+                target: target.as_triple(),
+                no_split_dbg_info: false,
+                extra_env: None,
+                pre_build_deps,
+                output: v,
+            });
+
+            ctx.emit_minor_rust_step("report built vmgstool", |ctx| {
+                let vmgstool = vmgstool.claim(ctx);
+                let output = output.claim(ctx);
+                move |rt| {
+                    let output = match rt.read(output) {
+                        crate::run_cargo_build::CargoBuildOutput::WindowsBin { exe, pdb } => {
+                            VmgstoolOutput::WindowsBin { exe, pdb }
+                        }
+                        crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
+                            VmgstoolOutput::LinuxBin { bin, dbg }
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    rt.write_all(vmgstool, &output);
+                }
+            });
+        }
 
         Ok(())
     }

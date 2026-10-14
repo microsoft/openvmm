@@ -150,6 +150,9 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
+        vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
         MshvProtoPartition::new(config, vmfd)
     }
 }
@@ -185,7 +188,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             caps,
             synic_ports: Default::default(),
             isolation: MshvIsolationState::None,
-            time_frozen: false.into(),
+            time_frozen: true.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
             gsi_states: parking_lot::Mutex::new(Box::new(
                 [crate::irqfd::GsiState::Unallocated; crate::irqfd::NUM_GSIS],
@@ -219,6 +222,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 impl virt::Partition for MshvPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         virt::InitialVpStateSource::Registers
+    }
+
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        Some(self)
     }
 
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
@@ -274,7 +281,6 @@ impl virt::ResetPartition for MshvPartition {
     type Error = Error;
 
     fn reset(&self) -> Result<(), Error> {
-        self.inner.freeze_time()?;
         Ok(())
     }
 }

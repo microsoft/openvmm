@@ -11,19 +11,6 @@ pub const CXL_DVSEC_VENDOR_ID: u16 = 0x1e98;
 pub mod cxl_device_dvsec {
     use bitfield_struct::bitfield;
     use inspect::Inspect;
-    use std::sync::Arc;
-
-    /// Callback interface for handling CXL reset requests.
-    pub trait CxlResetHandler: Send + Sync + Inspect {
-        /// Called when a new CXL reset request is initiated.
-        fn initiate_cxl_reset(&self);
-    }
-
-    /// Callback interface for handling cache writeback+invalidate requests.
-    pub trait CxlCacheWriteBackAndInvalidateHandler: Send + Sync + Inspect {
-        /// Called when cache writeback+invalidate is initiated.
-        fn initiate_cache_write_back_and_invalidate(&self);
-    }
 
     /// Media_Type encodings for DVSEC CXL Range Size Low.
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -419,41 +406,6 @@ pub mod cxl_device_dvsec {
         #[bits(11)]
         _reserved: u16,
     }
-
-    /// CXL PCIe Designated Vendor-Specific Extended Capability (DVSEC).
-    #[derive(Clone, Inspect)]
-    pub struct CxlDeviceDevsecExtendedCapability {
-        pub(crate) control: CxlDeviceDvsecControl,
-        pub(crate) status: CxlDeviceDvsecStatus,
-        pub(crate) control2: CxlDeviceDvsecControl2,
-        pub(crate) status2: CxlDeviceDvsecStatus2,
-        pub(crate) lock: CxlDeviceDvsecLock,
-        pub(crate) capability: CxlDeviceDvsecCapability,
-        pub(crate) capability2: CxlDeviceDvsecCapability2,
-        pub(crate) capability3: CxlDeviceDvsecCapability3,
-        pub(crate) range1_size_high: u32,
-        pub(crate) range1_size_low: u32,
-        pub(crate) range1_base_high: u32,
-        pub(crate) range1_base_low: CxlDeviceDvsecRangeBaseLow,
-        pub(crate) range2_size_high: u32,
-        pub(crate) range2_size_low: u32,
-        pub(crate) range2_base_high: u32,
-        pub(crate) range2_base_low: CxlDeviceDvsecRangeBaseLow,
-        pub(crate) cxl_reset_handler: Option<Arc<dyn CxlResetHandler>>,
-        pub(crate) cxl_cache_write_back_and_invalidate_handler:
-            Option<Arc<dyn CxlCacheWriteBackAndInvalidateHandler>>,
-        pub(crate) reset_baseline_capability: CxlDeviceDvsecCapability,
-        pub(crate) reset_baseline_capability2: CxlDeviceDvsecCapability2,
-        pub(crate) reset_baseline_capability3: CxlDeviceDvsecCapability3,
-        pub(crate) reset_baseline_range1_size_high: u32,
-        pub(crate) reset_baseline_range1_size_low: u32,
-        pub(crate) reset_baseline_range1_base_high: u32,
-        pub(crate) reset_baseline_range1_base_low: CxlDeviceDvsecRangeBaseLow,
-        pub(crate) reset_baseline_range2_size_high: u32,
-        pub(crate) reset_baseline_range2_size_low: u32,
-        pub(crate) reset_baseline_range2_base_high: u32,
-        pub(crate) reset_baseline_range2_base_low: CxlDeviceDvsecRangeBaseLow,
-    }
 }
 
 /// CXL Port Designated Vendor-Specific Extended Capability (DVSEC).
@@ -602,25 +554,6 @@ pub mod cxl_port_dvsec {
         _reserved: u16,
         #[bits(19)]
         pub cxl_rcrb_base_address_low: u32,
-    }
-
-    /// CXL Port PCIe Designated Vendor-Specific Extended Capability (DVSEC).
-    #[derive(Clone, Inspect)]
-    pub struct CxlPortDvsecExtendedCapability {
-        pub(crate) status: CxlPortDvsecStatus,
-        pub(crate) control: CxlPortDvsecControl,
-        pub(crate) alt_bus_base: u8,
-        pub(crate) alt_bus_limit: u8,
-        pub(crate) alt_mem_base: CxlPortDvsecAltMemoryBase,
-        pub(crate) alt_mem_limit: CxlPortDvsecAltMemoryLimit,
-        pub(crate) alt_prefetch_mem_base: CxlPortDvsecAltPrefetchableMemoryBase,
-        pub(crate) alt_prefetch_mem_limit: CxlPortDvsecAltPrefetchableMemoryLimit,
-        pub(crate) alt_prefetch_mem_base_high: u32,
-        pub(crate) alt_prefetch_mem_limit_high: u32,
-        pub(crate) cxl_rcrb_base: CxlPortDvsecRcrbBase,
-        pub(crate) cxl_rcrb_base_high: u32,
-        pub(crate) supports_uio_to_hdm_enable: bool,
-        pub(crate) supports_viral: bool,
     }
 }
 
@@ -788,21 +721,6 @@ pub mod flex_bus_port_dvsec {
         #[bits(29)]
         _reserved: u32,
     }
-
-    /// CXL Flex Bus Port PCIe Designated Vendor-Specific Extended Capability (DVSEC).
-    #[derive(Clone, Inspect)]
-    pub struct CxlFlexBusPortDvsecExtendedCapability {
-        pub(crate) capability: CxlFlexBusPortDvsecCapability,
-        pub(crate) control: CxlFlexBusPortDvsecControl,
-        pub(crate) status: CxlFlexBusPortDvsecStatus,
-        pub(crate) received_modified_ts_data_phase1:
-            CxlFlexBusPortDvsecReceivedModifiedTsDataPhase1,
-        pub(crate) capability2: CxlFlexBusPortDvsecCapability2,
-        pub(crate) control2: CxlFlexBusPortDvsecControl2,
-        pub(crate) status2: CxlFlexBusPortDvsecStatus2,
-        pub(crate) reset_baseline_capability: CxlFlexBusPortDvsecCapability,
-        pub(crate) reset_baseline_capability2: CxlFlexBusPortDvsecCapability2,
-    }
 }
 
 /// CXL Register Locator Designated Vendor-Specific Extended Capability (DVSEC).
@@ -895,21 +813,5 @@ pub mod register_locator_dvsec {
         pub register_block_identifier: u8,
         #[bits(16)]
         pub register_block_offset_low: u16,
-    }
-
-    /// One Register Locator register-block entry.
-    #[derive(Clone, Inspect)]
-    pub struct CxlRegisterLocatorDvsecRegisterBlockEntry {
-        pub(crate) offset_low: CxlRegisterLocatorDvsecRegisterOffsetLow,
-        pub(crate) offset_high: u32,
-    }
-
-    /// CXL Register Locator PCIe Designated Vendor-Specific Extended Capability (DVSEC).
-    #[derive(Clone, Default, Inspect)]
-    pub struct CxlRegisterLocatorDvsecExtendedCapability {
-        #[inspect(skip)]
-        pub(crate) register_blocks: Vec<CxlRegisterLocatorDvsecRegisterBlockEntry>,
-        #[inspect(skip)]
-        pub(crate) reset_baseline_register_blocks: Vec<CxlRegisterLocatorDvsecRegisterBlockEntry>,
     }
 }

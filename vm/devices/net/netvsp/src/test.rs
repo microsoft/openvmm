@@ -2230,6 +2230,23 @@ async fn build_nic(driver: DefaultDriver) {
     let offer_params = nic.offer();
     assert_eq!(offer_params.interface_id, VMNIC_CHANNEL_TYPE_GUID);
     assert_eq!(offer_params.instance_id, unique_id);
+    assert_eq!(offer_params.offer_order, None);
+}
+
+#[async_test]
+async fn build_nic_with_offer_order(driver: DefaultDriver) {
+    let offer_order = 7;
+    let builder = Nic::builder().offer_order(offer_order);
+    let unique_id = Guid::new_random();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
+        unique_id,
+        Box::new(NullEndpoint::new()),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let offer_params = nic.offer();
+    assert_eq!(offer_params.offer_order, Some(offer_order));
 }
 
 #[async_test]

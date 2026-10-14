@@ -9,6 +9,7 @@ use super::PetriVmResourcesOpenVmm;
 use crate::Drive;
 use crate::EfiDiagnosticsLogLevel;
 use crate::Firmware;
+use crate::IgvmFirmwareSource;
 use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
@@ -55,7 +56,7 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
@@ -112,7 +113,7 @@ impl PetriVmConfigOpenVmm {
         openvmm_path: &ResolvedArtifact,
         petri_vm_config: PetriVmConfig,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<Self> {
         let PetriVmConfig {
             name: _,
@@ -123,16 +124,26 @@ impl PetriVmConfigOpenVmm {
             ipmi_enabled,
             memory,
             proc_topology,
+            nested_virt_enabled,
             vmgs,
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
             pcie_virtio_blk_drives,
             physical_nvme_devices,
+            guest_shares,
         } = petri_vm_config;
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
+        assert!(guest_shares.is_empty());
+
+        if matches!(
+            firmware.openhcl_firmware(),
+            Some(IgvmFirmwareSource::VmgsOrInBox)
+        ) {
+            anyhow::bail!("loading OpenHCL from VMGS is only supported by the Hyper-V backend");
         }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
@@ -676,7 +687,7 @@ impl PetriVmConfigOpenVmm {
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
-                nested_virt: false,
+                nested_virt: nested_virt_enabled,
             },
             vmbus: if properties.no_vmbus {
                 None
@@ -766,7 +777,7 @@ impl PetriVmConfigOpenVmm {
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vsock_path: vsock_path,
-                properties,
+                properties: properties.clone(),
                 #[cfg(windows)]
                 _switch_ports: Vec::new(),
             },
@@ -1003,11 +1014,11 @@ impl PetriVmConfigSetupCore<'_> {
             (
                 MachineArch::X86_64,
                 Firmware::OpenhclLinuxDirect {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     openhcl_config,
                 }
                 | Firmware::OpenhclUefi {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     guest: _,       // load_boot_disk
                     isolation: _,   // new via Firmware::isolation
                     uefi_config: _, // config_openhcl_vmbus_devices
@@ -1099,17 +1110,14 @@ impl PetriVmConfigSetupCore<'_> {
                     }
                 });
 
-                let file = File::open(igvm_path.clone())
+                let file = File::open(igvm_path.get())
                     .context("failed to open openhcl firmware file")?
                     .into();
                 LoadMode::Igvm {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address,
-                    com_serial: Some(SerialInformation {
-                        io_port: ComPort::Com3.io_port(),
-                        irq: ComPort::Com3.irq().into(),
-                    }),
+                    com_serial: self.enable_serial.then_some(UartId::Com(ComPort::Com3)),
                 }
             }
             (a, f) => anyhow::bail!("Unsupported firmware {f:?} for arch {a:?}"),

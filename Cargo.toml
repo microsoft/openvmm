@@ -284,7 +284,8 @@ hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
 hyperv_keyboard_protocol = { path = "vm/devices/input/hyperv_keyboard_protocol" }
-cxl_spec = { path = "vm/devices/cxl" }
+cxl = { path = "vm/devices/cxl" }
+cxl_spec = { path = "vm/devices/cxl/cxl_spec" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }
@@ -376,6 +377,7 @@ serial_debugcon_resources = { path = "vm/devices/serial/serial_debugcon_resource
 serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
+serial_uart_resources = { path = "vm/devices/serial/serial_uart_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }

@@ -23,6 +23,15 @@ pub enum CargoBuildProfile {
 }
 
 impl CargoBuildProfile {
+    /// The profile name passed to Cargo's `--profile` option.
+    pub fn as_cargo_profile(&self) -> &str {
+        match self {
+            Self::Debug => "dev",
+            Self::Release => "release",
+            Self::Custom(profile) => profile,
+        }
+    }
+
     pub fn from_release(value: bool) -> Self {
         match value {
             true => CargoBuildProfile::Release,
@@ -190,7 +199,7 @@ impl FlowNode for Node {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
-                    let with_env = rt.read(extra_env).unwrap_or_default();
+                    let mut with_env = rt.read(extra_env).unwrap_or_default();
 
                     let crate::cfg_cargo_common_flags::Flags {
                         locked,
@@ -198,11 +207,7 @@ impl FlowNode for Node {
                         no_incremental,
                     } = flags;
 
-                    let cargo_profile = match &profile {
-                        CargoBuildProfile::Debug => "dev",
-                        CargoBuildProfile::Release => "release",
-                        CargoBuildProfile::Custom(s) => s,
-                    };
+                    let cargo_profile = profile.as_cargo_profile();
 
                     // would be nice to use +{toolchain} syntax instead, but that
                     // doesn't work on windows via xshell for some reason...
@@ -212,68 +217,33 @@ impl FlowNode for Node {
                         "cargo"
                     };
 
-                    // FIXME: this flow is vestigial from a time when this node
-                    // would return `CargoBuildCommand` back to the caller.
-                    //
-                    // this should be replaced with a easier to read + maintain
-                    // `xshell` invocation
-                    let cmd = CargoBuildCommand {
-                        argv0: argv0.into(),
-                        params: {
-                            let mut v = Vec::new();
-                            if let Some(rust_toolchain) = &rust_toolchain {
-                                v.push("run".into());
-                                v.push(rust_toolchain.into());
-                                v.push("cargo".into());
-                            }
-                            v.push("build".into());
-                            v.push("--message-format=json-render-diagnostics".into());
-                            if verbose {
-                                v.push("--verbose".into());
-                            }
-                            if locked {
-                                v.push("--locked".into());
-                            }
-                            v.push("-p".into());
-                            v.push(crate_name.clone());
-                            v.extend(features.to_cargo_arg_strings());
-                            if let Some(target) = &target {
-                                v.push("--target".into());
-                                v.push(target.to_string());
-                            }
-                            v.push("--profile".into());
-                            v.push(cargo_profile.into());
-                            v.extend(config.iter().flat_map(|x| ["--config", x]).map(Into::into));
-                            match output_kind {
-                                CargoCrateType::Bin => {
-                                    v.push("--bin".into());
-                                    v.push(out_name.clone());
-                                }
-                                CargoCrateType::StaticLib | CargoCrateType::DynamicLib => {
-                                    v.push("--lib".into());
-                                }
-                            }
-                            v
-                        },
-                        with_env,
-                        cargo_work_dir: in_folder.clone(),
-                        out_name,
-                        crate_type: output_kind,
-                    };
-
-                    let CargoBuildCommand {
-                        argv0,
-                        params,
-                        mut with_env,
-                        cargo_work_dir,
-                        out_name,
-                        crate_type,
-                    } = cmd;
-
                     let out_dir = rt.sh.current_dir();
-
-                    rt.sh.change_dir(cargo_work_dir);
-                    let mut cmd = flowey::shell_cmd!(rt, "{argv0} {params...}");
+                    let _dir = rt.sh.push_dir(&in_folder);
+                    let mut cmd = flowey::shell_cmd!(rt, "{argv0}");
+                    if let Some(rust_toolchain) = &rust_toolchain {
+                        cmd = cmd.args(["run", rust_toolchain, "cargo"]);
+                    }
+                    cmd = cmd.args(["build", "--message-format=json-render-diagnostics"]);
+                    if verbose {
+                        cmd = cmd.arg("--verbose");
+                    }
+                    if locked {
+                        cmd = cmd.arg("--locked");
+                    }
+                    cmd = cmd
+                        .args(["-p", &crate_name])
+                        .args(features.to_cargo_arg_strings());
+                    if let Some(target) = &target {
+                        cmd = cmd.args(["--target", &target.to_string()]);
+                    }
+                    cmd = cmd.args(["--profile", cargo_profile]);
+                    for config in config {
+                        cmd = cmd.args(["--config", &config]);
+                    }
+                    cmd = match output_kind {
+                        CargoCrateType::Bin => cmd.args(["--bin", &out_name]),
+                        CargoCrateType::StaticLib | CargoCrateType::DynamicLib => cmd.arg("--lib"),
+                    };
                     if no_incremental {
                         with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
                     } else if matches!(rt.backend(), FlowBackend::Local) {
@@ -301,10 +271,10 @@ impl FlowNode for Node {
                             .collect::<Result<_, _>>()
                             .context("failed to deserialize cargo output")?;
 
-                    rt.sh.change_dir(out_dir.clone());
+                    drop(_dir);
 
                     let build_output =
-                        rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;
+                        rename_output(&messages, &crate_name, &out_name, output_kind, &out_dir)?;
 
                     rt.write(output, &build_output);
 
@@ -315,15 +285,6 @@ impl FlowNode for Node {
 
         Ok(())
     }
-}
-
-struct CargoBuildCommand {
-    argv0: String,
-    params: Vec<String>,
-    with_env: BTreeMap<String, String>,
-    cargo_work_dir: PathBuf,
-    out_name: String,
-    crate_type: CargoCrateType,
 }
 
 fn rename_output(

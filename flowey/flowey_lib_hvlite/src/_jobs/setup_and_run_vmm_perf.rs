@@ -5,7 +5,7 @@
 
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_vmm_perf::VmmPerfOutput;
-use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 flowey_request! {
     pub struct Params {
         pub label: String,
+        pub target: CommonTriple,
         pub runner: ReadVar<VmmPerfOutput>,
         pub openvmm: ReadVar<OpenvmmOutput>,
         pub profiles: Vec<VmmPerfProfile>,
@@ -46,6 +47,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             label,
+            target,
             runner,
             openvmm,
             profiles,
@@ -82,14 +84,25 @@ impl SimpleFlowNode for Node {
         });
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_external_deps::Request::Install)];
 
+        let target_is_windows = matches!(
+            target.as_triple().operating_system,
+            target_lexicon::OperatingSystem::Windows
+        );
+        anyhow::ensure!(
+            target_is_windows == matches!(ctx.platform(), FlowPlatform::Windows),
+            "VMM.Perf target {target} does not match job platform {:?}",
+            ctx.platform()
+        );
+        let arch = target.common_arch()?;
         let firmware = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-            arch: CommonArch::X86_64,
+            arch,
+            flavor: None,
             msvm_fd: v,
         });
         let runtime_archive = match runtime_archive {
             Some(runtime_archive) => runtime_archive,
             None => ctx.reqv(|v| crate::download_vmm_perf_runtime::Request::Get {
-                arch: CommonArch::X86_64,
+                arch,
                 runtime_archive: v,
             }),
         };

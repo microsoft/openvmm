@@ -206,22 +206,12 @@ impl RsaKeyPairInner {
         Ok(Self(handle))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         use der::asn1::OctetString;
         use pkcs8::spki::AlgorithmIdentifierOwned;
 
-        let mut error: CFErrorRef = ptr::null();
-        // SAFETY: self.0.0 is a valid SecKeyRef.
-        let data = unsafe { SecKeyCopyExternalRepresentation(self.0.0, &mut error) };
-        if data.is_null() {
-            // SAFETY: error is null or valid.
-            return Err(unsafe { rsa_sec_err(error, "exporting the RSA private key") });
-        }
-        let data = CfHandle(data);
-        // SAFETY: data.0 is a valid CFDataRef.
-        let pkcs1_der = unsafe { cf_data_to_vec(data.0) };
-
+        let pkcs1_der = self.export_pkcs1_der()?;
         let pki = pkcs8::PrivateKeyInfoOwned {
             algorithm: AlgorithmIdentifierOwned {
                 oid: pkcs1::ALGORITHM_OID,
@@ -233,6 +223,39 @@ impl RsaKeyPairInner {
         };
         pki.to_der()
             .map_err(|e| der_err(e, "encoding the PKCS#8 PrivateKeyInfo"))
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        let der = self.export_pkcs1_der()?;
+        let key = pkcs1::RsaPrivateKey::from_der(&der)
+            .map_err(|e| der_err(e, "parsing the exported PKCS#1 RSA private key"))?;
+        if key.other_prime_infos.is_some() {
+            return Err(RsaError(crate::BackendError::Invalid(
+                "multi-prime RSA private keys are not supported",
+            )));
+        }
+        Ok(super::RsaPrivateKeyComponents {
+            modulus: key.modulus.as_bytes().to_vec(),
+            public_exponent: key.public_exponent.as_bytes().to_vec(),
+            private_exponent: key.private_exponent.as_bytes().to_vec(),
+            prime1: key.prime1.as_bytes().to_vec(),
+            prime2: key.prime2.as_bytes().to_vec(),
+        })
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    fn export_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        let mut error: CFErrorRef = ptr::null();
+        // SAFETY: self.0.0 is a valid SecKeyRef.
+        let data = unsafe { SecKeyCopyExternalRepresentation(self.0.0, &mut error) };
+        if data.is_null() {
+            // SAFETY: error is null or valid.
+            return Err(unsafe { rsa_sec_err(error, "exporting the RSA private key") });
+        }
+        let data = CfHandle(data);
+        // SAFETY: data.0 is a valid CFDataRef.
+        Ok(unsafe { cf_data_to_vec(data.0) })
     }
 
     pub fn oaep_decrypt(

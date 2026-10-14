@@ -179,12 +179,14 @@ impl virt::Hypervisor for LinuxMshv {
                     mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
                         as u64,
                 ),
-                (HvPartitionPropertyCode::TimeFreeze, 1),
             ] {
                 vmfd.set_partition_property(code.0, value)
                     .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             }
         }
+
+        vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
         // Tell the hypervisor how many VPs are in each socket.
         vmfd.set_partition_property(
@@ -277,13 +279,13 @@ fn snp_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_partition_reference_counter(true)
         .with_access_synic_regs(true)
         .with_access_synthetic_timer_regs(true)
-        // HACK: Do not advertise AccessPartitionReferenceTsc to the ACI SNP
-        // kernel yet. Physical Hyper-V and Cloud Hypervisor both advertise
+        // HACK: Do not advertise AccessPartitionReferenceTsc to SNP guests yet.
+        // Physical Hyper-V and Cloud Hypervisor both advertise
         // it, relying on the hypervisor/MSHV rather than userspace to service
         // HV_X64_MSR_REFERENCE_TSC and its page. OpenVMM launch-imports GPA
-        // 0x3402000 normally; the ACI kernel then shares it as its retained
+        // 0x3402000 normally; the guest kernel then shares it as its retained
         // Hyper-V `tsc_pg`. MSHV accepts the initial import but later reports
-        // that GPA as unaccepted when device I/O begins. Keeping ACI on the
+        // that GPA as unaccepted when device I/O begins. Keeping the guest on the
         // reference counter MSR makes virtio-blk write/readback work.
         // Re-enable this after tracing and fixing MSHV's SNP PSC/host-access
         // handling for the shared reference-TSC page.
@@ -570,7 +572,6 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 config,
             )),
         };
-        let time_frozen = isolation.is_isolated();
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
             bsp_vcpufd: self.bsp,
@@ -586,8 +587,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             synic_ports: Default::default(),
             software_devices: ApicSoftwareDevices::new(apic_id_map),
             isolation,
-            // SNP partition creation set TimeFreeze=1 before this object was built.
-            time_frozen: Mutex::new(time_frozen),
+            time_frozen: Mutex::new(true),
         });
         inner.add_snp_vmsa_mapping()?;
 
@@ -615,6 +615,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 impl virt::Partition for MshvPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         self.inner.isolation.initial_vp_state_source()
+    }
+
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        Some(self)
     }
 
     fn supports_initial_page_acceptance(
@@ -692,8 +696,6 @@ impl virt::ResetPartition for MshvPartition {
         for irq in 0..virt::irqcon::IRQ_LINES as u8 {
             self.inner.irq_routes.set_irq_route(irq, None);
         }
-
-        self.inner.freeze_time()?;
 
         let bsp_vp_info = &self.inner.vps[0].vp_info;
         self.access_state(Vtl::Vtl0)

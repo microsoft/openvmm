@@ -90,19 +90,21 @@ message IgvmBoot {
     Personality personality = 2;
 }
 
+// AMD SEV-SNP isolation configuration.
+message SnpIsolationConfig {
+    // Optional 32-byte host data bound to the SNP guest.
+    bytes host_data = 1;
+}
+
 // Confidential-computing isolation configuration.
 message IsolationConfig {
-    enum Type {
-        // An isolation type must be specified when this configuration is supplied.
-        TYPE_UNSPECIFIED = 0;
+    // An isolation type must be specified when this configuration is supplied.
+    oneof isolation_type {
         // No confidential-computing isolation.
-        TYPE_NONE = 1;
+        google.protobuf.Empty none = 1;
         // AMD SEV-SNP isolation.
-        TYPE_SNP = 2;
+        SnpIsolationConfig snp = 2;
     }
-
-    // Isolation mode.
-    Type isolation_type = 1;
 }
 
 message UEFI {

@@ -8,6 +8,16 @@ The OpenVMM PR and CI pipelines will run the full test suite on all supported
 platforms; you'd typically run only the tests relevant to the changes you're
 working on.
 
+## Scheduled Pipelines
+
+The **OpenVMM Burn In** workflow repeatedly runs Windows x64 VMM tests using
+artifacts from a successful CI run on `main` to measure failure frequency.
+
+The **OpenVMM Patina Nightly** workflow runs the release check-in gates using
+the configured `mu_msvm` RELEASE ClangPDB Patina firmware for standalone
+OpenVMM UEFI tests and newly built OpenHCL images. You can also start it
+manually using GitHub Actions' **Run workflow**.
+
 ## Writing VMM Tests
 
 To streamline the process of booting and interacting with VMs during VMM tests, the
@@ -119,6 +129,40 @@ attribute alongside `configs(...)`:
 async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     // ...
 }
+```
+
+### Nested Tests
+
+Petri supports writing nested tests by defining a function to create the L1 VM host using Petri and annotating the L2 test definition as follows:
+
+```rust,ignore
+#[vmm_test(
+    nested(
+        (my_vm_host, l1_config),
+        (NEXTEST_ARCHIVE_WITH_NESTED_TEST, "test_binary", "test::module::path", l2_config),
+    ),
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+
+async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_nested_virt()
+        // other l1 configuration
+        .run().await?;
+
+    // use the pipette agent to configure the l1 if necessary
+
+    // run the nested test, optionally with custom environment variables.
+    vm.run_nested_test(&agent, Default::default()).await?;
+
+    // power off and clean up
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 ```
 
 ## Running VMM Tests (Flowey)
