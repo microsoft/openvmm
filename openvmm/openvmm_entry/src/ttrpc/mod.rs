@@ -755,6 +755,12 @@ impl VmService {
                 response.send(map_grpc(self.teardown_vm().await))
             }
             vmservice::Vm::Quit((), response) => {
+                // Let in-flight device and resource changes finish first. Each
+                // can hold a clone of a device RPC channel (for example the
+                // SCSI controller's), and a live channel keeps the worker from
+                // stopping, so dropping the VM under them could hang below.
+                // The VM is still running, so they complete normally.
+                futures::future::join_all(self.rpc_tasks.drain(..)).await;
                 // Shut down the controller (which stops and joins the worker).
                 // Drop the VM's device RPC channels first; see `teardown_vm`.
                 self.vm.take();
@@ -1468,7 +1474,7 @@ impl VmService {
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
-        let _gate = self.operation_gate.try_acquire(VmOperation::Lifecycle)?;
+        let _gate = self.operation_gate.try_acquire(VmOperation::Pause)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Pause, ())
@@ -1482,7 +1488,7 @@ impl VmService {
     }
 
     async fn resume_vm(&mut self) -> anyhow::Result<()> {
-        let _gate = self.operation_gate.try_acquire(VmOperation::Lifecycle)?;
+        let _gate = self.operation_gate.try_acquire(VmOperation::Resume)?;
         let vm = self.vm.clone().context("VM not created yet")?;
         vm.worker_rpc
             .call(VmRpc::Resume, ())
