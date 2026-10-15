@@ -3917,11 +3917,17 @@ impl LoadedVm {
                         })
                     }
                     VmRpc::RemoveHvsockListener(rpc) => {
-                        rpc.handle_failable_sync(|(vtl, service_id)| {
-                            self.hvsock_relay_mut(vtl)
-                                .context("hvsock is not available")?
+                        rpc.handle(async |(vtl, service_id)| {
+                            let relay = self
+                                .hvsock_relay_mut(vtl)
+                                .context("hvsock is not available")
+                                .map_err(RemoteError::new)?;
+                            relay
                                 .remove_service_listener(service_id)
+                                .await
+                                .map_err(RemoteError::new)
                         })
+                        .await
                     }
                     VmRpc::PulseSaveRestore(rpc) => {
                         rpc.handle(async |()| {

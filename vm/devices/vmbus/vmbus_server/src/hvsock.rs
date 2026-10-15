@@ -146,14 +146,13 @@ impl HvsockRelay {
     /// Stops accepting connections for a listener added by
     /// [`Self::add_service_listener`]. Established connections are not
     /// affected.
-    pub fn remove_service_listener(&mut self, service_id: Guid) -> anyhow::Result<()> {
+    pub async fn remove_service_listener(&mut self, service_id: Guid) -> anyhow::Result<()> {
         let task = self
             .service_listener_tasks
             .remove(&service_id)
             .with_context(|| format!("no listener for hvsocket service {service_id}"))?;
 
-        // Dropping the task cancels it, which closes the listener.
-        drop(task);
+        task.cancel().await;
         Ok(())
     }
 
@@ -766,8 +765,9 @@ mod tests {
         let params = offer_recv.next().await.unwrap();
         assert_eq!(params.interface_id, service_id);
 
-        relay.remove_service_listener(service_id).unwrap();
-        relay.remove_service_listener(service_id).unwrap_err();
+        relay.remove_service_listener(service_id).await.unwrap();
+        assert!(UnixStream::connect(&path).is_err());
+        relay.remove_service_listener(service_id).await.unwrap_err();
         relay
             .add_service_listener(
                 service_id,
