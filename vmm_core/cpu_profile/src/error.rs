@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! CPU profile failures, with the stable codes of the time ABI specification.
+//! CPU profile failures, with the stable codes of the NVX time ABI.
 
 use std::fmt;
 
-/// A stable failure code from the "Failure codes" table of the NVX time ABI
-/// specification.
+/// A stable failure code of the NVX time ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileErrorCode {
     /// `E_PROFILE_UNKNOWN`: the profile ID is not pinned in this OpenVMM.
@@ -32,7 +31,7 @@ pub enum ProfileErrorCode {
 }
 
 impl ProfileErrorCode {
-    /// Every code, in specification order.
+    /// Every code, in declaration order.
     pub const ALL: [Self; 7] = [
         Self::ProfileUnknown,
         Self::ProfileDigest,
@@ -43,7 +42,7 @@ impl ProfileErrorCode {
         Self::CpuUnlisted,
     ];
 
-    /// Returns the code as the specification spells it, such as
+    /// Returns the code as the NVX time ABI spells it, such as
     /// `E_PROFILE_UNKNOWN`.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -100,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_distinct_and_spelled_like_the_specification() {
+    fn codes_are_distinct_and_well_formed() {
         let mut codes = ProfileErrorCode::ALL.map(ProfileErrorCode::as_str).to_vec();
         assert!(codes.iter().all(|code| {
             code.starts_with("E_")
