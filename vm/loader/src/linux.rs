@@ -3,7 +3,7 @@
 
 //! Linux specific loader definitions and implementation.
 
-pub mod microvm;
+pub mod mptable_boot;
 
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;

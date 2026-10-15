@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Linux direct boot for the microVM MP-table machine profile.
+//! Firmware-less x86-64 Linux direct boot that describes processors and
+//! interrupt routing with Intel MP 1.4 tables instead of ACPI.
 
 use super::CR3_BASE;
 use super::Error;
