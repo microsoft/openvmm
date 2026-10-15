@@ -1195,7 +1195,7 @@ mod tests {
         let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
 
         let locked = gm
-            .lock_gpns(guestmem::AccessType::Write, false, &[0])
+            .lock_user_gpns(guestmem::AccessType::Write, &[0])
             .unwrap();
         // Store directly through the locked pointer (not via `write_at`, which
         // would fault the page in on its own).
@@ -1217,9 +1217,7 @@ mod tests {
         const SIZE: u64 = 2 * 1024 * 1024;
         let (_mgr, gm) = build_thp_primary_memory(SIZE).await;
 
-        let locked = gm
-            .lock_gpns(guestmem::AccessType::Read, false, &[0])
-            .unwrap();
+        let locked = gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).unwrap();
         assert_eq!(locked.pages()[0][0].load(Ordering::SeqCst), 0);
         drop(locked);
     }

@@ -333,7 +333,12 @@ impl VsockWorker {
             );
         }
 
-        state.tx_queue.get_mut().complete(work, 0);
+        if let Err(err) = state.tx_queue.get_mut().complete(work.into_completion(), 0) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "queue completion failed"
+            );
+        }
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
@@ -464,7 +469,12 @@ impl VsockWorker {
                     0
                 }
             };
-            state.rx_queue.complete(queue_work, bytes);
+            if let Err(err) = state.rx_queue.complete(queue_work.into_completion(), bytes) {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "queue completion failed"
+                );
+            }
         }
 
         state.queue_pending(pending);
@@ -613,7 +623,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     writable: bool,
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
-    if !mem.supports_locking() {
+    if !mem.supports_kernel_lock() {
         // Memory behind an emulated IOMMU has no stable host mapping to lock,
         // so fall back to a bounce buffer via read_at/write_at.
         return Ok(None);

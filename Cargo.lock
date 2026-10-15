@@ -3242,8 +3242,11 @@ dependencies = [
  "inspect",
  "minircu",
  "pal_event",
+ "parking_lot",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "trycopy",
  "zerocopy",
 ]
@@ -4111,6 +4114,7 @@ dependencies = [
  "guestmem",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
 ]
 
