@@ -49,6 +49,9 @@ impl ResolveResource<ChipsetDeviceHandleKind, GenerationIdDeviceHandle> for Gene
             input
                 .configure
                 .new_line(GPE0_LINE_SET, "genid", GPE0_LINE_GENERATION_ID);
+        // Publish a new ID (e.g. after a snapshot restore) before guest code
+        // runs.
+        input.configure.start_before_processors();
 
         Ok(GenerationIdDevice::new(
             initial_generation_id,

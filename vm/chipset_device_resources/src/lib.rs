@@ -87,6 +87,13 @@ pub trait ConfigureChipsetDevice: Send {
 
     /// Tags this device so that its save/restore routines will not be called.
     fn omit_saved_state(&mut self);
+
+    /// Starts this device before the VM's processors start running.
+    ///
+    /// Devices with MMIO, PIO, or PCI interfaces already start before the
+    /// processors. Use this for devices without them that must update guest
+    /// state (e.g. memory or interrupts) on start before guest code runs.
+    fn start_before_processors(&mut self);
 }
 
 #[async_trait]
