@@ -584,8 +584,8 @@ pub(super) struct TimeAbiReport {
 }
 
 /// Runs the backend preflight and the rate policy, and declares the rates
-/// to the guest: restore steps 8 and 9 of the specification when `saved`
-/// holds the snapshot's rates, or their cold-boot equivalent.
+/// to the guest, for a restore when `saved` holds the snapshot's rates, or
+/// for a cold boot when it is `None`.
 pub(super) fn declare_rates(
     partition: &dyn HvlitePartition,
     msrs: &TimeAbiMsrs,
@@ -619,10 +619,10 @@ pub(super) fn declare_rates(
     })
 }
 
-/// Compares the effective CPUID recomputed for this partition with the one
-/// the snapshot recorded: restore step 8 of the specification
-/// (`E_CPU_SURFACE`). It compares the binary records, about a microsecond of
-/// work, and decodes the snapshot's only to name the differences.
+/// Compares the effective CPUID recomputed for a restored partition with the
+/// one the snapshot recorded (`E_CPU_SURFACE`). It compares the binary
+/// records, about a microsecond of work, and decodes the snapshot's only to
+/// name the differences.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
@@ -842,10 +842,10 @@ fn host_cpu_surface(
     }
 }
 
-/// Takes the time ABI records of a capture: capture steps 2 and 3 of the
-/// specification, the capture anchor and host identities, then the declared
-/// rates, the CPU profile record, and the generation counter. The caller has
-/// stopped every VP and checked the LAPIC timers (step 1).
+/// Takes the time ABI records of a capture: the capture anchor and host
+/// identities, then the declared rates, the CPU profile record, and the
+/// generation counter. The caller has stopped every VP and checked the LAPIC
+/// timers first.
 pub(super) fn capture_records(
     partition: &dyn HvlitePartition,
     state: &TimeAbiState,
@@ -951,9 +951,8 @@ pub(super) fn record_vm_time_cut(contract: &mut SnapshotTimeContract, saved_stat
 }
 
 impl LoadedVm {
-    /// Restores the guest clocks: restore steps 12 to 16 of the
-    /// specification, after the saved state is restored and before any
-    /// restored VP runs.
+    /// Restores the guest clocks after the saved state is restored and before
+    /// any restored VP runs.
     ///
     /// It performs the synchronized TSC set at the downtime selected at the
     /// restore anchor, then concurrently advances and sets every LAPIC and
@@ -1019,10 +1018,10 @@ impl LoadedVm {
             );
         }
 
-        // Steps 14 and 15 touch disjoint state, since no backend's LAPIC
-        // reads VM time under the time ABI, so they run concurrently. Both
-        // run to completion, so a failure never cancels a state unit
-        // operation midway.
+        // The LAPIC advance and the VM-time and RTC advance touch disjoint
+        // state, since no backend's LAPIC reads VM time under the time ABI, so
+        // they run concurrently. Both run to completion, so a failure never
+        // cancels a state unit operation midway.
         let downtime_ns = downtime.nanos;
         let partition_unit = &mut self.inner.partition_unit;
         let state_units = &mut self.state_units;
