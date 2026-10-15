@@ -277,6 +277,11 @@ describes the source definitions.
   `auto`. `--virtio-rng-pcie-port` overrides this option.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
+* `--virtio-vsock-bounce`: Force owned buffers for the in-process virtio-vsock
+  device. The default is off. Requires `--virtio-vsock-path`; it cannot be
+  used with `--virtio-vsock-vhost-cid`. The bus selection, guest CID, socket
+  paths, and Unix relay connection protocol do not change. See
+  [network and vsock bounce I/O](#per-device-network-and-vsock-bounce-io).
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
   virtio-vsock device created by `--virtio-vsock-path` or
   `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
@@ -595,6 +600,60 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
+```
+
+#### Per-device network and vsock bounce I/O
+
+Prefix one `--virtio-net` value with `bounce:` to stage its transmitted and
+received data in owned buffers. The flag defaults to off. Guest memory that
+requires owned I/O uses staging automatically. Other NICs keep their existing
+I/O path. Prefixes can appear in either order:
+
+```bash
+--virtio-net bounce:pcie_port=rp0:consomme
+--virtio-net pcie_port=rp0:bounce:queues=2:consomme:10.0.0.0/24,hostfwd=tcp::8080-:80
+--virtio-net bounce:tap:tap0
+--virtio-vsock-path path/to/vsock --virtio-vsock-bounce --virtio-vsock-bus pci
+```
+
+Network bounce I/O supports Consomme, Linux TAP, and `none` for tests without
+network traffic. It is limited to VTL0 virtio-net devices. It rejects `--net`,
+`--mana`, `uh:`, `vtl2:`, Direct I/O, assigned NICs, and vhost-user backends.
+It does not change MAC address generation, Consomme CIDR and port-forwarding
+options, or host NIC configuration. `queues=` and `pcie_port=` remain
+available. There is no VM-wide bounce switch.
+
+Vsock bounce I/O supports only the in-process Unix relay selected by
+`--virtio-vsock-path`. It preserves the relay protocol and guest connection
+behavior. `--virtio-vsock-bus` still accepts `mmio`, `pci`, and `pcie[:PORT]`.
+Kernel vhost-vsock and external vhost-user devices reject memory that requires
+owned I/O or does not support kernel locks. Ordinary Direct/IOMMU memory keeps
+its existing copy fallback and does not require owned I/O.
+
+Network I/O uses bounded owned TX/RX buffers. Each active network queue pair
+reserves 4.25 MiB: 32 RX and 32 TX slots of 68 KiB each. Packets are limited
+to 64 KiB and 256 descriptors. Full arenas apply backpressure instead of
+allocating from guest-provided queue lengths. Backend and queue metadata can
+use additional memory.
+Backend packet IDs wrap without reusing an ID held by an outstanding RX or TX
+packet. Slots stay reserved until completion or backend quiescence.
+
+Vsock uses the existing fallback paths within its credit bounds. RX allocation
+is capped by the posted capacity, available credit, and the 64 KiB stream
+buffer limit. Save and restore are not supported for devices that use owned
+staging. Only software backends are supported; hardware DMA support is deferred.
+Healthy vsock devices support pause and resume with their stopped queue cursors.
+All old queues must stop before an owned-I/O queue generation can resume.
+Stopping the worker closes existing host connections; new connections can
+transfer data after resume. This does not add snapshot support.
+In Direct mode, recoverable packet errors do not stop independent connections.
+Queue publication failures retire the vsock worker and disable save and restore
+until all queues have been stopped and a fresh queue generation starts.
+
+```admonish warning
+Bounce I/O stages data; it is not memory isolation or memory management.
+Per-device bounce options do not select a host-permission protocol or add
+kernel memory-management enforcement.
 ```
 
 **Filesystems and other virtio devices** (colon-prefixed):

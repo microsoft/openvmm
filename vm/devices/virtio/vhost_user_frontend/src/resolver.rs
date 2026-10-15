@@ -39,6 +39,12 @@ async fn connect_frontend(
     socket_fd: OwnedFd,
     config: crate::VhostUserConfig,
 ) -> anyhow::Result<VhostUserFrontend> {
+    anyhow::ensure!(
+        input
+            .guest_memory
+            .is_none_or(guestmem::GuestMemory::supports_kernel_lock),
+        "vhost-user requires kernel-lockable guest memory"
+    );
     let driver = input.driver_source.simple();
     let stream = UnixStream::from(socket_fd);
     let polled =
@@ -160,5 +166,39 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserBlkHandle> for VhostUserF
             .context("failed to set up vhost-user-blk device")?;
 
         Ok(frontend.into())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    #[async_test]
+    async fn kernel_denied_memory_rejected_before_vhost_connection(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let memory = guestmem::GuestMemory::allocate(4096).copy_only_view();
+        let error = connect_frontend(
+            VirtioResolveInput {
+                driver_source: &driver_source,
+                guest_memory: Some(&memory),
+            },
+            std::fs::File::open("Cargo.toml").unwrap().into(),
+            crate::VhostUserConfig {
+                device_id: VirtioDeviceType::BLK,
+                use_backend_config: true,
+                queue_sizes: vec![128],
+                config_patches: vec![],
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "vhost-user requires kernel-lockable guest memory"
+        );
     }
 }

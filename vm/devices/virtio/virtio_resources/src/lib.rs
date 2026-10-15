@@ -229,10 +229,59 @@ pub mod net {
         pub max_queues: Option<u16>,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
+        /// Force owned network staging, even when guest memory supports kernel locks.
+        /// Kernel-denied guest memory requires staging regardless of this flag.
+        /// Missing mesh fields decode as false.
+        pub bounce_io: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioNetHandle {
         const ID: &'static str = "virtio-net";
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use net_backend_resources::null::NullHandle;
+        use test_with_tracing::test;
+
+        #[derive(MeshPayload)]
+        struct LegacyVirtioNetHandle {
+            max_queues: Option<u16>,
+            mac_address: MacAddress,
+            endpoint: Resource<NetEndpointHandleKind>,
+        }
+
+        #[test]
+        fn missing_bounce_field_defaults_off() {
+            let mac_address = MacAddress::new([0x00, 0x15, 0x5d, 1, 2, 3]);
+            let legacy = LegacyVirtioNetHandle {
+                max_queues: Some(2),
+                mac_address,
+                endpoint: Resource::new(NullHandle),
+            };
+            let handle: VirtioNetHandle = mesh::OwnedMessage::new(legacy).parse().unwrap();
+            assert!(!handle.bounce_io);
+            assert_eq!(handle.max_queues, Some(2));
+            assert_eq!(handle.mac_address, mac_address);
+            assert_eq!(handle.endpoint.id(), "null");
+        }
+
+        #[test]
+        fn bounce_field_round_trips() {
+            for bounce_io in [false, true] {
+                let handle = VirtioNetHandle {
+                    max_queues: None,
+                    mac_address: MacAddress::new([0x00, 0x15, 0x5d, 1, 2, 3]),
+                    endpoint: Resource::new(NullHandle),
+                    bounce_io,
+                };
+                let message = mesh::OwnedMessage::new(handle).serialize();
+                let handle: VirtioNetHandle =
+                    mesh::OwnedMessage::serialized(message).parse().unwrap();
+                assert_eq!(handle.bounce_io, bounce_io);
+            }
+        }
     }
 }
 
@@ -334,10 +383,77 @@ pub mod vsock {
         pub guest_cid: u64,
         pub base_path: String,
         pub listener: UnixListener,
+        /// Force owned in-process vsock staging, even when guest memory supports kernel locks.
+        /// Kernel-denied guest memory requires staging regardless of this flag.
+        /// Missing mesh fields decode as false.
+        pub bounce_io: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
         const ID: &'static str = "virtio-vsock";
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use test_with_tracing::test;
+
+        #[derive(MeshPayload)]
+        struct LegacyVirtioVsockHandle {
+            guest_cid: u64,
+            base_path: String,
+            listener: UnixListener,
+        }
+
+        struct TestSocketPath(String);
+
+        impl TestSocketPath {
+            fn bind(name: &str) -> (Self, UnixListener) {
+                let path = Self(format!(".virtio-vsock-{name}-{}", std::process::id()));
+                let listener = UnixListener::bind(&path.0).unwrap();
+                (path, listener)
+            }
+        }
+
+        impl Drop for TestSocketPath {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        #[test]
+        fn missing_bounce_field_defaults_off() {
+            let (path, listener) = TestSocketPath::bind("legacy");
+            let legacy = LegacyVirtioVsockHandle {
+                guest_cid: 3,
+                base_path: path.0.clone(),
+                listener,
+            };
+            let handle: VirtioVsockHandle = mesh::OwnedMessage::new(legacy).parse().unwrap();
+            assert!(!handle.bounce_io);
+            assert_eq!(handle.guest_cid, 3);
+            assert_eq!(handle.base_path, path.0);
+            assert!(handle.listener.set_nonblocking(true).is_ok());
+        }
+
+        #[test]
+        fn bounce_field_round_trips() {
+            for bounce_io in [false, true] {
+                let (path, listener) = TestSocketPath::bind(&format!("round-trip-{bounce_io}"));
+                let handle = VirtioVsockHandle {
+                    guest_cid: 3,
+                    base_path: path.0.clone(),
+                    listener,
+                    bounce_io,
+                };
+                let message = mesh::OwnedMessage::new(handle).serialize();
+                let handle: VirtioVsockHandle =
+                    mesh::OwnedMessage::serialized(message).parse().unwrap();
+                assert_eq!(handle.bounce_io, bounce_io);
+                assert_eq!(handle.guest_cid, 3);
+                assert_eq!(handle.base_path, path.0);
+            }
+        }
     }
 
     /// A virtio-vsock device backed by the Linux kernel's `vhost_vsock`
