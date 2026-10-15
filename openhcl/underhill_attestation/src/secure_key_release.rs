@@ -64,7 +64,7 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
 }
 
 impl RequestVmgsEncryptionKeysError {
-    /// Missing required context, malformed metadata, and invalid framing must not
+    /// Malformed metadata and invalid framing must not
     /// be converted into hardware recovery. Ordinary SKR outages retain fallback.
     pub(crate) fn is_context_failure(&self) -> bool {
         match self {
@@ -205,7 +205,7 @@ pub(crate) async fn request_vmgs_encryption_keys(
 ) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
-    let cached_context_hash = attestation_vm_config
+    attestation_vm_config
         .key_release_context_hash
         .as_deref()
         .map(decode_key_release_context_hash)
@@ -267,7 +267,6 @@ pub(crate) async fn request_vmgs_encryption_keys(
         &result.report,
         agent_data,
         vmgs_encrypted,
-        cached_context_hash.is_some(),
     )
     .await
     {
@@ -339,7 +338,6 @@ async fn make_igvm_attest_requests(
     attestation_report: &[u8],
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     vmgs_encrypted: bool,
-    require_context: bool,
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // When VMGS is encrypted, empty `agent_data` from VMGS implies that the data required by the
     // KeyRelease request needs to come from the WrappedKey response.
@@ -452,11 +450,8 @@ async fn make_igvm_attest_requests(
         }
     };
 
-    match igvm_attest::key_release::parse_response_requiring_context(
-        &response.response,
-        transfer_key.modulus_size(),
-        require_context,
-    ) {
+    match igvm_attest::key_release::parse_response(&response.response, transfer_key.modulus_size())
+    {
         Ok(igvm_attest::key_release::KeyReleaseResponse {
             wrapped_key: rsa_aes_wrapped_key,
             rsa_aes_key_wrap_384_used,
@@ -526,9 +521,7 @@ mod tests {
         ]));
 
         for response in responses {
-            let error =
-                igvm_attest::key_release::parse_response_requiring_context(&response, 256, false)
-                    .unwrap_err();
+            let error = igvm_attest::key_release::parse_response(&response, 256).unwrap_err();
             assert!(
                 RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
                     .is_context_failure()
@@ -559,9 +552,7 @@ mod tests {
         let wrong_key_type = extended_frame(
             br#"{"schema_version":1,"request_type":"wrapped_key","payload":"","extensions":{}}"#,
         );
-        let error =
-            igvm_attest::key_release::parse_response_requiring_context(&wrong_key_type, 256, false)
-                .unwrap_err();
+        let error = igvm_attest::key_release::parse_response(&wrong_key_type, 256).unwrap_err();
         assert!(
             RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
                 .is_context_failure()
@@ -579,35 +570,27 @@ mod tests {
     }
 
     #[test]
-    fn invalid_key_release_context_is_terminal() {
-        // A malformed hash is a key-release-only error, not a shared envelope
-        // error. Wrapped-key acceptance is tested with valid CPS payloads in
-        // igvm_attest::wrapped_key::tests.
+    fn invalid_optional_context_reaches_inner_payload() {
         let response = extended_frame(
             br#"{"schema_version":1,"request_type":"key_release","payload":"","extensions":{"key_release_context_hash":"bad"}}"#,
         );
-        let error =
-            igvm_attest::key_release::parse_response_requiring_context(&response, 256, false)
-                .unwrap_err();
+        let error = igvm_attest::key_release::parse_response(&response, 256).unwrap_err();
         assert!(matches!(
             error,
-            igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                igvm_attest::Error::InvalidContextHash(_)
-            )
+            igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall
         ));
         assert!(
-            RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
+            !RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
                 .is_context_failure()
         );
     }
 
     #[test]
-    fn missing_context_is_terminal_but_changed_context_reaches_inner_payload() {
+    fn missing_and_changed_context_reach_inner_payload() {
         use openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash;
 
         for actual_context in [None, Some([2; 32])] {
-            // A missing hash is terminal. A changed valid hash reaches payload
-            // parsing, whose failure must not be misclassified as a context error.
+            // Optional metadata does not change classification of service-payload errors.
             let extensions = match actual_context.as_ref() {
                 Some(hash) => serde_json::json!({
                     "key_release_context_hash": encode_key_release_context_hash(hash)
@@ -621,26 +604,14 @@ mod tests {
                 "extensions": extensions,
             });
             let response = extended_frame(&serde_json::to_vec(&envelope).unwrap());
-            let error =
-                igvm_attest::key_release::parse_response_requiring_context(&response, 256, true)
-                    .unwrap_err();
-            if actual_context.is_none() {
-                assert!(matches!(
-                    error,
-                    igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                        igvm_attest::Error::MissingRequiredResponseContext
-                    )
-                ));
-            } else {
-                assert!(matches!(
-                    error,
-                    igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall
-                ));
-            }
-            assert_eq!(
-                RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
-                    .is_context_failure(),
-                actual_context.is_none()
+            let error = igvm_attest::key_release::parse_response(&response, 256).unwrap_err();
+            assert!(matches!(
+                error,
+                igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall
+            ));
+            assert!(
+                !RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(error)
+                    .is_context_failure()
             );
         }
     }
@@ -707,12 +678,9 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let parsed = igvm_attest::key_release::parse_response_requiring_context(
-                &response,
-                transfer_key.modulus_size(),
-                true,
-            )
-            .unwrap();
+            let parsed =
+                igvm_attest::key_release::parse_response(&response, transfer_key.modulus_size())
+                    .unwrap();
             assert_eq!(parsed.key_release_context_hash, Some([0xb2; 32]));
             let keys = WrappedKeyVmgsEncryptionKeys {
                 key_release_context_hash: parsed.key_release_context_hash,

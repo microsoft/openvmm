@@ -450,6 +450,7 @@ fn config() -> AttestationVmConfig {
         filtered_vpci_devices_allowed: true,
         vm_unique_id: String::new(),
         vmgs_provisioner: None,
+        key_release_context_hash: None,
     }
 }
 

@@ -173,6 +173,8 @@ pub enum IgvmAgentAction {
     },
     /// Emit a response that indicates a protocol error.
     RespondFailure,
+    /// Emit an explicit service error with the retry signal set.
+    RespondFailureRetry,
     /// Emit a response that indicates a protocol error with skip_hw_unsealing signal.
     RespondFailureSkipHwUnsealing,
     /// Skip responding to simulate a timeout (consumed once).
@@ -553,11 +555,6 @@ impl TestIgvmAgent {
         let runtime_claims_bytes = remaining
             .get(..request.request_data.variable_data_size as usize)
             .ok_or(Error::InvalidIgvmAttestRequest)?;
-        if request_type == IgvmAttestRequestType::AK_CERT_REQUEST {
-            if let Some(state) = &mut self.ak_cert {
-                return state.handle_request(runtime_claims_bytes);
-            }
-        }
         self.last_requests.insert(
             request_type,
             IgvmAgentRecordedRequest {
@@ -565,6 +562,11 @@ impl TestIgvmAgent {
                 runtime_claims: runtime_claims_bytes.to_vec(),
             },
         );
+        if request_type == IgvmAttestRequestType::AK_CERT_REQUEST {
+            if let Some(state) = &mut self.ak_cert {
+                return state.handle_request(runtime_claims_bytes);
+            }
+        }
 
         let check_context = request_type == IgvmAttestRequestType::KEY_RELEASE_REQUEST
             && self.context_config.is_some();
@@ -633,12 +635,13 @@ impl TestIgvmAgent {
             IgvmAgentAction::NoResponse | IgvmAgentAction::AlwaysNoResponse => {
                 return Ok((vec![], 0));
             }
-            IgvmAgentAction::RespondFailure => {
+            IgvmAgentAction::RespondFailure | IgvmAgentAction::RespondFailureRetry => {
                 return Self::build_failure_response(
                     request_type,
                     response_version,
                     0x1234,
-                    IgvmSignal::default().with_retry(false),
+                    IgvmSignal::default()
+                        .with_retry(matches!(action, IgvmAgentAction::RespondFailureRetry)),
                 );
             }
             IgvmAgentAction::RespondFailureSkipHwUnsealing => {
@@ -723,6 +726,7 @@ impl TestIgvmAgent {
                     } else {
                         None
                     },
+                    ..Default::default()
                 },
             })
             .map_err(Error::ResponseEnvelopeSerialize)?
@@ -1207,6 +1211,7 @@ mod tests {
                         keys: vec![],
                         vm_configuration: vm_config(issued.clone()),
                         user_data: String::new(),
+                        akcert: None,
                     })
                     .unwrap();
                     for (version, response_version, extended_payload) in VERSIONS {
@@ -1247,7 +1252,7 @@ mod tests {
         use openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash;
 
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
         for config in [
             IgvmAttestTestConfig::KeyReleaseV2,
@@ -1386,7 +1391,7 @@ mod tests {
     #[test]
     fn refresh_commits_only_built_extended_responses_and_legacy_does_not_change_context() {
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
         let setting =
             IgvmAgentTestSetting::TestConfig(IgvmAttestTestConfig::KeyReleaseContextRefresh);
@@ -1399,6 +1404,7 @@ mod tests {
                 keys: vec![],
                 vm_configuration: vm_config(previous.clone()),
                 user_data: String::new(),
+                akcert: None,
             })
             .unwrap();
             assert!(matches!(
@@ -1580,7 +1586,7 @@ mod tests {
 
     fn exercise_key_responses(request_type: IgvmAttestRequestType, use_sha384: bool) {
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let context_hash = encode_key_release_context_hash(&[0x42; 32]);
         let config = vm_config(Some(context_hash.clone()));
         let claims = RuntimeClaims::key_release_request_runtime_claims(
@@ -1688,7 +1694,13 @@ mod tests {
                             IgvmAttestResponseRequestType::WrappedKey
                         }
                     );
-                    assert_eq!(envelope.extensions.key_release_context_hash, hash);
+                    let accepted_hash = hash.as_ref().filter(|hash| {
+                        openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash(hash).is_ok()
+                    });
+                    assert_eq!(
+                        envelope.extensions.key_release_context_hash.as_ref(),
+                        accepted_hash
+                    );
                     let json: serde_json::Value = serde_json::from_slice(body).unwrap();
                     if request_type == IgvmAttestRequestType::WRAPPED_KEY_REQUEST {
                         assert_eq!(json["extensions"], serde_json::json!({}));
@@ -1697,7 +1709,15 @@ mod tests {
                         json["extensions"].get("key_release_context_hash").is_some(),
                         hash.is_some()
                     );
-                    assert_eq!(serde_json::to_vec(&envelope).unwrap(), body);
+                    assert_eq!(
+                        json["extensions"].get("key_release_context_hash"),
+                        hash.as_ref()
+                            .map(|hash| serde_json::Value::String(hash.clone()))
+                            .as_ref()
+                    );
+                    if envelope.extensions.ignored_context_hash.is_none() {
+                        assert_eq!(serde_json::to_vec(&envelope).unwrap(), body);
+                    }
                     assert!(body.len() > envelope.payload.len());
                     envelope.payload
                 } else {
@@ -1811,11 +1831,16 @@ mod tests {
                     [
                         IgvmAgentAction::RespondFailure,
                         IgvmAgentAction::RespondFailureSkipHwUnsealing,
+                        IgvmAgentAction::RespondFailureRetry,
                     ],
                 );
                 let request =
                     request_bytes(request_type, request_version, b"{}", true, extended_payload);
-                for (code, skip) in [(0x1234, false), (0x5678, true)] {
+                for (code, skip, retry) in [
+                    (0x1234, false, false),
+                    (0x5678, true, false),
+                    (0x1234, false, true),
+                ] {
                     let response = agent.handle_request(&request).unwrap();
                     assert_recorded(&agent, request_type, request_version, b"{}");
                     if response_version == IgvmAttestResponseVersion::VERSION_1 {
@@ -1829,7 +1854,9 @@ mod tests {
                     let expected = IgvmErrorInfo {
                         error_code: code,
                         http_status_code: 400,
-                        igvm_signal: IgvmSignal::default().with_skip_hw_unsealing(skip),
+                        igvm_signal: IgvmSignal::default()
+                            .with_skip_hw_unsealing(skip)
+                            .with_retry(retry),
                         reserved: [0; 3],
                     };
                     assert_eq!(error.as_bytes(), expected.as_bytes());
@@ -1864,6 +1891,7 @@ mod tests {
                     keys: vec![],
                     vm_configuration: config,
                     user_data: format!("request {}", request_type.0),
+                    akcert: None,
                 })
                 .unwrap();
                 let mut request = request_bytes(
@@ -1956,7 +1984,7 @@ mod tests {
 
     #[test]
     fn oversized_extended_envelope_is_rejected_not_truncated() {
-        let transfer_key = RsaKeyPair::generate(2048).unwrap().to_components();
+        let transfer_key = RsaKeyPair::generate(2048).unwrap().to_components().unwrap();
         let claims = serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
             &transfer_key.public_exponent,
             &transfer_key.modulus,

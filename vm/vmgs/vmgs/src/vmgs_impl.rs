@@ -1124,6 +1124,25 @@ impl Vmgs {
         encryption_key: &[u8],
         encryption_algorithm: EncryptionAlgorithm,
     ) -> Result<(), Error> {
+        let old_index = self
+            .add_encryption_key(encryption_key, encryption_algorithm)
+            .await?;
+        if let Some(old_index) = old_index {
+            self.remove_encryption_key(old_index).await?;
+        }
+        Ok(())
+    }
+
+    /// Add a root key while retaining the currently active key. Return the
+    /// previous key's slot, if any, for the caller to retire after persisting
+    /// its recovery state. If both slots are occupied, remove the inactive one.
+    /// On failure, reopen or unlock with a recoverable key before retrying.
+    #[cfg(feature = "encryption")]
+    pub async fn add_encryption_key(
+        &mut self,
+        encryption_key: &[u8],
+        encryption_algorithm: EncryptionAlgorithm,
+    ) -> Result<Option<usize>, Error> {
         let old_index = self.state.active_datastore_key_index;
 
         match self
@@ -1146,11 +1165,7 @@ impl Vmgs {
             Err(e) => return Err(e),
         };
 
-        if let Some(old_index) = old_index {
-            self.remove_encryption_key(old_index).await?;
-        }
-
-        Ok(())
+        Ok(old_index)
     }
 
     /// Associates a new root key with the data store.
@@ -1214,7 +1229,7 @@ impl Vmgs {
 
     /// Disassociates the root key at the specified index from the data store.
     #[cfg(feature = "encryption")]
-    async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
+    pub async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
             return Err(Error::EncryptionNotSupported);
         }

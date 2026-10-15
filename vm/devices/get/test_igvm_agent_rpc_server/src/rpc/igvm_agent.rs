@@ -102,11 +102,11 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "ubuntu_2504_server_x64_snp_cvm_guest",
-            IgvmAttestTestConfig::AkCertNoRenewal,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
         ),
         (
             "ubuntu_2504_server_x64_tdx_cvm_guest",
-            IgvmAttestTestConfig::AkCertNoRenewal,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_vbs_cvm_guest",
@@ -114,11 +114,11 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_cvm_guest",
-            IgvmAttestTestConfig::AkCertNoRenewal,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_tdx_cvm_guest",
-            IgvmAttestTestConfig::AkCertNoRenewal,
+            IgvmAttestTestConfig::KeyReleaseContextRefresh,
         ),
         (
             "ubuntu_2504_server_x64_ak_cert_retry",
@@ -273,22 +273,6 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         (
             "windows_datacenter_core_2025_x64_prepped_tdx_ctx_v2",
             IgvmAttestTestConfig::KeyReleaseV2,
-        ),
-        (
-            "ubuntu_2504_server_x64_snp_cvm_guest",
-            IgvmAttestTestConfig::KeyReleaseContextRefresh,
-        ),
-        (
-            "ubuntu_2504_server_x64_tdx_cvm_guest",
-            IgvmAttestTestConfig::KeyReleaseContextRefresh,
-        ),
-        (
-            "windows_datacenter_core_2025_x64_prepped_snp_cvm_guest",
-            IgvmAttestTestConfig::KeyReleaseContextRefresh,
-        ),
-        (
-            "windows_datacenter_core_2025_x64_prepped_tdx_cvm_guest",
-            IgvmAttestTestConfig::KeyReleaseContextRefresh,
         ),
         // `multiarch::tpm138` runs the same tests against the 1.38 vTPM. Its
         // test-function names are abbreviated to keep VM names under the
@@ -548,9 +532,12 @@ mod tests {
                     assert!(
                         matches!(
                             resolve_test_config(&vm_name),
-                            Some(IgvmAgentTestSetting::TestConfig(
-                                IgvmAttestTestConfig::AkCertNoRenewal
-                            ))
+                            Some(IgvmAgentTestSetting::TestConfig(config))
+                                if matches!(
+                                    (isolation, config),
+                                    ("vbs", IgvmAttestTestConfig::AkCertNoRenewal)
+                                        | ("snp" | "tdx", IgvmAttestTestConfig::KeyReleaseContextRefresh)
+                                )
                         ),
                         "{vm_name}"
                     );
@@ -606,6 +593,9 @@ mod tests {
                 "ubuntu_2404_server_x64_snp",
                 "windows_datacenter_core_2022_x64_tdx",
             ] {
+                if test_fn == "cvm_guest" && image_and_isolation.ends_with("_vbs") {
+                    continue;
+                }
                 assert!(resolve_test_config(&format!("{image_and_isolation}_{test_fn}")).is_none());
             }
             assert!(resolve_test_config(test_fn).is_none());
@@ -630,9 +620,12 @@ mod tests {
             assert!(
                 matches!(
                     resolve_test_config(&vm_name),
-                    Some(IgvmAgentTestSetting::TestConfig(
-                        IgvmAttestTestConfig::AkCertNoRenewal
-                    ))
+                    Some(IgvmAgentTestSetting::TestConfig(config))
+                        if matches!(
+                            (isolation, config),
+                            ("vbs", IgvmAttestTestConfig::AkCertNoRenewal)
+                                | ("snp" | "tdx", IgvmAttestTestConfig::KeyReleaseContextRefresh)
+                        )
                 ),
                 "{vm_name}"
             );
