@@ -1807,6 +1807,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_vmdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "blocking",
+ "disk_backend",
+ "disk_backend_resources",
+ "fs-err",
+ "futures",
+ "guestmem",
+ "inspect",
+ "io-uring",
+ "libc",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "storage_tests",
+ "tempfile",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracing",
+ "vm_resource",
+]
+
+[[package]]
 name = "disklayer_ram"
 version = "0.0.0"
 dependencies = [
@@ -6317,6 +6342,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "disk_vmdk",
  "disklayer_vhdx",
  "fs-err",
  "get_resources",
@@ -6324,6 +6350,7 @@ dependencies = [
  "libc",
  "mesh",
  "openvmm_defs",
+ "pal_async",
  "sparse_mmap",
  "tempfile",
  "tracing",
@@ -6374,6 +6401,7 @@ dependencies = [
  "disk_prwrap",
  "disk_vhd1",
  "disk_vhdmp",
+ "disk_vmdk",
  "disklayer_ram",
  "disklayer_sqlite",
  "disklayer_vhdx",
@@ -11280,6 +11308,7 @@ dependencies = [
  "build_rs_guest_arch",
  "disk_backend_resources",
  "disk_vhd1",
+ "disk_vmdk",
  "fs-err",
  "futures",
  "get_resources",
