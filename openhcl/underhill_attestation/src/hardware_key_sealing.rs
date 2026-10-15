@@ -663,11 +663,12 @@ mod tests {
         let tee = MockTeeCall::new([0x7a; 32]);
         let policy = test_policy();
         let keys = HardwareDerivedKeys::derive_key(&tee, &config, policy).unwrap();
-        let original_output = crypto::kbkdf::kbkdf_hmac_sha256(
+        let original_output = crypto::kbkdf::kbkdf_hmac(
             &tee.get_derived_key(policy).unwrap(),
             original_json.as_bytes(),
             b"ISOHWKEY",
             64,
+            crypto::HashAlgorithm::Sha256,
         )
         .unwrap();
         assert_eq!(keys.aes_key, original_output[..32]);

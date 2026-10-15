@@ -50,7 +50,16 @@ guests use the same plans on SNP and TDX:
 These request checks include Hyper-V's automatic initial reboot. A failed
 context assertion returns a distinct service error with hardware unsealing
 disabled, so recovery cannot hide a failed test expectation. Parser and
-boot-flow unit tests cover malformed and missing required context separately.
+boot-flow unit tests cover discarding invalid optional hashes, strict envelope
+validation, and V3 sealing when context is absent or discarded. These include
+first provisioning, replacement after a context-bound boot, and hardware
+recovery on a subsequent cold boot during a service outage.
+
+The strict hash checks above assert successful hardware persistence in those
+specific scenarios. They are not production agent authorization rules. A
+production agent must tolerate stale or absent optimization hints and use
+the normal key-release path when it cannot reuse a context. The mock does
+not demonstrate a reduction in real SKR service callouts.
 
 ## Direct use
 

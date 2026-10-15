@@ -8,7 +8,6 @@ use crate::igvm_attest::parse_response_header;
 use crypto::x509::X509Certificate;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata;
 use thiserror::Error;
-use zerocopy::FromBytes;
 
 /// The certificate or renewal decision returned by the host.
 #[derive(Debug, PartialEq, Eq)]
@@ -285,7 +284,7 @@ mod tests {
                 AkCertResponse::NoRenewal
             );
         }
-        for bit in [0, 1, 2, 3, 4, 6, 31] {
+        for bit in [0, 1, 2, 3, 4, 31] {
             let signal = IgvmSignal::from(1u32 << bit);
             assert_eq!(
                 parse_response(&v2_response(signal, b"cert")).unwrap(),
@@ -333,7 +332,10 @@ mod tests {
         ] {
             // AK certificates are binary, not subject to service payload UTF-8 checks.
             let response = frame_response(version, &[0xff, 0x30], IgvmErrorInfo::default());
-            assert_eq!(parse_response(&response).unwrap(), [0xff, 0x30]);
+            assert!(matches!(
+                parse_response(&response).unwrap(),
+                AkCertResponse::Certificate(cert) if cert == [0xff, 0x30]
+            ));
         }
         let response = frame_response(
             IgvmAttestResponseVersion(3),

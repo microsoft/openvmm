@@ -176,6 +176,37 @@ fn config() -> AttestationVmConfig {
         filtered_vpci_devices_allowed: true,
         vm_unique_id: String::new(),
         vmgs_provisioner: None,
+        key_release_context_hash: None,
+    }
+}
+
+#[test]
+fn context_bound_protectors_survive_runtime_resealing() {
+    for tee in [MutableTee::snp(3, 0x19, 0, BASE_TCB), MutableTee::tdx()] {
+        let mut config = config();
+        config.key_release_context_hash = Some(hex::encode([0x42; 32]));
+        let mut floor = RuntimeTcbFloor::new(&tee, &config).unwrap();
+        let source = floor.create_protector(&tee, &config, &DEK).unwrap();
+        assert!(
+            floor
+                .verify_protector(&tee, &config, &source, &DEK)
+                .unwrap()
+        );
+        tee.state.lock().secret = [0x73; 32];
+        assert!(
+            !floor
+                .verify_protector(&tee, &config, &source, &DEK)
+                .unwrap()
+        );
+        let destination = floor.create_protector(&tee, &config, &DEK).unwrap();
+        assert!(
+            floor
+                .verify_protector(&tee, &config, &destination, &DEK)
+                .unwrap()
+        );
+        let protector = parse_hardware_key_protector(&destination).unwrap();
+        assert_eq!(protector.version(), vmgs::HW_KEY_PROTECTOR_VERSION_4);
+        assert_eq!(protector.key_release_context_hash(), Some([0x42; 32]));
     }
 }
 
