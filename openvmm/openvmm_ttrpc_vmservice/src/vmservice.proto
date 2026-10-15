@@ -141,6 +141,9 @@ message UEFI {
     // Whether the firmware enforces Secure Boot policy. This is independent
     // of whether initial Secure Boot variables are supplied above.
     bool secure_boot_enabled = 5;
+
+    // Expose the guest watchdog via ACPI WDAT. Enabled by default. false omits device.
+    optional bool guest_watchdog = 6;
 }
 
 message MemoryConfig {
@@ -635,8 +638,8 @@ message VMConfig {
         GuestPowerAction reset = 2;
         // The guest triple faulted. Defaults to HALT.
         GuestPowerAction crash = 3;
-        // The guest's watchdog timer expired. Defaults to RESTART.
-        // A non-default action requires VMConfig.guest_watchdog.
+        // The guest's watchdog timer expired. Defaults to no action (logs
+        // only). A non-DEFAULT action requires the UEFI guest watchdog.
         GuestPowerAction watchdog = 4;
     }
 
@@ -682,8 +685,6 @@ message VMConfig {
     bool disable_hv = 17;
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
-    // Enable the guest watchdog device. Disabled by default.
-    bool guest_watchdog = 20;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

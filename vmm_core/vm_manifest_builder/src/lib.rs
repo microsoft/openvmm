@@ -80,6 +80,7 @@ pub struct VmManifestBuilder {
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
     framebuffer: bool,
     guest_watchdog: bool,
+    guest_watchdog_log_only: bool,
     ipmi_kcs: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
@@ -293,6 +294,7 @@ impl VmManifestBuilder {
             battery_status_recv: None,
             framebuffer: false,
             guest_watchdog: false,
+            guest_watchdog_log_only: false,
             ipmi_kcs: false,
             psp: false,
             platform_pm_timer_assist: false,
@@ -389,6 +391,14 @@ impl VmManifestBuilder {
     /// Enable the guest watchdog device.
     pub fn with_guest_watchdog(mut self) -> Self {
         self.guest_watchdog = true;
+        self
+    }
+
+    /// Enable the guest watchdog device, logging timeouts instead of halting
+    /// the VM or recording a boot failure.
+    pub fn with_guest_watchdog_log_only(mut self) -> Self {
+        self.guest_watchdog = true;
+        self.guest_watchdog_log_only = true;
         self
     }
 
@@ -548,7 +558,7 @@ impl VmManifestBuilder {
                     result.attach_battery(self.arch, recv);
                 }
                 if self.guest_watchdog {
-                    result.attach_guest_watchdog();
+                    result.attach_guest_watchdog(self.guest_watchdog_log_only);
                 }
             }
             BaseChipsetType::EnlightenedLinuxDirect => {
@@ -594,7 +604,7 @@ impl VmManifestBuilder {
                     // devices instead of tracing them as unknown PIO.
                     .attach_missing_pci_config_ports(self.arch);
                 if self.guest_watchdog {
-                    result.attach_guest_watchdog();
+                    result.attach_guest_watchdog(self.guest_watchdog_log_only);
                 }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
@@ -632,7 +642,7 @@ impl VmManifestBuilder {
                     result.attach_battery(self.arch, recv);
                 }
                 if self.guest_watchdog {
-                    result.attach_guest_watchdog();
+                    result.attach_guest_watchdog(self.guest_watchdog_log_only);
                 }
                 if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
                     if self.ipmi_kcs {
@@ -791,11 +801,12 @@ impl VmChipsetResult {
         self
     }
 
-    fn attach_guest_watchdog(&mut self) -> &mut Self {
+    fn attach_guest_watchdog(&mut self, log_only: bool) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "guest-watchdog".to_owned(),
             resource: HyperVGuestWatchdogDeviceHandle {
                 port_base: DEFAULT_WDAT_PORT_BASE,
+                log_only,
             }
             .into_resource(),
         });

@@ -637,7 +637,6 @@ async fn test_ttrpc_interface(
                             path: hvsocket_path.to_string_lossy().to_string(),
                         }),
                         smbios_config,
-                        guest_watchdog: i == 0,
                         ..Default::default()
                     }),
                     log_id: String::new(),
@@ -679,27 +678,6 @@ async fn test_ttrpc_interface(
         assert!(
             props.memory_stats.is_none() && props.processor_stats.is_none(),
             "memory/processor stats should be unset, not zeroed"
-        );
-
-        let vm = client
-            .call()
-            .start(
-                inspect_proto::InspectService::Inspect,
-                inspect_proto::InspectRequest {
-                    path: "vm".into(),
-                    depth: 1,
-                },
-            )
-            .await
-            .unwrap()
-            .result;
-        let inspect::Node::Dir(entries) = &vm else {
-            anyhow::bail!("unexpected VM inspect node: {vm:?}");
-        };
-        assert_eq!(
-            entries.iter().any(|entry| entry.name == "guest-watchdog"),
-            i == 0,
-            "guest watchdog should be present only when requested"
         );
 
         // Invalid options exercise Consomme update/remove without binding a port.
@@ -1098,6 +1076,7 @@ async fn test_ttrpc_uefi_boot(
                                     secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
                                 }),
                                 secure_boot_enabled: false,
+                                guest_watchdog: None,
                             },
                         )),
                         // The UEFI watchdog that ends `guest_test_uefi` reports
@@ -1131,6 +1110,26 @@ async fn test_ttrpc_uefi_boot(
             )
             .await
             .unwrap();
+
+    let vm = client
+        .call()
+        .start(
+            inspect_proto::InspectService::Inspect,
+            inspect_proto::InspectRequest {
+                path: "vm".into(),
+                depth: 1,
+            },
+        )
+        .await
+        .unwrap()
+        .result;
+    let inspect::Node::Dir(entries) = &vm else {
+        anyhow::bail!("unexpected VM inspect node: {vm:?}");
+    };
+    assert!(
+        entries.iter().any(|entry| entry.name == "guest-watchdog"),
+        "UEFI should expose the guest watchdog by default"
+    );
 
     let com1 = PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?;
 
