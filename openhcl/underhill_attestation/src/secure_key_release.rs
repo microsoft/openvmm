@@ -23,7 +23,7 @@ use vmgs::Vmgs;
 
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
-    #[error("failed to generate an RSA transfer key")]
+    #[error("failed to generate or export an RSA transfer key")]
     GenerateTransferKey(#[source] crypto::rsa::RsaError),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
@@ -156,7 +156,12 @@ pub async fn request_vmgs_encryption_keys(
         )
     })?;
 
-    let components = transfer_key.to_components();
+    let components = transfer_key.to_components().map_err(|e| {
+        (
+            RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
+            false,
+        )
+    })?;
     let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(
