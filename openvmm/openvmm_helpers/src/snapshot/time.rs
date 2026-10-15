@@ -34,7 +34,7 @@ fn identity(bytes: &[u8], description: &str) -> Result<[u8; 16], TimeAbiError> {
         .map_err(|_| manifest_error(format!("{description} is {} bytes, not 16", bytes.len())))
 }
 
-/// Validates a time contract (restore step 2 of the specification).
+/// Validates a snapshot's time contract before a restore relies on it.
 pub fn validate_time_contract(contract: &SnapshotTimeContract) -> Result<(), TimeAbiError> {
     let SnapshotTimeContract {
         time_abi_version,
@@ -157,8 +157,8 @@ pub fn required_machine_contract(
         manifest_error("the microVM snapshot has no machine contract, so no time ABI records")
     })
 }
-/// The controller's view of a time ABI restore after restore steps 2 to 5 of
-/// the specification.
+/// The controller's view of a time ABI restore after its preflight,
+/// [`preflight_time_abi_restore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeAbiRestorePreflight {
     /// The capture record.
@@ -172,10 +172,10 @@ pub struct TimeAbiRestorePreflight {
     pub cpu_profile: String,
 }
 
-/// Runs restore steps 2 to 5 of the specification on a version 6 machine
-/// contract: the time ABI records, the backend, the CPU profile and host CPU
-/// generation, and the downtime preflight against the destination host's
-/// identity and clocks.
+/// Runs the time ABI's restore preflight on a version 6 machine contract: it
+/// checks the time ABI records, the backend, the CPU profile and host CPU
+/// generation, and the downtime against the destination host's identity and
+/// clocks.
 ///
 /// The snapshot's profile must be pinned in this OpenVMM with the same
 /// digest, and the embedded document must be the pinned profile's canonical
