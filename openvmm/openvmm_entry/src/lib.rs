@@ -316,9 +316,7 @@ async fn vm_config_from_command_line(
     mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
-    opt.validate_isolation_options()?;
-    opt.validate_igvm_options()?;
-    opt.validate_bounce_options()?;
+    let snp_bounce = opt.validate_vm_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     let uefi = opt.effective_uefi()?;
@@ -758,7 +756,7 @@ async fn vm_config_from_command_line(
                 storage_builder::DiskLocation::VirtioBlk {
                     pcie_port: pcie_port.clone(),
                     serial: serial.clone(),
-                    bounce_io,
+                    bounce_io: bounce_io || snp_bounce,
                 },
                 kind,
                 is_dvd,
@@ -1892,7 +1890,7 @@ async fn vm_config_from_command_line(
             max_queues: vport.max_queues,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
-            bounce_io: cli_cfg.bounce_io,
+            bounce_io: cli_cfg.bounce_io || snp_bounce,
         }
         .into_resource();
         if let Some(pcie_port) = &cli_cfg.pcie_port {
@@ -2063,7 +2061,7 @@ async fn vm_config_from_command_line(
             guest_cid: 0x3,
             base_path: vsock_path.clone(),
             listener,
-            bounce_io: opt.virtio_vsock_bounce,
+            bounce_io: opt.virtio_vsock_bounce || snp_bounce,
         }
         .into_resource();
         add_virtio_device(virtio_vsock_bus.clone(), resource, &mut pcie_devices);
@@ -2733,6 +2731,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     meshworker::run_vmm_mesh_host()?;
 
     let opt = cli_args::parse_options();
+    opt.validate_vm_options()?;
 
     // Print the version number. This comes after argument parsing to not interfere
     // with --version and --help.
@@ -2826,8 +2825,15 @@ async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32
 async fn run_control_inner(
     driver: &DefaultDriver,
     mesh_slot: &mut Option<VmmMesh>,
-    opt: Options,
+    mut opt: Options,
 ) -> anyhow::Result<i32> {
+    let hypervisor = match &opt.hypervisor {
+        Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+        None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+    };
+    // Resource creation validates backend parameters once. All admission and
+    // device defaults below use the actual selected backend, including auto.
+    opt.hypervisor = Some(hypervisor.id().to_owned());
     let mesh = mesh_slot.as_ref().unwrap();
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
@@ -2970,10 +2976,7 @@ async fn run_control_inner(
         };
 
         let params = VmWorkerParameters {
-            hypervisor: match &opt.hypervisor {
-                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
-                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
-            },
+            hypervisor,
             cfg: vm_config,
             saved_state,
             shared_memory,
