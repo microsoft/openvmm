@@ -150,7 +150,13 @@ impl AsyncRun<RngQueue> for RngWorker {
             match work {
                 Ok(work) => {
                     let bytes = process_rng_request(&state.mem, &work);
-                    state.queue.complete(work, bytes);
+                    if let Err(err) = state.queue.complete(work.into_completion(), bytes) {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "queue completion failed"
+                        );
+                        break;
+                    }
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(

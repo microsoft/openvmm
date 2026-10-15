@@ -182,7 +182,13 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
             match work {
                 Ok(work) => {
                     let bytes = process_9p_request(&state.mem, &self.fs, &work);
-                    state.queue.complete(work, bytes);
+                    if let Err(err) = state.queue.complete(work.into_completion(), bytes) {
+                        tracing::error!(
+                            error = &err as &dyn std::error::Error,
+                            "queue completion failed; stopping until reset"
+                        );
+                        break;
+                    }
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");

@@ -996,11 +996,10 @@ impl Worker {
                 );
                 // Complete (drop) the packet in avail order via the in-order
                 // completion discipline.
-                self.virtio_state.tx_in_order.complete(
-                    &mut self.virtio_state.tx_queue,
-                    work.into_completion(),
-                    0,
-                );
+                self.virtio_state
+                    .tx_in_order
+                    .complete(&mut self.virtio_state.tx_queue, work.into_completion(), 0)
+                    .map_err(WorkerError::VirtioQueue)?;
             }
         }
         Ok(())
@@ -1308,11 +1307,10 @@ impl Worker {
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
-                    self.virtio_state.rx_in_order.complete(
-                        &mut self.virtio_state.rx_queue,
-                        work.into_completion(),
-                        0,
-                    );
+                    self.virtio_state
+                        .rx_in_order
+                        .complete(&mut self.virtio_state.rx_queue, work.into_completion(), 0)
+                        .map_err(WorkerError::VirtioQueue)?;
                 }
                 Err(RxQueueError::DuplicateIndex(work)) => {
                     // A duplicate descriptor index cannot be tracked (the pool
@@ -1347,11 +1345,14 @@ impl Worker {
         for ready_id in state.data.rx_ready[..n].iter() {
             state.stats.rx_packets.increment();
             let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
-            self.virtio_state.rx_in_order.complete(
-                &mut self.virtio_state.rx_queue,
-                work.into_completion(),
-                bytes,
-            );
+            self.virtio_state
+                .rx_in_order
+                .complete(
+                    &mut self.virtio_state.rx_queue,
+                    work.into_completion(),
+                    bytes,
+                )
+                .map_err(WorkerError::VirtioQueue)?;
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
@@ -1424,11 +1425,10 @@ impl Worker {
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
         let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
-        self.virtio_state.tx_in_order.complete(
-            &mut self.virtio_state.tx_queue,
-            tx_packet.completion,
-            0,
-        );
+        self.virtio_state
+            .tx_in_order
+            .complete(&mut self.virtio_state.tx_queue, tx_packet.completion, 0)
+            .map_err(WorkerError::VirtioQueue)?;
         self.active_state.stats.tx_packets.increment();
         Ok(())
     }

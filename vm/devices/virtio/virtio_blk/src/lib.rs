@@ -132,7 +132,14 @@ enum IoStat {
 impl BlkWorker {
     /// Complete a descriptor and accumulate stats.
     fn finish_io(&mut self, queue: &mut VirtioQueue, completion: IoCompletion) {
-        queue.complete(completion.work, completion.bytes_written);
+        if let Err(err) =
+            queue.complete(completion.work.into_completion(), completion.bytes_written)
+        {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "queue completion failed"
+            );
+        }
         match completion.stat {
             IoStat::Read => self.stats.read_ops.increment(),
             IoStat::Write => self.stats.write_ops.increment(),
