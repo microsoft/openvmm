@@ -22,6 +22,14 @@ blob, or a layered composition of multiple backends.
 | NvmeDisk | [`disk_nvme`](https://openvmm.dev/rustdoc/linux/disk_nvme/index.html) | Physical NVMe (VFIO) | Linux/Windows | User-mode NVMe driver. Resize via AEN. |
 | StripedDisk | [`disk_striped`](https://openvmm.dev/rustdoc/linux/disk_striped/index.html) | Multiple Disks | Cross-platform | Stripes data across underlying disks. |
 
+On Windows, `disk_vhdmp` forwards guest discard through
+[`RawSCSIVirtualDisk`](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-rawscsivirtualdisk)
+using the existing virtual-disk handle, without exposing a host disk device.
+It queries SCSI provisioning and block-limit pages before enabling UNMAP,
+and only promises zero reads when the driver advertises that guarantee.
+Discard makes space eligible for reclamation; shrinking the backing file may
+still require a separate compaction operation.
+
 ## Decorators
 
 Decorators wrap another
