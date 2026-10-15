@@ -49,8 +49,7 @@
 //!   which has no constants, encodes and hashes at cold boot and decodes at
 //!   restore.
 //!
-//! Failures carry the stable codes of the time ABI specification
-//! ([`ProfileError`]).
+//! Failures carry the stable codes of the NVX time ABI ([`ProfileError`]).
 //!
 //! A [`CpuFingerprint`](fingerprint::CpuFingerprint) records the CPU surface
 //! that one backend supports on one host, with the host's identity, as
