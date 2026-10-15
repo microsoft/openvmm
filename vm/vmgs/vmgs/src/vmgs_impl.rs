@@ -1143,6 +1143,9 @@ impl Vmgs {
         encryption_key: &[u8],
         encryption_algorithm: EncryptionAlgorithm,
     ) -> Result<Option<usize>, Error> {
+        if encryption_key.len() != VMGS_ENCRYPTION_KEY_SIZE {
+            return Err(Error::InvalidArgument("encryption key length"));
+        }
         let old_index = self.state.active_datastore_key_index;
 
         match self
@@ -1235,6 +1238,9 @@ impl Vmgs {
     /// Disassociates the root key at the specified index from the data store.
     #[cfg(feature = "encryption")]
     pub async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
+        if key_index >= self.state.datastore_keys.len() {
+            return Err(Error::InvalidArgument("key index"));
+        }
         if self.state.version < VMGS_VERSION_3_0 {
             return Err(Error::EncryptionNotSupported);
         }
@@ -2739,6 +2745,129 @@ mod tests {
         vmgs.remove_encryption_key(1).await.unwrap();
         let read_buf = vmgs.read_file_raw(FileId::BIOS_NVRAM).await;
         assert_ne!(read_buf.unwrap(), buf);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[async_test]
+    async fn invalid_encryption_key_lengths_preserve_slots() {
+        let keys = [[1; VMGS_ENCRYPTION_KEY_SIZE], [2; VMGS_ENCRYPTION_KEY_SIZE]];
+        for update in [false, true] {
+            for slot_count in 0..=keys.len() {
+                let disk = new_test_file();
+                let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+                for key in keys[..slot_count].iter().take(1) {
+                    vmgs.add_encryption_key(key, EncryptionAlgorithm::AES_GCM)
+                        .await
+                        .unwrap();
+                }
+                vmgs.write_file_encrypted(FileId::BIOS_NVRAM, b"preserved state")
+                    .await
+                    .unwrap();
+                for key in keys[..slot_count].iter().skip(1) {
+                    vmgs.add_encryption_key(key, EncryptionAlgorithm::AES_GCM)
+                        .await
+                        .unwrap();
+                }
+                let sequence = vmgs.state.active_header_sequence_number;
+                let active_index = vmgs.state.active_datastore_key_index;
+                let datastore_keys = vmgs.state.datastore_keys;
+                for length in [
+                    0,
+                    1,
+                    VMGS_ENCRYPTION_KEY_SIZE - 1,
+                    VMGS_ENCRYPTION_KEY_SIZE + 1,
+                    64,
+                ] {
+                    let invalid_key = vec![3; length];
+                    let result = if update {
+                        vmgs.update_encryption_key(&invalid_key, EncryptionAlgorithm::AES_GCM)
+                            .await
+                    } else {
+                        vmgs.add_encryption_key(&invalid_key, EncryptionAlgorithm::AES_GCM)
+                            .await
+                            .map(|_| ())
+                    };
+                    assert!(matches!(
+                        result,
+                        Err(Error::InvalidArgument("encryption key length"))
+                    ));
+                    assert_eq!(vmgs.state.active_header_sequence_number, sequence);
+                    assert_eq!(vmgs.state.active_datastore_key_index, active_index);
+                    assert_eq!(vmgs.state.datastore_keys, datastore_keys);
+                    assert_eq!(vmgs.state.datastore_key_count as usize, slot_count);
+                }
+                drop(vmgs);
+                let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
+                assert_eq!(reopened.encrypted(), slot_count != 0);
+                for key in &keys[..slot_count] {
+                    let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
+                    reopened.unlock_with_encryption_key(key).await.unwrap();
+                    assert_eq!(
+                        reopened.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+                        b"preserved state"
+                    );
+                }
+                if slot_count == 0 {
+                    assert_eq!(
+                        reopened.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+                        b"preserved state"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    #[async_test]
+    async fn invalid_encryption_key_indices_preserve_slots() {
+        let keys = [[1; VMGS_ENCRYPTION_KEY_SIZE], [2; VMGS_ENCRYPTION_KEY_SIZE]];
+        for slot_count in 0..=keys.len() {
+            let disk = new_test_file();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            for key in keys[..slot_count].iter().take(1) {
+                vmgs.add_encryption_key(key, EncryptionAlgorithm::AES_GCM)
+                    .await
+                    .unwrap();
+            }
+            vmgs.write_file_encrypted(FileId::BIOS_NVRAM, b"preserved state")
+                .await
+                .unwrap();
+            for key in keys[..slot_count].iter().skip(1) {
+                vmgs.add_encryption_key(key, EncryptionAlgorithm::AES_GCM)
+                    .await
+                    .unwrap();
+            }
+            let sequence = vmgs.state.active_header_sequence_number;
+            let active_index = vmgs.state.active_datastore_key_index;
+            let datastore_keys = vmgs.state.datastore_keys;
+            for index in [keys.len(), keys.len() + 1, usize::MAX] {
+                assert!(matches!(
+                    vmgs.remove_encryption_key(index).await,
+                    Err(Error::InvalidArgument("key index"))
+                ));
+                assert_eq!(vmgs.state.active_header_sequence_number, sequence);
+                assert_eq!(vmgs.state.active_datastore_key_index, active_index);
+                assert_eq!(vmgs.state.datastore_keys, datastore_keys);
+                assert_eq!(vmgs.state.datastore_key_count as usize, slot_count);
+            }
+            drop(vmgs);
+            let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
+            assert_eq!(reopened.encrypted(), slot_count != 0);
+            for key in &keys[..slot_count] {
+                let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
+                reopened.unlock_with_encryption_key(key).await.unwrap();
+                assert_eq!(
+                    reopened.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+                    b"preserved state"
+                );
+            }
+            if slot_count == 0 {
+                assert_eq!(
+                    reopened.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+                    b"preserved state"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "encryption")]
