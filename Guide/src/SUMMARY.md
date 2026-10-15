@@ -116,6 +116,7 @@
       - [virtio-9p]()
       - [virtio-net]()
       - [virtio-pmem]()
+      - [virtio-rtc](./reference/devices/virtio/rtc.md)
   - [VMBus]()
       - [storvsp](./reference/devices/vmbus/storvsp.md)
         - [Channels & Subchannels](./reference/devices/vmbus/storvsp_channels.md)
