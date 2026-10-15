@@ -1076,7 +1076,7 @@ async fn test_ttrpc_uefi_boot(
                                     secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
                                 }),
                                 secure_boot_enabled: false,
-                                guest_watchdog: None,
+                                disable_guest_watchdog: false,
                             },
                         )),
                         // The UEFI watchdog that ends `guest_test_uefi` reports

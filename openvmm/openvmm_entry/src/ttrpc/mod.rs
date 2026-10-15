@@ -610,7 +610,7 @@ impl IommufdContexts {
 fn guest_watchdog_enabled(config: &vmservice::VmConfig) -> bool {
     matches!(
         config.boot_config.as_ref(),
-        Some(vmservice::vm_config::BootConfig::Uefi(uefi)) if uefi.guest_watchdog != Some(false)
+        Some(vmservice::vm_config::BootConfig::Uefi(uefi)) if !uefi.disable_guest_watchdog
     )
 }
 
@@ -2613,7 +2613,6 @@ mod tests {
                     let valid =
                         !disable_hv || (disable_vmbus && !(is_uefi && cfg!(guest_arch = "x86_64")));
                     assert_eq!(validate_platform_config(&config).is_ok(), valid);
-                    assert_eq!(guest_watchdog_enabled(&config), is_uefi);
                 }
             }
         }
@@ -2633,14 +2632,7 @@ mod tests {
             (BootConfig::Uefi(Default::default()), true),
             (
                 BootConfig::Uefi(vmservice::Uefi {
-                    guest_watchdog: Some(true),
-                    ..Default::default()
-                }),
-                true,
-            ),
-            (
-                BootConfig::Uefi(vmservice::Uefi {
-                    guest_watchdog: Some(false),
+                    disable_guest_watchdog: true,
                     ..Default::default()
                 }),
                 false,

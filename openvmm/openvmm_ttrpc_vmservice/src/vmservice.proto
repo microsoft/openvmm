@@ -142,8 +142,9 @@ message UEFI {
     // of whether initial Secure Boot variables are supplied above.
     bool secure_boot_enabled = 5;
 
-    // Expose the guest watchdog via ACPI WDAT. Enabled by default. false omits device.
-    optional bool guest_watchdog = 6;
+    // The guest watchdog is enabled by default for UEFI.
+    // Set to omit the device.
+    bool disable_guest_watchdog = 6;
 }
 
 message MemoryConfig {
