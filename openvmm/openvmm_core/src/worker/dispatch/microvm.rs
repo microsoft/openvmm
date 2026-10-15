@@ -339,8 +339,8 @@ impl LoadedVm {
         quiesce.complete("capture", "quiesce", Default::default());
         self.running = false;
 
-        // Time ABI capture steps 1 and 2: the LAPIC timers, then the capture
-        // anchor and records. The PIT checks itself when saved.
+        // The time ABI's capture checks and records: the LAPIC timers, then
+        // the capture anchor and records. The PIT checks itself when saved.
         #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
         let mut time = self.capture_time_abi().await.map_err(|error| {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
@@ -385,8 +385,7 @@ impl LoadedVm {
     }
 
     /// Takes the time ABI records of a capture: checks the LAPIC timers, then
-    /// takes the capture anchor and records (capture steps 1 to 3 of the
-    /// specification).
+    /// takes the capture anchor and records.
     #[cfg(guest_arch = "x86_64")]
     async fn capture_time_abi(&mut self) -> anyhow::Result<openvmm_defs::time_abi::TimeCapture> {
         let state = self

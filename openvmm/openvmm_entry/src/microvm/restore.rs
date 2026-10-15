@@ -117,8 +117,8 @@ impl MicrovmRestore {
     }
 
     /// Returns the controller's fields of restore packet version 4 for a time
-    /// ABI restore, and the generation ID they imply: restore step 7 of the
-    /// specification. The generation counter is the snapshot's plus one.
+    /// ABI restore, and the generation ID they imply. The generation counter
+    /// is the snapshot's plus one.
     pub(crate) fn time_abi_restore_packet(
         &self,
         restore_online_vp_count: Option<u32>,
@@ -138,9 +138,9 @@ impl MicrovmRestore {
 
 /// Returns the controller's fields of restore packet version 4 for a time
 /// ABI restore of a snapshot with the time contract `time`, and the
-/// generation ID they imply: restore step 7 of the specification. The
-/// generation counter is the snapshot's plus one, and `ack_required` makes
-/// the guest acknowledge the restore through port `0x605`.
+/// generation ID they imply. The generation counter is the snapshot's plus
+/// one, and `ack_required` makes the guest acknowledge the restore through
+/// port `0x605`.
 pub(crate) fn restore_packet_base(
     time: &SnapshotTimeContract,
     restore_online_vp_count: Option<u32>,
@@ -413,8 +413,9 @@ pub(crate) struct TimeAbiRestoreOptions<'a> {
     pub(crate) hooks: &'a TimeAbiTestHooks,
 }
 
-/// A time ABI restore validated by the controller: restore steps 1 to 6 of
-/// the specification.
+/// A time ABI restore that the controller validated: the time ABI preflight
+/// passed against this host, and the snapshot's machine contract matches the
+/// restore's configuration.
 pub(crate) struct TimeAbiRestore {
     contract: SnapshotTimeContract,
     cpu_profile: SnapshotCpuProfile,
@@ -526,8 +527,8 @@ pub(crate) fn validate_restore_contract(
     })
 }
 
-/// Runs the controller's time ABI preflight (restore steps 2 to 5 of the
-/// specification) against this host, and returns the host's identity.
+/// Runs the controller's time ABI preflight against this host, and returns
+/// the host's identity.
 fn preflight_time_abi_restore(
     contract: &SnapshotMachineContract,
     hypervisor: &str,
