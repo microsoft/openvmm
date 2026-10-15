@@ -1144,6 +1144,7 @@ mod tests {
     use crate::importer::IsolationConfig;
     use crate::importer::ParameterAreaIndex;
     use crate::importer::StartupMemoryType;
+    use std::io::Cursor;
     use test_with_tracing::test;
     use zerocopy::FromBytes;
 
@@ -1708,5 +1709,108 @@ mod tests {
             ),
             Err(Error::LowTablesTooLarge(..))
         ));
+    }
+
+    /// Builds a minimal little-endian x86-64 ELF executable with one `PT_LOAD`
+    /// program header, and no file contents, for each `(paddr, memsz)` in
+    /// `load_segments`.
+    fn test_elf(entrypoint: u64, load_segments: &[(u64, u64)]) -> Cursor<Vec<u8>> {
+        use object::LittleEndian;
+        use object::U16;
+        use object::U32;
+        use object::U64;
+        use object::elf;
+
+        let header_size = size_of::<elf::FileHeader64<LittleEndian>>();
+        let header = elf::FileHeader64::<LittleEndian> {
+            e_ident: elf::Ident {
+                magic: elf::ELFMAG,
+                class: elf::ELFCLASS64,
+                data: elf::ELFDATA2LSB,
+                version: elf::EV_CURRENT,
+                os_abi: elf::ELFOSABI_NONE,
+                abi_version: 0,
+                padding: [0; 7],
+            },
+            e_type: U16::new(LittleEndian, elf::ET_EXEC),
+            e_machine: U16::new(LittleEndian, elf::EM_X86_64),
+            e_version: U32::new(LittleEndian, elf::EV_CURRENT.into()),
+            e_entry: U64::new(LittleEndian, entrypoint),
+            e_phoff: U64::new(LittleEndian, header_size as u64),
+            e_shoff: U64::new(LittleEndian, 0),
+            e_flags: U32::new(LittleEndian, 0),
+            e_ehsize: U16::new(LittleEndian, header_size as u16),
+            e_phentsize: U16::new(
+                LittleEndian,
+                size_of::<elf::ProgramHeader64<LittleEndian>>() as u16,
+            ),
+            e_phnum: U16::new(LittleEndian, load_segments.len().try_into().unwrap()),
+            e_shentsize: U16::new(
+                LittleEndian,
+                size_of::<elf::SectionHeader64<LittleEndian>>() as u16,
+            ),
+            e_shnum: U16::new(LittleEndian, 0),
+            e_shstrndx: U16::new(LittleEndian, 0),
+        };
+        let mut image = object::pod::bytes_of(&header).to_vec();
+        for &(paddr, memsz) in load_segments {
+            let program_header = elf::ProgramHeader64::<LittleEndian> {
+                p_type: U32::new(LittleEndian, elf::PT_LOAD),
+                p_flags: U32::new(LittleEndian, elf::PF_R | elf::PF_X),
+                p_offset: U64::new(LittleEndian, 0),
+                p_vaddr: U64::new(LittleEndian, paddr),
+                p_paddr: U64::new(LittleEndian, paddr),
+                p_filesz: U64::new(LittleEndian, 0),
+                p_memsz: U64::new(LittleEndian, memsz),
+                p_align: U64::new(LittleEndian, HV_PAGE_SIZE),
+            };
+            image.extend_from_slice(object::pod::bytes_of(&program_header));
+        }
+        Cursor::new(image)
+    }
+
+    #[test]
+    fn elf_without_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE, &[]);
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_with_only_empty_load_segment_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE + 1, &[(KERNEL_BASE + 1, 0)]);
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_entrypoint_outside_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(
+            KERNEL_BASE + HV_PAGE_SIZE,
+            &[
+                (KERNEL_BASE, HV_PAGE_SIZE),
+                (KERNEL_BASE + 2 * HV_PAGE_SIZE, HV_PAGE_SIZE),
+            ],
+        );
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::EntryPointNotInLoadableSegment { .. })
+        ));
+        assert!(importer.imports.is_empty());
     }
 }
