@@ -617,7 +617,7 @@ options:
     ///   --net consomme:hostfwd=tcp:127.0.0.1:8080-:80
     ///   --net consomme:hostfwd=tcp:\[::1\]:8080-:80
     ///   --net consomme:10.0.0.0/24,hostfwd=tcp::22-:22,hostfwd=udp::5000-:5000
-    #[clap(long)]
+    #[clap(long, value_parser = parse_non_bounce_nic)]
     pub net: Vec<NicConfigCli>,
 
     /// expose a virtual NIC using the Windows kernel-mode vmswitch.
@@ -857,6 +857,12 @@ The openhcl personality requires explicit --hv --vtl2."#
     #[clap(long, value_name = "PATH")]
     pub virtio_vsock_path: Option<String>,
 
+    /// force owned in-process vsock staging (requires --virtio-vsock-path)
+    /// Kernel-denied guest memory uses owned staging automatically.
+    #[clap(long, requires = "virtio_vsock_path")]
+    #[cfg_attr(target_os = "linux", clap(conflicts_with = "virtio_vsock_vhost_cid"))]
+    pub virtio_vsock_bounce: bool,
+
     /// expose the guest in the host AF_VSOCK namespace using the Linux
     /// vhost_vsock kernel backend
     #[cfg(target_os = "linux")]
@@ -868,12 +874,15 @@ The openhcl personality requires explicit --hv --vtl2."#
     )]
     pub virtio_vsock_vhost_cid: Option<u32>,
 
-    /// expose a virtio network with the given backend (dio | vmnic | tap |
+    /// expose a virtio network with the given backend (consomme | dio | tap |
     /// none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `bounce:` to force owned staging for this NIC only
+    /// (consomme, Linux tap, or none; VTL0 only).
+    /// Kernel-denied guest memory uses owned staging automatically.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -1027,7 +1036,7 @@ flags:
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
     /// at the specified port.
-    #[clap(long)]
+    #[clap(long, value_parser = parse_non_bounce_nic)]
     pub mana: Vec<NicConfigCli>,
 
     /// use a specific hypervisor interface, with optional backend-specific
@@ -1414,13 +1423,30 @@ Syntax: id=<name>
 }
 
 impl Options {
-    /// Reject bounce mode outside the per-device virtio-blk option.
+    /// Reject bounce mode outside supported per-device options.
     pub fn validate_bounce_options(&self) -> anyhow::Result<()> {
         for disk in self.disk.iter().chain(&self.nvme) {
             disk.validate_bounce_scope(false)?;
         }
         for disk in &self.virtio_blk {
             disk.validate_bounce_scope(true)?;
+        }
+        for nic in self.net.iter().chain(&self.mana) {
+            if nic.bounce_io {
+                anyhow::bail!("`bounce:` is only supported with --virtio-net");
+            }
+        }
+        for nic in &self.virtio_net {
+            nic.validate_bounce_io().map_err(anyhow::Error::msg)?;
+        }
+        if self.virtio_vsock_bounce {
+            if self.virtio_vsock_path.is_none() {
+                anyhow::bail!("--virtio-vsock-bounce requires --virtio-vsock-path");
+            }
+            #[cfg(target_os = "linux")]
+            if self.virtio_vsock_vhost_cid.is_some() {
+                anyhow::bail!("--virtio-vsock-bounce does not support kernel vhost-vsock");
+            }
         }
         Ok(())
     }
@@ -3132,6 +3158,31 @@ pub struct NicConfigCli {
     pub max_queues: Option<u16>,
     pub underhill: bool,
     pub pcie_port: Option<String>,
+    pub bounce_io: bool,
+}
+
+fn parse_non_bounce_nic(s: &str) -> Result<NicConfigCli, String> {
+    let config: NicConfigCli = s.parse()?;
+    if config.bounce_io {
+        return Err("`bounce:` is only supported with --virtio-net".into());
+    }
+    Ok(config)
+}
+
+impl NicConfigCli {
+    pub fn validate_bounce_io(&self) -> Result<(), String> {
+        if !self.bounce_io {
+            return Ok(());
+        }
+        if self.underhill || self.vtl != DeviceVtl::Vtl0 {
+            return Err("`bounce:` is incompatible with `uh` and `vtl2`".into());
+        }
+        match self.endpoint {
+            EndpointConfigCli::Consomme { .. } | EndpointConfigCli::None => Ok(()),
+            EndpointConfigCli::Tap { .. } if cfg!(target_os = "linux") => Ok(()),
+            _ => Err("`bounce:` requires consomme, Linux tap, or none".into()),
+        }
+    }
 }
 
 impl FromStr for NicConfigCli {
@@ -3142,6 +3193,7 @@ impl FromStr for NicConfigCli {
         let mut max_queues = None;
         let mut underhill = false;
         let mut pcie_port = None;
+        let mut bounce_io = false;
         while let Some((opt, rest)) = s.split_once(':') {
             if let Some((opt, val)) = opt.split_once('=') {
                 match opt {
@@ -3162,6 +3214,7 @@ impl FromStr for NicConfigCli {
                         vtl = DeviceVtl::Vtl2;
                     }
                     "uh" => underhill = true,
+                    "bounce" => bounce_io = true,
                     _ => break,
                 }
             }
@@ -3177,13 +3230,16 @@ impl FromStr for NicConfigCli {
         }
 
         let endpoint = s.parse()?;
-        Ok(NicConfigCli {
+        let config = NicConfigCli {
             vtl,
             endpoint,
             max_queues,
             underhill,
             pcie_port,
-        })
+            bounce_io,
+        };
+        config.validate_bounce_io()?;
+        Ok(config)
     }
 }
 
@@ -4619,6 +4675,7 @@ mod tests {
         let config = NicConfigCli::from_str("none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
         assert!(config.max_queues.is_none());
+        assert!(!config.bounce_io);
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
@@ -4653,6 +4710,137 @@ mod tests {
         assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
         assert!(NicConfigCli::from_str("pcie_port=:none").is_err());
         assert!(NicConfigCli::from_str("pcie_port:none").is_err());
+    }
+
+    #[test]
+    fn test_nic_bounce_prefix_order_and_options() {
+        for value in [
+            "bounce:pcie_port=rp0:queues=4:consomme:10.0.0.0/24,hostfwd=tcp:127.0.0.1:8080-:80",
+            "queues=4:pcie_port=rp0:bounce:consomme:10.0.0.0/24,hostfwd=tcp:127.0.0.1:8080-:80",
+        ] {
+            let config: NicConfigCli = value.parse().unwrap();
+            assert!(config.bounce_io);
+            assert_eq!(config.pcie_port.as_deref(), Some("rp0"));
+            assert_eq!(config.max_queues, Some(4));
+            assert_eq!(
+                config.endpoint,
+                EndpointConfigCli::Consomme {
+                    cidr: Some("10.0.0.0/24".into()),
+                    host_fwd: vec![HostPortConfigCli {
+                        protocol: HostPortProtocolCli::Tcp,
+                        host_address: Some("127.0.0.1".parse().unwrap()),
+                        host_port: 8080,
+                        guest_port: 80,
+                    }],
+                }
+            );
+        }
+        assert!(NicConfigCli::from_str("bounce:none").unwrap().bounce_io);
+        assert_eq!(
+            NicConfigCli::from_str("bounce:tap:tap0").is_ok(),
+            cfg!(target_os = "linux")
+        );
+        for value in [
+            "bounce:uh:consomme",
+            "uh:bounce:consomme",
+            "bounce:vtl2:none",
+            "vtl2:bounce:none",
+            "bounce:dio",
+            "bounce:vmnic",
+            "bounce:vhost-user:path/to/net.sock",
+        ] {
+            assert!(NicConfigCli::from_str(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_nic_bounce_cli_scope() {
+        for flag in ["--net", "--mana"] {
+            assert!(
+                Options::try_parse_from(["openvmm", flag, "bounce:consomme"]).is_err(),
+                "{flag}"
+            );
+            let mut opt = Options::try_parse_from(["openvmm", flag, "consomme"]).unwrap();
+            if flag == "--net" {
+                opt.net[0].bounce_io = true;
+            } else {
+                opt.mana[0].bounce_io = true;
+            }
+            assert!(opt.validate_bounce_options().is_err());
+        }
+        let mut opt = Options::try_parse_from([
+            "openvmm",
+            "--virtio-net",
+            "bounce:consomme",
+            "--virtio-net",
+            "consomme",
+            "--net",
+            "consomme",
+            "--mana",
+            "none",
+        ])
+        .unwrap();
+        opt.validate_bounce_options().unwrap();
+        assert!(opt.virtio_net[0].bounce_io);
+        assert!(!opt.virtio_net[1].bounce_io);
+        assert!(!opt.net[0].bounce_io);
+        assert!(!opt.mana[0].bounce_io);
+        opt.virtio_net[0].vtl = DeviceVtl::Vtl2;
+        assert!(opt.validate_bounce_options().is_err());
+        assert!(Options::try_parse_from(["openvmm", "--bounce"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_vhost_user_rejects_bounce() {
+        for value in [
+            "path/to/net.sock,type=net,bounce",
+            "path/to/net.sock,device_id=1,queue_sizes=[256],bounce",
+        ] {
+            assert!(Options::try_parse_from(["openvmm", "--vhost-user", value]).is_err());
+        }
+    }
+
+    #[test]
+    fn test_virtio_vsock_bounce_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(!opt.virtio_vsock_bounce);
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bounce"]).is_err());
+        for bus in ["mmio", "pci", "pcie", "pcie:custom"] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-path",
+                "path/to/vsock",
+                "--virtio-vsock-bounce",
+                "--virtio-vsock-bus",
+                bus,
+            ])
+            .unwrap();
+            assert!(opt.virtio_vsock_bounce);
+            assert_eq!(opt.virtio_vsock_path.as_deref(), Some("path/to/vsock"));
+            opt.validate_bounce_options().unwrap();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--virtio-vsock-vhost-cid",
+                    "3",
+                    "--virtio-vsock-bounce",
+                ])
+                .is_err()
+            );
+            let mut opt = Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-path",
+                "path/to/vsock",
+                "--virtio-vsock-bounce",
+            ])
+            .unwrap();
+            opt.virtio_vsock_vhost_cid = Some(3);
+            assert!(opt.validate_bounce_options().is_err());
+        }
     }
 
     #[test]

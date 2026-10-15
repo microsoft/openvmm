@@ -2348,6 +2348,7 @@ async fn build_virtio_device(
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,
                 endpoint,
+                bounce_io: false,
             }
             .into_resource()
         }
@@ -2364,6 +2365,7 @@ async fn build_virtio_device(
                 guest_cid: guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID),
                 base_path: socket_path,
                 listener,
+                bounce_io: false,
             }
             .into_resource()
         }

@@ -56,6 +56,7 @@ use crate::VirtioNetHeaderGso;
 use crate::VirtioNetHeaderGsoProtocol;
 use crate::Worker;
 use crate::header_size;
+use net_backend::BufferAccess;
 
 // --- Constants ---
 
@@ -96,6 +97,7 @@ struct TxAvailBehavior {
     sync: bool,
     consume_all: bool,
     consume_count: Option<usize>,
+    error_after_accept: bool,
 }
 
 impl Default for TxAvailBehavior {
@@ -104,6 +106,7 @@ impl Default for TxAvailBehavior {
             sync: true,
             consume_all: true,
             consume_count: None,
+            error_after_accept: false,
         }
     }
 }
@@ -119,6 +122,34 @@ struct MockQueue {
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
+    probe: Arc<Mutex<BackendProbe>>,
+}
+
+#[derive(Default)]
+struct BackendProbe {
+    guest_origin: Option<usize>,
+    memory: Option<GuestMemory>,
+    rx_addresses: Vec<Vec<(u64, u32)>>,
+    pending_tx: Vec<TxSegment>,
+    consume_tx: bool,
+    consumed_tx: Vec<Vec<u8>>,
+    queue_dropped: bool,
+    segmented_rx: bool,
+}
+
+impl BackendProbe {
+    fn observe(&mut self, pool: &dyn BufferAccess) {
+        let mem = pool.guest_memory();
+        if let Some(origin) = self.guest_origin {
+            assert_eq!(mem.io_policy(), guestmem::GuestMemoryIoPolicy::Direct);
+            assert_ne!(
+                mem.full_mapping().unwrap().0 as usize,
+                origin,
+                "backend received guest-origin mapping"
+            );
+        }
+        self.memory = Some(mem.clone());
+    }
 }
 
 impl InspectMut for MockQueue {
@@ -127,13 +158,34 @@ impl InspectMut for MockQueue {
     }
 }
 
+impl Drop for MockQueue {
+    fn drop(&mut self) {
+        self.probe.lock().queue_dropped = true;
+    }
+}
+
 #[async_trait]
 impl net_backend::Queue for MockQueue {
-    fn poll_ready(
-        &mut self,
-        cx: &mut Context<'_>,
-        _pool: &mut dyn net_backend::BufferAccess,
-    ) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
+        let mut probe = self.probe.lock();
+        probe.observe(pool);
+        if probe.consume_tx {
+            probe.consume_tx = false;
+            let mut segments = probe.pending_tx.as_slice();
+            let mut packets = Vec::new();
+            let mut ids = Vec::new();
+            while !segments.is_empty() {
+                let TxSegmentType::Head(metadata) = &segments[0].ty else {
+                    panic!("missing head")
+                };
+                ids.push(metadata.id);
+                packets.push(net_backend::linearize(pool, &mut segments).unwrap());
+            }
+            probe.pending_tx.clear();
+            probe.consumed_tx.extend(packets);
+            self.tx_completions.lock().push_back(ids);
+        }
+        drop(probe);
         let completions = self.tx_completions.lock();
         if !completions.is_empty() {
             return Poll::Ready(());
@@ -148,7 +200,17 @@ impl net_backend::Queue for MockQueue {
         Poll::Pending
     }
 
-    fn rx_avail(&mut self, _pool: &mut dyn net_backend::BufferAccess, done: &[RxId]) {
+    fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]) {
+        let mut probe = self.probe.lock();
+        probe.observe(pool);
+        for id in done {
+            let mut addresses = Vec::new();
+            pool.push_guest_addresses(*id, &mut addresses);
+            probe
+                .rx_addresses
+                .push(addresses.iter().map(|p| (p.gpa, p.len)).collect());
+        }
+        drop(probe);
         self.rx_pending.lock().extend(done.iter().copied());
         for _ in done {
             self.rx_avail_notify.send(());
@@ -157,14 +219,19 @@ impl net_backend::Queue for MockQueue {
 
     fn rx_poll(
         &mut self,
-        pool: &mut dyn net_backend::BufferAccess,
+        pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
     ) -> anyhow::Result<usize> {
         let mut ready = self.rx_ready.lock();
         let n = ready.len().min(packets.len());
         for packet in packets.iter_mut().take(n) {
             let (rx_id, data, metadata) = ready.pop_front().unwrap();
-            pool.write_packet(rx_id, &metadata, &data);
+            if self.probe.lock().segmented_rx {
+                let split = data.len() / 2;
+                pool.write_packet_segments(rx_id, &metadata, &[&data[..split], &data[split..]]);
+            } else {
+                pool.write_packet(rx_id, &metadata, &data);
+            }
             *packet = rx_id;
         }
         Ok(n)
@@ -172,7 +239,7 @@ impl net_backend::Queue for MockQueue {
 
     fn tx_avail(
         &mut self,
-        _pool: &mut dyn net_backend::BufferAccess,
+        pool: &mut dyn BufferAccess,
         segments: &[TxSegment],
     ) -> anyhow::Result<(bool, usize)> {
         // Log the segments
@@ -203,12 +270,20 @@ impl net_backend::Queue for MockQueue {
         } else {
             segments.len()
         };
+        let mut probe = self.probe.lock();
+        probe.observe(pool);
+        if !behavior.sync {
+            probe.pending_tx.extend_from_slice(&segments[..consumed]);
+        }
+        if behavior.error_after_accept {
+            return Err(anyhow::anyhow!("backend failed after accepting TX"));
+        }
         Ok((behavior.sync, consumed))
     }
 
     fn tx_poll(
         &mut self,
-        _pool: &mut dyn net_backend::BufferAccess,
+        _pool: &mut dyn BufferAccess,
         done: &mut [TxId],
     ) -> Result<usize, TxError> {
         let mut completions = self.tx_completions.lock();
@@ -233,9 +308,16 @@ struct MockQueueHandle {
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Receiver<()>,
     tx_avail_notify: mesh::Receiver<()>,
+    probe: Arc<Mutex<BackendProbe>>,
 }
 
 impl MockQueueHandle {
+    fn consume_delayed_tx(&self) {
+        self.probe.lock().consume_tx = true;
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
+    }
     fn complete_tx(&self, ids: Vec<TxId>) {
         self.tx_completions.lock().push_back(ids);
         if let Some(waker) = self.ready_waker.lock().take() {
@@ -326,6 +408,7 @@ impl MockQueueHandle {
 }
 
 fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
+    let probe = Arc::new(Mutex::new(BackendProbe::default()));
     let tx_avail_behavior = Arc::new(Mutex::new(TxAvailBehavior::default()));
     let tx_avail_log = Arc::new(Mutex::new(Vec::new()));
     let tx_completions = Arc::new(Mutex::new(VecDeque::new()));
@@ -344,6 +427,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
         ready_waker: ready_waker.clone(),
         rx_avail_notify: rx_avail_tx,
         tx_avail_notify: tx_avail_tx,
+        probe: probe.clone(),
     };
     let handle = MockQueueHandle {
         tx_avail_behavior,
@@ -354,6 +438,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
         ready_waker,
         rx_avail_notify: rx_avail_rx,
         tx_avail_notify: tx_avail_rx,
+        probe,
     };
     (queue, handle)
 }
@@ -363,6 +448,8 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
     is_ordered: bool,
+    guest_origin: Option<usize>,
+    endpoint_type: &'static str,
 }
 
 impl InspectMut for MockEndpoint {
@@ -374,7 +461,7 @@ impl InspectMut for MockEndpoint {
 #[async_trait]
 impl Endpoint for MockEndpoint {
     fn endpoint_type(&self) -> &'static str {
-        "mock"
+        self.endpoint_type
     }
 
     async fn get_queues(
@@ -384,6 +471,7 @@ impl Endpoint for MockEndpoint {
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
         let (queue, handle) = new_mock_queue();
+        handle.probe.lock().guest_origin = self.guest_origin;
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
         Ok(())
@@ -412,6 +500,61 @@ impl Endpoint for MockEndpoint {
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
         pending().await
+    }
+}
+
+struct RestartEndpoint {
+    current_probe: Arc<Mutex<BackendProbe>>,
+    queue_tx: mesh::Sender<MockQueueHandle>,
+    stop_gate: Option<mesh::Receiver<()>>,
+    stop_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl InspectMut for RestartEndpoint {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.ignore();
+    }
+}
+
+#[async_trait]
+impl Endpoint for RestartEndpoint {
+    fn endpoint_type(&self) -> &'static str {
+        "mock"
+    }
+
+    fn is_ordered(&self) -> bool {
+        true
+    }
+
+    async fn get_queues(
+        &mut self,
+        _config: Vec<QueueConfig>,
+        _rss: Option<&RssConfig<'_>>,
+        queues: &mut Vec<Box<dyn net_backend::Queue>>,
+    ) -> anyhow::Result<()> {
+        {
+            let old = self.current_probe.lock();
+            assert!(old.queue_dropped);
+            assert!(old.memory.is_none());
+            assert!(old.pending_tx.is_empty());
+        }
+        let (queue, handle) = new_mock_queue();
+        self.current_probe = handle.probe.clone();
+        self.queue_tx.send(handle);
+        queues.push(Box::new(queue));
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        assert!(self.current_probe.lock().queue_dropped);
+        self.stop_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(mut gate) = self.stop_gate.take() {
+            gate.next().await.expect("restart stop gate closed");
+        }
+        let mut consumer = self.current_probe.lock();
+        consumer.pending_tx.clear();
+        consumer.memory = None;
     }
 }
 
@@ -472,6 +615,10 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
+        Self::new_with_bounce(driver, false)
+    }
+
+    fn new_with_bounce(driver: &DefaultDriver, bounce: bool) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
         // Initialize RX queue rings
@@ -487,11 +634,14 @@ impl TestHarness {
         let endpoint = MockEndpoint {
             queue_tx,
             is_ordered: true,
+            guest_origin: bounce.then(|| mem.full_mapping().unwrap().0 as usize),
+            endpoint_type: "mock",
         };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
         let device = Device::builder()
+            .bounce_io(bounce)
             .build(&driver_source, Box::new(endpoint), mac)
             .unwrap();
 
@@ -728,6 +878,1391 @@ impl TestHarness {
 
 use futures::StreamExt;
 
+fn owned_worker(
+    driver: &DefaultDriver,
+    mem: &GuestMemory,
+    size: u16,
+    features: VirtioDeviceFeatures,
+) -> Worker {
+    let frontend = mem.copy_only_view();
+    let queue = |desc_addr, avail_addr, used_addr| {
+        virtio::VirtioQueue::new(
+            features,
+            QueueParams {
+                size,
+                enable: true,
+                desc_addr,
+                avail_addr,
+                used_addr,
+            },
+            frontend.clone(),
+            Interrupt::null(),
+            pal_async::wait::PolledWait::new(driver, Event::new()).unwrap(),
+            None,
+        )
+        .unwrap()
+    };
+    let mut active_state = crate::ActiveState::new(frontend.clone(), size, size);
+    active_state.pending_rx_packets.enable_owned();
+    Worker {
+        virtio_state: crate::VirtioState {
+            rx_queue: queue(RX_DESC_ADDR, RX_AVAIL_ADDR, RX_USED_ADDR),
+            tx_queue: queue(TX_DESC_ADDR, TX_AVAIL_ADDR, TX_USED_ADDR),
+            rx_queue_size: size,
+            tx_queue_size: size,
+            rx_in_order: virtio::in_order::InOrderCompletion::new(size),
+            tx_in_order: virtio::in_order::InOrderCompletion::new(size),
+        },
+        active_state,
+        negotiated_features: features.bank(0).into(),
+        negotiated_features_bank1: features.bank(1).into(),
+        retired: false,
+    }
+}
+
+fn test_memory() -> GuestMemory {
+    let mem = GuestMemory::allocate(TOTAL_MEM_SIZE * 2);
+    init_avail_ring(&mem, RX_AVAIL_ADDR);
+    init_used_ring(&mem, RX_USED_ADDR);
+    init_avail_ring(&mem, TX_AVAIL_ADDR);
+    init_used_ring(&mem, TX_USED_ADDR);
+    mem
+}
+
+#[test]
+fn owned_packet_buffer_allocation_limits() {
+    let limit = crate::buffers::MAX_PACKET_SIZE + header_size();
+    assert!(crate::buffers::packet_buffer(0, limit).unwrap().is_empty());
+    let bytes = crate::buffers::packet_buffer(limit, limit).unwrap();
+    assert_eq!(bytes.len(), limit);
+    assert!(bytes.iter().all(|&byte| byte == 0));
+    assert_eq!(
+        crate::buffers::packet_buffer(limit + 1, limit)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput,
+    );
+}
+
+fn queue_owned_tx(worker: &mut Worker, mem: &GuestMemory, idx: u16, avail: &mut u16, size: u16) {
+    let header_gpa = DATA_BASE + u64::from(idx) * 256;
+    mem.write_at(header_gpa, &[0; header_size()]).unwrap();
+    mem.write_at(header_gpa + header_size() as u64, &[0xAB; 64])
+        .unwrap();
+    post_tx_packet(
+        mem,
+        idx,
+        header_gpa,
+        NET_HEADER_SIZE,
+        &[(header_gpa + header_size() as u64, 64)],
+    );
+    make_available(mem, TX_AVAIL_ADDR, size, idx, avail);
+    let work = worker
+        .virtio_state
+        .tx_in_order
+        .try_next(&mut worker.virtio_state.tx_queue)
+        .unwrap()
+        .unwrap();
+    worker.queue_tx_packet(work).unwrap();
+}
+
+fn post_owned_rx(mem: &GuestMemory, idx: u16, gpa: u64, avail: &mut u16, size: u16) {
+    write_descriptor(
+        mem,
+        RX_DESC_ADDR,
+        idx,
+        gpa,
+        128,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(mem, RX_AVAIL_ADDR, size, idx, avail);
+}
+
+#[async_test]
+async fn backend_namespace_and_delayed_consumption(driver: DefaultDriver) {
+    for (force_bounce, automatic) in [(false, false), (true, false), (false, true)] {
+        let bounce = force_bounce || automatic;
+        let mut harness = TestHarness::new_with_bounce(&driver, force_bounce);
+        let origin = harness.mem.full_mapping().unwrap().0;
+        if automatic {
+            harness.mem = harness.mem.copy_only_view();
+            assert!(!harness.mem.supports_kernel_lock());
+            assert!(!harness.device.adapter.bounce_io());
+        }
+        let mut handle = harness.enable_and_get_handle().await;
+        handle.tx_avail_behavior.lock().sync = false;
+        harness.post_tx_and_signal(0, 64);
+        handle.wait_for_tx_avail().await;
+        let probe_mem = handle.probe.lock().memory.clone().unwrap();
+        assert_eq!(probe_mem.full_mapping().unwrap().0 == origin, !bounce);
+        assert_eq!(probe_mem.io_policy(), guestmem::GuestMemoryIoPolicy::Direct);
+        assert!(harness.try_read_tx_used().is_none());
+        harness
+            .mem
+            .fill_at(DATA_BASE, 0xCD, NET_HEADER_SIZE as usize + 64)
+            .unwrap();
+        handle.consume_delayed_tx();
+        assert_eq!(harness.wait_for_used().await, (0, 0));
+        assert_eq!(
+            handle.probe.lock().consumed_tx,
+            vec![vec![if bounce { 0xAB } else { 0xCD }; 64]]
+        );
+        assert_eq!(harness.device.supports_save_restore(), !bounce);
+        let rx_gpa = harness.post_rx_buffer_and_signal(0, 1500);
+        handle.wait_for_rx_pending().await;
+        let packet = b"automatic RX staging";
+        handle.inject_rx_packet(packet);
+        assert_eq!(
+            harness.wait_for_rx_used().await,
+            (0, NET_HEADER_SIZE + packet.len() as u32)
+        );
+        let mut received = vec![0; packet.len()];
+        harness
+            .mem
+            .read_at(rx_gpa + u64::from(NET_HEADER_SIZE), &mut received)
+            .unwrap();
+        assert_eq!(received.as_slice(), packet);
+        harness.disable().await;
+    }
+}
+
+#[async_test]
+async fn automatic_staging_rejects_mode_changes_after_queue_start(driver: DefaultDriver) {
+    for active_pair in [false, true] {
+        let mut harness = TestHarness::new(&driver);
+        let _handle = if active_pair {
+            Some(harness.enable_and_get_handle().await)
+        } else {
+            harness
+                .device
+                .start_queue(
+                    0,
+                    QueueResources {
+                        params: QueueParams {
+                            size: QUEUE_SIZE,
+                            enable: true,
+                            desc_addr: RX_DESC_ADDR,
+                            avail_addr: RX_AVAIL_ADDR,
+                            used_addr: RX_USED_ADDR,
+                        },
+                        notify: Interrupt::from_event(harness.rx_interrupt_event.clone()),
+                        event: harness.rx_event.clone(),
+                        guest_memory: harness.mem.clone(),
+                    },
+                    &VirtioDeviceFeatures::new(),
+                    None,
+                )
+                .await
+                .unwrap();
+            None
+        };
+        let error = harness
+            .device
+            .start_queue(
+                1,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr: TX_DESC_ADDR,
+                        avail_addr: TX_AVAIL_ADDR,
+                        used_addr: TX_USED_ADDR,
+                    },
+                    notify: Interrupt::from_event(harness.tx_interrupt_event.clone()),
+                    event: harness.tx_event.clone(),
+                    guest_memory: harness.mem.copy_only_view(),
+                },
+                &VirtioDeviceFeatures::new(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot change network memory policy with active queues")
+        );
+        assert!(!harness.device.adapter.bounce_io());
+        harness.disable().await;
+    }
+}
+
+#[async_test]
+async fn automatic_staging_rejects_unsupported_endpoint_before_queue_exposure(
+    driver: DefaultDriver,
+) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let (queue_tx, _queue_rx) = mesh::channel();
+    let endpoint = MockEndpoint {
+        queue_tx,
+        is_ordered: true,
+        guest_origin: None,
+        endpoint_type: "assigned",
+    };
+    let mut device = Device::builder()
+        .build(
+            &driver_source,
+            Box::new(endpoint),
+            MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]),
+        )
+        .unwrap();
+    assert!(!device.adapter.bounce_io());
+    let memory = test_memory().copy_only_view();
+    let error = device
+        .start_queue(
+            0,
+            QueueResources {
+                params: QueueParams {
+                    size: QUEUE_SIZE,
+                    enable: true,
+                    desc_addr: RX_DESC_ADDR,
+                    avail_addr: RX_AVAIL_ADDR,
+                    used_addr: RX_USED_ADDR,
+                },
+                notify: Interrupt::from_event(Event::new()),
+                event: Event::new(),
+                guest_memory: memory,
+            },
+            &VirtioDeviceFeatures::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("requires a software endpoint"));
+    assert!(
+        device
+            .pairs
+            .iter()
+            .all(|pair| matches!(pair, crate::QueuePairState::Empty))
+    );
+    assert!(!device.coordinator.has_state());
+}
+
+#[async_test]
+async fn owned_rx_tx_ids_wrap_around_live_packets(driver: DefaultDriver) {
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (queue, handle) = new_mock_queue();
+    handle.tx_avail_behavior.lock().sync = false;
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    let mut tx_avail = 0;
+    let mut rx_avail = 0;
+    queue_owned_tx(&mut worker, &mem, 0, &mut tx_avail, QUEUE_SIZE);
+    post_owned_rx(&mem, 0, DATA_BASE + 8192, &mut rx_avail, QUEUE_SIZE);
+    worker.process_virtio_rx(endpoint.queue.as_mut()).unwrap();
+    worker
+        .active_state
+        .pending_rx_packets
+        .set_next_backend_id(u32::MAX - 1);
+    post_owned_rx(&mem, 1, DATA_BASE + 8448, &mut rx_avail, QUEUE_SIZE);
+    worker.process_virtio_rx(endpoint.queue.as_mut()).unwrap();
+    queue_owned_tx(&mut worker, &mem, 2, &mut tx_avail, QUEUE_SIZE);
+    post_owned_rx(&mem, 2, DATA_BASE + 8704, &mut rx_avail, QUEUE_SIZE);
+    worker.process_virtio_rx(endpoint.queue.as_mut()).unwrap();
+    let rx_ids: Vec<_> = handle.rx_pending.lock().iter().copied().collect();
+    assert_eq!(
+        rx_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        [1, u32::MAX - 1, 2]
+    );
+    // Start on the live TX ID, then skip live TX 0 and live RX 1 and 2.
+    worker
+        .active_state
+        .pending_rx_packets
+        .set_next_backend_id(u32::MAX);
+    queue_owned_tx(&mut worker, &mem, 4, &mut tx_avail, QUEUE_SIZE);
+    let tx_ids: Vec<_> = [0, 2, 4]
+        .map(|idx| {
+            worker.active_state.pending_tx_packets[idx]
+                .as_ref()
+                .unwrap()
+                .id
+        })
+        .into();
+    assert_eq!(
+        tx_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        [0, u32::MAX, 3]
+    );
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    mem.fill_at(DATA_BASE, 0xCD, 1280).unwrap();
+    handle.consume_delayed_tx();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        endpoint
+            .queue
+            .poll_ready(&mut cx, &mut worker.active_state.pending_rx_packets)
+            .is_ready()
+    );
+    // Complete out of order, after the backend has read each owned snapshot.
+    handle.tx_completions.lock().clear();
+    handle.complete_tx(vec![tx_ids[2], tx_ids[1], tx_ids[0]]);
+    worker.process_endpoint_tx(endpoint.queue.as_mut()).unwrap();
+    assert_eq!(handle.probe.lock().consumed_tx, vec![vec![0xAB; 64]; 3]);
+    let mut used = 0;
+    for idx in [0, 2, 4] {
+        assert_eq!(
+            read_used(&mem, TX_USED_ADDR, QUEUE_SIZE, &mut used),
+            Some((idx, 0))
+        );
+    }
+    assert_eq!(used, 3);
+    for (id, bytes) in [
+        (rx_ids[2], b"third".as_slice()),
+        (rx_ids[0], b"first"),
+        (rx_ids[1], b"second"),
+    ] {
+        handle.inject_rx_packet_for(id, bytes);
+        worker.process_endpoint_rx(endpoint.queue.as_mut()).unwrap();
+    }
+    let mut used = 0;
+    for (idx, bytes) in [b"first".as_slice(), b"second", b"third"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+            Some((idx as u16, NET_HEADER_SIZE + bytes.len() as u32))
+        );
+        let mut received = vec![0; bytes.len()];
+        mem.read_at(
+            DATA_BASE + 8192 + idx as u64 * 256 + header_size() as u64,
+            &mut received,
+        )
+        .unwrap();
+        assert_eq!(received, bytes);
+    }
+    assert!(
+        worker
+            .active_state
+            .pending_tx_packets
+            .iter()
+            .all(Option::is_none)
+    );
+    assert!(worker.mark_tx_backend_done(tx_ids[0]).is_err());
+    assert!(
+        worker
+            .active_state
+            .pending_rx_packets
+            .take_rx_work(rx_ids[0])
+            .is_err()
+    );
+}
+
+#[async_test]
+async fn owned_partial_acceptance_keeps_unsent_suffix(driver: DefaultDriver) {
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (queue, handle) = new_mock_queue();
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    {
+        let mut behavior = handle.tx_avail_behavior.lock();
+        behavior.sync = false;
+        behavior.consume_all = false;
+        behavior.consume_count = Some(1);
+    }
+    let mut avail = 0;
+    queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+    queue_owned_tx(&mut worker, &mem, 2, &mut avail, QUEUE_SIZE);
+    let first_gpa = worker.active_state.data.tx_segments[0].gpa;
+    let second_gpa = worker.active_state.data.tx_segments[1].gpa;
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    assert_eq!(worker.active_state.data.tx_segments.len(), 1);
+    mem.fill_at(DATA_BASE, 0xCD, 1024).unwrap();
+    handle.consume_delayed_tx();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        endpoint
+            .queue
+            .poll_ready(&mut cx, &mut worker.active_state.pending_rx_packets)
+            .is_ready()
+    );
+    worker.process_endpoint_tx(endpoint.queue.as_mut()).unwrap();
+    assert!(worker.active_state.pending_tx_packets[0].is_none());
+    assert!(worker.active_state.pending_tx_packets[2].is_some());
+    let mut bytes = [0; 64];
+    worker
+        .active_state
+        .pending_rx_packets
+        .guest_memory()
+        .read_at(first_gpa, &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [0; 64]);
+    worker
+        .active_state
+        .pending_rx_packets
+        .guest_memory()
+        .read_at(second_gpa, &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [0xAB; 64]);
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    handle.consume_delayed_tx();
+    assert!(
+        endpoint
+            .queue
+            .poll_ready(&mut cx, &mut worker.active_state.pending_rx_packets)
+            .is_ready()
+    );
+    worker.process_endpoint_tx(endpoint.queue.as_mut()).unwrap();
+    assert_eq!(handle.probe.lock().consumed_tx, vec![vec![0xAB; 64]; 2]);
+}
+
+#[async_test]
+async fn owned_rx_snapshot_addresses_and_order(driver: DefaultDriver) {
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (mut queue, handle) = new_mock_queue();
+    let mut avail = 0;
+    post_owned_rx(&mem, 0, DATA_BASE, &mut avail, QUEUE_SIZE);
+    post_owned_rx(&mem, 1, DATA_BASE + 256, &mut avail, QUEUE_SIZE);
+    worker.process_virtio_rx(&mut queue).unwrap();
+    {
+        let probe = handle.probe.lock();
+        let owned_mem = probe.memory.as_ref().unwrap();
+        assert_ne!(
+            owned_mem.full_mapping().unwrap().0,
+            mem.full_mapping().unwrap().0
+        );
+        // Scratch GPA zero numerically overlaps the guest descriptor ring, but
+        // identifies a different allocation.
+        assert_eq!(probe.rx_addresses[0], vec![(0, 128)]);
+        assert_eq!(owned_mem.io_policy(), guestmem::GuestMemoryIoPolicy::Direct);
+    }
+    write_descriptor(
+        &mem,
+        RX_DESC_ADDR,
+        1,
+        DATA_BASE + 512,
+        128,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    let ids: Vec<_> = handle.rx_pending.lock().iter().copied().collect();
+    handle.inject_rx_packet_for(ids[1], b"second");
+    worker.process_endpoint_rx(&mut queue).unwrap();
+    let mut used = 0;
+    assert!(read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used).is_none());
+    let mut bytes = [0; 6];
+    mem.read_at(DATA_BASE + 256 + header_size() as u64, &mut bytes)
+        .unwrap();
+    assert_eq!(&bytes, b"second");
+    mem.read_at(DATA_BASE + 512 + header_size() as u64, &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [0; 6]);
+    handle.inject_rx_packet_for(ids[0], b"first");
+    worker.process_endpoint_rx(&mut queue).unwrap();
+    assert_eq!(
+        read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+        Some((0, NET_HEADER_SIZE + 5))
+    );
+    assert_eq!(
+        read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+        Some((1, NET_HEADER_SIZE + 6))
+    );
+    mem.read_at(DATA_BASE + 256, &mut bytes[..2]).unwrap();
+    assert_eq!(&bytes[..2], &[0, 0]);
+    assert!(
+        worker
+            .active_state
+            .pending_rx_packets
+            .take_rx_work(ids[1])
+            .is_err()
+    );
+}
+
+#[async_test]
+async fn owned_raw_rx_addresses_use_header_offset(driver: DefaultDriver) {
+    let mem = test_memory();
+    mem.fill_at(DATA_BASE, 0xCC, 128).unwrap();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (mut queue, handle) = new_mock_queue();
+    let mut avail = 0;
+    post_owned_rx(&mem, 0, DATA_BASE, &mut avail, QUEUE_SIZE);
+    worker.process_virtio_rx(&mut queue).unwrap();
+    let id = handle.rx_pending.lock()[0];
+    let pool = &mut worker.active_state.pending_rx_packets;
+    let mut segments = Vec::new();
+    pool.push_guest_addresses(id, &mut segments);
+    pool.guest_memory()
+        .write_at(segments[0].gpa + header_size() as u64, b"raw")
+        .unwrap();
+    pool.write_header(
+        id,
+        &RxMetadata {
+            len: 3,
+            ..Default::default()
+        },
+    );
+    let mut bytes = [0; 3];
+    mem.read_at(DATA_BASE + header_size() as u64, &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [0xCC; 3]);
+    let (work, len) = pool.take_rx_work(id).unwrap();
+    worker
+        .virtio_state
+        .rx_in_order
+        .complete(
+            &mut worker.virtio_state.rx_queue,
+            work.into_completion(),
+            len,
+        )
+        .unwrap();
+    mem.read_at(DATA_BASE + header_size() as u64, &mut bytes)
+        .unwrap();
+    assert_eq!(&bytes, b"raw");
+    let mut padding = [1; 16];
+    mem.read_at(DATA_BASE + header_size() as u64 + 3, &mut padding)
+        .unwrap();
+    assert_eq!(padding, [0xCC; 16]);
+}
+
+#[async_test]
+async fn owned_rx_failure_never_completes_successfully(driver: DefaultDriver) {
+    for invalid_metadata in [false, true] {
+        let mem = test_memory();
+        let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+        let (mut queue, handle) = new_mock_queue();
+        let mut avail = 0;
+        let gpa = if invalid_metadata {
+            DATA_BASE
+        } else {
+            (TOTAL_MEM_SIZE * 3) as u64
+        };
+        post_owned_rx(&mem, 0, gpa, &mut avail, QUEUE_SIZE);
+        worker.process_virtio_rx(&mut queue).unwrap();
+        let metadata = RxMetadata {
+            len: if invalid_metadata { 4 } else { 3 },
+            ..Default::default()
+        };
+        handle.inject_rx_packet_with_metadata(b"bad", &metadata);
+        assert!(worker.process_endpoint_rx(&mut queue).is_err());
+        let mut used = 0;
+        assert!(read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used).is_none());
+    }
+}
+
+#[async_test]
+async fn legacy_rx_guest_write_failure_drops_and_continues(driver: DefaultDriver) {
+    for header_fails in [false, true] {
+        for segmented in [false, true] {
+            let mem = test_memory();
+            let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+            worker.active_state = crate::ActiveState::new(mem.clone(), QUEUE_SIZE, QUEUE_SIZE);
+            let (mut queue, handle) = new_mock_queue();
+            handle.probe.lock().segmented_rx = segmented;
+            let bad_gpa = (TOTAL_MEM_SIZE * 3) as u64;
+            write_descriptor(
+                &mem,
+                RX_DESC_ADDR,
+                0,
+                if header_fails { bad_gpa } else { DATA_BASE },
+                NET_HEADER_SIZE,
+                DescriptorFlags::new().with_write(true).with_next(true),
+                1,
+            );
+            write_descriptor(
+                &mem,
+                RX_DESC_ADDR,
+                1,
+                if header_fails { DATA_BASE } else { bad_gpa },
+                8,
+                DescriptorFlags::new().with_write(true),
+                0,
+            );
+            let mut avail = 0;
+            make_available(&mem, RX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail);
+            worker.process_virtio_rx(&mut queue).unwrap();
+            handle.inject_rx_packet(b"bad");
+            worker.process_endpoint_rx(&mut queue).unwrap();
+            let mut used = 0;
+            assert_eq!(
+                read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+                Some((0, 0))
+            );
+            assert_eq!(worker.active_state.stats.rx_dropped.get(), 1);
+            assert_eq!(worker.active_state.stats.rx_packets.get(), 0);
+            post_owned_rx(&mem, 0, DATA_BASE + 256, &mut avail, QUEUE_SIZE);
+            worker.process_virtio_rx(&mut queue).unwrap();
+            handle.inject_rx_packet(b"good");
+            worker.process_endpoint_rx(&mut queue).unwrap();
+            assert_eq!(
+                read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+                Some((0, NET_HEADER_SIZE + 4)),
+            );
+            assert_eq!(worker.active_state.stats.rx_packets.get(), 1);
+            assert_eq!(worker.active_state.stats.rx_dropped.get(), 1);
+            queue.rx_ready.lock().push_back((
+                RxId(u32::MAX),
+                b"invalid".to_vec(),
+                RxMetadata {
+                    len: 7,
+                    ..Default::default()
+                },
+            ));
+            assert!(matches!(
+                worker.process_endpoint_rx(&mut queue),
+                Err(crate::WorkerError::RxBuffer(
+                    crate::buffers::RxCompletionError::InvalidId(u32::MAX)
+                )),
+            ));
+        }
+    }
+}
+
+#[async_test]
+async fn owned_stale_and_invalid_ids_fail_without_panic(driver: DefaultDriver) {
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    assert!(worker.complete_tx_packet(TxId(u32::MAX)).is_err());
+    let mut avail = 0;
+    queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+    let id = worker.active_state.pending_tx_packets[0]
+        .as_ref()
+        .unwrap()
+        .id;
+    assert!(
+        worker.complete_tx_packet(id).is_err(),
+        "unsent TX completion must fail"
+    );
+    let (queue, _) = new_mock_queue();
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    assert!(
+        worker.complete_tx_packet(id).is_err(),
+        "duplicate completion must fail"
+    );
+    queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+    let next = worker.active_state.pending_tx_packets[0]
+        .as_ref()
+        .unwrap()
+        .id;
+    assert_ne!(id.0, next.0);
+    assert!(
+        worker.complete_tx_packet(id).is_err(),
+        "reused descriptor must not accept old ID"
+    );
+    let pool = &mut worker.active_state.pending_rx_packets;
+    pool.write_data(RxId(u32::MAX), b"bad");
+    assert!(pool.check_error().is_err());
+    assert!(pool.take_rx_work(RxId(u32::MAX)).is_err());
+}
+
+#[async_test]
+async fn owned_arena_backpressure_is_independent_of_queue_size(driver: DefaultDriver) {
+    const SIZE: u16 = 64;
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, SIZE, VirtioDeviceFeatures::new());
+    let (mut rx_queue, handle) = new_mock_queue();
+    let mut rx_avail = 0;
+    for idx in 0..SIZE {
+        post_owned_rx(
+            &mem,
+            idx,
+            DATA_BASE + u64::from(idx) * 128,
+            &mut rx_avail,
+            SIZE,
+        );
+    }
+    worker.process_virtio_rx(&mut rx_queue).unwrap();
+    assert_eq!(handle.rx_pending.lock().len(), crate::buffers::OWNED_SLOTS);
+    assert_eq!(worker.virtio_state.rx_queue.queue_state().avail_index, 32);
+    assert!(!worker.active_state.pending_rx_packets.has_room(false));
+    assert_eq!(
+        worker
+            .active_state
+            .pending_rx_packets
+            .guest_memory()
+            .full_mapping()
+            .unwrap()
+            .1,
+        4_456_448
+    );
+    handle.inject_rx_packet(b"room");
+    worker.process_endpoint_rx(&mut rx_queue).unwrap();
+    worker.process_virtio_rx(&mut rx_queue).unwrap();
+    assert_eq!(worker.virtio_state.rx_queue.queue_state().avail_index, 33);
+
+    let pool = &mut worker.active_state.pending_rx_packets;
+    let mut slots = Vec::new();
+    for _ in 0..crate::buffers::OWNED_SLOTS {
+        slots.push(pool.stage_tx(&[0; 32]).unwrap().0);
+    }
+    assert!(!pool.has_room(true));
+    assert!(pool.stage_tx(&[0; 32]).is_err());
+    pool.release_tx(slots.pop().unwrap()).unwrap();
+    assert!(pool.has_room(true));
+    assert!(
+        pool.stage_tx(&vec![
+            0;
+            crate::buffers::MAX_PACKET_SIZE + header_size() + 1
+        ])
+        .is_err()
+    );
+}
+
+#[async_test]
+async fn owned_completion_metadata_failure_retires_split_and_packed(driver: DefaultDriver) {
+    for packed in [false, true] {
+        let mapping = Arc::new(sparse_mmap::SparseMapping::new(TOTAL_MEM_SIZE).unwrap());
+        mapping.alloc(0, TOTAL_MEM_SIZE).unwrap();
+        let mem = GuestMemory::new("net completion fault", mapping.clone());
+        let features = if packed {
+            VirtioDeviceFeatures::new()
+                .with_version_1(true)
+                .with_ring_packed(true)
+        } else {
+            VirtioDeviceFeatures::new()
+        };
+        let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, features);
+        if packed {
+            mem.write_at(TX_DESC_ADDR, &DATA_BASE.to_le_bytes())
+                .unwrap();
+            mem.write_at(TX_DESC_ADDR + 8, &(NET_HEADER_SIZE + 64).to_le_bytes())
+                .unwrap();
+            mem.write_at(TX_DESC_ADDR + 12, &0u16.to_le_bytes())
+                .unwrap();
+            mem.write_at(
+                TX_DESC_ADDR + 14,
+                &DescriptorFlags::new()
+                    .with_available(true)
+                    .into_bits()
+                    .to_le_bytes(),
+            )
+            .unwrap();
+            let work = worker
+                .virtio_state
+                .tx_in_order
+                .try_next(&mut worker.virtio_state.tx_queue)
+                .unwrap()
+                .unwrap();
+            worker.queue_tx_packet(work).unwrap();
+        } else {
+            let mut avail = 0;
+            queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+            queue_owned_tx(&mut worker, &mem, 2, &mut avail, QUEUE_SIZE);
+        }
+        let (queue, _) = new_mock_queue();
+        let mut endpoint = crate::EndpointQueueState {
+            queue: Box::new(queue),
+        };
+        let fault_page = if packed { TX_AVAIL_ADDR } else { TX_USED_ADDR };
+        mapping
+            .unmap(fault_page as usize, guestmem::PAGE_SIZE)
+            .unwrap();
+        assert!(worker.transmit_pending_segments(&mut endpoint).is_err());
+        let state = worker.virtio_state.tx_queue.queue_state();
+        worker.drain_owned(endpoint.queue.as_mut()).await.unwrap();
+        assert!(
+            worker
+                .active_state
+                .pending_tx_packets
+                .iter()
+                .all(Option::is_none)
+        );
+        mapping
+            .alloc(fault_page as usize, guestmem::PAGE_SIZE)
+            .unwrap();
+        assert!(
+            worker
+                .virtio_state
+                .tx_in_order
+                .try_next(&mut worker.virtio_state.tx_queue)
+                .is_err()
+        );
+        assert!(worker.complete_tx_packet(TxId(0)).is_err());
+        assert_eq!(worker.virtio_state.tx_queue.queue_state(), state);
+        assert_eq!(state.used_index, if packed { 0x8001 } else { 0 });
+    }
+}
+
+#[async_test]
+async fn owned_header_and_payload_share_one_snapshot(driver: DefaultDriver) {
+    let mem = test_memory();
+    let features = VirtioDeviceFeatures::new().with_bank(0, features_tso().into_bits());
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, features);
+    assert_eq!(
+        worker.active_state.pending_rx_packets.mem().io_policy(),
+        guestmem::GuestMemoryIoPolicy::CopyOnly
+    );
+    assert!(
+        worker
+            .active_state
+            .pending_rx_packets
+            .mem()
+            .full_mapping()
+            .is_none()
+    );
+    let header = make_virtio_header(true, VirtioNetHeaderGsoProtocol::TCPV4, 58, 1460, 38, 16);
+    mem.write_at(DATA_BASE, &header.as_bytes()[..header_size()])
+        .unwrap();
+    let mut packet = vec![0xAB; crate::buffers::MAX_PACKET_SIZE];
+    packet[12..14].copy_from_slice(&0x8100u16.to_be_bytes());
+    packet[16..18].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+    let data_gpa = DATA_BASE + header_size() as u64;
+    mem.write_at(data_gpa, &packet).unwrap();
+    post_tx_packet(
+        &mem,
+        0,
+        DATA_BASE,
+        NET_HEADER_SIZE,
+        &[(data_gpa, packet.len() as u32)],
+    );
+    let mut avail = 0;
+    make_available(&mem, TX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail);
+    let work = worker
+        .virtio_state
+        .tx_in_order
+        .try_next(&mut worker.virtio_state.tx_queue)
+        .unwrap()
+        .unwrap();
+    worker.queue_tx_packet(work).unwrap();
+    mem.fill_at(DATA_BASE, 0, header_size() + packet.len())
+        .unwrap();
+    let (queue, handle) = new_mock_queue();
+    handle.tx_avail_behavior.lock().sync = false;
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    let log = handle.take_tx_avail_log();
+    let metadata = log[0][0].metadata.as_ref().unwrap();
+    assert_eq!(metadata.len as usize, crate::buffers::MAX_PACKET_SIZE);
+    assert_eq!(metadata.segment_count, 1);
+    assert!(metadata.flags.offload_tcp_segmentation());
+    assert!(metadata.flags.offload_tcp_checksum());
+    assert_eq!(metadata.l2_len, 18);
+    assert_eq!(metadata.l3_len, 20);
+    assert_eq!(metadata.l4_len, 20);
+    assert_eq!(metadata.max_segment_size, 1460);
+    handle.consume_delayed_tx();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        endpoint
+            .queue
+            .poll_ready(&mut cx, &mut worker.active_state.pending_rx_packets)
+            .is_ready()
+    );
+    worker.process_endpoint_tx(endpoint.queue.as_mut()).unwrap();
+    assert_eq!(handle.probe.lock().consumed_tx, vec![packet]);
+}
+
+#[async_test]
+async fn owned_non_gso_tx_frame_size_limits(driver: DefaultDriver) {
+    for (size, vlan, accepted) in [(1514, false, true), (1518, true, true), (1519, true, false)] {
+        let mem = test_memory();
+        let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+        mem.write_at(DATA_BASE, &[0; header_size()]).unwrap();
+        let mut packet = vec![0xAB; size];
+        if vlan {
+            packet[12..14].copy_from_slice(&0x8100u16.to_be_bytes());
+            packet[16..18].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        } else {
+            packet[12..14].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        }
+        let data_gpa = DATA_BASE + header_size() as u64;
+        mem.write_at(data_gpa, &packet).unwrap();
+        post_tx_packet(
+            &mem,
+            0,
+            DATA_BASE,
+            NET_HEADER_SIZE,
+            &[(data_gpa, size as u32)],
+        );
+        let mut avail = 0;
+        make_available(&mem, TX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail);
+        let work = worker
+            .virtio_state
+            .tx_in_order
+            .try_next(&mut worker.virtio_state.tx_queue)
+            .unwrap()
+            .unwrap();
+        worker.queue_tx_packet(work).unwrap();
+        assert_eq!(
+            worker.active_state.pending_tx_packets[0].is_some(),
+            accepted,
+            "frame size {size}, VLAN {vlan}",
+        );
+        if accepted {
+            let (queue, handle) = new_mock_queue();
+            let mut endpoint = crate::EndpointQueueState {
+                queue: Box::new(queue),
+            };
+            worker.transmit_pending_segments(&mut endpoint).unwrap();
+            let log = handle.take_tx_avail_log();
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0][0].len as usize, size);
+        } else {
+            assert!(worker.active_state.data.tx_segments.is_empty());
+            let mut used = 0;
+            assert_eq!(
+                read_used(&mem, TX_USED_ADDR, QUEUE_SIZE, &mut used),
+                Some((0, 0)),
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn owned_oversized_or_nonnegotiated_gso_is_dropped(driver: DefaultDriver) {
+    for (size, features) in [
+        (crate::buffers::MAX_PACKET_SIZE + 1, features_tso()),
+        (crate::buffers::MAX_PACKET_SIZE, NetworkFeaturesBank0::new()),
+        (u32::MAX as usize, features_tso()),
+    ] {
+        let mem = test_memory();
+        let mut worker = owned_worker(
+            &driver,
+            &mem,
+            QUEUE_SIZE,
+            VirtioDeviceFeatures::new().with_bank(0, features.into_bits()),
+        );
+        let header = make_virtio_header(true, VirtioNetHeaderGsoProtocol::TCPV4, 54, 1460, 34, 16);
+        mem.write_at(DATA_BASE, &header.as_bytes()[..header_size()])
+            .unwrap();
+        let data_gpa = DATA_BASE + header_size() as u64;
+        post_tx_packet(
+            &mem,
+            0,
+            DATA_BASE,
+            NET_HEADER_SIZE,
+            &[(data_gpa, size as u32)],
+        );
+        let mut avail = 0;
+        make_available(&mem, TX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail);
+        let work = worker
+            .virtio_state
+            .tx_in_order
+            .try_next(&mut worker.virtio_state.tx_queue)
+            .unwrap()
+            .unwrap();
+        worker.queue_tx_packet(work).unwrap();
+        assert!(worker.active_state.data.tx_segments.is_empty());
+        assert!(worker.active_state.pending_rx_packets.has_room(true));
+        let mut used = 0;
+        assert_eq!(
+            read_used(&mem, TX_USED_ADDR, QUEUE_SIZE, &mut used),
+            Some((0, 0))
+        );
+    }
+}
+
+#[async_test]
+async fn owned_reused_rx_descriptor_rejects_stale_backend_id(driver: DefaultDriver) {
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (mut queue, handle) = new_mock_queue();
+    let mut avail = 0;
+    post_owned_rx(&mem, 0, DATA_BASE, &mut avail, QUEUE_SIZE);
+    worker.process_virtio_rx(&mut queue).unwrap();
+    let old_id = handle.rx_pending.lock()[0];
+    handle.inject_rx_packet(b"one");
+    worker.process_endpoint_rx(&mut queue).unwrap();
+    post_owned_rx(&mem, 0, DATA_BASE + 256, &mut avail, QUEUE_SIZE);
+    worker.process_virtio_rx(&mut queue).unwrap();
+    assert_ne!(handle.rx_pending.lock()[0].0, old_id.0);
+    handle.rx_ready.lock().push_back((
+        old_id,
+        b"stale".to_vec(),
+        RxMetadata {
+            len: 5,
+            ..Default::default()
+        },
+    ));
+    assert!(worker.process_endpoint_rx(&mut queue).is_err());
+    let mut bytes = [0; 16];
+    mem.read_at(DATA_BASE + 256, &mut bytes).unwrap();
+    assert_eq!(bytes, [0; 16]);
+    let mut used = 0;
+    assert_eq!(
+        read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used),
+        Some((0, NET_HEADER_SIZE + 3))
+    );
+    assert!(read_used(&mem, RX_USED_ADDR, QUEUE_SIZE, &mut used).is_none());
+}
+
+#[async_test]
+async fn owned_tx_backpressure_leaves_guest_work_available(driver: DefaultDriver) {
+    const SIZE: u16 = 64;
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, SIZE, VirtioDeviceFeatures::new());
+    let mut avail = 0;
+    for idx in 0..33 {
+        let gpa = DATA_BASE + u64::from(idx) * 256;
+        mem.write_at(gpa + header_size() as u64, &[0xAB; 64])
+            .unwrap();
+        write_descriptor(
+            &mem,
+            TX_DESC_ADDR,
+            idx,
+            gpa,
+            NET_HEADER_SIZE + 64,
+            DescriptorFlags::new(),
+            0,
+        );
+        make_available(&mem, TX_AVAIL_ADDR, SIZE, idx, &mut avail);
+    }
+    let (queue, handle) = new_mock_queue();
+    handle.tx_avail_behavior.lock().sync = false;
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    worker.process_virtio_tx(&mut endpoint).unwrap();
+    assert_eq!(worker.virtio_state.tx_queue.queue_state().avail_index, 32);
+    assert_eq!(
+        worker
+            .active_state
+            .pending_tx_packets
+            .iter()
+            .flatten()
+            .count(),
+        32
+    );
+    assert!(!worker.active_state.pending_rx_packets.has_room(true));
+    handle.consume_delayed_tx();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(
+        endpoint
+            .queue
+            .poll_ready(&mut cx, &mut worker.active_state.pending_rx_packets)
+            .is_ready()
+    );
+    worker.process_endpoint_tx(endpoint.queue.as_mut()).unwrap();
+    worker.process_virtio_tx(&mut endpoint).unwrap();
+    assert_eq!(worker.virtio_state.tx_queue.queue_state().avail_index, 33);
+    assert_eq!(
+        worker
+            .active_state
+            .pending_tx_packets
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+}
+
+#[async_test]
+async fn owned_retirement_waits_for_actual_backend_consumption(driver: DefaultDriver) {
+    use std::future::Future;
+
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (queue, handle) = new_mock_queue();
+    handle.tx_avail_behavior.lock().sync = false;
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    let mut avail = 0;
+    queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+    queue_owned_tx(&mut worker, &mem, 2, &mut avail, QUEUE_SIZE);
+    let gpa = worker.active_state.data.tx_segments[0].gpa;
+    worker.transmit_pending_segments(&mut endpoint).unwrap();
+    let backend_mem = handle.probe.lock().memory.clone().unwrap();
+    let mut drain = Box::pin(worker.drain_owned(endpoint.queue.as_mut()));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(drain.as_mut().poll(&mut cx).is_pending());
+    let mut bytes = [0; 64];
+    backend_mem.read_at(gpa, &mut bytes).unwrap();
+    assert_eq!(
+        bytes, [0xAB; 64],
+        "in-flight scratch must not be scrubbed early"
+    );
+    handle.consume_delayed_tx();
+    assert!(drain.as_mut().poll(&mut cx).is_pending());
+    assert!(drain.as_mut().poll(&mut cx).is_ready());
+    drop(drain);
+    assert_eq!(handle.probe.lock().consumed_tx, vec![vec![0xAB; 64]; 2]);
+    assert!(
+        worker
+            .active_state
+            .pending_tx_packets
+            .iter()
+            .all(Option::is_none)
+    );
+    backend_mem.read_at(gpa, &mut bytes).unwrap();
+    assert_eq!(bytes, [0; 64]);
+    let mut used = 0;
+    assert!(read_used(&mem, TX_USED_ADDR, QUEUE_SIZE, &mut used).is_none());
+}
+
+#[async_test]
+async fn owned_submission_error_keeps_offered_slots_in_flight(driver: DefaultDriver) {
+    use std::future::Future;
+
+    let mem = test_memory();
+    let mut worker = owned_worker(&driver, &mem, QUEUE_SIZE, VirtioDeviceFeatures::new());
+    let (queue, handle) = new_mock_queue();
+    {
+        let mut behavior = handle.tx_avail_behavior.lock();
+        behavior.sync = false;
+        behavior.error_after_accept = true;
+    }
+    let mut endpoint = crate::EndpointQueueState {
+        queue: Box::new(queue),
+    };
+    let mut avail = 0;
+    queue_owned_tx(&mut worker, &mem, 0, &mut avail, QUEUE_SIZE);
+    let gpa = worker.active_state.data.tx_segments[0].gpa;
+    assert!(worker.transmit_pending_segments(&mut endpoint).is_err());
+    let backend_mem = handle.probe.lock().memory.clone().unwrap();
+    let mut drain = Box::pin(worker.drain_owned(endpoint.queue.as_mut()));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(drain.as_mut().poll(&mut cx).is_pending());
+    let mut bytes = [0; 64];
+    backend_mem.read_at(gpa, &mut bytes).unwrap();
+    assert_eq!(bytes, [0xAB; 64]);
+    handle.consume_delayed_tx();
+    assert!(drain.as_mut().poll(&mut cx).is_pending());
+    assert!(drain.as_mut().poll(&mut cx).is_ready());
+    drop(drain);
+    assert_eq!(handle.probe.lock().consumed_tx, vec![vec![0xAB; 64]]);
+    assert!(
+        worker
+            .active_state
+            .pending_tx_packets
+            .iter()
+            .all(Option::is_none)
+    );
+}
+
+#[async_test]
+async fn owned_endpoint_restart_quiesces_old_consumers_and_recovers_slots(driver: DefaultDriver) {
+    use std::future::Future;
+
+    const SIZE: u16 = 128;
+    for confirm_stop in [false, true] {
+        let mem = test_memory();
+        let mut worker = owned_worker(&driver, &mem, SIZE, VirtioDeviceFeatures::new());
+        let (mut old_queue, old_handle) = new_mock_queue();
+        {
+            let mut behavior = old_handle.tx_avail_behavior.lock();
+            behavior.sync = false;
+            behavior.consume_all = false;
+            behavior.consume_count = Some(31);
+        }
+        let mut rx_avail = 0;
+        post_owned_rx(&mem, 0, DATA_BASE + 0x8000, &mut rx_avail, SIZE);
+        post_owned_rx(&mem, 1, DATA_BASE + 0x8100, &mut rx_avail, SIZE);
+        worker.process_virtio_rx(&mut old_queue).unwrap();
+        let old_rx_ids: Vec<_> = old_handle.rx_pending.lock().iter().copied().collect();
+        worker.active_state.pending_rx_packets.write_packet(
+            old_rx_ids[0],
+            &RxMetadata {
+                len: 3,
+                ..Default::default()
+            },
+            b"old",
+        );
+        let mut tx_avail = 0;
+        let order: Vec<u16> = std::iter::once(62)
+            .chain((0..31).map(|idx| idx * 2))
+            .collect();
+        for &idx in &order {
+            queue_owned_tx(&mut worker, &mem, idx, &mut tx_avail, SIZE);
+        }
+        let first_gpa = worker.active_state.data.tx_segments[0].gpa;
+        let old_tx_id = worker.active_state.pending_tx_packets[62]
+            .as_ref()
+            .unwrap()
+            .id;
+        let mut old_endpoint_queue = crate::EndpointQueueState {
+            queue: Box::new(old_queue),
+        };
+        worker
+            .transmit_pending_segments(&mut old_endpoint_queue)
+            .unwrap();
+        assert_eq!(worker.active_state.data.tx_segments.len(), 1);
+        assert!(!worker.active_state.pending_rx_packets.has_room(true));
+
+        let stop_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (stop_tx, stop_rx) = mesh::channel();
+        let (queue_tx, mut queue_rx) = mesh::channel();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let mut device = Device::builder()
+            .build(
+                &driver_source,
+                Box::new(RestartEndpoint {
+                    current_probe: old_handle.probe.clone(),
+                    queue_tx,
+                    stop_gate: Some(stop_rx),
+                    stop_requested: stop_requested.clone(),
+                }),
+                MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]),
+            )
+            .unwrap();
+        assert!(!device.adapter.bounce_io());
+        device
+            .start_queue(
+                0,
+                QueueResources {
+                    params: QueueParams {
+                        size: SIZE,
+                        enable: true,
+                        desc_addr: RX_DESC_ADDR,
+                        avail_addr: RX_AVAIL_ADDR,
+                        used_addr: RX_USED_ADDR,
+                    },
+                    notify: Interrupt::from_event(Event::new()),
+                    event: Event::new(),
+                    guest_memory: mem.copy_only_view(),
+                },
+                &VirtioDeviceFeatures::new(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(device.adapter.bounce_io());
+        let mut task = task_control::TaskControl::new(crate::NetQueue {
+            state: Some(old_endpoint_queue),
+        });
+        task.insert(&device.adapter.driver, "owned-restart-test", worker);
+        let mut coordinator = crate::Coordinator {
+            workers: vec![task],
+            num_queues: 1,
+            restart: false,
+            owned_restart_pending: false,
+        };
+        let retained_mem = old_handle.probe.lock().memory.clone().unwrap();
+        mem.fill_at(DATA_BASE, 0xCD, 0x4000).unwrap();
+        let mut restart = Box::pin(coordinator.restart_queues(device.coordinator.task_mut()));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(restart.as_mut().poll(&mut cx).is_pending());
+        assert!(stop_requested.load(std::sync::atomic::Ordering::Acquire));
+        assert!(old_handle.probe.lock().queue_dropped);
+        let mut bytes = [0; 64];
+        retained_mem.read_at(first_gpa, &mut bytes).unwrap();
+        assert_eq!(bytes, [0xAB; 64], "stop has not quiesced the old consumer");
+        let mut used = 0;
+        assert!(read_used(&mem, TX_USED_ADDR, SIZE, &mut used).is_none());
+
+        if !confirm_stop {
+            drop(restart);
+            assert!(matches!(
+                coordinator
+                    .restart_queues(device.coordinator.task_mut())
+                    .await,
+                Err(crate::WorkerError::EndpointNotQuiescent),
+            ));
+            let worker = coordinator.workers[0].state_mut().unwrap();
+            assert!(worker.retired);
+            assert!(!worker.active_state.pending_rx_packets.has_room(true));
+            assert!(old_handle.probe.lock().memory.is_some());
+            retained_mem.read_at(first_gpa, &mut bytes).unwrap();
+            assert_eq!(bytes, [0xAB; 64]);
+            assert!(read_used(&mem, TX_USED_ADDR, SIZE, &mut used).is_none());
+            continue;
+        }
+
+        // The old endpoint still owns packet references after queue drop. It
+        // consumes them during stop but deliberately never reports completion.
+        {
+            let mut old = old_handle.probe.lock();
+            let memory = old.memory.clone().unwrap();
+            let mut observed = Vec::new();
+            for segment in &old.pending_tx {
+                let mut bytes = vec![0; segment.len as usize];
+                memory.read_at(segment.gpa, &mut bytes).unwrap();
+                observed.push(bytes);
+            }
+            assert_eq!(observed, vec![vec![0xAB; 64]; 31]);
+            old.consumed_tx.extend(observed);
+        }
+        stop_tx.send(());
+        assert!(matches!(
+            restart.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        drop(restart);
+        assert!(old_handle.probe.lock().memory.is_none());
+        assert!(old_handle.probe.lock().pending_tx.is_empty());
+        retained_mem.read_at(first_gpa, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 64]);
+        for &idx in &order {
+            assert_eq!(
+                read_used(&mem, TX_USED_ADDR, SIZE, &mut used),
+                Some((idx, 0))
+            );
+        }
+        assert!(read_used(&mem, TX_USED_ADDR, SIZE, &mut used).is_none());
+        let new_handle = queue_rx.next().await.unwrap();
+        let new_rx_ids: Vec<_> = new_handle.rx_pending.lock().iter().copied().collect();
+        assert_eq!(new_rx_ids.len(), 2);
+        assert!(
+            new_rx_ids
+                .iter()
+                .all(|id| old_rx_ids.iter().all(|old| id.0 != old.0))
+        );
+        {
+            let worker = coordinator.workers[0].state_mut().unwrap();
+            assert!(!worker.retired);
+            assert!(
+                worker
+                    .active_state
+                    .pending_tx_packets
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert_eq!(worker.active_state.stats.tx_dropped.get(), 32);
+            assert!(worker.active_state.pending_rx_packets.has_room(true));
+            for idx in 0..32 {
+                queue_owned_tx(worker, &mem, idx * 2, &mut tx_avail, SIZE);
+            }
+            assert!(!worker.active_state.pending_rx_packets.has_room(true));
+        }
+        {
+            let (task, worker) = coordinator.workers[0].get_mut();
+            let worker = worker.unwrap();
+            new_handle.tx_avail_behavior.lock().sync = false;
+            worker
+                .transmit_pending_segments(task.state.as_mut().unwrap())
+                .unwrap();
+        }
+        // A second restart must also recover all 32 slots without completions.
+        coordinator
+            .restart_queues(device.coordinator.task_mut())
+            .await
+            .unwrap();
+        for idx in 0..32 {
+            assert_eq!(
+                read_used(&mem, TX_USED_ADDR, SIZE, &mut used),
+                Some((idx * 2, 0))
+            );
+        }
+        assert!(new_handle.probe.lock().memory.is_none());
+        let latest_handle = queue_rx.next().await.unwrap();
+        let worker = coordinator.workers[0].state_mut().unwrap();
+        assert_eq!(worker.active_state.stats.tx_dropped.get(), 64);
+        assert!(worker.active_state.pending_rx_packets.has_room(true));
+        queue_owned_tx(worker, &mem, 0, &mut tx_avail, SIZE);
+        assert!(worker.complete_tx_packet(old_tx_id).is_err());
+        assert!(worker.active_state.pending_tx_packets[0].is_some());
+        latest_handle.rx_ready.lock().push_back((
+            old_rx_ids[0],
+            b"stale".to_vec(),
+            RxMetadata {
+                len: 5,
+                ..Default::default()
+            },
+        ));
+        let (task, worker) = coordinator.workers[0].get_mut();
+        assert!(matches!(
+            worker
+                .unwrap()
+                .process_endpoint_rx(task.state.as_mut().unwrap().queue.as_mut()),
+            Err(crate::WorkerError::RxBuffer(
+                crate::buffers::RxCompletionError::InvalidId(_)
+            )),
+        ));
+        assert!(read_used(&mem, TX_USED_ADDR, SIZE, &mut used).is_none());
+        let mut rx_used = 0;
+        assert!(read_used(&mem, RX_USED_ADDR, SIZE, &mut rx_used).is_none());
+    }
+}
+
 /// Post 1 TX packet. tx_avail returns (sync: true, all segments consumed).
 /// Verify segments logged and used ring updated.
 #[async_test]
@@ -871,6 +2406,8 @@ async fn unordered_backend_rejected(driver: DefaultDriver) {
     let endpoint = MockEndpoint {
         queue_tx,
         is_ordered: false,
+        guest_origin: None,
+        endpoint_type: "mock",
     };
 
     let err = Device::builder()

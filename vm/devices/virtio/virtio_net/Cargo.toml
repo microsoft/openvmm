@@ -34,6 +34,7 @@ futures.workspace = true
 mesh.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true
+sparse_mmap.workspace = true
 test_with_tracing.workspace = true
 
 [lints]
