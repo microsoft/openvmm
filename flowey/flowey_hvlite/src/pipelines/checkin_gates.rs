@@ -14,6 +14,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmFile;
 use flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::artifact_name_openhcl_baseline;
 use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
 use flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode;
@@ -1193,8 +1194,18 @@ impl IntoPipeline for CheckinGatesCli {
                                 let pub_openhcl_igvm = pub_openhcl_igvms.remove(&recipe).unwrap();
                                 let pub_openhcl_igvm_extras =
                                     pub_openhcl_igvms_extras.remove(&recipe).unwrap();
-                                (
-                                    OpenhclIgvmBuildParams {
+                                let vmfirmwareigvm_dll = if recipe == OpenhclIgvmRecipe::X64Cvm
+                                    && arch == CommonArch::X86_64
+                                    && !mi_secure
+                                {
+                                    pub_vmfirmwareigvm_cvm_x64
+                                        .take()
+                                        .map(|artifact| ctx.publish_typed_artifact(artifact))
+                                } else {
+                                    None
+                                };
+                                OpenhclIgvmFile {
+                                    build_params: OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
                                         recipe,
                                         custom_target: Some(CommonTriple::Custom(
@@ -1215,19 +1226,14 @@ impl IntoPipeline for CheckinGatesCli {
                                         // consumed by the VMM tests.
                                         confidential_debug: true,
                                     },
-                                    ctx.publish_typed_artifact(pub_openhcl_igvm),
-                                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
-                                )
+                                    openhcl_igvm: ctx.publish_typed_artifact(pub_openhcl_igvm),
+                                    openhcl_igvm_extras: ctx
+                                        .publish_typed_artifact(pub_openhcl_igvm_extras),
+                                    vmfirmwareigvm_dll,
+                                }
                             })
                             .collect(),
                         artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
-                        vmfirmwareigvm_cvm: if arch == CommonArch::X86_64 && !mi_secure {
-                            pub_vmfirmwareigvm_cvm_x64
-                                .take()
-                                .map(|artifact| ctx.publish_typed_artifact(artifact))
-                        } else {
-                            None
-                        },
                     }
                 });
 
