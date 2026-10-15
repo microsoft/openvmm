@@ -302,6 +302,8 @@ impl PetriVmConfigOpenVmm {
                         disk,
                         read_only: false,
                         serial: None,
+                        bounce_io: false,
+                        bounce_disk: None,
                     }
                     .into_resource(),
                 )
@@ -1596,6 +1598,8 @@ async fn vmbus_storage_controllers_to_openvmm(
                                 disk: petri_disk_to_openvmm(disk).await?,
                                 read_only: false,
                                 serial: None,
+                                bounce_io: false,
+                                bounce_disk: None,
                             }
                             .into_resource(),
                         )

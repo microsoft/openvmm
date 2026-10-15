@@ -132,6 +132,10 @@ disk_vhdmp.workspace = true
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+virtio_resources.workspace = true
+
 [lints]
 workspace = true
 

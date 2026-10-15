@@ -560,6 +560,8 @@ valid disk kinds:
 
 flags:
     `ro`                           open disk as read-only
+    `bounce`                       force owned block staging (default: off)
+                                   only plain regular files and RAM disks; no wrappers
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port
@@ -1412,6 +1414,17 @@ Syntax: id=<name>
 }
 
 impl Options {
+    /// Reject bounce mode outside the per-device virtio-blk option.
+    pub fn validate_bounce_options(&self) -> anyhow::Result<()> {
+        for disk in self.disk.iter().chain(&self.nvme) {
+            disk.validate_bounce_scope(false)?;
+        }
+        for disk in &self.virtio_blk {
+            disk.validate_bounce_scope(true)?;
+        }
+        Ok(())
+    }
+
     /// Returns the structured UEFI configuration with deprecated options merged in.
     pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
         let mut uefi = match &self.uefi {
@@ -2473,6 +2486,7 @@ pub struct DiskCli {
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
     pub relay: Option<(String, Option<u32>)>,
+    pub bounce_io: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -2514,6 +2528,8 @@ struct DiskArgs {
     #[kv(flag)]
     ro: bool,
     #[kv(flag)]
+    bounce: bool,
+    #[kv(flag)]
     dvd: bool,
     #[kv(flag, key = "vtl2", present = DeviceVtl::Vtl2, absent = DeviceVtl::Vtl0)]
     vtl: DeviceVtl,
@@ -2551,6 +2567,22 @@ impl FromStr for DiskCli {
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+
+        if args.bounce {
+            if underhill.is_some()
+                || vtl != DeviceVtl::Vtl0
+                || is_dvd
+                || controller.is_some()
+                || relay.is_some()
+            {
+                anyhow::bail!(
+                    "`bounce` is incompatible with relay, named controllers, vtl2, and dvd"
+                );
+            }
+            if !matches!(args.kind, DiskCliKind::File { .. } | DiskCliKind::Memory(_)) {
+                anyhow::bail!("`bounce` only supports plain regular-file and RAM disks");
+            }
+        }
 
         if serial.as_ref().is_some_and(|serial| {
             serial.bytes().any(|byte| {
@@ -2614,7 +2646,18 @@ impl FromStr for DiskCli {
             nsid,
             lun,
             relay,
+            bounce_io: args.bounce,
         })
+    }
+}
+
+impl DiskCli {
+    /// Check the argument scope after parsing the shared disk syntax.
+    pub fn validate_bounce_scope(&self, virtio_blk: bool) -> anyhow::Result<()> {
+        if self.bounce_io && !virtio_blk {
+            anyhow::bail!("`bounce` is only supported by `--virtio-blk`");
+        }
+        Ok(())
     }
 }
 
@@ -3936,6 +3979,60 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn test_disk_cli_bounce() {
+        assert!(!"mem:1M".parse::<DiskCli>().unwrap().bounce_io);
+        let disk: DiskCli = "file:disk.raw,pcie_port=rp0,ro,serial=DATA,bounce"
+            .parse()
+            .unwrap();
+        assert!(disk.bounce_io);
+        assert!(disk.read_only);
+        assert_eq!(disk.pcie_port.as_deref(), Some("rp0"));
+        assert_eq!(disk.serial.as_deref(), Some("DATA"));
+    }
+
+    #[test]
+    fn test_disk_cli_bounce_rejects_incompatible_contexts() {
+        for disk in [
+            "mem:1M,bounce,dvd",
+            "mem:1M,bounce,vtl2",
+            "mem:1M,bounce,uh",
+            "mem:1M,bounce,uh-nvme",
+            "mem:1M,bounce,on=controller",
+            "mem:1M,bounce,on=controller,relay=openhcl",
+            "memdiff:mem:1M,bounce",
+            "prwrap:mem:1M,bounce",
+            "mem:1M,bounce=true",
+        ] {
+            assert!(disk.parse::<DiskCli>().is_err(), "{disk}");
+        }
+    }
+
+    #[test]
+    fn test_bounce_options_reject_other_disk_flags() {
+        for flag in ["--disk", "--nvme"] {
+            let opt = Options::try_parse_from(["openvmm", flag, "mem:1M,bounce"]).unwrap();
+            assert_eq!(
+                opt.validate_bounce_options().unwrap_err().to_string(),
+                "`bounce` is only supported by `--virtio-blk`"
+            );
+        }
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--virtio-blk",
+            "mem:1M,bounce",
+            "--virtio-blk",
+            "mem:1M",
+            "--disk",
+            "mem:1M",
+        ])
+        .unwrap();
+        opt.validate_bounce_options().unwrap();
+        assert!(opt.virtio_blk[0].bounce_io);
+        assert!(!opt.virtio_blk[1].bounce_io);
+        assert!(!opt.disk[0].bounce_io);
+    }
 
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.

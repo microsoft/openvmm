@@ -109,6 +109,8 @@ mod linux {
                         disk: Resource::new(FileDiskHandle(file)),
                         read_only: *read_only,
                         serial: None,
+                        bounce_io: false,
+                        bounce_disk: None,
                     };
 
                     let resolved = resolver

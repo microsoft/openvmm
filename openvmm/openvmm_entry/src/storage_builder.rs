@@ -28,6 +28,7 @@ use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use storvsp_resources::StorvspIdeDeviceHandle;
 use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::blk::VirtioBlkBounceDiskHandle;
 use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -41,6 +42,225 @@ use vtl2_settings_proto::storage_controller;
 /// Namespace GUID for deriving deterministic GUIDs from controller names.
 /// This is hashed together with the name via SHA-256 to produce a UUIDv8.
 const OPENVMM_CONTROLLER_NS: Guid = guid::guid!("a3f1e2d4-5b6c-4a8d-9e0f-1234567890ab");
+
+fn bounce_disk_candidate(kind: &DiskCliKind) -> bool {
+    match kind {
+        DiskCliKind::Memory(_) => true,
+        DiskCliKind::File {
+            path,
+            create_with_len,
+            direct: false,
+        } => {
+            let structured = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    ["vhd", "vhdx", "vmgs", "iso"]
+                        .iter()
+                        .any(|format| extension.eq_ignore_ascii_case(format))
+                });
+            let regular_file = match path.metadata() {
+                Ok(metadata) => metadata.is_file(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    create_with_len.is_some()
+                }
+                Err(_) => false,
+            };
+            !structured && regular_file
+        }
+        _ => false,
+    }
+}
+
+fn open_reviewed_disk(
+    kind: &DiskCliKind,
+    read_only: bool,
+) -> anyhow::Result<VirtioBlkBounceDiskHandle> {
+    let disk = match kind {
+        DiskCliKind::Memory(len) => VirtioBlkBounceDiskHandle::Ram { len: *len },
+        DiskCliKind::File {
+            path,
+            create_with_len,
+            direct,
+        } => {
+            if *direct {
+                anyhow::bail!("`bounce` does not support `;direct`");
+            }
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    ["vhd", "vhdx", "vmgs", "iso"]
+                        .iter()
+                        .any(|format| extension.eq_ignore_ascii_case(format))
+                })
+            {
+                anyhow::bail!("`bounce` requires a plain disk image, not a structured disk format");
+            }
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(!read_only || create_with_len.is_some())
+                .create(create_with_len.is_some())
+                .truncate(create_with_len.is_some())
+                .open(path)
+                .with_context(|| format!("failed to open {}", path.display()))?;
+            if !file.metadata()?.is_file() {
+                anyhow::bail!("`bounce` requires a regular file, not a host device");
+            }
+
+            if let Some(len) = create_with_len {
+                file.set_len(*len)?;
+            }
+            VirtioBlkBounceDiskHandle::File(file)
+        }
+        _ => anyhow::bail!("`bounce` only supports plain regular-file and RAM disks"),
+    };
+    Ok(disk)
+}
+
+fn open_bounce_disk(
+    kind: &DiskCliKind,
+    read_only: bool,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(open_reviewed_disk(kind, read_only)?.into_resource())
+}
+
+fn open_auto_disks(
+    kind: &DiskCliKind,
+    read_only: bool,
+) -> anyhow::Result<(Resource<DiskHandleKind>, Resource<DiskHandleKind>)> {
+    let bounce = open_reviewed_disk(kind, read_only)?;
+    let direct = match &bounce {
+        VirtioBlkBounceDiskHandle::Ram { len } => {
+            disk_backend_resources::LayeredDiskHandle::single_layer(
+                disk_backend_resources::layer::RamDiskLayerHandle {
+                    len: Some(*len),
+                    sector_size: None,
+                },
+            )
+            .into_resource()
+        }
+        VirtioBlkBounceDiskHandle::File(file) => {
+            let file = file.try_clone()?;
+            #[cfg(target_os = "linux")]
+            {
+                disk_backend_resources::BlockDeviceDiskHandle { file }.into_resource()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                disk_backend_resources::FileDiskHandle(file).into_resource()
+            }
+        }
+    };
+    Ok((direct, bounce.into_resource()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn bounce_disk_allowlist() {
+        let ram = open_bounce_disk(&"mem:1M".parse().unwrap(), false).unwrap();
+        assert_eq!(ram.id(), "virtio-blk-bounce-disk");
+        let file = open_bounce_disk(&"file:Cargo.toml".parse().unwrap(), true).unwrap();
+        assert_eq!(file.id(), "virtio-blk-bounce-disk");
+        for kind in ["memdiff:mem:1M", "file:disk.raw;direct"] {
+            assert!(
+                open_bounce_disk(&kind.parse().unwrap(), true).is_err(),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_bounce_disk_candidates_preserve_direct_backends() {
+        for kind in ["mem:1M", "file:Cargo.toml"] {
+            assert!(bounce_disk_candidate(&kind.parse().unwrap()), "{kind}");
+        }
+        for kind in [
+            "memdiff:mem:1M",
+            "file:Cargo.toml;direct",
+            "file:disk.vhd",
+            "file:disk.VHDX",
+            "file:disk.iso",
+        ] {
+            assert!(!bounce_disk_candidate(&kind.parse().unwrap()), "{kind}");
+        }
+        #[cfg(unix)]
+        assert!(!bounce_disk_candidate(&"file:/dev/null".parse().unwrap()));
+    }
+
+    #[test]
+    fn automatic_disk_keeps_platform_direct_backend_and_reviewed_alternative() {
+        let (direct, bounce) = open_auto_disks(&"file:Cargo.toml".parse().unwrap(), true).unwrap();
+        assert_eq!(bounce.id(), "virtio-blk-bounce-disk");
+        #[cfg(target_os = "linux")]
+        assert_eq!(direct.id(), "block");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(direct.id(), "file");
+        let (direct, bounce) = open_auto_disks(&"mem:1M".parse().unwrap(), false).unwrap();
+        assert_eq!(direct.id(), "layered");
+        assert_eq!(bounce.id(), "virtio-blk-bounce-disk");
+    }
+
+    #[test]
+    fn bounce_disk_rejects_structured_formats_case_insensitively() {
+        for extension in ["vhd", "VHD", "vHd", "vhdx", "VHDX", "vHdX", "VMGS", "ISO"] {
+            let kind = format!("file:disk.{extension}").parse().unwrap();
+            let error = open_bounce_disk(&kind, true).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "`bounce` requires a plain disk image, not a structured disk format",
+                "{extension}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounce_disk_create_truncates_existing_contents() {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        struct TestFile(std::path::PathBuf);
+        impl Drop for TestFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let path = format!(
+            ".bounce-create-{}-{}.raw",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let file_path = TestFile(path.into());
+        std::io::Write::write_all(&mut file, &[0x5a; 512]).unwrap();
+        drop(file);
+
+        let kind = DiskCliKind::File {
+            path: file_path.0.clone(),
+            create_with_len: Some(512),
+            direct: false,
+        };
+        drop(open_bounce_disk(&kind, true).unwrap());
+        assert_eq!(std::fs::read(&file_path.0).unwrap(), [0; 512]);
+    }
+
+    #[test]
+    fn bounce_disk_checks_opened_file_type() {
+        let kind = DiskCliKind::File {
+            path: ".".into(),
+            create_with_len: None,
+            direct: false,
+        };
+        assert!(open_bounce_disk(&kind, true).is_err());
+    }
+}
 
 /// Derive a deterministic GUID from a name string using UUIDv8 (RFC 9562
 /// §5.8) with SHA-256. The result is stable across Rust versions and
@@ -141,6 +361,8 @@ struct VirtioBlkDisk {
     disk: Resource<DiskHandleKind>,
     read_only: bool,
     serial: Option<String>,
+    bounce_io: bool,
+    bounce_disk: Option<Resource<DiskHandleKind>>,
 }
 
 impl VirtioBlkDisk {
@@ -149,6 +371,8 @@ impl VirtioBlkDisk {
             disk: self.disk,
             read_only: self.read_only,
             serial: self.serial,
+            bounce_io: self.bounce_io,
+            bounce_disk: self.bounce_disk,
         }
         .into_resource()
     }
@@ -170,6 +394,7 @@ pub enum DiskLocation {
     VirtioBlk {
         pcie_port: Option<String>,
         serial: Option<String>,
+        bounce_io: bool,
     },
 }
 
@@ -346,7 +571,18 @@ impl StorageBuilder {
         is_dvd: bool,
         read_only: bool,
     ) -> anyhow::Result<Option<u32>> {
-        let disk = disk_open(kind, read_only || is_dvd).await?;
+        let (disk, bounce_disk) = match &target {
+            DiskLocation::VirtioBlk {
+                bounce_io: true, ..
+            } => (open_bounce_disk(kind, read_only || is_dvd)?, None),
+            DiskLocation::VirtioBlk {
+                bounce_io: false, ..
+            } if bounce_disk_candidate(kind) => {
+                let (direct, bounce) = open_auto_disks(kind, read_only || is_dvd)?;
+                (direct, Some(bounce))
+            }
+            _ => (disk_open(kind, read_only || is_dvd).await?, None),
+        };
         let location = match target {
             DiskLocation::Ide(channel, device) => {
                 let guest_media = if is_dvd {
@@ -522,7 +758,11 @@ impl StorageBuilder {
                     anyhow::bail!("unknown controller: '{controller}'");
                 }
             },
-            DiskLocation::VirtioBlk { pcie_port, serial } => {
+            DiskLocation::VirtioBlk {
+                pcie_port,
+                serial,
+                bounce_io,
+            } => {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
                 }
@@ -533,6 +773,8 @@ impl StorageBuilder {
                     disk,
                     read_only,
                     serial,
+                    bounce_io,
+                    bounce_disk,
                 };
                 if let Some(port) = pcie_port {
                     self.pcie_virtio_blk_disks.push((port, vblk));

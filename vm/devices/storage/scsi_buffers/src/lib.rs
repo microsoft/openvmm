@@ -169,6 +169,11 @@ impl Deref for IoBuffer<'_> {
 
 const PAGE_SIZE: usize = 4096;
 
+/// Maximum size of one request staged in owned memory.
+///
+/// This is a per-request limit, not a shared budget across devices.
+pub const MAX_BOUNCE_IO_SIZE: usize = 1024 * 1024;
+
 #[repr(C, align(4096))]
 #[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct Page([u8; PAGE_SIZE]);
@@ -562,6 +567,7 @@ impl BounceBufferTracker {
 mod tests {
     use super::*;
     use sparse_mmap::SparseMapping;
+    use test_with_tracing::test;
     const SIZE_1MB: usize = 1048576;
 
     #[test]
