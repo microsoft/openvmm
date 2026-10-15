@@ -5,8 +5,7 @@
 //!
 //! Active only for partitions built with
 //! [`ProtoPartitionConfig::time_abi`](virt::ProtoPartitionConfig::time_abi).
-//! It implements the WHP column of "Backend obligations" in NVX
-//! `doc/design/time-abi.md`:
+//! It meets the time ABI's backend obligations with these WHP mechanisms:
 //!
 //! - **Partition.** No Hyper-V guest interface (so no synthetic processor
 //!   features), the in-hypervisor (offloaded) APIC, no isolation, no VTL2,

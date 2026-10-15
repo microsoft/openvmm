@@ -5,8 +5,9 @@
 //!
 //! The guest-visible time contract of the microVM: a minimal Hyper-V
 //! frequency identity, the identity MSRs, the TSC rate policy, downtime
-//! selection, and the backend primitives that snapshot restore needs. The
-//! contract is specified in the NVX repository, `doc/design/time-abi.md`.
+//! selection, and the backend primitives that snapshot restore needs. A host,
+//! backend, or snapshot that cannot meet the contract fails with a stable
+//! [`TimeAbiCode`], and nothing falls back to another behavior.
 
 #[cfg(guest_arch = "x86_64")]
 pub mod backend;
@@ -67,7 +68,7 @@ macro_rules! time_abi_codes {
         }
 
         impl TimeAbiCode {
-            /// Every code, in specification order.
+            /// Every code, in declaration order.
             pub const ALL: &[TimeAbiCode] = &[$(TimeAbiCode::$variant,)*];
 
             /// Returns the stable name of the code, for example
@@ -452,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn codes_match_the_specification() {
+    fn codes_keep_their_names_and_order() {
         let names: Vec<_> = TimeAbiCode::ALL.iter().map(|code| code.as_str()).collect();
         assert_eq!(
             names,
