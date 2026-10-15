@@ -1778,6 +1778,9 @@ mod aarch64 {
         pub(crate) fn flush_apic(&mut self, _vtl: Vtl) {}
 
         fn get_x(&self, n: u8) -> u64 {
+            if n >= 31 {
+                return 0; // XZR
+            }
             let mut value = [Default::default()];
             self.current_whp()
                 .get_registers(
@@ -1791,6 +1794,9 @@ mod aarch64 {
         }
 
         fn set_x(&self, n: u8, v: u64) {
+            if n >= 31 {
+                return;
+            }
             let value = [whp::abi::WHV_REGISTER_VALUE(v.into())];
             self.current_whp()
                 .set_registers(

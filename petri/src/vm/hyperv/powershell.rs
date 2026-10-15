@@ -20,7 +20,10 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -511,7 +514,7 @@ impl HyperVNewCustomVMArgs {
         }
 
         Ok(HyperVNewCustomVMArgs {
-            name: name.to_owned(),
+            name: make_vm_safe_name(name),
             generation: Some(if properties.is_pcat {
                 HyperVGeneration::One
             } else {
@@ -653,6 +656,41 @@ impl HyperVNewCustomVMArgs {
             management_vtl_settings: None,
             physical_nvme_devices: physical_nvme_devices.clone(),
         })
+    }
+}
+
+/// Creates a VM-safe name that respects platform limitations.
+///
+/// Hyper-V limits VM names to 100 characters. For names that exceed this limit,
+/// this function truncates to 96 characters and appends a 4-character hash
+/// to ensure uniqueness while staying within the limit.
+fn make_vm_safe_name(name: &str) -> String {
+    const MAX_VM_NAME_LENGTH: usize = 100;
+    const HASH_LENGTH: usize = 4;
+    const MAX_PREFIX_LENGTH: usize = MAX_VM_NAME_LENGTH - HASH_LENGTH;
+
+    if name.len() <= MAX_VM_NAME_LENGTH {
+        name.to_owned()
+    } else {
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Format hash as a 4-character hex string
+        let hash_suffix = format!("{:04x}", hash & 0xFFFF);
+
+        // Truncate the name and append the hash
+        let truncated = &name[..MAX_PREFIX_LENGTH];
+        tracing::debug!(
+            "VM name too long ({}), truncating '{}' to '{}{}'",
+            name.len(),
+            name,
+            truncated,
+            hash_suffix
+        );
+
+        format!("{}{}", truncated, hash_suffix)
     }
 }
 

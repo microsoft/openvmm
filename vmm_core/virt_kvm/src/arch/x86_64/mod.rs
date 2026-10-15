@@ -278,6 +278,7 @@ impl virt::Hypervisor for Kvm {
             use hvdef::*;
             let privileges = HvPartitionPrivilege::new()
                 .with_access_partition_reference_counter(true)
+                .with_access_partition_reference_tsc(true)
                 .with_access_hypercall_msrs(true)
                 .with_access_vp_index(true)
                 .with_access_frequency_msrs(true)

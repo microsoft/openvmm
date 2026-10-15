@@ -22,12 +22,11 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri::ResolvedArtifact;
+use petri::TestChild;
 use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Write;
 use std::net::TcpListener;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -1474,7 +1473,7 @@ async fn launch_openvmm(
     openvmm: &ResolvedArtifact,
     socket_path: &Path,
     pidfile_path: &Path,
-) -> anyhow::Result<(OpenvmmChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
+) -> anyhow::Result<(TestChild, mesh_rpc::Client, Task<anyhow::Result<()>>)> {
     tracing::info!(socket_path = %socket_path.display(), "launching OpenVMM with ttrpc");
 
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -1491,7 +1490,7 @@ async fn launch_openvmm(
 
     // Wrap the child immediately so that the error paths below (and any test
     // failure after this function returns) tear the process down.
-    let mut child = OpenvmmChild(PolledChild::<std::process::Child>::new(driver, child)?);
+    let mut child = TestChild::new(PolledChild::<std::process::Child>::new(driver, child)?);
 
     // Start pumping stderr immediately so the pipe buffer doesn't fill up and
     // block the child.
@@ -1549,50 +1548,6 @@ async fn launch_openvmm(
     );
 
     Ok((child, client, stderr_task))
-}
-
-/// Owns the OpenVMM process launched by [`launch_openvmm`], killing it on drop.
-///
-/// [`std::process::Child`] deliberately does *not* kill the process when it is
-/// dropped. Without this guard, any test that fails or panics before reaching
-/// its `TeardownVM`/`Quit` calls leaves an orphaned OpenVMM process behind,
-/// still running its VM and still holding the ttrpc socket.
-struct OpenvmmChild(PolledChild<std::process::Child>);
-
-impl Deref for OpenvmmChild {
-    type Target = PolledChild<std::process::Child>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for OpenvmmChild {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for OpenvmmChild {
-    fn drop(&mut self) {
-        let child = self.0.get_mut();
-        // `kill` reports success for an already-reaped child, so ask `try_wait`
-        // whether the process is actually gone rather than relying on that.
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
-        tracing::warn!("killing openvmm, which was still running at the end of the test");
-        if let Err(err) = child.kill() {
-            tracing::warn!(
-                error = &err as &dyn std::error::Error,
-                "failed to kill openvmm"
-            );
-            return;
-        }
-        // Reap the process so it doesn't linger as a zombie. It was just
-        // killed, so this returns promptly.
-        let _ = child.wait();
-    }
 }
 
 /// Builds a file-backed disk backend for the given path.

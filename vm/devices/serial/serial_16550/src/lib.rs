@@ -35,6 +35,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
+use serial_16550_resources::COM_REGISTER_COUNT;
 use serial_16550_resources::MmioOrIoPort;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
@@ -172,7 +173,7 @@ impl Serial16550 {
         wait_for_rts: bool,
         debugger_poll_timer: Option<PolledTimer>,
     ) -> Result<Self, ConfigurationError> {
-        let width = 8 * register_width as u64;
+        let width = u64::from(COM_REGISTER_COUNT) * u64::from(register_width);
         let (base_addr, io_region, mmio_region) = match base {
             MmioOrIoPort::Mmio(base) => {
                 if ![1, 2, 4, 8].contains(&register_width) {
@@ -343,7 +344,8 @@ impl Serial16550 {
             return None;
         }
         Some(Register(
-            ((addr & ((8 << self.register_shift) - 1)) >> self.register_shift) as u8,
+            ((addr & ((u64::from(COM_REGISTER_COUNT) << self.register_shift) - 1))
+                >> self.register_shift) as u8,
         ))
     }
 

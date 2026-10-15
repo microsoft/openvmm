@@ -667,7 +667,7 @@ options:
     pub smmu: Vec<SmmuCli>,
 
     /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     ///
     /// Prefix the binding with `debugger-mode:` to run this COM port in
     /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
@@ -681,25 +681,25 @@ options:
     pub com1: Option<ComSerialConfigCli>,
 
     /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<ComSerialConfigCli>,
 
     /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<ComSerialConfigCli>,
 
     /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<ComSerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
@@ -707,7 +707,7 @@ options:
     #[clap(long)]
     pub serial_tx_only: bool,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -839,7 +839,7 @@ The openhcl personality requires explicit --hv --vtl2."#
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
-    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 
@@ -2846,10 +2846,11 @@ impl FromStr for ComSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
+    Null,
     Console,
     NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
@@ -2872,6 +2873,7 @@ impl FromStr for SerialConfigCli {
 
         let ret = match first_key {
             "none" => SerialConfigCli::None,
+            "null" => SerialConfigCli::Null,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
             "file" => match first_value {
@@ -4286,6 +4288,10 @@ mod tests {
         assert_eq!(
             SerialConfigCli::from_str("none").unwrap(),
             SerialConfigCli::None
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("null").unwrap(),
+            SerialConfigCli::Null
         );
         assert_eq!(
             SerialConfigCli::from_str("console").unwrap(),
