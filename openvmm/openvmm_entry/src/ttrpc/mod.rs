@@ -2329,6 +2329,8 @@ async fn build_virtio_device(
                 disk,
                 read_only,
                 serial,
+                bounce_io: false,
+                bounce_disk: None,
             }
             .into_resource()
         }

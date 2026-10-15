@@ -150,3 +150,66 @@ vm_resource::register_static_resolvers! {
     #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
     hypervisor_resolvers::hvf::HvfResolver,
 }
+
+#[cfg(test)]
+mod tests {
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use virtio::resolve::VirtioResolveInput;
+    use virtio_resources::blk::VirtioBlkBounceDiskHandle;
+    use virtio_resources::blk::VirtioBlkHandle;
+    use vm_resource::IntoResource;
+    use vm_resource::ResourceResolver;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    async fn resolve_bounce_disk(disk: VirtioBlkBounceDiskHandle, driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let result = ResourceResolver::new()
+            .resolve(
+                VirtioBlkHandle {
+                    disk: disk.into_resource(),
+                    read_only: false,
+                    serial: None,
+                    bounce_io: true,
+                    bounce_disk: None,
+                }
+                .into_resource(),
+                VirtioResolveInput {
+                    driver_source: &driver_source,
+                    guest_memory: None,
+                },
+            )
+            .await;
+        match result {
+            Ok(device) => drop(device),
+            Err(error) => panic!("static bounce disk resolution failed: {error:?}"),
+        }
+    }
+
+    #[async_test]
+    async fn bounce_ram_disk_resolves_with_static_registry(driver: DefaultDriver) {
+        resolve_bounce_disk(VirtioBlkBounceDiskHandle::Ram { len: 1024 * 1024 }, driver).await;
+    }
+
+    #[async_test]
+    async fn bounce_file_disk_resolves_with_static_registry(driver: DefaultDriver) {
+        struct TestFile(std::path::PathBuf);
+        impl Drop for TestFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let path = format!(".bounce-resource-file-{}.raw", std::process::id());
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let _cleanup = TestFile(path.into());
+        file.set_len(1024 * 1024).unwrap();
+        resolve_bounce_disk(VirtioBlkBounceDiskHandle::File(file), driver).await;
+    }
+}

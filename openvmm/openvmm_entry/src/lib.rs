@@ -318,6 +318,7 @@ async fn vm_config_from_command_line(
 ) -> anyhow::Result<(Config, VmResources)> {
     opt.validate_isolation_options()?;
     opt.validate_igvm_options()?;
+    opt.validate_bounce_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     let uefi = opt.effective_uefi()?;
@@ -602,6 +603,7 @@ async fn vm_config_from_command_line(
         nsid,
         lun,
         ref relay,
+        bounce_io: _,
     } in &opt.disk
     {
         if serial.is_some() {
@@ -710,6 +712,7 @@ async fn vm_config_from_command_line(
         nsid: _,
         lun: _,
         relay: _,
+        bounce_io: _,
     } in &opt.nvme
     {
         if serial.is_some() {
@@ -741,6 +744,7 @@ async fn vm_config_from_command_line(
         nsid: _,
         lun: _,
         relay: _,
+        bounce_io,
     } in &opt.virtio_blk
     {
         if underhill.is_some() {
@@ -754,6 +758,7 @@ async fn vm_config_from_command_line(
                 storage_builder::DiskLocation::VirtioBlk {
                     pcie_port: pcie_port.clone(),
                     serial: serial.clone(),
+                    bounce_io,
                 },
                 kind,
                 is_dvd,
