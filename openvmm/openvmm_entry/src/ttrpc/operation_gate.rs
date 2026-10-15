@@ -5,8 +5,8 @@
 //!
 //! Operations that mutate the VM are admitted through this gate. Topology
 //! operations (hot add/remove of devices and resources) are independent of one
-//! another and share the gate; lifecycle and teardown operations are exclusive
-//! and exclude everything else. The gate never queues: a conflicting caller is
+//! another and share the gate; pause, resume, and teardown are exclusive and
+//! exclude everything else. The gate never queues: a conflicting caller is
 //! rejected immediately with `ABORTED`.
 //!
 //! The gate must be acquired before any side effect of the operation, and is
@@ -21,8 +21,10 @@ use std::sync::Arc;
 /// An operation that mutates the VM and therefore requires the gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VmOperation {
-    /// Pause or resume. Exclusive.
-    Lifecycle,
+    /// Pause. Exclusive.
+    Pause,
+    /// Resume. Exclusive.
+    Resume,
     /// Hot add or remove of a device or resource. Shared with other topology
     /// operations.
     Topology,
@@ -33,7 +35,8 @@ pub(crate) enum VmOperation {
 impl VmOperation {
     fn name(self) -> &'static str {
         match self {
-            VmOperation::Lifecycle => "pause/resume",
+            VmOperation::Pause => "pause",
+            VmOperation::Resume => "resume",
             VmOperation::Topology => "device or resource modification",
             VmOperation::Teardown => "teardown",
         }
@@ -128,9 +131,10 @@ mod tests {
     #[test]
     fn exclusive_rejects_everything_with_aborted() {
         let gate = VmOperationGate::default();
-        let _guard = gate.try_acquire(VmOperation::Lifecycle).unwrap();
+        let _guard = gate.try_acquire(VmOperation::Pause).unwrap();
         for op in [
-            VmOperation::Lifecycle,
+            VmOperation::Pause,
+            VmOperation::Resume,
             VmOperation::Topology,
             VmOperation::Teardown,
         ] {
@@ -141,11 +145,25 @@ mod tests {
     }
 
     #[test]
+    fn rejection_names_both_operations() {
+        let gate = VmOperationGate::default();
+        let _guard = gate.try_acquire(VmOperation::Pause).unwrap();
+        let status = grpc_error(gate.try_acquire(VmOperation::Resume).err().unwrap());
+        assert!(
+            status
+                .message
+                .contains("pause in progress, cannot start resume"),
+            "{}",
+            status.message
+        );
+    }
+
+    #[test]
     fn topology_operations_share_the_gate() {
         let gate = VmOperationGate::default();
         let a = gate.try_acquire(VmOperation::Topology).unwrap();
         let b = gate.try_acquire(VmOperation::Topology).unwrap();
-        assert!(gate.try_acquire(VmOperation::Lifecycle).is_err());
+        assert!(gate.try_acquire(VmOperation::Pause).is_err());
         assert!(gate.try_acquire(VmOperation::Teardown).is_err());
         drop(a);
         assert!(gate.try_acquire(VmOperation::Teardown).is_err());
@@ -156,7 +174,7 @@ mod tests {
     #[test]
     fn releases_on_drop() {
         let gate = VmOperationGate::default();
-        drop(gate.try_acquire(VmOperation::Lifecycle).unwrap());
+        drop(gate.try_acquire(VmOperation::Pause).unwrap());
         drop(gate.try_acquire(VmOperation::Teardown).unwrap());
     }
 
