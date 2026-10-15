@@ -4514,15 +4514,14 @@ fn add_devices_to_dsdt_x64(
 
 /// The host page backing the standalone generation ID buffer.
 struct GenerationIdPage {
-    /// Keeps the page mapped into the guest.
     _guest_mapping: Box<dyn guestmem::MappableGuestMemory>,
-    /// Host view of the page; the ID lives at offset 0.
     buffer: GuestMemory,
 }
 
 /// Maps a dedicated host page at `gpa` for the standalone generation ID
-/// buffer, as `rom.rs` does for ROMs. The guest mapping is read-only; the
-/// device writes the ID through a separate host mapping of the same memory.
+/// buffer; the device writes the ID through a separate host mapping of the
+/// same memory. The guest mapping is writable because MSHV does not honor a
+/// read-only mapping here.
 fn map_generation_id_page(
     mapper: &membacking::DeviceMemoryMapper,
     gpa: u32,
@@ -4543,10 +4542,10 @@ fn map_generation_id_page(
         .new_region(len, "generation-id".into())
         .context("failed to create generation ID region")?;
     region
-        .map(0, &backing, 0, len, false)
+        .map(0, &backing, 0, len, true)
         .context("failed to map generation ID page")?;
     guest_mapping
-        .map_to_guest(gpa.into(), false)
+        .map_to_guest(gpa.into(), true)
         .context("failed to map generation ID page into the guest")?;
 
     Ok(GenerationIdPage {

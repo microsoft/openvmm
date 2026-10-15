@@ -1072,7 +1072,6 @@ impl VmService {
                 None,
             ));
         }
-        // VM Generation ID, as in the CLI.
         let generation_id_send = if !matches!(load_mode, LoadMode::Igvm { .. }) {
             let (send, recv) = mesh::channel();
             chipset_builder = chipset_builder.with_generation_id(recv);

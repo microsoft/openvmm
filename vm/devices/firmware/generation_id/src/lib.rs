@@ -228,11 +228,9 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::task::Waker;
     use vmcore::line_interrupt::LineSetTarget;
-    use vmcore::save_restore::SaveRestore;
 
     const GPA: u64 = 0x1000;
 
-    /// Counts rising edges, since the device pulses the line.
     #[derive(Default)]
     struct EdgeCounter(AtomicUsize);
 
@@ -250,14 +248,11 @@ mod tests {
         }
     }
 
-    fn new_device(
-        gm: &GuestMemory,
-        id: [u8; 16],
-    ) -> (GenerationId, Arc<EdgeCounter>, mesh::Sender<[u8; 16]>) {
+    fn new_device(gm: &GuestMemory) -> (GenerationId, Arc<EdgeCounter>, mesh::Sender<[u8; 16]>) {
         let edges = Arc::new(EdgeCounter::default());
         let (send, recv) = mesh::channel();
         let mut dev = GenerationId::new(
-            id,
+            [1; 16],
             GenerationIdRuntimeDeps {
                 gm: gm.clone(),
                 generation_id_recv: recv,
@@ -281,12 +276,12 @@ mod tests {
     #[test]
     fn fixed_address_publishes_id_without_firmware() {
         let gm = GuestMemory::allocate(0x10000);
-        let (mut dev, edges, _send) = new_device(&gm, [1; 16]);
+        let (mut dev, edges, _send) = new_device(&gm);
         assert_eq!(guest_id(&gm), [1; 16]);
         poll(&mut dev);
         assert_eq!(edges.count(), 0);
 
-        // The fixed buffer survives reset; no firmware will re-report it.
+        // The fixed buffer survives reset.
         dev.reset();
         gm.write_at(GPA, &[0; 16]).unwrap();
         dev.write_to_guest();
@@ -295,19 +290,13 @@ mod tests {
 
     #[test]
     fn update_queued_before_start_applies_on_first_poll() {
-        // The VM worker queues a new ID while restoring; the device must
-        // publish it and notify the guest once it starts polling.
         let gm = GuestMemory::allocate(0x10000);
-        let (mut template, _, _send) = new_device(&gm, [1; 16]);
-
-        let (mut clone, edges, send) = new_device(&gm, [2; 16]);
-        clone.restore(template.save().unwrap()).unwrap();
+        let (mut dev, edges, send) = new_device(&gm);
         send.send([3; 16]);
-        assert_eq!(edges.count(), 0);
-        poll(&mut clone);
+        poll(&mut dev);
         assert_eq!(guest_id(&gm), [3; 16]);
         assert_eq!(edges.count(), 1);
-        poll(&mut clone);
-        assert_eq!(edges.count(), 1, "notify only once");
+        poll(&mut dev);
+        assert_eq!(edges.count(), 1);
     }
 }

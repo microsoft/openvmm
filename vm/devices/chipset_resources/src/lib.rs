@@ -227,27 +227,24 @@ pub mod pit {
 }
 
 pub mod generation_id {
-    //! Resource definitions for a standalone VM Generation ID device, used
-    //! when no firmware (UEFI/PCAT) is present to host the generation ID
-    //! buffer, e.g. Linux direct boot.
+    //! Resource definitions for the standalone VM Generation ID device, used
+    //! when no firmware hosts the generation ID (e.g. Linux direct boot).
 
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
-    /// Guest physical address of the generation ID buffer for x86 Linux
-    /// direct boot: a dedicated host page that the VMM maps into the guest in
-    /// the x86 architectural reserved zone `[0xfe00_0000, 4 GiB)`, alongside
-    /// the other fixed-address platform devices. It is not guest RAM, so it
-    /// needs no memory-map entry.
+    /// Guest physical address of the generation ID page for x86 Linux direct
+    /// boot, in the x86 architectural reserved zone `[0xfe00_0000, 4 GiB)`.
+    /// Saved VMs depend on it (the guest's DSDT and `vmgenid` driver keep it),
+    /// so it must not change.
     pub const X86_DIRECT_BOOT_GENERATION_ID_GPA: u32 = 0xfed3_e000;
 
-    /// Size of the page that backs the generation ID buffer. Only the first 16
-    /// bytes are used.
+    /// Size of the page that backs the generation ID buffer.
     pub const GENERATION_ID_PAGE_SIZE: u32 = 0x1000;
 
-    // Keep the page in the x86 architectural reserved zone and clear of the
-    // other fixed-address platform devices in it.
+    // Keep the page in the reserved zone and clear of the other fixed-address
+    // platform devices in it.
     const _: () = {
         const START: u64 = X86_DIRECT_BOOT_GENERATION_ID_GPA as u64;
         const END: u64 = START + GENERATION_ID_PAGE_SIZE as u64;
@@ -264,9 +261,7 @@ pub mod generation_id {
         assert!(!overlaps(0xfee0_0000, 0x10_0000)); // LAPIC
     };
 
-    /// A handle to a standalone VM Generation ID device. The platform maps its
-    /// buffer, describes it in the ACPI tables, and gives the device's resolver
-    /// a host view of it.
+    /// A handle to a standalone VM Generation ID device.
     #[derive(MeshPayload)]
     pub struct GenerationIdDeviceHandle {
         /// The generation ID for a fresh boot.

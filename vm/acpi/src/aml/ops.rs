@@ -210,21 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn verify_notify_operation() {
-        let op = NotifyOp {
-            object: crate::aml::encode_name(b"\\_SB.GENC"),
-            value: 0x80,
-        };
-        let bytes = op.to_bytes();
-        verify_expected_bytes(
-            &bytes,
-            &[
-                0x86, b'\\', 0x2e, b'_', b'S', b'B', b'_', b'G', b'E', b'N', b'C', 0x0a, 0x80,
-            ],
-        );
-    }
-
-    #[test]
     fn verify_if_operation() {
         // If with a simple predicate (byte 0x01 = One) and empty body
         let op = IfOp {

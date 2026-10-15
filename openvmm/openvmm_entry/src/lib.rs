@@ -1331,8 +1331,8 @@ async fn vm_config_from_command_line(
     let ged_smbios = (*smbios).clone();
 
     // The VM worker sends a new generation ID on this channel when the VM is
-    // created from a snapshot, so the guest reseeds its RNG. IGVM guests build
-    // their own platform description, so they are excluded.
+    // created from a snapshot. IGVM guests build their own platform
+    // description, so they are excluded.
     let generation_id_send = if opt.igvm.is_none() {
         let (send, recv) = mesh::channel();
         chipset = chipset.with_generation_id(recv);
