@@ -19,8 +19,8 @@ Alternatively, some queries you can use to get Hyper-V-Worker logs:
 
 ## \[Hyper-V] Initramfs unpacking failed: write error, No working init found
 
-Launching OpenHCL on AArch64 Hyper-V without Trusted Launch can panic in
-VTL 0x2 before userspace starts. The Hyper-V-Worker log shows:
+A VTL2 out-of-memory panic while unpacking the initramfs can occur on any
+configuration, before userspace starts. The Hyper-V-Worker log shows:
 
 ```text
 Initramfs unpacking failed: write error
@@ -40,7 +40,8 @@ startup RAM does not enlarge VTL2. An 8 GB startup setting sizes the guest
 pool, which is separate from VTL2.
 
 For an image built in-tree, VTL2 RAM is `memory_page_count` from the recipe
-manifest. Counts are 4 KiB pages.
+manifest. Counts are 4 KiB pages. The AArch64 manifests below are one
+example.
 
 ```bash
 cargo xflowey build-igvm aarch64 --release
@@ -57,24 +58,32 @@ cargo xflowey build-igvm aarch64
 Without `--release`, the same recipe reads
 `vm/loader/manifests/openhcl-aarch64-dev.json`: 131072 pages (512 MiB),
 with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug`. That dev
-count, 131072 pages, got past this panic. The x64 release manifest is a
-separate budget, 17920 pages (70 MiB).
+count, 131072 pages, got past this panic on that image. The x64 release
+manifest is a separate budget, 17920 pages (70 MiB).
 
-Raise `memory_page_count` in the manifest you build. Keep the count a
-multiple of 512 pages so the byte size stays 2 MiB-aligned.
-`load_openhcl_arm64` rejects an unaligned size. A new count takes effect
-only after you rebuild the IGVM. 12288 pages remains the in-tree AArch64
-release budget; use a higher multiple of 512 in your build when unpacking
-fails. See
-[Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
+To fix it:
+
+1. Raise `memory_page_count` in the recipe manifest and rebuild the IGVM.
+   Keep the count a multiple of 512 pages so the byte size stays
+   2 MiB-aligned. `load_openhcl_arm64` rejects an unaligned size. A new
+   count takes effect only after you rebuild. 12288 pages remains the
+   in-tree AArch64 release budget; use a higher multiple of 512 when
+   unpacking fails. See
+   [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
+2. When the larger image needs more VTL2 memory than the host provides,
+   for example the 131072-page (512 MiB) count, also pass
+   `-IncreaseVtl2Memory` to `Set-OpenHCLFirmware` on the host:
+
+   ```powershell
+   Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile -IncreaseVtl2Memory
+   ```
 
 ```admonish warning
-`Set-OpenHCLFirmware -IncreaseVtl2Memory` is the host-side switch in
-`petri/src/vm/hyperv/hyperv.psm1` for non-isolated OpenHCL. It selects
-auto placement and sets `Vtl2AddressRangeSize` to 1024 (MB) and
-`Vtl2MmioAddressRangeSize` to 512 (MB). The host VTL2 RAM window is the
-difference, 512 MiB. The image still uses `memory_page_count`. The switch
-leaves a 48 MiB image at 48 MiB.
+`-IncreaseVtl2Memory` complements the manifest change and does not
+replace it. The switch selects auto placement and enlarges the host-side
+VTL2 window (`Vtl2AddressRangeSize` 1024 MB minus
+`Vtl2MmioAddressRangeSize` 512 MB, so 512 MiB of RAM), but it does not
+change the image's own `memory_page_count`: a 48 MiB image stays 48 MiB.
 ```
 
 Create the VM under "Create VM with OpenHCL (but not Trusted Launch)":
