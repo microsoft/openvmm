@@ -722,6 +722,7 @@ impl TestIgvmAgent {
                     } else {
                         None
                     },
+                    ..Default::default()
                 },
             })
             .map_err(Error::ResponseEnvelopeSerialize)?
@@ -1687,7 +1688,13 @@ mod tests {
                             IgvmAttestResponseRequestType::WrappedKey
                         }
                     );
-                    assert_eq!(envelope.extensions.key_release_context_hash, hash);
+                    let accepted_hash = hash.as_ref().filter(|hash| {
+                        openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash(hash).is_ok()
+                    });
+                    assert_eq!(
+                        envelope.extensions.key_release_context_hash.as_ref(),
+                        accepted_hash
+                    );
                     let json: serde_json::Value = serde_json::from_slice(body).unwrap();
                     if request_type == IgvmAttestRequestType::WRAPPED_KEY_REQUEST {
                         assert_eq!(json["extensions"], serde_json::json!({}));
@@ -1696,7 +1703,15 @@ mod tests {
                         json["extensions"].get("key_release_context_hash").is_some(),
                         hash.is_some()
                     );
-                    assert_eq!(serde_json::to_vec(&envelope).unwrap(), body);
+                    assert_eq!(
+                        json["extensions"].get("key_release_context_hash"),
+                        hash.as_ref()
+                            .map(|hash| serde_json::Value::String(hash.clone()))
+                            .as_ref()
+                    );
+                    if envelope.extensions.ignored_context_hash.is_none() {
+                        assert_eq!(serde_json::to_vec(&envelope).unwrap(), body);
+                    }
                     assert!(body.len() > envelope.payload.len());
                     envelope.payload
                 } else {

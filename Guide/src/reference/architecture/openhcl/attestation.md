@@ -1,7 +1,7 @@
 # Attestation and VMGS Protection
 
 This page describes boot-time attestation, VM Guest State (VMGS) protection,
-key-release context adoption, and hardware recovery in OpenHCL.
+key-release context tracking, and hardware recovery in OpenHCL.
 
 ```admonish note title="See also"
 [IGVM Attestation Protocol](attestation_protocol.md) specifies request and
@@ -70,10 +70,31 @@ without a hardware backup. A protector records the derivation SVN and
 `mix_measurement` policy used to seal it; recovery must use that recorded
 policy, consistent with the current VM configuration.
 
-## Context trust boundary
+## Agent callout optimization
+
+Key-release context tracking supports an agent-side optimization to reduce
+actual SKR service callouts. OpenHCL still sends the IGVM attestation request.
+The agent uses the supplied context as a hint when deciding whether to make
+a service call; OpenHCL does not implement that cache decision or guarantee
+a callout reduction.
+
+The hardware context binding applies to the stateful SKR recovery backup
+when hardware sealing is available. Stateless hardware-only sealing does
+not use it. Hardware sealing remains optional for successful stateful SKR:
+without it, released context may appear in this boot's runtime claims, but
+cannot be persisted through a hardware protector.
+
+An absent or stale hint is not a reason to deny an otherwise valid key
+release. When context is insufficient to use the optimization, the agent
+must use its normal key-release path. Issuing a response does not prove
+the guest has persisted its context. In particular, the next boot can send
+an older hash after a failed write or a boot without sealing support.
+
+## Context semantics
 
 The host-provided `key_release_context_hash` is context for key derivation,
-not an authorization decision. The host extension has no signed authenticity
+not an authorization decision or an additional security guarantee. The host
+extension has no signed authenticity
 of its own. A successful release and key unwrap permit adoption of the
 context, but do not prove that the service signed or authenticated this
 extension. Existing service-payload checks and key unwrap remain necessary.
@@ -96,22 +117,49 @@ the wire representation and normalization rules.
    `key-release-context-hash`. It does not use a caller-supplied configuration
    snapshot as the source of the binding.
 3. A successful key-release response may supply a new valid hash, including
-   when the key-release policy changes. If a cached hash exists, the response
-   must supply a hash, but it need not equal the cached value. An omitted
-   required hash, including a legacy response without one, or malformed hash
-   is rejected before parsing the inner JSON/JWT or unwrapping its key.
-4. The response hash is a candidate until key release and key unwrap succeed.
-   OpenHCL uses the candidate for egress key derivation and, when hardware
-   sealing succeeds, writes it into the replacement V4 protector. After VMGS
-   initialization succeeds, the adopted value is exposed to later runtime
-   claims. The next boot reads the persisted hash for its request. A response
-   arriving after report creation cannot retroactively bind that report.
+   when the key-release policy changes. It need not equal the cached hint.
+   Missing metadata, including a legacy response, remains valid even if an
+   older V4 protector exists. Invalid optional hashes, including duplicate
+   fields, are discarded as absent with a rate-limited warning that excludes
+   their values. Envelope and service-payload validation remain strict.
+4. The response hash is a candidate until key release, key unwrap, and VMGS
+   initialization succeed. It is then exposed to this boot's later runtime
+   claims. When hardware sealing succeeds, the candidate is included in
+   the replacement V4 protector. The next boot reads the persisted hash,
+   which need not be the last hash the agent issued if sealing was
+   unavailable. A response arriving after report creation cannot
+   retroactively bind that report.
 5. When hardware sealing succeeds, the new protector uses V4 if a context
    hash is present, or V3 if it is absent. A successful legacy response or
-   extended response that omits the hash can produce a V3 protector when
-   no cached hash is required. An all-zero 32-byte hash is a present value,
-   not an absence sentinel. Successful SKR does not require a hardware
-   backup to be available.
+   extended response whose hash is omitted or discarded produces a V3
+   protector, including after a previous V4 boot. Existing V4 ingress
+   protectors still use their recorded context for authenticated unsealing;
+   they are never stripped of context or relabeled as V3. An all-zero 32-byte
+   hash is a present value,
+   not an absence sentinel. Lack of hardware sealing support does not make
+   successful SKR fail, even if an older V4 protector remains on disk.
+
+### Hardware backup persistence
+
+When a replacement hardware protector can be created, the attestation VMGS
+helper adds the new unlock key, writes and flushes the protector, then
+retires the old key slot. Each phase has a distinct error, and successful
+protector persistence and completion are logged at INFO. VMGS itself only
+provides key-slot and flush primitives; it does not own attestation policy.
+
+This is ordered recovery, not an atomic transaction. A failed write or
+flush retains the prior key slot until the replacement protector is
+durable. Reopen or unlock using the persisted recovery protector before
+retrying; the in-memory active slot may already contain the new key. This
+assumes the prior protector recovers the key used to unlock the datastore.
+It cannot repair an already-stale backup or guarantee hardware recovery
+after a boot where no usable backup could be produced.
+
+Hardware backup updates also occur when incomplete GSP rotation suppresses
+regular key-protector updates. Without a replacement backup, normal SKR
+rotation remains available; the old backup can become unusable. Subsequent
+boots then need the normal key-release path. No separate persistent context
+record or service acknowledgment is introduced.
 
 ```admonish warning title="Absence is not first-boot authorization"
 A missing or legacy protector is not proof of first boot: it can also occur
@@ -230,13 +278,13 @@ With `Hash` policy, an OpenHCL update that changes the measurement prevents
 unsealing a protector created by the previous image. Stateful operation must
 obtain the required keys through SKR to unlock VMGS and create a replacement
 hardware protector. The stored V4 context hash is still read before SKR:
-measurement changes do not clear the requirement for a response hash. A
-successful release may provide a different hash for the replacement
-protector.
+the agent can use it as an optimization hint, not proof that hardware
+recovery remains available. A successful release may provide a different
+hash or omit the optional hash for the replacement protector.
 
 ```admonish warning title="Replay and binary rollback"
-Successful SKR can update a context hash, but cannot remove a required hash.
-This binding adds no anti-replay mechanism or
+Successful SKR can update a context hash or omit it for a newly sealed
+legacy protector. Context tracking adds no anti-replay mechanism or
 monotonic freshness counter; an HMAC alone does not prevent replay of old
 valid state. Deleting a protector is not an authenticated reset procedure.
 

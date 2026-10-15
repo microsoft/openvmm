@@ -9,6 +9,7 @@ use crate::igvm_attest::Error as CommonError;
 use crate::igvm_attest::parse_response_payload;
 use crate::jwt::JwtError;
 use crate::jwt::JwtHelper;
+use cvm_tracing::CVM_ALLOWED;
 use openhcl_attestation_protocol::igvm_attest::akv;
 use thiserror::Error;
 
@@ -48,23 +49,13 @@ pub(crate) struct KeyReleaseResponse {
 ///
 /// Returns `Ok(KeyReleaseResponse)` on successfully extracting a wrapped key blob
 /// from `response`, otherwise return an error.
-#[cfg(test)]
-pub fn parse_response(
-    response: &[u8],
-    rsa_modulus_size: usize,
-) -> Result<KeyReleaseResponse, KeyReleaseError> {
-    parse_response_requiring_context(response, rsa_modulus_size, false)
-}
-
-/// Require a context hash when a cached binding exists, and validate any supplied
-/// hash before interpreting the service payload. Missing or malformed metadata
-/// must not be hidden by an invalid payload and enable hardware fallback.
+/// Invalid optional context metadata is discarded before interpreting the
+/// service payload. Envelope and service-payload validation remain strict.
 /// A valid hash may differ from the cached one; it is only a candidate for
 /// adoption after successful key unwrap and VMGS initialization.
-pub(crate) fn parse_response_requiring_context(
+pub(crate) fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
-    require_context: bool,
 ) -> Result<KeyReleaseResponse, KeyReleaseError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseExtensions;
@@ -85,19 +76,18 @@ pub(crate) fn parse_response_requiring_context(
     )
     .map_err(KeyReleaseError::ParseHeader)?;
 
+    if let Some(reason) = parsed.extensions.ignored_context_hash {
+        tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
+            ?reason,
+            "ignoring invalid optional key-release context hash"
+        );
+    }
     let key_release_context_hash = parsed
         .extensions
         .key_release_context_hash
         .as_deref()
-        .map(decode_key_release_context_hash)
-        .transpose()
-        .map_err(|err| KeyReleaseError::ParseHeader(CommonError::InvalidContextHash(err)))?;
-    if require_context && key_release_context_hash.is_none() {
-        return Err(KeyReleaseError::ParseHeader(
-            CommonError::MissingRequiredResponseContext,
-        ));
-    }
-
+        .and_then(|hash| decode_key_release_context_hash(hash).ok());
     // The `rsa_aes_key_wrap_384_used` signal is only present in the version 2+
     // response header. When absent, fall back to the default (SHA-1) scheme.
     let rsa_aes_key_wrap_384_used = match parsed.header.version {
@@ -236,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn required_context_is_checked_before_invalid_service_payload() {
+    fn missing_optional_context_does_not_hide_service_payload_errors() {
         use crate::igvm_attest::tests::extended_response;
         use crate::igvm_attest::tests::frame_response;
 
@@ -247,10 +237,8 @@ mod tests {
             IgvmErrorInfo::default(),
         );
         assert!(matches!(
-            parse_response_requiring_context(&response, 256, true),
-            Err(KeyReleaseError::ParseHeader(
-                CommonError::MissingRequiredResponseContext
-            ))
+            parse_response(&response, 256),
+            Err(KeyReleaseError::PayloadSizeTooSmall)
         ));
         for version in [
             IgvmAttestResponseVersion::VERSION_1,
@@ -258,10 +246,8 @@ mod tests {
         ] {
             let response = frame_response(version, b"x", IgvmErrorInfo::default());
             assert!(matches!(
-                parse_response_requiring_context(&response, 256, true),
-                Err(KeyReleaseError::ParseHeader(
-                    CommonError::MissingRequiredResponseContext
-                ))
+                parse_response(&response, 256),
+                Err(KeyReleaseError::PayloadSizeTooSmall)
             ));
         }
         let response = extended_response(
@@ -271,16 +257,23 @@ mod tests {
             IgvmErrorInfo::default(),
         );
         assert!(matches!(
-            parse_response_requiring_context(&response, 256, true),
+            parse_response(&response, 256),
             Err(KeyReleaseError::PayloadSizeTooSmall)
         ));
     }
 
     #[test]
-    fn invalid_context_metadata_is_rejected_before_service_payload() {
+    fn invalid_optional_context_metadata_is_ignored() {
         use crate::igvm_attest::tests::frame_extended_response;
 
+        let wrapped_key = vec![42; 520];
+        let payload = serde_json::to_string(&akv::AkvKeyReleaseKeyBlob {
+            ciphertext: wrapped_key.clone(),
+        })
+        .unwrap();
+        let payload = serde_json::to_string(&payload).unwrap();
         for extensions in [
+            r#"{}"#,
             r#"{"key_release_context_hash":null}"#,
             r#"{"key_release_context_hash":42}"#,
             r#"{"key_release_context_hash":false}"#,
@@ -289,23 +282,17 @@ mod tests {
             r#"{"key_release_context_hash":""}"#,
             r#"{"key_release_context_hash":"not hex"}"#,
             r#"{"key_release_context_hash":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","key_release_context_hash":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}"#,
+            r#"{"key_release_context_hash":null,"key_release_context_hash":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}"#,
+            r#"{"key_release_context_hash":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","key_release_context_hash":false}"#,
         ] {
             let envelope = format!(
-                r#"{{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{extensions}}}"#
+                r#"{{"schema_version":1,"request_type":"key_release","payload":{payload},"extensions":{extensions}}}"#
             );
             let response = frame_extended_response(envelope.as_bytes(), IgvmErrorInfo::default());
-            for require_context in [false, true] {
-                assert!(
-                    matches!(
-                        parse_response_requiring_context(&response, 256, require_context),
-                        Err(KeyReleaseError::ParseHeader(
-                            CommonError::InvalidResponseEnvelope(_)
-                                | CommonError::InvalidContextHash(_)
-                        ))
-                    ),
-                    "accepted {extensions}"
-                );
-            }
+            let parsed = parse_response(&response, 256)
+                .unwrap_or_else(|error| panic!("rejected {extensions}: {error}"));
+            assert_eq!(parsed.key_release_context_hash, None);
+            assert_eq!(parsed.wrapped_key, wrapped_key);
         }
     }
 

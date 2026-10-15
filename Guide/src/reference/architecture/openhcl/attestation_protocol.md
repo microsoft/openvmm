@@ -31,10 +31,12 @@ body parser from that response bit, not the request capability or body shape.
 If the bit is clear, the body retains its original service format and
 supplies no context hash. V1 responses also retain their legacy format.
 
-Legacy response acceptance remains subject to the
-[cached-context requirement](attestation.md#stateful-context-lifecycle);
-advertising extended-payload support does not require an envelope on an
-unbound VM. A malformed flagged envelope is never retried as a legacy body.
+Advertising extended-payload support does not require an envelope, even
+when an earlier hardware protector supplied a cached context hint. Missing
+context is an ordinary compatibility case for the
+[agent callout optimization](attestation.md#agent-callout-optimization),
+not an authorization failure. A malformed flagged envelope is never
+retried as a legacy body.
 
 AK certificate requests remain V2 and do not set the extended-payload bit.
 Flagged AK certificate responses are rejected. Unknown header versions,
@@ -110,10 +112,10 @@ key-release response (the payload and digest are synthetic):
 ```
 
 Unknown optional fields in the envelope or extensions are ignored. There is
-no `critical` extension mechanism. Duplicate recognized fields, missing
-required fields, wrong types, unsupported schema versions, and mismatched
-request types are rejected. The envelope and `extensions` must be JSON
-objects, not arrays or `null`.
+no `critical` extension mechanism. Duplicate recognized top-level fields,
+missing required fields, wrong types for required fields, unsupported schema
+versions, and mismatched request types are rejected. The envelope and
+`extensions` must be JSON objects, not arrays or `null`.
 
 Extensions are interpreted by response type. Only Key Release recognizes
 `key_release_context_hash`. Wrapped Key recognizes no extensions:
@@ -124,15 +126,20 @@ within the response limits. Mock agents emit empty Wrapped Key extensions.
 
 ### Context hash encoding
 
-In a Key Release response, the optional hash must be a string of exactly
+Context is agent-provided optimization metadata, not an authorization or
+freshness assertion. In a Key Release response, the optional hash must be a
+string of exactly
 64 ASCII hexadecimal characters encoding 32 bytes. Uppercase, lowercase,
 and mixed-case hex are accepted and normalized to lowercase for the hardware
 KDF and generated runtime claims. No `0x` prefix, whitespace, or separators
-are allowed. Empty, non-hex, incorrectly sized, or non-string values are
-rejected. Explicit `null` is invalid; absence means `None`. This rule applies
-to the response extension, not to generic deserialization of
-`AttestationVmConfig`. Report, request, and JWK fields use their respective
-base64 encodings independently of the context hash.
+are allowed in an accepted hash. Missing, empty, non-hex, incorrectly sized,
+non-string, or explicit `null` values are treated as absent (`None`). Duplicate
+hash fields discard the entire hash regardless of their order or values.
+Discarded metadata produces a rate-limited warning containing only a safe
+reason, never the supplied value; a missing field does not produce a warning.
+This sanitization applies only to the optional response extension, not to
+cached configuration or stored protector validation. Report, request, and JWK
+fields use their respective base64 encodings independently of the context hash.
 
 ## Limits and failure handling
 
@@ -143,13 +150,18 @@ metadata count toward the response limit, so a service payload that fits
 without an envelope may exceed the limit when enveloped. Oversized responses
 are rejected.
 
-Malformed framing, invalid UTF-8, invalid envelopes, malformed Key Release
-context hashes, and missing required hashes fail closed. They are not reparsed
-as legacy responses and do not trigger hardware fallback. These protocol/context
+Malformed framing, invalid UTF-8, and invalid envelopes are rejected. They
+are not reparsed as legacy responses and do not trigger hardware fallback.
+These protocol
 failures are distinct from explicit service errors and transport outages,
 which retain the existing retry and hardware-recovery behavior. Inner
 service-payload or unwrap failures do not adopt a new hash and retain their
-existing handling.
+existing handling. An omitted or discarded optional hash does not prevent
+successful SKR or hardware sealing: a fresh hardware protector uses V3 without
+context binding. Existing V4 ingress protectors still require their recorded
+context for authenticated unsealing. An accepted hash is adopted only after
+successful key unwrap and VMGS initialization; hardware persistence is separate
+from its use in this boot.
 
 ## Implementation references
 

@@ -18,7 +18,6 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseRequestTyp
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
-use openhcl_attestation_protocol::igvm_attest::get::InvalidKeyReleaseContextHash;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use serde::de::DeserializeOwned;
@@ -81,10 +80,6 @@ pub enum Error {
         actual: IgvmAttestResponseRequestType,
         expected: IgvmAttestResponseRequestType,
     },
-    #[error("invalid key-release context hash")]
-    InvalidContextHash(#[source] InvalidKeyReleaseContextHash),
-    #[error("key-release response is missing the required context hash")]
-    MissingRequiredResponseContext,
     #[error(
         "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
@@ -556,6 +551,7 @@ pub(crate) mod tests {
                 key_release_context_hash: context_hash
                     .as_ref()
                     .map(encode_key_release_context_hash),
+                ..Default::default()
             },
         };
         frame_extended_response(&serde_json::to_vec(&envelope).unwrap(), error_info)
@@ -691,8 +687,7 @@ pub(crate) mod tests {
                 IgvmErrorInfo::default(),
             );
             let expected = std::array::from_fn(|i| i as u8);
-            let parsed =
-                key_release::parse_response_requiring_context(&response, 256, true).unwrap();
+            let parsed = key_release::parse_response(&response, 256).unwrap();
             assert_eq!(parsed.key_release_context_hash, Some(expected));
             assert_eq!(parsed.wrapped_key, vec![42; 520]);
         }
@@ -775,11 +770,8 @@ pub(crate) mod tests {
             r#"{"schema_version":1,"request_type":"key_release","request_type":"key_release","payload":"x","extensions":{}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","payload":"x","extensions":{}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{},"extensions":{}}"#,
-            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":null}}"#,
-            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":5}}"#,
-            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":false}}"#,
-            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":[]}}"#,
-            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":{}}}"#,
+            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":[}}"#,
+            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":null,}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":null}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":[]}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":[null]}"#,
@@ -802,20 +794,10 @@ pub(crate) mod tests {
                 "accepted {invalid}"
             );
         }
-
-        let hash = CONTEXT_HASH_HEX;
-        let duplicate = format!(
-            r#"{{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{{"key_release_context_hash":"{hash}","key_release_context_hash":"{hash}"}}}}"#
-        );
-        let response = frame_extended_response(duplicate.as_bytes(), IgvmErrorInfo::default());
-        assert!(matches!(
-            parse_key_payload(&response),
-            Err(Error::InvalidResponseEnvelope(_))
-        ));
     }
 
     #[test]
-    fn extended_rejects_invalid_context_hashes() {
+    fn extended_discards_invalid_context_hashes_but_validates_payload() {
         for hash in invalid_context_hashes() {
             let envelope = serde_json::json!({
                 "schema_version": 1, "request_type": "key_release", "payload": "x",
@@ -825,11 +807,12 @@ pub(crate) mod tests {
                 &serde_json::to_vec(&envelope).unwrap(),
                 IgvmErrorInfo::default(),
             );
+            let parsed = parse_key_payload(&response).unwrap();
+            assert!(parsed.extensions.key_release_context_hash.is_none());
+            assert!(parsed.extensions.ignored_context_hash.is_some());
             assert!(matches!(
                 key_release::parse_response(&response, 256),
-                Err(key_release::KeyReleaseError::ParseHeader(
-                    Error::InvalidContextHash(_)
-                ))
+                Err(key_release::KeyReleaseError::PayloadSizeTooSmall)
             ));
         }
     }

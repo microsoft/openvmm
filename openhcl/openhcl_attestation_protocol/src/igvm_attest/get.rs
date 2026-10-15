@@ -142,24 +142,86 @@ fn deserialize_object<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 /// authenticated evidence of the key-release policy.
 #[derive(Debug, Default, Serialize)]
 pub struct IgvmAttestResponseExtensions {
-    /// 64-character hexadecimal SHA-256 digest. Consumers must validate this with
-    /// [`decode_key_release_context_hash`] before using it.
+    /// 64-character hexadecimal SHA-256 digest. Invalid received values are discarded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_release_context_hash: Option<String>,
+    /// Local diagnostic only; never serialized or accepted from the host.
+    #[serde(skip)]
+    pub ignored_context_hash: Option<IgnoredContextHashReason>,
+}
+
+/// Why optional received context metadata was discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IgnoredContextHashReason {
+    /// The value was not a string.
+    WrongType,
+    /// The string was empty.
+    Empty,
+    /// The string was not a 64-character hexadecimal digest.
+    InvalidEncoding,
+    /// More than one hash field was supplied.
+    Duplicate,
 }
 
 impl<'de> Deserialize<'de> for IgvmAttestResponseExtensions {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Fields {
-            #[serde(default, deserialize_with = "deserialize_optional_context_hash")]
-            key_release_context_hash: Option<String>,
+        struct ExtensionsVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ExtensionsVisitor {
+            type Value = IgvmAttestResponseExtensions;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an extensions object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                #[derive(Deserialize)]
+                #[serde(untagged)]
+                enum HashValue {
+                    String(String),
+                    Other(serde::de::IgnoredAny),
+                }
+
+                let mut extensions = IgvmAttestResponseExtensions::default();
+                let mut seen_hash = false;
+                while let Some(field) = map.next_key::<String>()? {
+                    if field != "key_release_context_hash" {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    } else if seen_hash {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                        extensions.key_release_context_hash = None;
+                        extensions.ignored_context_hash = Some(IgnoredContextHashReason::Duplicate);
+                    } else {
+                        seen_hash = true;
+                        match map.next_value::<HashValue>()? {
+                            HashValue::String(hash) if hash.is_empty() => {
+                                extensions.ignored_context_hash =
+                                    Some(IgnoredContextHashReason::Empty);
+                            }
+                            HashValue::String(hash)
+                                if decode_key_release_context_hash(&hash).is_ok() =>
+                            {
+                                extensions.key_release_context_hash = Some(hash);
+                            }
+                            HashValue::String(_) => {
+                                extensions.ignored_context_hash =
+                                    Some(IgnoredContextHashReason::InvalidEncoding);
+                            }
+                            HashValue::Other(_) => {
+                                extensions.ignored_context_hash =
+                                    Some(IgnoredContextHashReason::WrongType);
+                            }
+                        }
+                    }
+                }
+                Ok(extensions)
+            }
         }
 
-        let fields = deserialize_object::<D, Fields>(deserializer)?;
-        Ok(Self {
-            key_release_context_hash: fields.key_release_context_hash,
-        })
+        deserializer.deserialize_map(ExtensionsVisitor)
     }
 }
 
@@ -193,13 +255,6 @@ impl<'de> Deserialize<'de> for IgvmAttestWrappedKeyResponseExtensions {
 
         deserializer.deserialize_map(ExtensionsVisitor)
     }
-}
-
-fn deserialize_optional_context_hash<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    // Missing is allowed; explicit null (or any other non-string value) is not.
-    String::deserialize(deserializer).map(Some)
 }
 
 /// A context hash was not a 64-character hexadecimal SHA-256 digest.

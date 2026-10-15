@@ -17,6 +17,7 @@ mesh.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 cvm_tracing.workspace = true
 
 base64.workspace = true
@@ -34,6 +35,9 @@ zerocopy.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
 disklayer_ram.workspace = true
 disk_backend.workspace = true
+inspect.workspace = true
+parking_lot.workspace = true
+scsi_buffers.workspace = true
 vmgs = { workspace = true, features = ["encryption", "test_helpers"] }
 vmgs_format.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
