@@ -18,7 +18,7 @@ use vm_topology::processor::VpIndex;
 ///
 /// Every method is called with all VPs stopped. No method falls back to
 /// another mechanism: a backend that cannot meet an obligation returns the
-/// failure code the specification names.
+/// time ABI failure code for that condition.
 pub trait TimeAbiBackend: Send + Sync {
     /// Returns the native guest TSC rate `F_d`, in Hz. The guest TSC is never
     /// scaled. Fails with `E_TSC_RATE_UNAVAILABLE`.
@@ -170,8 +170,8 @@ pub struct NegotiatedRates {
     pub check: Option<RateCheck>,
 }
 
-/// Applies the rate policy to a backend: restore step 9 of the
-/// specification, and its cold-boot equivalent when `saved` is `None`.
+/// Applies the rate policy to a backend, for a restore when `saved` holds the
+/// snapshot's rates, or for a cold boot when it is `None`.
 ///
 /// A cold boot declares the native TSC rate. A restore declares the saved
 /// rates after checking the native rate, perturbed by the
