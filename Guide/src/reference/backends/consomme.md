@@ -184,6 +184,12 @@ split-tunnel DNS configurations.
 
 DNS over TCP is also supported for large responses.
 
+When `internal_dns` is false, Consomme advertises the host's DNS servers
+instead of its internal resolver. Host loopback DNS stubs, such as
+`127.0.0.53` or `::1`, are advertised using guest-reachable virtual
+addresses. TCP and UDP traffic to these aliases is translated back to
+the host stub, rather than being sent to the guest's own loopback interface.
+
 ### ICMP
 
 Echo requests (ping) are forwarded through a host-side ICMP socket.
