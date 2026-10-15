@@ -161,15 +161,18 @@ impl IntoPipeline for CheckinGatesCli {
         };
 
         if let RepoSource::GithubSelf = &openvmm_repo_source {
-            pipeline.gh_set_flowey_bootstrap_template(
-                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
+            pipeline.gh_set_flowey_bootstrap_template_fn(
+                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template_for_platform,
             );
         }
 
         if let RepoSource::AdoResource(source) = &openvmm_repo_source {
-            pipeline.ado_set_flowey_bootstrap_template(
-                crate::pipelines_shared::ado_flowey_bootstrap_template::get_template_ado(source),
-            );
+            let source = source.clone();
+            pipeline.ado_set_flowey_bootstrap_template_fn(move |platform, arch| {
+                crate::pipelines_shared::ado_flowey_bootstrap_template::get_template_for_platform(
+                    platform, arch, &source,
+                )
+            });
         }
 
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(
@@ -1980,7 +1983,7 @@ impl IntoPipeline for CheckinGatesCli {
                             target: target.clone(),
                             runner: ctx.use_typed_artifact(&runner),
                             openvmm: ctx.use_typed_artifact(&openvmm),
-                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::all_profiles(),
                             vm_sizes_json: None,
                             parameters_json: None,
                             runtime_archive: None,

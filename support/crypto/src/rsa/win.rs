@@ -350,7 +350,12 @@ impl RsaKeyPairInner {
                 .split_at_checked(size as usize)
                 .ok_or_else(|| invalid_err("exported RSA private key blob is truncated"))?;
             rest = remaining;
-            Ok(bytes.to_vec())
+            // BCrypt components are fixed-width, skip any leading zero bytes.
+            let start = bytes
+                .iter()
+                .position(|&b| b != 0)
+                .ok_or_else(|| invalid_err("exported RSA private key has a zero component"))?;
+            Ok(bytes[start..].to_vec())
         };
         let public_exponent = take_component(cb_e)?;
         let modulus = take_component(cb_n)?;

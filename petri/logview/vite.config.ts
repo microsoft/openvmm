@@ -3,6 +3,7 @@
 
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Custom plugin to add copyright header
 const copyrightPlugin = () => ({
@@ -40,7 +41,7 @@ const copyrightPlugin = () => ({
 // https://vitejs.dev/config/
 export default defineConfig({
   base: "/test-results/",
-  plugins: [react(), copyrightPlugin()],
+  plugins: [react(), tailwindcss(), copyrightPlugin()],
   server: {
     port: 3000,
     open: true,
