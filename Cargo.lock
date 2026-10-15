@@ -3774,6 +3774,7 @@ dependencies = [
  "anyhow",
  "linkme",
  "mesh",
+ "test_with_tracing",
  "vm_resource",
 ]
 
@@ -4612,6 +4613,7 @@ dependencies = [
  "range_map_vec",
  "slab",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",

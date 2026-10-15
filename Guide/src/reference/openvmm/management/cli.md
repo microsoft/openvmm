@@ -113,7 +113,7 @@ describes the source definitions.
   openvmm --hypervisor mshv --isolation snp \
     --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
     --com1 console \
-    --hv --no-vmbus -m 160MB -p 1
+    --hv --no-vmbus --memory size=160MB,thp=off -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
@@ -122,6 +122,68 @@ describes the source definitions.
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
   `--isolation snp`.
+* MSHV SNP always uses copy-only host access and owned bounce buffers.
+  There is no direct-access mode or host-access opt-in. The former
+  `snp_scoped_host_access` parameter is not accepted. Non-isolated MSHV
+  guests retain their existing device and guest-memory behavior.
+  Base-page backing is required: pass `--memory size=<SIZE>,thp=off`.
+  Transparent huge pages and explicit huge pages are not supported.
+  For NUMA configurations, pass `thp=off` on every `--numa` node instead
+  of using `--memory`. Existing guest-memory backing files are not supported.
+
+  Bouncing is automatic for virtio block, virtio network with Consomme,
+  Linux TAP, or `none`, and in-process vsock. Per-device `bounce`, `bounce:`,
+  and `--virtio-vsock-bounce` options remain valid but are not needed.
+  Block backends are limited to plain buffered regular files and RAM disks.
+  See [block bounce I/O](#per-device-block-bounce-io) and
+  [network and vsock bounce I/O](#per-device-network-and-vsock-bounce-io).
+
+  The device allowlist contains these three bounced virtio devices, serial
+  ports, and the minimal chipset. Other devices are rejected before their
+  resources are opened. This includes kernel vhost, vhost-user, assigned
+  devices, remote PCIe devices, CXL, persistent memory, filesystem devices,
+  RNG, and virtio console. With `--hv`, also pass `--no-vmbus`.
+  Snapshot restore, guest memory dumps, and the debugger are not supported.
+  The VM-service supports only the minimal chipset and serial for MSHV SNP;
+  disable VMBus and omit device configurations. It selects base-page backing
+  by default and rejects explicit NUMA huge-page settings. Use the CLI for
+  bounced virtio devices.
+
+  Both usermode VA locks and kernel locks are denied. Copies use
+  fault-contained `GuestMemory` operations, without per-copy permission
+  leases or VP cancellation. A mapping fault requests read or write host
+  permission and retries the full operation. Confirmed grants remain until
+  a guest GPA-attribute conflict requires release. The selected backend and
+  isolation mode fix the backing's copy-only policy before memory views exist;
+  changing guest page visibility does not change that policy.
+  Grant denial returns a guest-memory I/O error, not partition-wide poison.
+  If an access faults again at the same or an earlier offset after reported
+  resolution, the operation returns an I/O error. Forward-moving first-touch
+  faults can continue across pages. Restarting a copy does not provide an
+  atomic guest-memory snapshot. Staging uses the normal host allocator;
+  host out-of-memory failures follow its existing behavior.
+  GPA-attribute conflicts release host access and let the next VP run retry
+  the existing guest operation. Valid repeated requests remain supported.
+
+  Control-page preparation validates guest addresses but does not release
+  cached grants. Normal GPA-attribute conflicts revoke those grants.
+  OpenVMM does not keep a separate control-page reservation table. The kernel
+  and hypervisor enforce their control-page and permission contracts.
+  GHCB replacement clears the old registration before setting the new one.
+  Unregister waits for a successful clear before acknowledgement.
+  Control-operation failures remain explicit; supported replacement and
+  disable operations depend on the backend. VP teardown waits for processor
+  binders and their VP file descriptors to retire, not just the dispatch loop.
+  Normal and post-construction error teardown drain running devices, join
+  owned state-unit tasks, and shut down both VMBus servers before RAM disposal.
+  Normal teardown releases registered memory before its backing.
+  Closing the partition also precedes
+  release of the bootstrap VMSA's configuration-owned backing.
+
+  This mode uses existing MSHV calls. It does not add a Hyper-V ABI, kernel
+  memory-management enforcement, or large-page support. Do not treat it as
+  a completed isolation feature. Private-page handoff race tests remain an
+  acceptance requirement.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
