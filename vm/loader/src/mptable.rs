@@ -104,7 +104,7 @@ pub enum Error {
     /// At least one processor must be described.
     #[error("MP processor topology must contain at least one processor")]
     NoProcessors,
-    /// MicroVM APIC IDs must be contiguous and start at zero.
+    /// APIC IDs must be contiguous and start at zero.
     #[error("MP processor {index} has APIC ID {apic_id}; expected {expected}")]
     InvalidApicId {
         /// Processor index.
