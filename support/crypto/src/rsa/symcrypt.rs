@@ -53,7 +53,7 @@ impl RsaKeyPairInner {
         Ok(Self(rsa))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         use der::Encode;
         use der::asn1::OctetString;
@@ -96,6 +96,21 @@ impl RsaKeyPairInner {
         };
         pki.to_der()
             .map_err(|e| der_err(e, "encoding the PKCS#8 PrivateKeyInfo"))
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        let blob = self
+            .0
+            .export_key_pair_blob()
+            .map_err(|e| err(e, "exporting the RSA key blob"))?;
+        Ok(super::RsaPrivateKeyComponents {
+            modulus: blob.modulus,
+            public_exponent: blob.pub_exp,
+            private_exponent: blob.private_exp,
+            prime1: blob.p,
+            prime2: blob.q,
+        })
     }
 
     pub fn oaep_decrypt(

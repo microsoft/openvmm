@@ -2354,6 +2354,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2483,6 +2484,7 @@ dependencies = [
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "zerocopy",
 ]
@@ -3455,6 +3457,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "test_with_tracing",
  "tracing",
 ]
 
@@ -4081,6 +4084,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5863,6 +5867,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm-img"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "blocking",
+ "clap",
+ "fs-err",
+ "guid",
+ "pal_async",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "vhdx",
+ "vmm_cli",
+]
+
+[[package]]
 name = "openvmm_build_info"
 version = "0.2.0"
 dependencies = [
@@ -5934,6 +5957,8 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "serial_pl011_resources",
+ "serial_uart_resources",
  "smmu",
  "sparse_mmap",
  "state_unit",
@@ -5985,6 +6010,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "serial_uart_resources",
  "smbios_defs",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -6675,6 +6701,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
@@ -6691,6 +6718,7 @@ dependencies = [
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
+ "target-lexicon",
  "tempfile",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -6753,8 +6781,10 @@ name = "petri_artifacts_core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "linkme",
  "paste",
  "serde",
+ "serde_json",
  "target-lexicon",
 ]
 
@@ -7697,6 +7727,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+ "x86defs",
 ]
 
 [[package]]
@@ -7785,6 +7816,14 @@ dependencies = [
  "tracing",
  "unix_socket",
  "vm_resource",
+]
+
+[[package]]
+name = "serial_uart_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "serial_16550_resources",
 ]
 
 [[package]]
@@ -8943,9 +8982,9 @@ dependencies = [
 
 [[package]]
 name = "uefi"
-version = "0.35.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da7569ceafb898907ff764629bac90ac24ba4203c38c33ef79ee88c74aa35b11"
+checksum = "368cef7d94514897e6dad4350945c7910a9f5bf9021191d1c58ee3ec09962697"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
@@ -8959,20 +8998,20 @@ dependencies = [
 
 [[package]]
 name = "uefi-macros"
-version = "0.18.1"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3dad47b3af8f99116c0f6d4d669c439487d9aaf1c8d9480d686cda6f3a8aa23"
+checksum = "643efa8b64be89780bc498b290fab04337c7c4d171cc82cce2e133a74616dcc4"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.106",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "uefi-raw"
-version = "0.11.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cad96b8baaf1615d3fdd0f03d04a0b487d857c1b51b19dcbfe05e2e3c447b78"
+checksum = "3636327a6d88a38c0f2567fb695ec7ba27b3483d1877730486605aa0866da201"
 dependencies = [
  "bitflags 2.9.3",
  "uguid",
@@ -9038,9 +9077,9 @@ dependencies = [
 
 [[package]]
 name = "uguid"
-version = "2.2.0"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab14ea9660d240e7865ce9d54ecdbd1cd9fa5802ae6f4512f093c7907e921533"
+checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
 
 [[package]]
 name = "uidevices"
@@ -10083,7 +10122,6 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
- "tracing",
  "virtio",
  "virtio_resources",
  "vm_resource",

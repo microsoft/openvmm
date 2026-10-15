@@ -87,7 +87,7 @@ directory, performs required image preparation, and invokes nextest with the
 resolved environment.
 
 Use `--build-only` to produce the selected artifacts without executing tests.
-Cross-compilation and Incubator are selected through `--target` and related
+Cross-compilation is selected through `--target` and related
 options described in the VMM-test guide.
 
 ## Regenerating CI
