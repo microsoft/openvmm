@@ -5,8 +5,7 @@
 //!
 //! Active only for partitions built with
 //! [`ProtoPartitionConfig::time_abi`](virt::ProtoPartitionConfig::time_abi).
-//! It implements the KVM column of "Backend obligations" in NVX
-//! `doc/design/time-abi.md`:
+//! It meets the time ABI's backend obligations with these KVM mechanisms:
 //!
 //! - **CPUID and the CPU profile.** The partition's CPUID is the CPU
 //!   profile's complete effective CPUID, programmed verbatim with

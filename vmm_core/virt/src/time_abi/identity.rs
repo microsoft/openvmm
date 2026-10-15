@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_leaves_match_the_specification() {
+    fn identity_leaves_keep_their_values() {
         let leaves = identity_cpuid_leaves(4);
         let results: Vec<_> = leaves
             .iter()
