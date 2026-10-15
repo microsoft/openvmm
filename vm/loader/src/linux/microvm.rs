@@ -6,17 +6,11 @@
 use super::CR3_BASE;
 use super::Error;
 use super::GDT_BASE;
-use super::InitrdAddressType;
 use super::InitrdConfig;
-use super::InitrdInfo;
 use super::KERNEL_BASE;
-use super::KernelInfo;
 use super::LoadInfo;
 use super::ZERO_PAGE_BASE;
-use crate::common::ChunkBuf;
-use crate::common::ImportFileRegion;
 use crate::common::import_default_gdt;
-use crate::elf::load_static_elf_with_buffer;
 use crate::importer::BootPageAcceptance;
 use crate::importer::ImageLoad;
 use crate::importer::X86Register;
@@ -41,7 +35,6 @@ const MPTABLE_ISA_HOLE_BASE: u64 = 0xa_0000;
 const MPTABLE_ISA_HOLE_END: u64 = 0x10_0000;
 const MPTABLE_MMIO_GAP_BASE: u64 = 0xc000_0000;
 const MPTABLE_MMIO_GAP_END: u64 = 0x1_0000_0000;
-const MPTABLE_LOAD_CHUNK_SIZE: usize = 1024 * 1024;
 const MPTABLE_PAGE_TABLE_COUNT: usize = 6;
 const MPTABLE_PAGE_TABLE_END: u64 = CR3_BASE + MPTABLE_PAGE_TABLE_COUNT as u64 * HV_PAGE_SIZE;
 const MPTABLE_FIXED_BOOT_DATA_RANGES: [(u64, u64); 3] = [
@@ -301,90 +294,6 @@ fn build_mptable_zero_page(
     Ok(boot_params)
 }
 
-fn import_initrd_with_buffer(
-    initrd: Option<InitrdConfig<'_>>,
-    next_addr: u64,
-    importer: &mut dyn ImageLoad<X86Register>,
-    buffer: &mut ChunkBuf,
-) -> Result<Option<InitrdInfo>, Error> {
-    let initrd_info = match initrd {
-        Some(cfg) => {
-            let initrd_address = match cfg.initrd_address {
-                InitrdAddressType::AfterKernel => super::align_initrd_after_kernel(next_addr)?,
-                InitrdAddressType::Address(addr) => addr,
-            };
-
-            tracing::trace!(initrd_address, "loading initrd");
-            super::check_address_alignment(initrd_address)?;
-
-            buffer
-                .import_file_region(
-                    importer,
-                    ImportFileRegion {
-                        file: cfg.initrd,
-                        file_offset: 0,
-                        file_length: cfg.size,
-                        gpa: initrd_address,
-                        memory_length: cfg.size,
-                        acceptance: BootPageAcceptance::Exclusive,
-                        tag: "linux-initrd",
-                    },
-                )
-                .map_err(Error::ImportInitrd)?;
-
-            Some(InitrdInfo {
-                gpa: initrd_address,
-                size: cfg.size,
-            })
-        }
-        None => None,
-    };
-    Ok(initrd_info)
-}
-
-fn load_uncompressed_kernel_and_initrd_x64_with_buffer<F>(
-    importer: &mut dyn ImageLoad<X86Register>,
-    kernel_image: &mut F,
-    kernel_minimum_start_address: u64,
-    initrd: Option<InitrdConfig<'_>>,
-    buffer: &mut ChunkBuf,
-) -> Result<LoadInfo, Error>
-where
-    F: Read + Seek,
-{
-    let elf_load_info = load_static_elf_with_buffer(
-        importer,
-        kernel_image,
-        kernel_minimum_start_address,
-        0,
-        false,
-        BootPageAcceptance::Exclusive,
-        "linux-kernel",
-        buffer,
-    )
-    .map_err(Error::ElfLoader)?;
-
-    let crate::elf::LoadInfo {
-        minimum_address_used: min_addr,
-        next_available_address: next_addr,
-        entrypoint,
-    } = elf_load_info;
-    tracing::trace!(min_addr, next_addr, entrypoint, "loaded kernel");
-
-    let initrd_info = import_initrd_with_buffer(initrd, next_addr, importer, buffer)?;
-
-    Ok(LoadInfo {
-        kernel: KernelInfo {
-            gpa: min_addr,
-            size: next_addr - min_addr,
-            entrypoint,
-        },
-        initrd: initrd_info,
-        dtb: None,
-        bzimage_setup_header: None,
-    })
-}
-
 fn import_command_line(
     importer: &mut impl ImageLoad<X86Register>,
     cmdline: &CString,
@@ -546,14 +455,7 @@ where
     if crate::bzimage::is_bzimage(kernel_image).map_err(Error::BzImage)? {
         return Err(Error::MpTableRequiresElf);
     }
-    let mut buffer = ChunkBuf::with_size(MPTABLE_LOAD_CHUNK_SIZE);
-    let load_info = load_uncompressed_kernel_and_initrd_x64_with_buffer(
-        importer,
-        kernel_image,
-        KERNEL_BASE,
-        initrd,
-        &mut buffer,
-    )?;
+    let load_info = super::load_kernel_and_initrd_x64(importer, kernel_image, KERNEL_BASE, initrd)?;
     import_mptable_config(
         importer,
         &load_info,
@@ -572,6 +474,9 @@ mod tests {
     use crate::importer::IsolationConfig;
     use crate::importer::ParameterAreaIndex;
     use crate::importer::StartupMemoryType;
+    use crate::linux::InitrdAddressType;
+    use crate::linux::InitrdInfo;
+    use crate::linux::KernelInfo;
     use std::io::Cursor;
     use test_with_tracing::test;
     use zerocopy::FromBytes;
@@ -1004,13 +909,11 @@ mod tests {
     fn elf_without_load_segments_is_rejected() {
         let mut importer = RecordingImporter::default();
         let mut kernel_image = test_elf(KERNEL_BASE, &[]);
-        let mut buffer = ChunkBuf::new();
-        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+        let error = crate::linux::load_kernel_and_initrd_x64(
             &mut importer,
             &mut kernel_image,
             KERNEL_BASE,
             None,
-            &mut buffer,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1024,13 +927,11 @@ mod tests {
     fn elf_with_only_empty_load_segment_is_rejected() {
         let mut importer = RecordingImporter::default();
         let mut kernel_image = test_elf(KERNEL_BASE + 1, &[(KERNEL_BASE + 1, 0)]);
-        let mut buffer = ChunkBuf::new();
-        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+        let error = crate::linux::load_kernel_and_initrd_x64(
             &mut importer,
             &mut kernel_image,
             KERNEL_BASE,
             None,
-            &mut buffer,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1050,13 +951,11 @@ mod tests {
                 (KERNEL_BASE + 2 * HV_PAGE_SIZE, HV_PAGE_SIZE),
             ],
         );
-        let mut buffer = ChunkBuf::new();
-        let error = load_uncompressed_kernel_and_initrd_x64_with_buffer(
+        let error = crate::linux::load_kernel_and_initrd_x64(
             &mut importer,
             &mut kernel_image,
             KERNEL_BASE,
             None,
-            &mut buffer,
         )
         .unwrap_err();
         assert!(matches!(
@@ -1070,8 +969,7 @@ mod tests {
     fn initrd_after_kernel_alignment_overflow_is_rejected() {
         let mut importer = RecordingImporter::default();
         let mut initrd = Cursor::new([0]);
-        let mut buffer = ChunkBuf::new();
-        let error = import_initrd_with_buffer(
+        let error = crate::linux::import_initrd(
             Some(InitrdConfig {
                 initrd_address: InitrdAddressType::AfterKernel,
                 initrd: &mut initrd,
@@ -1079,7 +977,6 @@ mod tests {
             }),
             u64::MAX - HV_PAGE_SIZE + 1,
             &mut importer,
-            &mut buffer,
         )
         .unwrap_err();
         assert!(matches!(error, Error::InitrdAddressTooHigh(_)));

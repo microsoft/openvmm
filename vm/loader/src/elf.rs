@@ -115,33 +115,6 @@ pub fn load_static_elf<F, R: GuestArch>(
 where
     F: Read + Seek,
 {
-    let mut buffer = ChunkBuf::new();
-    load_static_elf_with_buffer(
-        importer,
-        kernel_image,
-        start_address,
-        load_offset,
-        assume_pic,
-        acceptance,
-        tag,
-        &mut buffer,
-    )
-}
-
-/// Loads a static ELF while reusing the caller's page-aligned import buffer.
-pub(crate) fn load_static_elf_with_buffer<F, R: GuestArch>(
-    importer: &mut dyn ImageLoad<R>,
-    kernel_image: &mut F,
-    start_address: u64,
-    load_offset: u64,
-    assume_pic: bool,
-    acceptance: crate::importer::BootPageAcceptance,
-    tag: &'static str,
-    buffer: &mut ChunkBuf,
-) -> Result<LoadInfo>
-where
-    F: Read + Seek,
-{
     let reader = ReadCache::new(&mut *kernel_image);
     let ehdr: &elf::FileHeader64<LE> = reader.read_at(0).map_err(|_| Error::ReadFileHeader)?;
 
@@ -317,6 +290,7 @@ where
     drop(reader);
 
     // During the second pass, import each segment.
+    let mut buf = ChunkBuf::new();
     for seg in &segments {
         let mem_offset =
             seg.mem_offset
@@ -335,20 +309,19 @@ where
         }
 
         if seg.p_memsz > 0 {
-            buffer
-                .import_file_region(
-                    importer,
-                    ImportFileRegion {
-                        file: kernel_image,
-                        file_offset: seg.p_offset,
-                        file_length: seg.p_filesz,
-                        gpa: mem_offset,
-                        memory_length: seg.p_memsz,
-                        acceptance,
-                        tag,
-                    },
-                )
-                .map_err(Error::ImportFileRegion)?;
+            buf.import_file_region(
+                importer,
+                ImportFileRegion {
+                    file: kernel_image,
+                    file_offset: seg.p_offset,
+                    file_length: seg.p_filesz,
+                    gpa: mem_offset,
+                    memory_length: seg.p_memsz,
+                    acceptance,
+                    tag,
+                },
+            )
+            .map_err(Error::ImportFileRegion)?;
         }
     }
 
