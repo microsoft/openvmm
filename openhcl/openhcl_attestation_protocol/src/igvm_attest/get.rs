@@ -178,13 +178,6 @@ impl<'de> Deserialize<'de> for IgvmAttestResponseExtensions {
                 self,
                 mut map: A,
             ) -> Result<Self::Value, A::Error> {
-                #[derive(Deserialize)]
-                #[serde(untagged)]
-                enum HashValue {
-                    String(String),
-                    Other(serde::de::IgnoredAny),
-                }
-
                 let mut extensions = IgvmAttestResponseExtensions::default();
                 let mut seen_hash = false;
                 while let Some(field) = map.next_key::<String>()? {
@@ -196,21 +189,28 @@ impl<'de> Deserialize<'de> for IgvmAttestResponseExtensions {
                         extensions.ignored_context_hash = Some(IgnoredContextHashReason::Duplicate);
                     } else {
                         seen_hash = true;
-                        match map.next_value::<HashValue>()? {
-                            HashValue::String(hash) if hash.is_empty() => {
+                        let raw = map.next_value::<Box<serde_json::value::RawValue>>()?;
+                        let hash = if raw.get().starts_with('"') {
+                            Some(
+                                serde_json::from_str::<String>(raw.get())
+                                    .map_err(serde::de::Error::custom)?,
+                            )
+                        } else {
+                            None
+                        };
+                        match hash {
+                            Some(hash) if hash.is_empty() => {
                                 extensions.ignored_context_hash =
                                     Some(IgnoredContextHashReason::Empty);
                             }
-                            HashValue::String(hash)
-                                if decode_key_release_context_hash(&hash).is_ok() =>
-                            {
+                            Some(hash) if decode_key_release_context_hash(&hash).is_ok() => {
                                 extensions.key_release_context_hash = Some(hash);
                             }
-                            HashValue::String(_) => {
+                            Some(_) => {
                                 extensions.ignored_context_hash =
                                     Some(IgnoredContextHashReason::InvalidEncoding);
                             }
-                            HashValue::Other(_) => {
+                            None => {
                                 extensions.ignored_context_hash =
                                     Some(IgnoredContextHashReason::WrongType);
                             }

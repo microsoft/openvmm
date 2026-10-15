@@ -772,6 +772,8 @@ pub(crate) mod tests {
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{},"extensions":{}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":[}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":null,}}"#,
+            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":1e}}"#,
+            r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":{"key_release_context_hash":"\ud800"}}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":null}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":[]}"#,
             r#"{"schema_version":1,"request_type":"key_release","payload":"x","extensions":[null]}"#,
