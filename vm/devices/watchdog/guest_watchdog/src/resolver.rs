@@ -73,15 +73,14 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVGuestWatchdogDeviceHand
     }
 }
 
-/// Logs watchdog timeouts without notifying the platform, so the VM keeps
-/// running and no watchdog boot failure is recorded.
+/// Ignores watchdog timeouts instead of notifying the platform, so the VM keeps
+/// running and no watchdog boot failure is recorded. The timeout itself is
+/// already logged by `WatchdogServices`.
 struct NoActionWatchdog(Box<dyn WatchdogPlatform>);
 
 #[async_trait]
 impl WatchdogPlatform for NoActionWatchdog {
-    async fn on_timeout(&mut self) {
-        tracelimit::warn_ratelimited!("guest watchdog expired; configured to take no action");
-    }
+    async fn on_timeout(&mut self) {}
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
         self.0.read_and_clear_boot_status().await
