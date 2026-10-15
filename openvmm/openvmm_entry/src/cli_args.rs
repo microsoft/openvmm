@@ -560,7 +560,7 @@ valid disk kinds:
 
 flags:
     `ro`                           open disk as read-only
-    `bounce`                       force owned block staging (default: off)
+    `bounce`                       force owned block staging (default: automatic)
                                    only plain regular files and RAM disks; no wrappers
 
 options:
@@ -1439,7 +1439,7 @@ impl Options {
         })
     }
 
-    /// Reject bounce mode outside supported per-device options.
+    /// Reject bounce mode outside the per-device virtio-blk option.
     pub fn validate_bounce_options(&self) -> anyhow::Result<()> {
         for disk in self.disk.iter().chain(&self.nvme) {
             disk.validate_bounce_scope(false)?;
@@ -4930,48 +4930,6 @@ mod tests {
     }
 
     #[test]
-    fn test_virtio_vsock_bounce_cli() {
-        let opt = Options::try_parse_from(["openvmm"]).unwrap();
-        assert!(!opt.virtio_vsock_bounce);
-        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bounce"]).is_err());
-        for bus in ["mmio", "pci", "pcie", "pcie:custom"] {
-            let opt = Options::try_parse_from([
-                "openvmm",
-                "--virtio-vsock-path",
-                "path/to/vsock",
-                "--virtio-vsock-bounce",
-                "--virtio-vsock-bus",
-                bus,
-            ])
-            .unwrap();
-            assert!(opt.virtio_vsock_bounce);
-            assert_eq!(opt.virtio_vsock_path.as_deref(), Some("path/to/vsock"));
-            opt.validate_bounce_options().unwrap();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            assert!(
-                Options::try_parse_from([
-                    "openvmm",
-                    "--virtio-vsock-vhost-cid",
-                    "3",
-                    "--virtio-vsock-bounce",
-                ])
-                .is_err()
-            );
-            let mut opt = Options::try_parse_from([
-                "openvmm",
-                "--virtio-vsock-path",
-                "path/to/vsock",
-                "--virtio-vsock-bounce",
-            ])
-            .unwrap();
-            opt.virtio_vsock_vhost_cid = Some(3);
-            assert!(opt.validate_bounce_options().is_err());
-        }
-    }
-
-    #[test]
     fn test_parse_pcie_port_prefix() {
         // Successful prefix parsing
         let (port, rest) = parse_pcie_port_prefix("pcie_port=rp0:tag,path");
@@ -6888,6 +6846,48 @@ mod tests {
             Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
                 .unwrap();
         assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
+    }
+
+    #[test]
+    fn test_virtio_vsock_bounce_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(!opt.virtio_vsock_bounce);
+        assert!(Options::try_parse_from(["openvmm", "--virtio-vsock-bounce"]).is_err());
+        for bus in ["mmio", "pci", "pcie", "pcie:custom"] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-path",
+                "path/to/vsock",
+                "--virtio-vsock-bounce",
+                "--virtio-vsock-bus",
+                bus,
+            ])
+            .unwrap();
+            assert!(opt.virtio_vsock_bounce);
+            assert_eq!(opt.virtio_vsock_path.as_deref(), Some("path/to/vsock"));
+            opt.validate_bounce_options().unwrap();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--virtio-vsock-vhost-cid",
+                    "3",
+                    "--virtio-vsock-bounce",
+                ])
+                .is_err()
+            );
+            let mut opt = Options::try_parse_from([
+                "openvmm",
+                "--virtio-vsock-path",
+                "path/to/vsock",
+                "--virtio-vsock-bounce",
+            ])
+            .unwrap();
+            opt.virtio_vsock_vhost_cid = Some(3);
+            assert!(opt.validate_bounce_options().is_err());
+        }
     }
 
     #[test]

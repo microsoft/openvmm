@@ -449,6 +449,14 @@ pub trait ProtoPartition {
         guestmem::GuestMemoryIoPolicy::Direct
     }
 
+    /// Whether CPU loans need the attached host-access callback's readiness.
+    ///
+    /// This is independent of IO policy: non-isolated copy-only memory can
+    /// support local loans without a host-grant callback.
+    fn user_locks_require_host_access(&self) -> bool {
+        false
+    }
+
     /// Constructs the full partition.
     fn build(
         self,

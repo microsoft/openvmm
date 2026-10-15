@@ -80,8 +80,8 @@ impl AlignedGpadlView {
 }
 
 struct GpadlPagedMemory {
-    _gpadl: AlignedGpadlView,
     pages: UserLockedPages,
+    _gpadl: AlignedGpadlView,
 }
 
 impl GpadlPagedMemory {
@@ -95,8 +95,8 @@ impl GpadlPagedMemory {
             .collect();
         let pages = mem.lock_user_gpns(guestmem::AccessType::Write, &gpns)?;
         Ok(Self {
-            _gpadl: gpadl,
             pages,
+            _gpadl: gpadl,
         })
     }
 }

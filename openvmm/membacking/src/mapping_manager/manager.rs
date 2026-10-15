@@ -9,12 +9,12 @@ use super::mappable::Mappable;
 use super::object_cache::ObjectCache;
 use super::object_cache::ObjectId;
 use super::va_mapper::MapperRole;
+use super::va_mapper::MapperSharedState;
 use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
 use crate::region_manager::MappingType;
 use futures::StreamExt;
-use futures::future::join_all;
 use guestmem::ProvideShareableRegions;
 use guestmem::ShareableRegion;
 use inspect::Inspect;
@@ -26,8 +26,10 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
+use parking_lot::Mutex;
 use slab::Slab;
 use std::sync::Arc;
+use std::sync::Weak;
 use thiserror::Error;
 
 /// The mapping manager.
@@ -62,8 +64,15 @@ impl MappingManager {
         minimum_va_alignment: Option<usize>,
         supports_memory_fault_resolution: bool,
         io_policy: guestmem::GuestMemoryIoPolicy,
+        user_locks_require_host_access: bool,
     ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
-        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment, io_policy);
+        let this = Self::new_bare(
+            spawn,
+            max_addr,
+            minimum_va_alignment,
+            io_policy,
+            user_locks_require_host_access,
+        );
         // Create the primary mapper as part of construction. Being first, it is
         // the instance the shared cache hands to every later `new_mapper` in
         // this process.
@@ -86,11 +95,19 @@ impl MappingManager {
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
         io_policy: guestmem::GuestMemoryIoPolicy,
+        user_locks_require_host_access: bool,
     ) -> Self {
+        let id = ObjectId::new();
+        let shared_state = Arc::new(MapperSharedState::default());
+        LOCAL_USER_LOCKS
+            .lock()
+            .push((id, Arc::downgrade(&shared_state)));
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
                 let mut task = MappingManagerTask::new();
+                task.user_locks = shared_state.user_locks.clone();
+                task._shared_state = Some(shared_state);
                 async move {
                     task.run(&mut req_recv).await;
                 }
@@ -98,11 +115,12 @@ impl MappingManager {
             .detach();
         Self {
             client: MappingManagerClient {
-                id: ObjectId::new(),
+                id,
                 req_send,
                 max_addr,
                 minimum_va_alignment,
                 copy_only: io_policy == guestmem::GuestMemoryIoPolicy::CopyOnly,
+                user_locks_require_host_access,
             },
         }
     }
@@ -121,6 +139,7 @@ impl MappingManager {
             max_addr,
             minimum_va_alignment,
             guestmem::GuestMemoryIoPolicy::Direct,
+            false,
         )
     }
 
@@ -138,13 +157,42 @@ pub struct MappingManagerClient {
     id: ObjectId,
     max_addr: u64,
     minimum_va_alignment: Option<usize>,
-    // Carried over mesh so remote mappers have the same policy at construction.
     copy_only: bool,
+    user_locks_require_host_access: bool,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
+static LOCAL_USER_LOCKS: Mutex<Vec<(ObjectId, Weak<MapperSharedState>)>> = Mutex::new(Vec::new());
 
 impl MappingManagerClient {
+    #[cfg(test)]
+    pub(crate) async fn new_local_secondary_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
+        Ok(Arc::new(
+            VaMapper::new(
+                self.req_send.clone(),
+                self.max_addr,
+                None,
+                self.minimum_va_alignment,
+                true,
+                MapperRole::Secondary,
+                self.copy_only,
+                self.user_locks_require_host_access,
+                self.local_mapper_state(),
+            )
+            .await?,
+        ))
+    }
+
+    pub(crate) fn local_user_locks(&self) -> Option<Arc<guestmem::GuestMemoryUserLocks>> {
+        Some(self.local_mapper_state()?.user_locks.clone())
+    }
+
+    fn local_mapper_state(&self) -> Option<Arc<MapperSharedState>> {
+        let mut locks = LOCAL_USER_LOCKS.lock();
+        locks.retain(|(_, locks)| locks.strong_count() != 0);
+        locks.iter().find(|(id, _)| *id == self.id)?.1.upgrade()
+    }
+
     /// Returns a secondary VA mapper for this guest memory.
     ///
     /// A *secondary* mapper is any host-side view of guest memory other than the
@@ -175,6 +223,10 @@ impl MappingManagerClient {
     /// primary mapper created by [`MappingManager::new`](MappingManager::new);
     /// in other processes (device/DMA workers) this creates a fresh secondary
     /// mapper.
+    ///
+    /// CPU-only loans are supported only in the manager's process. Local
+    /// mappers share loan admission and backend ownership. Other processes
+    /// cannot participate in that tracker and reject CPU-only loans.
     pub async fn new_mapper(&self, eager: bool) -> Result<Arc<VaMapper>, VaMapperError> {
         self.get_or_create_mapper(eager, MapperRole::Secondary)
             .await
@@ -195,6 +247,8 @@ impl MappingManagerClient {
                     eager,
                     role,
                     self.copy_only,
+                    self.user_locks_require_host_access,
+                    self.local_mapper_state(),
                 )
                 .await
             })
@@ -239,6 +293,8 @@ impl MappingManagerClient {
                 // pages, so it just maps them plain read-write 4 KB.
                 MapperRole::Secondary,
                 self.copy_only,
+                self.user_locks_require_host_access,
+                self.local_mapper_state(),
             )
             .await?,
         ))
@@ -249,9 +305,7 @@ impl MappingManagerClient {
     /// The mapping is pushed eagerly to all existing VA mappers. Returns an
     /// error if any mapper fails to establish the mapping.
     ///
-    /// TODO: currently this will panic if the mapping overlaps an existing
-    /// mapping. This needs to be fixed to allow this to overlap existing
-    /// mappings, in which case the old ones will be split and replaced.
+    /// Overlapping mappings are rejected without changing existing mappings.
     pub async fn add_mapping(&self, params: MappingParams) -> anyhow::Result<()> {
         self.req_send
             .call_failable(MappingRequest::AddMapping, params)
@@ -262,11 +316,11 @@ impl MappingManagerClient {
     /// Removes all mappings in `range`.
     ///
     /// TODO: allow this to split existing mappings.
-    pub async fn remove_mappings(&self, range: MemoryRange) {
+    pub async fn remove_mappings(&self, range: MemoryRange) -> Result<(), RemoteError> {
         self.req_send
             .call(MappingRequest::RemoveMappings, range)
             .await
-            .unwrap();
+            .map_err(RemoteError::new)?
     }
 }
 
@@ -294,7 +348,7 @@ pub enum MappingRequest {
     /// mark it for future pushes.
     UpgradeToEager(FailableRpc<MapperId, ()>),
     AddMapping(FailableRpc<MappingParams, ()>),
-    RemoveMappings(Rpc<MemoryRange, ()>),
+    RemoveMappings(FailableRpc<MemoryRange, ()>),
     /// Returns all mappings that have [`MappingType::Ram`] type.
     GetDmaTargetMappings(Rpc<(), Vec<MappingParams>>),
     Inspect(inspect::Deferred),
@@ -306,6 +360,10 @@ struct MappingManagerTask {
     mappings: Vec<Mapping>,
     #[inspect(skip)]
     mappers: Mappers,
+    #[inspect(skip)]
+    user_locks: Arc<guestmem::GuestMemoryUserLocks>,
+    #[inspect(skip)]
+    _shared_state: Option<Arc<MapperSharedState>>,
 }
 
 fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
@@ -485,7 +543,7 @@ pub enum MapperRequest {
     /// wakes waiters with a failure.
     NoMapping(MemoryRange),
     /// Unmap the specified range and send a response when it's done.
-    Unmap(Rpc<MemoryRange, ()>),
+    Unmap(Rpc<MemoryRange, Result<(), RemoteError>>),
     /// Mark this mapper as eager and respond when done. Sent after all
     /// replay `MapEager` Rpcs have completed, so the mapper task
     /// processes it after all replays.
@@ -499,6 +557,8 @@ impl MappingManagerTask {
                 mappers: Slab::new(),
             },
             mappings: Vec::new(),
+            user_locks: Arc::new(guestmem::GuestMemoryUserLocks::default()),
+            _shared_state: None,
         }
     }
 
@@ -541,7 +601,7 @@ impl MappingManagerTask {
                         .await
                 }
                 MappingRequest::RemoveMappings(rpc) => {
-                    rpc.handle(async |range| self.remove_mappings(range).await)
+                    rpc.handle_failable(async |range| self.remove_mappings(range).await)
                         .await
                 }
                 MappingRequest::GetDmaTargetMappings(rpc) => {
@@ -721,6 +781,9 @@ impl MappingManagerTask {
     }
 
     async fn add_mapping(&mut self, params: MappingParams) -> anyhow::Result<()> {
+        let _change = self
+            .user_locks
+            .begin_change(&[params.range.start()..params.range.end()])?;
         tracing::debug!(range = %params.range, "adding mapping");
 
         // Private memory is anonymous and lives in a single mapper's address
@@ -730,7 +793,13 @@ impl MappingManagerTask {
             anyhow::bail!("cannot add private memory while multiple mappers are present");
         }
 
-        assert!(!self.mappings.iter().any(|m| m.params.range == params.range));
+        anyhow::ensure!(
+            !self
+                .mappings
+                .iter()
+                .any(|m| m.params.range.overlaps(&params.range)),
+            "mapping overlaps an existing mapping"
+        );
 
         // Push to eager mappers only. Lazy mappers will request on demand.
         let mut active_mappers = Vec::new();
@@ -798,42 +867,77 @@ impl MappingManagerTask {
             .collect()
     }
 
-    async fn remove_mappings(&mut self, range: MemoryRange) {
+    async fn remove_mappings(&mut self, range: MemoryRange) -> anyhow::Result<()> {
+        let ranges: Vec<_> = self
+            .mappings
+            .iter()
+            .filter(|mapping| range.contains(&mapping.params.range))
+            .map(|mapping| mapping.params.range.start()..mapping.params.range.end())
+            .collect();
+        let _change = if ranges.is_empty() {
+            None
+        } else {
+            Some(self.user_locks.begin_change(&ranges)?)
+        };
         let mut mappers = Vec::new();
-        self.mappings.retain_mut(|mapping| {
+        for mapping in &self.mappings {
             if !range.contains(&mapping.params.range) {
                 assert!(
                     !range.overlaps(&mapping.params.range),
                     "no partial unmappings allowed"
                 );
-                return true;
+                continue;
             }
             tracing::debug!(range = %mapping.params.range, "removing mapping");
-            mappers.append(&mut mapping.active_mappers);
-            false
-        });
+            mappers.extend_from_slice(&mapping.active_mappers);
+        }
         mappers.sort();
         mappers.dedup();
-        self.mappers.invalidate(&mappers, range).await;
+        self.mappers
+            .invalidate(&mappers, range, &self.mappings)
+            .await?;
+        self.mappings
+            .retain(|mapping| !range.contains(&mapping.params.range));
+        Ok(())
     }
 }
 
 impl Mappers {
-    async fn invalidate(&self, ids: &[MapperId], range: MemoryRange) {
+    async fn invalidate(
+        &self,
+        ids: &[MapperId],
+        range: MemoryRange,
+        mappings: &[Mapping],
+    ) -> anyhow::Result<()> {
         tracing::debug!(mapper_count = ids.len(), %range, "sending invalidations");
-        join_all(ids.iter().map(async |&MapperId(i)| {
-            if let Err(err) = self.mappers[i]
+        for (completed, &MapperId(i)) in ids.iter().enumerate() {
+            match self.mappers[i]
                 .req_send
                 .call(MapperRequest::Unmap, range)
                 .await
             {
-                tracing::warn!(
+                Ok(Err(error)) => {
+                    for id in &ids[..completed] {
+                        for mapping in mappings.iter().filter(|mapping| {
+                            range.contains(&mapping.params.range)
+                                && mapping.active_mappers.contains(id)
+                        }) {
+                            self.mappers[id.0]
+                                .req_send
+                                .call(MapperRequest::MapEager, mapping.params.clone())
+                                .await??;
+                        }
+                    }
+                    return Err(error.into());
+                }
+                Ok(Ok(())) => {}
+                Err(err) => tracing::warn!(
                     error = &err as &dyn std::error::Error,
                     "mapper dropped invalidate request"
-                );
+                ),
             }
-        }))
-        .await;
+        }
+        Ok(())
     }
 }
 
@@ -873,6 +977,71 @@ mod tests {
     use guestmem::GuestMemoryAccess;
     use guestmem::ProvideShareableRegions;
     use memory_range::MemoryRange;
+
+    #[pal_async::async_test]
+    async fn invalidation_failure_restores_completed_mappers_and_keeps_records(_spawn: impl Spawn) {
+        let (mut task, _) = task_with_mapping().await;
+        let (first_send, mut first_recv) = mesh::channel();
+        let first = task.add_mapper(first_send, false).await.unwrap();
+        let (second_send, mut second_recv) = mesh::channel();
+        let second = task.add_mapper(second_send, false).await.unwrap();
+        let range = MemoryRange::new(0..0x10000);
+        task.send_mappings(first, range);
+        task.send_mappings(second, range);
+        assert!(matches!(
+            first_recv.recv().await.unwrap(),
+            MapperRequest::MapLazy(_)
+        ));
+        assert!(matches!(
+            second_recv.recv().await.unwrap(),
+            MapperRequest::MapLazy(_)
+        ));
+        let (result, (), ()) = futures::join!(
+            task.remove_mappings(range),
+            async {
+                match first_recv.recv().await.unwrap() {
+                    MapperRequest::Unmap(rpc) => rpc.complete(Ok(())),
+                    other => panic!("expected first invalidation, got {other:?}"),
+                }
+                match first_recv.recv().await.unwrap() {
+                    MapperRequest::MapEager(rpc) => {
+                        let (params, rpc) = rpc.split();
+                        assert_eq!(params.range, range);
+                        rpc.complete(Ok(()));
+                    }
+                    other => panic!("expected restoration, got {other:?}"),
+                }
+            },
+            async {
+                match second_recv.recv().await.unwrap() {
+                    MapperRequest::Unmap(rpc) => rpc.complete(Err(RemoteError::new(
+                        std::io::Error::other("injected invalidation failure"),
+                    ))),
+                    other => panic!("expected second invalidation, got {other:?}"),
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(task.mappings.len(), 1);
+        assert_eq!(task.mappings[0].active_mappers, [first, second]);
+        let (result, (), ()) = futures::join!(
+            task.remove_mappings(range),
+            async {
+                match first_recv.recv().await.unwrap() {
+                    MapperRequest::Unmap(rpc) => rpc.complete(Ok(())),
+                    other => panic!("expected retry, got {other:?}"),
+                }
+            },
+            async {
+                match second_recv.recv().await.unwrap() {
+                    MapperRequest::Unmap(rpc) => rpc.complete(Ok(())),
+                    other => panic!("expected retry, got {other:?}"),
+                }
+            },
+        );
+        result.unwrap();
+        assert!(task.mappings.is_empty());
+    }
 
     #[pal_async::async_test]
     async fn test_dma_target_regions_returned(spawn: impl Spawn) {
@@ -1239,7 +1408,7 @@ mod tests {
 
         // Remove the mapping — both should get Unmap.
         let remove_future = task.remove_mappings(MemoryRange::new(0..0x10000));
-        let ((), _, _) = futures::join!(
+        let (result, _, _) = futures::join!(
             remove_future,
             async {
                 let msg = eager_recv.recv().await.unwrap();
@@ -1247,7 +1416,7 @@ mod tests {
                     MapperRequest::Unmap(rpc) => {
                         let (range, rpc) = rpc.split();
                         assert_eq!(range, MemoryRange::new(0..0x10000));
-                        rpc.complete(());
+                        rpc.complete(Ok(()));
                     }
                     other => panic!("expected Unmap for eager, got {other:?}"),
                 }
@@ -1258,12 +1427,13 @@ mod tests {
                     MapperRequest::Unmap(rpc) => {
                         let (range, rpc) = rpc.split();
                         assert_eq!(range, MemoryRange::new(0..0x10000));
-                        rpc.complete(());
+                        rpc.complete(Ok(()));
                     }
                     other => panic!("expected Unmap for lazy, got {other:?}"),
                 }
             }
         );
+        result.unwrap();
     }
 
     /// Helper: create a task with two mappings for rollback tests.
@@ -1390,7 +1560,7 @@ mod tests {
                     MapperRequest::Unmap(rpc) => {
                         let (range, rpc) = rpc.split();
                         assert_eq!(range, MemoryRange::new(0..0x1000));
-                        rpc.complete(());
+                        rpc.complete(Ok(()));
                     }
                     other => panic!("expected Unmap rollback, got {other:?}"),
                 }
@@ -1508,6 +1678,8 @@ mod tests {
                 supports_memory_fault_resolution: false,
             },
             false,
+            false,
+            Some(Arc::new(MapperSharedState::default())),
         );
         let (mapper, _) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1549,6 +1721,8 @@ mod tests {
                 supports_memory_fault_resolution: false,
             },
             false,
+            false,
+            Some(Arc::new(MapperSharedState::default())),
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();

@@ -86,6 +86,9 @@ struct RamRegion {
 /// Errors when attaching a partition to a [`GuestMemoryManager`].
 #[derive(Error, Debug)]
 pub enum PartitionAttachError {
+    /// Failure to attach partition permission and user-lock callbacks.
+    #[error("failed to install partition host access")]
+    HostAccess(#[source] anyhow::Error),
     /// Failure to allocate a VA mapper.
     #[error("failed to reserve VA range for partition mapping")]
     VaMapper(#[source] VaMapperError),
@@ -350,6 +353,7 @@ pub struct GuestMemoryBuilder {
     supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
     io_policy: guestmem::GuestMemoryIoPolicy,
+    user_locks_require_host_access: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -362,6 +366,7 @@ impl GuestMemoryBuilder {
             supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
             io_policy: guestmem::GuestMemoryIoPolicy::Direct,
+            user_locks_require_host_access: false,
         }
     }
 
@@ -416,6 +421,12 @@ impl GuestMemoryBuilder {
     /// Sets the backing policy before any mapping or view can be exported.
     pub fn io_policy(mut self, policy: guestmem::GuestMemoryIoPolicy) -> Self {
         self.io_policy = policy;
+        self
+    }
+
+    /// Requires callback readiness for CPU loans, independently of IO policy.
+    pub fn user_locks_require_host_access(mut self, required: bool) -> Self {
+        self.user_locks_require_host_access = required;
         self
     }
 
@@ -584,11 +595,16 @@ impl GuestMemoryBuilder {
             max_hugepage_size,
             self.supports_memory_fault_resolution,
             self.io_policy,
+            self.user_locks_require_host_access,
         )
         .await
         .map_err(MemoryBuildError::VaMapper)?;
 
-        let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
+        let region_manager = RegionManager::new_with_user_locks(
+            &spawner,
+            mapping_manager.client().clone(),
+            va_mapper.user_locks(),
+        );
 
         // Build RAM regions from each backing's ranges.
         let mut ram_regions = Vec::new();
@@ -828,7 +844,9 @@ impl GuestMemoryManager {
                 Vtl::Vtl0,
                 "host access must be installed while attaching VTL0"
             );
-            self.va_mapper.install_host_access(host_access);
+            self.va_mapper
+                .install_host_access(host_access)
+                .map_err(PartitionAttachError::HostAccess)?;
         }
 
         let va_mapper = if let Some(process) = process {
@@ -930,7 +948,11 @@ impl RamVisibilityControl {
                     .await
                     .map_err(|error| RamVisibilityError::Map { range, error })?;
             }
-            RamVisibility::Unmapped => region.handle.unmap().await,
+            RamVisibility::Unmapped => region
+                .handle
+                .unmap()
+                .await
+                .map_err(|error| RamVisibilityError::Map { range, error })?,
         }
         Ok(())
     }
@@ -967,6 +989,7 @@ mod tests {
     async fn copy_only_policy_precedes_callback_attachment() {
         let manager = GuestMemoryBuilder::new()
             .io_policy(guestmem::GuestMemoryIoPolicy::CopyOnly)
+            .user_locks_require_host_access(true)
             .add_backing(RamBackingRequest::new(vec![MemoryRange::new(0..0x10000)]))
             .build(0x10000)
             .await
@@ -985,6 +1008,26 @@ mod tests {
             GuestMemory::allocate(0x1000).io_policy(),
             guestmem::GuestMemoryIoPolicy::Direct
         );
+    }
+
+    #[async_test]
+    async fn nonisolated_copy_only_backing_supports_local_user_loans_without_callback() {
+        let manager = GuestMemoryBuilder::new()
+            .io_policy(guestmem::GuestMemoryIoPolicy::CopyOnly)
+            .add_backing(RamBackingRequest::new(vec![MemoryRange::new(0..0x10000)]))
+            .build(0x10000)
+            .await
+            .unwrap();
+        let memory = manager.client().guest_memory().await.unwrap();
+        assert!(memory.supports_user_lock());
+        assert!(!memory.supports_kernel_lock());
+        let loan = memory
+            .lock_user_gpns(guestmem::AccessType::Read, &[0])
+            .unwrap();
+        drop(loan);
+        let forced = GuestMemory::allocate(0x1000).copy_only_view();
+        assert!(forced.supports_user_lock());
+        assert!(!forced.supports_kernel_lock());
     }
 
     #[async_test]

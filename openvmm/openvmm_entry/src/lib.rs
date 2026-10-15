@@ -3378,8 +3378,6 @@ mod tests {
             let initrd_path = temp_dir.path().join("initrd");
             File::create(&initrd_path).unwrap();
             let socket_path = temp_dir.path().join("vsock");
-            let cwd = std::env::current_dir().unwrap();
-            let socket_path = socket_path.strip_prefix(cwd).unwrap_or(&socket_path);
             let opt = Options::try_parse_from([
                 "openvmm",
                 "--kernel",

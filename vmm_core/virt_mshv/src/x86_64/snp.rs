@@ -171,6 +171,8 @@ pub(crate) struct SnpPartitionState {
     /// feature set for subsequent requests.
     pub(super) sev_features: Mutex<Option<u64>>,
     pub(super) cpuid_offloads_enabled: bool,
+    #[inspect(skip)]
+    user_locks: std::sync::OnceLock<Arc<guestmem::GuestMemoryUserLocks>>,
     config: Option<Box<MshvSnpConfig>>,
 }
 
@@ -180,6 +182,7 @@ impl SnpPartitionState {
             launch_state: Mutex::new(SnpLaunchState::NotStarted),
             sev_features: Mutex::new(None),
             cpuid_offloads_enabled: !disable_cpuid_offload,
+            user_locks: std::sync::OnceLock::new(),
             config: None,
         }
     }
@@ -193,13 +196,13 @@ impl SnpPartitionState {
         state
     }
 
-    pub(crate) fn validate_control_pages(
+    pub(crate) fn prepare_control_access_change(
         &self,
         partition: &MshvPartitionInner,
         addresses: &[u64],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<guestmem::GuestMemoryChangeGuard>> {
         if !self.control_operation_ready()? {
-            return Ok(());
+            return Ok(None);
         }
         let ranges = addresses
             .iter()
@@ -207,10 +210,53 @@ impl SnpPartitionState {
             .collect::<Result<Vec<_>, _>>()?;
         let memory = partition.memory.lock();
         let (ram, mappings) = host_access_ram(partition, &memory)?;
-        for range in ranges {
+        for &range in &ranges {
             validate_ram(range, true, &ram, &mappings)?;
         }
-        Ok(())
+        self.begin_user_access_change(&ranges)
+    }
+
+    pub(crate) fn install_user_locks(
+        &self,
+        locks: Arc<guestmem::GuestMemoryUserLocks>,
+    ) -> anyhow::Result<()> {
+        if let Some(existing) = self.user_locks.get() {
+            anyhow::ensure!(
+                Arc::ptr_eq(existing, &locks),
+                "SNP user-lock tracker is already installed"
+            );
+            return Ok(());
+        }
+        self.user_locks
+            .set(locks)
+            .map_err(|_| anyhow::anyhow!("SNP user-lock tracker installation raced"))
+    }
+
+    pub(crate) fn supports_user_locks(&self) -> bool {
+        *self.launch_state.lock() == SnpLaunchState::Finished && self.user_locks.get().is_some()
+    }
+
+    fn begin_user_access_change(
+        &self,
+        ranges: &[PageRange],
+    ) -> anyhow::Result<Option<guestmem::GuestMemoryChangeGuard>> {
+        let Some(locks) = self.user_locks.get() else {
+            anyhow::ensure!(
+                *self.launch_state.lock() != SnpLaunchState::Finished,
+                "SNP user-lock tracker is missing after launch"
+            );
+            return Ok(None);
+        };
+        let ranges: Vec<_> = ranges.iter().map(|range| range.start..range.end).collect();
+        Ok(Some(locks.begin_change(&ranges)?))
+    }
+
+    pub(crate) fn prepare_mapping_change(
+        &self,
+        addr: u64,
+        size: u64,
+    ) -> anyhow::Result<Option<guestmem::GuestMemoryChangeGuard>> {
+        self.begin_user_access_change(&[PageRange::new(addr, size)?])
     }
 
     fn control_operation_ready(&self) -> Result<bool, SnpError> {
@@ -259,6 +305,10 @@ impl SnpPartitionState {
         let memory = partition.memory.lock();
         let (ram, mappings) = host_access_ram(partition, &memory)?;
         let ranges = attribute_ranges(message)?;
+        for &range in &ranges {
+            validate_ram(range, false, &ram, &mappings)?;
+        }
+        let _change = self.begin_user_access_change(&ranges)?;
         release_host_access_ranges(&ranges, false, &ram, &mappings, |range| {
             modify_snp_host_access(
                 &partition.vmfd,
@@ -1345,7 +1395,10 @@ impl MshvProcessor<'_> {
         Ok(regs)
     }
 
-    fn dispatch_snp_hypercall(&mut self, regs: &mut HvX64RegisterPage) -> (u16, u8) {
+    fn dispatch_snp_hypercall(
+        &mut self,
+        regs: &mut HvX64RegisterPage,
+    ) -> Result<(u16, u8), VpHaltReason> {
         let mut handler = MshvHypercallHandler {
             partition: self.partition,
             reg_page: regs,
@@ -1353,13 +1406,17 @@ impl MshvProcessor<'_> {
             isolated: true,
             modified_gp: 0,
             modified_xmm: 0,
+            halt_reason: None,
         };
 
         MshvHypercallHandler::DISPATCHER.dispatch(
             &self.partition.gm,
             X64RegisterIo::new(&mut handler, true, false),
         );
-        (handler.modified_gp, handler.modified_xmm)
+        if let Some(reason) = handler.halt_reason {
+            return Err(reason);
+        }
+        Ok((handler.modified_gp, handler.modified_xmm))
     }
 
     fn write_snp_hypercall_output(
@@ -1391,7 +1448,7 @@ impl MshvProcessor<'_> {
     fn handle_snp_hypercall_intercept(&mut self, message: &HvMessage) -> Result<(), VpHaltReason> {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
         let mut regs = self.snp_hypercall_registers(info)?;
-        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(&mut regs);
+        let (modified_gp, modified_xmm) = self.dispatch_snp_hypercall(&mut regs)?;
         self.write_snp_hypercall_output(&regs, modified_gp, modified_xmm)
     }
 
@@ -1497,18 +1554,16 @@ impl MshvProcessor<'_> {
         name: HvX64RegisterName,
         value: u64,
     ) -> Result<(), VpHaltReason> {
-        if name == HvX64RegisterName::SevDoorbellGpa && value & 1 != 0 {
-            if let Some(snp) = self.partition.isolation.snp() {
-                snp.validate_control_pages(self.partition, &[value & !1])
-                    .map_err(|error| {
-                        tracelimit::warn_ratelimited!(
-                            error = &*error,
-                            "SNP doorbell admission failed"
-                        );
-                        VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
-                    })?
-            }
-        }
+        let _change = if name == HvX64RegisterName::SevDoorbellGpa && value & 1 != 0 {
+            Self::snp_state(self.partition)
+                .prepare_control_access_change(self.partition, &[value & !1])
+                .map_err(|error| {
+                    tracelimit::warn_ratelimited!(error = &*error, "SNP doorbell admission failed");
+                    VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                })?
+        } else {
+            None
+        };
         self.runner
             .vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((name, value))])
@@ -1628,7 +1683,8 @@ impl MshvProcessor<'_> {
                         GHCB_INFO_REGISTER_RESPONSE as u64 | page_number << GHCB_INFO_BIT_WIDTH,
                     );
                 }
-                snp.validate_control_pages(self.partition, &[ghcb_gpa])
+                let _change = snp
+                    .prepare_control_access_change(self.partition, &[ghcb_gpa])
                     .map_err(|error| {
                         tracelimit::warn_ratelimited!(error = &*error, "SNP GHCB admission failed");
                         VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
@@ -1987,8 +2043,8 @@ impl MshvProcessor<'_> {
             req_gpa: request.request_gpa,
             rsp_gpa: request.response_gpa,
         };
-        Self::snp_state(self.partition)
-            .validate_control_pages(self.partition, &[request.req_gpa, request.rsp_gpa])
+        let _change = Self::snp_state(self.partition)
+            .prepare_control_access_change(self.partition, &[request.req_gpa, request.rsp_gpa])
             .map_err(|error| {
                 tracelimit::warn_ratelimited!(error = &*error, "SNP PSP admission failed");
                 VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
@@ -2099,7 +2155,8 @@ impl MshvProcessor<'_> {
             vp_id: u64::from(target_vp.index()),
             vmsa_gpa: request.vmsa_gpa,
         };
-        snp.validate_control_pages(self.partition, &[request.vmsa_gpa])
+        let _change = snp
+            .prepare_control_access_change(self.partition, &[request.vmsa_gpa])
             .map_err(|error| {
                 tracelimit::warn_ratelimited!(error = &*error, "SNP AP VMSA admission failed");
                 VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
@@ -2133,6 +2190,47 @@ impl MshvProcessor<'_> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn user_loans_require_tracker_and_completed_launch() {
+        let snp = SnpPartitionState::new(false);
+        assert!(!snp.supports_user_locks());
+        *snp.launch_state.lock() = SnpLaunchState::Finished;
+        assert!(!snp.supports_user_locks());
+        let locks = Arc::new(guestmem::GuestMemoryUserLocks::default());
+        snp.install_user_locks(locks.clone()).unwrap();
+        assert!(snp.supports_user_locks());
+        snp.install_user_locks(locks).unwrap();
+        assert!(
+            snp.install_user_locks(Arc::new(guestmem::GuestMemoryUserLocks::default()))
+                .is_err()
+        );
+        *snp.launch_state.lock() = SnpLaunchState::Failed;
+        assert!(!snp.supports_user_locks());
+    }
+
+    #[test]
+    fn user_lock_conflict_rejects_complete_batch_before_release() {
+        let snp = SnpPartitionState::new(false);
+        let locks = Arc::new(guestmem::GuestMemoryUserLocks::default());
+        snp.install_user_locks(locks.clone()).unwrap();
+        *snp.launch_state.lock() = SnpLaunchState::Finished;
+        locks.lock_gpns(&[1]).unwrap();
+        let ranges = [
+            PageRange::new(0, 4096).unwrap(),
+            PageRange::new(4096, 4096).unwrap(),
+        ];
+        assert!(snp.begin_user_access_change(&ranges).is_err());
+        locks.lock_gpns(&[0]).unwrap();
+        locks.unlock_gpns(&[0]);
+        locks.unlock_gpns(&[1]);
+        let change = snp.begin_user_access_change(&ranges).unwrap();
+        assert!(locks.lock_gpns(&[0]).is_err());
+        assert!(locks.lock_gpns(&[1]).is_err());
+        drop(change);
+        locks.lock_gpns(&[0, 1]).unwrap();
+        locks.unlock_gpns(&[0, 1]);
+    }
 
     #[test]
     fn attribute_intercept_wrong_vp_is_a_backend_error() {

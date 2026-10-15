@@ -447,6 +447,10 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         }
     }
 
+    fn user_locks_require_host_access(&self) -> bool {
+        matches!(self.isolation, MshvProtoPartitionIsolation::Snp { .. })
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
@@ -1007,6 +1011,7 @@ impl MshvProcessor<'_> {
             isolated: false,
             modified_gp: 0,
             modified_xmm: 0,
+            halt_reason: None,
         };
 
         MshvHypercallHandler::DISPATCHER.dispatch(
@@ -1295,6 +1300,7 @@ pub(crate) struct MshvHypercallHandler<'a> {
     isolated: bool,
     modified_gp: u16,
     modified_xmm: u8,
+    halt_reason: Option<VpHaltReason>,
 }
 
 impl MshvHypercallHandler<'_> {
@@ -1393,16 +1399,18 @@ impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
             vp_id: u64::from(target_vp.index()),
             vmsa_gpa,
         };
-        self.partition
+        let _change = self
+            .partition
             .isolation
             .snp()
             .ok_or(hvdef::HvError::InvalidPartitionId)?
-            .validate_control_pages(self.partition, &[vmsa_gpa])
+            .prepare_control_access_change(self.partition, &[vmsa_gpa])
             .map_err(|error| {
                 tracelimit::warn_ratelimited!(
                     error = &*error,
                     "SNP StartVirtualProcessor VMSA admission failed"
                 );
+                self.halt_reason = Some(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                 hvdef::HvError::InvalidVpState
             })?;
         self.partition

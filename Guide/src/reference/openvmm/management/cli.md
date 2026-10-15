@@ -146,8 +146,8 @@ describes the source definitions.
   by default and rejects explicit NUMA huge-page settings. Use the CLI for
   bounced virtio devices.
 
-  Both usermode VA locks and kernel locks are denied. Copies use
-  fault-contained `GuestMemory` operations, without per-copy permission
+  Kernel locks are denied. Copies use fault-contained `GuestMemory`
+  operations, without per-copy permission
   leases or VP cancellation. A mapping fault requests read or write host
   permission and retries the full operation. Confirmed grants remain until
   a guest GPA-attribute conflict requires release. The selected backend and
@@ -162,9 +162,28 @@ describes the source definitions.
   GPA-attribute conflicts release host access and let the next VP run retry
   the existing guest operation. Valid repeated requests remain supported.
 
-  Control-page preparation validates guest addresses but does not release
-  cached grants. Normal GPA-attribute conflicts revoke those grants.
-  OpenVMM does not keep a separate control-page reservation table. The kernel
+  `GuestMemory::supports_kernel_lock()` is false for SNP guest RAM.
+  `requires_owned_io()` makes supported devices select owned staging.
+  Translation-only memory can retain its ordinary copying fallback while
+  forwarding the underlying ownership restriction.
+
+  Protected usermode VA locks are separate. `supports_user_lock()` becomes
+  available only after SNP launch and tracker installation. `lock_user_gpns()`
+  returns a `UserLockedPages` handle that keeps the backing owner, mapping,
+  and required permissions valid through unlock. A guest attribute or control
+  request that conflicts with a held lock halts the requesting VP without
+  releasing locked permissions. Overlapping locks remain protected until
+  every holder unlocks.
+
+  These are not kernel pins, an OS-residency guarantee, or mutual exclusion
+  for the bytes. They do not authorize kernel I/O or DMA. Ordinary bounce
+  copies do not register locks and remain revocable. Remote mappers cannot
+  acquire these locks because they do not share the local tracking state.
+
+  Control-page preparation validates guest addresses and holds loan admission
+  closed through the backend operation. It does not release cached grants.
+  Normal GPA-attribute conflicts revoke those grants.
+  It does not keep a separate control-page reservation table. The kernel
   and hypervisor enforce their control-page and permission contracts.
   GHCB replacement clears the old registration before setting the new one.
   Unregister waits for a successful clear before acknowledgement.

@@ -588,6 +588,7 @@ mod tests {
             assert_eq!(view.io_policy(), guestmem::GuestMemoryIoPolicy::CopyOnly);
             assert_eq!(view.io_policy(), guestmem::GuestMemoryIoPolicy::CopyOnly);
             assert!(!view.supports_kernel_lock());
+            assert!(!view.supports_user_lock());
             assert!(view.full_mapping().is_none());
             for access in [guestmem::AccessType::Read, guestmem::AccessType::Write] {
                 for kernel in [false, true] {
