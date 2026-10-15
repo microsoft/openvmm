@@ -11,16 +11,18 @@
 #![expect(clippy::missing_safety_doc)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 
+use std::ffi::c_void;
+
 /// Optimized memmove implementation.
 #[cfg_attr(feature = "replace_system_memcpy", unsafe(no_mangle))]
-pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+pub unsafe extern "C" fn memmove(dest: *mut c_void, src: *const c_void, len: usize) -> *mut c_void {
     // Our memcpy handles overlapping regions correctly.
     unsafe { memcpy(dest, src, len) }
 }
 
 /// Optimized memcpy implementation.
 #[cfg_attr(feature = "replace_system_memcpy", unsafe(no_mangle))]
-pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+pub unsafe extern "C" fn memcpy(dest: *mut c_void, src: *const c_void, len: usize) -> *mut c_void {
     unsafe {
         // Handle small sizes with specialized code. For some values, perform a
         // single read+write of the appropriate size. For others, read+write
@@ -28,7 +30,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
         // range.
         match len {
             0 => {}
-            1 => copy_one::<u8>(dest, src),
+            1 => copy_one::<u8>(dest.cast(), src.cast()),
             2 => copy_one::<u16>(dest.cast(), src.cast()),
             3 => copy_one::<U8x3>(dest.cast(), src.cast()),
             4 => copy_one::<u32>(dest.cast(), src.cast()),
@@ -88,7 +90,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
     dest
 }
 
-fn overlaps(dest: *mut u8, src: *const u8, len: usize) -> bool {
+fn overlaps(dest: *mut c_void, src: *const c_void, len: usize) -> bool {
     dest.addr().abs_diff(src.addr()) < len
 }
 
@@ -361,8 +363,8 @@ mod tests {
             dest.fill(0);
             unsafe {
                 super::memcpy(
-                    core::hint::black_box(dest.as_mut_ptr()),
-                    core::hint::black_box(src.as_ptr()),
+                    core::hint::black_box(dest.as_mut_ptr().cast()),
+                    core::hint::black_box(src.as_ptr().cast()),
                     core::hint::black_box(i),
                 )
             };
@@ -388,8 +390,8 @@ mod tests {
                 };
                 unsafe {
                     super::memmove(
-                        core::hint::black_box(dest_ptr),
-                        core::hint::black_box(src_ptr),
+                        core::hint::black_box(dest_ptr.cast()),
+                        core::hint::black_box(src_ptr.cast()),
                         core::hint::black_box(len),
                     )
                 };

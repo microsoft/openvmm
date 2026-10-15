@@ -10,21 +10,9 @@ use crate::service::diagnostics::header::HeaderParseError;
 use crate::service::diagnostics::header::LogBufferHeader;
 use crate::service::diagnostics::log::Log;
 use crate::service::diagnostics::log::LogParseError;
+use crate::service::diagnostics::suppressor::LogSuppressor;
 use guestmem::GuestMemory;
-use std::collections::BTreeMap;
 use thiserror::Error;
-
-// Suppress logs that contain these known error/warning messages.
-// These messages are the result of known issues with our UEFI firmware that do
-// not seem to affect the guest.
-// TODO: Fix UEFI to resolve these errors/warnings
-const SUPPRESS_LOGS: [&str; 5] = [
-    "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
-    "that are linking different HashInstanceLib instances!",
-    "ConvertPages: failed to find range",
-    "ConvertPages: Incompatible memory types",
-    "ConvertPages: range",
-];
 
 /// Iterator over raw log entries from a buffer.
 ///
@@ -120,8 +108,7 @@ where
 struct LogProcessor {
     /// Accumulator for multi-part messages
     accumulator: LogAccumulator,
-    /// Map of suppressed log patterns to their counts
-    suppressed_logs: BTreeMap<&'static str, u32>,
+    suppressor: LogSuppressor,
     /// Number of entries processed
     entries_processed: usize,
     /// Number of entries emitted (passed level/suppression filters)
@@ -134,40 +121,22 @@ impl LogProcessor {
     fn new() -> Self {
         Self {
             accumulator: LogAccumulator::new(),
-            suppressed_logs: BTreeMap::new(),
+            suppressor: LogSuppressor::new(),
             entries_processed: 0,
             entries_emitted: 0,
             bytes_read: 0,
         }
     }
 
-    /// Check if a log should be suppressed based on known patterns
-    fn should_suppress(&mut self, log: &Log) -> bool {
-        for &pattern in &SUPPRESS_LOGS {
-            if log.message.contains(pattern) {
-                *self.suppressed_logs.entry(pattern).or_insert(0) += 1;
-                return true;
-            }
-        }
-        false
-    }
-
     /// Log summary of suppressed messages and statistics
     fn log_summary(&self) {
-        for (substring, count) in &self.suppressed_logs {
-            tracelimit::warn_ratelimited!(substring, count, "suppressed logs");
-        }
+        self.suppressor.log_summary();
         tracelimit::info_ratelimited!(
             entries_processed = self.entries_processed,
             entries_emitted = self.entries_emitted,
             bytes_read = self.bytes_read,
             "processed EFI log entries"
         );
-    }
-
-    /// Check if a log should be emitted based on level and suppression
-    fn should_emit(&mut self, log: &Log, log_level: LogLevel) -> bool {
-        log_level.should_log(log.debug_level) && !self.should_suppress(log)
     }
 
     /// Process the log buffer and emit completed log entries
@@ -195,7 +164,7 @@ impl LogProcessor {
 
             if let Some(complete_log) = processor.accumulator.take() {
                 processor.entries_processed += 1;
-                if processor.should_emit(&complete_log, log_level) {
+                if processor.suppressor.should_emit(&complete_log, log_level) {
                     processor.entries_emitted += 1;
                     log_handler(&complete_log);
                 }
@@ -204,7 +173,7 @@ impl LogProcessor {
 
         if let Some(final_log) = processor.accumulator.clear() {
             processor.entries_processed += 1;
-            if processor.should_emit(&final_log, log_level) {
+            if processor.suppressor.should_emit(&final_log, log_level) {
                 processor.entries_emitted += 1;
                 log_handler(&final_log);
             }
@@ -212,5 +181,71 @@ impl LogProcessor {
 
         processor.log_summary();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::diagnostics::log::ALIGNMENT;
+    use std::mem::size_of;
+    use test_with_tracing::test;
+    use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
+    use uefi_specs::hyperv::advanced_logger::DXE_PHASE;
+    use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
+    use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+
+    fn append_entry(buffer: &mut Vec<u8>, message: &str) {
+        let header_size = size_of::<AdvancedLoggerMessageEntryV2>() as u16;
+        buffer.extend_from_slice(&SIG_ENTRY);
+        buffer.extend_from_slice(&[2, 0]);
+        buffer.extend_from_slice(&DEBUG_ERROR.to_le_bytes());
+        buffer.extend_from_slice(&0u64.to_le_bytes());
+        buffer.extend_from_slice(&DXE_PHASE.to_le_bytes());
+        buffer.extend_from_slice(&(message.len() as u16).to_le_bytes());
+        buffer.extend_from_slice(&header_size.to_le_bytes());
+        buffer.extend_from_slice(message.as_bytes());
+        buffer.resize(buffer.len().next_multiple_of(ALIGNMENT), 0);
+    }
+
+    #[test]
+    fn processing_filters_assembled_messages_and_preserves_other_errors() {
+        let mut buffer = Vec::new();
+        append_entry(&mut buffer, "Error: Image at 0003FC79000");
+        append_entry(&mut buffer, " start failed: Unsupported\r\n");
+        append_entry(&mut buffer, "[Bds] Unable to boot!\n");
+        append_entry(
+            &mut buffer,
+            "MnpStart: MnpStartSnp failed, Already started.\n",
+        );
+        append_entry(
+            &mut buffer,
+            "SecurityLock::LockType: SOFTWARE_LOCK, Module: 42857F0A-13F2-4B21-8A23-53D3F714B840, Function: LockCapsuleInterface, Output: Lock Capsule Interface\n",
+        );
+        append_entry(
+            &mut buffer,
+            "VmbusRootIsChannelAllowed: Channel not allowed during boot (",
+        );
+        append_entry(&mut buffer, "525074DC-8985-46E2-8057-A307DC18A502).\r\n");
+        append_entry(&mut buffer, "Unexpected boot failure\n");
+        append_entry(&mut buffer, "Boot order is empty");
+        let mut emitted = Vec::new();
+        LogProcessor::process_buffer(&buffer, LogLevel::make_default(), |log| {
+            emitted.push(log.message_trimmed().to_owned());
+        })
+        .unwrap();
+        assert_eq!(emitted, ["Unexpected boot failure"]);
+
+        buffer.clear();
+        append_entry(
+            &mut buffer,
+            "PeiDelayedDispatchOnEndOfPei Count of dispatch cycles is 0",
+        );
+        emitted.clear();
+        LogProcessor::process_buffer(&buffer, LogLevel::make_default(), |log| {
+            emitted.push(log.message_trimmed().to_owned());
+        })
+        .unwrap();
+        assert!(emitted.is_empty());
     }
 }

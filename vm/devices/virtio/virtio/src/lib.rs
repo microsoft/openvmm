@@ -8,6 +8,7 @@
 
 mod common;
 pub mod device;
+pub mod in_order;
 pub mod queue;
 pub mod regions;
 pub mod resolve;

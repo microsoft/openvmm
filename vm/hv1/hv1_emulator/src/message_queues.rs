@@ -58,7 +58,7 @@ impl MessageQueues {
     pub fn restore(&self, value: &SynicMessageQueues) {
         let queues = &mut self.queues.lock();
         for (dest, src) in queues.iter_mut().zip(&value.queues) {
-            dest.truncate(0);
+            dest.clear();
             dest.extend(src.iter().map(|m| {
                 let m: HvMessage = zerocopy::transmute!(*m);
                 m

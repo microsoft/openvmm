@@ -54,17 +54,31 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
         resource: TpmDeviceHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        let TpmDeviceHandle {
+            version,
+            ppi_store,
+            nvram_store,
+            refresh_tpm_seeds,
+            ak_cert_type,
+            register_layout,
+            guest_secret_key,
+            logger,
+            is_confidential_vm,
+            bios_guid,
+            nvram_size,
+        } = resource;
+
         let ppi_store = resolver
-            .resolve(resource.ppi_store, &())
+            .resolve(ppi_store, &())
             .await
             .map_err(ResolveTpmError::ResolvePpiStore)?;
 
         let nvram_store = resolver
-            .resolve(resource.nvram_store, &())
+            .resolve(nvram_store, &())
             .await
             .map_err(ResolveTpmError::ResolveNvramStore)?;
 
-        let ak_cert_type = match resource.ak_cert_type {
+        let ak_cert_type = match ak_cert_type {
             TpmAkCertTypeResource::HwAttested(request_ak_cert) => TpmAkCertType::HwAttested(
                 resolver
                     .resolve(request_ak_cert, &())
@@ -102,7 +116,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             }
         });
 
-        let logger = if let Some(r) = resource.logger {
+        let logger = if let Some(r) = logger {
             Some(
                 resolver
                     .resolve(r, &())
@@ -115,19 +129,20 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
         };
 
         let tpm = Tpm::new(
-            resource.register_layout,
+            version,
+            register_layout,
             input.encrypted_guest_memory.clone(),
             ppi_store.0,
             nvram_store.0,
-            resource.nvram_size,
+            nvram_size,
             monotonic_timer,
-            resource.refresh_tpm_seeds,
+            refresh_tpm_seeds,
             input.is_restoring,
             ak_cert_type,
-            resource.guest_secret_key,
+            guest_secret_key,
             logger,
-            resource.is_confidential_vm,
-            resource.bios_guid,
+            is_confidential_vm,
+            bios_guid,
         )
         .await
         .map_err(ResolveTpmError::Tpm)?;

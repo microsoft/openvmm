@@ -5,6 +5,7 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
+use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
@@ -19,12 +20,16 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tempfile::NamedTempFile;
+use tracing::Level;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -233,12 +238,29 @@ impl ps::AsVal for HyperVGuestStateEncryptionPolicy {
 #[bitfield_struct::bitfield(u64)]
 pub struct HyperVManagementVtlFeatureFlags {
     pub strict_encryption_policy: bool,
-    pub _reserved1: bool,
+    pub load_firmware_supported: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
     pub tx_only_serial_port: bool,
-    #[bits(59)]
+    pub _reserved5: bool,
+    pub use_tpm_138_by_default: bool,
+    pub use_tpm_185_by_default: bool,
+    #[bits(56)]
     pub _reserved2: u64,
+}
+
+impl HyperVManagementVtlFeatureFlags {
+    fn with_tpm_version(self, version: Option<crate::PetriTpmVersion>) -> Self {
+        match version {
+            Some(crate::PetriTpmVersion::V138) => self
+                .with_use_tpm_138_by_default(true)
+                .with_use_tpm_185_by_default(false),
+            Some(crate::PetriTpmVersion::V185) => self
+                .with_use_tpm_138_by_default(false)
+                .with_use_tpm_185_by_default(true),
+            None => self,
+        }
+    }
 }
 
 impl ps::AsVal for HyperVManagementVtlFeatureFlags {
@@ -263,6 +285,8 @@ pub struct HyperVNewCustomVMArgs {
     pub guest_state_path: Option<PathBuf>,
     /// VMBUS message redirection
     pub vmbus_message_redirection: Option<bool>,
+    /// Enable the OpenHCL guest feature set.
+    pub enable_openhcl: bool,
     /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
     /// OpenHCL command line parameters
@@ -303,6 +327,8 @@ pub struct HyperVNewCustomVMArgs {
     pub com_3: bool,
     /// Enable the TPM
     pub tpm_enabled: bool,
+    /// Enable guest hibernation
+    pub hibernation_enabled: bool,
     /// Temporary file containing management VTL settings
     pub management_vtl_settings: Option<NamedTempFile>,
 }
@@ -339,7 +365,7 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        let is_openhcl = self.firmware_file.is_some();
+        let is_openhcl = self.enable_openhcl;
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
@@ -488,7 +514,7 @@ impl HyperVNewCustomVMArgs {
         }
 
         Ok(HyperVNewCustomVMArgs {
-            name: name.to_owned(),
+            name: make_vm_safe_name(name),
             generation: Some(if properties.is_pcat {
                 HyperVGeneration::One
             } else {
@@ -541,11 +567,13 @@ impl HyperVNewCustomVMArgs {
                     }
                 }),
             management_vtl_feature_flags: properties.is_openhcl.then(|| {
-                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(
-                    vmgs.encryption_policy()
-                        .map(|p| p.is_strict())
-                        .unwrap_or(false),
-                )
+                HyperVManagementVtlFeatureFlags::new()
+                    .with_strict_encryption_policy(
+                        vmgs.encryption_policy()
+                            .map(|p| p.is_strict())
+                            .unwrap_or(false),
+                    )
+                    .with_tpm_version(tpm.as_ref().map(|t| t.version))
             }),
             guest_state_encryption_policy: {
                 // A requested hardware sealing policy takes precedence over the
@@ -613,7 +641,9 @@ impl HyperVNewCustomVMArgs {
                 }
                 tpm_enabled
             },
+            hibernation_enabled: config.hibernation_enabled,
             com_1: true,
+            enable_openhcl: properties.is_openhcl,
 
             // specified after creation
             firmware_file: None,
@@ -626,6 +656,41 @@ impl HyperVNewCustomVMArgs {
             management_vtl_settings: None,
             physical_nvme_devices: physical_nvme_devices.clone(),
         })
+    }
+}
+
+/// Creates a VM-safe name that respects platform limitations.
+///
+/// Hyper-V limits VM names to 100 characters. For names that exceed this limit,
+/// this function truncates to 96 characters and appends a 4-character hash
+/// to ensure uniqueness while staying within the limit.
+fn make_vm_safe_name(name: &str) -> String {
+    const MAX_VM_NAME_LENGTH: usize = 100;
+    const HASH_LENGTH: usize = 4;
+    const MAX_PREFIX_LENGTH: usize = MAX_VM_NAME_LENGTH - HASH_LENGTH;
+
+    if name.len() <= MAX_VM_NAME_LENGTH {
+        name.to_owned()
+    } else {
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Format hash as a 4-character hex string
+        let hash_suffix = format!("{:04x}", hash & 0xFFFF);
+
+        // Truncate the name and append the hash
+        let truncated = &name[..MAX_PREFIX_LENGTH];
+        tracing::debug!(
+            "VM name too long ({}), truncating '{}' to '{}{}'",
+            name.len(),
+            name,
+            truncated,
+            hash_suffix
+        );
+
+        format!("{}{}", truncated, hash_suffix)
     }
 }
 
@@ -674,14 +739,14 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 },
             )| {
                 (
-                    format!("\"{vsid}\""),
+                    vsid,
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(target_vtl as u32)),
                         (
                             "Drives",
                             ps::Value::new(ps::HashTable::new(drives.into_iter().map(
                                 |(lun, HyperVDrive { disk, is_dvd })| {
-                                    (lun.to_string(), {
+                                    (lun, {
                                         let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
                                         if let Some(disk) = disk {
                                             drive.push(("DiskPath", ps::Value::new(disk)));
@@ -702,10 +767,10 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             ps::HashTable::new(args.ide_controllers.into_iter().map(
                 |(controller_number, drives)| {
                     (
-                        controller_number.to_string(),
+                        controller_number,
                         ps::Value::new(ps::HashTable::new(drives.into_iter().map(
                             |(lun, HyperVDrive { disk, is_dvd })| {
-                                (lun.to_string(), {
+                                (lun, {
                                     let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
                                     if let Some(disk) = disk {
                                         drive.push(("DiskPath", ps::Value::new(disk)));
@@ -747,7 +812,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 actual
             );
             nvme_entries.push((
-                format!("\"{vsid}\""),
+                vsid,
                 ps::Value::new(ps::HashTable::new([
                     ("Vtl", ps::Value::new(target_vtl as u32)),
                     (
@@ -770,7 +835,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         Some(ps::HashTable::new(args.physical_nvme_devices.iter().map(
             |(vsid, dev)| {
                 (
-                    format!("\"{}\"", vsid),
+                    vsid,
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(dev.target_vtl as u32)),
                         ("Nsid", ps::Value::new(dev.nsid)),
@@ -796,6 +861,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg_opt("GuestStateLifetime", args.guest_state_lifetime)
             .arg_opt("GuestStateFilePath", args.guest_state_path)
             .arg_opt("VMBusMessageRedirection", args.vmbus_message_redirection)
+            .arg("EnableOpenHCL", args.enable_openhcl)
             .arg_opt("FirmwareFile", args.firmware_file)
             .arg_opt("FirmwareParameters", args.firmware_parameters)
             .flag_opt(
@@ -829,6 +895,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             .arg("Com1", args.com_1)
             .arg("Com3", args.com_3)
             .arg("TpmEnabled", args.tpm_enabled)
+            .arg("EnableHibernation", args.hibernation_enabled)
             .arg_opt(
                 "ManagementVtlSettings",
                 args.management_vtl_settings.as_ref().map(|f| f.path()),
@@ -1466,6 +1533,30 @@ pub struct WinEvent {
     pub properties: Vec<String>,
 }
 
+impl WinEvent {
+    /// Writes the event to `log_file`.
+    pub fn write_to(&self, log_file: &PetriLogFile) {
+        log_file.write_entry_fmt(
+            Some(self.time_created),
+            match self.level {
+                1 | 2 => Level::ERROR,
+                3 => Level::WARN,
+                5 => Level::TRACE,
+                _ => Level::INFO,
+            },
+            format_args!(
+                "[{}] {}: ({}, {}) {} ({})",
+                self.time_created,
+                self.provider_name,
+                self.level,
+                self.id,
+                self.message,
+                self.properties.join(",")
+            ),
+        );
+    }
+}
+
 /// Deserialize the `Properties` projection of a Windows event into a flat list
 /// of stringified values.
 fn deserialize_event_properties<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -1505,6 +1596,7 @@ where
 /// Get event logs
 pub async fn run_get_winevent(
     log_name: &[&str],
+    provider_name: &[&str],
     start_time: Option<&Timestamp>,
     find: Option<&str>,
     ids: &[u32],
@@ -1512,6 +1604,12 @@ pub async fn run_get_winevent(
     let mut filter = Vec::new();
     if !log_name.is_empty() {
         filter.push(("LogName", ps::Value::new(ps::Array::new(log_name))));
+    }
+    if !provider_name.is_empty() {
+        filter.push((
+            "ProviderName",
+            ps::Value::new(ps::Array::new(provider_name)),
+        ));
     }
     if let Some(start_time) = start_time {
         filter.push(("StartTime", ps::Value::new(start_time)));
@@ -1573,7 +1671,16 @@ pub async fn run_get_winevent(
     .await;
 
     match output {
-        Ok(logs) => serde_json::from_str(&logs).context("parsing winevents"),
+        Ok(logs) => {
+            // `Get-WinEvent` writes its failures to stderr and still exits
+            // zero, leaving the output variable unset and the JSON array
+            // holding a single `null`. `run_host_cmd` has already logged the
+            // reason, which is usually that the requested log or provider is
+            // not registered on this machine.
+            let events: Vec<Option<WinEvent>> =
+                serde_json::from_str(&logs).context("parsing winevents")?;
+            Ok(events.into_iter().flatten().collect())
+        }
         Err(e) => match e {
             CommandError::Command(_, err_output)
                 if err_output.contains(
@@ -1589,6 +1696,26 @@ pub async fn run_get_winevent(
 
 const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
+const HYPERV_WORKER_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Operational";
+const HYPERV_VMMS_OPERATIONAL_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Operational";
+const HYPERV_WORKER_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Analytic";
+const HYPERV_WORKER_VDEV_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-VDev-Analytic";
+const HYPERV_VMMS_ANALYTIC_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Analytic";
+
+/// Providers that report a process fault to Windows Error Reporting and the
+/// Azure Watson agent.
+///
+/// The `Application Error` and `Windows Error Reporting` events carry the
+/// Watson report ID, which is what the crash analysis at
+/// <https://azurewatson.microsoft.com> is looked up by. On CI machines the
+/// faulting details themselves are redacted from the event in favor of that
+/// report ID, so capturing these events is the only way to get from a failed
+/// test back to the crash dump.
+const WATSON_PROVIDERS: &[&str] = &[
+    "Application Error",
+    "Windows Error Reporting",
+    "Microsoft-Windows Azure-AzureWatsonAgent",
+];
 
 macro_rules! define_winevents {
     (
@@ -1677,18 +1804,63 @@ define_winevents!(
 );
 
 /// Get Hyper-V event logs for a VM
-pub async fn hyperv_event_logs(
-    vmid: Option<&Guid>,
-    start_time: &Timestamp,
-) -> anyhow::Result<Vec<WinEvent>> {
+pub async fn hyperv_event_logs(vmid: Option<&Guid>, start_time: &Timestamp) -> Vec<WinEvent> {
     let vmid = vmid.map(|id| id.to_string());
-    run_get_winevent(
-        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+    // All the logs are fetched in a single query. `Get-WinEvent` reports a log
+    // that is missing or disabled as a non-terminating error and still returns
+    // the events from the remaining logs.
+    let mut events = match run_get_winevent(
+        &[
+            HYPERV_WORKER_TABLE,
+            HYPERV_VMMS_TABLE,
+            HYPERV_WORKER_OPERATIONAL_TABLE,
+            HYPERV_VMMS_OPERATIONAL_TABLE,
+            HYPERV_WORKER_ANALYTIC_TABLE,
+            HYPERV_WORKER_VDEV_ANALYTIC_TABLE,
+            HYPERV_VMMS_ANALYTIC_TABLE,
+        ],
+        &[],
         Some(start_time),
         vmid.as_deref(),
         &[],
     )
     .await
+    {
+        Ok(events) => events,
+        Err(err) => {
+            tracing::warn!(
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read hyper-v event logs"
+            );
+            Vec::new()
+        }
+    };
+    events.sort_by_key(|e| e.time_created);
+    events
+}
+
+/// Get the Windows Error Reporting / Azure Watson events logged since
+/// `start_time`.
+///
+/// A process that is faulted or killed writes nothing to its own logs, so
+/// these events are the only record that it crashed, and the report ID they
+/// contain is the only handle on the dump Watson collected.
+pub async fn watson_events(start_time: &Timestamp) -> Vec<WinEvent> {
+    let mut events = Vec::new();
+    // Query each provider separately, since `Get-WinEvent` fails the whole
+    // query if any one provider is unregistered on this machine.
+    for provider in WATSON_PROVIDERS {
+        match run_get_winevent(&[], &[provider], Some(start_time), None, &[]).await {
+            Ok(e) => events.extend(e),
+            Err(err) => tracing::warn!(
+                provider,
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to read error reporting events"
+            ),
+        }
+    }
+    events.sort_by_key(|e| e.time_created);
+    events
 }
 
 /// Get Hyper-V boot event logs for a VM
@@ -1699,6 +1871,7 @@ pub async fn hyperv_boot_events(
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE],
+        &[],
         Some(start_time),
         Some(&vmid),
         BOOT_EVENT_IDS,
@@ -1714,6 +1887,7 @@ pub async fn hyperv_halt_events(
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        &[],
         Some(start_time),
         Some(&vmid),
         HALT_EVENT_IDS,
@@ -1831,12 +2005,16 @@ pub async fn run_remove_vm_scsi_controller(
 }
 
 /// Run Get-VmScreenshot commandlet
+///
+/// Returns `None` if the VM currently has no active video head, which happens
+/// routinely while the guest is switching video modes or before the firmware
+/// has brought up a framebuffer.
 pub async fn run_get_vm_screenshot(
     vmid: &Guid,
     image: &mut Vec<u8>,
     ps_mod: &Path,
     temp_bin_path: &Path,
-) -> anyhow::Result<VmScreenshotMeta> {
+) -> anyhow::Result<Option<VmScreenshotMeta>> {
     // execute wmi via powershell
     let output = run_host_cmd(
         PowerShellBuilder::new()
@@ -1856,8 +2034,12 @@ pub async fn run_get_vm_screenshot(
 
     // parse output
     let (x, y) = output.split_once(',').context("invalid dimensions")?;
-    let x = x.parse().context("invalid x dimension")?;
-    let y = y.parse().context("invalid y dimension")?;
+    let (Ok(x), Ok(y)) = (x.trim().parse::<u16>(), y.trim().parse::<u16>()) else {
+        return Ok(None);
+    };
+    if x == 0 || y == 0 {
+        return Ok(None);
+    }
     let (widthsize, heightsize) = (x as usize, y as usize);
     let mut image_rgb565 = fs_err::read(temp_bin_path)?;
 
@@ -1888,11 +2070,11 @@ pub async fn run_get_vm_screenshot(
         out_pixel[2] = in_pixel[0] << 3;
     }
 
-    Ok(VmScreenshotMeta {
+    Ok(Some(VmScreenshotMeta {
         color: image::ExtendedColorType::Rgb8,
         width: x,
         height: y,
-    })
+    }))
 }
 
 /// Run Set-TurnOffOnGuestRestart commandlet
@@ -2020,7 +2202,11 @@ pub async fn run_set_base_vtl2_settings(
 ) -> anyhow::Result<()> {
     // Pass the settings via a file to avoid challenges escaping the string across
     // the command line.
-    let mut tempfile = NamedTempFile::new().context("creating tempfile")?;
+    let temp_dir = ps_mod.parent().unwrap();
+    let mut tempfile = tempfile::Builder::new()
+        .prefix("base-vtl2-settings-")
+        .tempfile_in(temp_dir)
+        .context("creating base VTL2 settings tempfile")?;
     tempfile
         .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
         .context("writing settings to tempfile")?;

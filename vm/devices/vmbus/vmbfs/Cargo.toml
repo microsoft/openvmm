@@ -17,6 +17,7 @@ vmcore.workspace = true
 
 guid.workspace = true
 inspect = { workspace = true, features = ["filepath"] }
+mesh.workspace = true
 open_enum.workspace = true
 task_control.workspace = true
 

@@ -521,8 +521,12 @@ impl Node {
                 repo_src,
                 RepoSource::GithubSelf | RepoSource::GithubRepo { .. }
             ) {
+                // actions/checkout v6.1.0
                 let mut step = ctx
-                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v6")
+                    .emit_gh_step(
+                        format!("checkout repo {repo_id}"),
+                        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+                    )
                     .condition(active.clone())
                     .with("path", format!("repo{idx}"))
                     .with("fetch-depth", depth.unwrap_or(0).to_string())

@@ -15,6 +15,8 @@ use std::fmt::Display;
 use std::time::Duration;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
+use vmbus_core::protocol::PipeFlags;
+use vmbus_core::protocol::PipeUserDefinedData;
 use vmbus_core::protocol::UserDefinedData;
 use vmcore::interrupt::Interrupt;
 
@@ -209,6 +211,11 @@ pub struct OpenRequest {
     /// Indicates if the currently connected vmbus client, as well as the channel the request is
     /// for, supports the use of confidential external memory.
     pub use_confidential_external_memory: bool,
+    /// Indicates if the currently connected vmbus client is expected to pin any external memory
+    /// used by the channel. This is only true if the vmbus client supports GPA pinning and the
+    /// channel indicated it requires pinned external memory. It can only be true for paravisor
+    /// channels in a VM that supports the GPA pinning hypercalls.
+    pub is_external_memory_pinned: bool,
 }
 
 impl OpenRequest {
@@ -226,6 +233,8 @@ impl OpenRequest {
                 && offer_flags.confidential_ring_buffer(),
             use_confidential_external_memory: feature_flags.confidential_channels()
                 && offer_flags.confidential_external_memory(),
+            is_external_memory_pinned: feature_flags.gpa_pinning()
+                && offer_flags.require_pinned_external_memory(),
         }
     }
 }
@@ -323,6 +332,10 @@ pub enum ChannelType {
     Pipe {
         /// If true, the pipe uses message mode. Otherwise, it uses byte mode.
         message_mode: bool,
+        /// Provider-defined offer data.
+        user_defined: PipeUserDefinedData,
+        /// Pipe capabilities.
+        pipe_flags: PipeFlags,
     },
     /// A channel representing a Hyper-V socket.
     HvSocket {

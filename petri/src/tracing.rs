@@ -35,6 +35,7 @@ struct LogSourceInner {
     json_log: JsonLog,
     log_files: Mutex<HashMap<String, PetriLogFile>>,
     attachments: Mutex<HashMap<String, u64>>,
+    prefix: Option<String>,
 }
 
 impl PetriLogSource {
@@ -45,11 +46,17 @@ impl PetriLogSource {
     pub fn log_file(&self, name: &str) -> anyhow::Result<PetriLogFile> {
         use std::collections::hash_map::Entry;
 
+        let name = if let Some(prefix) = self.0.prefix.as_ref() {
+            format!("{prefix}{name}")
+        } else {
+            name.to_string()
+        };
+
         let mut log_files = self.0.log_files.lock();
-        let log_file = match log_files.entry(name.to_owned()) {
+        let log_file = match log_files.entry(name.clone()) {
             Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
             Entry::Vacant(vacant_entry) => {
-                let mut path = self.0.root_path.join(name);
+                let mut path = self.0.root_path.join(&name);
                 // Note that .log is preferred to .txt at least partially
                 // because WSL2 and Defender reportedly conspire to make
                 // cross-OS .txt file accesses extremely slow.
@@ -62,7 +69,7 @@ impl PetriLogSource {
                     .insert(PetriLogFile(Arc::new(LogFileInner {
                         file,
                         json_log: self.0.json_log.clone(),
-                        source: name.to_owned(),
+                        source: name.clone(),
                     })))
                     .clone()
             }
@@ -72,8 +79,15 @@ impl PetriLogSource {
 
     fn attachment_path(&self, name: &str) -> PathBuf {
         let mut attachments = self.0.attachments.lock();
-        let next = attachments.entry(name.to_owned()).or_default();
-        let name = Path::new(name);
+
+        let name = if let Some(prefix) = self.0.prefix.as_ref() {
+            format!("{prefix}{name}")
+        } else {
+            name.to_string()
+        };
+
+        let next = attachments.entry(name.clone()).or_default();
+        let name = Path::new(&name);
         let name = if *next == 0 {
             name
         } else {
@@ -131,31 +145,43 @@ impl PetriLogSource {
         println!("[[ATTACHMENT|{}]]", path.display());
     }
 
+    /// Records that a test with the given name is running in this directory.
+    ///
+    /// This is written up front, before the test body runs, so that tooling
+    /// can identify the test even if the process never gets as far as
+    /// [`Self::log_test_result`] -- because it was killed by a timeout, or
+    /// crashed hard enough to skip unwinding. A directory with this file but
+    /// no result marker is a test that died without reporting.
+    pub fn log_test_start(&self, name: &str) {
+        fs_err::write(self.0.root_path.join("petri.test"), name).unwrap();
+    }
+
     /// Traces and logs the result of a test run in the format expected by our tooling.
-    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>, unstable: bool) {
-        let result_path = match &r {
+    pub fn log_test_result(&self, r: &anyhow::Result<()>, unstable: bool) {
+        let (result_path, contents) = match &r {
             Ok(()) => {
                 tracing::info!("test passed");
-                "petri.passed"
+                ("petri.passed", String::new())
             }
             Err(err) if unstable => {
                 tracing::warn!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "unstable test failed"
                 );
-                "petri.failed_unstable"
+                ("petri.failed_unstable", format!("{err:#}"))
             }
             Err(err) => {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "test failed"
                 );
-                "petri.failed"
+                ("petri.failed", format!("{err:#}"))
             }
         };
         // Write a file to the output directory to indicate whether the test
-        // passed, for easy scanning via tools.
-        fs_err::write(self.0.root_path.join(result_path), name).unwrap();
+        // passed, for easy scanning via tools. For a failure the file holds
+        // the error, so that tooling can report why without parsing the log.
+        fs_err::write(self.0.root_path.join(result_path), contents).unwrap();
     }
 
     /// Returns the output directory for log files.
@@ -297,6 +323,7 @@ macro_rules! log {
 pub fn try_init_tracing(
     root_path: &Path,
     default_level: LevelFilter,
+    prefix: Option<String>,
 ) -> anyhow::Result<PetriLogSource> {
     let targets =
         if let Ok(var) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
@@ -307,12 +334,19 @@ pub fn try_init_tracing(
 
     // Canonicalize so that printed attachment paths are most likely to work.
     let root_path = root_path.fs_err_canonicalize()?;
-    let jsonl = File::create(root_path.join("petri.jsonl"))?;
+    let jsonl_name = "petri.jsonl";
+    let jsonl_name = if let Some(prefix) = prefix.as_ref() {
+        format!("{prefix}{jsonl_name}")
+    } else {
+        jsonl_name.to_string()
+    };
+    let jsonl = File::create(root_path.join(jsonl_name))?;
     let logger = PetriLogSource(Arc::new(LogSourceInner {
         json_log: JsonLog(Arc::new(jsonl)),
         root_path,
         log_files: Default::default(),
         attachments: Default::default(),
+        prefix,
     }));
 
     let petri_log = logger.log_file("petri")?;
@@ -362,12 +396,17 @@ pub async fn log_task(
     reader: impl AsyncRead + Unpin + Send + 'static,
     name: &str,
 ) -> anyhow::Result<()> {
+    const MAX_LINE_LENGTH: usize = 4096;
     tracing::info!("connected to {name}");
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(MAX_LINE_LENGTH);
     let mut reader = BufReader::new(reader);
     loop {
         buf.clear();
-        match (&mut reader).take(256).read_until(b'\n', &mut buf).await {
+        match (&mut reader)
+            .take(MAX_LINE_LENGTH as u64)
+            .read_until(b'\n', &mut buf)
+            .await
+        {
             Ok(0) => {
                 tracing::info!("disconnected from {name}: EOF");
                 return Ok(());

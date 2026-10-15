@@ -63,7 +63,11 @@ impl SimpleVmbusDevice for GuestEmulationLog {
             interface_name: "gel".to_owned(),
             interface_id: get_protocol::GUEST_EMULATION_INTERFACE_TYPE,
             instance_id: get_protocol::GET_LOG_INTERFACE_GUID,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }

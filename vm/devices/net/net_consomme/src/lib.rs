@@ -12,6 +12,8 @@ use consomme::ChecksumState;
 use consomme::Consomme;
 use consomme::ConsommeParams;
 pub use consomme::IpVersion;
+pub use consomme::StaticDnsRecord;
+pub use consomme::StaticDnsRecordError;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -194,6 +196,13 @@ pub enum ConsommeMessageError {
     /// Error executing request on current network instance.
     #[error("bind error")]
     Bind(consomme::BindError),
+    /// Error adding a static DNS record.
+    #[error("dns record error: {0}")]
+    DnsRecord(#[source] StaticDnsRecordError),
+    /// The subnet's virtual address pool is exhausted, so no virtual address
+    /// could be allocated.
+    #[error("virtual address pool exhausted")]
+    VirtualAddressPoolExhausted,
 }
 
 /// Callback to modify network state dynamically.
@@ -224,10 +233,19 @@ struct PortUnbindConfig {
     guest_port: u16,
 }
 
+struct AddDnsRecordConfig {
+    /// The type and data of the record (currently only `A` is supported).
+    record: StaticDnsRecord,
+    /// The query name in presentation form (e.g. `"example.com"`).
+    name: String,
+}
+
 enum ConsommeMessage {
     BindPort(Rpc<PortForwardConfig, Result<(), consomme::BindError>>),
     UnbindPort(Rpc<PortUnbindConfig, Result<(), consomme::BindError>>),
     UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+    AddDnsRecord(Rpc<AddDnsRecordConfig, Result<(), StaticDnsRecordError>>),
+    CreateVirtualAddress(Rpc<IpAddr, Option<IpAddr>>),
 }
 
 impl ConsommeControl {
@@ -298,6 +316,39 @@ impl ConsommeControl {
             .call(ConsommeMessage::UpdateState, f)
             .await
             .map_err(ConsommeMessageError::Mesh)
+    }
+
+    /// Adds a static DNS record that will be returned directly
+    /// if the guest sends a matching query.
+    pub async fn add_dns_record(
+        &self,
+        record: StaticDnsRecord,
+        name: String,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(
+                ConsommeMessage::AddDnsRecord,
+                AddDnsRecordConfig { record, name },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::DnsRecord)
+    }
+
+    /// Allocates a virtual IP address within the endpoint's subnet and routes
+    /// guest traffic sent to it to `destination` on the host.
+    ///
+    /// Returns [`ConsommeMessageError::VirtualAddressPoolExhausted`] if the
+    /// subnet's virtual address pool is exhausted.
+    pub async fn create_virtual_address(
+        &self,
+        destination: IpAddr,
+    ) -> Result<IpAddr, ConsommeMessageError> {
+        self.send
+            .call(ConsommeMessage::CreateVirtualAddress, destination)
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .ok_or(ConsommeMessageError::VirtualAddressPoolExhausted)
     }
 }
 
@@ -619,6 +670,12 @@ fn process_message(
                 consomme.update_dns_nameservers()
             });
         }
+        ConsommeMessage::AddDnsRecord(rpc) => {
+            rpc.handle_sync(|cfg| consomme.get_mut().add_dns_record(cfg.record, &cfg.name));
+        }
+        ConsommeMessage::CreateVirtualAddress(rpc) => {
+            rpc.handle_sync(|destination| consomme.get_mut().create_virtual_address(destination));
+        }
     }
 }
 
@@ -799,6 +856,10 @@ impl consomme::Client for Client<'_> {
     }
 
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
+        self.recv_segments(&[data], checksum);
+    }
+
+    fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
         let Some(rx_id) = self.state.rx_avail.pop_front() else {
             // This should be rare, only affecting unbuffered protocols. TCP and
             // UDP are buffered and they won't indicate packets unless rx_mtu()
@@ -807,12 +868,13 @@ impl consomme::Client for Client<'_> {
             return;
         };
         let max = self.pool.capacity(rx_id) as usize;
-        if data.len() <= max {
-            self.pool.write_packet(
+        let len: usize = segments.iter().map(|s| s.len()).sum();
+        if len <= max {
+            self.pool.write_packet_segments(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
-                    len: data.len(),
+                    len,
                     ip_checksum: if checksum.ipv4 {
                         RxChecksumState::Good
                     } else {
@@ -832,11 +894,11 @@ impl consomme::Client for Client<'_> {
                     },
                     vlan: None,
                 },
-                data,
+                segments,
             );
             self.state.rx_ready.push_back(rx_id);
         } else {
-            tracing::warn!(len = data.len(), max, "dropping rx packet: too large");
+            tracing::warn!(len, max, "dropping rx packet: too large");
             self.state.rx_avail.push_front(rx_id);
         }
     }

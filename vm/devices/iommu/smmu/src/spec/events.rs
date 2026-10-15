@@ -52,6 +52,16 @@ open_enum! {
     }
 }
 
+impl EventId {
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+
+    const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+}
+
 /// Event queue entry (32 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -76,7 +86,7 @@ pub struct EvtEntry {
 pub struct EvtHeader {
     /// Event type.
     #[bits(8)]
-    pub event_id: u8,
+    pub event_id: EventId,
     #[bits(2)]
     _reserved0: u32,
     /// SubstreamID valid.
@@ -123,15 +133,10 @@ impl EvtEntry {
         }
     }
 
-    /// Returns the event type.
-    pub fn event_id(&self) -> EventId {
-        EventId(self.header.event_id())
-    }
-
     /// Creates a translation fault event.
     pub fn translation_fault(sid: u32, iova: u64, write: bool) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::F_TRANSLATION.0),
+            header: EvtHeader::new().with_event_id(EventId::F_TRANSLATION),
             sid,
             flags: EvtFlags::new().with_rnw(!write),
             input_addr: iova,
@@ -142,7 +147,7 @@ impl EvtEntry {
     /// Creates a permission fault event.
     pub fn permission_fault(sid: u32, iova: u64, write: bool) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::F_PERMISSION.0),
+            header: EvtHeader::new().with_event_id(EventId::F_PERMISSION),
             sid,
             flags: EvtFlags::new().with_rnw(!write),
             input_addr: iova,
@@ -153,7 +158,7 @@ impl EvtEntry {
     /// Creates an access flag fault event.
     pub fn access_fault(sid: u32, iova: u64, write: bool) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::F_ACCESS.0),
+            header: EvtHeader::new().with_event_id(EventId::F_ACCESS),
             sid,
             flags: EvtFlags::new().with_rnw(!write),
             input_addr: iova,
@@ -164,7 +169,7 @@ impl EvtEntry {
     /// Creates an address size fault event.
     pub fn addr_size_fault(sid: u32, iova: u64, write: bool) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::F_ADDR_SIZE.0),
+            header: EvtHeader::new().with_event_id(EventId::F_ADDR_SIZE),
             sid,
             flags: EvtFlags::new().with_rnw(!write),
             input_addr: iova,
@@ -175,7 +180,7 @@ impl EvtEntry {
     /// Creates a bad STE event.
     pub fn bad_ste(sid: u32) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::C_BAD_STE.0),
+            header: EvtHeader::new().with_event_id(EventId::C_BAD_STE),
             sid,
             ..Self::new()
         }
@@ -184,7 +189,7 @@ impl EvtEntry {
     /// Creates a bad CD event.
     pub fn bad_cd(sid: u32) -> Self {
         Self {
-            header: EvtHeader::new().with_event_id(EventId::C_BAD_CD.0),
+            header: EvtHeader::new().with_event_id(EventId::C_BAD_CD),
             sid,
             ..Self::new()
         }
@@ -205,6 +210,9 @@ mod tests {
         assert_eq!(EventId::F_ADDR_SIZE.0, 0x11);
         assert_eq!(EventId::F_ACCESS.0, 0x12);
         assert_eq!(EventId::F_PERMISSION.0, 0x13);
+
+        let unknown = EventId(0xff);
+        assert_eq!(EvtHeader::new().with_event_id(unknown).event_id(), unknown);
     }
 
     #[test]
@@ -215,7 +223,7 @@ mod tests {
     #[test]
     fn test_evt_entry_translation_fault() {
         let evt = EvtEntry::translation_fault(0x42, 0x1000_2000, true);
-        assert_eq!(evt.event_id(), EventId::F_TRANSLATION);
+        assert_eq!(evt.header.event_id(), EventId::F_TRANSLATION);
         assert_eq!(evt.sid, 0x42);
         assert_eq!(evt.input_addr, 0x1000_2000);
         // write → RnW = false (not-read)
@@ -225,7 +233,7 @@ mod tests {
     #[test]
     fn test_evt_entry_permission_fault() {
         let evt = EvtEntry::permission_fault(0x10, 0xFFFF_0000, false);
-        assert_eq!(evt.event_id(), EventId::F_PERMISSION);
+        assert_eq!(evt.header.event_id(), EventId::F_PERMISSION);
         assert_eq!(evt.sid, 0x10);
         assert_eq!(evt.input_addr, 0xFFFF_0000);
         // read → RnW = true
@@ -235,14 +243,14 @@ mod tests {
     #[test]
     fn test_evt_entry_bad_ste() {
         let evt = EvtEntry::bad_ste(0x100);
-        assert_eq!(evt.event_id(), EventId::C_BAD_STE);
+        assert_eq!(evt.header.event_id(), EventId::C_BAD_STE);
         assert_eq!(evt.sid, 0x100);
     }
 
     #[test]
     fn test_evt_entry_access_fault() {
         let evt = EvtEntry::access_fault(5, 0xDEAD_BEEF_0000, true);
-        assert_eq!(evt.event_id(), EventId::F_ACCESS);
+        assert_eq!(evt.header.event_id(), EventId::F_ACCESS);
         assert_eq!(evt.sid, 5);
         assert_eq!(evt.input_addr, 0xDEAD_BEEF_0000);
     }

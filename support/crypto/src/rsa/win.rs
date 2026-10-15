@@ -10,7 +10,6 @@ use crate::win::CryptAlloc;
 use crate::win::KeyHandle;
 use std::ffi::CStr;
 use std::ffi::c_void;
-use windows::Win32::Foundation::NTE_BAD_TYPE;
 use windows::Win32::Foundation::STATUS_INVALID_PARAMETER;
 use windows::Win32::Foundation::STATUS_INVALID_SIGNATURE;
 use windows::Win32::Security::Cryptography::BCRYPT_FLAGS;
@@ -28,26 +27,31 @@ use windows::Win32::Security::Cryptography::BCRYPT_RSAPRIVATE_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
 use windows::Win32::Security::Cryptography::CNG_RSA_PRIVATE_KEY_BLOB;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
 use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ENCODE_ALLOC_FLAG;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 use windows::Win32::Security::Cryptography::CRYPT_PRIVATE_KEY_INFO;
 use windows::Win32::Security::Cryptography::CryptDecodeObjectEx;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CryptEncodeObjectEx;
 use windows::Win32::Security::Cryptography::PKCS_7_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::PKCS_PRIVATE_KEY_INFO;
 use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
-#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(test, feature = "export_private"))]
 use windows::core::PSTR;
 
 fn err(err: windows_result::Error, op: &'static str) -> RsaError {
-    RsaError(crate::BackendError(err, op))
+    RsaError(crate::BackendError::Windows(err, op))
+}
+
+/// An error for input that decoded but is not valid or supported.
+fn invalid_err(reason: &'static str) -> RsaError {
+    RsaError(crate::BackendError::Invalid(reason))
 }
 
 #[repr(transparent)]
@@ -81,7 +85,7 @@ pub(crate) fn export_key(
         )
     }
     .ok()
-    .map_err(|e| err(e, "querying export size"))?;
+    .map_err(|e| err(e, "querying the key export size"))?;
     let mut out = vec![0u8; needed as usize];
     // SAFETY: out is sized per the previous query.
     unsafe {
@@ -95,7 +99,7 @@ pub(crate) fn export_key(
         )
     }
     .ok()
-    .map_err(|e| err(e, "exporting key"))?;
+    .map_err(|e| err(e, "exporting the key"))?;
     out.truncate(needed as usize);
     Ok(out)
 }
@@ -116,7 +120,7 @@ fn import_key(blob: &[u8], blob_type: windows::core::PCWSTR) -> Result<KeyHandle
         )
     }
     .ok()
-    .map_err(|e| err(e, "importing key"))?;
+    .map_err(|e| err(e, "importing the key"))?;
     Ok(KeyHandle(handle))
 }
 
@@ -134,12 +138,12 @@ impl RsaKeyPairInner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "generating RSA key"))?;
+        .map_err(|e| err(e, "generating the RSA key"))?;
         let key = KeyHandle(handle);
         // SAFETY: handle is valid.
         unsafe { windows::Win32::Security::Cryptography::BCryptFinalizeKeyPair(key.0, 0) }
             .ok()
-            .map_err(|e| err(e, "finalizing RSA key"))?;
+            .map_err(|e| err(e, "finalizing the RSA key"))?;
         Ok(Self(key))
     }
 
@@ -163,29 +167,25 @@ impl RsaKeyPairInner {
                     &mut len,
                 )
             }
-            .map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?
+            .map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?;
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?
         };
         // SAFETY: Crypt32 was asked to decode a PKCS_PRIVATE_KEY_INFO, so
         // the buffer (when non-null and large enough, as validated by
         // as_struct) holds a CRYPT_PRIVATE_KEY_INFO.
         let pki = unsafe { pki_buf.as_struct::<CRYPT_PRIVATE_KEY_INFO>() }
-            .map_err(|e| err(e, "decoding PKCS#8 PrivateKeyInfo"))?;
+            .map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?;
         // SAFETY: pszObjId is a NUL-terminated string owned by the same
         // Crypt32 allocation.
         let oid = unsafe { CStr::from_ptr(pki.Algorithm.pszObjId.0.cast()) };
         // SAFETY: szOID_RSA_RSA is a static NUL-terminated string constant.
         let rsa_oid = unsafe { CStr::from_ptr(szOID_RSA_RSA.0.cast()) };
         if oid != rsa_oid {
-            return Err(err(
-                windows_result::Error::from_hresult(NTE_BAD_TYPE),
-                "PKCS#8 algorithm is not rsaEncryption",
-            ));
+            return Err(invalid_err("PKCS#8 private key is not an RSA key"));
         }
         if pki.PrivateKey.pbData.is_null() || pki.PrivateKey.cbData == 0 {
-            return Err(err(
-                windows_result::Error::from_hresult(NTE_BAD_TYPE),
-                "PKCS#8 PrivateKey field is empty",
+            return Err(invalid_err(
+                "PKCS#8 PrivateKeyInfo has an empty privateKey field",
             ));
         }
         // SAFETY: PrivateKey describes a buffer of cbData bytes owned by
@@ -218,15 +218,12 @@ impl RsaKeyPairInner {
                     &mut len,
                 )
             }
-            .map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding PKCS#1 RSA private key"))?
+            .map_err(|e| err(e, "decoding the PKCS#1 RSA private key"))?;
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding the PKCS#1 RSA private key"))?
         };
         let blob = blob_buf.as_bytes();
         if blob.len() < size_of::<BCRYPT_RSAKEY_BLOB>() {
-            return Err(err(
-                windows_result::Error::from_hresult(NTE_BAD_TYPE),
-                "decoded RSA private blob too small",
-            ));
+            return Err(invalid_err("decoded RSA private key blob is too small"));
         }
         // SAFETY: blob is at least header-sized and the header is POD.
         let magic =
@@ -239,9 +236,8 @@ impl RsaKeyPairInner {
                 BCRYPT_RSAPRIVATE_BLOB
             }
             _ => {
-                return Err(err(
-                    windows_result::Error::from_hresult(NTE_BAD_TYPE),
-                    "decoded RSA private blob has unexpected magic",
+                return Err(invalid_err(
+                    "decoded RSA private key blob has an unrecognized magic value",
                 ));
             }
         };
@@ -249,7 +245,7 @@ impl RsaKeyPairInner {
         Ok(Self(handle))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         // Step 1: export the key as a BCrypt full-private blob, which
         // contains every field needed by the PKCS#1 RSAPrivateKey ASN.1
@@ -277,8 +273,8 @@ impl RsaKeyPairInner {
                     &mut len,
                 )
             }
-            .map_err(|e| err(e, "encoding PKCS#1 RSA private key"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding PKCS#1 RSA private key"))?
+            .map_err(|e| err(e, "encoding the PKCS#1 RSA private key"))?;
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding the PKCS#1 RSA private key"))?
         };
 
         // Step 3: wrap the PKCS#1 DER in a PKCS#8 PrivateKeyInfo with the
@@ -322,10 +318,65 @@ impl RsaKeyPairInner {
                     &mut len,
                 )
             }
-            .map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding PKCS#8 PrivateKeyInfo"))?
+            .map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))?;
+            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))?
         };
         Ok(pkcs8_buf.as_bytes().to_vec())
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        use windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_MAGIC;
+        use zerocopy::FromBytes;
+
+        let blob = export_key(&self.0, BCRYPT_RSAFULLPRIVATE_BLOB)?;
+
+        // BCRYPT_RSAKEY_BLOB consists of six native-endian u32 fields.
+        let ([magic, _bits, cb_e, cb_n, cb_p, cb_q], mut rest) =
+            <[u32; 6]>::read_from_prefix(&blob)
+                .map_err(|_| invalid_err("exported RSA private key blob is too small"))?;
+        if magic != BCRYPT_RSAFULLPRIVATE_MAGIC.0 {
+            return Err(invalid_err(
+                "exported RSA private key blob has an invalid magic value",
+            ));
+        }
+        let mut take_component = |size: u32| -> Result<Vec<u8>, RsaError> {
+            if size == 0 {
+                return Err(invalid_err(
+                    "exported RSA private key has an empty component",
+                ));
+            }
+            let (bytes, remaining) = rest
+                .split_at_checked(size as usize)
+                .ok_or_else(|| invalid_err("exported RSA private key blob is truncated"))?;
+            rest = remaining;
+            // BCrypt components are fixed-width, skip any leading zero bytes.
+            let start = bytes
+                .iter()
+                .position(|&b| b != 0)
+                .ok_or_else(|| invalid_err("exported RSA private key has a zero component"))?;
+            Ok(bytes[start..].to_vec())
+        };
+        let public_exponent = take_component(cb_e)?;
+        let modulus = take_component(cb_n)?;
+        let prime1 = take_component(cb_p)?;
+        let prime2 = take_component(cb_q)?;
+        let _exponent1 = take_component(cb_p)?;
+        let _exponent2 = take_component(cb_q)?;
+        let _coefficient = take_component(cb_p)?;
+        let private_exponent = take_component(cb_n)?;
+        if !rest.is_empty() {
+            return Err(invalid_err(
+                "exported RSA private key blob has trailing bytes",
+            ));
+        }
+        Ok(super::RsaPrivateKeyComponents {
+            modulus,
+            public_exponent,
+            private_exponent,
+            prime1,
+            prime2,
+        })
     }
 
     pub fn oaep_decrypt(
@@ -354,7 +405,7 @@ impl RsaKeyPairInner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "querying OAEP decrypt size"))?;
+        .map_err(|e| err(e, "querying the RSA-OAEP plaintext size"))?;
         let mut out = vec![0u8; needed as usize];
         // SAFETY: output buffer is sized to needed.
         unsafe {
@@ -369,7 +420,7 @@ impl RsaKeyPairInner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "RSA-OAEP decrypt"))?;
+        .map_err(|e| err(e, "decrypting with RSA-OAEP"))?;
         out.truncate(needed as usize);
         Ok(out)
     }
@@ -435,7 +486,7 @@ fn sign_hash(
         )
     }
     .ok()
-    .map_err(|e| err(e, "querying signature size"))?;
+    .map_err(|e| err(e, "querying the signature size"))?;
     let mut sig = vec![0u8; needed as usize];
     // SAFETY: sig is sized per query.
     unsafe {
@@ -449,7 +500,7 @@ fn sign_hash(
         )
     }
     .ok()
-    .map_err(|e| err(e, "signing hash"))?;
+    .map_err(|e| err(e, "signing the message hash"))?;
     sig.truncate(needed as usize);
     Ok(sig)
 }
@@ -479,7 +530,7 @@ fn verify_hash(
         // the symcrypt backend.
         return Ok(false);
     }
-    status.ok().map_err(|e| err(e, "verifying signature"))?;
+    status.ok().map_err(|e| err(e, "verifying the signature"))?;
     Ok(true)
 }
 
@@ -557,7 +608,7 @@ impl RsaPublicKeyInner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "querying OAEP encrypt size"))?;
+        .map_err(|e| err(e, "querying the RSA-OAEP ciphertext size"))?;
         let mut out = vec![0u8; needed as usize];
         // SAFETY: output sized to needed.
         unsafe {
@@ -572,7 +623,7 @@ impl RsaPublicKeyInner {
             )
         }
         .ok()
-        .map_err(|e| err(e, "RSA-OAEP encrypt"))?;
+        .map_err(|e| err(e, "encrypting with RSA-OAEP"))?;
         out.truncate(needed as usize);
         Ok(out)
     }

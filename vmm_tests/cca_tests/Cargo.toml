@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "cca_tests"
+edition.workspace = true
+rust-version.workspace = true
+
+[[test]]
+name = "cca"
+harness = false
+
+[dev-dependencies]
+petri_artifacts_core.workspace = true
+petri_artifacts_common.workspace = true
+petri_artifacts_vmm_test.workspace = true
+petri.workspace = true
+
+anyhow.workspace = true
+fs-err.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

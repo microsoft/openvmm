@@ -3,22 +3,21 @@
 
 use alloc::alloc::alloc;
 use core::alloc::Layout;
-use core::arch::asm;
 use core::cell::RefCell;
 use core::ops::Range;
 
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
-use crate::context::InterruptPlatformTrait;
-use crate::context::SecureInterceptPlatformTrait;
-use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecToken;
-use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
+use opentmk_core::context::InterruptPlatformTrait;
+use opentmk_core::context::SecureInterceptPlatformTrait;
+use opentmk_core::context::VirtualProcessorPlatformTrait;
+use opentmk_core::context::VpExecToken;
+use opentmk_core::context::VtlPlatformTrait;
 
-static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
+static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut());
 
 static mut RETURN_VALUE: u8 = 0;
 
@@ -27,7 +26,10 @@ static mut RETURN_VALUE: u8 = 0;
 #[inline(never)]
 #[expect(static_mut_refs)]
 // writing to a static generates a warning. we safely handle RETURN_VALUE so ignoring it here.
+/// Violates the heap memory protection by reading a value from the heap allocated in VTL1 while running in VTL0.
 fn violate_heap() {
+    // SAFETY: the test driver guarantees that the heap pointer is valid and points to a
+    // valid memory region before calling this function.
     unsafe {
         let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
         // after a VTL switch we can't trust the value returned by eax
@@ -70,12 +72,15 @@ where
 
         let layout =
             Layout::from_size_align(1024 * 1024, 4096).expect("msg: failed to create layout");
-        // SAFETY: we are allocating memory to heap, we don't free it in this test.
+        // SAFETY: Layout has a non zero size
         let ptr = unsafe { alloc(layout) };
+        tmk_assert!(!ptr.is_null(), "heap allocation should succeed");
         log::info!("allocated some memory in the heap from vtl1");
 
         #[expect(static_mut_refs)]
         // writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
+        // SAFETY: the test at this point is single threaded
+        // and we are writing to a static variable that is only written to once.
         unsafe {
             let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;

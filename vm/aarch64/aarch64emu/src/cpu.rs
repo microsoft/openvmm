@@ -22,10 +22,12 @@ pub trait Cpu: AccessCpuState {
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Performs a memory read of 1, 2, 4, or 8 bytes on a guest physical address.
+    /// `exec` indicates whether the read is for execution (true) or data (false).
     fn read_physical_memory(
         &mut self,
         gpa: u64,
         bytes: &mut [u8],
+        exec: bool,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Performs a memory write of 1, 2, 4, or 8 bytes.
@@ -71,7 +73,7 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         gva: u64,
         bytes: &mut [u8],
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_memory(gva, bytes)
+        (*self).read_instruction(gva, bytes)
     }
 
     fn read_memory(
@@ -86,8 +88,9 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         &mut self,
         gpa: u64,
         bytes: &mut [u8],
+        exec: bool,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        (*self).read_physical_memory(gpa, bytes)
+        (*self).read_physical_memory(gpa, bytes, exec)
     }
 
     fn write_memory(

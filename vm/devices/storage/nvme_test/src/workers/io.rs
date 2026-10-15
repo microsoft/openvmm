@@ -302,7 +302,7 @@ impl IoHandler {
                     IoQueueFaultBehavior::Panic(message) => {
                         panic!(
                             "configured fault: io completion panic with sqid: {:?} command: {:?}, completion: {:?} and message: {}",
-                            &self.sqid, &command, &completion, &message
+                            self.sqid, command, completion, message
                         );
                     }
                     IoQueueFaultBehavior::Delay(duration) => {

@@ -140,7 +140,9 @@ struct MsiInterruptInner {
     route: Option<MsiRoute>,
     pending: bool,
     enabled: bool,
+    #[inspect(hex)]
     address: u64,
+    #[inspect(hex)]
     data: u32,
 }
 
@@ -269,7 +271,10 @@ impl InspectMut for MsixMessageTableEntry {
             .hex("data", self.state.data)
             .hex("control", self.state.control)
             .field("enabled", self.state.control & 1 == 0)
-            .field("is_pending", self.check_is_pending(true));
+            .field("is_pending", self.check_is_pending(true))
+            // Delivery state, which can diverge from the table above (e.g. an
+            // interrupt latched while masked).
+            .field("msi", &self.msi);
     }
 }
 

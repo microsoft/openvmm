@@ -131,3 +131,25 @@ impl DiskIo for DelayDisk {
         self.inner.optimal_unmap_sectors()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::DelayDisk;
+    use disk_backend::Disk;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::time::Duration;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    #[async_test]
+    async fn sector_range_conformance(driver: DefaultDriver) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        // A zero delay keeps the test fast. The delay is never updated, so the
+        // updater can be dropped immediately; the cell keeps its initial value.
+        let cell = mesh::CellUpdater::new(Duration::ZERO).cell();
+        let inner = disklayer_ram::ram_disk(1024 * 1024, false).unwrap();
+        let disk = Disk::new(DelayDisk::new(cell, inner, &source)).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+}

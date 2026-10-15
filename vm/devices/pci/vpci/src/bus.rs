@@ -8,6 +8,7 @@ use crate::device::VpciChannel;
 use crate::device::VpciConfigSpace;
 use crate::device::VpciConfigSpaceOffset;
 use crate::device::VpciConfigSpaceVtom;
+use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -22,11 +23,15 @@ use closeable_mutex::CloseableMutex;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
+use mesh::rpc::RpcSend;
+use parking_lot::Mutex;
 use pci_core::bus_cfg::PciBusCfgAccessCallbacks;
 use pci_core::bus_cfg::PciBusCfgAccessHandler;
 use std::sync::Arc;
 use std::task::Context;
 use thiserror::Error;
+use vmbus_channel::simple::InitialDeviceState;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::offer_simple_device;
 use vmcore::device_state::ChangeDeviceState;
@@ -48,8 +53,56 @@ use vpci_protocol::SlotNumber;
 pub struct VpciBus {
     #[inspect(mut, flatten)]
     bus_device: VpciBusDevice,
-    #[inspect(flatten)]
-    channel: SimpleDeviceHandle<VpciChannel>,
+    #[inspect(mut, flatten)]
+    channel: VpciBusChannelState,
+    #[inspect(skip)]
+    eject: VpciBusEject,
+}
+
+#[derive(InspectMut)]
+#[inspect(tag = "state")]
+enum VpciBusChannelState {
+    Unoffered,
+    Offering,
+    Offered {
+        #[inspect(flatten)]
+        channel: SimpleDeviceHandle<VpciChannel>,
+    },
+    Revoked,
+}
+
+/// Capability for publishing a deferred VPCI channel offer.
+#[must_use = "the deferred VPCI channel must be offered or explicitly discarded"]
+pub struct PendingVpciBusOffer {
+    channel: VpciChannel,
+}
+
+/// Control used to request graceful ejection of a VPCI device.
+#[derive(Clone, Default)]
+pub struct VpciBusEject(Arc<Mutex<Option<mesh::Sender<FailableRpc<(), ()>>>>>);
+
+impl VpciBusEject {
+    /// Requests device ejection and waits for the guest to acknowledge it.
+    ///
+    /// If the VPCI channel is not open, there is no guest device to eject.
+    pub async fn eject(&self) -> anyhow::Result<()> {
+        let Some(send) = self.0.lock().clone() else {
+            return Ok(());
+        };
+        send.call_failable(|rpc| rpc, ())
+            .await
+            .context("VPCI channel closed before device ejection completed")
+    }
+
+    pub(crate) fn connect(&self) -> mesh::Receiver<FailableRpc<(), ()>> {
+        let (send, recv) = mesh::channel();
+        *self.0.lock() = Some(send);
+        recv
+    }
+
+    pub(crate) fn disconnect(&self) {
+        *self.0.lock() = None;
+    }
 }
 
 /// The chipset device portion of the VPCI bus.
@@ -145,35 +198,140 @@ impl VpciBus {
         vmbus: &dyn vmbus_channel::bus::ParentBus,
         msi_controller: VpciInterruptMapper,
     ) -> Result<Self, CreateBusError> {
-        let (bus, channel) = VpciBusDevice::new(
-            config,
-            device.clone(),
-            register_mmio,
-            msi_controller.clone(),
-        )
-        .map_err(CreateBusError::NotPci)?;
-        let channel = offer_simple_device(driver_source, vmbus, channel)
+        let (mut this, offer) = Self::new_unoffered(config, device, register_mmio, msi_controller)
+            .map_err(CreateBusError::NotPci)?;
+        let channel = offer
+            .offer(driver_source, vmbus, false)
             .await
             .map_err(CreateBusError::Offer)?;
+        this.channel = VpciBusChannelState::Offered { channel };
+        Ok(this)
+    }
 
-        Ok(Self {
-            bus_device: bus,
-            channel,
-        })
+    /// Creates a VPCI bus with a deferred VMBus channel offer.
+    ///
+    /// The returned [`PendingVpciBusOffer`] must be consumed after registering
+    /// the bus as a state unit.
+    pub fn new_unoffered(
+        config: VpciBusConfig,
+        device: Arc<CloseableMutex<dyn ChipsetDevice>>,
+        register_mmio: &mut dyn RegisterMmioIntercept,
+        msi_controller: VpciInterruptMapper,
+    ) -> Result<(Self, PendingVpciBusOffer), NotPciDevice> {
+        let (bus, channel) = VpciBusDevice::new(config, device, register_mmio, msi_controller)?;
+        let eject = channel.eject_control();
+
+        Ok((
+            Self {
+                bus_device: bus,
+                channel: VpciBusChannelState::Unoffered,
+                eject,
+            },
+            PendingVpciBusOffer { channel },
+        ))
+    }
+
+    /// Returns a handle used to request graceful device ejection.
+    pub fn eject_control(&self) -> VpciBusEject {
+        self.eject.clone()
+    }
+
+    /// Revokes the VMBus channel and waits for revocation to complete.
+    ///
+    /// If an offer is in progress, the offering task revokes its channel when
+    /// the offer completes.
+    pub async fn revoke(&mut self) {
+        if let VpciBusChannelState::Offered { channel } =
+            std::mem::replace(&mut self.channel, VpciBusChannelState::Revoked)
+        {
+            channel.revoke().await;
+        }
+    }
+}
+
+impl PendingVpciBusOffer {
+    async fn offer(
+        self,
+        driver_source: &VmTaskDriverSource,
+        vmbus: &dyn vmbus_channel::bus::ParentBus,
+        started: bool,
+    ) -> anyhow::Result<SimpleDeviceHandle<VpciChannel>> {
+        let initial_state = if started {
+            InitialDeviceState::Running
+        } else {
+            InitialDeviceState::Stopped
+        };
+        offer_simple_device(driver_source, vmbus, self.channel, initial_state).await
+    }
+
+    /// Publishes the VMBus channel for an already-registered VPCI bus.
+    ///
+    /// Returns an error if the bus is closed or the channel is already being
+    /// offered, has been offered, or has been revoked.
+    pub async fn offer_registered(
+        self,
+        bus: &Arc<CloseableMutex<VpciBus>>,
+        driver_source: &VmTaskDriverSource,
+        vmbus: &dyn vmbus_channel::bus::ParentBus,
+        started: bool,
+    ) -> anyhow::Result<()> {
+        {
+            let mut bus = bus.lock_if_open().context("VPCI bus is closed")?;
+            match bus.channel {
+                VpciBusChannelState::Unoffered => {
+                    bus.channel = VpciBusChannelState::Offering;
+                }
+                VpciBusChannelState::Offering => {
+                    anyhow::bail!("VPCI channel offer is already in progress")
+                }
+                VpciBusChannelState::Offered { .. } => {
+                    anyhow::bail!("VPCI channel has already been offered")
+                }
+                VpciBusChannelState::Revoked => {
+                    anyhow::bail!("VPCI channel has been revoked")
+                }
+            }
+        }
+        let result = self.offer(driver_source, vmbus, started).await;
+        {
+            if let Some(mut bus) = bus.lock_if_open()
+                && matches!(bus.channel, VpciBusChannelState::Offering)
+            {
+                match result {
+                    Ok(channel) => {
+                        bus.channel = VpciBusChannelState::Offered { channel };
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        bus.channel = VpciBusChannelState::Revoked;
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        let channel = result?;
+        channel.revoke().await;
+        anyhow::bail!("VPCI bus was closed or revoked while offering the channel")
     }
 }
 
 impl ChangeDeviceState for VpciBus {
     fn start(&mut self) {
-        self.channel.start();
+        if let VpciBusChannelState::Offered { channel } = &self.channel {
+            channel.start();
+        }
     }
 
     async fn stop(&mut self) {
-        self.channel.stop().await;
+        if let VpciBusChannelState::Offered { channel } = &self.channel {
+            channel.stop().await;
+        }
     }
 
     async fn reset(&mut self) {
-        self.channel.reset().await;
+        if let VpciBusChannelState::Offered { channel } = &self.channel {
+            channel.reset().await;
+        }
     }
 }
 
@@ -212,8 +370,7 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl PollDevice for VpciBusDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        let mut callback = PciBusCfgAccessCallbackView::new(&mut self.device);
-        self.bus_cfg_handler.poll(cx, &mut callback);
+        self.bus_cfg_handler.poll(cx);
     }
 }
 
@@ -345,7 +502,7 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
 }
 
 impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+    fn read(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordRead<'_>) -> IoResult {
         self.device
             .lock()
             .supports_pci()
@@ -353,7 +510,7 @@ impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
             .pci_cfg_read(addr.byte_offset(), value)
     }
 
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
+    fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
         self.device
             .lock()
             .supports_pci()
@@ -520,7 +677,7 @@ mod tests {
     }
 
     impl PciConfigSpace for DeferWriteDevice {
-        fn pci_cfg_read(&mut self, _offset: u16, value: &mut u32) -> IoResult {
+        fn pci_cfg_read(&mut self, _offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
             if self.defer_reads {
                 assert!(
                     self.pending_read.is_none(),
@@ -530,13 +687,13 @@ mod tests {
                 self.pending_read = Some(deferred);
                 IoResult::Defer(token)
             } else {
-                *value = self.read_value;
+                value.set(self.read_value);
                 IoResult::Ok
             }
         }
 
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            self.writes.push((offset, value));
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.writes.push((offset, value.extract()));
             if self.defer_writes {
                 assert!(
                     self.pending_write.is_none(),
@@ -656,7 +813,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn verify_deferred_pci_cfg_read_and_read_for_write_via_bus(_driver: DefaultDriver) {
+    async fn verify_deferred_pci_cfg_read_via_bus(_driver: DefaultDriver) {
         const BASE_ADDR: u64 = 0x1000_0000;
         const READ_OFFSET: u64 = 4;
         const WRITE_OFFSET: u64 = 5;
@@ -705,41 +862,7 @@ mod tests {
         device.lock().start_deferring_reads(0x1122_3344);
         let write_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + WRITE_OFFSET;
         let write_result = bus.lock().mmio_write(write_addr, &[0xaa]);
-        assert!(matches!(write_result, IoResult::Defer(_)));
-
-        std::future::poll_fn(|cx| {
-            bus.lock().poll_device(cx);
-            device.lock().poll_device(cx);
-            bus.lock().poll_device(cx);
-            Poll::Ready(())
-        })
-        .await;
-
-        if let IoResult::Defer(token) = write_result {
-            token
-                .write_future()
-                .await
-                .expect("deferred PCI config read-for-write should complete successfully");
-        }
-
-        let mut expected = 0x1122_3344u32.to_ne_bytes();
-        expected[1] = 0xaa;
-        assert_eq!(
-            device.lock().writes.pop(),
-            Some((4, u32::from_ne_bytes(expected)))
-        );
-
-        let mut read_data = [0; 2];
-        let read_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + 7;
-        let read_result = bus.lock().mmio_read(read_addr, &mut read_data);
-        assert!(
-            matches!(read_result, IoResult::Err(_)),
-            "read crossing a DWORD boundary should be rejected"
-        );
-        assert!(
-            device.lock().pending_read.is_none(),
-            "rejected read should not issue a device read"
-        );
+        assert!(matches!(write_result, IoResult::Ok));
     }
 
     #[async_test]

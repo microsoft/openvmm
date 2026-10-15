@@ -21,6 +21,7 @@ use x86defs::X64_CR4_SMAP;
 use x86defs::X64_CR4_SMEP;
 use x86defs::X64_EFER_LMA;
 use x86defs::X64_EFER_NXE;
+use x86defs::is_canonical_address;
 
 /// Registers needed to walk the page table.
 #[derive(Debug, Clone)]
@@ -411,18 +412,10 @@ pub fn translate_gva_to_gpa(
     })
 }
 
-/// Returns whether a virtual address is canonical. On x86-64, this means that
-/// the N top unused bits are equal to the top used bit, where N is 64 minus the
-/// number of effective address bits (48 or 57).
-fn is_canonical_address(gva: u64, address_bits: u32) -> bool {
-    // Shift out the address bits that aren't part of the check, sign extending.
-    // This makes the subsequent check an easy comparison.
-    let high_bits = (gva as i64) >> (address_bits - 1);
-    high_bits == 0 || high_bits == -1
-}
-
 #[cfg(test)]
 mod tests {
+    use x86defs::is_canonical_address;
+
     #[test]
     fn test_canonical() {
         let cases = &[
@@ -441,7 +434,7 @@ mod tests {
 
         for &(addr, bits, is_canonical) in cases {
             assert_eq!(
-                super::is_canonical_address(addr, bits),
+                is_canonical_address(addr, bits),
                 is_canonical,
                 "{addr:#x} {bits}"
             );

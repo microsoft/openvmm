@@ -17,5 +17,10 @@ inspect = { workspace = true, features = ["filepath"] }
 blocking.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+storage_tests.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

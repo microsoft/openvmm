@@ -6,8 +6,8 @@
 use inspect::Inspect;
 use open_enum::open_enum;
 
-pub const PCI_VENDOR_ID: u16 = 0x1414;
-pub const PCI_DEVICE_ID: u16 = 0x5353;
+pub const PCI_VENDOR_ID: u16 = pci_core::microsoft::VENDOR_ID;
+pub const PCI_DEVICE_ID: u16 = pci_core::microsoft::DeviceId::VGA.0;
 pub const PCI_REVISION: u8 = 0;
 pub const PCI_SUBSYSTEM: u8 = 0;
 pub const PCI_VIDEO_CLASS_CODE: u8 = 3;

@@ -21,10 +21,3 @@ pub struct FloppyDiskConfig {
     /// Whether the disk is read-only.
     pub read_only: bool,
 }
-
-/// The configuration for a floppy controller.
-#[derive(Debug, MeshPayload)]
-pub struct FloppyControllerConfig {
-    /// The floppy disks attached to the controller.
-    pub floppy_disks: Vec<FloppyDiskConfig>,
-}

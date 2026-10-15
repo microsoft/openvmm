@@ -8,6 +8,8 @@ use crate::spec::hwid::HardwareIds;
 use crate::spec::hwid::ProgrammingInterface;
 use crate::spec::hwid::Subclass;
 use chipset_device::ChipsetDevice;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 
 /// An extension trait to simplify probing PCI [`ChipsetDevice`] devices.
@@ -27,19 +29,24 @@ where
     fn probe_bar_masks(&mut self) -> [u32; 6] {
         let mut masks = [0; 6];
         for (i, addr) in (0x10..=0x24).step_by(4).enumerate() {
-            let mut buf = 0;
+            let mut buf_u32 = 0;
+            let buf = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf_u32);
             let old = self
-                .pci_cfg_read(addr, &mut buf)
+                .pci_cfg_read(addr, buf)
                 .now_or_never()
-                .map(|_| buf)
+                .map(|_| buf_u32)
                 .unwrap_or(0);
-            self.pci_cfg_write(addr, !0).unwrap();
+            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(!0))
+                .unwrap();
+            let mut buf_u32 = 0;
+            let buf = ByteEnabledDwordRead::with_all_bytes_enabled(&mut buf_u32);
             masks[i] = self
-                .pci_cfg_read(addr, &mut buf)
+                .pci_cfg_read(addr, buf)
                 .now_or_never()
-                .map(|_| buf)
+                .map(|_| buf_u32)
                 .unwrap_or(0);
-            self.pci_cfg_write(addr, old).unwrap();
+            self.pci_cfg_write(addr, ByteEnabledDwordWrite::with_all_bytes_enabled(old))
+                .unwrap();
         }
         masks
     }
@@ -49,17 +56,17 @@ where
         let mut p8 = 0;
         let mut p2c = 0;
         p0 = self
-            .pci_cfg_read(0, &mut p0)
+            .pci_cfg_read(0, ByteEnabledDwordRead::with_all_bytes_enabled(&mut p0))
             .now_or_never()
             .map(|_| p0)
             .unwrap_or(0);
         p8 = self
-            .pci_cfg_read(8, &mut p8)
+            .pci_cfg_read(8, ByteEnabledDwordRead::with_all_bytes_enabled(&mut p8))
             .now_or_never()
             .map(|_| p8)
             .unwrap_or(0);
         p2c = self
-            .pci_cfg_read(0x2c, &mut p2c)
+            .pci_cfg_read(0x2c, ByteEnabledDwordRead::with_all_bytes_enabled(&mut p2c))
             .now_or_never()
             .map(|_| p2c)
             .unwrap_or(0);

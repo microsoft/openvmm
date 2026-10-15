@@ -7,6 +7,42 @@ use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
+/// Firmware core and toolchain used by the RELEASE build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum FirmwareFlavor {
+    LegacyVs2022,
+    LegacyClangPdb,
+    PatinaClangPdb,
+}
+
+impl FirmwareFlavor {
+    fn default_for_arch(arch: CommonArch) -> Self {
+        match arch {
+            CommonArch::X86_64 => Self::LegacyVs2022,
+            CommonArch::Aarch64 => Self::LegacyClangPdb,
+        }
+    }
+
+    fn file_name(self, arch: CommonArch) -> anyhow::Result<&'static str> {
+        Ok(match (self, arch) {
+            (Self::LegacyVs2022, CommonArch::X86_64) => "firmware-RELEASE-X64-VS2022.tar.gz",
+            (Self::LegacyVs2022, CommonArch::Aarch64) => {
+                anyhow::bail!("mu_msvm does not support AARCH64 with VS2022")
+            }
+            (Self::LegacyClangPdb, CommonArch::X86_64) => "firmware-RELEASE-X64-CLANGPDB.tar.gz",
+            (Self::LegacyClangPdb, CommonArch::Aarch64) => {
+                "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::X86_64) => {
+                "firmware-RELEASE-X64-CLANGPDB-patina.tar.gz"
+            }
+            (Self::PatinaClangPdb, CommonArch::Aarch64) => {
+                "firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz"
+            }
+        })
+    }
+}
+
 flowey_config! {
     /// Config for the download_uefi_mu_msvm node.
     pub struct Config {
@@ -22,6 +58,7 @@ flowey_request! {
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: CommonArch,
+            flavor: Option<FirmwareFlavor>,
             msvm_fd: WriteVar<PathBuf>
         }
     }
@@ -45,11 +82,22 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let version = config.version;
         let local_paths = config.local_paths;
-        let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
+        let mut reqs: BTreeMap<(CommonArch, FirmwareFlavor), Vec<WriteVar<PathBuf>>> =
+            BTreeMap::new();
 
         for req in requests {
             match req {
-                Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
+                Request::GetMsvmFd {
+                    arch,
+                    flavor,
+                    msvm_fd,
+                } => reqs
+                    .entry((
+                        arch,
+                        flavor.unwrap_or_else(|| FirmwareFlavor::default_for_arch(arch)),
+                    ))
+                    .or_default()
+                    .push(msvm_fd),
             }
         }
 
@@ -75,7 +123,7 @@ impl FlowNodeWithConfig for Node {
                     .map(|(arch, var)| (arch, var.claim(ctx)))
                     .collect();
                 move |rt| {
-                    for (arch, out_vars) in reqs {
+                    for ((arch, _flavor), out_vars) in reqs {
                         let msvm_fd_var = local_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })?;
@@ -99,17 +147,14 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let version = version.expect("local paths handled above");
+        let version = version.context("missing mu_msvm version")?;
         let extract_archive_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
-        for (arch, out_vars) in reqs {
-            let file_name = match arch {
-                CommonArch::X86_64 => "RELEASE-X64-VS2022-artifacts.tar.gz",
-                CommonArch::Aarch64 => "RELEASE-AARCH64-CLANGPDB-artifacts.tar.gz",
-            };
+        for ((arch, flavor), out_vars) in reqs {
+            let file_name = flavor.file_name(arch)?;
 
             let mu_msvm_archive = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                repo_owner: "microsoft".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
                 repo_name: "mu_msvm".into(),
                 needs_auth: false,
                 tag: format!("v{version}"),

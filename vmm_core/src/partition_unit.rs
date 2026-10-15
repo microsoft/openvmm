@@ -4,6 +4,8 @@
 //! State unit for managing the VM partition and associated virtual processors.
 
 mod debug;
+#[cfg(test)]
+mod tests;
 mod vp_set;
 
 pub use vp_set::Halt;
@@ -22,7 +24,6 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use mesh::Receiver;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -35,8 +36,9 @@ use state_unit::UnitBuilder;
 use state_unit::UnitHandle;
 use std::sync::Arc;
 use thiserror::Error;
+use virt::InitialPageImport;
 use virt::InitialRegs;
-use virt::PageVisibility;
+use virt::InitialVpStateSource;
 #[cfg(feature = "dump")]
 use virt::VpIndex;
 use vm_topology::processor::ProcessorTopology;
@@ -56,17 +58,25 @@ pub struct PartitionUnit {
 /// Trait with the minimal methods needed to run the partition.
 #[async_trait]
 pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore {
+    /// Returns the source of the initial virtual processor state.
+    fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
+    /// Freezes backend partition time, if owned and supported by this backend.
+    /// All VPs have stopped before this is called.
+    fn freeze_time(&mut self) {}
+
+    /// Thaws backend partition time before VP execution can start.
+    /// This must be a no-op for time that is already running.
+    fn thaw_time(&mut self) {}
+
     /// Resets the partition.
     fn reset(&mut self) -> anyhow::Result<()>;
 
     /// Scrubs the VTL state for a partition.
     fn scrub_vtl(&mut self, vtl: Vtl) -> anyhow::Result<()>;
 
-    /// Accepts pages on behalf of the loader.
-    fn accept_initial_pages(
-        &mut self,
-        pages: Vec<(MemoryRange, PageVisibility)>,
-    ) -> anyhow::Result<()>;
+    /// Finalizes initial page imports on behalf of the loader.
+    fn accept_initial_pages(&mut self, pages: Vec<InitialPageImport>) -> anyhow::Result<()>;
 
     /// Returns the guest OS ID (from `HV_X64_MSR_GUEST_OS_ID`).
     ///
@@ -128,9 +138,7 @@ impl InspectMut for PartitionUnitRunner {
 enum PartitionRequest {
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>), Result<(), InitialRegError>>),
-    SetInitialPageVisibility(
-        Rpc<Vec<(MemoryRange, PageVisibility)>, Result<(), InitialVisibilityError>>,
-    ),
+    AcceptInitialPages(Rpc<Vec<InitialPageImport>, Result<(), AcceptInitialPagesError>>),
     StopVps(Rpc<(), ()>),
     StartVps,
     /// Build the partition state blob for a dump file.
@@ -179,11 +187,11 @@ pub enum InitialRegError {
     ScrubVtl(#[source] anyhow::Error),
 }
 
-/// Error returned by [`PartitionUnit::set_initial_page_visibility()`].
+/// Error returned by [`PartitionUnit::accept_initial_pages()`].
 #[derive(Debug, Error)]
-pub enum InitialVisibilityError {
-    #[error("failed to set initial page acceptance")]
-    PageAcceptance(#[source] anyhow::Error),
+pub enum AcceptInitialPagesError {
+    #[error("failed to finalize initial page imports")]
+    Finalize(#[source] anyhow::Error),
 }
 
 impl PartitionUnit {
@@ -291,12 +299,12 @@ impl PartitionUnit {
             .unwrap()
     }
 
-    pub async fn set_initial_page_visibility(
+    pub async fn accept_initial_pages(
         &mut self,
-        vis: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         self.req_send
-            .call(PartitionRequest::SetInitialPageVisibility, vis)
+            .call(PartitionRequest::AcceptInitialPages, initial_pages)
             .await
             .unwrap()
     }
@@ -372,9 +380,11 @@ impl PartitionUnitRunner {
                         rpc.handle(async |(vtl, state)| self.set_initial_regs(vtl, state).await)
                             .await
                     }
-                    PartitionRequest::SetInitialPageVisibility(rpc) => {
-                        rpc.handle(async |vis| self.set_initial_page_visibility(vis).await)
-                            .await
+                    PartitionRequest::AcceptInitialPages(rpc) => {
+                        rpc.handle(async |initial_pages| {
+                            self.accept_initial_pages(initial_pages).await
+                        })
+                        .await
                     }
                     PartitionRequest::StopVps(rpc) => {
                         rpc.handle(async |()| self.stop_vps().await).await
@@ -396,7 +406,7 @@ impl PartitionUnitRunner {
         }
 
         if self.unit_started {
-            self.vp_set.stop().await;
+            StateUnit::stop(self).await;
         }
     }
 
@@ -483,28 +493,35 @@ impl PartitionUnitRunner {
             self.needs_reset = false;
         }
 
-        self.vp_set
-            .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
-            .await
-            .map_err(InitialRegError::RegisterSet)?;
+        match self.partition.initial_vp_state_source() {
+            InitialVpStateSource::Registers => {
+                self.vp_set
+                    .set_initial_regs(vtl, state.clone(), vp_set::RegistersToSet::All)
+                    .await
+                    .map_err(InitialRegError::RegisterSet)?;
+            }
+            InitialVpStateSource::ImportedContext => {}
+        }
 
         self.initial_regs = Some(state);
         Ok(())
     }
 
-    async fn set_initial_page_visibility(
+    async fn accept_initial_pages(
         &mut self,
-        visibility: Vec<(MemoryRange, PageVisibility)>,
-    ) -> Result<(), InitialVisibilityError> {
+        initial_pages: Vec<InitialPageImport>,
+    ) -> Result<(), AcceptInitialPagesError> {
         assert!(!self.unit_started);
 
         self.partition
-            .accept_initial_pages(visibility)
-            .map_err(InitialVisibilityError::PageAcceptance)
+            .accept_initial_pages(initial_pages)
+            .map_err(AcceptInitialPagesError::Finalize)
     }
 
     fn try_start(&mut self) {
         if self.unit_started && self.halt_reason.is_none() && self.vp_stop_count == 0 {
+            // A VTL scrub can reset its clock during a temporary VP stop.
+            self.partition.thaw_time();
             self.needs_reset = true;
             self.vp_set.start();
         }
@@ -578,12 +595,14 @@ impl Drop for StopGuard {
 
 impl StateUnit for PartitionUnitRunner {
     async fn start(&mut self) {
+        self.partition.thaw_time();
         self.unit_started = true;
         self.try_start();
     }
 
     async fn stop(&mut self) {
         self.vp_set.stop().await;
+        self.partition.freeze_time();
         self.unit_started = false;
 
         // Now that the VM is stopped, flush any guest-initiated

@@ -266,7 +266,7 @@ fn run(options: &Options, env: impl IntoIterator<Item = (String, String)>) -> an
         }
     }
 
-    log::info!("running {:?}", &command);
+    log::info!("running {:?}", command);
 
     let child = command.spawn().context("underhill failed to start")?;
 

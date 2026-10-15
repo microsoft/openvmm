@@ -7,6 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
+# Enable per-VM measured product policy support.
+product_policy = ["underhill_core/product_policy"]
 # Enable gdbstub support.
 gdb = ["underhill_core/gdb"]
 
@@ -25,8 +27,8 @@ disable_secure_avic = ["underhill_core/disable_secure_avic"]
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 
-# Enable TIO support for SEV-SNP
-dev_snp_ohcl_tio_support = ["underhill_core/dev_snp_ohcl_tio_support"]
+# Use the TIO variant of the sev-guest ioctl ABI
+dev_snp_tio_guest_ioctl_abi = ["underhill_core/dev_snp_tio_guest_ioctl_abi"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_core.workspace = true

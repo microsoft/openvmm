@@ -172,6 +172,7 @@ For the OpenHCL settings model (`StorageController`, `Lun`, `PhysicalDevice`), s
 | FileDisk | [`disk_file`](https://openvmm.dev/rustdoc/linux/disk_file/index.html) | Host file | Cross-platform | Simplest backend |
 | Vhd1Disk | [`disk_vhd1`](https://openvmm.dev/rustdoc/linux/disk_vhd1/index.html) | VHD1 fixed file | Cross-platform | Parses VHD footer |
 | VhdmpDisk | `disk_vhdmp` | Windows vhdmp driver | Windows | Dynamic/differencing VHD/VHDX |
+| VhdxDisk | [`vhdx`](../../backends/vhdx.md) | VHDX file | Cross-platform | Pure-Rust VHDX parser |
 | BlobDisk | [`disk_blob`](https://openvmm.dev/rustdoc/linux/disk_blob/index.html) | HTTP / Azure Blob | Cross-platform | Read-only, HTTP range requests |
 | BlockDeviceDisk | [`disk_blockdevice`](https://openvmm.dev/rustdoc/linux/disk_blockdevice/index.html) | Linux block device | Linux | io_uring, resize via uevent, PR passthrough |
 | NvmeDisk | [`disk_nvme`](https://openvmm.dev/rustdoc/linux/disk_nvme/index.html) | Physical NVMe (VFIO) | Linux/Windows | User-mode NVMe driver, resize via AEN |

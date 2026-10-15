@@ -17,8 +17,6 @@ use openssl_sys::EVP_MD;
 #[expect(clippy::upper_case_acronyms)]
 pub enum KDF {}
 
-pub enum KDF_CTX {}
-
 unsafe extern "C" {
     pub fn EVP_MD_get0_name(md: *const EVP_MD) -> *const c_char;
 }

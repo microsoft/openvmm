@@ -23,4 +23,20 @@ type = "virtio-blk"
 name = "test-disk"
 size = "64M"
 vfio = true
-provides = "test_disk_vfio"
+
+# P2P DMA pair: `edu` is the DMA initiator, `ivshmem-plain` BAR2 is the
+# peer-BAR target. Assigning both into the L2 guest and having `edu` DMA into
+# `ivshmem`'s BAR2 exercises the vfio-dmabuf device-BAR P2P import path. The
+# edu `dma_mask` is widened from its 28-bit default so it can address the high
+# aarch64 guest physical addresses the target BAR lands at.
+[[devices]]
+type = "edu"
+name = "edu-initiator"
+dma-mask = "0xffffffffffff"
+vfio = true
+
+[[devices]]
+type = "ivshmem-plain"
+name = "ivshmem-target"
+size = "4M"
+vfio = true

@@ -341,24 +341,26 @@ impl SimpleScsiDisk {
         request: &Request,
     ) -> Result<usize, ScsiError> {
         let is_mode_select_10 = request.scsiop() == ScsiOp::MODE_SELECT10;
-        let request_length;
-        let header_size;
-        let is_spbit_set;
-        if is_mode_select_10 {
+
+        let (request_length, header_size, is_spbit_set) = if is_mode_select_10 {
             let cdb = scsi::ModeSelect10::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            request_length = cdb.parameter_list_length.get() as usize;
-            header_size = MODE_PARAMETER_HEADER10_SIZE;
-            is_spbit_set = cdb.flags.spbit();
+            (
+                cdb.parameter_list_length.get() as usize,
+                MODE_PARAMETER_HEADER10_SIZE,
+                cdb.flags.spbit(),
+            )
         } else {
             let cdb = scsi::ModeSelect::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            request_length = cdb.parameter_list_length as usize;
-            header_size = MODE_PARAMETER_HEADER_SIZE;
-            is_spbit_set = cdb.flags.spbit();
-        }
+            (
+                cdb.parameter_list_length as usize,
+                MODE_PARAMETER_HEADER_SIZE,
+                cdb.flags.spbit(),
+            )
+        };
 
         if request_length == 0 {
             return Ok(0);
@@ -465,27 +467,28 @@ impl SimpleScsiDisk {
         }
 
         let is_mode_sense_10 = request.scsiop() == ScsiOp::MODE_SENSE10;
-        let page_code;
-        let page_control;
-        let allocation_length;
-        let header_size;
-        if is_mode_sense_10 {
+
+        let (allocation_length, page_code, page_control, header_size) = if is_mode_sense_10 {
             let cdb = scsi::ModeSense10::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            allocation_length = cdb.allocation_length.get() as usize;
-            page_code = cdb.flags2.page_code();
-            page_control = cdb.flags2.pc() << 6;
-            header_size = MODE_PARAMETER_HEADER10_SIZE;
+            (
+                cdb.allocation_length.get() as usize,
+                cdb.flags2.page_code(),
+                cdb.flags2.pc() << 6,
+                MODE_PARAMETER_HEADER10_SIZE,
+            )
         } else {
             let cdb = scsi::ModeSense::read_from_prefix(&request.cdb[..])
                 .unwrap()
                 .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            allocation_length = cdb.allocation_length as usize;
-            page_code = cdb.flags2.page_code();
-            page_control = cdb.flags2.pc() << 6;
-            header_size = MODE_PARAMETER_HEADER_SIZE;
-        }
+            (
+                cdb.allocation_length as usize,
+                cdb.flags2.page_code(),
+                cdb.flags2.pc() << 6,
+                MODE_PARAMETER_HEADER_SIZE,
+            )
+        };
 
         // It is valid to not supply a buffer, just complete immediately.
         if allocation_length == 0 {
@@ -1256,6 +1259,13 @@ impl SimpleScsiDisk {
 }
 
 impl AsyncScsiDisk for SimpleScsiDisk {
+    fn clear_nexus_state(&self) {
+        // last_sector_count is deliberately left alone. It latches a capacity
+        // change so the unit attention is reported once; re-latching it here
+        // would raise a spurious one at the next initiator's first command.
+        self.sense_data.set(None);
+    }
+
     fn execute_scsi<'a>(
         &'a self,
         external_data: &'a RequestBuffers<'a>,

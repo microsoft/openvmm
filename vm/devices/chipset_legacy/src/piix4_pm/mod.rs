@@ -11,6 +11,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
@@ -317,8 +319,8 @@ impl LineInterruptTarget for Piix4Pm {
 
 /// Sidestep the config space emulator, and match legacy stub behavior directly
 impl PciConfigSpace for Piix4Pm {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = match ConfigSpace(offset) {
+    fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
+        value.set(match ConfigSpace(offset) {
             // for bug-for-bug compat with the hyper-v implementation: return
             // hardcoded status register instead of letting the config space
             // emulator take care of it
@@ -333,11 +335,11 @@ impl PciConfigSpace for Piix4Pm {
             _ if offset == pci_core::spec::cfg_space::HeaderType00::LATENCY_INTERRUPT.0 => {
                 // report that the device is hard-wired to PCI interrupt lane A
                 // (even though we don't actually use the IRQ for anything)
-                let res = self.cfg_space.read_u32(offset, value);
-                *value = *value & 0xff | (1 << 8);
+                let res = self.cfg_space.read_byte_enabled(offset, value.reborrow());
+                value.set(value.extract() & 0xff | (1 << 8));
                 return res;
             }
-            _ if offset < 0x40 => return self.cfg_space.read_u32(offset, value),
+            _ if offset < 0x40 => return self.cfg_space.read_byte_enabled(offset, value),
             // The bottom bit is always 1 to indicate an I/O address.
             ConfigSpace::IO_BASE => self.state.base_io_addr as u32 | 1,
             ConfigSpace::COUNT_A => self.state.counter_info_a,
@@ -361,45 +363,52 @@ impl PciConfigSpace for Piix4Pm {
                 tracing::debug!(?offset, "unimplemented config space read");
                 return IoResult::Err(IoError::InvalidRegister);
             }
-        };
+        });
 
         IoResult::Ok
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         match ConfigSpace(offset) {
             // intercept smbus_io_enabled bit
             // We don't have SMBus support, but the bit still needs to get latched.
             _ if offset == pci_core::spec::cfg_space::HeaderType00::STATUS_COMMAND.0 => {
-                self.state.smbus_io_enabled = value & 1 != 0;
-                return self.cfg_space.write_u32(offset, value);
+                if value.valid_mask() & 1 != 0 {
+                    self.state.smbus_io_enabled = value.extract() & 1 != 0;
+                }
+                return self.cfg_space.write_byte_enabled(offset, value);
             }
-            _ if offset < 0x40 => return self.cfg_space.write_u32(offset, value),
+            _ if offset < 0x40 => return self.cfg_space.write_byte_enabled(offset, value),
             ConfigSpace::IO_BASE => {
                 // mask off the read-only bits
                 //
                 // NOTE: this implies that the base address of the pm device
                 // will always be a multiple of 0x100
-                self.state.base_io_addr = (value & 0xFFC0) as u16;
+                let value = value.merge_low(self.state.base_io_addr);
+                self.state.base_io_addr = value & 0xFFC0;
                 self.update_io_mappings()
             }
-            ConfigSpace::COUNT_A => self.state.counter_info_a = value,
-            ConfigSpace::COUNT_B => self.state.counter_info_b = value,
-            ConfigSpace::GENERAL_PURPOSE => self.state.general_purpose_config_info = value,
-            ConfigSpace::ACTIVITY_A => self.state.device_activity_flags[0] = value,
-            ConfigSpace::ACTIVITY_B => self.state.device_activity_flags[1] = value,
-            ConfigSpace::RESOURCE_A => self.state.device_resource_flags[0] = value,
-            ConfigSpace::RESOURCE_B => self.state.device_resource_flags[1] = value,
-            ConfigSpace::RESOURCE_C => self.state.device_resource_flags[2] = value,
-            ConfigSpace::RESOURCE_D => self.state.device_resource_flags[3] = value,
-            ConfigSpace::RESOURCE_E => self.state.device_resource_flags[4] = value,
-            ConfigSpace::RESOURCE_F => self.state.device_resource_flags[5] = value,
-            ConfigSpace::RESOURCE_G => self.state.device_resource_flags[6] = value,
-            ConfigSpace::RESOURCE_H => self.state.device_resource_flags[7] = value,
-            ConfigSpace::RESOURCE_I => self.state.device_resource_flags[8] = value,
-            ConfigSpace::RESOURCE_J => self.state.device_resource_flags[9] = value,
+            ConfigSpace::COUNT_A => value.merge_into(&mut self.state.counter_info_a),
+            ConfigSpace::COUNT_B => value.merge_into(&mut self.state.counter_info_b),
+            ConfigSpace::GENERAL_PURPOSE => {
+                value.merge_into(&mut self.state.general_purpose_config_info)
+            }
+            ConfigSpace::ACTIVITY_A => value.merge_into(&mut self.state.device_activity_flags[0]),
+            ConfigSpace::ACTIVITY_B => value.merge_into(&mut self.state.device_activity_flags[1]),
+            ConfigSpace::RESOURCE_A => value.merge_into(&mut self.state.device_resource_flags[0]),
+            ConfigSpace::RESOURCE_B => value.merge_into(&mut self.state.device_resource_flags[1]),
+            ConfigSpace::RESOURCE_C => value.merge_into(&mut self.state.device_resource_flags[2]),
+            ConfigSpace::RESOURCE_D => value.merge_into(&mut self.state.device_resource_flags[3]),
+            ConfigSpace::RESOURCE_E => value.merge_into(&mut self.state.device_resource_flags[4]),
+            ConfigSpace::RESOURCE_F => value.merge_into(&mut self.state.device_resource_flags[5]),
+            ConfigSpace::RESOURCE_G => value.merge_into(&mut self.state.device_resource_flags[6]),
+            ConfigSpace::RESOURCE_H => value.merge_into(&mut self.state.device_resource_flags[7]),
+            ConfigSpace::RESOURCE_I => value.merge_into(&mut self.state.device_resource_flags[8]),
+            ConfigSpace::RESOURCE_J => value.merge_into(&mut self.state.device_resource_flags[9]),
             ConfigSpace::IO_ENABLE => {
-                self.state.base_io_enable = value & 1 != 0;
+                if value.valid_mask() & 1 != 0 {
+                    self.state.base_io_enable = value.extract() & 1 != 0;
+                }
                 self.update_io_mappings()
             }
             ConfigSpace::SM_BASE | ConfigSpace::SM_HOST => {} // Hyper-V ignores these, so do we.

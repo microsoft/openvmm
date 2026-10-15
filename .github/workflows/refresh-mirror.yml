@@ -14,7 +14,7 @@ jobs:
   QueueBuild:
     runs-on: ubuntu-latest
     steps:
-      - uses: Azure/login@v1
+      - uses: Azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1
         with:
           # These secrets describe the HvLite-GitHub service principal and associated Azure subscription,
           # which, along with the GITHUB_TOKEN, are used to authenticate GitHub Actions to Azure with OpenID Connect.
@@ -25,14 +25,14 @@ jobs:
           subscription-id:  ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
 
       - name: Pull Azure Key Vault secrets
-        uses: Azure/get-keyvault-secrets@v1
+        uses: Azure/get-keyvault-secrets@b5c723b9ac7870c022b8c35befe620b7009b336f # v1.2
         with:
           keyvault: 'HvLite-PATs'
           secrets: 'HvliteMirrorPAT'
         id: AzureKeyVault
 
       - name: Checkout actions
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 

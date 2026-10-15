@@ -3,7 +3,13 @@
 
 //! OpenVMM repo-specific automation.
 //!
-//! If you're thinking of writing a bash script, write an xtask instead!
+//! This host-side CLI implements standalone development utilities such as
+//! repository formatting, fuzz-target management, guest-test image creation,
+//! cleanup, binary-size verification, and git-hook installation. Invoke it
+//! through the repository's `cargo xtask <command>` alias.
+//!
+//! `xtask` owns tools that perform project-specific work. Multi-step build and
+//! test orchestration instead belongs in `cargo xflowey`.
 //!
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>

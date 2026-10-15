@@ -14,6 +14,7 @@ fuzzing = []
 firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
+hyperv_uefi_custom_vars_json.workspace = true
 uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 uefi_specs.workspace = true
 uefi_nvram_specvars.workspace = true
@@ -31,6 +32,7 @@ vmm_core.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 crypto.workspace = true
+cvm_tracing.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"] }
 getrandom.workspace = true
 guid.workspace = true

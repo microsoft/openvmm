@@ -4,6 +4,7 @@
 use super::StalledIo;
 use super::core::TransportOps;
 use super::core::VirtioTransportCore;
+use super::task::ConfigReadCompletion;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use crate::DynVirtioDevice;
@@ -462,6 +463,7 @@ impl MmioIntercept for VirtioMmioDevice {
                 &self.core.device_sender,
                 offset - VirtioMmioRegister::CONFIG.0,
                 data.len() as u8,
+                ConfigReadCompletion::Exact,
             );
         }
         if self.core.state.is_busy() {

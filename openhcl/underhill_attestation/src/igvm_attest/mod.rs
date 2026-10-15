@@ -318,7 +318,11 @@ fn create_request(
         let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
             .with_retry(true)
-            .with_skip_hw_unsealing(true);
+            .with_skip_hw_unsealing(true)
+            .with_use_rsa_aes_key_wrap_384(true)
+            // Signal the IGVM Agent to fetch the CoRIM launch endorsement.
+            // TDX only for now.
+            .with_corim_endorsement(matches!(report_type, &ReportType::Tdx));
         let ext = IgvmAttestRequestDataExt::new(capability_bitmap);
         buffer.extend_from_slice(ext.as_bytes());
     }
@@ -360,6 +364,7 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 
     #[test]
@@ -469,6 +474,9 @@ mod tests {
         assert!(ext.capability_bitmap.error_code());
         assert!(ext.capability_bitmap.retry());
         assert!(ext.capability_bitmap.skip_hw_unsealing());
+        // CoRIM endorsement is requested for TDX only; an SNP request must not
+        // set the bit.
+        assert!(!ext.capability_bitmap.corim_endorsement());
 
         assert_eq!(
             buffer.len(),
@@ -478,6 +486,33 @@ mod tests {
             &buffer[header_size + expected_extension_size..],
             runtime_claims.as_slice()
         );
+    }
+
+    #[test]
+    fn test_create_request_version2_tdx_requests_corim() {
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+
+        let runtime_claims = vec![4u8, 5, 6, 7];
+        let attestation_report =
+            vec![0u8; openhcl_attestation_protocol::igvm_attest::get::TDX_VM_REPORT_SIZE];
+
+        let buffer = create_request(
+            IgvmAttestRequestVersion::VERSION_2,
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            &runtime_claims,
+            &attestation_report,
+            &ReportType::Tdx,
+            IgvmAttestHashType::SHA_256,
+        )
+        .expect("request generation");
+
+        let header_size = size_of::<IgvmAttestRequestBase>();
+        let (ext, _) = IgvmAttestRequestDataExt::read_from_prefix(&buffer[header_size..])
+            .expect("parse IgvmAttestRequestDataExt");
+        // TDX requests must signal the IGVM Agent to fetch the CoRIM endorsement.
+        assert!(ext.capability_bitmap.corim_endorsement());
     }
 
     #[test]
@@ -498,15 +533,17 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"ipmi-enabled":true,"secure-boot":false,"tpm-enabled":false,"tpm-version":"1.38","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"signer"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
             interactive_console_enabled: false,
+            ipmi_enabled: true,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Signer,
             filtered_vpci_devices_allowed: true,
@@ -522,15 +559,17 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"hash"}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"ipmi-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-version":"185","tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":"","hardware-sealing-policy":"hash"}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
             interactive_console_enabled: false,
+            ipmi_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
+            tpm_version: AttestationTpmVersion::V185,
             tpm_persisted: false,
             hardware_sealing_policy: HardwareSealingPolicy::Hash,
             filtered_vpci_devices_allowed: true,

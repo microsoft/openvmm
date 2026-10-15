@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "opentmk_decoder"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

@@ -19,8 +19,9 @@ For cross-compilation from WSL2 to Windows, see
 
 ## Git Commit Rules
 
-- **Never amend commits that have already been pushed.** Make new commits
-  instead. PRs are squash-merged, so a clean history is unnecessary.
+- **Never amend commits that have already been pushed without express
+  permission from the user.** Make new commits instead. PRs are
+  squash-merged, so a clean history is unnecessary.
 - Rebasing onto `main` to resolve conflicts is fine, but do not use
   `git commit --amend`, `git rebase -i`, or `git push --force` to clean
   up history on already-pushed commits.
@@ -94,9 +95,13 @@ For VMM test validation during development, use `cargo xflowey vmm-tests-run`:
 ```bash
 cargo xflowey vmm-tests-run --filter "test(my_test_name)"
 ```
-Do not pass `--dir` — it is only required when cross-compiling for Windows
-from WSL2 (where the output directory must be on the Windows filesystem, e.g.,
-`--dir /mnt/d/vmm_tests`). For native host tests it is unnecessary.
+Do not pass `--dir` in most cases. When cross-compiling for Windows from WSL2,
+`--dir` on the Windows filesystem (e.g., `--dir /mnt/d/vmm_tests`) is required
+only when the selected tests use disk images that need a Windows filesystem
+(Hyper-V tests, or VHDX / dynamic VHD1 images); `vmm-tests-run` detects this and
+errors with a clear message when it's needed. For native host tests, and for
+Windows-from-WSL2 tests that stream disks or use fixed VHD1 / VMGS / ISO images,
+it is unnecessary.
 
 This automatically discovers artifacts, builds dependencies, and runs tests.
 See `Guide/src/dev_guide/tests/vmm.md` for details.

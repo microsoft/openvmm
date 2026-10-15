@@ -278,7 +278,7 @@ impl StorageDevice {
         } = state;
 
         if channels.is_empty() || channels.len() - 1 > self.max_sub_channel_count.into() {
-            return Err(StorvspRestoreError::InvalidChannelCount(channels.len()))?;
+            return Err(StorvspRestoreError::InvalidChannelCount(channels.len()).into());
         }
 
         let subchannel_count = channels.len() as u16 - 1;

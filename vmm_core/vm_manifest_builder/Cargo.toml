@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_resources.workspace = true
-firmware_uefi_custom_vars.workspace = true
 firmware_uefi_resources.workspace = true
 getrandom.workspace = true
 input_core.workspace = true
@@ -24,6 +23,9 @@ vmotherboard.workspace = true
 mesh.workspace = true
 
 thiserror.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

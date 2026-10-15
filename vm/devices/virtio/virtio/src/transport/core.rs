@@ -251,7 +251,6 @@ impl VirtioTransportCore {
         match result {
             TransportStateResult::EnableComplete(true) => {
                 self.device_status.set_driver_ok(true);
-                self.update_config_generation(ops);
             }
             TransportStateResult::EnableComplete(false) | TransportStateResult::DisableComplete => {
                 self.reset_status(ops);

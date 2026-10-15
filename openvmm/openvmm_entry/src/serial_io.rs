@@ -71,6 +71,7 @@ pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
 ///
 /// Unlike [`bind_serial`], which creates a new server, this function connects
 /// to a pipe or socket that already exists.
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub fn connect_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     #[cfg(windows)]
     {

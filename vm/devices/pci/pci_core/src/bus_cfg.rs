@@ -21,10 +21,10 @@ use zerocopy::IntoBytes;
 /// Callback trait for the [`PciBusCfgAccessHandler`] for bus-specific operations.
 pub trait PciBusCfgAccessCallbacks {
     /// Dispatches a read to the downstream config-space target.
-    fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult;
+    fn read(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordRead<'_>) -> IoResult;
 
     /// Dispatches a write to the downstream config-space target.
-    fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult;
+    fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult;
 }
 
 /// A pending config space access that was deferred by a downstream device.
@@ -39,16 +39,6 @@ enum DeferredCfgAccess {
         bus_read: DeferredRead,
         addr: PciConfigAddress,
         byte_enable: PciConfigByteEnable,
-    },
-    /// A read that was deferred by a downstream device that was initiated
-    /// as part of a read-modify-write operation.
-    ReadForWrite {
-        #[inspect(skip)]
-        deferred_device_read: DeferredToken,
-        #[inspect(skip)]
-        bus_write: DeferredWrite,
-        addr: PciConfigAddress,
-        value: ByteEnabledDwordWrite,
     },
     /// A write that was deferred by a downstream device.
     Write {
@@ -90,12 +80,8 @@ impl PciBusCfgAccessHandler {
         mut inline_completion_value: ByteEnabledDwordRead<'_>,
         callbacks: &mut impl PciBusCfgAccessCallbacks,
     ) -> IoResult {
-        let mut value = 0;
-        match callbacks.read(addr, &mut value) {
-            IoResult::Ok => {
-                inline_completion_value.set(value);
-                IoResult::Ok
-            }
+        match callbacks.read(addr, inline_completion_value.reborrow()) {
+            IoResult::Ok => IoResult::Ok,
             IoResult::Err(err) => IoResult::Err(err),
             IoResult::Defer(deferred_device_read) => {
                 let (bus_read, bus_token) = defer_read();
@@ -117,31 +103,7 @@ impl PciBusCfgAccessHandler {
         value: ByteEnabledDwordWrite,
         callbacks: &mut impl PciBusCfgAccessCallbacks,
     ) -> IoResult {
-        let write_value = if value.is_full() {
-            // The write spans a full DWORD, so we can extract the value directly.
-            value.extract()
-        } else {
-            // Need to read-for-write, which the device may itself defer.
-            let mut old_value = 0;
-            match callbacks.read(addr, &mut old_value) {
-                IoResult::Ok => value.merge(old_value),
-                IoResult::Err(err) => {
-                    return IoResult::Err(err);
-                }
-                IoResult::Defer(deferred_device_read) => {
-                    let (bus_write, bus_token) = defer_write();
-                    self.push_action(DeferredCfgAccess::ReadForWrite {
-                        deferred_device_read,
-                        bus_write,
-                        addr,
-                        value,
-                    });
-                    return IoResult::Defer(bus_token);
-                }
-            }
-        };
-
-        let result = callbacks.write(addr, write_value);
+        let result = callbacks.write(addr, value);
         if let IoResult::Defer(deferred_device_write) = result {
             let (bus_write, bus_token) = defer_write();
             self.push_action(DeferredCfgAccess::Write {
@@ -156,7 +118,7 @@ impl PciBusCfgAccessHandler {
     }
 
     /// Polls pending accesses and keeps any that are still incomplete.
-    pub fn poll(&mut self, cx: &mut Context<'_>, callbacks: &mut impl PciBusCfgAccessCallbacks) {
+    pub fn poll(&mut self, cx: &mut Context<'_>) {
         self.waker = Some(cx.waker().clone());
         self.actions = std::mem::take(&mut self.actions)
             .into_iter()
@@ -191,56 +153,6 @@ impl PciBusCfgAccessHandler {
                             bus_read,
                             addr,
                             byte_enable,
-                        })
-                    }
-                }
-                DeferredCfgAccess::ReadForWrite {
-                    mut deferred_device_read,
-                    bus_write,
-                    addr,
-                    value,
-                } => {
-                    // If the inner read succeeded, proceed with the write. If the inner
-                    // read failed, fail the outer write.
-                    let mut old_value = 0;
-                    if let Poll::Ready(res) =
-                        deferred_device_read.poll_read(cx, old_value.as_mut_bytes())
-                    {
-                        match res {
-                            Ok(()) => {
-                                let merged_value = value.merge(old_value);
-                                match callbacks.write(addr, merged_value) {
-                                    IoResult::Ok => {
-                                        bus_write.complete();
-                                        None
-                                    }
-                                    IoResult::Err(err) => {
-                                        bus_write.complete_error(err);
-                                        None
-                                    }
-                                    IoResult::Defer(deferred_device_write) => {
-                                        cx.waker().wake_by_ref();
-                                        Some(DeferredCfgAccess::Write {
-                                            deferred_device_write,
-                                            bus_write,
-                                            addr,
-                                        })
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                bus_write.complete_error(err);
-                                None
-                            }
-                        }
-                    } else {
-                        // If the inner read is not ready, keep the write pending and
-                        // leave the deferred action in the list for the next poll.
-                        Some(DeferredCfgAccess::ReadForWrite {
-                            deferred_device_read,
-                            bus_write,
-                            addr,
-                            value,
                         })
                     }
                 }
@@ -339,11 +251,15 @@ mod tests {
     }
 
     impl PciBusCfgAccessCallbacks for DeferredCallbacks {
-        fn read(&mut self, addr: PciConfigAddress, value: &mut u32) -> IoResult {
+        fn read(
+            &mut self,
+            addr: PciConfigAddress,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> IoResult {
             self.reads.push(addr);
             match self.read_action {
                 ReadAction::Ok(read_value) => {
-                    *value = read_value;
+                    value.set(read_value);
                     IoResult::Ok
                 }
                 ReadAction::Err(error) => IoResult::Err(error),
@@ -355,8 +271,8 @@ mod tests {
             }
         }
 
-        fn write(&mut self, addr: PciConfigAddress, value: u32) -> IoResult {
-            self.writes.push((addr, value));
+        fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
+            self.writes.push((addr, value.extract()));
             match self.write_action {
                 WriteAction::Ok => IoResult::Ok,
                 WriteAction::Err(error) => IoResult::Err(error),
@@ -369,9 +285,9 @@ mod tests {
         }
     }
 
-    fn poll_once(handler: &mut PciBusCfgAccessHandler, callbacks: &mut DeferredCallbacks) {
+    fn poll_once(handler: &mut PciBusCfgAccessHandler) {
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        handler.poll(&mut cx, callbacks);
+        handler.poll(&mut cx);
     }
 
     fn poll_read_token(token: &mut DeferredToken, bytes: &mut [u8]) -> Poll<Result<(), IoError>> {
@@ -417,6 +333,30 @@ mod tests {
     }
 
     #[test]
+    fn deferred_read_applies_byte_enable() {
+        let mut handler = PciBusCfgAccessHandler::new();
+        let mut callbacks = DeferredCallbacks::new(ReadAction::Defer, WriteAction::Ok);
+        let addr = PciConfigAddress::new(0, 0, 1).unwrap();
+        let mut buffer = 0xffff_ffff;
+        let value = ByteEnabledDwordRead::new(&mut buffer, PciConfigByteEnable::HIGH_WORD);
+
+        let IoResult::Defer(mut bus_token) = handler.read(addr, value, &mut callbacks) else {
+            panic!("read should defer");
+        };
+
+        callbacks.complete_read(0x1122_3344);
+        poll_once(&mut handler);
+
+        let mut read_data = [0; 2];
+        assert!(matches!(
+            poll_read_token(&mut bus_token, &mut read_data),
+            Poll::Ready(Ok(()))
+        ));
+
+        assert_eq!(read_data, [0x22, 0x11]);
+    }
+
+    #[test]
     fn deferred_read_error_completes_outer_read_with_error() {
         let mut handler = PciBusCfgAccessHandler::new();
         let mut callbacks = DeferredCallbacks::new(ReadAction::Defer, WriteAction::Ok);
@@ -429,7 +369,7 @@ mod tests {
         };
 
         callbacks.complete_read_error(IoError::NoResponse);
-        poll_once(&mut handler, &mut callbacks);
+        poll_once(&mut handler);
 
         let mut read_data = [0; 4];
         assert!(matches!(
@@ -439,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_partial_write_reads_merges_and_writes() {
+    fn partial_writes_do_not_read_for_write() {
         let mut handler = PciBusCfgAccessHandler::new();
         let mut callbacks = DeferredCallbacks::new(ReadAction::Ok(0x1122_3344), WriteAction::Ok);
         let addr = PciConfigAddress::new(0, 0, 1).unwrap();
@@ -449,12 +389,12 @@ mod tests {
             handler.write(addr, write_value, &mut callbacks),
             IoResult::Ok
         ));
-        assert_eq!(callbacks.reads, vec![addr]);
-        assert_eq!(callbacks.writes, vec![(addr, 0x1122_aa44)]);
+        assert_eq!(callbacks.reads, vec![]);
+        assert_eq!(callbacks.writes, vec![(addr, 0x0000_aa00)]);
     }
 
     #[test]
-    fn write_error_is_returned_after_successful_read_for_write() {
+    fn immediate_write_error_is_returned() {
         let mut handler = PciBusCfgAccessHandler::new();
         let mut callbacks = DeferredCallbacks::new(
             ReadAction::Ok(0x1122_3344),
@@ -467,7 +407,28 @@ mod tests {
             handler.write(addr, write_value, &mut callbacks),
             IoResult::Err(IoError::InvalidRegister)
         ));
-        assert_eq!(callbacks.writes, vec![(addr, 0x1122_aa44)]);
+        assert_eq!(callbacks.writes, vec![(addr, 0x0000_aa00)]);
+    }
+
+    #[test]
+    fn deferred_writes_complete_outer_write() {
+        let mut handler = PciBusCfgAccessHandler::new();
+        let mut callbacks = DeferredCallbacks::new(ReadAction::Ok(0), WriteAction::Defer);
+        let addr = PciConfigAddress::new(0, 0, 1).unwrap();
+        let write_value = ByteEnabledDwordWrite::with_all_bytes_enabled(0xaabb_ccdd);
+
+        let IoResult::Defer(mut bus_token) = handler.write(addr, write_value, &mut callbacks)
+        else {
+            panic!("write should defer");
+        };
+
+        callbacks.complete_write();
+        poll_once(&mut handler);
+
+        assert!(matches!(
+            poll_write_token(&mut bus_token),
+            Poll::Ready(Ok(()))
+        ));
     }
 
     #[test]
@@ -483,39 +444,11 @@ mod tests {
         };
 
         callbacks.complete_write_error(IoError::NoResponse);
-        poll_once(&mut handler, &mut callbacks);
+        poll_once(&mut handler);
 
         assert!(matches!(
             poll_write_token(&mut bus_token),
             Poll::Ready(Err(IoError::NoResponse))
         ));
-    }
-
-    #[test]
-    fn deferred_read_for_write_completes_after_deferred_write() {
-        let mut handler = PciBusCfgAccessHandler::new();
-        let mut callbacks = DeferredCallbacks::new(ReadAction::Defer, WriteAction::Defer);
-        let addr = PciConfigAddress::new(0, 0, 1).unwrap();
-        let write_value = ByteEnabledDwordWrite::new(0xaa00, PciConfigByteEnable::BYTE1);
-
-        let IoResult::Defer(mut bus_token) = handler.write(addr, write_value, &mut callbacks)
-        else {
-            panic!("partial write should defer while reading the old value");
-        };
-
-        callbacks.complete_read(0x1122_3344);
-        poll_once(&mut handler, &mut callbacks);
-
-        let mut expected = 0x1122_3344u32.to_ne_bytes();
-        expected[1] = 0xaa;
-        assert_eq!(callbacks.writes, vec![(addr, u32::from_ne_bytes(expected))]);
-
-        callbacks.complete_write();
-        poll_once(&mut handler, &mut callbacks);
-
-        assert!(
-            matches!(poll_write_token(&mut bus_token), Poll::Ready(Ok(()))),
-            "read-for-write bus token should complete after the deferred write completes"
-        );
     }
 }

@@ -12,7 +12,6 @@ use crate::common::CommonProfile;
 use crate::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams;
@@ -103,6 +102,8 @@ impl FlowNode for Node {
                 let mut exclude = [
                     // Skip VMM tests, they get run in a different step.
                     "vmm_tests",
+                    // Skip CCA tests, they aren't setup to run in CI yet
+                    "cca_tests",
                     // Skip guest_test_uefi, as it's a no_std UEFI crate
                     "guest_test_uefi",
                     // Exclude various proc_macro crates, since they don't compile successfully
@@ -189,10 +190,7 @@ impl FlowNode for Node {
                 features,
                 no_default_features: false,
                 target: target.clone(),
-                profile: match profile {
-                    CommonProfile::Release => CargoBuildProfile::Release,
-                    CommonProfile::Debug => CargoBuildProfile::Debug,
-                },
+                profile: profile.into(),
                 extra_env: injected_env,
             };
 
@@ -276,12 +274,12 @@ impl FlowNode for Node {
                     let publish_dones: Vec<_> = test_results
                         .iter()
                         .map(|(test_label, r)| {
-                            let junit_xml = r.clone().map(ctx, |t| t.junit_xml);
                             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-                                junit_xml,
+                                test_results: r.clone(),
                                 test_label: test_label.clone(),
                                 attachments: BTreeMap::new(),
                                 output_dir: artifact_dir.clone(),
+                                upload_logs_on_success: true,
                                 done: v,
                             })
                         })

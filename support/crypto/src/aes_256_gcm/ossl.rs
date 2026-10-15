@@ -30,25 +30,25 @@ impl Aes256GcmInner {
 
     pub fn enc_ctx(&self) -> Result<Aes256GcmEncCtxInner<'_>, Aes256GcmError> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating encrypt context"))?;
+            .map_err(|e| err(e, "creating the encryption context"))?;
         ctx.encrypt_init(
             Some(openssl::cipher::Cipher::aes_256_gcm()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "encrypt init"))?;
+        .map_err(|e| err(e, "initializing the encryption context"))?;
         Ok(Aes256GcmEncCtxInner { ctx, _dummy: &() })
     }
 
     pub fn dec_ctx(&self) -> Result<Aes256GcmDecCtxInner<'_>, Aes256GcmError> {
         let mut ctx = openssl::cipher_ctx::CipherCtx::new()
-            .map_err(|e| err(e, "creating decrypt context"))?;
+            .map_err(|e| err(e, "creating the decryption context"))?;
         ctx.decrypt_init(
             Some(openssl::cipher::Cipher::aes_256_gcm()),
             Some(&self.key),
             None,
         )
-        .map_err(|e| err(e, "decrypt init"))?;
+        .map_err(|e| err(e, "initializing the decryption context"))?;
         Ok(Aes256GcmDecCtxInner { ctx, _dummy: &() })
     }
 }
@@ -63,7 +63,7 @@ impl Aes256GcmEncCtxInner<'_> {
         let mut output = vec![0u8; data.len()];
         self.ctx
             .encrypt_init(None, None, Some(iv))
-            .map_err(|e| err(e, "setting iv for encryption"))?;
+            .map_err(|e| err(e, "setting the encryption IV"))?;
         let count = self
             .ctx
             .cipher_update(data, Some(&mut output))
@@ -75,7 +75,7 @@ impl Aes256GcmEncCtxInner<'_> {
         output.truncate(count + rest);
         self.ctx
             .tag(tag)
-            .map_err(|e| err(e, "getting authentication tag"))?;
+            .map_err(|e| err(e, "reading the authentication tag"))?;
         Ok(output)
     }
 }
@@ -90,7 +90,7 @@ impl Aes256GcmDecCtxInner<'_> {
         let mut output = vec![0u8; data.len()];
         self.ctx
             .decrypt_init(None, None, Some(iv))
-            .map_err(|e| err(e, "setting iv for decryption"))?;
+            .map_err(|e| err(e, "setting the decryption IV"))?;
         let count = self
             .ctx
             .cipher_update(data, Some(&mut output))

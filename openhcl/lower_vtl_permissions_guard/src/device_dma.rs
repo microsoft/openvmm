@@ -18,9 +18,12 @@ use user_driver::memory::MemoryBlock;
 /// access to all VTLs.
 #[derive(Inspect)]
 pub struct LowerVtlDmaBuffer {
+    // NOTE: This must be dropped first to restore VTL protections to the
+    // underlying pages before we free the MemoryBlock and return any pages to
+    // be allocated again.
+    pub(crate) _vtl_guard: PagesAccessibleToLowerVtl,
     #[inspect(skip)]
     pub(crate) block: MemoryBlock,
-    pub(crate) _vtl_guard: PagesAccessibleToLowerVtl,
 }
 
 // SAFETY: The underlying MemoryBlock is providing the implementation for this

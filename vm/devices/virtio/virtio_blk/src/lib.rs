@@ -81,6 +81,7 @@ pub struct VirtioBlkDevice {
 struct BlkWorker {
     disk: Disk,
     read_only: bool,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     stats: WorkerStats,
     #[inspect(with = "FuturesUnordered::len")]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
@@ -169,7 +170,13 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
         state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
         stop.until_stopped(async {
-            loop {
+            // Set once the queue can no longer produce work, because the guest
+            // violated the queue protocol. Fetching stops, but in-flight IOs
+            // keep draining so their descriptors are still completed; the
+            // worker exits once they are done.
+            let mut queue_done = false;
+
+            while !(queue_done && self.ios.is_empty()) {
                 enum Event {
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
                     Completed(IoCompletion),
@@ -181,7 +188,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         return Poll::Ready(Event::Completed(completion));
                     }
                     // Accept new work if under the depth limit.
-                    if self.ios.len() < MAX_IO_DEPTH {
+                    if !queue_done && self.ios.len() < MAX_IO_DEPTH {
                         if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::NewWork(item));
@@ -196,15 +203,19 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         let disk = self.disk.clone();
                         let mem = state.memory.clone();
                         let read_only = self.read_only;
+                        let serial = self.serial;
                         self.ios.push(Box::pin(async move {
-                            process_request(&disk, &mem, read_only, work).await
+                            process_request(&disk, &mem, read_only, serial, work).await
                         }));
                     }
                     Event::NewWork(Err(err)) => {
+                        // The queue is retired: the rejected chain is never
+                        // consumed, so retrying would fail identically forever.
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
-                            "error reading from virtio queue"
+                            "error reading from virtio queue, stopping worker"
                         );
+                        queue_done = true;
                     }
                     Event::Completed(completion) => {
                         self.finish_io(&mut state.queue, completion);
@@ -218,7 +229,13 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
 
 impl VirtioBlkDevice {
     /// Creates a new virtio-blk device backed by the given disk.
-    pub fn new(driver_source: &VmTaskDriverSource, disk: Disk, read_only: bool) -> Self {
+    pub fn new(
+        driver_source: &VmTaskDriverSource,
+        disk: Disk,
+        read_only: bool,
+        serial: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let serial = serial.map(parse_serial).transpose()?;
         let sector_count = disk.sector_count();
         let sector_size = disk.sector_size();
         let physical_sector_size = disk.physical_sector_size();
@@ -284,10 +301,11 @@ impl VirtioBlkDevice {
 
         let supports_discard = disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored;
 
-        Self {
+        Ok(Self {
             worker: TaskControl::new(BlkWorker {
                 disk,
                 read_only,
+                serial,
                 stats: WorkerStats::default(),
                 ios: FuturesUnordered::new(),
             }),
@@ -295,8 +313,23 @@ impl VirtioBlkDevice {
             read_only,
             supports_discard,
             config,
-        }
+        })
     }
+}
+
+fn parse_serial(serial: String) -> anyhow::Result<[u8; VIRTIO_BLK_ID_BYTES]> {
+    anyhow::ensure!(!serial.is_empty(), "serial must not be empty");
+    anyhow::ensure!(
+        serial.len() <= VIRTIO_BLK_ID_BYTES,
+        "serial must be at most {VIRTIO_BLK_ID_BYTES} bytes"
+    );
+    anyhow::ensure!(
+        serial.bytes().all(|byte| byte.is_ascii()),
+        "serial must contain only ASCII characters"
+    );
+    let mut bytes = [0; VIRTIO_BLK_ID_BYTES];
+    bytes[..serial.len()].copy_from_slice(serial.as_bytes());
+    Ok(bytes)
 }
 
 impl VirtioDevice for VirtioBlkDevice {
@@ -422,9 +455,10 @@ async fn process_request(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: VirtioQueueCallbackWork,
 ) -> IoCompletion {
-    match process_request_inner(disk, mem, read_only, &work).await {
+    match process_request_inner(disk, mem, read_only, serial, &work).await {
         Ok((bytes_written, stat, bounced)) => {
             if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
                 tracelimit::error_ratelimited!(
@@ -462,6 +496,7 @@ async fn process_request_inner(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
+    serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     work: &VirtioQueueCallbackWork,
 ) -> Result<(u32, IoStat, bool), u8> {
     // Read the request header from the first (readable) descriptor.
@@ -499,7 +534,9 @@ async fn process_request_inner(
             Ok((0, IoStat::Flush, false))
         }
         VIRTIO_BLK_T_GET_ID => {
-            let id = if let Some(disk_id) = disk.disk_id() {
+            let id = if let Some(serial) = serial {
+                serial
+            } else if let Some(disk_id) = disk.disk_id() {
                 let mut id_str = [0u8; VIRTIO_BLK_ID_BYTES];
                 let hex: String = disk_id.iter().map(|b| format!("{:02x}", b)).collect();
                 let copy_len = hex.len().min(VIRTIO_BLK_ID_BYTES);

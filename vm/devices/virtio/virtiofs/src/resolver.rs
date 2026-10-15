@@ -59,6 +59,24 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
             VirtioFsBackend::SectionFs { .. } => {
                 anyhow::bail!("section fs not supported on this platform")
             }
+            VirtioFsBackend::Aggregate { children } => {
+                let fs = VirtioFs::new_aggregate();
+                for child in children {
+                    fs.add_child(
+                        &child.name,
+                        &child.root_path,
+                        Some(&LxVolumeOptions::from_option_string(&child.mount_options)),
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to add virtiofs aggregate child '{}' (root_path='{}'): {e}",
+                            child.name,
+                            child.root_path
+                        )
+                    })?;
+                }
+                VirtioFsDevice::new(input.driver_source, &resource.tag, fs, 0, None)
+            }
         };
         Ok(device.into())
     }

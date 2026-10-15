@@ -63,6 +63,7 @@ mod ioctl {
     ioctl_write_ptr!(kvm_set_gsi_routing, KVMIO, 0x6a, kvm_irq_routing);
     ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, kvm_irqfd);
     ioctl_write_int_bad!(kvm_set_boot_cpu_id, request_code_none!(KVMIO, 0x78));
+    ioctl_write_ptr!(kvm_set_clock, KVMIO, 0x7b, kvm_clock_data);
     ioctl_read!(kvm_get_clock, KVMIO, 0x7c, kvm_clock_data);
     ioctl_write_int_bad!(kvm_run, request_code_none!(KVMIO, 0x80));
     // Is *NOT* defined for arm64
@@ -114,6 +115,10 @@ mod ioctl {
     ioctl_read!(kvm_arm_preferred_target, KVMIO, 0xaf, kvm_vcpu_init);
     ioctl_write_ptr!(kvm_ioeventfd, KVMIO, 0x79, kvm_ioeventfd);
     ioctl_write_ptr!(kvm_set_guest_debug, KVMIO, 0x9b, kvm_guest_debug);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_x86_setup_mce, KVMIO, 0x9c, u64);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_read!(kvm_x86_get_mce_cap_supported, KVMIO, 0x9d, u64);
     ioctl_write_ptr!(
         kvm_set_memory_attributes,
         KVMIO,
@@ -122,6 +127,8 @@ mod ioctl {
     );
     ioctl_readwrite!(kvm_create_device, KVMIO, 0xe0, kvm_create_device);
     ioctl_write_ptr!(kvm_set_device_attr, KVMIO, 0xe1, kvm_device_attr);
+    #[cfg(target_arch = "x86_64")]
+    ioctl_write_ptr!(kvm_get_device_attr, KVMIO, 0xe2, kvm_device_attr);
     ioctl_readwrite!(kvm_create_guest_memfd, KVMIO, 0xd4, kvm_create_guest_memfd);
     #[cfg(target_arch = "aarch64")]
     ioctl_readwrite_bad!(
@@ -324,6 +331,19 @@ pub enum Error {
     GetMsrs(#[source] nix::Error),
     #[error("SetMsrs")]
     SetMsrs(#[source] nix::Error),
+    #[error(
+        "MSR access only processed {completed} of {requested} entries (first failed MSR: {failed_msr:#x}, write={write})"
+    )]
+    IncompleteMsrs {
+        write: bool,
+        completed: usize,
+        requested: usize,
+        failed_msr: u32,
+    },
+    #[error("SetupMce")]
+    SetupMce(#[source] nix::Error),
+    #[error("GetMceCapSupported")]
+    GetMceCapSupported(#[source] nix::Error),
     #[error("GetMpState")]
     GetMpState(#[source] nix::Error),
     #[error("SetMpState")]
@@ -348,8 +368,14 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("GetDeviceAttr")]
+    GetDeviceAttr(#[source] nix::Error),
     #[error("CheckExtension")]
     CheckExtension(#[source] nix::Error),
+    #[error("GetClock")]
+    GetClock(#[source] nix::Error),
+    #[error("SetClock")]
+    SetClock(#[source] nix::Error),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -413,6 +439,38 @@ impl Kvm {
         }
 
         Ok(supported_cpuid.entries[..supported_cpuid.cpuid.nent as usize].to_vec())
+    }
+
+    /// Returns the set of `IA32_MCG_CAP` capability bits that KVM supports
+    /// setting via [`Processor::setup_mce`] on this host (e.g. `MCG_CMCI_P`,
+    /// `MCG_LMCE_P` on Intel).
+    #[cfg(target_arch = "x86_64")]
+    pub fn supported_mce_cap(&self) -> Result<u64> {
+        let mut cap: u64 = 0;
+        // SAFETY: passing a valid pointer to a u64 for the ioctl to fill in.
+        unsafe {
+            ioctl::kvm_x86_get_mce_cap_supported(self.as_fd().as_raw_fd(), &mut cap)
+                .map_err(Error::GetMceCapSupported)?;
+        }
+        Ok(cap)
+    }
+
+    /// Returns the VMSA feature bits supported by KVM for SEV guests.
+    #[cfg(target_arch = "x86_64")]
+    pub fn supported_sev_vmsa_features(&self) -> Result<u64> {
+        let mut value = 0u64;
+        let attr = kvm_device_attr {
+            group: KVM_X86_GRP_SEV,
+            attr: u64::from(KVM_X86_SEV_VMSA_FEATURES),
+            addr: std::ptr::from_mut(&mut value) as u64,
+            flags: 0,
+        };
+        // SAFETY: `attr.addr` points to `value` for the duration of the ioctl.
+        unsafe {
+            ioctl::kvm_get_device_attr(self.as_fd().as_raw_fd(), &attr)
+                .map_err(Error::GetDeviceAttr)?;
+        }
+        Ok(value)
     }
 
     /// Returns the Hyper-V CPUID values that KVM supports for guest
@@ -604,8 +662,11 @@ impl Partition {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub fn sev_snp_init(&self, sev: BorrowedFd<'_>) -> Result<()> {
-        let mut init = kvm_sev_init::default();
+    pub fn sev_snp_init(&self, sev: BorrowedFd<'_>, vmsa_features: u64) -> Result<()> {
+        let mut init = kvm_sev_init {
+            vmsa_features,
+            ..Default::default()
+        };
         let mut command = kvm_sev_cmd {
             id: sev_cmd_id_KVM_SEV_INIT2,
             data: std::ptr::from_mut(&mut init) as u64,
@@ -1145,9 +1206,22 @@ impl Partition {
         let mut clock = kvm_clock_data::default();
         // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe {
-            ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetRegs)?;
+            ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetClock)?;
         }
         Ok(clock)
+    }
+
+    /// Sets the current kvmclock value.
+    pub fn set_clock_ns(&self, clock_ns: u64) -> Result<()> {
+        let clock = kvm_clock_data {
+            clock: clock_ns,
+            ..Default::default()
+        };
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        unsafe {
+            ioctl::kvm_set_clock(self.vm.as_raw_fd(), &clock).map_err(Error::SetClock)?;
+        }
+        Ok(())
     }
 }
 
@@ -1368,9 +1442,18 @@ impl<'a> Processor<'a> {
         }
 
         // SAFETY: Our Msrs type puts the entries array immediately after the header in memory, as required.
-        unsafe {
+        let completed = unsafe {
             ioctl::kvm_get_msrs(self.get().vcpu.as_raw_fd(), &mut input.header)
-                .map_err(Error::GetMsrs)?;
+                .map_err(Error::GetMsrs)?
+        } as usize;
+        assert!(completed <= msrs.len());
+        if completed < msrs.len() {
+            return Err(Error::IncompleteMsrs {
+                requested: msrs.len(),
+                completed,
+                failed_msr: msrs.get(completed).copied().unwrap(),
+                write: false,
+            });
         }
         for (v, e) in values.iter_mut().zip(&input.entries) {
             *v = e.data;
@@ -1404,9 +1487,34 @@ impl<'a> Processor<'a> {
         }
 
         // SAFETY: Our Msrs type puts the entries array immediately after the header in memory, as required.
-        unsafe {
+        let completed = unsafe {
             ioctl::kvm_set_msrs(self.get().vcpu.as_raw_fd(), &input.header)
-                .map_err(Error::SetMsrs)?;
+                .map_err(Error::SetMsrs)?
+        } as usize;
+        assert!(completed <= msrs.len());
+        if completed < msrs.len() {
+            return Err(Error::IncompleteMsrs {
+                requested: msrs.len(),
+                completed,
+                failed_msr: msrs.get(completed).copied().unwrap().0,
+                write: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// Configures the vCPU's machine-check capability register
+    /// (`IA32_MCG_CAP`) via `KVM_X86_SETUP_MCE`.
+    ///
+    /// `mcg_cap` should only contain capability bits reported as supported by
+    /// [`Kvm::supported_mce_cap`] (plus the bank count in the low byte);
+    /// otherwise KVM returns `EINVAL`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn setup_mce(&self, mcg_cap: u64) -> Result<()> {
+        // SAFETY: passing a valid pointer to a u64 for the ioctl to read.
+        unsafe {
+            ioctl::kvm_x86_setup_mce(self.get().vcpu.as_raw_fd(), &mcg_cap)
+                .map_err(Error::SetupMce)?;
         }
         Ok(())
     }
@@ -1937,12 +2045,13 @@ impl<'a> VpRunner<'a> {
 
     /// Request an exit when the interrupt window opens.
     ///
-    /// Returns true if the window is already open (in which case the request is
-    /// not registered).
+    /// Returns true if the window is already open, in which case no request is
+    /// registered, and any earlier request is withdrawn.
     #[must_use]
     pub fn check_or_request_interrupt_window(&mut self) -> bool {
         let rdata = self.run_data();
         if rdata.ready_for_interrupt_injection != 0 {
+            rdata.request_interrupt_window = 0;
             true
         } else {
             rdata.request_interrupt_window = 1;
@@ -1950,12 +2059,26 @@ impl<'a> VpRunner<'a> {
         }
     }
 
-    /// Injects an extint interrupt.
+    /// Returns whether an exit is requested for when the interrupt window
+    /// opens (see [`Self::check_or_request_interrupt_window`]).
+    ///
+    /// The request stays registered until [`Self::run`] returns
+    /// [`Exit::InterruptWindow`], or until
+    /// [`Self::check_or_request_interrupt_window`] finds the window open.
+    pub fn interrupt_window_requested(&mut self) -> bool {
+        self.run_data().request_interrupt_window != 0
+    }
+
+    /// Queues an extint interrupt with `KVM_INTERRUPT`.
+    ///
+    /// KVM delivers the interrupt once the guest can take it, exiting from a
+    /// nested guest first if needed. But KVM has no way to report or withdraw
+    /// a queued extint; `KVM_GET_VCPU_EVENTS` never exposes the queued vector.
     ///
     /// Caller must ensure that either it has received a
     /// [`Exit::InterruptWindow`] exit, or that
     /// [`Self::check_or_request_interrupt_window`] has returned `true`.
-    pub fn inject_extint_interrupt(&mut self, vector: u8) -> Result<()> {
+    pub fn queue_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
         // Remember that there is a pending extint interrupt. KVM will update
         // this field again after the VP runs.

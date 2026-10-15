@@ -53,3 +53,13 @@ pub enum IdentityMapSize {
     /// Identity-map the bottom 8GB
     Size8Gb,
 }
+
+impl IdentityMapSize {
+    /// The size of the identity-mapped address space in bytes.
+    pub const fn address_space_size(self) -> u64 {
+        match self {
+            Self::Size4Gb => 0x1_0000_0000,
+            Self::Size8Gb => 0x2_0000_0000,
+        }
+    }
+}

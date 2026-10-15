@@ -94,7 +94,7 @@ impl<T: IoAccess> Serial<T> {
     }
 
     /// Create an instance without calling init.
-    pub fn new(io: T) -> Self {
+    pub const fn new(io: T) -> Self {
         Self { io }
     }
 

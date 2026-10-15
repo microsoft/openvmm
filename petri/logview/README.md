@@ -4,8 +4,14 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 ## Prerequisites
 
-- **Node.js** (version `^20.19.0 || >=22.12.0`, as required by Vite 8)
+- **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
+- **Browser**: Safari 16.4+, Chrome 111+, or Firefox 128+ (required by Tailwind CSS 4)
+
+Tailwind CSS 4 runs through the `@tailwindcss/vite` plugin in `vite.config.ts`.
+`tailwind.css` imports the theme and utilities without Preflight and retains
+the existing gray palette, preserving browser defaults and the site's custom
+styles. Source scanning is limited to TypeScript files under `src/`.
 
 ## Initial Setup
 
@@ -19,9 +25,13 @@ Navigate to the project directory and install all required packages:
 # Navigate to the logview directory
 cd .\petri\logview
 
-# Install all dependencies
-npm install
+# Install all dependencies exactly as locked
+npm ci
 ```
+
+`npm ci` installs the exact versions recorded in `package-lock.json`, which is
+what CI runs. Use `npm install` only when you intend to add or update a
+dependency, and commit the resulting `package-lock.json` changes.
 
 ### 2. Verify Installation
 
@@ -30,7 +40,7 @@ After installation, you should have the following key dependencies:
 **Runtime Dependencies:**
 
 - `react` & `react-dom` - React framework
-- `react-router-dom` - Client-side routing
+- `react-router` - Client-side routing
 - `@tanstack/react-query` - Data fetching and caching
 - `@tanstack/react-table` - Table component library
 - `@tanstack/react-virtual` - Virtual scrolling
@@ -82,7 +92,7 @@ logview/
 
 ### Common Issues
 
-1. **Module not found errors**: Ensure all dependencies are installed with `npm install`
+1. **Module not found errors**: Ensure all dependencies are installed with `npm ci`
 2. **TypeScript errors**: Make sure both `tsconfig.json` and `tsconfig.node.json` are present
 3. **Port already in use**: The dev server uses port 3000 by default. You can change this in `vite.config.ts`
 

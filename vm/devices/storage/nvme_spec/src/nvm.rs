@@ -319,6 +319,14 @@ pub struct Cdw10ReservationRelease {
     _rsvd2: u16,
 }
 
+const RESERVATION_ACTION_BITS: usize = 3;
+/// Maximum value of the action field of a reservation command, for use by the fuzzer
+pub const RESERVATION_ACTION_MAX: u8 = (1u8 << RESERVATION_ACTION_BITS) - 1;
+
+const _: () = assert!(Cdw10ReservationRegister::RREGA_BITS == RESERVATION_ACTION_BITS);
+const _: () = assert!(Cdw10ReservationAcquire::RACQA_BITS == RESERVATION_ACTION_BITS);
+const _: () = assert!(Cdw10ReservationRelease::RRELA_BITS == RESERVATION_ACTION_BITS);
+
 open_enum! {
     pub enum ReservationReleaseAction: u8 {
         RELEASE = 0,

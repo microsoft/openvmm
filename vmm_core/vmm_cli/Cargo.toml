@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vmm_cli"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vmm_cli_derive.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

@@ -6,6 +6,7 @@
 export const run_filters: string[] = [
     "all",
     "main",
+    "release/1.8.2607",
     "release/1.7.2511",
     "release/2505",
 ];
@@ -14,6 +15,7 @@ export const run_filters: string[] = [
 // branch name exactly.
 export const test_filters: string[] = [
     "main",
+    "release/1.8.2607",
     "release/1.7.2511",
     "release/2505",
     "all",

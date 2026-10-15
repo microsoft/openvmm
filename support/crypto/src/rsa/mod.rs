@@ -47,14 +47,14 @@ use thiserror::Error;
     all(native, target_os = "macos")
 ))]
 #[derive(Debug, Error)]
-#[error("RSA error")]
+#[error("RSA operation failed")]
 pub struct RsaError(#[source] pub(crate) super::BackendError);
 
 /// An error for RSA operations.
 // TODO: Make this clone once RustCrypto rsa::errors::Error is cloneable
 #[cfg(rust)]
 #[derive(Debug, Error)]
-#[error("RSA error during {1}")]
+#[error("RSA operation failed while {1}")]
 pub struct RsaError(
     #[source] pub(crate) rsa::errors::Error,
     pub(crate) &'static str,
@@ -75,10 +75,17 @@ impl RsaKeyPair {
         sys::RsaKeyPairInner::from_pkcs8_der(der).map(Self)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     /// Convert the RSA private key to PKCS#8 DER-encoded bytes.
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_pkcs8_der()
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    /// Returns the components of an RSA private key as big-endian
+    /// byte vectors, without leading zero padding.
+    pub fn to_private_components(&self) -> Result<RsaPrivateKeyComponents, RsaError> {
+        self.0.to_private_components()
     }
 
     /// Decrypt `input` using RSA-OAEP with the specified hash algorithm.
@@ -117,12 +124,32 @@ impl RsaKeyPair {
 pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
 /// The public components of an RSA key.
+///
+/// All components are unsigned big-endian integers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsaPublicKeyComponents {
-    /// The RSA modulus as a big-endian byte vector.
+    /// The RSA modulus, `n`.
     pub modulus: Vec<u8>,
-    /// The RSA public exponent as a big-endian byte vector.
+    /// The RSA public exponent, `e`.
     pub public_exponent: Vec<u8>,
+}
+
+/// The full components of a two-prime RSA private key.
+///
+/// All components are unsigned big-endian integers.
+#[cfg(any(test, feature = "export_private"))]
+#[derive(Clone, PartialEq, Eq)]
+pub struct RsaPrivateKeyComponents {
+    /// The RSA modulus, `n`.
+    pub modulus: Vec<u8>,
+    /// The RSA public exponent, `e`.
+    pub public_exponent: Vec<u8>,
+    /// The RSA private exponent, `d`.
+    pub private_exponent: Vec<u8>,
+    /// The first prime factor, `p`.
+    pub prime1: Vec<u8>,
+    /// The second prime factor, `q`.
+    pub prime2: Vec<u8>,
 }
 
 impl RsaPublicKey {
@@ -191,6 +218,7 @@ impl std::ops::Deref for RsaKeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use der::Decode;
 
     /// Sign and verify a message of arbitrary (i.e. not pre-hashed) length.
     /// Both backends must hash the message internally before applying the
@@ -258,13 +286,18 @@ mod tests {
         assert!(valid);
     }
 
-    /// OAEP encrypt/decrypt round-trip with both supported hash algorithms.
+    /// OAEP encrypt/decrypt round-trip with every supported hash algorithm.
     #[test]
     #[expect(deprecated)]
     fn oaep_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let payload = b"a secret message";
-        for alg in [HashAlgorithm::Sha1, HashAlgorithm::Sha256] {
+        for alg in [
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
             let ct = key.oaep_encrypt(payload, alg).unwrap();
             let pt = key.oaep_decrypt(&ct, alg).unwrap();
             assert_eq!(pt, payload);
@@ -332,5 +365,29 @@ mod tests {
             .unwrap();
         assert!(!pkcs1_as_pss);
         assert!(!pss_as_pkcs1);
+    }
+
+    #[test]
+    fn private_components_match_pkcs8() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let components = key.to_private_components().unwrap();
+        let public = key.to_components();
+        assert_eq!(components.modulus, public.modulus);
+        assert_eq!(components.public_exponent, public.public_exponent);
+
+        let der = key.to_pkcs8_der().unwrap();
+        let pki = pkcs8::PrivateKeyInfoRef::from_der(&der).unwrap();
+        let decoded = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes()).unwrap();
+        for (actual, expected) in [
+            (&components.modulus, decoded.modulus),
+            (&components.public_exponent, decoded.public_exponent),
+            (&components.private_exponent, decoded.private_exponent),
+            (&components.prime1, decoded.prime1),
+            (&components.prime2, decoded.prime2),
+        ] {
+            assert!(!actual.is_empty());
+            assert_ne!(actual[0], 0);
+            assert_eq!(actual.as_slice(), expected.as_bytes());
+        }
     }
 }

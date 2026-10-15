@@ -13,6 +13,7 @@ use cache_topology::CacheTopology;
 use chipset::ioapic;
 use chipset::psp;
 use inspect::Inspect;
+use memory_range::MemoryRange;
 use std::collections::BTreeMap;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
@@ -41,13 +42,18 @@ pub struct AcpiSmmuConfig {
     pub event_gsiv: u32,
     /// GIC SPI INTID for the global error interrupt.
     pub gerr_gsiv: u32,
+    /// IOVA ranges reserved by the host IOMMU (e.g., MSI windows). When
+    /// non-empty, an IORT RMR node (or DT `reserved-memory` entry) is
+    /// generated so the guest identity-maps these ranges in its S1 page
+    /// tables.
+    pub reserved_iova_ranges: Vec<MemoryRange>,
 }
 
 /// Binary ACPI tables constructed by [`AcpiTablesBuilder`].
 pub struct BuiltAcpiTables {
-    /// The RDSP. Assumed to be given a whole page.
-    pub rdsp: Vec<u8>,
-    /// The remaining tables pointed to by the RDSP.
+    /// The RSDP. Assumed to be given a whole page.
+    pub rsdp: Vec<u8>,
+    /// The remaining tables pointed to by the RSDP.
     pub tables: Vec<u8>,
 }
 
@@ -654,7 +660,13 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         };
         let its_node_count: u32 = if has_its { 1 } else { 0 };
         let smmu_node_count = smmu_configs.len() as u32;
-        let node_count = its_node_count + smmu_node_count + self.pcie_host_bridges.len() as u32;
+        // Count RMR nodes: one per SMMU with reserved IOVA ranges.
+        let rmr_node_count = smmu_configs
+            .iter()
+            .filter(|cfg| !cfg.reserved_iova_ranges.is_empty())
+            .count() as u32;
+        let node_count =
+            its_node_count + smmu_node_count + self.pcie_host_bridges.len() as u32 + rmr_node_count;
 
         let mut iort_extra: Vec<u8> = Vec::new();
 
@@ -780,6 +792,52 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             }
         }
 
+        // RMR (Reserved Memory Range) nodes for SMMUs with reserved IOVA
+        // ranges (e.g., MSI windows). Each RMR node tells the guest kernel
+        // to identity-map the reserved ranges in S1 page tables.
+        for (cfg_idx, cfg) in smmu_configs.iter().enumerate() {
+            if cfg.reserved_iova_ranges.is_empty() {
+                continue;
+            }
+            let smmu_offset = smmu_rc_offsets
+                .iter()
+                .find(|(idx, _)| *idx == cfg.rc_index)
+                .map(|(_, off)| *off)
+                .expect("RMR config references a valid SMMU");
+
+            let rmr_count = cfg.reserved_iova_ranges.len() as u32;
+            // One ID mapping pointing to the SMMUv3 node, covering the
+            // full BDF range.
+            let mapping_count = 1u32;
+            let rmr = iort::IortRmr::new(
+                cfg_idx as u32 + 0x1000, // unique identifier
+                0,                       // flags: no ACCESS_PRIVILEGE, no REMAP_PERMITTED
+                rmr_count,
+                mapping_count,
+            );
+            iort_extra.extend_from_slice(rmr.as_bytes());
+
+            // ID mapping first (must come before RMR descriptors to match
+            // the offset layout in IortRmr::new).
+            iort_extra.extend_from_slice(
+                iort::IortIdMapping::new(
+                    0,           // input_base
+                    0xFFFF,      // id_count (full 16-bit BDF range)
+                    0,           // output_base
+                    smmu_offset, // output_reference → SMMUv3 node
+                    0,           // flags
+                )
+                .as_bytes(),
+            );
+
+            // RMR descriptors.
+            for &range in &cfg.reserved_iova_ranges {
+                iort_extra.extend_from_slice(
+                    iort::IortRmrDescriptor::new(range.start(), range.len()).as_bytes(),
+                );
+            }
+        }
+
         (f)(&acpi::builder::Table::new_dyn(
             iort::IORT_REVISION,
             None,
@@ -821,12 +879,15 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 })
             });
 
-            let ivhd_total = size_of::<ivrs::IvhdType40>() + dev_entries_size;
+            let ivhd_total = size_of::<ivrs::IvhdType11>() + dev_entries_size;
 
-            // Type 40h is the "mixed format" IVHD (§5.2.2.3) — same layout
-            // as type 11h but supports both BDF and ACPI HID device entries.
-            // We use it as the superset format; our entries are all BDF-based.
-            let ivhd = ivrs::IvhdType40::new(
+            // Type 11h is the extended IVHD format (§5.2.2.3) carrying the
+            // EFR image. We use 11h (not the byte-identical 40h) because the
+            // Microsoft hypervisor's IVRS parser in Windows Server 2022 only
+            // accepts types 10h/11h and rejects the IVRS as a bad ACPI table
+            // otherwise; our device entries are all BDF-based, so the 40h
+            // "mixed format" superset buys us nothing.
+            let ivhd = ivrs::IvhdType11::new(
                 config.device_id,
                 config.capability_offset,
                 config.mmio_base,
@@ -1091,7 +1152,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
     /// Build ACPI tables based on the supplied closure that adds devices to the DSDT.
     ///
-    /// The RDSP is assumed to take one whole page.
+    /// The RSDP is assumed to take one whole page.
     ///
     /// Returns tables that should be loaded at the supplied gpa.
     pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
@@ -1130,15 +1191,6 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         }
 
         self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes())
-    }
-
-    /// Build ACPI tables based on the supplied custom DSDT.
-    ///
-    /// The RDSP is assumed to take one whole page.
-    ///
-    /// Returns tables that should be loaded at the supplied gpa.
-    pub fn build_acpi_tables_custom_dsdt(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
-        self.build_acpi_tables_inner(gpa, dsdt)
     }
 
     fn build_acpi_tables_inner(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
@@ -1323,9 +1375,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             self.with_gtdt(|t| b.append(t));
         }
 
-        let (rdsp, tables) = b.build();
+        let (rsdp, tables) = b.build();
 
-        BuiltAcpiTables { rdsp, tables }
+        BuiltAcpiTables { rsdp, tables }
     }
 
     /// Helper method to construct an MADT without constructing the rest of
@@ -1424,7 +1476,6 @@ mod test {
     use super::*;
     use acpi_spec::madt::MadtParser;
     use acpi_spec::mcfg::parse_mcfg;
-    use memory_range::MemoryRange;
     use virt::VpIndex;
     use virt::VpInfo;
     use vm_topology::processor::TopologyBuilder;
@@ -1779,6 +1830,7 @@ mod test {
                     base: smmu_base,
                     event_gsiv: 35,
                     gerr_gsiv: 36,
+                    reserved_iova_ranges: Vec::new(),
                 }],
             },
         }
@@ -2112,9 +2164,9 @@ mod test {
         assert_eq!(checksum(&ivrs), 0);
 
         // After the 36-byte ACPI header and 12-byte IVRS header (offset 48),
-        // the IVHD type 40h block starts.
+        // the IVHD type 11h block starts.
         let ivhd_offset = 48;
-        assert_eq!(ivrs[ivhd_offset], 0x40); // IVHD type 40h
+        assert_eq!(ivrs[ivhd_offset], 0x11); // IVHD type 11h
 
         // IOMMU DeviceID at offset +4 (u16)
         let dev_id = u16::from_ne_bytes(ivrs[ivhd_offset + 4..ivhd_offset + 6].try_into().unwrap());
@@ -2130,11 +2182,11 @@ mod test {
             u64::from_ne_bytes(ivrs[ivhd_offset + 8..ivhd_offset + 16].try_into().unwrap());
         assert_eq!(mmio_base, 0xFD00_0000);
 
-        // EFR at offset +24 (u64) in the type 40h extended fields
+        // EFR at offset +24 (u64) in the type 11h extended fields
         let efr = u64::from_ne_bytes(ivrs[ivhd_offset + 24..ivhd_offset + 32].try_into().unwrap());
         assert_eq!(efr, 0xC0); // IASup + GASup
 
-        // Device entries follow the IVHD type 40h header (40 bytes).
+        // Device entries follow the IVHD type 11h header (40 bytes).
         // We emit a range_start + range_end pair.
         let dev_entry_offset = ivhd_offset + 40;
         assert_eq!(ivrs[dev_entry_offset], 0x03); // range_start entry
@@ -2258,7 +2310,7 @@ mod test {
 
         // First IVHD block at offset 48 (after 36-byte ACPI header + 12-byte IVRS header)
         let ivhd0_offset = 48;
-        assert_eq!(ivrs[ivhd0_offset], 0x40); // IVHD type 40h
+        assert_eq!(ivrs[ivhd0_offset], 0x11); // IVHD type 11h
 
         // Read first IVHD length to find second IVHD
         let ivhd0_len =
@@ -2280,7 +2332,7 @@ mod test {
 
         // Second IVHD block follows the first
         let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
-        assert_eq!(ivrs[ivhd1_offset], 0x40); // IVHD type 40h
+        assert_eq!(ivrs[ivhd1_offset], 0x11); // IVHD type 11h
 
         // Second IOMMU: segment 1, MMIO 0xFD00_4000
         let mmio1 = u64::from_ne_bytes(
@@ -2605,7 +2657,7 @@ mod test {
         // its length is header (40) + 2 * 4 = 48, and it carries no special
         // device entry.
         let ivhd0_offset = 48;
-        assert_eq!(ivrs[ivhd0_offset], 0x40);
+        assert_eq!(ivrs[ivhd0_offset], 0x11);
         let ivhd0_len =
             u16::from_ne_bytes(ivrs[ivhd0_offset + 2..ivhd0_offset + 4].try_into().unwrap());
         assert_eq!(ivhd0_len as usize, 40 + 2 * 4);
@@ -2613,7 +2665,7 @@ mod test {
         // Second IVHD (segment 0): range_start + range_end + the 8-byte
         // IOAPIC special device entry, so its length is 40 + 2 * 4 + 8 = 56.
         let ivhd1_offset = ivhd0_offset + ivhd0_len as usize;
-        assert_eq!(ivrs[ivhd1_offset], 0x40);
+        assert_eq!(ivrs[ivhd1_offset], 0x11);
         let ivhd1_len =
             u16::from_ne_bytes(ivrs[ivhd1_offset + 2..ivhd1_offset + 4].try_into().unwrap());
         assert_eq!(ivhd1_len as usize, 40 + 2 * 4 + 8);

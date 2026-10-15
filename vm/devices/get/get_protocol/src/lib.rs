@@ -17,6 +17,8 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+use zerocopy::LittleEndian;
+use zerocopy::U16;
 
 pub mod crash;
 pub mod dps_json; // TODO: split into separate crate, so get_protocol can be no_std
@@ -117,6 +119,7 @@ open_enum! {
         START_VTL0_COMPLETED               = 7,
         VTL_CRASH                          = 8,
         TRIPLE_FAULT                       = 9,
+        IPMI_SEL                           = 13,
     }
 }
 
@@ -158,6 +161,7 @@ open_enum! {
         DEVICE_PLATFORM_SETTINGS_V2_REV1 = 27, // wart: only sent back in *response* to DEVICE_PLATFORM_SETTINGS
         CREATE_RAM_GPA_RANGE             = 28,
         RESET_RAM_GPA_RANGE              = 29,
+        LOAD_FIRMWARE                    = 30,
 
         // --- Experimental (not yet in Hyper-V) ---
         MAP_FRAMEBUFFER              = 0xFFFF,
@@ -370,6 +374,31 @@ impl EventLogNotification {
         Self {
             message_header: HeaderGeneric::new(HostNotifications::EVENT_LOG),
             event_log_id,
+        }
+    }
+}
+
+pub use ipmi_protocol::SEL_RECORD_SIZE as IPMI_SEL_RECORD_SIZE;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct IpmiSelNotification {
+    pub message_header: HeaderHostNotification,
+    pub record_id: U16<LittleEndian>,
+    pub record: [u8; IPMI_SEL_RECORD_SIZE],
+}
+
+const_assert_eq!(22, size_of::<IpmiSelNotification>());
+const_assert_eq!(0, std::mem::offset_of!(IpmiSelNotification, message_header));
+const_assert_eq!(4, std::mem::offset_of!(IpmiSelNotification, record_id));
+const_assert_eq!(6, std::mem::offset_of!(IpmiSelNotification, record));
+
+impl IpmiSelNotification {
+    pub fn new(record_id: u16, record: [u8; IPMI_SEL_RECORD_SIZE]) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostNotifications::IPMI_SEL),
+            record_id: U16::new(record_id),
+            record,
         }
     }
 }
@@ -1894,6 +1923,64 @@ impl ResetRamGpaRangeResponse {
     pub fn new() -> Self {
         Self {
             message_header: HeaderGeneric::new(HostRequests::RESET_RAM_GPA_RANGE),
+        }
+    }
+}
+
+/// Requests that the host load a firmware image into VTL0 guest RAM (memory
+/// only; the guest/paravisor remains responsible for VP state). Host support is
+/// advertised via the `load_firmware_supported` bit in
+/// [`dps_json::ManagementVtlFeatures`].
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct LoadFirmwareRequest {
+    pub message_header: HeaderHostRequest,
+    /// Opaque token identifying the firmware resource to load.
+    pub firmware_token: u64,
+}
+
+const_assert_eq!(12, size_of::<LoadFirmwareRequest>());
+
+impl LoadFirmwareRequest {
+    pub fn new(firmware_token: u64) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostRequests::LOAD_FIRMWARE),
+            firmware_token,
+        }
+    }
+}
+
+open_enum! {
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    pub enum LoadFirmwareStatus: u32 {
+        SUCCESS = 0,
+        /// The supplied firmware token did not map to a known resource.
+        INVALID_TOKEN = 1,
+        /// The firmware image could not be loaded or written into guest RAM.
+        FAILED = 2,
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct LoadFirmwareResponse {
+    pub message_header: HeaderHostResponse,
+    pub status: LoadFirmwareStatus,
+    /// Offset from the firmware image base to the firmware entry point (SEC
+    /// entry on x64), computed by the host. Valid only when `status` is
+    /// [`LoadFirmwareStatus::SUCCESS`]; the guest/paravisor programs VTL0's RIP
+    /// to `image_base + entry_point_image_offset`.
+    pub entry_point_image_offset: u64,
+}
+
+const_assert_eq!(16, size_of::<LoadFirmwareResponse>());
+
+impl LoadFirmwareResponse {
+    pub fn new(status: LoadFirmwareStatus, entry_point_image_offset: u64) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostRequests::LOAD_FIRMWARE),
+            status,
+            entry_point_image_offset,
         }
     }
 }

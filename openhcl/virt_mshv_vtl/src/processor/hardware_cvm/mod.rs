@@ -26,6 +26,7 @@ use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
+use hv1_structs::VtlSet;
 use hvdef::HvCacheType;
 use hvdef::HvError;
 use hvdef::HvInterceptAccessType;
@@ -60,8 +61,27 @@ use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vm_topology::memory::AddressType;
+use vmcore::vmtime::VmTime;
+use vmcore::vmtime::VmTimeAccess;
+use x86defs::X64_CR0_CD;
+use x86defs::X64_CR0_NW;
+use x86defs::X64_CR0_PE;
+use x86defs::X64_CR0_PG;
+use x86defs::X64_CR0_RSVDZ_MASK;
+use x86defs::X64_CR4_LA57;
+use x86defs::X64_EFER_FFXSR;
+use x86defs::X64_EFER_LMA;
+use x86defs::X64_EFER_LME;
+use x86defs::X64_EFER_NXE;
+use x86defs::X64_EFER_SCE;
+use x86defs::X64_EFER_SVME;
+use x86defs::X64_EFER_TCE;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::is_canonical_address;
+use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_CET_S;
+use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_CET_U;
+use x86defs::xsave::XSAVE_SUPERVISOR_FEATURE_PASID;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -121,6 +141,137 @@ impl Drop for RedirectedVectorMapping<'_> {
             ),
         }
     }
+}
+
+const CVM_GUEST_VA_BITS_48: u32 = 48;
+const CVM_GUEST_VA_BITS_57: u32 = 57;
+
+/// CR4 bits that are either reserved or unsupported for CVM guests, so must
+/// be zero.
+///
+/// - Bit 13 (VMXE), 14 (SMXE): Intel VMX / SMX, not permitted in a CVM guest.
+/// - Bit 19 (KL): Key Locker.
+/// - Bit 22 (PKE), 24 (PKS): protection keys, not supported.
+/// - Bit 25 (UINTR): user interrupts.
+/// - Bit 27 (LASS): linear-address space separation.
+/// - Bit 32 (FRED): flexible return and event delivery.
+/// - Bits 15, 26, 28-31, 33-63: architecturally reserved.
+const X64_CR4_INVALID_MASK: u64 = 0xFFFF_FFFF_FF48_E000;
+
+/// EFER bits allowed for a CVM guest.
+const X64_EFER_VALID_MASK: u64 = X64_EFER_SCE
+    | X64_EFER_LME
+    | X64_EFER_LMA
+    | X64_EFER_NXE
+    | X64_EFER_SVME
+    | X64_EFER_FFXSR
+    | X64_EFER_TCE;
+
+/// `IA32_FMASK` reserved bits (only low 32 are defined).
+const SFMASK_MSR_RESERVED_MASK: u64 = 0xFFFF_FFFF_0000_0000;
+
+/// `IA32_PLx_SSP` reserved bits (SSPs are 4-byte aligned).
+const PLX_SSP_MSR_RESERVED_MASK: u64 = 0x3;
+
+/// Corresponds to PASID (bit 10), CET_U (bit 11), and CET_S (bit 12).
+const XSS_VALID_MASK: u64 = XSAVE_SUPERVISOR_FEATURE_PASID
+    | XSAVE_SUPERVISOR_FEATURE_CET_U
+    | XSAVE_SUPERVISOR_FEATURE_CET_S;
+
+/// Returns true if `v` is a valid linear address to load into a currently-in-
+/// use paging state whose EFER.LMA / CR4.LA57 bits are as given.
+pub(crate) fn validate_canonical_address(v: u64, efer: u64, cr4: u64) -> bool {
+    let la57_active = (efer & X64_EFER_LMA) != 0 && (cr4 & X64_CR4_LA57) != 0;
+    let bits = if la57_active {
+        CVM_GUEST_VA_BITS_57
+    } else {
+        CVM_GUEST_VA_BITS_48
+    };
+    is_canonical_address(v, bits)
+}
+
+/// Validates a PAT MSR value: each of the 8 entries must be a valid memory
+/// type (0=UC, 1=WC, 4=WT, 5=WP, 6=WB, 7=UC-), with the top 5 bits of each
+/// byte zero.
+fn is_valid_pat(pat: u64) -> bool {
+    for i in 0..8 {
+        let byte = ((pat >> (i * 8)) & 0xFF) as u8;
+        // Top 5 bits reserved.
+        if byte & 0xF8 != 0 {
+            return false;
+        }
+        // Values 2 and 3 are reserved.
+        if byte == 2 || byte == 3 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Validates a PLx_SSP MSR value: no reserved bits set, and the value is a
+/// canonical linear address.
+fn is_valid_ssp_msr(v: u64) -> bool {
+    if v & PLX_SSP_MSR_RESERVED_MASK != 0 {
+        return false;
+    }
+    is_canonical_address(v, CVM_GUEST_VA_BITS_57)
+}
+
+/// Validates the value being written to `msr` per the architectural
+/// constraints of the target MSR.
+///
+/// Callers must also validate MSRs that need the guest's current paging
+/// state (i.e. `MSR_FS_BASE`, `MSR_GS_BASE`) via
+/// [`validate_canonical_address`], since that check requires reading the
+/// guest's live EFER and CR4 from the backing.
+pub(crate) fn validate_cvm_msr_write(
+    msr: u32,
+    value: u64,
+    xsave: &virt::x86::XsaveCapabilities,
+) -> Result<(), MsrError> {
+    match msr {
+        x86defs::X64_MSR_KERNEL_GS_BASE
+        | x86defs::X86X_MSR_LSTAR
+        | x86defs::X86X_MSR_CSTAR
+        | x86defs::X86X_MSR_SYSENTER_EIP
+        | x86defs::X86X_MSR_SYSENTER_ESP
+        | x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR => {
+            if !is_canonical_address(value, CVM_GUEST_VA_BITS_57) {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        x86defs::X86X_MSR_EFER => {
+            if value & !X64_EFER_VALID_MASK != 0 {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        x86defs::X86X_MSR_CR_PAT => {
+            if !is_valid_pat(value) {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        x86defs::X86X_MSR_SFMASK => {
+            if value & SFMASK_MSR_RESERVED_MASK != 0 {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        x86defs::X86X_MSR_XSS => {
+            let max_xss = (xsave.features | xsave.supervisor_features) & XSS_VALID_MASK;
+            if value & !max_xss != 0 {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        x86defs::X86X_MSR_PL0_SSP
+        | x86defs::X86X_MSR_PL1_SSP
+        | x86defs::X86X_MSR_PL2_SSP
+        | x86defs::X86X_MSR_PL3_SSP => {
+            if !is_valid_ssp_msr(value) {
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
@@ -218,6 +369,28 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
                 }
                 Ok(())
             }
+            HvX64RegisterName::VsmPartitionConfig => {
+                if target_vtl != GuestVtl::Vtl1 {
+                    return Err(HvError::InvalidParameter);
+                }
+                if self.intercepted_vtl == GuestVtl::Vtl0
+                    && !self.vp.cvm_partition().access_vsm_privilege()
+                {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::VsmPartitionStatus
+            | HvX64RegisterName::VsmVpStatus
+            | HvX64RegisterName::VsmCapabilities => {
+                if self.intercepted_vtl == GuestVtl::Vtl0
+                    && !self.vp.cvm_partition().access_vsm_privilege()
+                {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
+
             _ => Ok(()),
         }
     }
@@ -244,6 +417,99 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         // clean this up.
 
         match name.into() {
+            HvX64RegisterName::VsmPartitionConfig => {
+                let guest_vsm = self.vp.cvm_partition().guest_vsm.read();
+                let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm else {
+                    return Ok(HvRegisterValue::from(0u64));
+                };
+
+                let protector = &self.vp.cvm_partition().isolated_memory_protector;
+                let default_protections = protector.default_vtl0_protections();
+                Ok(u64::from(
+                    HvRegisterVsmPartitionConfig::new()
+                        .with_enable_vtl_protection(protector.vtl1_protections_enabled())
+                        .with_default_vtl_protection_mask(u32::from(default_protections) as u8)
+                        .with_zero_memory_on_reset(vtl1.zero_memory_on_reset)
+                        .with_deny_lower_vtl_startup(vtl1.deny_lower_vtl_startup),
+                )
+                .into())
+            }
+            HvX64RegisterName::VsmPartitionStatus => {
+                let guest_vsm = self.vp.cvm_partition().guest_vsm.read();
+                let (enabled_vtl_set, maximum_vtl, mbec_enabled_vtl_set, sss_enabled_vtl_set) =
+                    match &*guest_vsm {
+                        GuestVsmState::Enabled { vtl1, .. } => {
+                            let enabled_vtls =
+                                VtlSet::new().with_vtl(Vtl::Vtl0).with_vtl(Vtl::Vtl1);
+
+                            let mbec_enabled_vtls = if vtl1.mbec_enabled {
+                                enabled_vtls
+                            } else {
+                                VtlSet::new()
+                            };
+
+                            let sss_enabled_vtls = if vtl1.shadow_supervisor_stack_enabled {
+                                enabled_vtls
+                            } else {
+                                VtlSet::new()
+                            };
+
+                            (
+                                u16::from(enabled_vtls),
+                                1u8,
+                                u16::from(mbec_enabled_vtls),
+                                u16::from(sss_enabled_vtls) as u8,
+                            )
+                        }
+                        GuestVsmState::NotGuestEnabled => {
+                            let enabled_vtls = VtlSet::new().with_vtl(Vtl::Vtl0);
+                            (u16::from(enabled_vtls), 1u8, 0u16, 0u8)
+                        }
+                        GuestVsmState::NotPlatformSupported => {
+                            let enabled_vtls = VtlSet::new().with_vtl(Vtl::Vtl0);
+                            (u16::from(enabled_vtls), 0u8, 0u16, 0u8)
+                        }
+                    };
+
+                Ok(u64::from(
+                    hvdef::HvRegisterVsmPartitionStatus::new()
+                        .with_enabled_vtl_set(enabled_vtl_set)
+                        .with_maximum_vtl(maximum_vtl)
+                        .with_mbec_enabled_vtl_set(mbec_enabled_vtl_set)
+                        .with_supervisor_shadow_stack_enabled_vtl_set(sss_enabled_vtl_set),
+                )
+                .into())
+            }
+            HvX64RegisterName::VsmVpStatus => {
+                let active_vtl = self.intercepted_vtl;
+                let active_mbec_enabled = self
+                    .vp
+                    .backing
+                    .cvm_state()
+                    .vtl1
+                    .as_ref()
+                    .is_some_and(|s| s.vp_mbec_enabled);
+                let mut enabled_vtls = VtlSet::new();
+                enabled_vtls.set(Vtl::Vtl0);
+                if *self
+                    .vp
+                    .cvm_partition()
+                    .vp_inner(self.vp.vp_index().index())
+                    .vtl1_enable_called
+                    .lock()
+                {
+                    enabled_vtls.set(Vtl::Vtl1);
+                }
+                let enabled_vtl_set = u16::from(enabled_vtls);
+
+                Ok(u64::from(
+                    hvdef::HvRegisterVsmVpStatus::new()
+                        .with_active_vtl(active_vtl as u8)
+                        .with_active_mbec_enabled(active_mbec_enabled)
+                        .with_enabled_vtl_set(enabled_vtl_set),
+                )
+                .into())
+            }
             HvX64RegisterName::VsmCodePageOffsets => Ok(u64::from(
                 self.vp.backing.cvm_state_mut().hv[vtl].vsm_code_page_offsets(true),
             )
@@ -251,7 +517,8 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
             HvX64RegisterName::VsmCapabilities => Ok(u64::from(
                 hvdef::HvRegisterVsmCapabilities::new()
                     .with_deny_lower_vtl_startup(true)
-                    .with_dr6_shared(self.vp.partition.hcl.dr6_shared()),
+                    .with_dr6_shared(self.vp.partition.hcl.dr6_shared())
+                    .with_mbec_vtl_mask(VtlSet::new().with_vtl(Vtl::Vtl0).into()),
             )
             .into()),
             HvX64RegisterName::VsmVpSecureConfigVtl0 => {
@@ -493,18 +760,102 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
         }
     }
 
+    /// Validates (and possibly normalizes) the value being written to `reg`
+    /// against the target register's architectural constraints, returning the
+    /// (possibly modified) register-value pair on success. Some registers
+    /// (e.g. CR0) silently mask reserved bits matching hypervisor behavior.
+    fn validate_set_vp_register_value(
+        &self,
+        vtl: GuestVtl,
+        mut reg: hvdef::hypercall::HvRegisterAssoc,
+    ) -> HvResult<hvdef::hypercall::HvRegisterAssoc> {
+        match HvX64RegisterName::from(reg.name) {
+            HvX64RegisterName::SysenterEsp
+            | HvX64RegisterName::SysenterEip
+            | HvX64RegisterName::Lstar
+            | HvX64RegisterName::Cstar
+            | HvX64RegisterName::KernelGsBase
+            | HvX64RegisterName::InterruptSspTableAddr => {
+                if !is_canonical_address(reg.value.as_u64(), CVM_GUEST_VA_BITS_57) {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Efer => {
+                if reg.value.as_u64() & !X64_EFER_VALID_MASK != 0 {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Pat => {
+                if !is_valid_pat(reg.value.as_u64()) {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Sfmask => {
+                if reg.value.as_u64() & SFMASK_MSR_RESERVED_MASK != 0 {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Xss => {
+                let xsave = &self.vp.partition.caps.xsave;
+                let max_xss = (xsave.features | xsave.supervisor_features) & XSS_VALID_MASK;
+                if reg.value.as_u64() & !max_xss != 0 {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Pl0Ssp
+            | HvX64RegisterName::Pl1Ssp
+            | HvX64RegisterName::Pl2Ssp
+            | HvX64RegisterName::Pl3Ssp => {
+                if !is_valid_ssp_msr(reg.value.as_u64()) {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Fs | HvX64RegisterName::Gs => {
+                let seg = hvdef::HvX64SegmentRegister::from(reg.value);
+                let regs = self.vp.backing.translation_registers(self.vp, vtl);
+                if !validate_canonical_address(seg.base, regs.efer, regs.cr4) {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            HvX64RegisterName::Cr0 | HvX64RegisterName::IntermediateCr0 => {
+                // Writes to CR0 reserved bits in the Low 32 are silently ignored.
+                let mut cr0 = reg.value.as_u64();
+                cr0 &= !X64_CR0_RSVDZ_MASK;
+                if cr0 & 0xFFFF_FFFF_0000_0000 != 0
+                    || (cr0 & X64_CR0_PG != 0 && cr0 & X64_CR0_PE == 0)
+                    || (cr0 & X64_CR0_NW != 0 && cr0 & X64_CR0_CD == 0)
+                {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+                reg.value = HvRegisterValue::from(cr0);
+            }
+
+            HvX64RegisterName::Cr4 | HvX64RegisterName::IntermediateCr4 => {
+                if reg.value.as_u64() & X64_CR4_INVALID_MASK != 0 {
+                    return Err(HvError::InvalidRegisterValue);
+                }
+            }
+
+            _ => {}
+        }
+
+        Ok(reg)
+    }
+
     fn set_vp_register(
         &mut self,
         vtl: GuestVtl,
         reg: &hvdef::hypercall::HvRegisterAssoc,
     ) -> HvResult<()> {
         self.validate_register_access(vtl, reg.name)?;
-        // TODO CVM:
-        // - when access vp state has support for single registers, clean this
-        //   up.
-        // - validate the values being set, e.g. that addresses are canonical,
-        //   that efer and pat make sense, etc. Similar validation is needed in
-        //   the write_msr path.
+        let reg = self.validate_set_vp_register_value(vtl, *reg)?;
 
         match HvX64RegisterName::from(reg.name) {
             HvX64RegisterName::VsmPartitionConfig => self.vp.set_vsm_partition_config(
@@ -1491,9 +1842,15 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         vtl: Vtl,
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> HvResult<()> {
+        let target_vp = if vp_index == hvdef::HV_VP_INDEX_SELF {
+            self.vp.vp_index().index()
+        } else {
+            vp_index
+        };
+
         tracing::debug!(
             vp_index = self.vp.vp_index().index(),
-            target_vp = vp_index,
+            target_vp,
             ?vtl,
             "HvEnableVpVtl"
         );
@@ -1501,7 +1858,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             return Err(HvError::InvalidPartitionId);
         }
 
-        if vp_index as usize >= self.vp.partition.vps.len() {
+        if target_vp as usize >= self.vp.partition.vps.len() {
             return Err(HvError::InvalidVpIndex);
         }
 
@@ -1532,7 +1889,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
             if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1.enabled_on_any_vp || vp_index != current_vp_index {
+                if vtl1.enabled_on_any_vp || target_vp != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -1551,7 +1908,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         let mut vtl1_enabled = self
             .vp
             .cvm_partition()
-            .vp_inner(vp_index)
+            .vp_inner(target_vp)
             .vtl1_enable_called
             .lock();
 
@@ -1564,7 +1921,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
             virt::IsolationType::Snp => {
                 // For VTL 1, user mode needs to explicitly register the VMSA
                 // with the hypervisor via the EnableVpVtl hypercall.
-                let target_cpu_index = self.vp.partition.vps[vp_index as usize].cpu_index;
+                let target_cpu_index = self.vp.partition.vps[target_vp as usize].cpu_index;
                 let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(target_cpu_index);
                 let sev_control = hvdef::HvX64RegisterSevControl::new()
                     .with_enable_encrypted_state(true)
@@ -1583,7 +1940,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         self.vp
             .partition
             .hcl
-            .enable_vp_vtl(vp_index, vtl, hv_vp_context)?;
+            .enable_vp_vtl(target_vp, vtl, hv_vp_context)?;
 
         // Cannot fail from here
         if let Some(mut vtl1) = gvsm_state {
@@ -1603,12 +1960,12 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::In
         *self
             .vp
             .cvm_partition()
-            .vp_inner(vp_index)
+            .vp_inner(target_vp)
             .hv_start_enable_vtl_vp[vtl]
             .lock() = Some(Box::new(enable_vp_vtl_state));
-        self.vp.partition.vps[vp_index as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        self.vp.partition.vps[target_vp as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
-        tracing::debug!(vp_index, "enabled vtl 1 on vp");
+        tracing::debug!(target_vp, "enabled vtl 1 on vp");
 
         Ok(())
     }
@@ -1717,7 +2074,20 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         // LockedPages, but that requires some refactoring. For now, we just use
         // guest memory to lock the pages. When this is cleaned up, don't forget
         // to also cleanup how underhill_mem handles locking overlay pages.
-        Ok(self.guest_memory.lock_gpns(false, &[gpn]).unwrap())
+        //
+        // Lock for read, not write, even though the paravisor writes these
+        // overlay pages. The paravisor writes them through a mapping that
+        // bypasses guest VTL protections, so the lock must not apply the guest's
+        // write permission. `register_overlay_page` above has already validated
+        // and set the required permissions; locking for write would instead
+        // re-check the guest write bitmap, which is deliberately cleared to
+        // read-only for pages made guest-read-only (e.g. the hypercall and
+        // reference TSC pages), and would spuriously fail with a VTL protection
+        // violation.
+        Ok(self
+            .guest_memory
+            .lock_gpns(guestmem::AccessType::Read, false, &[gpn])
+            .unwrap())
     }
 
     fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), HvError> {
@@ -1831,17 +2201,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             .into_cpuid();
                 }
             }
-            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES) => {
-                // Update the VSM access privilege if it's been revoked by UEFI.
-                if matches!(
-                    *self.cvm_partition().guest_vsm.read(),
-                    GuestVsmState::NotPlatformSupported
-                ) {
-                    let mut features = hvdef::HvFeatures::from_cpuid([eax, ebx, ecx, edx]);
-                    features.set_privileges(features.privileges().with_access_vsm(false));
-                    [eax, ebx, ecx, edx] = features.into_cpuid();
-                }
-            }
 
             _ => {}
         }
@@ -1901,19 +2260,20 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // than the VTL specified as an argument for hardware CVMs.
         let targeted_vtl = GuestVtl::Vtl0;
 
-        // Don't allow changing existing protections once vtl protection is enabled
-        if protector.vtl1_protections_enabled() {
-            let current_protections = protector.default_vtl0_protections();
-            if protections != current_protections {
+        let current_protections = protector.default_vtl0_protections();
+        if protections != current_protections {
+            if protector.vtl1_protections_enabled() {
+                // Don't allow changing existing protections once vtl protection
+                // is enabled
                 return Err(HvError::InvalidRegisterValue);
+            } else {
+                protector.change_default_vtl_protections(
+                    targeted_vtl,
+                    protections,
+                    &mut self.tlb_flush_lock_access(),
+                )?;
             }
         }
-
-        protector.change_default_vtl_protections(
-            targeted_vtl,
-            protections,
-            &mut self.tlb_flush_lock_access(),
-        )?;
 
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         // We're not to spec but match the HCL, so good enough for now?
@@ -2422,6 +2782,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             (false, true) => self.set_tlb_lock(requesting_vtl, target_vtl),
             _ => (), // Nothing to do
         };
+
+        // Setting this on any VTL will enable it for all VTLs. This matches
+        // the hypervisor behavior, but for all intents and purposes only VTL 1
+        // will be able to set this on VTL 0, so only a single VTL can have
+        // this configured anyway.
+        if let Some(vtl1_state) = self.backing.cvm_state_mut().vtl1.as_mut() {
+            vtl1_state.vp_mbec_enabled = config.mbec_enabled();
+        }
 
         Ok(())
     }
@@ -2955,8 +3323,12 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
 
-    /// Synchronize armed deadline state for hardware virtualized timers.
-    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
+    /// Publish timer state before running a lower VTL.
+    fn begin_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
+
+    /// Synchronize timer state after returning from a lower VTL. Implementations
+    /// must not assume that backend-private register readback has completed.
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, T>, vtl: GuestVtl);
 }
 
 /// Interface for managing lower VTL timer deadlines via [`VmTime`].
@@ -2964,13 +3336,13 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
 /// timer virtualization.
 pub(super) struct VmTimeGuestTimer;
 
-impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
-    fn is_hardware_virtualized(&self) -> bool {
-        false
-    }
-
-    /// Update timer deadline.
-    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+impl VmTimeGuestTimer {
+    pub(super) fn timeout(
+        &self,
+        vmtime: &VmTimeAccess,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) -> VmTime {
         /// Convert reference time in 100ns units to Duration.
         fn duration_from_100ns(n: u64) -> std::time::Duration {
             const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
@@ -2980,7 +3352,18 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         // Convert from reference timer basis to [`VmTime`] basis via
         // difference of programmed timer and current reference time.
         let ref_diff = ref_time_next.saturating_sub(ref_time_now);
-        let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
+        vmtime.now().wrapping_add(duration_from_100ns(ref_diff))
+    }
+}
+
+impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+        let timeout = self.timeout(&vp.vmtime, ref_time_now, ref_time_next);
         vp.vmtime.set_timeout_if_before(timeout);
     }
 
@@ -2989,7 +3372,140 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         vp.vmtime.cancel_timeout();
     }
 
-    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
-        // No-op for software timers
+    fn begin_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+
+    fn end_vtl_transition(&self, _vp: &mut UhProcessor<'_, T>, _vtl: GuestVtl) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_current_paging_mode() {
+        let lma_la57 = X64_EFER_LMA;
+        let cr4_la57 = X64_CR4_LA57;
+        let cr4_no_la57 = 0;
+        // 48-bit canonical: always OK.
+        assert!(validate_canonical_address(
+            0x0000_7FFF_FFFF_FFFF,
+            lma_la57,
+            cr4_no_la57,
+        ));
+        // 57-bit canonical only, with LA57 enabled: OK.
+        assert!(validate_canonical_address(
+            0x0000_8000_0000_0000,
+            lma_la57,
+            cr4_la57,
+        ));
+        // 57-bit canonical only, with LA57 disabled: rejected.
+        assert!(!validate_canonical_address(
+            0x0000_8000_0000_0000,
+            lma_la57,
+            cr4_no_la57,
+        ));
+        // 57-bit canonical only, LA57 set but not in long mode: rejected.
+        assert!(!validate_canonical_address(
+            0x0000_8000_0000_0000,
+            0,
+            cr4_la57,
+        ));
+        // Not 57-bit canonical: always rejected.
+        assert!(!validate_canonical_address(
+            0x0100_0000_0000_0000,
+            lma_la57,
+            cr4_la57,
+        ));
+    }
+
+    #[test]
+    fn pat_validation() {
+        // Default PAT: {WB, WT, UC-, UC, WB, WT, UC-, UC}.
+        assert!(is_valid_pat(0x0007_0406_0007_0406));
+        // WC (1) and WP (5) are valid.
+        assert!(is_valid_pat(0x0505_0505_0101_0101));
+        // Reserved memory type (2).
+        assert!(!is_valid_pat(0x0000_0000_0000_0002));
+        // Reserved memory type (3).
+        assert!(!is_valid_pat(0x0000_0000_0000_0003));
+        // Top 5 bits of any byte must be zero.
+        assert!(!is_valid_pat(0x0000_0000_0000_0080));
+    }
+
+    #[test]
+    fn efer_valid_mask_covers_expected_bits() {
+        // Baseline long-mode EFER bits: LME | LMA | NXE | SCE.
+        assert_eq!(
+            (X64_EFER_SCE | X64_EFER_LME | X64_EFER_LMA | X64_EFER_NXE) & !X64_EFER_VALID_MASK,
+            0
+        );
+        // SVME is permitted (required by SNP).
+        assert_eq!(X64_EFER_SVME & !X64_EFER_VALID_MASK, 0);
+        // TCE (bit 15) is permitted, matching the Windows HCL allowlist.
+        assert_eq!(X64_EFER_TCE & !X64_EFER_VALID_MASK, 0);
+        // FFXSR (bit 14) is permitted (allowed by HCL on SEV; TDX rejects it
+        // separately in `write_efer`).
+        assert_eq!(X64_EFER_FFXSR & !X64_EFER_VALID_MASK, 0);
+        // LMSLE (bit 13) is not permitted.
+        assert_ne!((1u64 << 13) & !X64_EFER_VALID_MASK, 0);
+        // Reserved bits (bit 1) must be zero.
+        assert_ne!((1u64 << 1) & !X64_EFER_VALID_MASK, 0);
+    }
+
+    #[test]
+    fn ssp_msr_validation() {
+        assert!(is_valid_ssp_msr(0));
+        assert!(is_valid_ssp_msr(0x1000));
+        // 57-bit canonical addresses in the LA57 upper half are OK for SSPs,
+        // even though they aren't 48-bit canonical, because SSPs use the
+        // permissive `CurrentPagingMode = FALSE` variant.
+        assert!(is_valid_ssp_msr(0x0000_8000_0000_0000));
+        // Not 4-byte aligned.
+        assert!(!is_valid_ssp_msr(0x1001));
+        assert!(!is_valid_ssp_msr(0x1002));
+        // Not even 57-bit canonical.
+        assert!(!is_valid_ssp_msr(0x0100_0000_0000_0000));
+    }
+
+    #[test]
+    fn cr4_invalid_mask_covers_expected_bits() {
+        // Reserved and unsupported bits per the Windows reference:
+        // 13 VMXE, 14 SMXE, 15 rsvd, 19 KL, 22 PKE, 24 PKS, 25 UINTR,
+        // 26 rsvd, 27 LASS, 28-31 rsvd, 32 FRED, 33-63 rsvd.
+        for bit in [
+            13, 14, 15, 19, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 47, 63,
+        ] {
+            assert!(
+                X64_CR4_INVALID_MASK & (1u64 << bit) != 0,
+                "expected CR4 bit {bit} to be invalid"
+            );
+        }
+        // Bits that CVMs must allow.
+        for bit in [0, 1, 4, 5, 7, 9, 10, 11, 16, 17, 18, 20, 21, 23] {
+            assert!(
+                X64_CR4_INVALID_MASK & (1u64 << bit) == 0,
+                "did not expect CR4 bit {bit} to be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn cr0_reserved_low32_mask_covers_expected_bits() {
+        // Silently-masked reserved bits per the CR0 layout: 6-15, 17, 19-28.
+        for bit in [6, 7, 8, 15, 17, 19, 28] {
+            assert!(
+                X64_CR0_RSVDZ_MASK & (1u64 << bit) != 0,
+                "expected CR0 bit {bit} to be silently masked"
+            );
+        }
+        // Live bits must not be masked.
+        for bit in [0, 1, 2, 3, 4, 5, 16, 18, 29, 30, 31] {
+            assert!(
+                X64_CR0_RSVDZ_MASK & (1u64 << bit) == 0,
+                "did not expect CR0 bit {bit} to be masked"
+            );
+        }
+        // The mask only covers the low 32 bits — the upper 32 are hard-rejected.
+        assert_eq!(X64_CR0_RSVDZ_MASK & 0xFFFF_FFFF_0000_0000, 0);
     }
 }

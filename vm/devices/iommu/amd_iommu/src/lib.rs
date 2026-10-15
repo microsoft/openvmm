@@ -18,6 +18,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -1016,11 +1018,19 @@ impl iommu_common::InterruptRemapper for IommuSharedState {
         match self.remap_msi(device_id, address, data) {
             Ok(result) => Some(result),
             Err(fault) => {
-                self.queue_event(fault.to_event_entry());
+                // This runs at interrupt delivery time (the IOAPIC wiring
+                // translates its routes lazily, on assertion), so a fault here
+                // corresponds to an interrupt actually firing through a bad
+                // entry. Log it, matching hardware which performs the IRTE
+                // lookup at delivery time.
                 tracelimit::warn_ratelimited!(
                     device_id,
-                    "interrupt remapping fault on cached route, masking"
+                    address,
+                    data,
+                    error = &fault as &dyn std::error::Error,
+                    "interrupt remapping fault on registered-route delivery, dropping interrupt"
                 );
+                self.queue_event(fault.to_event_entry());
                 None
             }
         }
@@ -1070,8 +1080,8 @@ impl AmdIommuDevice {
                 prog_if: ProgrammingInterface(spec::registers::PCI_CLASS_PROG_IF),
                 sub_class: Subclass(spec::registers::PCI_CLASS_SUB),
                 base_class: ClassCode(spec::registers::PCI_CLASS_BASE),
-                type0_sub_vendor_id: 0,
-                type0_sub_system_id: 0,
+                type0_sub_vendor_id: pci_core::microsoft::VENDOR_ID,
+                type0_sub_system_id: pci_core::microsoft::DEFAULT_SUBSYSTEM_ID,
             },
             vec![Box::new(capability), Box::new(msi_capability)],
             vec![],            // No extended capabilities
@@ -1655,12 +1665,12 @@ impl ChipsetDevice for AmdIommuDevice {
 // =============================================================================
 
 impl PciConfigSpace for AmdIommuDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.cfg_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.cfg_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.cfg_space.write_byte_enabled(offset, value)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -1782,7 +1792,10 @@ mod tests {
     /// Helper to read a 32-bit PCI config register.
     fn pci_read(dev: &mut AmdIommuDevice, offset: u16) -> u32 {
         let mut value = 0u32;
-        let _ = dev.pci_cfg_read(offset, &mut value);
+        let _ = dev.pci_cfg_read(
+            offset,
+            ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
+        );
         value
     }
 
@@ -2479,14 +2492,26 @@ mod tests {
 
         // Configure MSI: address = 0xFEE00000, data = 0x41.
         // Write address low (offset + 4).
-        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 4,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xFEE0_0000),
+        );
         // Write address high (offset + 8) — 64-bit capable.
-        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 8,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0),
+        );
         // Write data (offset + 12 for 64-bit).
-        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 12,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x41),
+        );
         // Enable MSI (write control register at offset + 0, set enable bit).
         let control = pci_read(&mut dev, msi_cap_offset);
-        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(control | (1 << 16)),
+        );
 
         setup_iommu_enabled(&mut dev);
 
@@ -6218,11 +6243,23 @@ mod tests {
         // Enable MSI on PCI config space.
         let iommu_cap_header = pci_read(&mut dev, 0x40);
         let msi_cap_offset = ((iommu_cap_header >> 8) & 0xFF) as u16;
-        let _ = dev.pci_cfg_write(msi_cap_offset + 4, 0xFEE0_0000);
-        let _ = dev.pci_cfg_write(msi_cap_offset + 8, 0);
-        let _ = dev.pci_cfg_write(msi_cap_offset + 12, 0x41);
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 4,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0xFEE0_0000),
+        );
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 8,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0),
+        );
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset + 12,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x41),
+        );
         let control = pci_read(&mut dev, msi_cap_offset);
-        let _ = dev.pci_cfg_write(msi_cap_offset, control | (1 << 16));
+        let _ = dev.pci_cfg_write(
+            msi_cap_offset,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(control | (1 << 16)),
+        );
 
         setup_iommu_enabled(&mut dev);
 

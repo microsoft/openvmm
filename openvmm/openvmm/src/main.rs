@@ -1,7 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Root binary crate for OpenVMM.
+//! Host-side executable for the OpenVMM virtual machine monitor.
+//!
+//! This crate links the platform hypervisors and device resource resolvers,
+//! then delegates startup and command-line processing to
+//! [`openvmm_entry::openvmm_main`]. It can be launched from the repository
+//! with `cargo run -p openvmm -- <options>`.
 
 #![forbid(unsafe_code)]
 

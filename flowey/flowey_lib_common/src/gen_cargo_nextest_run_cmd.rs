@@ -7,6 +7,7 @@ use crate::run_cargo_build::CargoBuildProfile;
 use crate::run_cargo_nextest_run::build_params;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 
 flowey_request! {
@@ -50,7 +51,7 @@ pub enum RunKindDeps<C = VarNotClaimed> {
     RunFromArchive {
         archive_file: ReadVar<PathBuf, C>,
         nextest_bin: ReadVar<PathBuf, C>,
-        target: ReadVar<target_lexicon::Triple, C>,
+        target: target_lexicon::Triple,
     },
 }
 
@@ -74,9 +75,6 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
-        ctx.import::<crate::download_cargo_nextest::Node>();
-        ctx.import::<crate::install_cargo_nextest::Node>();
-        ctx.import::<crate::install_rust::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -118,7 +116,7 @@ impl FlowNode for Node {
                             params: build_params::NextestBuildParams { target, .. },
                             ..
                         } => target.clone(),
-                        RunKindDeps::RunFromArchive { target, .. } => rt.read(target.clone()),
+                        RunKindDeps::RunFromArchive { target, .. } => target.clone(),
                     };
 
                     let windows_target = matches!(
@@ -128,11 +126,10 @@ impl FlowNode for Node {
                     let windows_via_wsl2 = windows_target && crate::_util::running_in_wsl(rt);
 
                     let working_dir_ref = working_dir.as_path();
-                    let working_dir_win = windows_via_wsl2.then(|| {
-                        crate::_util::wslpath::linux_to_win(rt, working_dir_ref)
-                            .display()
-                            .to_string()
-                    });
+                    let working_dir_win = windows_via_wsl2
+                        .then(|| crate::_util::wslpath::linux_to_win(rt, working_dir_ref))
+                        .transpose()?
+                        .map(|path| path.display().to_string());
 
                     let tool_config_files: Vec<(String, PathBuf)> = tool_config_files
                         .into_iter()
@@ -221,7 +218,7 @@ impl FlowNode for Node {
                     // otherwise just make it absolute.
                     let wsl_convert_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
                         if windows_via_wsl2 {
-                            Ok(crate::_util::wslpath::linux_to_win(rt, path))
+                            crate::_util::wslpath::linux_to_win(rt, path)
                         } else {
                             path.absolute()
                                 .with_context(|| format!("invalid path {}", path.display()))
@@ -402,11 +399,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     let no_incremental = cargo_flags.no_incremental;
     let locked = cargo_flags.locked.then_some("--locked");
     let verbose = cargo_flags.verbose.then_some("--verbose");
-    let cargo_profile = match &cargo_profile {
-        CargoBuildProfile::Debug => "dev",
-        CargoBuildProfile::Release => "release",
-        CargoBuildProfile::Custom(s) => s,
-    };
+    let cargo_profile = cargo_profile.as_cargo_profile();
     let target = target.to_string();
 
     let packages: Vec<String> = {
@@ -478,46 +471,54 @@ impl RunKindDeps {
             } => RunKindDeps::RunFromArchive {
                 archive_file: archive_file.claim(ctx),
                 nextest_bin: nextest_bin.claim(ctx),
-                target: target.claim(ctx),
+                target,
             },
+        }
+    }
+}
+
+impl CommandShell {
+    /// Quote a value as a literal for this shell. Single quotes suppress all
+    /// expansion, so `'` is the only character that needs escaping.
+    fn quote(&self, s: &OsStr) -> String {
+        match self {
+            CommandShell::Powershell => powershell_builder::quote_str(s)
+                .to_string_lossy()
+                .into_owned(),
+            CommandShell::Bash => format!("'{}'", s.to_string_lossy().replace('\'', r"'\''")),
         }
     }
 }
 
 impl std::fmt::Display for Script {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let quote_char = match self.shell {
-            CommandShell::Powershell => "\"",
-            CommandShell::Bash => "'",
-        };
-
         let env_string = match self.shell {
             CommandShell::Powershell => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("$env:{k}=\"{v}\""))
+                .map(|(k, v)| format!("$env:{k}={}", self.shell.quote(OsStr::new(v))))
                 .collect::<Vec<_>>()
                 .join("\n"),
             CommandShell::Bash => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("export {k}=\"{v}\""))
+                .map(|(k, v)| format!("export {k}={}", self.shell.quote(OsStr::new(v))))
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
         writeln!(f, "{env_string}")?;
 
         for cmd in &self.commands {
-            let argv0_string = cmd.0.to_string_lossy();
+            let argv0_string = self.shell.quote(&cmd.0);
             let argv0_string = match self.shell {
-                CommandShell::Powershell => format!("&\"{argv0_string}\""),
-                CommandShell::Bash => format!("\"{argv0_string}\""),
+                CommandShell::Powershell => format!("&{argv0_string}"),
+                CommandShell::Bash => argv0_string,
             };
 
             let arg_string = {
                 cmd.1
                     .iter()
-                    .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
+                    .map(|v| self.shell.quote(v))
                     .collect::<Vec<_>>()
                     .join(" ")
             };

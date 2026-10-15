@@ -26,11 +26,14 @@ use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
+use storvsp_resources::StorvspIdeDeviceHandle;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
@@ -120,6 +123,7 @@ pub struct RelayTarget {
 
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
+    storvsp_ide_handles: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
@@ -136,6 +140,18 @@ pub(super) struct StorageBuilder {
 struct VirtioBlkDisk {
     disk: Resource<DiskHandleKind>,
     read_only: bool,
+    serial: Option<String>,
+}
+
+impl VirtioBlkDisk {
+    fn into_resource(self) -> Resource<VirtioDeviceHandle> {
+        VirtioBlkHandle {
+            disk: self.disk,
+            read_only: self.read_only,
+            serial: self.serial,
+        }
+        .into_resource()
+    }
 }
 
 #[derive(Clone)]
@@ -151,7 +167,10 @@ pub enum DiskLocation {
         nsid: Option<u32>,
         lun: Option<u8>,
     },
-    VirtioBlk(Option<String>),
+    VirtioBlk {
+        pcie_port: Option<String>,
+        serial: Option<String>,
+    },
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
@@ -184,6 +203,7 @@ impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
             vtl0_ide_disks: Vec::new(),
+            storvsp_ide_handles: Vec::new(),
             vtl0_scsi_devices: Vec::new(),
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
@@ -341,7 +361,6 @@ impl StorageBuilder {
                     GuestMedia::Disk {
                         disk_type: disk,
                         read_only,
-                        disk_parameters: None,
                     }
                 };
 
@@ -369,6 +388,29 @@ impl StorageBuilder {
                     },
                     guest_media,
                 });
+
+                // Hard disks also get a storvsp IDE accelerator channel offered over
+                // VMBus. This is the accelerator half of the IDE path; the emulated IDE
+                // drive itself is built in openvmm_core's worker. OpenVMM has no CLI
+                // surface for per-disk SCSI parameters, so they are left as Default here.
+                if !is_dvd {
+                    let storvsp_disk = disk_open(kind, read_only).await?;
+                    self.storvsp_ide_handles.push((
+                        DeviceVtl::Vtl0,
+                        StorvspIdeDeviceHandle {
+                            channel_id: channel,
+                            device_id: device,
+                            disk: SimpleScsiDiskHandle {
+                                disk: storvsp_disk,
+                                read_only,
+                                parameters: Default::default(),
+                            }
+                            .into_resource(),
+                            io_queue_depth: None,
+                        }
+                        .into_resource(),
+                    ));
+                }
                 None
             }
             DiskLocation::Scsi(lun) => {
@@ -480,14 +522,18 @@ impl StorageBuilder {
                     anyhow::bail!("unknown controller: '{controller}'");
                 }
             },
-            DiskLocation::VirtioBlk(pcie_port) => {
+            DiskLocation::VirtioBlk { pcie_port, serial } => {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
                 }
                 if is_dvd {
                     anyhow::bail!("dvd not supported with virtio-blk");
                 }
-                let vblk = VirtioBlkDisk { disk, read_only };
+                let vblk = VirtioBlkDisk {
+                    disk,
+                    read_only,
+                    serial,
+                };
                 if let Some(port) = pcie_port {
                     self.pcie_virtio_blk_disks.push((port, vblk));
                 } else {
@@ -628,7 +674,7 @@ impl StorageBuilder {
                     NVME_VTL0_INSTANCE_ID
                 },
             ),
-            DiskLocation::VirtioBlk(_) => {
+            DiskLocation::VirtioBlk { .. } => {
                 anyhow::bail!("OpenHCL relay not supported with virtio-blk")
             }
             DiskLocation::Named { .. } => {
@@ -648,7 +694,7 @@ impl StorageBuilder {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
             }
-            DiskLocation::VirtioBlk(_) => {
+            DiskLocation::VirtioBlk { .. } => {
                 anyhow::bail!("OpenHCL relay not supported with virtio-blk")
             }
             DiskLocation::Named { .. } => {
@@ -687,6 +733,13 @@ impl StorageBuilder {
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
         config.ide_disks.append(&mut self.vtl0_ide_disks);
+        if !self.storvsp_ide_handles.is_empty() {
+            anyhow::ensure!(
+                config.vmbus.is_some(),
+                "IDE accelerator requires VMBus to be enabled"
+            );
+            config.vmbus_devices.append(&mut self.storvsp_ide_handles);
+        }
 
         // Add an empty VTL0 SCSI controller even if there are no configured disks.
         if !self.vtl0_scsi_devices.is_empty() || config.vmbus.is_some() {
@@ -856,14 +909,7 @@ impl StorageBuilder {
             config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
                 instance_id,
-                resource: VirtioPciDeviceHandle(
-                    VirtioBlkHandle {
-                        disk: vblk.disk,
-                        read_only: vblk.read_only,
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
+                resource: VirtioPciDeviceHandle(vblk.into_resource()).into_resource(),
                 vnode: None,
             });
         }
@@ -871,14 +917,7 @@ impl StorageBuilder {
         for (port_name, vblk) in std::mem::take(&mut self.pcie_virtio_blk_disks) {
             config.pcie_devices.push(PcieDeviceConfig {
                 port_name,
-                resource: VirtioPciDeviceHandle(
-                    VirtioBlkHandle {
-                        disk: vblk.disk,
-                        read_only: vblk.read_only,
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
+                resource: VirtioPciDeviceHandle(vblk.into_resource()).into_resource(),
             });
         }
 

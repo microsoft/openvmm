@@ -18,8 +18,6 @@ mod memfd;
 
 use crate::common::InvitationAddress;
 use crate::protocol;
-use crate::unix_common::try_recv;
-use crate::unix_common::try_send;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -457,10 +455,10 @@ impl SendEvent for PacketSender {
         // N.B. This can lead to out of order messages. The event protocol is
         //      responsible for handling this condition.
         if !USE_SEQPACKET
-            || try_send(
+            || unix_socket::send_with_fds(
                 self.socket.socket.lock().get().as_fd(),
                 &[IoSlice::new(&packet)],
-                &fds,
+                fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
             )
             .is_err()
         {
@@ -653,8 +651,9 @@ async fn run_receive(
 ) -> Result<(), ReceiveError> {
     let mut buf = vec![0; MAX_PACKET_SIZE];
     let mut fds = Vec::new();
+    let mut receiver = unix_socket::ScmReceiver::new(protocol::MAX_FDS_PER_MESSAGE);
     loop {
-        let len = socket.recv(&mut buf, &mut fds).await?;
+        let len = socket.recv(&mut buf, &mut fds, &mut receiver).await?;
         if len == 0 {
             break;
         }
@@ -1076,11 +1075,29 @@ impl UnixSocket {
         iov: &mut [IoSlice<'_>],
         fds: &[OsResource],
     ) -> Result<usize, io::Error> {
+        // Bound the fd count to what the receiver can hold. Without this,
+        // attaching more than `MAX_FDS_PER_MESSAGE` descriptors would
+        // deterministically trip `MSG_CTRUNC` on the receiver and tear down the
+        // connection; reject it locally with a clear error instead.
+        if fds.len() > protocol::MAX_FDS_PER_MESSAGE {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "too many file descriptors ({}, max {})",
+                    fds.len(),
+                    protocol::MAX_FDS_PER_MESSAGE
+                ),
+            ));
+        }
         let n = poll_fn(|cx| {
             self.socket
                 .lock()
                 .poll_io(cx, InterestSlot::Write, PollEvents::OUT, |socket| {
-                    try_send(socket.get().as_fd(), iov, fds)
+                    unix_socket::send_with_fds(
+                        socket.get().as_fd(),
+                        iov,
+                        fds.iter().map(|OsResource::Fd(fd)| fd.as_fd()),
+                    )
                 })
         })
         .await?;
@@ -1100,19 +1117,24 @@ impl UnixSocket {
         Ok(())
     }
 
-    async fn recv(&self, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::Result<usize> {
+    async fn recv(
+        &self,
+        buf: &mut [u8],
+        fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
+    ) -> io::Result<usize> {
         if USE_SEQPACKET {
-            self.recv_raw(buf, fds).await
+            self.recv_raw(buf, fds, receiver).await
         } else {
             let mut len = [0; 4];
-            if !self.recv_all_raw(&mut len, fds).await? {
+            if !self.recv_all_raw(&mut len, fds, receiver).await? {
                 return Ok(0);
             }
             let len = u32::from_le_bytes(len) as usize;
             let buf = buf
                 .get_mut(..len)
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::EMSGSIZE))?;
-            if !self.recv_all_raw(buf, fds).await? {
+            if !self.recv_all_raw(buf, fds, receiver).await? {
                 return Err(ErrorKind::UnexpectedEof.into());
             }
             Ok(len)
@@ -1123,10 +1145,11 @@ impl UnixSocket {
         &self,
         buf: &mut [u8],
         fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
     ) -> Result<bool, io::Error> {
         let mut read = 0;
         while read < buf.len() {
-            let n = self.recv_raw(&mut buf[read..], fds).await?;
+            let n = self.recv_raw(&mut buf[read..], fds, receiver).await?;
             if n == 0 {
                 if read != 0 {
                     return Err(ErrorKind::UnexpectedEof.into());
@@ -1143,15 +1166,17 @@ impl UnixSocket {
         &self,
         buf: &mut [u8],
         fds: &mut Vec<OsResource>,
+        receiver: &mut unix_socket::ScmReceiver,
     ) -> Result<usize, io::Error> {
         let n = poll_fn(|cx| {
             self.socket
                 .lock()
                 .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
-                    try_recv(socket.get().as_fd(), buf, fds)
+                    receiver.recv(socket.get().as_fd(), buf)
                 })
         })
         .await?;
+        fds.extend(receiver.drain().map(OsResource::Fd));
         Ok(n)
     }
 

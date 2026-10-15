@@ -570,7 +570,11 @@ impl ProxyTask {
                         anyhow::bail!("unsupported offer pipe mode");
                     }
                 };
-                ChannelType::Pipe { message_mode }
+                ChannelType::Pipe {
+                    message_mode,
+                    user_defined: params.user_defined,
+                    pipe_flags: params.flags,
+                }
             } else {
                 ChannelType::Interface {
                     user_defined: offer.UserDefined,

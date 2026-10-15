@@ -7,6 +7,7 @@
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
 use crate::registrar::MemoryRegistrar;
+use crate::registrar::RegisterAllError;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
@@ -388,15 +389,27 @@ pub enum VtlPermissionsError {
     NoPermissionsTracked,
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum RegisterMemoryError {
+    #[error("memory mapping is not configured for kernel registration")]
+    NotConfigured,
+    #[error(transparent)]
+    Registration(#[from] RegisterAllError),
+}
+
 #[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
 }
 
 impl GuestMemoryBitmap {
+    const PAGES_PER_CHUNK: u64 = 8;
+    const BYTES_PER_CHUNK: u64 = PAGE_SIZE as u64 * Self::PAGES_PER_CHUNK;
     fn new(address_space_size: usize) -> Result<Self, MappingError> {
-        let bitmap = SparseMapping::new((address_space_size / PAGE_SIZE).div_ceil(8))
-            .map_err(MappingError::BitmapReserve)?;
+        let bitmap = SparseMapping::new(
+            (address_space_size / PAGE_SIZE).div_ceil(Self::PAGES_PER_CHUNK as usize),
+        )
+        .map_err(MappingError::BitmapReserve)?;
         bitmap
             .map_zero(0, bitmap.len())
             .map_err(MappingError::BitmapMap)?;
@@ -404,14 +417,14 @@ impl GuestMemoryBitmap {
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        if !range.start().is_multiple_of(PAGE_SIZE as u64 * 8)
-            || !range.end().is_multiple_of(PAGE_SIZE as u64 * 8)
+        if !range.start().is_multiple_of(Self::BYTES_PER_CHUNK)
+            || !range.end().is_multiple_of(Self::BYTES_PER_CHUNK)
         {
             return Err(MappingError::BadAlignment(range));
         }
 
-        let bitmap_start = range.start() as usize / PAGE_SIZE / 8;
-        let bitmap_end = (range.end() - 1) as usize / PAGE_SIZE / 8;
+        let bitmap_start = (range.start() / Self::BYTES_PER_CHUNK) as usize;
+        let bitmap_end = ((range.end() - 1) / Self::BYTES_PER_CHUNK) as usize;
         let bitmap_page_start = bitmap_start / PAGE_SIZE;
         let bitmap_page_end = bitmap_end / PAGE_SIZE;
         let page_count = bitmap_page_end + 1 - bitmap_page_start;
@@ -432,10 +445,14 @@ impl GuestMemoryBitmap {
         if state {
             let start_gpn = range.start() / PAGE_SIZE as u64;
             let gpn_count = range.len() / PAGE_SIZE as u64;
-            assert_eq!(range.start() % 8, 0);
-            assert_eq!(gpn_count % 8, 0);
+            assert_eq!(range.start() % Self::PAGES_PER_CHUNK, 0);
+            assert_eq!(gpn_count % Self::PAGES_PER_CHUNK, 0);
             self.bitmap
-                .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
+                .fill_at(
+                    (start_gpn / Self::PAGES_PER_CHUNK) as usize,
+                    0xff,
+                    (gpn_count / Self::PAGES_PER_CHUNK) as usize,
+                )
                 .unwrap();
         }
 
@@ -444,20 +461,40 @@ impl GuestMemoryBitmap {
 
     /// Panics if the range is outside of guest RAM.
     fn update(&self, range: MemoryRange, state: bool) {
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
-            // TODO: use `fill_at` for the aligned part of the range.
-            let mut b = 0;
+        let aligned_range = range.aligned_subrange(Self::BYTES_PER_CHUNK);
+        if !aligned_range.is_empty() {
             self.bitmap
-                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+                .fill_at(
+                    (aligned_range.start() / Self::BYTES_PER_CHUNK) as usize,
+                    if state { u8::MAX } else { 0u8 },
+                    (aligned_range.len() / Self::BYTES_PER_CHUNK) as usize,
+                )
                 .unwrap();
-            if state {
-                b |= 1 << (gpn % 8);
-            } else {
-                b &= !(1 << (gpn % 8));
+        }
+
+        for unaligned_range in memory_range::subtract_ranges([range], [aligned_range]) {
+            for gpn in
+                unaligned_range.start() / PAGE_SIZE as u64..unaligned_range.end() / PAGE_SIZE as u64
+            {
+                let mut b = 0;
+                self.bitmap
+                    .read_at(
+                        (gpn / Self::PAGES_PER_CHUNK) as usize,
+                        std::slice::from_mut(&mut b),
+                    )
+                    .unwrap();
+                if state {
+                    b |= 1 << (gpn % Self::PAGES_PER_CHUNK);
+                } else {
+                    b &= !(1 << (gpn % Self::PAGES_PER_CHUNK));
+                }
+                self.bitmap
+                    .write_at(
+                        (gpn / Self::PAGES_PER_CHUNK) as usize,
+                        std::slice::from_ref(&b),
+                    )
+                    .unwrap();
             }
-            self.bitmap
-                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
-                .unwrap();
         }
     }
 
@@ -466,9 +503,12 @@ impl GuestMemoryBitmap {
     fn page_state(&self, gpn: u64) -> bool {
         let mut b = 0;
         self.bitmap
-            .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+            .read_at(
+                (gpn / Self::PAGES_PER_CHUNK) as usize,
+                std::slice::from_mut(&mut b),
+            )
             .unwrap();
-        b & (1 << (gpn % 8)) != 0
+        b & (1 << (gpn % Self::PAGES_PER_CHUNK)) != 0
     }
 
     fn as_ptr(&self) -> *mut u8 {
@@ -501,7 +541,7 @@ pub struct GuestMemoryMappingBuilder {
     valid_memory: Option<Arc<GuestValidMemory>>,
     permissions_bitmap_state: Option<bool>,
     shared: bool,
-    for_kernel_access: bool,
+    kernel_registration_granularity: Option<u64>,
     dma_base_address: Option<u64>,
     ignore_registration_failure: bool,
 }
@@ -531,12 +571,12 @@ impl GuestMemoryMappingBuilder {
         self
     }
 
-    /// Set whether this mapping's memory can be locked to pass to the kernel.
+    /// Allow this mapping's memory to be locked and passed to the kernel.
     ///
-    /// If so, then the memory will be registered with the kernel as part of
+    /// Memory is registered in chunks of `registration_granularity` as part of
     /// `expose_va`, which is called when memory is locked.
-    pub fn for_kernel_access(&mut self, for_kernel_access: bool) -> &mut Self {
-        self.for_kernel_access = for_kernel_access;
+    pub fn for_kernel_access(&mut self, registration_granularity: u64) -> &mut Self {
+        self.kernel_registration_granularity = Some(registration_granularity);
         self
     }
 
@@ -671,12 +711,14 @@ impl GuestMemoryMappingBuilder {
             tracing::trace!(?entry, "mapped memory map entry");
         }
 
-        let registrar = if self.for_kernel_access {
+        let registrar = if let Some(registration_granularity) = self.kernel_registration_granularity
+        {
             let mshv = Mshv::new().map_err(MappingError::OpenDevice)?;
             let mshv_vtl = mshv.create_vtl().map_err(MappingError::OpenDevice)?;
             Some(MemoryRegistrar::new(
                 memory_layout,
                 self.physical_address_base,
+                registration_granularity,
                 MshvVtlWithPolicy {
                     mshv_vtl,
                     ignore_registration_failure: self.ignore_registration_failure,
@@ -709,10 +751,26 @@ impl GuestMemoryMapping {
             valid_memory: None,
             permissions_bitmap_state: None,
             shared: false,
-            for_kernel_access: false,
+            kernel_registration_granularity: None,
             dma_base_address: None,
             ignore_registration_failure: false,
         }
+    }
+
+    /// Register all complete `alignment`-aligned RAM subranges before they are accessed.
+    ///
+    /// If `ignore_unaligned_ranges` is false, fail if any RAM remains outside
+    /// the aligned subranges.
+    pub(crate) fn register_all_aligned_memory(
+        &self,
+        alignment: u64,
+        ignore_unaligned_ranges: bool,
+    ) -> Result<(), RegisterMemoryError> {
+        self.registrar
+            .as_ref()
+            .ok_or(RegisterMemoryError::NotConfigured)?
+            .register_all_aligned(alignment, ignore_unaligned_ranges)
+            .map_err(RegisterMemoryError::from)
     }
 
     /// Update the permission bitmaps to reflect the given flags.
@@ -757,8 +815,10 @@ impl GuestMemoryMapping {
 
 #[cfg(test)]
 mod tests {
+    use crate::mapping::GuestMemoryBitmap;
     use crate::mapping::GuestValidMemory;
     use crate::mapping::GuestValidMemoryType;
+    use guestmem::PAGE_SIZE;
     use memory_range::MemoryRange;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::memory::MemoryRangeWithNode;
@@ -777,6 +837,66 @@ mod tests {
             GuestValidMemory::new(&memory_layout, GuestValidMemoryType::Encrypted, true).unwrap();
         for (i, &b) in [true, true, false, true, false].iter().enumerate() {
             assert_eq!(guest_valid_mem.check_valid(i as u64 * 8), b, "{i}");
+        }
+    }
+
+    #[test]
+    fn test_bitmap_update() {
+        const PAGE_COUNT: u64 = 24;
+
+        // Cover fully-aligned, single-edge, both-edge, sub-byte, and
+        // full-coverage ranges.
+        for gpn_range in [8..16, 3..21, 5..6, 8..13, 3..8, 0..24, 7..17] {
+            let mut bitmap = GuestMemoryBitmap::new(PAGE_COUNT as usize * PAGE_SIZE).unwrap();
+            bitmap
+                .init(MemoryRange::from_4k_gpn_range(0..PAGE_COUNT), false)
+                .unwrap();
+
+            let range = MemoryRange::from_4k_gpn_range(gpn_range.clone());
+            bitmap.update(range, true);
+            for gpn in 0..PAGE_COUNT {
+                assert_eq!(bitmap.page_state(gpn), gpn_range.contains(&gpn), "{gpn}");
+            }
+
+            bitmap.update(range, false);
+            for gpn in 0..PAGE_COUNT {
+                assert!(!bitmap.page_state(gpn), "{gpn}");
+            }
+        }
+    }
+
+    // Apply a sequence of overlapping and partially-overlapping updates and
+    // check the running state after each one.
+    #[test]
+    fn test_bitmap_update_overlapping() {
+        const PAGE_COUNT: u64 = 24;
+
+        let mut bitmap = GuestMemoryBitmap::new(PAGE_COUNT as usize * PAGE_SIZE).unwrap();
+        bitmap
+            .init(MemoryRange::from_4k_gpn_range(0..PAGE_COUNT), false)
+            .unwrap();
+
+        let mut expected = [false; PAGE_COUNT as usize];
+        let ops = [
+            (3..21, true),   // unaligned on both edges
+            (0..4, false),   // clears the left chunk, shares an edge
+            (6..10, true),   // partial overlap, re-sets some pages
+            (9..24, true),   // shares the right edge
+            (20..22, false), // clears an interior sub-byte span
+        ];
+
+        for (gpn_range, state) in ops {
+            bitmap.update(MemoryRange::from_4k_gpn_range(gpn_range.clone()), state);
+            for gpn in gpn_range.clone() {
+                expected[gpn as usize] = state;
+            }
+            for gpn in 0..PAGE_COUNT {
+                assert_eq!(
+                    bitmap.page_state(gpn),
+                    expected[gpn as usize],
+                    "gpn {gpn} after updating {gpn_range:?} to {state}"
+                );
+            }
         }
     }
 }

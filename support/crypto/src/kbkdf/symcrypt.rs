@@ -21,6 +21,12 @@ pub fn kbkdf_hmac_sha256(
             "deriving SP800-108 KBKDF",
         )));
     }
-    sp800_108_counter_mode(HmacAlgorithm::HmacSha256, key, label, context, output_len)
-        .map_err(|e| KbkdfError(crate::BackendError::SymCrypt(e, "deriving SP800-108 KBKDF")))
+    sp800_108_counter_mode(HmacAlgorithm::HmacSha256, key, label, context, output_len).map_err(
+        |e| {
+            KbkdfError(crate::BackendError::SymCrypt(
+                e,
+                "deriving the SP800-108 key",
+            ))
+        },
+    )
 }

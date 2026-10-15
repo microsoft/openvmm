@@ -7,9 +7,8 @@
 //! and the vhost-user frontend (`vhost_user_frontend`).
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 #![expect(missing_docs)]
-// UNSAFETY: socket.rs uses libc sendmsg/recvmsg and handling cmsg ancillary data.
-#![expect(unsafe_code)]
 
 pub mod protocol;
 pub mod socket;

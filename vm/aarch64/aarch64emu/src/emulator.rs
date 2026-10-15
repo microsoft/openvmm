@@ -93,9 +93,10 @@ impl<T: Cpu> EmulatorOperations<T> {
         &mut self,
         gpa: u64,
         data: &mut [u8],
+        exec: bool,
     ) -> Result<(), Box<Error<T::Error>>> {
         self.cpu
-            .read_physical_memory(gpa, data)
+            .read_physical_memory(gpa, data, exec)
             .await
             .map_err(|err| Error::MemoryAccess(gpa, OperationKind::Read, err))?;
         Ok(())
@@ -223,7 +224,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             let mut data = [0; 8];
             // tracing::info!(gpa, len = data.len(), "reading memory from syndrome decode");
             self.inner
-                .read_physical_memory(gpa, &mut data[..len])
+                .read_physical_memory(gpa, &mut data[..len], false)
                 .await?;
             let mut data = u64::from_ne_bytes(data);
             if sign_extend {

@@ -6,7 +6,7 @@
 use crate::common::CommonTriple;
 use crate::run_cargo_build::BuildProfile;
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
+use flowey_lib_common::_util::group_by;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -21,7 +21,8 @@ pub enum IgvmfilegenOutput {
         #[serde(rename = "igvmfilegen.exe")]
         exe: PathBuf,
         #[serde(rename = "igvmfilegen.pdb")]
-        pdb: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pdb: Option<PathBuf>,
     },
 }
 
@@ -47,20 +48,27 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // de-dupe incoming requests
-        let requests = requests
-            .into_iter()
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut m, r| {
-                let Request {
-                    build_params,
-                    igvmfilegen,
-                } = r;
-                m.entry(build_params).or_default().push(igvmfilegen);
-                m
-            });
+        let requests = group_by(
+            requests
+                .into_iter()
+                .map(|r| (r.build_params, r.igvmfilegen)),
+        );
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // `crypto`'s vendored OpenSSL build needs the headers and perl.
+        let ssl_pkgs = crate::common::openssl_dev_packages(ctx.platform())?;
+        let ssl_dep = (!ssl_pkgs.is_empty()).then(|| {
+            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
+                package_names: ssl_pkgs,
+                done: v,
+            })
+        });
 
         for (IgvmfilegenBuildParams { target, profile }, outvars) in requests {
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
@@ -72,7 +80,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps: Vec::new(),
+                pre_build_deps: ssl_dep.clone().into_iter().collect(),
                 output: v,
             });
 
@@ -93,9 +101,7 @@ impl FlowNode for Node {
                         _ => unreachable!(),
                     };
 
-                    for var in outvars {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(outvars, &output);
                 }
             });
         }

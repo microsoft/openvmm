@@ -47,6 +47,8 @@ use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
+use product_policy::ProductPolicy;
+use product_policy::encode_product_policy;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -79,6 +81,14 @@ pub const HCL_SECURE_VTL: Vtl = Vtl::Vtl2;
 /// Size of the persisted region (2MB).
 const PERSISTED_REGION_SIZE: u64 = 2 * 1024 * 1024;
 
+fn avoid_page_table_large_page_boundary(offset: u64, large_page_size: u64) -> u64 {
+    if offset.is_multiple_of(large_page_size) {
+        offset + HV_PAGE_SIZE
+    } else {
+        offset
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("memory is unaligned: {0}")]
@@ -101,6 +111,77 @@ pub enum Error {
     InitrdRead(#[source] std::io::Error),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
+}
+
+/// Encode and validate a [`ProductPolicy`] for inclusion in the
+/// measured VTL2 config region.
+///
+/// Panics if the policy violates product invariants (see
+/// [`validate_product_policy_for_build`]) or if the encoded body
+/// exceeds [`PRODUCT_POLICY_MAX_SIZE_BYTES`].
+fn encode_product_policy_bytes(policy: &ProductPolicy) -> Vec<u8> {
+    validate_product_policy_for_build(policy);
+    let bytes = encode_product_policy(policy);
+    let max = PRODUCT_POLICY_MAX_SIZE_BYTES;
+    assert!(
+        bytes.len() <= max,
+        "product policy mesh-encoded size {} bytes exceeds the static measured-config-region budget of {} bytes; bump PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES (currently {}) and accept the attestation-measurement change",
+        bytes.len(),
+        max,
+        PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
+    );
+    bytes
+}
+
+/// Enforce product-specific build-time invariants on a
+/// [`ProductPolicy`]. Violations panic.
+fn validate_product_policy_for_build(policy: &ProductPolicy) {
+    match policy {
+        ProductPolicy::Sivm(sivm) => {
+            if sivm.require_secure_boot
+                && (sivm.require_secure_boot_vars || sivm.require_bcd_integrity)
+            {
+                assert!(
+                    !sivm.custom_uefi_json.is_empty(),
+                    "product policy requires non-empty custom_uefi_json"
+                );
+            }
+        }
+        ProductPolicy::Cwcow(cwcow) => {
+            if cwcow.require_secure_boot
+                && (cwcow.require_secure_boot_vars || cwcow.require_bcd_integrity)
+            {
+                assert!(
+                    !cwcow.custom_uefi_json.is_empty(),
+                    "product policy requires non-empty custom_uefi_json"
+                );
+            }
+        }
+    }
+}
+
+/// Build the fixed-size measured VTL2 config region image: the struct
+/// followed by the optional (encoded) product policy body, zero-padded
+/// to `PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES * HV_PAGE_SIZE`. Every
+/// byte is measured.
+fn build_measured_vtl2_config_region(
+    mut config: ParavisorMeasuredVtl2Config,
+    product_policy: Option<&ProductPolicy>,
+) -> Vec<u8> {
+    let policy_bytes = product_policy.map(encode_product_policy_bytes);
+    let policy_bytes = policy_bytes.as_deref().unwrap_or(&[]);
+    config.product_policy_size = policy_bytes.len() as u32;
+
+    let buf_bytes = (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize);
+    let mut buf = vec![0u8; buf_bytes];
+
+    let struct_bytes = config.as_bytes();
+    buf[..struct_bytes.len()].copy_from_slice(struct_bytes);
+    if !policy_bytes.is_empty() {
+        let off = PRODUCT_POLICY_INLINE_OFFSET;
+        buf[off..off + policy_bytes.len()].copy_from_slice(policy_bytes);
+    }
+    buf
 }
 
 /// Kernel Command line type.
@@ -130,6 +211,7 @@ pub fn load_openhcl_x64<F>(
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
+    product_policy: Option<&ProductPolicy>,
 ) -> Result<(), Error>
 where
     F: Read + Seek,
@@ -408,6 +490,10 @@ where
         &[],
     )?;
     offset += heap_size;
+
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    offset = avoid_page_table_large_page_boundary(offset, X64_LARGE_PAGE_SIZE);
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
@@ -889,7 +975,11 @@ where
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: shared_gpa_boundary_bits.unwrap_or(0),
         padding: [0; 7],
+        product_policy_size: 0,
+        reserved: [0; 4],
     };
+
+    let region_image = build_measured_vtl2_config_region(vtl2_measured_config, product_policy);
 
     importer
         .import_pages(
@@ -897,7 +987,7 @@ where
             PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
             "underhill-vtl2-measured-config",
             BootPageAcceptance::Exclusive,
-            vtl2_measured_config.as_bytes(),
+            &region_image,
         )
         .map_err(Error::Importer)?;
 
@@ -905,6 +995,14 @@ where
         config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_ACCEPTED_MEMORY_PAGE_INDEX;
 
     importer.set_imported_regions_config_page(imported_region_base);
+
+    // Also announce the per-page expected-hashes region. The IGVM file
+    // loader populates it in finalize alongside the imported-regions page
+    // (both regions are derived from the same set of shared pages). See
+    // `openhcl_boot::verify_imported_regions_hash` diagnostic changes.
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
     Ok(())
 }
 
@@ -948,6 +1046,7 @@ pub fn load_openhcl_arm64<F>(
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
+    product_policy: Option<&ProductPolicy>,
 ) -> Result<(), Error>
 where
     F: Read + Seek,
@@ -1154,6 +1253,10 @@ where
         &[],
     )?;
     next_addr += heap_size;
+
+    // Some loaders only fix up identity map entries that overlap the relocation
+    // region, so keep the page table region in the same large page as it.
+    next_addr = avoid_page_table_large_page_boundary(next_addr, u64::from(Arm64PageSize::Large));
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
@@ -1453,7 +1556,11 @@ where
         magic: ParavisorMeasuredVtl2Config::MAGIC,
         vtom_offset_bit: 0,
         padding: [0; 7],
+        product_policy_size: 0,
+        reserved: [0; 4],
     };
+
+    let region_image = build_measured_vtl2_config_region(vtl2_measured_config, product_policy);
 
     importer
         .import_pages(
@@ -1461,7 +1568,7 @@ where
             PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES,
             "underhill-vtl2-measured-config",
             BootPageAcceptance::Exclusive,
-            vtl2_measured_config.as_bytes(),
+            &region_image,
         )
         .map_err(Error::Importer)?;
 
@@ -1470,5 +1577,139 @@ where
 
     importer.set_imported_regions_config_page(imported_region_base);
 
+    // Also announce the per-page expected-hashes region (see comments in
+    // the x86 sibling above).
+    let expected_page_hashes_base =
+        config_region_page_base + PARAVISOR_MEASURED_VTL2_CONFIG_PAGE_HASHES_PAGE_INDEX;
+    importer.set_expected_page_hashes_config_page(expected_page_hashes_base);
+
     Ok(())
+}
+
+#[cfg(test)]
+mod page_table_layout_tests {
+    use super::*;
+
+    #[test]
+    fn page_table_region_avoids_large_page_boundary() {
+        for large_page_size in [X64_LARGE_PAGE_SIZE, u64::from(Arm64PageSize::Large)] {
+            assert_eq!(
+                avoid_page_table_large_page_boundary(large_page_size, large_page_size),
+                large_page_size + HV_PAGE_SIZE
+            );
+            assert_eq!(
+                avoid_page_table_large_page_boundary(
+                    large_page_size - HV_PAGE_SIZE,
+                    large_page_size
+                ),
+                large_page_size - HV_PAGE_SIZE
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod product_policy_tests {
+    use super::*;
+    use product_policy::decode_product_policy;
+    use product_policy::sivm::SivmPolicy;
+    use zerocopy::FromBytes;
+
+    // ---------------------------------------------------------------
+    // Encoding helper round trips
+    // ---------------------------------------------------------------
+
+    fn empty_config() -> ParavisorMeasuredVtl2Config {
+        ParavisorMeasuredVtl2Config {
+            magic: ParavisorMeasuredVtl2Config::MAGIC,
+            vtom_offset_bit: 0,
+            padding: [0; 7],
+            product_policy_size: 0,
+            reserved: [0; 4],
+        }
+    }
+
+    #[test]
+    fn encode_product_policy_bytes_round_trip() {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
+            require_ephemeral_vmgs: true,
+            require_secure_boot: true,
+            custom_uefi_json: vec![0xAA, 0xBB, 0xCC, 0xDD],
+            ..Default::default()
+        });
+        let bytes = encode_product_policy_bytes(&policy);
+        let decoded = decode_product_policy(&bytes).unwrap();
+        // Test that the decoded policy matches the original policy
+        assert_eq!(decoded, policy);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty custom_uefi_json")]
+    fn encode_product_policy_bytes_panics_on_empty_custom_uefi_json() {
+        let policy = ProductPolicy::Sivm(SivmPolicy {
+            require_ephemeral_vmgs: true,
+            require_secure_boot: true,
+            require_secure_boot_vars: true,
+            require_bcd_integrity: true,
+            custom_uefi_json: vec![],
+        });
+        let _ = encode_product_policy_bytes(&policy);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the static measured-config-region budget")]
+    fn encode_product_policy_bytes_panics_on_oversize() {
+        let oversize_body = PRODUCT_POLICY_MAX_SIZE_BYTES + 1;
+        let policy = ProductPolicy::Sivm(SivmPolicy {
+            custom_uefi_json: vec![0u8; oversize_body],
+            ..Default::default()
+        });
+        let _ = encode_product_policy_bytes(&policy);
+    }
+
+    #[test]
+    fn build_region_absent_records_zero_size_in_struct() {
+        let cfg = empty_config();
+        let region = build_measured_vtl2_config_region(cfg, None);
+        assert_eq!(
+            region.len(),
+            (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
+        );
+        let (decoded_cfg, _) = ParavisorMeasuredVtl2Config::ref_from_prefix(&region).unwrap();
+        assert_eq!(decoded_cfg.magic, ParavisorMeasuredVtl2Config::MAGIC);
+        assert_eq!(decoded_cfg.product_policy_size, 0);
+        assert!(
+            region[PRODUCT_POLICY_INLINE_OFFSET..]
+                .iter()
+                .all(|&b| b == 0)
+        );
+    }
+
+    #[test]
+    fn build_region_present_records_policy_size_in_struct() {
+        let cfg = empty_config();
+        let policy = ProductPolicy::Sivm(SivmPolicy {
+            require_secure_boot: true,
+            custom_uefi_json: vec![1, 2, 3, 4],
+            ..Default::default()
+        });
+        let bytes = encode_product_policy_bytes(&policy);
+        let region = build_measured_vtl2_config_region(cfg, Some(&policy));
+        assert_eq!(
+            region.len(),
+            (PARAVISOR_MEASURED_VTL2_CONFIG_SIZE_PAGES as usize) * (HV_PAGE_SIZE as usize)
+        );
+        let (decoded_cfg, _) = ParavisorMeasuredVtl2Config::ref_from_prefix(&region).unwrap();
+        assert_eq!(decoded_cfg.product_policy_size, bytes.len() as u32);
+        assert_eq!(
+            &region[PRODUCT_POLICY_INLINE_OFFSET..PRODUCT_POLICY_INLINE_OFFSET + bytes.len()],
+            bytes.as_slice()
+        );
+        let decoded = decode_product_policy(
+            &region[PRODUCT_POLICY_INLINE_OFFSET..PRODUCT_POLICY_INLINE_OFFSET + bytes.len()],
+        )
+        .unwrap();
+        // Test that the decoded policy matches the original policy
+        assert_eq!(decoded, policy);
+    }
 }

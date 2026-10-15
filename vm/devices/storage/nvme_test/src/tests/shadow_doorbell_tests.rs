@@ -16,6 +16,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
+use vmcore::device_state::ChangeDeviceState;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -160,6 +161,29 @@ async fn test_setup_shadow_doorbells(driver: DefaultDriver) {
     let int_controller = TestPciInterruptController::new();
 
     setup_shadow_doorbells(driver.clone(), &cq_buf, &sq_buf, &gm, &int_controller, None).await;
+}
+
+#[async_test]
+async fn test_reset_shadow_doorbells(driver: DefaultDriver) {
+    let cq_buf = PrpRange::new(vec![CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let sq_buf = PrpRange::new(vec![SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec =
+        setup_shadow_doorbells(driver, &cq_buf, &sq_buf, &gm, &int_controller, None).await;
+
+    ChangeDeviceState::reset(&mut nvmec).await;
+
+    let shadow_value = 0x1234;
+    gm.write_plain::<u32>(DOORBELL_BUFFER_BASE, &shadow_value)
+        .unwrap();
+    nvmec.write_bar0(0x1000, 0x5678_u32.as_bytes()).unwrap();
+
+    assert_eq!(
+        gm.read_plain::<u32>(DOORBELL_BUFFER_BASE).unwrap(),
+        shadow_value
+    );
 }
 
 #[async_test]

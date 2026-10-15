@@ -42,6 +42,7 @@ disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
 disk_vhd1.workspace = true
+disklayer_vhdx.workspace = true
 disklayer_ram.workspace = true
 disklayer_sqlite = { workspace = true, optional = true }
 
@@ -59,7 +60,7 @@ vmcore.workspace = true
 vmgs_broker.workspace = true
 
 # PCI devices
-cxl_spec.workspace = true
+cxl.workspace = true
 gdma.workspace = true
 nvme.workspace = true
 nvme_test.workspace = true

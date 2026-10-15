@@ -3,14 +3,18 @@
 
 //! Test modules driving OpenTMK tests.
 
-// only one test is run at a time so there is dead code in other tests
-#![expect(dead_code)]
-use crate::platform::hyperv::ctx::HvTestCtx;
 mod hyperv;
 
-/// Runs all the tests.
+crate::opentmk_backends! {
+    hyperv => |_params: &serde_json::Value| {
+        let mut ctx = opentmk_core::platform::hyperv::ctx::HvTestCtx::new();
+        ctx.init(hvdef::Vtl::Vtl0).expect("failed to init on BSP");
+        ctx
+    },
+}
+
+/// Reads the embedded config and runs the selected backend/test.
+/// Panics if the config is invalid or names an unknown backend/test.
 pub fn run_test() {
-    let mut ctx = HvTestCtx::new();
-    ctx.init(hvdef::Vtl::Vtl0).expect("failed to init on BSP");
-    hyperv::hv_processor::exec(&mut ctx);
+    crate::dispatch::run_test(&crate::config::OPENTMK_CONFIG, dispatch);
 }

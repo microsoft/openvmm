@@ -19,6 +19,30 @@ export interface RunMetadata {
   prTitle?: string;
 }
 
+// A parsed run identifier. Run identifiers are stored as "<runId>_<attempt>"
+// (e.g. "16234567890_1"), where runId is the GitHub Actions run id and attempt
+// is the re-run attempt number (the first attempt is "1").
+export interface ParsedRunKey {
+  runId: string;
+  attempt: string; // empty string if the key has no attempt suffix
+}
+
+/**
+ * Split a "<runId>_<attempt>" run key into its parts for display / linking.
+ * Falls back gracefully (attempt = "") for keys without an attempt suffix.
+ * Uses the last underscore so a numeric runId is split unambiguously.
+ */
+export function parseRunKey(runKey: string): ParsedRunKey {
+  const underscore = runKey.lastIndexOf("_");
+  if (underscore === -1) {
+    return { runId: runKey, attempt: "" };
+  }
+  return {
+    runId: runKey.slice(0, underscore),
+    attempt: runKey.slice(underscore + 1),
+  };
+}
+
 export interface TestResult {
   name: string;
   status: "passed" | "failed";

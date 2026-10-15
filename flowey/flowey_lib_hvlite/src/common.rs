@@ -9,6 +9,37 @@
 //! common subset of supported target triples + build profiles.
 
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
+
+pub(crate) const OPENVMM_GITHUB_OWNER: &str = "microsoft";
+pub(crate) const OPENVMM_GITHUB_REPO: &str = "openvmm";
+pub(crate) const OPENVMM_DEPS_GITHUB_REPO: &str = "openvmm-deps";
+
+/// Environment for OpenHCL builds that must use prebuilt native libraries.
+pub(crate) fn openhcl_build_env() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("CC_FORCE_DISABLE".into(), "1".into()),
+        (
+            "CMAKE".into(),
+            "cmake-is-forbidden-during-openvmm-hcl-build".into(),
+        ),
+    ])
+}
+
+pub(crate) fn openssl_dev_packages(platform: FlowPlatform) -> anyhow::Result<Vec<String>> {
+    Ok(match platform {
+        FlowPlatform::Linux(distro) => match distro {
+            FlowPlatformLinuxDistro::Ubuntu => vec!["libssl-dev".into()],
+            FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
+                vec!["openssl-devel".into(), "perl".into()]
+            }
+            FlowPlatformLinuxDistro::Arch => vec!["openssl".into(), "perl".into()],
+            FlowPlatformLinuxDistro::Nix => Vec::new(),
+            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+        },
+        _ => Vec::new(),
+    })
+}
 
 /// Vocabulary type for artifacts that only get built using the two most
 /// common cargo build profiles (i.e: `release` vs. `debug`).
@@ -47,6 +78,15 @@ impl From<CommonProfile> for crate::run_cargo_build::BuildProfile {
     }
 }
 
+impl From<CommonProfile> for flowey_lib_common::run_cargo_build::CargoBuildProfile {
+    fn from(value: CommonProfile) -> Self {
+        match value {
+            CommonProfile::Release => Self::Release,
+            CommonProfile::Debug => Self::Debug,
+        }
+    }
+}
+
 /// Vocabulary type for artifacts that only get built for the most common
 /// actively-supported architectures in the hvlite tree.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -56,6 +96,20 @@ pub enum CommonArch {
 }
 
 impl CommonArch {
+    /// Target the OpenHCL minimal runtime, leaving target translation to
+    /// [`crate::run_cargo_build`].
+    pub fn minimal_rt_triple(self) -> target_lexicon::Triple {
+        target_lexicon::Triple {
+            architecture: self.as_arch(),
+            operating_system: target_lexicon::OperatingSystem::None_,
+            environment: target_lexicon::Environment::Unknown,
+            vendor: target_lexicon::Vendor::Custom(target_lexicon::CustomVendor::Static(
+                "minimal_rt",
+            )),
+            binary_format: target_lexicon::BinaryFormat::Unknown,
+        }
+    }
+
     /// Convert to a [`target_lexicon::Architecture`].
     pub fn as_arch(&self) -> target_lexicon::Architecture {
         match self {
@@ -102,6 +156,10 @@ impl TryFrom<FlowArch> for CommonArch {
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum CommonPlatform {
     WindowsMsvc,
+    /// Windows via the GNU (mingw-w64) toolchain. Used to cross-compile
+    /// Windows *guest* payloads (e.g. pipette) from a non-WSL Linux host,
+    /// where the MSVC toolchain / Windows SDK is unavailable.
+    WindowsGnu,
     LinuxGnu,
     LinuxMusl,
     MacOs,
@@ -134,6 +192,10 @@ impl CommonTriple {
         arch: CommonArch::X86_64,
         platform: CommonPlatform::WindowsMsvc,
     };
+    pub const X86_64_WINDOWS_GNU: Self = Self::Common {
+        arch: CommonArch::X86_64,
+        platform: CommonPlatform::WindowsGnu,
+    };
     pub const X86_64_LINUX_GNU: Self = Self::Common {
         arch: CommonArch::X86_64,
         platform: CommonPlatform::LinuxGnu,
@@ -145,6 +207,10 @@ impl CommonTriple {
     pub const AARCH64_WINDOWS_MSVC: Self = Self::Common {
         arch: CommonArch::Aarch64,
         platform: CommonPlatform::WindowsMsvc,
+    };
+    pub const AARCH64_WINDOWS_GNU: Self = Self::Common {
+        arch: CommonArch::Aarch64,
+        platform: CommonPlatform::WindowsGnu,
     };
     pub const AARCH64_LINUX_GNU: Self = Self::Common {
         arch: CommonArch::Aarch64,
@@ -191,6 +257,13 @@ impl CommonTriple {
                     vendor: target_lexicon::Vendor::Pc,
                     operating_system: target_lexicon::OperatingSystem::Windows,
                     environment: target_lexicon::Environment::Msvc,
+                    binary_format: target_lexicon::BinaryFormat::Coff,
+                },
+                CommonPlatform::WindowsGnu => target_lexicon::Triple {
+                    architecture: arch.as_arch(),
+                    vendor: target_lexicon::Vendor::Pc,
+                    operating_system: target_lexicon::OperatingSystem::Windows,
+                    environment: target_lexicon::Environment::Gnu,
                     binary_format: target_lexicon::BinaryFormat::Coff,
                 },
                 CommonPlatform::LinuxGnu => target_lexicon::Triple {

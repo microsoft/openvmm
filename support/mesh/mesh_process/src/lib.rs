@@ -470,7 +470,7 @@ impl Mesh {
         };
 
         let task = node_driver.spawn(
-            format!("mesh-{}", &mesh_name),
+            format!("mesh-{}", mesh_name),
             async move { inner.run().await },
         );
 

@@ -1,7 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A simple test microkernel (TMK) for testing very basic VMM functionality.
+//! Bare-metal Test Microkernel (TMK) payload for low-level VMM tests.
+//!
+//! The binary contains small architecture-specific tests registered in the
+//! ELF `tmk_tests` section. [`tmk_vmm`](https://docs.rs/tmk_vmm) discovers
+//! those descriptors, loads this image as a guest kernel, and runs each test
+//! without booting firmware or a general-purpose operating system.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: TMK tests are going to need to perform unsafe operations.
@@ -9,6 +14,7 @@
 
 mod prelude;
 
+mod aarch64;
 mod common;
 mod x86_64;
 

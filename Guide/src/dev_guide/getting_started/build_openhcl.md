@@ -152,12 +152,16 @@ Some examples of potentially useful customization include:
     cargo xflowey build-igvm x64 --custom-openvmm-hcl target/x86_64-unknown-linux-musl/debug/openvmm_hcl
     ```
 
-- Specify a custom VTL2 kernel `vmlinux` / `Image`, instead of using a
-    pre-packed stable/dev kernel.
+- Specify a custom VTL2 kernel `vmlinux` / `Image`, instead of using the
+    packaged main kernel.
 
     ```bash
     cargo xflowey build-igvm x64 --custom-kernel path/to/my/prebuilt/vmlinux
     ```
+
+    The packaged dev kernel variants are disabled by default. A custom kernel
+    remains available for local kernel development without enabling those
+    variants.
 
 For a full list of available customizations, refer to `build-igvm --help`.
 

@@ -11,7 +11,6 @@ use fuse::protocol::fuse_statx;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use zerocopy::FromZeros;
 
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {
@@ -28,16 +27,21 @@ impl VirtioFsFile {
         }
     }
 
+    /// The inode backing this open file.
+    pub fn inode(&self) -> &VirtioFsInode {
+        &self.inode
+    }
+
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         let stat = self.file.read().fstat()?.into();
-        Ok(util::stat_to_fuse_attr(&stat))
+        Ok(self.inode.attr_from_stat(&stat))
     }
 
     /// Gets the statx details for the open file.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
         let statx = self.file.read().fstat()?;
-        Ok(util::statx_to_fuse_statx(&statx))
+        Ok(self.inode.statx_from(&statx))
     }
 
     /// Sets the attributes of the open file.
@@ -74,7 +78,9 @@ impl VirtioFsFile {
     ) -> lx::Result<Vec<u8>> {
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
-        let self_inode_nr = self.inode.inode_nr();
+        // Report the directory's guest-visible inode number so `.`/`..` agree
+        // with the number reported by lookup/getattr.
+        let self_inode_nr = self.inode.guest_inode_nr();
         let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
@@ -97,10 +103,7 @@ impl VirtioFsFile {
             // If readdirplus is being used, do a lookup on all items except the . and .. entries.
             if plus {
                 let fuse_entry = if entry.name == "." || entry.name == ".." {
-                    let mut e = fuse_entry_out::new_zeroed();
-                    e.attr.ino = self_inode_nr;
-                    e.attr.mode = (entry.file_type as u32) << 12;
-                    e
+                    fuse_entry_out::new_dot(self_inode_nr, (entry.file_type as u32) << 12)
                 } else {
                     if !buffer.check_dir_entry_plus(&entry.name) {
                         return Ok(false);
@@ -130,7 +133,9 @@ impl VirtioFsFile {
                         entry_count -= 1;
                         return Ok(true);
                     }
-                    entry.inode_nr
+                    // Children share this directory's volume, so apply its
+                    // guest inode mapping to match lookup/readdirplus.
+                    self.inode.guest_ino(entry.inode_nr)
                 };
 
                 Ok(buffer.dir_entry(

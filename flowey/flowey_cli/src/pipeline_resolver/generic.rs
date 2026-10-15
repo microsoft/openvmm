@@ -17,7 +17,9 @@ use flowey_core::pipeline::GhPrTriggers;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhScheduleTriggers;
 use flowey_core::pipeline::Pipeline;
+use flowey_core::pipeline::internal::AdoBootstrapTemplate;
 use flowey_core::pipeline::internal::ArtifactMeta;
+use flowey_core::pipeline::internal::GhBootstrapTemplate;
 use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
 use flowey_core::pipeline::internal::Parameter;
 use flowey_core::pipeline::internal::ParameterMeta;
@@ -34,7 +36,7 @@ pub struct ResolvedPipeline {
     pub ado_name: Option<String>,
     pub ado_ci_triggers: Option<AdoCiTriggers>,
     pub ado_pr_triggers: Option<AdoPrTriggers>,
-    pub ado_bootstrap_template: String,
+    pub ado_bootstrap_template: Option<Box<AdoBootstrapTemplate>>,
     pub ado_resources_repository: Vec<InternalAdoResourcesRepository>,
     pub ado_post_process_yaml_cb: Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
     pub ado_variables: BTreeMap<String, String>,
@@ -43,7 +45,7 @@ pub struct ResolvedPipeline {
     pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
     pub gh_ci_triggers: Option<GhCiTriggers>,
     pub gh_pr_triggers: Option<GhPrTriggers>,
-    pub gh_bootstrap_template: String,
+    pub gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,7 @@ pub struct ResolvedPipelineJob {
     pub gh_override_if: Option<String>,
     pub gh_global_env: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,
+    pub gh_concurrency_group: Option<flowey_core::pipeline::GhConcurrencyGroup>,
     pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
     pub external_read_vars: BTreeSet<String>,
     pub cond_param_idx: Option<usize>,
@@ -179,6 +182,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_override_if,
             gh_global_env,
             gh_pool,
+            gh_concurrency_group,
             gh_permissions,
         },
     ) in jobs.into_iter().enumerate()
@@ -233,6 +237,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_override_if,
             gh_global_env,
             gh_pool,
+            gh_concurrency_group,
             gh_permissions,
             platform,
             arch,

@@ -126,7 +126,11 @@ impl SimpleVmbusDevice for Serial {
             interface_name,
             interface_id: protocol::UART_INTERFACE_TYPE,
             instance_id,
-            channel_type: ChannelType::Pipe { message_mode: true },
+            channel_type: ChannelType::Pipe {
+                message_mode: true,
+                user_defined: Default::default(),
+                pipe_flags: Default::default(),
+            },
             ..Default::default()
         }
     }

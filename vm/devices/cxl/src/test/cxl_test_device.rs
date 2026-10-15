@@ -9,6 +9,8 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::ByteEnabledDwordRead;
+use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use inspect::InspectMut;
 use mesh::MeshPayload;
@@ -40,23 +42,23 @@ use crate::CxlDeviceDevsecExtendedCapability;
 use crate::CxlFlexBusPortDvsecExtendedCapability;
 use crate::CxlRegisterLocatorDvsecExtendedCapability;
 use crate::component_registers::CxlHdmDecoderCapability;
-use crate::component_registers::spec::hdm_decoder::CXL_HDM_DECODER_BASE_OFFSET;
-use crate::component_registers::spec::hdm_decoder::CXL_HDM_DECODER_CAPABILITY_ID;
-use crate::component_registers::spec::hdm_decoder::CXL_HDM_DECODER_GLOBAL_CONTROL_OFFSET;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderBaseLowRegister;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderControlRegister;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderGlobalControlRegister;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderInterleaveGranularity;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderInterleaveWays;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderRegisterOffset;
-use crate::component_registers::spec::hdm_decoder::CxlHdmDecoderSizeLowRegister;
-use crate::pci_registers::spec::cxl_device_dvsec::CxlDeviceDvsecDesiredInterleave;
-use crate::pci_registers::spec::cxl_device_dvsec::CxlDeviceDvsecMediaType;
-use crate::pci_registers::spec::cxl_device_dvsec::CxlDeviceDvsecMemoryActiveTimeout;
-use crate::pci_registers::spec::cxl_device_dvsec::CxlDeviceDvsecMemoryClass;
-use crate::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
-use crate::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
-use crate::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::component_registers::hdm_decoder::CXL_HDM_DECODER_BASE_OFFSET;
+use cxl_spec::component_registers::hdm_decoder::CXL_HDM_DECODER_CAPABILITY_ID;
+use cxl_spec::component_registers::hdm_decoder::CXL_HDM_DECODER_GLOBAL_CONTROL_OFFSET;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderBaseLowRegister;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderControlRegister;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderGlobalControlRegister;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderInterleaveGranularity;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderInterleaveWays;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderRegisterOffset;
+use cxl_spec::component_registers::hdm_decoder::CxlHdmDecoderSizeLowRegister;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecDesiredInterleave;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMediaType;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMemoryActiveTimeout;
+use cxl_spec::pci_registers::cxl_device_dvsec::CxlDeviceDvsecMemoryClass;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
 
 const CXL_TEST_DEVICE_ID: u16 = 0xc102;
 const MICROSOFT_VENDOR_ID: u16 = 0x1414;
@@ -457,12 +459,12 @@ impl MmioIntercept for CxlTestDevice {
 }
 
 impl PciConfigSpace for CxlTestDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        self.cfg_space.read_u32(offset, value)
+    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+        self.cfg_space.read_byte_enabled(offset, value)
     }
 
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+        self.cfg_space.write_byte_enabled(offset, value)
     }
 }
 

@@ -95,6 +95,8 @@ pub struct CiTrigger {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cron {
     pub cron: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +133,7 @@ pub enum PermissionValue {
 #[serde(rename_all = "kebab-case")]
 pub enum Permissions {
     Actions,
+    ArtifactMetadata,
     Attestations,
     Checks,
     Contents,
@@ -262,11 +265,23 @@ pub enum Runner {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct JobDefaults {
+    pub run: RunDefaults,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RunDefaults {
+    pub shell: String,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Job {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<Concurrency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Runner>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -277,6 +292,8 @@ pub struct Job {
     pub r#if: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<JobDefaults>,
     pub steps: Vec<serde_yaml::Value>,
 }
 

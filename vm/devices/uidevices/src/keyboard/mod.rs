@@ -3,7 +3,9 @@
 
 //! Vmbus synthetic keyboard device.
 
-mod protocol;
+// Re-export the shared wire types from `hyperv_keyboard_protocol`. Existing
+// `protocol::*` paths inside the keyboard module continue to resolve.
+use hyperv_keyboard_protocol as protocol;
 
 use async_trait::async_trait;
 use futures::StreamExt;

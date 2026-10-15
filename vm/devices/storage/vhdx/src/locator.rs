@@ -1,0 +1,588 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Parent locator parsing for VHDX files.
+//!
+//! Parses the parent locator metadata item (a key-value table of UTF-16LE
+//! strings) into a structured Rust type.
+
+use crate::VhdxParent;
+use crate::error::CorruptionType;
+use crate::error::InvalidFormatReason;
+use crate::error::OpenError;
+use crate::format;
+use crate::format::ParentLocatorEntry;
+use crate::format::ParentLocatorHeader;
+use guid::Guid;
+use std::path::Path;
+use std::path::PathBuf;
+use thiserror::Error;
+use zerocopy::FromBytes;
+
+/// A parsed key-value pair from a parent locator.
+#[derive(Debug, Clone)]
+pub struct LocatorKeyValue {
+    /// The key string.
+    pub key: String,
+    /// The value string.
+    pub value: String,
+}
+
+/// A parsed parent locator.
+#[derive(Debug, Clone)]
+pub struct ParentLocator {
+    /// The locator type GUID.
+    pub locator_type: Guid,
+    /// The key-value entries.
+    pub entries: Vec<LocatorKeyValue>,
+}
+
+/// An error interpreting a generic parent locator as a VHDX parent.
+#[derive(Debug, Error)]
+pub enum VhdxParentError {
+    /// The locator describes a parent type other than VHDX.
+    #[error("parent locator type {0} is not the VHDX locator type")]
+    UnsupportedLocatorType(Guid),
+    /// The required parent linkage entry is absent.
+    #[error("VHDX parent locator has no parent linkage GUID")]
+    MissingParentLinkage,
+    /// The deprecated alternative linkage entry is present.
+    #[error("VHDX parent locator contains unsupported parent_linkage2")]
+    AlternativeParentLinkage,
+    /// The parent linkage entry is not a GUID.
+    #[error("VHDX parent locator has an invalid parent linkage GUID")]
+    InvalidParentLinkage(#[source] guid::ParseError),
+    /// The decoded parent information violates a creation invariant.
+    #[error("VHDX parent locator is invalid")]
+    InvalidParent(#[source] InvalidFormatReason),
+}
+
+/// Decode a UTF-16LE string from `data` at the given byte offset and length.
+///
+/// Returns `None` if the string is empty, misaligned, out of bounds,
+/// contains embedded nulls, or is not valid UTF-16.
+fn decode_utf16le(data: &[u8], offset: usize, length: usize) -> Option<String> {
+    if length == 0 || !length.is_multiple_of(2) || !offset.is_multiple_of(2) {
+        return None;
+    }
+    let end = offset.checked_add(length)?;
+    if end > data.len() {
+        return None;
+    }
+    let slice = &data[offset..end];
+    if has_embedded_null(slice) {
+        return None;
+    }
+    let u16s: Vec<u16> = slice
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16(&u16s).ok()
+}
+
+/// Check that a UTF-16LE byte slice does not contain embedded null characters.
+fn has_embedded_null(data: &[u8]) -> bool {
+    data.chunks_exact(2)
+        .any(|c| u16::from_le_bytes([c[0], c[1]]) == 0)
+}
+
+impl ParentLocator {
+    /// Parse a parent locator from its raw metadata item bytes.
+    pub fn parse(data: &[u8]) -> Result<Self, OpenError> {
+        let header_size = size_of::<ParentLocatorHeader>();
+
+        // Check minimum size for the header.
+        if data.len() < header_size {
+            return Err((CorruptionType::LocatorTooSmallForHeader).into());
+        }
+
+        let header = ParentLocatorHeader::read_from_prefix(data)
+            .map_err(|_| CorruptionType::LocatorTooSmallForHeader)?
+            .0
+            .clone();
+
+        // Validate key-value count.
+        if header.key_value_count == 0
+            || header.key_value_count > format::PARENT_LOCATOR_MAXIMUM_KEY_VALUE_COUNT
+        {
+            return Err((CorruptionType::InvalidLocatorKeyValueCount).into());
+        }
+
+        // Check that the buffer is large enough for header + all entries.
+        let entry_size = size_of::<ParentLocatorEntry>();
+        let entries_end = header_size + header.key_value_count as usize * entry_size;
+        if data.len() < entries_end {
+            return Err((CorruptionType::LocatorTooSmallForEntries).into());
+        }
+
+        // Parse each entry.
+        let mut entries = Vec::with_capacity(header.key_value_count as usize);
+        for i in 0..header.key_value_count as usize {
+            let off = header_size + i * entry_size;
+            let entry = ParentLocatorEntry::read_from_prefix(&data[off..])
+                .unwrap()
+                .0
+                .clone();
+
+            // Validate and decode key.
+            let key_offset = entry.key_offset as usize;
+            let key_length = entry.key_length as usize;
+            let key = decode_utf16le(data, key_offset, key_length)
+                .ok_or(CorruptionType::InvalidLocatorEntryKey)?;
+
+            // Validate and decode value.
+            let value_offset = entry.value_offset as usize;
+            let value_length = entry.value_length as usize;
+            let value = decode_utf16le(data, value_offset, value_length)
+                .ok_or(CorruptionType::InvalidLocatorEntryValue)?;
+
+            entries.push(LocatorKeyValue { key, value });
+        }
+
+        Ok(ParentLocator {
+            locator_type: header.locator_type,
+            entries,
+        })
+    }
+
+    /// Find a value by key name (case-sensitive match).
+    pub fn find(&self, key: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.key == key)
+            .map(|e| e.value.as_str())
+    }
+
+    /// Interprets this locator as typed VHDX parent information.
+    pub fn vhdx_parent(&self) -> Result<VhdxParent, VhdxParentError> {
+        if self.locator_type != format::PARENT_LOCATOR_VHDX_TYPE_GUID {
+            return Err(VhdxParentError::UnsupportedLocatorType(self.locator_type));
+        }
+        if self
+            .find(format::PARENT_LOCATOR_KEY_ALT_PARENT_LINKAGE)
+            .is_some()
+        {
+            return Err(VhdxParentError::AlternativeParentLinkage);
+        }
+
+        let linkage = self
+            .find(format::PARENT_LOCATOR_KEY_PARENT_LINKAGE)
+            .ok_or(VhdxParentError::MissingParentLinkage)?
+            .parse()
+            .map_err(VhdxParentError::InvalidParentLinkage)?;
+        let mut parent = VhdxParent::new(linkage);
+        if let Some(path) = self.find(format::PARENT_LOCATOR_KEY_RELATIVE_PATH) {
+            parent = parent
+                .with_relative_path(path)
+                .map_err(VhdxParentError::InvalidParent)?;
+        }
+        if let Some(path) = self.find(format::PARENT_LOCATOR_KEY_VOLUME_PATH) {
+            parent = parent
+                .with_volume_path(path)
+                .map_err(VhdxParentError::InvalidParent)?;
+        }
+        if let Some(path) = self.find(format::PARENT_LOCATOR_KEY_ABSOLUTE_PATH) {
+            parent = parent
+                .with_absolute_win32_path(path)
+                .map_err(VhdxParentError::InvalidParent)?;
+        }
+        Ok(parent)
+    }
+
+    /// Extract well-known parent paths from the locator.
+    ///
+    /// This looks up the standard VHDX parent locator keys and returns
+    /// them in a structured form. Returns `None` for any key not present.
+    pub fn parent_paths(&self) -> ParentPaths {
+        ParentPaths {
+            parent_linkage: self
+                .find(format::PARENT_LOCATOR_KEY_PARENT_LINKAGE)
+                .map(String::from),
+            relative_path: self
+                .find(format::PARENT_LOCATOR_KEY_RELATIVE_PATH)
+                .map(String::from),
+            absolute_win32_path: self
+                .find(format::PARENT_LOCATOR_KEY_ABSOLUTE_PATH)
+                .map(String::from),
+            volume_path: self
+                .find(format::PARENT_LOCATOR_KEY_VOLUME_PATH)
+                .map(String::from),
+        }
+    }
+}
+
+impl VhdxParent {
+    /// Returns native parent path candidates relative to the child's directory.
+    ///
+    /// On Windows, candidates follow the MS-VHDX section 2.6.2.6.3 order:
+    /// relative path, volume path, then absolute Win32 path. On other platforms,
+    /// only the relative locator is used, with backslashes converted to native
+    /// separators. This does not validate path syntax, open files, or verify
+    /// parent linkage.
+    pub fn candidate_paths(&self, child_directory: &Path) -> impl Iterator<Item = PathBuf> {
+        let relative = self.relative_path().map(|path| {
+            #[cfg(not(windows))]
+            let path = path.replace('\\', "/");
+            child_directory.join(path)
+        });
+        let volume = self
+            .volume_path()
+            .filter(|_| cfg!(windows))
+            .map(PathBuf::from);
+        let absolute = self
+            .absolute_win32_path()
+            .filter(|_| cfg!(windows))
+            .map(PathBuf::from);
+        [relative, volume, absolute].into_iter().flatten()
+    }
+}
+
+/// Paths extracted from a VHDX parent locator.
+///
+/// Contains the well-known path entries from the standard VHDX parent
+/// locator type. The caller should try paths in order of preference:
+/// relative, then volume, then absolute Win32 path. Only the relative path
+/// is used on non-Windows platforms. Prefer [`ParentLocator::vhdx_parent`]
+/// and [`VhdxParent::candidate_paths`] for validated, platform-aware lookup.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ParentPaths {
+    /// Parent's data write GUID at child creation time.
+    pub parent_linkage: Option<String>,
+    /// Relative path from child to parent.
+    pub relative_path: Option<String>,
+    /// Absolute Win32 path to parent.
+    pub absolute_win32_path: Option<String>,
+    /// Volume GUID path to parent.
+    pub volume_path: Option<String>,
+}
+
+/// Helper to encode a Rust string into a UTF-16LE byte vector.
+fn encode_utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+}
+
+/// Build a valid parent locator binary blob from parts.
+pub(crate) fn build_locator(locator_type: Guid, kvs: &[(&str, &str)]) -> Option<Vec<u8>> {
+    use zerocopy::IntoBytes;
+
+    let header_size = size_of::<ParentLocatorHeader>();
+    let entry_size = size_of::<ParentLocatorEntry>();
+    let key_value_count = u16::try_from(kvs.len()).ok()?;
+    let entries_end = kvs
+        .len()
+        .checked_mul(entry_size)?
+        .checked_add(header_size)?;
+
+    // Encode all key/value strings.
+    let encoded: Option<Vec<(Vec<u8>, Vec<u8>)>> = kvs
+        .iter()
+        .map(|(key, value)| {
+            let key = encode_utf16le(key);
+            let value = encode_utf16le(value);
+            u16::try_from(key.len()).ok()?;
+            u16::try_from(value.len()).ok()?;
+            Some((key, value))
+        })
+        .collect();
+    let encoded = encoded?;
+
+    // Compute total size.
+    let strings_size = encoded.iter().try_fold(0usize, |size, (key, value)| {
+        size.checked_add(key.len())?.checked_add(value.len())
+    })?;
+    let total = entries_end.checked_add(strings_size)?;
+    if total > format::MAX_HOSTING_SECTOR_SIZE as usize {
+        return None;
+    }
+    let mut buf = vec![0u8; total];
+
+    // Write header.
+    let header = ParentLocatorHeader {
+        locator_type,
+        reserved: 0,
+        key_value_count,
+    };
+    let h_bytes = header.as_bytes();
+    buf[..h_bytes.len()].copy_from_slice(h_bytes);
+
+    // Write entries and string data.
+    let mut string_offset = entries_end;
+    for (i, (key_bytes, val_bytes)) in encoded.iter().enumerate() {
+        let entry = ParentLocatorEntry {
+            key_offset: u32::try_from(string_offset).ok()?,
+            value_offset: u32::try_from(string_offset.checked_add(key_bytes.len())?).ok()?,
+            key_length: u16::try_from(key_bytes.len()).ok()?,
+            value_length: u16::try_from(val_bytes.len()).ok()?,
+        };
+        let e_bytes = entry.as_bytes();
+        let off = header_size + i * entry_size;
+        buf[off..off + e_bytes.len()].copy_from_slice(e_bytes);
+
+        buf[string_offset..string_offset + key_bytes.len()].copy_from_slice(key_bytes);
+        string_offset += key_bytes.len();
+        buf[string_offset..string_offset + val_bytes.len()].copy_from_slice(val_bytes);
+        string_offset += val_bytes.len();
+    }
+
+    Some(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::OpenErrorInner;
+
+    use super::*;
+
+    #[test]
+    fn parent_candidate_paths() {
+        let directory = Path::new("child");
+        let parent = VhdxParent::unlinked()
+            .with_relative_path(r".\parents\parent.vhdx")
+            .unwrap()
+            .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path(r"\\?\C:\parent.vhdx")
+            .unwrap();
+        let mut expected = vec![directory.join("parents").join("parent.vhdx")];
+        if cfg!(windows) {
+            expected.push(PathBuf::from(parent.volume_path().unwrap()));
+            expected.push(PathBuf::from(parent.absolute_win32_path().unwrap()));
+        }
+        assert_eq!(
+            parent.candidate_paths(directory).collect::<Vec<_>>(),
+            expected
+        );
+
+        let parent = VhdxParent::unlinked()
+            .with_volume_path(r"\\?\Volume{26A21BDA-A627-11D7-9931-806E6F6E6963}\parent.vhdx")
+            .unwrap()
+            .with_absolute_win32_path(r"\\?\C:\parent.vhdx")
+            .unwrap();
+        assert_eq!(
+            parent.candidate_paths(directory).collect::<Vec<_>>(),
+            expected[1..]
+        );
+    }
+
+    #[test]
+    fn relative_parent_candidate_paths() {
+        let directory = Path::new("child");
+        for (relative, expected) in [
+            (r"parent.vhdx", directory.join("parent.vhdx")),
+            (r".\parent.vhdx", directory.join("parent.vhdx")),
+            (r"..\parent.vhdx", directory.join("..").join("parent.vhdx")),
+            (
+                r"parents\sub/parent.vhdx",
+                directory.join("parents/sub/parent.vhdx"),
+            ),
+            (r".\/parent.vhdx", directory.join("parent.vhdx")),
+        ] {
+            let parent = VhdxParent::unlinked().with_relative_path(relative).unwrap();
+            assert_eq!(
+                parent.candidate_paths(directory).collect::<Vec<_>>(),
+                vec![expected],
+                "relative locator: {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_parent_locator_preserves_strings() {
+        for relative in [r".\parent.vhdx", r"..\parents\parent.vhdx", "parent:stream"] {
+            let parent = VhdxParent::unlinked().with_relative_path(relative).unwrap();
+            assert_eq!(parent.relative_path(), Some(relative));
+
+            let linkage = Guid::new_random().to_string();
+            let data = build_locator(
+                format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+                &[("parent_linkage", &linkage), ("relative_path", relative)],
+            )
+            .unwrap();
+            let parent = ParentLocator::parse(&data).unwrap().vhdx_parent().unwrap();
+            assert_eq!(parent.relative_path(), Some(relative));
+        }
+    }
+
+    #[test]
+    fn parse_valid_locator() {
+        let data = build_locator(
+            format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            &[
+                ("parent_linkage", "guid-value-here"),
+                ("relative_path", "..\\parent.vhdx"),
+                ("absolute_win32_path", "C:\\vms\\parent.vhdx"),
+            ],
+        )
+        .unwrap();
+
+        let locator = ParentLocator::parse(&data).unwrap();
+        assert_eq!(locator.locator_type, format::PARENT_LOCATOR_VHDX_TYPE_GUID);
+        assert_eq!(locator.entries.len(), 3);
+        assert_eq!(locator.entries[0].key, "parent_linkage");
+        assert_eq!(locator.entries[0].value, "guid-value-here");
+        assert_eq!(locator.entries[1].key, "relative_path");
+        assert_eq!(locator.entries[1].value, "..\\parent.vhdx");
+        assert_eq!(locator.entries[2].key, "absolute_win32_path");
+        assert_eq!(locator.entries[2].value, "C:\\vms\\parent.vhdx");
+    }
+
+    #[test]
+    fn find_by_key() {
+        let data = build_locator(
+            format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            &[("parent_linkage", "link-val"), ("relative_path", "rel-val")],
+        )
+        .unwrap();
+
+        let locator = ParentLocator::parse(&data).unwrap();
+        assert_eq!(locator.find("parent_linkage"), Some("link-val"));
+        assert_eq!(locator.find("relative_path"), Some("rel-val"));
+        assert_eq!(locator.find("nonexistent"), None);
+    }
+
+    #[test]
+    fn interpret_vhdx_parent() {
+        let linkage = Guid::new_random();
+        let linkage_string = format!("{{{linkage}}}");
+        let data = build_locator(
+            format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            &[
+                (format::PARENT_LOCATOR_KEY_PARENT_LINKAGE, &linkage_string),
+                (format::PARENT_LOCATOR_KEY_RELATIVE_PATH, "..\\parent.vhdx"),
+            ],
+        )
+        .unwrap();
+
+        let parent = ParentLocator::parse(&data).unwrap().vhdx_parent().unwrap();
+        assert_eq!(parent.linkage(), linkage);
+        assert_eq!(parent.relative_path(), Some("..\\parent.vhdx"));
+        assert_eq!(parent.volume_path(), None);
+        assert_eq!(parent.absolute_win32_path(), None);
+    }
+
+    #[test]
+    fn parse_empty_locator() {
+        // Build a header with 0 entries.
+        use zerocopy::IntoBytes;
+        let header = ParentLocatorHeader {
+            locator_type: format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            reserved: 0,
+            key_value_count: 0,
+        };
+        let data = header.as_bytes().to_vec();
+        let result = ParentLocator::parse(&data);
+        assert!(matches!(
+            result,
+            Err(OpenError(OpenErrorInner::Corrupt(
+                CorruptionType::InvalidLocatorKeyValueCount
+            )))
+        ));
+    }
+
+    #[test]
+    fn parse_invalid_utf16() {
+        // Build a locator where key has odd byte length.
+        use zerocopy::IntoBytes;
+
+        let header_size = size_of::<ParentLocatorHeader>();
+        let entry_size = size_of::<ParentLocatorEntry>();
+
+        // Total buffer: header + 1 entry + key(3 bytes, odd) + value(2 bytes)
+        let total = header_size + entry_size + 3 + 2;
+        let mut buf = vec![0u8; total];
+
+        let header = ParentLocatorHeader {
+            locator_type: format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            reserved: 0,
+            key_value_count: 1,
+        };
+        let h_bytes = header.as_bytes();
+        buf[..h_bytes.len()].copy_from_slice(h_bytes);
+
+        let string_start = header_size + entry_size;
+        let entry = ParentLocatorEntry {
+            key_offset: string_start as u32,
+            value_offset: (string_start + 3) as u32,
+            key_length: 3, // odd = invalid
+            value_length: 2,
+        };
+        let e_bytes = entry.as_bytes();
+        buf[header_size..header_size + e_bytes.len()].copy_from_slice(e_bytes);
+
+        let result = ParentLocator::parse(&buf);
+        assert!(matches!(
+            result,
+            Err(OpenError(OpenErrorInner::Corrupt(
+                CorruptionType::InvalidLocatorEntryKey
+            )))
+        ));
+    }
+
+    #[test]
+    fn parse_embedded_null() {
+        // Build a locator where key contains an embedded null.
+        use zerocopy::IntoBytes;
+
+        let header_size = size_of::<ParentLocatorHeader>();
+        let entry_size = size_of::<ParentLocatorEntry>();
+
+        // Key: "a\0b" in UTF-16LE = [0x61, 0x00, 0x00, 0x00, 0x62, 0x00] (6 bytes)
+        let key_data: Vec<u8> = vec![0x61, 0x00, 0x00, 0x00, 0x62, 0x00];
+        let value_data = encode_utf16le("val");
+
+        let total = header_size + entry_size + key_data.len() + value_data.len();
+        let mut buf = vec![0u8; total];
+
+        let header = ParentLocatorHeader {
+            locator_type: format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            reserved: 0,
+            key_value_count: 1,
+        };
+        let h_bytes = header.as_bytes();
+        buf[..h_bytes.len()].copy_from_slice(h_bytes);
+
+        let string_start = header_size + entry_size;
+        let entry = ParentLocatorEntry {
+            key_offset: string_start as u32,
+            value_offset: (string_start + key_data.len()) as u32,
+            key_length: key_data.len() as u16,
+            value_length: value_data.len() as u16,
+        };
+        let e_bytes = entry.as_bytes();
+        buf[header_size..header_size + e_bytes.len()].copy_from_slice(e_bytes);
+
+        buf[string_start..string_start + key_data.len()].copy_from_slice(&key_data);
+        let vs = string_start + key_data.len();
+        buf[vs..vs + value_data.len()].copy_from_slice(&value_data);
+
+        let result = ParentLocator::parse(&buf);
+        assert!(matches!(
+            result,
+            Err(OpenError(OpenErrorInner::Corrupt(
+                CorruptionType::InvalidLocatorEntryKey
+            )))
+        ));
+    }
+
+    #[test]
+    fn parse_truncated_locator() {
+        // Header claims 5 entries but buffer only holds header.
+        use zerocopy::IntoBytes;
+
+        let header = ParentLocatorHeader {
+            locator_type: format::PARENT_LOCATOR_VHDX_TYPE_GUID,
+            reserved: 0,
+            key_value_count: 5,
+        };
+        let data = header.as_bytes().to_vec();
+
+        let result = ParentLocator::parse(&data);
+        assert!(matches!(
+            result,
+            Err(OpenError(OpenErrorInner::Corrupt(
+                CorruptionType::LocatorTooSmallForEntries
+            )))
+        ));
+    }
+}

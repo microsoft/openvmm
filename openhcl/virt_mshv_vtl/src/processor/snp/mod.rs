@@ -69,6 +69,7 @@ use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::apic::X2APIC_MSR_BASE;
@@ -119,6 +120,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    synic_timer_deadline: SnpSynicTimerDeadline,
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
@@ -153,6 +155,105 @@ struct ExitStats {
     secure_reg_write: Counter,
     avic_no_accel: Counter,
     avic_incomplete_ipi: Counter,
+}
+
+#[derive(Inspect, Default)]
+struct SnpSynicTimerDeadline {
+    #[inspect(hex)]
+    armed_ref_time: Option<u64>,
+    #[inspect(hex)]
+    armed_timeout: Option<VmTime>,
+    #[inspect(hex)]
+    next_ref_time: Option<u64>,
+    deadline_seen: bool,
+}
+
+impl SnpSynicTimerDeadline {
+    fn clear_scan_deadline(&mut self) {
+        // If the previous scan did not report any deadline, the cached armed deadline
+        // is stale and should no longer be restored into VmTime.
+        if !self.deadline_seen {
+            self.armed_ref_time = None;
+            self.armed_timeout = None;
+        }
+
+        // Start a new scan with no candidate. If update_scan_deadline is called
+        // during this scan, deadline_seen preserves the armed deadline for the
+        // next scan boundary.
+        self.next_ref_time = None;
+        self.deadline_seen = false;
+    }
+
+    fn update_scan_deadline(&mut self, ref_time_next: u64) -> bool {
+        // Only the earliest deadline discovered during a scan should drive the
+        // backing timer.
+        if self
+            .next_ref_time
+            .is_some_and(|next_ref_time| ref_time_next >= next_ref_time)
+        {
+            return false;
+        }
+
+        self.next_ref_time = Some(ref_time_next);
+        self.deadline_seen = true;
+        true
+    }
+}
+
+struct SnpKernelGuestTimer {
+    fallback: hardware_cvm::VmTimeGuestTimer,
+}
+
+impl SnpKernelGuestTimer {
+    fn timeout(&self, vmtime: &VmTimeAccess, ref_time_now: u64, ref_time_next: u64) -> VmTime {
+        self.fallback.timeout(vmtime, ref_time_now, ref_time_next)
+    }
+}
+
+impl HardwareIsolatedGuestTimer<SnpBacked> for SnpKernelGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    fn update_deadline(
+        &self,
+        vp: &mut UhProcessor<'_, SnpBacked>,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) {
+        self.fallback
+            .update_deadline(vp, ref_time_now, ref_time_next);
+    }
+
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, SnpBacked>) {
+        self.fallback.clear_deadline(vp);
+    }
+
+    fn begin_vtl_transition(&self, vp: &mut UhProcessor<'_, SnpBacked>, vtl: GuestVtl) {
+        vp.runner.set_stimer0_config(
+            (vtl == GuestVtl::Vtl0)
+                .then(|| vp.backing.cvm.hv[GuestVtl::Vtl0].synic.stimer_config(0)),
+        );
+    }
+
+    fn end_vtl_transition(&self, vp: &mut UhProcessor<'_, SnpBacked>, _vtl: GuestVtl) {
+        if let Some(update) = vp.runner.take_stimer0_update() {
+            assert_eq!(_vtl, GuestVtl::Vtl0);
+            tracing::trace!(
+                count = update.count,
+                programmed_ref_time = update.programmed_ref_time,
+                expired = update.expired,
+                "synchronizing kernel STIMER0 update"
+            );
+            // Kernel expiry only wakes VTL2. Reconstructing the original due
+            // time lets the normal SynIC scan perform the sole delivery.
+            vp.backing.cvm.hv[GuestVtl::Vtl0].synic.set_stimer_count_at(
+                0,
+                update.count,
+                update.programmed_ref_time,
+            );
+        }
+    }
 }
 
 enum UhDirectOverlay {
@@ -412,13 +513,39 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
-        this.shared
+        if !this
+            .backing
+            .synic_timer_deadline
+            .update_scan_deadline(next_ref_time)
+        {
+            return;
+        }
+
+        // The generic VP loop cancels the local VmTime timeout before each scan.
+        // If the effective SynIC deadline is unchanged, restore the cached VmTime
+        // timeout without re-arming the underlying timer.
+        if this.backing.synic_timer_deadline.armed_ref_time == Some(next_ref_time) {
+            if let Some(timeout) = this.backing.synic_timer_deadline.armed_timeout {
+                this.vmtime.set_timeout_if_before(timeout);
+            }
+            return;
+        }
+
+        let timeout = this
+            .shared
             .guest_timer
-            .update_deadline(this, ref_time_now, next_ref_time);
+            .timeout(&this.vmtime, ref_time_now, next_ref_time);
+
+        this.backing.synic_timer_deadline.armed_ref_time = Some(next_ref_time);
+        this.backing.synic_timer_deadline.armed_timeout = Some(timeout);
+        this.vmtime.set_timeout_if_before(timeout);
     }
 
     fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
-        this.shared.guest_timer.clear_deadline(this);
+        this.backing.synic_timer_deadline.clear_scan_deadline();
+        if this.backing.synic_timer_deadline.armed_ref_time.is_none() {
+            this.shared.guest_timer.clear_deadline(this);
+        }
     }
 }
 
@@ -433,7 +560,7 @@ pub struct SnpBackedShared {
     sev_status: SevStatusMsr,
     /// Accessor for managing lower VTL timer deadlines.
     #[inspect(skip)]
-    guest_timer: hardware_cvm::VmTimeGuestTimer,
+    guest_timer: SnpKernelGuestTimer,
     secure_avic: bool,
     /// Whether virtual NMI (V_NMI) is supported by the host CPU.
     pub(crate) vnmi: bool,
@@ -482,7 +609,9 @@ impl SnpBackedShared {
         tracing::info!(CVM_ALLOWED, ?secure_avic, "Secure AVIC status");
 
         // Configure timer interface for lower VTLs.
-        let guest_timer = hardware_cvm::VmTimeGuestTimer;
+        let guest_timer = SnpKernelGuestTimer {
+            fallback: hardware_cvm::VmTimeGuestTimer,
+        };
 
         Ok(Self {
             sev_status,
@@ -514,6 +643,7 @@ impl BackingPrivate for SnpBacked {
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
+            synic_timer_deadline: Default::default(),
             cvm: UhCvmVpState::new(
                 &shared.cvm,
                 params.partition,
@@ -951,7 +1081,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
         self.dev.handle_eoi(vector.into())
     }
 
-    fn now(&mut self) -> vmcore::vmtime::VmTime {
+    fn now(&mut self) -> VmTime {
         self.vmtime.now()
     }
 
@@ -1537,12 +1667,18 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
+        self.shared.guest_timer.begin_vtl_transition(self, next_vtl);
+
         let mut has_intercept = self
             .runner
             .run()
             .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
+
+        self.shared
+            .guest_timer
+            .end_vtl_transition(self, entered_from_vtl);
 
         // Kernel offload may have set or cleared the halt/idle states while
         // handling VTL0 exits internally. Keep the userspace activity state in
@@ -1755,7 +1891,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // current/last vtl
                 UhHypercallHandler::TRUSTED_DISPATCHER.dispatch(
                     guest_memory,
-                    hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+                    hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
                 );
                 &mut self.backing.exit_stats[entered_from_vtl].vmmcall
             }
@@ -2996,11 +3132,16 @@ impl UhProcessor<'_, SnpBacked> {
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
-        // TODO SNP: validation on the values being set, e.g. checking addresses
-        // are canonical, etc.
+        hardware_cvm::validate_cvm_msr_write(msr, value, &self.partition.caps.xsave)?;
+
         let mut vmsa = self.runner.vmsa_mut(vtl);
         match msr {
             x86defs::X64_MSR_FS_BASE => {
+                // The FS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let fs = vmsa.fs();
                 vmsa.set_fs(SevSelector {
                     attrib: fs.attrib,
@@ -3010,6 +3151,11 @@ impl UhProcessor<'_, SnpBacked> {
                 });
             }
             x86defs::X64_MSR_GS_BASE => {
+                // The GS base is loaded on the very next VMRUN, so it must
+                // be canonical in the guest's current paging mode.
+                if !hardware_cvm::validate_canonical_address(value, vmsa.efer(), vmsa.cr4()) {
+                    return Err(MsrError::InvalidAccess);
+                }
                 let gs = vmsa.gs();
                 vmsa.set_gs(SevSelector {
                     attrib: gs.attrib,
@@ -3073,7 +3219,7 @@ impl UhProcessor<'_, SnpBacked> {
 impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, SnpBacked> {
     fn advance_ip(&mut self) {
         let is_64bit = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, is_64bit);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, is_64bit, true);
         io.advance_ip();
     }
 

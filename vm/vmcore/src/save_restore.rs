@@ -196,20 +196,6 @@ pub enum SaveError {
     InvalidChildSavedState(#[source] anyhow::Error),
 }
 
-/// A save operation error.
-#[derive(Debug, thiserror::Error)]
-pub enum CollectError {
-    /// some save results are missing
-    #[error("failed to receive all save results")]
-    MissingResults,
-    /// got more save results than expected
-    #[error("received more results than expected")]
-    TooManyResults,
-    /// a save payload is corrupted
-    #[error("received bad payload")]
-    BadPayload(#[source] payload::Error),
-}
-
 /// Gets the message descriptions for all types deriving [`SavedStateRoot`].
 ///
 /// This can be used with

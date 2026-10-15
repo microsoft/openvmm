@@ -5,7 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod debugger;
 pub mod disconnected;
+pub mod null;
 pub mod resources;
 pub mod serial_io;
 

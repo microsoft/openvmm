@@ -51,6 +51,7 @@ vm_resource::register_static_resolvers! {
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
+    serial_core::null::resolver::NullSerialBackendResolver,
     #[cfg(windows)]
     serial_socket::windows::WindowsPipeSerialResolver,
     serial_socket::net::SocketSerialResolver,
@@ -83,9 +84,10 @@ vm_resource::register_static_resolvers! {
     disklayer_ram::resolver::RamDiskLayerResolver,
     #[cfg(feature = "disklayer_sqlite")]
     disklayer_sqlite::resolver::SqliteDiskLayerResolver,
+    disklayer_vhdx::resolver::VhdxDiskLayerResolver,
 
     // PCI devices
-    cxl_spec::test::resolver::CxlTestDeviceResolver,
+    cxl::test::resolver::CxlTestDeviceResolver,
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
@@ -107,6 +109,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(target_os = "linux")]
     vhost_user_frontend::resolver::VhostUserFrontendResolver,
     virtio_vsock::resolver::VirtioVsockResolver,
+    #[cfg(target_os = "linux")]
+    virtio_vsock::resolver::VirtioVsockVhostResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,
@@ -117,6 +121,7 @@ vm_resource::register_static_resolvers! {
     hyperv_ic::resolver::TimesyncIcResolver,
     netvsp::resolver::NetvspResolver,
     storvsp::resolver::StorvspResolver,
+    storvsp::resolver::StorvspIdeResolver,
     uidevices::resolver::VmbusUiResolver,
     vmbfs::resolver::VmbfsResolver,
     vmbus_serial_host::resolver::VmbusSerialDeviceResolver,

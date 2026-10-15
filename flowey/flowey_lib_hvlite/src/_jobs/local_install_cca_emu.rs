@@ -129,17 +129,17 @@ pub(crate) fn sync_shrinkwrap_overlay_assets(
 ) -> anyhow::Result<()> {
     let overlay_assets = [
         (
-            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_planes.yaml"),
+            openvmm_root.join("vmm_tests/cca_tests/test_data/cca_planes.yaml"),
             shrinkwrap_dir.join("config/cca_planes.yaml"),
             "planes.yaml",
         ),
         (
-            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_realm_overlay.yaml"),
+            openvmm_root.join("vmm_tests/cca_tests/test_data/cca_realm_overlay.yaml"),
             shrinkwrap_dir.join("config/cca_realm_overlay.yaml"),
             "realm overlay config",
         ),
         (
-            openvmm_root.join("vmm_tests/vmm_tests/test_data/cca_start_tmk.sh"),
+            openvmm_root.join("vmm_tests/cca_tests/test_data/cca_start_tmk.sh"),
             shrinkwrap_dir.join("config/cca_start_tmk.sh"),
             "Plane0 TMK launcher",
         ),

@@ -26,7 +26,7 @@ static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(
         )
         .ok()
         .map(|()| AlgHandle(handle))
-        .map_err(|e| err(e, "open algorithm provider"))?;
+        .map_err(|e| err(e, "opening the AES algorithm provider"))?;
 
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
@@ -35,14 +35,14 @@ static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(
             0,
         )
         .ok()
-        .map_err(|e| err(e, "setting GCM Property"))?;
+        .map_err(|e| err(e, "selecting the GCM chaining mode"))?;
 
         Ok(handle)
     }
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> Aes256GcmError {
-    Aes256GcmError(crate::BackendError(err, op))
+    Aes256GcmError(crate::BackendError::Windows(err, op))
 }
 
 pub struct Aes256GcmInner {
@@ -74,7 +74,7 @@ impl Aes256GcmInner {
         }
         .ok()
         .map(|()| KeyHandle(handle))
-        .map_err(|e| err(e, "importing key"))?;
+        .map_err(|e| err(e, "importing the AES key"))?;
 
         Ok(Aes256GcmInner { key })
     }
@@ -122,7 +122,7 @@ impl Aes256GcmEncCtxInner<'_> {
                 windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
             )
             .ok()
-            .map_err(|e| err(e, "encrypt"))
+            .map_err(|e| err(e, "encrypting data"))
         }?;
         assert_eq!(crypted_len as usize, data.len());
         Ok(crypted_data)
@@ -164,7 +164,7 @@ impl Aes256GcmDecCtxInner<'_> {
                 windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
             )
             .ok()
-            .map_err(|e| err(e, "decrypt"))
+            .map_err(|e| err(e, "decrypting data"))
         }?;
         assert_eq!(crypted_len as usize, data.len());
         Ok(crypted_data)

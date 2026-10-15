@@ -846,6 +846,22 @@ mod tests {
         f.into_temp_path()
     }
 
+    fn conformance_disk() -> disk_backend::Disk {
+        let path = make_test_vhd();
+        let vhd = VhdmpDisk::options()
+            .read_only(false)
+            .open(path.as_ref())
+            .unwrap();
+        // The driver keeps the file open, but the path only needs to survive
+        // until the handle is opened, so it can be dropped here.
+        disk_backend::Disk::new(VhdmpDisk::new(vhd, false).unwrap()).unwrap()
+    }
+
+    #[async_test]
+    async fn sector_range_conformance() {
+        storage_tests::sector_range::test_disk_sector_range_conformance(&conformance_disk()).await;
+    }
+
     #[test]
     fn open_readonly() {
         let path = make_test_vhd();

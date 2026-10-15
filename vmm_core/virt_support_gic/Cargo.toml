@@ -11,7 +11,7 @@ memory_range = { workspace = true, features = ["inspect"] }
 vm_topology.workspace = true
 
 aarch64defs.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 tracelimit.workspace = true
 
 parking_lot.workspace = true

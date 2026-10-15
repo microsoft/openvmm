@@ -77,8 +77,8 @@ impl IntoPipeline for BuildDocsCli {
         };
 
         if let RepoSource::GithubSelf = &openvmm_repo_source {
-            pipeline.gh_set_flowey_bootstrap_template(
-                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
+            pipeline.gh_set_flowey_bootstrap_template_fn(
+                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template_for_platform,
             );
         }
 
@@ -177,6 +177,10 @@ impl IntoPipeline for BuildDocsCli {
             let job = pipeline
                 .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "publish openvmm.dev")
                 .gh_set_pool(crate::pipelines_shared::gh_pools::linux_x64_gh())
+                .gh_set_concurrency_group(GhConcurrencyGroup {
+                    name: "publish-openvmm.dev".into(),
+                    cancel_in_progress: false,
+                })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
                         rustdoc_linux: ctx.use_typed_artifact(&use_rustdoc_linux),

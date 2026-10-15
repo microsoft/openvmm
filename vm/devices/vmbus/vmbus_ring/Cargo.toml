@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-guestmem.workspace = true
+guestmem_core.workspace = true
 
 inspect.workspace = true
 safeatomic.workspace = true

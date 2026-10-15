@@ -1,0 +1,27 @@
+{
+    "type": "Microsoft.Compute/disks",
+    "properties": {
+        "uefiSettings": {
+            "signatureMode": "Replace",
+            "signatures": {
+                "PK": {
+                    "type": "Default"
+                },
+                "KEK": [{
+                    "type": "Default"
+                }],
+                "db": [{
+                    "type": "Default"
+                }],
+                "dbx": [{
+                    "type": "Default"
+                }]
+            },
+            "PetriReplaceVar": {
+                "guid": "Yd/ki8qT0hGqDQDgmAMrjA==",
+                "attributes": "Bw==",
+                "value": "cGV0cmktdWVmaS1yZXBsYWNl"
+            }
+        }
+    }
+}

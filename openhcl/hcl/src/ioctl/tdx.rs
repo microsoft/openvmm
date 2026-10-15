@@ -24,17 +24,29 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use tdcall::Tdcall;
+use tdcall::TdgPageAttrRdResult;
+use tdcall::TdgPageReleaseError;
+use tdcall::tdcall_sys_rd;
+use tdcall::tdcall_vm_rd;
+use tdcall::tdcall_vm_wr;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
+use x86defs::tdx::DmarTarget;
+use x86defs::tdx::TDX_FIELD_CODE_CONFIG_FLAGS;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
+use x86defs::tdx::TdConfigFlags;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdVpsClassCode;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
+use x86defs::tdx::TdgTdiMmioAcceptR9;
+use x86defs::tdx::TdgTdiMmioAcceptRcx;
+use x86defs::tdx::TdiRdField;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
+use x86defs::tdx::TdxFunctionId;
 use x86defs::tdx::TdxGlaListInfo;
 use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxL2Ctls;
@@ -49,6 +61,15 @@ pub struct Tdx<'a> {
 }
 
 impl MshvVtl {
+    /// Issues a tdcall to read the gpa mapping and attributes of a private
+    /// page or a private MMIO page.
+    pub fn tdx_read_page_attributes(
+        &self,
+        gpa: u64,
+    ) -> Result<TdgPageAttrRdResult, TdCallResultCode> {
+        tdcall::tdcall_page_attr_rd(&mut MshvVtlTdcall(self), gpa)
+    }
+
     /// Issues a tdcall to set page attributes.
     pub fn tdx_set_page_attributes(
         &self,
@@ -76,6 +97,122 @@ impl MshvVtl {
             });
 
         tdcall::accept_pages(&mut MshvVtlTdcall(self), range, attributes)
+    }
+
+    /// Issues tdcalls to release pages.
+    pub fn tdx_release_pages(&self, range: MemoryRange) -> Result<(), TdgPageReleaseError> {
+        tdcall::release_pages(&mut MshvVtlTdcall(self), range)
+    }
+
+    /// Issues tdcall to get TD-scoped config flags.
+    pub fn tdx_get_config_flags(&self) -> TdConfigFlags {
+        let res = tdcall_vm_rd(&mut MshvVtlTdcall(self), TDX_FIELD_CODE_CONFIG_FLAGS)
+            .expect("TDG.VM.RD should not fail for CONFIG_FLAGS");
+
+        TdConfigFlags::from_bits(res)
+    }
+
+    /// Reads the global-scope `TDX_FEATURES0` metadata field via the
+    /// `TDG.SYS.RD` TDCALL, which enumerates optional TDX module features
+    /// (including hardware-bound sealing support).
+    ///
+    /// Returns an error if the module does not support `TDG.SYS.RD` (older
+    /// modules) or rejects the field.
+    pub fn tdx_read_features0(&self) -> Result<x86defs::tdx::TdxFeatures0, TdCallResult> {
+        let value = tdcall_sys_rd(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_ID_TDX_FEATURES0,
+        )?;
+        Ok(x86defs::tdx::TdxFeatures0::from(value))
+    }
+
+    /// Attempts to opt this TD into hardware-bound seal keys by setting
+    /// `TD_CTLS.ENABLE_HW_SEAL_KEYS`, enabling the `TDG.MR.KEY.GET` TDCALL that
+    /// backs VMGS hardware key sealing.
+    ///
+    /// Returns `Ok(true)` if the bit is set after the operation (sealing keys
+    /// are available), or `Ok(false)` if the TDX module does not support
+    /// sealing.
+    ///
+    /// A TDX module that does not implement sealing treats
+    /// `ENABLE_HW_SEAL_KEYS` as a reserved bit and may *silently ignore* the
+    /// masked write while still returning success. The write status alone is
+    /// therefore not sufficient, so this reads `TD_CTLS` back and reports
+    /// whether the bit actually stuck.
+    pub fn tdx_enable_hw_seal_keys(&self) -> Result<bool, TdCallResult> {
+        let enable = x86defs::tdx::TdCtls::new().with_enable_hw_seal_keys(true);
+
+        // Masked write: only touch the ENABLE_HW_SEAL_KEYS bit.
+        tdcall_vm_wr(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_CODE_TD_CTLS,
+            enable.into(),
+            enable.into(),
+        )?;
+
+        // Read back to confirm the bit actually took effect, since an
+        // unsupporting module may have ignored the write.
+        let controls = x86defs::tdx::TdCtls::from(tdcall_vm_rd(
+            &mut MshvVtlTdcall(self),
+            x86defs::tdx::TDX_FIELD_CODE_TD_CTLS,
+        )?);
+
+        Ok(controls.enable_hw_seal_keys())
+    }
+
+    /// Issues a TDG.TDI.RD tdcall to read a field of a TDX Connect TDI.
+    ///
+    /// Unlike the TD-scoped calls above, the TDI-scoped Connect calls can fail
+    /// for reasons the caller is expected to handle (the TDI is not bound, is
+    /// in the wrong TDISP state, or is not assigned to this TD), so the status
+    /// is returned rather than unwrapped.
+    pub fn tdx_tdi_rd(
+        &self,
+        function_id: TdxFunctionId,
+        field: TdiRdField,
+        out_buf_gpa: u64,
+    ) -> Result<u64, TdCallResult> {
+        tdcall::tdcall_tdi_rd(&mut MshvVtlTdcall(self), function_id, field, out_buf_gpa)
+    }
+
+    /// Issues a TDG.TDI.START tdcall to authorize starting a TDI's interface.
+    pub fn tdx_tdi_start(
+        &self,
+        function_id: TdxFunctionId,
+        exp_bind_session: u64,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_tdi_start(&mut MshvVtlTdcall(self), function_id, exp_bind_session)
+    }
+
+    /// Issues a TDG.DMAR.ACCEPT tdcall to accept a TDI's DMA remapping entry.
+    pub fn tdx_dmar_accept(
+        &self,
+        function_id: TdxFunctionId,
+        target: DmarTarget,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_dmar_accept(&mut MshvVtlTdcall(self), function_id, target)
+    }
+
+    /// Issues a TDG.TDI.MMIO.ACCEPT tdcall to accept a sub-range of a TDI's
+    /// MMIO.
+    ///
+    /// The ioctl this goes through cannot read back the leaf's R9 resume
+    /// cursor, so `range` must cover a single page and the caller must drive
+    /// its own cursor. See [`tdcall::tdcall_tdi_mmio_accept`].
+    pub fn tdx_tdi_mmio_accept(
+        &self,
+        function_id: TdxFunctionId,
+        gpa_base_and_level: TdgTdiMmioAcceptRcx,
+        mmio_range_idx: u16,
+        range: TdgTdiMmioAcceptR9,
+    ) -> Result<(), TdCallResult> {
+        tdcall::tdcall_tdi_mmio_accept(
+            &mut MshvVtlTdcall(self),
+            function_id,
+            gpa_base_and_level,
+            mmio_range_idx,
+            range,
+        )
     }
 }
 

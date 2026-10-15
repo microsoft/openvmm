@@ -43,7 +43,10 @@ impl RunContext<'_> {
                 processor_topology: &self.state.processor_topology,
                 hv_config: None,
                 vmtime: self.vmtime_source,
-                isolation: virt::IsolationType::None,
+                isolation: virt::ProtoPartitionIsolation::None,
+                nested_virt: false,
+                #[cfg(guest_arch = "aarch64")]
+                device_assignment_msi_iova_range: None,
             })
             .context("failed to create proto partition")?;
 
@@ -55,6 +58,7 @@ impl RunContext<'_> {
                 guest_memory: &guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
+                fault_resolver: None,
             })
             .context("failed to build partition")?;
 
@@ -91,6 +95,9 @@ impl RunContext<'_> {
                 test,
                 async |_this, runner| {
                     let [vp] = vps.try_into().ok().unwrap();
+                    if let Some(time) = partition.supports_time_control() {
+                        time.thaw_time();
+                    }
                     threads.push(start_vp(partition.clone(), vp, runner).await?);
                     Ok(())
                 },

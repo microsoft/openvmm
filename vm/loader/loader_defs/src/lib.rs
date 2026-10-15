@@ -9,3 +9,4 @@
 pub mod linux;
 pub mod paravisor;
 pub mod shim;
+pub mod uefi;

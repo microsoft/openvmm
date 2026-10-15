@@ -260,7 +260,7 @@ pub struct ImportFileRegion<'a, F: ?Sized> {
     /// The page acceptance type.
     pub acceptance: BootPageAcceptance,
     /// A debug tag for tracing.
-    pub tag: &'a str,
+    pub tag: &'static str,
 }
 
 /// A page-aligned chunk buffer for streaming file data into guest memory.

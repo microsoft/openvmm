@@ -40,6 +40,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file,
 
             memory_backing_file,
+            requested_private_memory: _,
 
             ged,
             framebuffer_view,
@@ -62,7 +63,7 @@ impl PetriVmConfigOpenVmm {
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
         // TODO: virtio vsock doesn't support save/restore yet
-        // save/restore yet.
+        // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
@@ -72,7 +73,8 @@ impl PetriVmConfigOpenVmm {
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
-            && !resources.properties.use_virtio_vsock;
+            && !resources.properties.use_virtio_vsock
+            && !config.hypervisor.nested_virt;
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
@@ -88,8 +90,10 @@ impl PetriVmConfigOpenVmm {
 
         let log_env = match host_log_levels {
             None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
-                ("OPENVMM_LOG".into(), "debug".into()),
-                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+                // Quiet down `hyper_util`'s connection-pool debug spam that
+                // `disk_blob` triggers on every HTTP range request.
+                ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "false".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
             Some(OpenvmmLogConfig::Custom(levels)) => levels
@@ -116,6 +120,31 @@ impl PetriVmConfigOpenVmm {
                 openvmm_helpers::shared_memory::open_memory_backing_file(mem_path, total_mem_size)
             })
             .transpose()?;
+
+        // Log the resolved guest RAM backing mode for diagnostics. Read from
+        // the final config so it reflects any backend overrides (e.g.
+        // `with_hugepages` / `with_memory_backing_file` forcing shared). Log
+        // per node, since NUMA nodes can have heterogeneous backings.
+        for (node, mem) in config
+            .numa
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| n.mem.as_ref().map(|m| (i, m)))
+        {
+            tracing::info!(
+                node,
+                mem_size = mem.mem_size,
+                backing_mode = if mem.private_memory {
+                    "private"
+                } else {
+                    "shared"
+                },
+                transparent_hugepages = mem.transparent_hugepages,
+                hugepages = mem.hugepages,
+                "guest RAM backing"
+            );
+        }
 
         let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
             .await

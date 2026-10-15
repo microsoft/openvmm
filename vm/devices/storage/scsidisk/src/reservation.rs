@@ -242,6 +242,12 @@ impl SimpleScsiDisk {
         let mut data = PriFullStatusListHeader::new_zeroed().as_bytes().to_vec();
 
         for controller in &report.controllers {
+            let host_id_slice = &controller.host_id[..controller.host_id.len().min(16)];
+
+            let mut transport_id = [0u8; 24];
+            transport_id[0] = 0x06; // Protocol Identifier: SAS
+            transport_id[4..4 + host_id_slice.len()].copy_from_slice(host_id_slice);
+
             let header = PriFullStatusDescriptorHeader {
                 reservation_key: controller.key.into(),
                 flags: scsi::PriFullStatusDescriptorHeaderFlags::new()
@@ -255,12 +261,12 @@ impl SimpleScsiDisk {
                         .map_or(scsi::ReservationType(0), to_scsi_reservation_type),
                 ),
                 relative_target_port_identifier: controller.controller_id.into(),
-                additional_descriptor_length: (controller.host_id.len() as u32).into(),
+                additional_descriptor_length: (transport_id.len() as u32).into(),
                 ..FromZeros::new_zeroed()
             };
 
             data.extend(header.as_bytes());
-            data.extend(&controller.host_id);
+            data.extend(&transport_id);
         }
 
         let header = PriFullStatusListHeader {

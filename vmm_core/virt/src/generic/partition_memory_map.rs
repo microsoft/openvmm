@@ -61,3 +61,17 @@ pub trait PartitionMemoryMap: Send + Sync {
         exec: bool,
     ) -> anyhow::Result<()>;
 }
+
+/// Interface for acquiring host access to guest memory.
+///
+/// Some isolated hypervisors do not make a guest page accessible to userspace
+/// merely because the guest marked it shared. The VMM must also ask the
+/// hypervisor to grant the host permission to touch the existing backing.
+pub trait PartitionHostAccess: Send + Sync {
+    /// Acquires host access without changing guest visibility.
+    ///
+    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
+    /// required to safely lower host access and track that pages are not
+    /// currently in use before revoking access.
+    fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()>;
+}

@@ -144,6 +144,7 @@ pub(crate) struct LoadedVm {
     /// The various guest memory objects.
     pub memory: underhill_mem::MemoryMappings,
     pub firmware_type: FirmwareType,
+    pub hibernate_token: Option<crate::hibernate::Token>,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
     pub chipset_devices: ChipsetDevices,
@@ -187,6 +188,10 @@ pub(crate) struct LoadedVm {
     pub device_platform_settings:
         guest_emulation_transport::api::platform_settings::DevicePlatformSettings,
     pub runtime_params: crate::loader::vtl2_config::RuntimeParameters,
+
+    /// Per-VM measured product policy.
+    #[cfg(feature = "product_policy")]
+    pub measured_product_policy: product_policy::MeasuredProductPolicy,
 
     pub _input_distributor: SpawnedUnit<InputDistributor>,
 
@@ -464,6 +469,8 @@ impl LoadedVm {
                         correlation_id = %correlation_id,
                         timeout_hint_ms = timeout_hint.as_millis() as u64,
                         servicing_deadline = ?servicing_deadline,
+                        enable_nvme_keepalive = capabilities_flags.enable_nvme_keepalive(),
+                        enable_mana_keepalive = capabilities_flags.enable_mana_keepalive(),
                         "received servicing request from host"
                     );
 
@@ -701,6 +708,37 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
+            async fn shutdown_nvme_manager(
+                nvme_manager: &mut Option<NvmeManager>,
+                nvme_keepalive_enabled: bool,
+                correlation_id: Guid,
+            ) {
+                if let Some(nvme_manager) = nvme_manager.take() {
+                    nvme_manager
+                        .shutdown(nvme_keepalive_enabled)
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_manager",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = nvme_keepalive_enabled
+                        ))
+                        .await;
+                }
+            }
+
+            let nvme_keepalive_enabled = self.nvme_keep_alive.is_enabled();
+
+            // If keepalive is disabled, reset all user-mode NVMe devices before
+            // save to free all resources, including DMA allocations.
+            if !nvme_keepalive_enabled {
+                shutdown_nvme_manager(
+                    &mut self.nvme_manager,
+                    nvme_keepalive_enabled,
+                    correlation_id,
+                )
+                .await;
+            }
+
             let mut state = self
                 .save(
                     Some(deadline),
@@ -722,18 +760,15 @@ impl LoadedVm {
                 }
             };
 
-            // Reset all user-mode NVMe devices.
+            // If keepalive is enabled, partially reset all user-mode NVMe devices after save.
             let shutdown_nvme = async {
-                if let Some(nvme_manager) = self.nvme_manager.take() {
-                    nvme_manager
-                        .shutdown(self.nvme_keep_alive.is_enabled())
-                        .instrument(tracing::info_span!(
-                            "shutdown_nvme_vfio",
-                            CVM_ALLOWED,
-                            correlation_id = %correlation_id,
-                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
-                        ))
-                        .await;
+                if nvme_keepalive_enabled {
+                    shutdown_nvme_manager(
+                        &mut self.nvme_manager,
+                        nvme_keepalive_enabled,
+                        correlation_id,
+                    )
+                    .await;
                 }
             };
 
@@ -937,7 +972,20 @@ impl LoadedVm {
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {
-            network_settings.save().await
+            let saved = network_settings
+                .save()
+                .instrument(tracing::info_span!(
+                    "mana_network_settings_save",
+                    CVM_ALLOWED,
+                    mana_keepalive_mode_enabled = mana_keepalive_mode.is_enabled()
+                ))
+                .await;
+            tracing::info!(
+                CVM_ALLOWED,
+                mana_devices_saved = saved.as_ref().map(|v| v.len()).unwrap_or(0),
+                "mana device state saved for keepalive"
+            );
+            saved
         } else {
             None
         };
@@ -967,6 +1015,11 @@ impl LoadedVm {
                 flush_logs_result: None,
                 vmgs,
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
+                hibernate: self
+                    .hibernate_token
+                    .map(|token| servicing::HibernateSavedState {
+                        token: token.into(),
+                    }),
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,

@@ -25,7 +25,6 @@ mod common;
 mod point_to_point;
 mod protocol;
 mod test_common;
-mod unix_common;
 mod unix_listener;
 mod unix_node;
 

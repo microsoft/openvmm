@@ -28,8 +28,13 @@ pub struct OpenhclIgvmBuildParams {
     pub custom_target: Option<CommonTriple>,
     /// Additional features to enable on top of the recipe's defaults.
     pub extra_features: BTreeSet<OpenvmmHclFeature>,
+    pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
     /// Whether to use release configuration (release manifests, no gdb, etc.).
     pub release_cfg: bool,
+    /// Add the confidential debug flag to the measured OpenHCL command line,
+    /// enabling confidential diagnostics on CVM builds. Used by the
+    /// VMM tests so that release CVM IGVMs still emit diagnostics.
+    pub confidential_debug: bool,
 }
 
 flowey_request! {
@@ -80,7 +85,9 @@ impl SimpleFlowNode for Node {
                 recipe,
                 custom_target,
                 extra_features,
+                uefi_firmware_flavor,
                 release_cfg,
+                confidential_debug,
             },
             openhcl_igvm,
             openhcl_igvm_extras,
@@ -93,6 +100,8 @@ impl SimpleFlowNode for Node {
                 recipe: OpenhclIgvmRecipeType::WellKnown(recipe.clone()),
                 extra_features: extra_features.clone(),
                 disable_secure_avic: false,
+                uefi_firmware_flavor,
+                confidential_debug,
                 openhcl_igvm,
                 openhcl_igvm_extras,
             });

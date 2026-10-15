@@ -3,11 +3,13 @@
 
 //! Implementation of the helper functions for accessing VMGS entries.
 
+use crate::hardware_key_sealing::HwKeyProtector;
 use guid::Guid;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::GuestSecretKey;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV3;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtectorById;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
@@ -205,8 +207,9 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
 /// Read the hardware key protector from the VMGS file.
 pub async fn read_hardware_key_protector(
     vmgs: &mut Vmgs,
-) -> Result<HardwareKeyProtector, ReadFromVmgsError> {
+) -> Result<HwKeyProtector, ReadFromVmgsError> {
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_V3_SIZE;
 
     let file_id = FileId::HW_KEY_PROTECTOR;
     let data = match vmgs.read_file(file_id).await {
@@ -219,22 +222,26 @@ pub async fn read_hardware_key_protector(
         }
     };
 
-    if data.len() != HW_KEY_PROTECTOR_SIZE {
-        Err(ReadFromVmgsError::EntrySizeUnexpected {
+    // Dispatch by blob size: the legacy v1/v2 layout and the current v3 layout
+    // have distinct sizes.
+    match data.len() {
+        HW_KEY_PROTECTOR_SIZE => HardwareKeyProtector::read_from_prefix(&data)
+            .map(|k| HwKeyProtector::Legacy(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
+        HW_KEY_PROTECTOR_V3_SIZE => HardwareKeyProtectorV3::read_from_prefix(&data)
+            .map(|k| HwKeyProtector::V3(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
+        size => Err(ReadFromVmgsError::EntrySizeUnexpected {
             file_id,
-            size: data.len(),
-            expected_size: HW_KEY_PROTECTOR_SIZE,
-        })?
+            size,
+            expected_size: HW_KEY_PROTECTOR_V3_SIZE,
+        }),
     }
-
-    HardwareKeyProtector::read_from_prefix(&data)
-        .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))
-        .map(|k| k.0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 }
 
 /// Write Key Protector Id (current Id) to the VMGS file.
 pub async fn write_hardware_key_protector(
-    hardware_key_protector: &HardwareKeyProtector,
+    hardware_key_protector: &HardwareKeyProtectorV3,
     vmgs: &mut Vmgs,
 ) -> Result<(), WriteToVmgsError> {
     let file_id = FileId::HW_KEY_PROTECTOR;
@@ -287,9 +294,10 @@ mod tests {
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION;
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
-    use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SVN_SIZE;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_TEE_TYPE_SNP;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_V3_SIZE;
+    use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeaderV3;
     use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::KeyProtector;
     use openhcl_attestation_protocol::vmgs::KeyProtectorById;
@@ -308,18 +316,18 @@ mod tests {
         Vmgs::format_new(disk, None).await.unwrap()
     }
 
-    fn new_hardware_key_protector() -> HardwareKeyProtector {
-        let header = HardwareKeyProtectorHeader::new(
-            HW_KEY_PROTECTOR_CURRENT_VERSION,
-            HW_KEY_PROTECTOR_SIZE as u32,
-            2,
+    fn new_hardware_key_protector() -> HardwareKeyProtectorV3 {
+        let header = HardwareKeyProtectorHeaderV3::new(
+            HW_KEY_PROTECTOR_V3_SIZE as u32,
+            HW_KEY_PROTECTOR_TEE_TYPE_SNP,
+            [2; HW_KEY_PROTECTOR_SVN_SIZE],
             1,
         );
         let iv = [3; AES_CBC_IV_LENGTH];
         let ciphertext = [4; AES_GCM_KEY_LENGTH];
         let hmac = [5; HMAC_SHA_256_KEY_LENGTH];
 
-        HardwareKeyProtector {
+        HardwareKeyProtectorV3 {
             header,
             iv,
             ciphertext,
@@ -543,6 +551,9 @@ mod tests {
             .unwrap();
 
         let found_hardware_key_protector = read_hardware_key_protector(&mut vmgs).await.unwrap();
+        let HwKeyProtector::V3(found_hardware_key_protector) = found_hardware_key_protector else {
+            panic!("expected a v3 hardware key protector");
+        };
 
         assert_eq!(
             found_hardware_key_protector.header.as_bytes(),
@@ -558,8 +569,8 @@ mod tests {
             hardware_key_protector.hmac
         );
 
-        // Write and then fail to read a hardware key protector larger than the expected size to the VMGS
-        let oversized_hardware_key_protector = [8u8; HW_KEY_PROTECTOR_SIZE + 1];
+        // Write and then fail to read a hardware key protector with an unexpected size to the VMGS
+        let oversized_hardware_key_protector = [8u8; HW_KEY_PROTECTOR_V3_SIZE + 1];
         vmgs.write_file(FileId::HW_KEY_PROTECTOR, &oversized_hardware_key_protector)
             .await
             .unwrap();
@@ -567,7 +578,11 @@ mod tests {
         assert!(found_hardware_key_protector_result.is_err());
         assert_eq!(
             found_hardware_key_protector_result.unwrap_err().to_string(),
-            "HW_KEY_PROTECTOR valid bytes 105, expected 104"
+            format!(
+                "HW_KEY_PROTECTOR valid bytes {}, expected {}",
+                HW_KEY_PROTECTOR_V3_SIZE + 1,
+                HW_KEY_PROTECTOR_V3_SIZE
+            )
         );
     }
 

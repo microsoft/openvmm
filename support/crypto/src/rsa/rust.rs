@@ -29,25 +29,44 @@ pub struct RsaKeyPairInner(pub(crate) RsaPrivateKey);
 impl RsaKeyPairInner {
     pub fn generate(bits: u32) -> Result<Self, RsaError> {
         let rsa = RsaPrivateKey::new(&mut rng(), bits as usize)
-            .map_err(|e| RsaError(e, "generating RSA key"))?;
+            .map_err(|e| RsaError(e, "generating the RSA key"))?;
         Ok(Self(rsa))
     }
 
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, RsaError> {
         let parsed = RsaPrivateKey::from_pkcs8_der(der)
-            .map_err(|e| RsaError(e.into(), "parsing PKCS#8 DER"))?;
+            .map_err(|e| RsaError(e.into(), "parsing the PKCS#8 DER private key"))?;
         Ok(Self(parsed))
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         use pkcs8::EncodePrivateKey;
         Ok(self
             .0
             .to_pkcs8_der()
-            .map_err(|e| RsaError(e.into(), "converting to DER"))?
+            .map_err(|e| RsaError(e.into(), "encoding the private key as PKCS#8 DER"))?
             .as_bytes()
             .to_vec())
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    pub fn to_private_components(&self) -> Result<super::RsaPrivateKeyComponents, RsaError> {
+        use rsa::traits::PrivateKeyParts;
+
+        let [p, q] = self.0.primes() else {
+            return Err(RsaError(
+                rsa::Error::InvalidArguments,
+                "exporting a two-prime RSA private key",
+            ));
+        };
+        Ok(super::RsaPrivateKeyComponents {
+            modulus: self.0.n().to_be_bytes_trimmed_vartime().into_vec(),
+            public_exponent: self.0.e().to_be_bytes_trimmed_vartime().into_vec(),
+            private_exponent: self.0.d().to_be_bytes_trimmed_vartime().into_vec(),
+            prime1: p.to_be_bytes_trimmed_vartime().into_vec(),
+            prime2: q.to_be_bytes_trimmed_vartime().into_vec(),
+        })
     }
 
     pub fn oaep_decrypt(
@@ -68,8 +87,12 @@ impl RsaKeyPairInner {
                 self.0
                     .decrypt_blinded(&mut rng(), Oaep::<sha2::Sha384>::new(), input)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .decrypt_blinded(&mut rng(), Oaep::<sha2::Sha512>::new(), input)
+            }
         }
-        .map_err(|e| RsaError(e, "OAEP decryption"))
+        .map_err(|e| RsaError(e, "decrypting with RSA-OAEP"))
     }
 
     pub fn pkcs1_sign(
@@ -94,8 +117,12 @@ impl RsaKeyPairInner {
                 self.0
                     .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha384>(), &data)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .sign_with_rng(&mut rng(), Pkcs1v15Sign::new::<sha2::Sha512>(), &data)
+            }
         }
-        .map_err(|e| RsaError(e, "PKCS#1 signing"))
+        .map_err(|e| RsaError(e, "computing the PKCS#1 v1.5 signature"))
     }
 
     pub fn pss_sign(
@@ -121,8 +148,12 @@ impl RsaKeyPairInner {
                 self.0
                     .sign_with_rng(&mut rng(), Pss::<sha2::Sha384>::new(), &data)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .sign_with_rng(&mut rng(), Pss::<sha2::Sha512>::new(), &data)
+            }
         }
-        .map_err(|e| RsaError(e, "PSS signing"))
+        .map_err(|e| RsaError(e, "computing the PSS signature"))
     }
 
     pub(crate) fn as_pub(&self) -> &RsaPublicKeyInner {
@@ -140,7 +171,7 @@ impl RsaPublicKeyInner {
             rsa::BoxedUint::from_be_slice_vartime(n),
             rsa::BoxedUint::from_be_slice_vartime(e),
         )
-        .map_err(|e| RsaError(e, "constructing RSA public key from components"))?;
+        .map_err(|e| RsaError(e, "constructing the RSA public key from its components"))?;
         Ok(Self(key))
     }
 
@@ -157,8 +188,11 @@ impl RsaPublicKeyInner {
             HashAlgorithm::Sha384 => self
                 .0
                 .encrypt(&mut rng(), Oaep::<sha2::Sha384>::new(), input),
+            HashAlgorithm::Sha512 => self
+                .0
+                .encrypt(&mut rng(), Oaep::<sha2::Sha512>::new(), input),
         }
-        .map_err(|e| RsaError(e, "OAEP encryption"))
+        .map_err(|e| RsaError(e, "encrypting with RSA-OAEP"))
     }
 
     pub fn pkcs1_verify(
@@ -184,11 +218,15 @@ impl RsaPublicKeyInner {
                 self.0
                     .verify(Pkcs1v15Sign::new::<sha2::Sha384>(), &data, signature)
             }
+            HashAlgorithm::Sha512 => {
+                self.0
+                    .verify(Pkcs1v15Sign::new::<sha2::Sha512>(), &data, signature)
+            }
         };
         match result {
             Ok(()) => Ok(true),
             Err(rsa::Error::Verification) => Ok(false),
-            Err(e) => Err(RsaError(e, "PKCS#1 signature verification")),
+            Err(e) => Err(RsaError(e, "verifying the PKCS#1 v1.5 signature")),
         }
     }
 
@@ -207,11 +245,12 @@ impl RsaPublicKeyInner {
             HashAlgorithm::Sha1 => self.0.verify(Pss::<sha1::Sha1>::new(), &data, signature),
             HashAlgorithm::Sha256 => self.0.verify(Pss::<sha2::Sha256>::new(), &data, signature),
             HashAlgorithm::Sha384 => self.0.verify(Pss::<sha2::Sha384>::new(), &data, signature),
+            HashAlgorithm::Sha512 => self.0.verify(Pss::<sha2::Sha512>::new(), &data, signature),
         };
         match result {
             Ok(()) => Ok(true),
             Err(rsa::Error::Verification) => Ok(false),
-            Err(e) => Err(RsaError(e, "PSS signature verification")),
+            Err(e) => Err(RsaError(e, "verifying the PSS signature")),
         }
     }
 

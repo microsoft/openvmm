@@ -81,10 +81,31 @@ pub struct SecurityProfile {
 /// Version 2 or newer is forward-compatible if header.mix_measurement is not set.
 pub const HW_KEY_PROTECTOR_VERSION_1: u32 = 1;
 pub const HW_KEY_PROTECTOR_VERSION_2: u32 = 2;
-pub const HW_KEY_PROTECTOR_CURRENT_VERSION: u32 = HW_KEY_PROTECTOR_VERSION_2;
+/// Version 3 is a unified, TEE-tagged format used for all newly-created
+/// protectors (SNP and TDX). It records the raw report SVNs so the derived key
+/// can bind every SVN the TEE mixes in (for TDX, both `TEE_TCB_SVN` and
+/// `CPU_SVN`) rather than a lossy `u64`. v2 is retained read-only for legacy SNP
+/// protectors.
+pub const HW_KEY_PROTECTOR_VERSION_3: u32 = 3;
+pub const HW_KEY_PROTECTOR_CURRENT_VERSION: u32 = HW_KEY_PROTECTOR_VERSION_3;
+
+/// TEE tag stored in [`HardwareKeyProtectorHeaderV3::tee_type`].
+pub const HW_KEY_PROTECTOR_TEE_TYPE_SNP: u32 = 0;
+/// TEE tag stored in [`HardwareKeyProtectorHeaderV3::tee_type`].
+pub const HW_KEY_PROTECTOR_TEE_TYPE_TDX: u32 = 1;
 
 /// The size of the `FileId::HW_KEY_PROTECTOR` entry in the VMGS file.
 pub const HW_KEY_PROTECTOR_SIZE: usize = size_of::<HardwareKeyProtector>();
+
+/// The size of a version-3 `FileId::HW_KEY_PROTECTOR` entry.
+pub const HW_KEY_PROTECTOR_V3_SIZE: usize = size_of::<HardwareKeyProtectorV3>();
+
+// Readers dispatch on the entry size to tell the legacy layout apart from v3,
+// so the two must never collide.
+const _: () = assert!(HW_KEY_PROTECTOR_SIZE != HW_KEY_PROTECTOR_V3_SIZE);
+
+/// Size of the TEE-specific SVN blob in [`HardwareKeyProtectorHeaderV3`].
+pub const HW_KEY_PROTECTOR_SVN_SIZE: usize = 32;
 
 /// AES-GCM key size
 pub const AES_GCM_KEY_LENGTH: usize = 32;
@@ -134,6 +155,65 @@ impl HardwareKeyProtectorHeader {
 pub struct HardwareKeyProtector {
     /// Header
     pub header: HardwareKeyProtectorHeader,
+    /// Random IV for AES-CBC
+    pub iv: [u8; AES_CBC_IV_LENGTH],
+    /// Encrypted key
+    pub ciphertext: [u8; AES_GCM_KEY_LENGTH],
+    /// HMAC-SHA-256 of [header, iv, ciphertext]
+    pub hmac: [u8; HMAC_SHA_256_KEY_LENGTH],
+}
+
+/// Version-3 header. Shares the `version`/`length` prefix with
+/// [`HardwareKeyProtectorHeader`] so the version can be read first, then carries
+/// a TEE-tagged SVN blob bound into the derived key.
+///
+/// `svn` layout by `tee_type`:
+/// - [`HW_KEY_PROTECTOR_TEE_TYPE_SNP`]: `reported_tcb` (u64, little-endian) in
+///   bytes `0..8`; bytes `8..32` zero.
+/// - [`HW_KEY_PROTECTOR_TEE_TYPE_TDX`]: `TEE_TCB_SVN` in bytes `0..16` and
+///   `CPU_SVN` in bytes `16..32`.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HardwareKeyProtectorHeaderV3 {
+    /// Version of the format (== [`HW_KEY_PROTECTOR_VERSION_3`]).
+    pub version: u32,
+    /// Size of the [`HardwareKeyProtectorV3`] data blob.
+    pub length: u32,
+    /// TEE that produced the SVNs (see `HW_KEY_PROTECTOR_TEE_TYPE_*`).
+    pub tee_type: u32,
+    /// TEE-specific SVN material recorded at seal time.
+    pub svn: [u8; HW_KEY_PROTECTOR_SVN_SIZE],
+    /// Whether to mix the measurement in hardware key derivation.
+    pub mix_measurement: u8,
+    /// Reserved bytes for future use.
+    pub _reserved: [u8; 3],
+}
+
+impl HardwareKeyProtectorHeaderV3 {
+    /// Create a `HardwareKeyProtectorHeaderV3` instance.
+    pub fn new(
+        length: u32,
+        tee_type: u32,
+        svn: [u8; HW_KEY_PROTECTOR_SVN_SIZE],
+        mix_measurement: u8,
+    ) -> Self {
+        Self {
+            version: HW_KEY_PROTECTOR_VERSION_3,
+            length,
+            tee_type,
+            svn,
+            mix_measurement,
+            _reserved: [0; 3],
+        }
+    }
+}
+
+/// Version-3 data format of the `FileId::HW_KEY_PROTECTOR` entry.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HardwareKeyProtectorV3 {
+    /// Header
+    pub header: HardwareKeyProtectorHeaderV3,
     /// Random IV for AES-CBC
     pub iv: [u8; AES_CBC_IV_LENGTH],
     /// Encrypted key
