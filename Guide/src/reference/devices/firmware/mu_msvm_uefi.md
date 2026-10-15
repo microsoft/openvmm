@@ -26,19 +26,21 @@ UEFI firmware:
 
 ## Firmware interface version
 
-Newer `mu_msvm` images contain a machine-readable version record in the DXE
-firmware volume. OpenVMM locates its dedicated FFS file by GUID and logs the
-record's release version, source commit, build flags, structure version, and
-firmware interface version when loading the image.
+Newer `mu_msvm` images contain a machine-readable version record in the combined
+PEI/DXE firmware volume. OpenVMM reads this volume at image offset `0x0` on x64
+and `0x1000` on AArch64, matching the layout introduced in v26.0.39. It does not
+search the separate DXE volume in older AArch64 images. OpenVMM locates the
+record's dedicated FFS file by GUID and logs its release version, source commit,
+build flags, structure version, and firmware interface version when loading the
+image.
 
 OpenVMM accepts the supported interface major version and that major's minimum
 minor version or any newer minor version. A present record that is malformed or
 has an incompatible interface version prevents the VM from starting. Use
 `--uefi force_firmware_version` to log a warning and continue in that case.
 
-Firmware published before this record was introduced remains usable. OpenVMM
-logs a warning when the dedicated FFS file is absent and continues loading the
-image.
+When the dedicated FFS file is absent from the volume being checked, OpenVMM
+logs a warning and continues loading the image.
 
 ## Acquiring a copy of `mu_msvm`
 

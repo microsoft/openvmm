@@ -432,7 +432,7 @@ mod tests {
         let mut image = vec![
             0;
             if cfg!(guest_arch = "aarch64") {
-                0x20_0000
+                0x1000
             } else {
                 0
             }
@@ -569,7 +569,7 @@ mod tests {
 
         let mut malformed = firmware_image(Some((1, 0)));
         let signature_offset = if cfg!(guest_arch = "aarch64") {
-            0x20_0000
+            0x1000
         } else {
             0
         } + size_of::<firmware_volume::FirmwareVolumeHeader>()
