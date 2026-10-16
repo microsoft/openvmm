@@ -33,6 +33,7 @@ dependencies = [
  "cxl_spec",
  "guid",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -579,6 +580,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "chipset"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
@@ -716,6 +718,7 @@ dependencies = [
 name = "chipset_resources"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "arbitrary",
  "inspect",
  "ipmi_protocol",
@@ -3898,11 +3901,9 @@ dependencies = [
 name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
- "acpi_spec",
  "anyhow",
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
- "chipset_resources",
  "clap",
  "corim",
  "crypto",
@@ -3921,14 +3922,12 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "serial_16550_resources",
  "signature",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
  "vm_topology",
- "vmm_core",
  "x509-cert",
  "x86defs",
  "zerocopy",
@@ -4863,6 +4862,7 @@ dependencies = [
  "arrayvec",
  "cfg-if",
  "hvdef",
+ "memory_range",
  "minimal_rt_build",
  "minimal_rt_reloc",
  "zerocopy",
@@ -5938,6 +5938,7 @@ dependencies = [
  "intel_vtd",
  "iommu_common",
  "loader",
+ "loader_defs",
  "membacking",
  "memory_range",
  "mesh",
@@ -8059,10 +8060,18 @@ dependencies = [
 name = "snp_bootshim"
 version = "0.0.0"
 dependencies = [
+ "acpi",
+ "acpi_spec",
+ "arrayvec",
+ "fdt",
  "loader_defs",
+ "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "test_with_tracing",
+ "thiserror 2.0.16",
  "x86defs",
+ "zerocopy",
 ]
 
 [[package]]

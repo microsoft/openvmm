@@ -30,6 +30,10 @@ use loader::importer::ImageLoad;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
+use loader_defs::linux::SNP_BOOT_SHIM_MAX_CPUS;
+use loader_defs::linux::SNP_BOOT_SHIM_MAX_PCIE_BRIDGES;
+use loader_defs::linux::SNP_BOOT_SHIM_MAX_RAM_END;
+use loader_defs::linux::SNP_BOOT_SHIM_MAX_RAM_RANGES;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -84,6 +88,10 @@ pub enum Error {
     Vtl2MemorySource,
     #[error("building device tree for partition failed")]
     DeviceTree(#[source] DeviceTreeError),
+    #[error("unsupported SNP PCIe device tree configuration")]
+    SnpPcieDeviceTree(#[from] SnpPcieDeviceTreeError),
+    #[error("unsupported SNP processor or memory configuration")]
+    SnpTopology(#[from] SnpTopologyError),
     #[error("supplied vtl2 memory {0} is not aligned to 2MB")]
     Vtl2MemoryAligned(u64),
     #[error("supplied vtl2 memory {0} is smaller than igvm file VTL2 range {1}")]
@@ -112,6 +120,79 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SnpPcieDeviceTreeError {
+    #[error("at most {SNP_BOOT_SHIM_MAX_PCIE_BRIDGES} PCIe host bridges are supported")]
+    TooManyBridges,
+    #[error("PCIe segment {0} is not unique")]
+    DuplicateSegment(u16),
+    #[error("PCIe segment {0} has CXL metadata")]
+    Cxl(u16),
+    #[error("IOMMU or interrupt remapping is not supported")]
+    Iommu,
+}
+
+/// Checks that the SNP boot shim can describe the PCIe configuration in ACPI.
+///
+/// The shim ignores the IOMMU and CXL, and it supports one bridge per segment
+/// and at most eight bridges. This check fails the launch with a clear error
+/// instead of letting the guest see different hardware than the host.
+fn check_snp_pcie(
+    bridges: &[PcieHostBridge],
+    has_iommu: bool,
+) -> Result<(), SnpPcieDeviceTreeError> {
+    if has_iommu {
+        return Err(SnpPcieDeviceTreeError::Iommu);
+    }
+    if bridges.len() > SNP_BOOT_SHIM_MAX_PCIE_BRIDGES {
+        return Err(SnpPcieDeviceTreeError::TooManyBridges);
+    }
+    for (index, bridge) in bridges.iter().enumerate() {
+        let segment = bridge.segment;
+        if bridges[..index].iter().any(|b| b.segment == segment) {
+            return Err(SnpPcieDeviceTreeError::DuplicateSegment(segment));
+        }
+        if bridge.cxl.is_some() {
+            return Err(SnpPcieDeviceTreeError::Cxl(segment));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SnpTopologyError {
+    #[error("at most {SNP_BOOT_SHIM_MAX_CPUS} processors are supported")]
+    TooManyProcessors,
+    #[error("at most {SNP_BOOT_SHIM_MAX_RAM_RANGES} RAM ranges are supported")]
+    TooManyRamRanges,
+    #[error("RAM must end at or below {SNP_BOOT_SHIM_MAX_RAM_END:#x}")]
+    RamTooHigh,
+}
+
+/// Checks that the SNP boot shim can accept the RAM and describe the
+/// processors in the device tree.
+///
+/// The shim stops the guest without a diagnostic if these limits are
+/// exceeded, so this check fails the launch with a clear error instead.
+fn check_snp_topology(
+    processor_count: usize,
+    ram: &[MemoryRangeWithNode],
+) -> Result<(), SnpTopologyError> {
+    if processor_count > SNP_BOOT_SHIM_MAX_CPUS {
+        return Err(SnpTopologyError::TooManyProcessors);
+    }
+    if ram.len() > SNP_BOOT_SHIM_MAX_RAM_RANGES {
+        return Err(SnpTopologyError::TooManyRamRanges);
+    }
+    if ram
+        .iter()
+        .any(|r| r.range.end() > SNP_BOOT_SHIM_MAX_RAM_END)
+    {
+        return Err(SnpTopologyError::RamTooHigh);
+    }
+    Ok(())
 }
 
 /// The largest device tree that the loader builds, whatever the size of the
@@ -459,6 +540,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub chipset_mmio: ChipsetMmioRanges,
     /// Resolved host bridges to describe for images requesting a device tree.
     pub pcie_host_bridges: &'a [PcieHostBridge],
+    /// Whether the runtime configured an IOMMU or interrupt remapping.
+    pub pcie_has_iommu: bool,
 }
 
 pub fn load_igvm(
@@ -499,6 +582,7 @@ fn load_igvm_x86(
         entropy,
         chipset_mmio,
         pcie_host_bridges,
+        pcie_has_iommu,
     } = params;
 
     let ChipsetMmioRanges {
@@ -529,6 +613,8 @@ fn load_igvm_x86(
         return Err(Error::CommandLineContainsNul(pos));
     }
 
+    // `selected_platform_header` consumes the isolation type.
+    let is_snp = igvm_isolation_type == igvm::IsolationType::Snp;
     let (mask, max_vtl) = match selected_platform_header(igvm_file, igvm_isolation_type)? {
         IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
@@ -911,6 +997,10 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, &bytes)?;
             }
             IgvmDirectiveHeader::DeviceTree(ref info) => {
+                if is_snp {
+                    check_snp_pcie(pcie_host_bridges, pcie_has_iommu)?;
+                    check_snp_topology(processor_topology.vp_count() as usize, &all_ram)?;
+                }
                 let max_size = match parameter_areas.get(&info.parameter_area_index) {
                     Some(ParameterAreaState::Allocated { max_size, .. }) => *max_size,
                     _ => return Err(Error::ParameterTooLarge),
@@ -1351,6 +1441,163 @@ impl PageDataBuffer {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+    #[cfg(guest_arch = "x86_64")]
+    use vm_topology::processor::TopologyBuilder;
+
+    fn snp_bridge(segment: u16) -> PcieHostBridge {
+        PcieHostBridge {
+            index: u32::from(segment),
+            segment,
+            start_bus: 32,
+            end_bus: 47,
+            ecam_range: MemoryRange::new(0x8000_0000..0x8100_0000),
+            low_mmio: MemoryRange::new(0x9000_0000..0xa000_0000),
+            high_mmio: MemoryRange::new(0x12_0000_0000..0x14_0000_0000),
+            cxl: None,
+            vnode: None,
+            preserve_bars: false,
+            preserve_boot_config: false,
+        }
+    }
+
+    #[test]
+    fn snp_rejects_unsupported_topology() {
+        let ram = |end: u64| MemoryRangeWithNode {
+            range: MemoryRange::new(0..end),
+            vnode: 0,
+        };
+        assert_eq!(check_snp_topology(255, &[ram(1 << 30)]), Ok(()));
+        assert_eq!(
+            check_snp_topology(256, &[ram(1 << 30)]),
+            Err(SnpTopologyError::TooManyProcessors)
+        );
+        assert_eq!(
+            check_snp_topology(1, &vec![ram(1 << 30); SNP_BOOT_SHIM_MAX_RAM_RANGES + 1]),
+            Err(SnpTopologyError::TooManyRamRanges)
+        );
+        assert_eq!(
+            check_snp_topology(1, &[ram(SNP_BOOT_SHIM_MAX_RAM_END + 0x1000)]),
+            Err(SnpTopologyError::RamTooHigh)
+        );
+    }
+
+    #[test]
+    fn snp_rejects_unsupported_pcie() {
+        assert_eq!(check_snp_pcie(&[snp_bridge(7)], false), Ok(()));
+        assert_eq!(
+            check_snp_pcie(&[snp_bridge(7)], true),
+            Err(SnpPcieDeviceTreeError::Iommu)
+        );
+        let too_many: Vec<_> = (0..=SNP_BOOT_SHIM_MAX_PCIE_BRIDGES as u16)
+            .map(snp_bridge)
+            .collect();
+        assert_eq!(
+            check_snp_pcie(&too_many, false),
+            Err(SnpPcieDeviceTreeError::TooManyBridges)
+        );
+        assert_eq!(
+            check_snp_pcie(&[snp_bridge(7), snp_bridge(7)], false),
+            Err(SnpPcieDeviceTreeError::DuplicateSegment(7))
+        );
+
+        let mut cxl = snp_bridge(7);
+        cxl.cxl = Some(vm_topology::pcie::PcieHostBridgeCxlInfo {
+            chbcr_range: MemoryRange::EMPTY,
+            hdm_range: MemoryRange::EMPTY,
+            hdm_window_restrictions: Default::default(),
+        });
+        assert_eq!(
+            check_snp_pcie(&[cxl], false),
+            Err(SnpPcieDeviceTreeError::Cxl(7))
+        );
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn snp_pcie_checks_require_device_tree_request() {
+        for request_device_tree in [false, true] {
+            let mut directives = vec![IgvmDirectiveHeader::PageData {
+                gpa: 0,
+                compatibility_mask: 1,
+                flags: igvm_defs::IgvmPageDataFlags::new(),
+                data_type: IgvmPageDataType::NORMAL,
+                data: vec![0xab; HV_PAGE_SIZE as usize],
+            }];
+            if request_device_tree {
+                directives.extend([
+                    IgvmDirectiveHeader::ParameterArea {
+                        number_of_bytes: 0x10000,
+                        parameter_area_index: 0,
+                        initial_data: vec![],
+                    },
+                    IgvmDirectiveHeader::DeviceTree(IGVM_VHS_PARAMETER {
+                        parameter_area_index: 0,
+                        byte_offset: 0,
+                    }),
+                    IgvmDirectiveHeader::ParameterInsert(IGVM_VHS_PARAMETER_INSERT {
+                        gpa: 0x10000,
+                        compatibility_mask: 1,
+                        parameter_area_index: 0,
+                    }),
+                ]);
+            }
+            let igvm_file = IgvmFile::new(
+                igvm::IgvmRevision::V1,
+                vec![IgvmPlatformHeader::SupportedPlatform(
+                    igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM {
+                        compatibility_mask: 1,
+                        highest_vtl: 0,
+                        platform_type: IgvmPlatformType::SEV_SNP,
+                        platform_version: 1,
+                        shared_gpa_boundary: 0,
+                    },
+                )],
+                vec![IgvmInitializationHeader::GuestPolicy {
+                    policy: 0x30000,
+                    compatibility_mask: 1,
+                }],
+                directives,
+            )
+            .unwrap();
+            let gm = GuestMemory::allocate(0x20000);
+            let result = load_igvm_x86(LoadIgvmParams {
+                igvm_file: &igvm_file,
+                igvm_isolation_type: igvm::IsolationType::Snp,
+                gm: &gm,
+                processor_topology: &TopologyBuilder::new_x86().build(1).unwrap(),
+                mem_layout: &MemoryLayout::new(0x20000, &[], &[], &[], None).unwrap(),
+                cmdline: "",
+                acpi_tables: AcpiTables {
+                    madt: &[],
+                    srat: &[],
+                    slit: None,
+                    pptt: None,
+                },
+                vtl2_base_address: Vtl2BaseAddressType::File,
+                vtl2_framebuffer_gpa_base: None,
+                vtl2_only: false,
+                with_vmbus_redirect: false,
+                dt_uarts: &[],
+                console: None,
+                entropy: None,
+                chipset_mmio: ChipsetMmioRanges {
+                    low: MemoryRange::EMPTY,
+                    high: MemoryRange::EMPTY,
+                    vtl2: MemoryRange::EMPTY,
+                },
+                pcie_host_bridges: &[snp_bridge(7)],
+                pcie_has_iommu: true,
+            });
+            if request_device_tree {
+                assert!(matches!(
+                    result,
+                    Err(Error::SnpPcieDeviceTree(SnpPcieDeviceTreeError::Iommu))
+                ));
+            } else {
+                result.unwrap();
+            }
+        }
+    }
 
     #[test]
     fn device_tree_parameter_capacity_uses_remaining_area() {

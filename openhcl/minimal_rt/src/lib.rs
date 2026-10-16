@@ -9,6 +9,7 @@
 #![expect(unsafe_code)]
 
 pub mod arch;
+pub mod bump_alloc;
 pub mod enlightened_panic;
 pub mod reftime;
 pub mod rt;

@@ -144,7 +144,11 @@ impl Dsdt {
         apic.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0003")));
         let mut apic_crs = CurrentResourceSettings::new();
         apic_crs.add_resource(&Memory32Fixed::new(APIC_BASE_ADDRESS, 0x1000, true));
-        apic_crs.add_resource(&Memory32Fixed::new(0xfec00000, 0x1000, true));
+        apic_crs.add_resource(&Memory32Fixed::new(
+            acpi_spec::hyperv::IOAPIC_BASE_ADDRESS,
+            0x1000,
+            true,
+        ));
         apic.add_object(&apic_crs);
         self.add_object(&apic);
     }
@@ -165,14 +169,39 @@ impl Dsdt {
     /// }
     /// ```
     pub fn add_uart(&mut self, name: &[u8], ddn: &[u8], uid: u64, io_base: u16, irq: u32) {
+        self.add_uart_resource(name, ddn, uid, io_base, irq, false);
+    }
+
+    /// Adds a 16550A UART with an edge-triggered, active-high, shared IRQ.
+    ///
+    /// Use this for chipsets where multiple COM ports share a line. The
+    /// existing [`Self::add_uart`] keeps its exclusive-IRQ resource contract.
+    pub fn add_uart_shared(&mut self, name: &[u8], ddn: &[u8], uid: u64, io_base: u16, irq: u32) {
+        self.add_uart_resource(name, ddn, uid, io_base, irq, true);
+    }
+
+    fn add_uart_resource(
+        &mut self,
+        name: &[u8],
+        ddn: &[u8],
+        uid: u64,
+        io_base: u16,
+        irq: u32,
+        shared: bool,
+    ) {
         let mut uart = Device::new(name);
         uart.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0501")));
         uart.add_object(&NamedString::new(b"_DDN", ddn));
         uart.add_object(&NamedInteger::new(b"_UID", uid));
         let mut uart_crs = CurrentResourceSettings::new();
-        uart_crs.add_resource(&IoPort::new(io_base, io_base, 8));
+        uart_crs.add_resource(&IoPort::new(
+            io_base,
+            io_base,
+            x86defs::serial::COM_REGISTER_COUNT,
+        ));
         let mut intr = Interrupt::new(irq);
         intr.is_edge_triggered = true;
+        intr.is_shared = shared;
         uart_crs.add_resource(&intr);
         uart.add_object(&uart_crs);
         self.add_object(&uart);
