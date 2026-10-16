@@ -15,13 +15,15 @@ vm_resource.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
 parking_lot.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+pal_async.workspace = true
 
 [lints]
 workspace = true
