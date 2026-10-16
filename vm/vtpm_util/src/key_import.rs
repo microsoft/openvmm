@@ -102,12 +102,14 @@ fn write_key_files_with(
     let mut public_file = tempfile::NamedTempFile::new_in(
         Path::new(public_key_file)
             .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new(".")),
     )
     .context("failed to create temporary public key file")?;
     let mut private_file = tempfile::NamedTempFile::new_in(
         Path::new(private_key_file)
             .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(Path::new(".")),
     )
     .context("failed to create temporary TPM import blob file")?;
@@ -211,6 +213,29 @@ mod tests {
         );
         assert!(!path.exists());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn key_files_accept_bare_destination_paths() {
+        let public_path = tempfile::NamedTempFile::new_in(".")
+            .unwrap()
+            .into_temp_path();
+        let private_path = tempfile::NamedTempFile::new_in(".")
+            .unwrap()
+            .into_temp_path();
+        fs::remove_file(&public_path).unwrap();
+        fs::remove_file(&private_path).unwrap();
+
+        write_key_files(
+            public_path.file_name().unwrap().to_str().unwrap(),
+            b"public",
+            private_path.file_name().unwrap().to_str().unwrap(),
+            b"private",
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&public_path).unwrap(), b"public");
+        assert_eq!(fs::read(&private_path).unwrap(), b"private");
     }
 
     #[test]

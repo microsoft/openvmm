@@ -221,8 +221,9 @@ fn export_vtpm_srk_pub(
     Ok(())
 }
 
-/// Print the SRK public key name.
-/// Prints the TPM key name of an SRK public key file.
+/// Prints the TPM key name of an RSA-2048 SRK public key file using SHA-256.
+///
+/// Rejects public areas with an unsupported type, key size, or modulus length.
 pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
     let srkpub_content_buf = fs::read(srkpub_path).context("failed to read SRK public key file")?;
 
@@ -234,6 +235,17 @@ pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
         public_area.name_alg == AlgIdEnum::SHA256.into(),
         "unsupported SRK name algorithm {:?}; only SHA-256 is supported",
         public_area.name_alg
+    );
+    anyhow::ensure!(
+        public_area.my_type == AlgIdEnum::RSA.into()
+            && public_area.parameters.key_bits.get() == 2048,
+        "unsupported SRK public key; only RSA-2048 is supported"
+    );
+    anyhow::ensure!(
+        usize::from(public_area.unique.size.get()) == tpm_helper::RSA_2K_MODULUS_SIZE,
+        "invalid RSA-2048 SRK modulus length {}; expected {} bytes",
+        public_area.unique.size.get(),
+        tpm_helper::RSA_2K_MODULUS_SIZE
     );
     // Compute SHA256 hash of the public area
     let public_area_hash = sha_256(&public_area.serialize());
@@ -408,6 +420,79 @@ mod tests {
         let error = print_key_name(path.to_str().unwrap()).unwrap_err();
 
         assert!(error.to_string().contains("only SHA-256 is supported"));
+    }
+
+    #[test]
+    fn print_key_name_validates_rsa_public_area() {
+        for (key_type, key_bits, modulus_len, expected_error) in [
+            (
+                AlgIdEnum::RSA,
+                2048,
+                0,
+                Some("invalid RSA-2048 SRK modulus length"),
+            ),
+            (
+                AlgIdEnum::RSA,
+                2048,
+                1,
+                Some("invalid RSA-2048 SRK modulus length"),
+            ),
+            (
+                AlgIdEnum::RSA,
+                2048,
+                255,
+                Some("invalid RSA-2048 SRK modulus length"),
+            ),
+            (
+                AlgIdEnum::RSA,
+                2048,
+                257,
+                Some("invalid RSA-2048 SRK modulus length"),
+            ),
+            (
+                AlgIdEnum::RSA,
+                1024,
+                128,
+                Some("only RSA-2048 is supported"),
+            ),
+            (
+                AlgIdEnum::RSA,
+                4096,
+                512,
+                Some("only RSA-2048 is supported"),
+            ),
+            (
+                AlgIdEnum::NULL,
+                2048,
+                256,
+                Some("only RSA-2048 is supported"),
+            ),
+            (AlgIdEnum::RSA, 2048, 256, None),
+        ] {
+            let symmetric = TpmtSymDefObject::new(AlgIdEnum::NULL.into(), None, None);
+            let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+            let parameters = TpmsRsaParams::new(symmetric, scheme, key_bits, 0);
+            let public_area = TpmtPublic::new(
+                key_type.into(),
+                AlgIdEnum::SHA256.into(),
+                TpmaObjectBits::new(),
+                &[],
+                parameters,
+                &vec![0x81; modulus_len],
+            )
+            .unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("srk.tpm2b");
+            fs::write(&path, Tpm2bPublic::new(public_area).serialize()).unwrap();
+
+            let result = print_key_name(path.to_str().unwrap());
+
+            if let Some(expected_error) = expected_error {
+                assert!(result.unwrap_err().to_string().contains(expected_error));
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     #[test]
