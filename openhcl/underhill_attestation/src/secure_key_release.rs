@@ -393,7 +393,7 @@ async fn make_igvm_attest_requests(
         }
         Err(
             igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
-                igvm_attest::Error::ResponseSizeTooSmall { .. },
+                igvm_attest::Error::ResponseSizeTooSmall { response_size: 0 },
             )
             | igvm_attest::wrapped_key::WrappedKeyError::PayloadSizeTooSmall,
         ) => {
@@ -474,6 +474,107 @@ mod tests {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
+
+    #[pal_async::async_test]
+    async fn truncated_wrapped_key_responses_stop_before_key_release(
+        driver: pal_async::DefaultDriver,
+    ) {
+        use guest_emulation_device::test_utilities::{Event, TestGetResponses};
+        use openhcl_attestation_protocol::igvm_attest::get::{
+            IgvmAttestCommonResponseHeader, IgvmAttestRequestBase, SNP_VM_REPORT_SIZE,
+        };
+        use zerocopy::FromBytes;
+
+        let transfer_key = RsaKeyPair::generate(2048).unwrap();
+        let components = transfer_key.to_components();
+        let report = vec![0; SNP_VM_REPORT_SIZE];
+        let config = crate::tests::test_attestation_config();
+        let frame = |length| {
+            TestGetResponses::new(Event::Response(
+                get_protocol::IgvmAttestResponse {
+                    message_header: get_protocol::HeaderGeneric::new(
+                        get_protocol::HostRequests::IGVM_ATTEST,
+                    ),
+                    length,
+                }
+                .as_bytes()
+                .to_vec(),
+            ))
+        };
+        for required in [false, true] {
+            for size in 0..size_of::<IgvmAttestCommonResponseHeader>() {
+                let memory = user_driver_emulated_mock::DeviceTestMemory::new(
+                    64,
+                    true,
+                    "wrapped-key-framing",
+                );
+                let mut responses = vec![frame(size as u32)];
+                if !required {
+                    responses.push(frame(0));
+                }
+                responses.push(TestGetResponses::default());
+                let mut get = guest_emulation_transport::test_utilities::new_transport_pair(
+                    driver.clone(),
+                    Some(responses),
+                    get_protocol::ProtocolVersion::NICKEL_REV2,
+                    Some(memory.guest_memory()),
+                    None,
+                )
+                .await;
+                get.client.set_gpa_allocator(memory.dma_client());
+                let mut helper = IgvmAttestRequestHelper::prepare_key_release_request(
+                    tee_call::TeeType::Snp,
+                    &components.public_exponent,
+                    &components.modulus,
+                    0,
+                    &config,
+                );
+                let original_agent_data = [if required { 0 } else { 0x41 }; AGENT_DATA_MAX_SIZE];
+                let mut agent_data = original_agent_data;
+                let error = make_igvm_attest_requests(
+                    &get.client,
+                    &transfer_key,
+                    &mut helper,
+                    &report,
+                    &mut agent_data,
+                    true,
+                )
+                .await
+                .err()
+                .expect("scripted responses cannot release a key");
+                let expected_request_type = if size != 0 {
+                    assert!(
+                        matches!(
+                            &error,
+                            RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
+                                igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                                    igvm_attest::Error::ResponseSizeTooSmall { response_size }
+                                )
+                            ) if *response_size == size
+                        ),
+                        "size={size}, required={required}: {error:?}"
+                    );
+                    assert!(error.is_context_failure());
+                    IgvmAttestRequestType::WRAPPED_KEY_REQUEST
+                } else if required {
+                    assert!(matches!(error, RequestVmgsEncryptionKeysError::RequiredButInvalidIgvmAttestWrappedKeyResponse));
+                    IgvmAttestRequestType::WRAPPED_KEY_REQUEST
+                } else {
+                    assert!(matches!(
+                        error,
+                        RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(_)
+                    ));
+                    IgvmAttestRequestType::KEY_RELEASE_REQUEST
+                };
+                let request = helper
+                    .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, &report)
+                    .unwrap();
+                let (request, _) = IgvmAttestRequestBase::read_from_prefix(&request).unwrap();
+                assert_eq!(request.header.request_type, expected_request_type);
+                assert_eq!(agent_data, original_agent_data);
+            }
+        }
+    }
 
     fn extended_frame(payload: &[u8]) -> Vec<u8> {
         let header = IgvmAttestKeyReleaseResponseHeader {
