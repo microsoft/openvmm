@@ -1187,9 +1187,6 @@ impl Vmgs {
         if self.encrypted() && !self.state.unlocked() {
             return Err(Error::NeedsUnlock);
         }
-        if self.state.datastore_key_count == self.state.datastore_keys.len() as u8 {
-            return Err(Error::DatastoreKeysFull);
-        }
         if is_empty_key(encryption_key) {
             return Err(Error::InvalidArgument("empty encryption key"));
         }
@@ -1202,6 +1199,9 @@ impl Vmgs {
             return Err(Error::InvalidArgument(
                 "Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm.",
             ));
+        }
+        if self.state.datastore_key_count == self.state.datastore_keys.len() as u8 {
+            return Err(Error::DatastoreKeysFull);
         }
 
         let new_key_index = self
@@ -2901,7 +2901,7 @@ mod tests {
 
     #[cfg(feature = "encryption")]
     #[async_test]
-    async fn invalid_encryption_key_lengths_preserve_slots() {
+    async fn invalid_encryption_key_inputs_preserve_slots() {
         let keys = [[1; VMGS_ENCRYPTION_KEY_SIZE], [2; VMGS_ENCRYPTION_KEY_SIZE]];
         for update in [false, true] {
             for slot_count in 0..=keys.len() {
@@ -2923,30 +2923,40 @@ mod tests {
                 let sequence = vmgs.state.active_header_sequence_number;
                 let active_index = vmgs.state.active_datastore_key_index;
                 let datastore_keys = vmgs.state.datastore_keys;
-                for length in [
+                let encryption_algorithm = vmgs.state.encryption_algorithm;
+                let mut invalid_inputs: Vec<_> = [
                     0,
                     1,
                     VMGS_ENCRYPTION_KEY_SIZE - 1,
                     VMGS_ENCRYPTION_KEY_SIZE + 1,
                     64,
-                ] {
-                    let invalid_key = vec![3; length];
+                ]
+                .into_iter()
+                .map(|length| (vec![3; length], EncryptionAlgorithm::AES_GCM))
+                .collect();
+                invalid_inputs.push((
+                    vec![0; VMGS_ENCRYPTION_KEY_SIZE],
+                    EncryptionAlgorithm::AES_GCM,
+                ));
+                invalid_inputs.push((vec![3; VMGS_ENCRYPTION_KEY_SIZE], EncryptionAlgorithm::NONE));
+                if slot_count != 0 {
+                    invalid_inputs
+                        .push((vec![3; VMGS_ENCRYPTION_KEY_SIZE], EncryptionAlgorithm(2)));
+                }
+                for (invalid_key, algorithm) in invalid_inputs {
                     let result = if update {
-                        vmgs.update_encryption_key(&invalid_key, EncryptionAlgorithm::AES_GCM)
-                            .await
+                        vmgs.update_encryption_key(&invalid_key, algorithm).await
                     } else {
-                        vmgs.add_encryption_key(&invalid_key, EncryptionAlgorithm::AES_GCM)
+                        vmgs.add_encryption_key(&invalid_key, algorithm)
                             .await
                             .map(|_| ())
                     };
-                    assert!(matches!(
-                        result,
-                        Err(Error::InvalidArgument("encryption key length"))
-                    ));
+                    assert!(matches!(result, Err(Error::InvalidArgument(_))));
                     assert_eq!(vmgs.state.active_header_sequence_number, sequence);
                     assert_eq!(vmgs.state.active_datastore_key_index, active_index);
                     assert_eq!(vmgs.state.datastore_keys, datastore_keys);
                     assert_eq!(vmgs.state.datastore_key_count as usize, slot_count);
+                    assert_eq!(vmgs.state.encryption_algorithm, encryption_algorithm);
                 }
                 drop(vmgs);
                 let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
