@@ -36,6 +36,22 @@ fn insert_socketless_flows(tcp: &mut Tcp, count: usize) {
     }
 }
 
+/// Inserts a flow from `port` in `state` that holds no host socket and whose
+/// lifetime ends with `lifetime_timer`.
+fn insert_flow_in_state(tcp: &mut Tcp, port: u16, state: TcpState, lifetime_timer: LifetimeTimer) {
+    let mut inner = TcpConnection::new_base(&tcp.connection_params);
+    inner.state = state;
+    inner.lifetime_timer = lifetime_timer;
+    let conn = TcpConnection {
+        backend: TcpBackend::Socket {
+            socket: None,
+            static_dns: None,
+        },
+        inner,
+    };
+    tcp.connections.insert(guest_flow(port), conn);
+}
+
 /// Returns a guest SYN that opens a flow from `src_port` to `dst_port`.
 fn guest_syn(src_port: u16, dst_port: u16) -> TcpRepr<'static> {
     TcpRepr {
@@ -258,5 +274,163 @@ async fn test_tcp_unbounded_flow_limit_admits_syn_beyond_default(driver: Default
         harness.consomme.tcp.connections.len(),
         DEFAULT_MAX_ACTIVE_TCP_FLOWS + 1,
         "an unbounded TCP flow map must admit a flow beyond the default limit"
+    );
+}
+
+#[test]
+fn test_tcp_flow_limit_reclaims_time_wait_closest_to_expiry() {
+    let mut consomme = Consomme::new(params_with_tcp_limit(Some(3)));
+    let tcp = &mut consomme.tcp;
+    let now = Instant::now();
+    insert_flow_in_state(tcp, 10000, TcpState::Established, LifetimeTimer::None);
+    insert_flow_in_state(
+        tcp,
+        10001,
+        TcpState::TimeWait,
+        LifetimeTimer::Close(now + Duration::from_secs(30)),
+    );
+    insert_flow_in_state(
+        tcp,
+        10002,
+        TcpState::TimeWait,
+        LifetimeTimer::Close(now + Duration::from_secs(10)),
+    );
+
+    // Each new flow at the limit reclaims the TIME-WAIT connection closest to
+    // expiry.
+    for (new_port, reclaimed_port) in [(20000, 10002), (20001, 10001)] {
+        tcp.check_flow_limit(&guest_flow(new_port)).unwrap();
+        assert!(!tcp.connections.contains_key(&guest_flow(reclaimed_port)));
+        insert_flow_in_state(tcp, new_port, TcpState::Established, LifetimeTimer::None);
+    }
+    assert_eq!(tcp.aggregate_stats.connections_reclaimed_time_wait.get(), 2);
+    assert_eq!(tcp.aggregate_stats.connections_closed_normal.get(), 2);
+
+    // Without a connection in TIME-WAIT, a new flow is rejected and no active
+    // flow is evicted.
+    assert!(matches!(
+        tcp.check_flow_limit(&guest_flow(20002)),
+        Err(DropReason::TcpConnectionLimit)
+    ));
+    assert_eq!(tcp.connections.len(), 3);
+
+    // An unbounded map never cuts TIME-WAIT short.
+    let mut unbounded = Consomme::new(params_with_tcp_limit(None));
+    insert_flow_in_state(
+        &mut unbounded.tcp,
+        10000,
+        TcpState::TimeWait,
+        LifetimeTimer::Close(now + Duration::from_secs(10)),
+    );
+    unbounded.tcp.check_flow_limit(&guest_flow(20000)).unwrap();
+    assert!(unbounded.tcp.connections.contains_key(&guest_flow(10000)));
+    assert_eq!(
+        unbounded
+            .tcp
+            .aggregate_stats
+            .connections_reclaimed_time_wait
+            .get(),
+        0
+    );
+}
+
+#[pal_async::async_test]
+async fn test_tcp_flow_limit_reclaims_server_closed_time_wait(driver: DefaultDriver) {
+    let mut h = TcpTestHarness::connect_with_params(driver, params_with_tcp_limit(Some(2))).await;
+    insert_flow_in_state(
+        &mut h.consomme.tcp,
+        10000,
+        TcpState::Established,
+        LifetimeTimer::None,
+    );
+
+    // The server closes first, so Consomme closes actively toward the guest
+    // and the connection lingers in TIME-WAIT once the guest closes too.
+    h.clear_guest_packets();
+    h.host_shutdown_write();
+    let fin = h
+        .poll_until_guest_packet(|tcp| tcp.control == TcpControl::Fin)
+        .await;
+    let (_, _, fin) = parse_tcp_packet(&fin);
+    h.server_ack = fin.seq_number + fin.segment_len();
+    h.send_segment(TcpControl::None, h.guest_seq, &[]);
+    h.send_fin();
+    assert_eq!(h.connection_inner().state, TcpState::TimeWait);
+
+    // Until Consomme shuts down the host socket, the connection still has to
+    // deliver the guest's FIN, so a new flow cannot reclaim it.
+    let syn = guest_syn(h.guest_port + 1, h.dst_port);
+    assert!(matches!(
+        h.try_send_repr(&syn),
+        Err(DropReason::TcpConnectionLimit)
+    ));
+
+    h.poll_until(|inner| inner.is_shutdown).await;
+    h.try_send_repr(&syn).unwrap();
+    assert!(!h.consomme.tcp.connections.contains_key(&h.four_tuple()));
+    assert_eq!(h.consomme.tcp.connections.len(), 2);
+    assert_eq!(
+        h.consomme
+            .tcp
+            .aggregate_stats
+            .connections_reclaimed_time_wait
+            .get(),
+        1
+    );
+
+    // With no connection left in TIME-WAIT, the next new flow is rejected.
+    assert!(matches!(
+        h.try_send_repr(&guest_syn(h.guest_port + 2, h.dst_port)),
+        Err(DropReason::TcpConnectionLimit)
+    ));
+}
+
+#[pal_async::async_test]
+async fn test_tcp_port_forward_reclaims_time_wait(driver: DefaultDriver) {
+    let mut h =
+        TcpTestHarness::connect_with_params(driver.clone(), params_with_tcp_limit(Some(2))).await;
+    insert_flow_in_state(
+        &mut h.consomme.tcp,
+        10000,
+        TcpState::TimeWait,
+        LifetimeTimer::Close(Instant::now() + Duration::from_secs(60)),
+    );
+
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+    h.consomme
+        .access(&mut h.client)
+        .bind_tcp_port(socket, 7777)
+        .expect("bind should succeed");
+    let _connector = std::net::TcpStream::connect(host_addr).unwrap();
+
+    // The accepted connection takes the slot of the TIME-WAIT connection.
+    let time_wait_flow = guest_flow(10000);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while h.consomme.tcp.connections.contains_key(&time_wait_flow) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the accepted connection to reclaim the TIME-WAIT slot"
+        );
+        std::future::poll_fn(|cx| {
+            h.consomme.access(&mut h.client).poll(cx);
+            Poll::Ready(())
+        })
+        .await;
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+    }
+    assert_eq!(h.consomme.tcp.connections.len(), 2);
+    assert_eq!(
+        h.consomme
+            .tcp
+            .aggregate_stats
+            .connections_reclaimed_time_wait
+            .get(),
+        1
     );
 }
