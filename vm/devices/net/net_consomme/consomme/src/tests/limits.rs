@@ -7,6 +7,7 @@ use super::*;
 use crate::limits::DEFAULT_MAX_ACTIVE_ICMP_FLOWS;
 use crate::limits::DEFAULT_MAX_ACTIVE_TCP_FLOWS;
 use crate::limits::DEFAULT_MAX_ACTIVE_UDP_FLOWS;
+use crate::limits::FlowLimits;
 
 #[test]
 fn default_resource_limits_are_pinned() {
@@ -30,4 +31,12 @@ fn default_resource_limits_are_pinned() {
     assert_eq!(DEFAULT_MAX_ACTIVE_UDP_FLOWS, 256);
     assert_eq!(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS, 256);
     assert_eq!(DEFAULT_MAX_ACTIVE_ICMP_FLOWS, 16);
+    assert_eq!(
+        params.flow_limits,
+        FlowLimits {
+            tcp: Some(DEFAULT_MAX_ACTIVE_TCP_FLOWS),
+            udp: Some(DEFAULT_MAX_ACTIVE_UDP_FLOWS),
+            icmp: Some(DEFAULT_MAX_ACTIVE_ICMP_FLOWS),
+        }
+    );
 }
