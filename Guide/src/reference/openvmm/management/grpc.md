@@ -53,6 +53,22 @@ Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
+## MSHV SNP devices
+
+When you create an SNP VM on MSHV, PCIe virtio-blk, virtio-net with Consomme
+or Linux TAP, and in-process virtio-vsock use bounce buffers automatically.
+The API does not expose force-bounce options. Device resolution selects
+bouncing from the VM's guest-memory policy. The same restrictions and
+resource construction apply to `CreateVM` and `AddPcieDevice`.
+
+Block disks must use buffered plain regular files (`FileDisk.direct: false`).
+Structured disk images and host block devices are not supported. Disable
+VMBus and omit legacy device configurations, HVSocket, crash dumps, iommufd
+contexts, and guest-visible IOMMUs. Other PCIe device types, vhost-user, and
+VPCI are not supported for these VMs. Empty PCIe hotplug ports and nested
+switches are allowed. Base-page memory is selected by default; explicit
+transparent huge pages and huge-page backing are rejected.
+
 ## VFIO and accelerated SMMU
 
 On Linux, declare named host iommufd contexts in `VMConfig.iommufds`, then

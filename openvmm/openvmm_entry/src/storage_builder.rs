@@ -72,6 +72,24 @@ fn bounce_disk_candidate(kind: &DiskCliKind) -> bool {
     }
 }
 
+pub(crate) fn validate_bounce_file(path: &std::path::Path, direct: bool) -> anyhow::Result<()> {
+    if direct {
+        anyhow::bail!("`bounce` does not support `;direct`");
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["vhd", "vhdx", "vmgs", "iso"]
+                .iter()
+                .any(|format| extension.eq_ignore_ascii_case(format))
+        })
+    {
+        anyhow::bail!("`bounce` requires a plain disk image, not a structured disk format");
+    }
+    Ok(())
+}
+
 fn open_reviewed_disk(
     kind: &DiskCliKind,
     read_only: bool,
@@ -83,20 +101,7 @@ fn open_reviewed_disk(
             create_with_len,
             direct,
         } => {
-            if *direct {
-                anyhow::bail!("`bounce` does not support `;direct`");
-            }
-            if path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    ["vhd", "vhdx", "vmgs", "iso"]
-                        .iter()
-                        .any(|format| extension.eq_ignore_ascii_case(format))
-                })
-            {
-                anyhow::bail!("`bounce` requires a plain disk image, not a structured disk format");
-            }
+            validate_bounce_file(path, *direct)?;
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(!read_only || create_with_len.is_some())
@@ -118,7 +123,7 @@ fn open_reviewed_disk(
     Ok(disk)
 }
 
-fn open_bounce_disk(
+pub(crate) fn open_bounce_disk(
     kind: &DiskCliKind,
     read_only: bool,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
