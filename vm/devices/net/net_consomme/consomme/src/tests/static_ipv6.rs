@@ -462,3 +462,28 @@ async fn gateway_tcp_reaches_host_ipv6_loopback(driver: DefaultDriver) {
         }
     }
 }
+
+/// The guest's datagrams to the IPv6 gateway reach host services on IPv6
+/// loopback, whose answers come from the gateway (#560).
+#[pal_async::async_test]
+async fn gateway_udp_replies_come_from_the_ipv6_gateway(driver: DefaultDriver) {
+    match std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)) {
+        Ok(_) => {}
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            return;
+        }
+        Err(err) => panic!("IPv6 loopback bind failed: {err}"),
+    }
+    check_gateway_udp_replies(
+        Consomme::new(dual_stack_params()),
+        driver,
+        SocketAddr::from((GUEST_IPV6, 40000)),
+        GATEWAY_IPV6.into(),
+    )
+    .await;
+}
