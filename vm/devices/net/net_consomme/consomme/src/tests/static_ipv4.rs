@@ -118,6 +118,28 @@ async fn gateway_proxy_exception_rejects_udp(driver: DefaultDriver) {
     );
 }
 
+/// The guest's datagrams to the gateway reach host services on IPv4 loopback,
+/// whose answers come from the gateway (#560).
+#[pal_async::async_test]
+async fn gateway_udp_replies_come_from_the_gateway(driver: DefaultDriver) {
+    let mut params = ConsommeParams::new().unwrap();
+    params
+        .set_static_ipv4(
+            Ipv4Addr::new(10, 0, 0, 2),
+            24,
+            Ipv4Addr::new(10, 0, 0, 1),
+            [0x52, 0x54, 0, 0, 0, 1],
+        )
+        .unwrap();
+    check_gateway_udp_replies(
+        Consomme::new(params),
+        driver,
+        "10.0.0.2:40000".parse().unwrap(),
+        Ipv4Addr::new(10, 0, 0, 1).into(),
+    )
+    .await;
+}
+
 #[test]
 fn static_ipv4_identity_rejects_inconsistent_values() {
     let mut params = ConsommeParams::new().unwrap();
