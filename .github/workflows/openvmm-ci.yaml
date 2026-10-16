@@ -703,7 +703,7 @@ jobs:
     - name: cargo build openvmm_hcl
       run: flowey e 11 flowey_lib_common::run_cargo_build 2 flowey_lib_hvlite::run_cargo_build 8
     - name: split debug symbols
-      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 2 flowey_lib_hvlite::run_cargo_build 9 flowey_lib_hvlite::build_openvmm_hcl 0 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_build 10 flowey_lib_hvlite::run_cargo_build 11
+      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 2 flowey_lib_hvlite::run_cargo_build 9 flowey_lib_hvlite::build_openvmm_hcl 0 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_build 10 flowey_lib_hvlite::run_cargo_build 11
     - name: cargo build openvmm_hcl
       run: flowey e 11 flowey_lib_common::run_cargo_build 3 flowey_lib_hvlite::run_cargo_build 12 flowey_lib_hvlite::build_openvmm_hcl 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
     - name: split debug symbols
@@ -723,7 +723,7 @@ jobs:
     - name: split debug symbols
       run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 3 flowey_lib_hvlite::run_cargo_build 1 flowey_lib_hvlite::build_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
     - name: building igvm file
-      run: flowey e 11 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_core::pipeline::artifact::publish 2
+      run: flowey e 11 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1 flowey_core::pipeline::artifact::publish 2
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 11 flowey_lib_common::cache 3
     - name: 🌼📦 Publish aarch64-openhcl-baseline
@@ -884,7 +884,7 @@ jobs:
     - name: cargo build openvmm_hcl
       run: flowey e 12 flowey_lib_common::run_cargo_build 2 flowey_lib_hvlite::run_cargo_build 8
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 4 flowey_lib_hvlite::run_cargo_build 9 flowey_lib_hvlite::build_openvmm_hcl 0 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3 flowey_lib_hvlite::init_cross_build 5 flowey_lib_hvlite::run_cargo_build 10 flowey_lib_hvlite::run_cargo_build 11
+      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 4 flowey_lib_hvlite::run_cargo_build 9 flowey_lib_hvlite::build_openvmm_hcl 0 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3 flowey_lib_hvlite::init_cross_build 5 flowey_lib_hvlite::run_cargo_build 10 flowey_lib_hvlite::run_cargo_build 11
     - name: cargo build openvmm_hcl
       run: flowey e 12 flowey_lib_common::run_cargo_build 3 flowey_lib_hvlite::run_cargo_build 12 flowey_lib_hvlite::build_openvmm_hcl 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
     - name: split debug symbols
@@ -908,7 +908,7 @@ jobs:
     - name: split debug symbols
       run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 6 flowey_lib_hvlite::run_cargo_build 1 flowey_lib_hvlite::build_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
     - name: building igvm file
-      run: flowey e 12 flowey_lib_hvlite::run_igvmfilegen 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_core::pipeline::artifact::publish 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
+      run: flowey e 12 flowey_lib_hvlite::run_igvmfilegen 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1 flowey_core::pipeline::artifact::publish 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
     - name: unpack openvmm-test-linux archives
       run: flowey e 12 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
     - name: unpack openvmm-test-initrd archives
@@ -918,7 +918,7 @@ jobs:
     - name: building openhcl initrd
       run: flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
     - name: building igvm file
-      run: flowey e 12 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1 flowey_core::pipeline::artifact::publish 3 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36 flowey_core::pipeline::artifact::publish 4
+      run: flowey e 12 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3 flowey_core::pipeline::artifact::publish 3 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4 flowey_core::pipeline::artifact::publish 4
     - name: extract and resolve kernel package
       run: flowey e 12 flowey_lib_hvlite::resolve_openhcl_kernel_package 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
     - name: split debug symbols
@@ -930,7 +930,7 @@ jobs:
     - name: determine vmfirmwareigvm_dll env vars
       run: flowey e 12 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_build 17 flowey_lib_hvlite::run_cargo_build 18
     - name: cargo build vmfirmwareigvm_dll
-      run: flowey e 12 flowey_lib_common::run_cargo_build 5 flowey_lib_hvlite::run_cargo_build 19 flowey_lib_hvlite::build_vmfirmwareigvm_dll 2 flowey_core::pipeline::artifact::publish 5 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2 flowey_core::pipeline::artifact::publish 6 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_core::pipeline::artifact::publish 7
+      run: flowey e 12 flowey_lib_common::run_cargo_build 5 flowey_lib_hvlite::run_cargo_build 19 flowey_lib_hvlite::build_vmfirmwareigvm_dll 2 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 7 flowey_core::pipeline::artifact::publish 5 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5 flowey_core::pipeline::artifact::publish 6 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 6 flowey_core::pipeline::artifact::publish 7
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 12 flowey_lib_common::cache 3
     - name: 🌼📦 Publish x64-openhcl-baseline
@@ -1137,7 +1137,7 @@ jobs:
     - name: split debug symbols
       run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 5 flowey_lib_hvlite::run_cargo_build 1 flowey_lib_hvlite::build_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
     - name: building igvm file
-      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
+      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0 flowey_core::pipeline::artifact::publish 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1 flowey_core::pipeline::artifact::publish 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
     - name: unpack openvmm-test-linux archives
       run: flowey e 13 flowey_lib_hvlite::resolve_openvmm_test_linux_kernel 0
     - name: unpack openvmm-test-initrd archives
@@ -1147,7 +1147,7 @@ jobs:
     - name: building openhcl initrd
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
     - name: building igvm file
-      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1 flowey_core::pipeline::artifact::publish 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36 flowey_core::pipeline::artifact::publish 3
+      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2 flowey_core::pipeline::artifact::publish 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3 flowey_core::pipeline::artifact::publish 3
     - name: extract and resolve kernel package
       run: flowey e 13 flowey_lib_hvlite::resolve_openhcl_kernel_package 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
     - name: split debug symbols
@@ -1155,7 +1155,7 @@ jobs:
     - name: building openhcl initrd
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 1 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
     - name: building igvm file
-      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2 flowey_core::pipeline::artifact::publish 4 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_core::pipeline::artifact::publish 5
+      run: flowey e 13 flowey_lib_hvlite::run_igvmfilegen 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4 flowey_core::pipeline::artifact::publish 4 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5 flowey_core::pipeline::artifact::publish 5
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 13 flowey_lib_common::cache 3
     - name: 🌼📦 Publish x64-mi-secure-openhcl-igvm

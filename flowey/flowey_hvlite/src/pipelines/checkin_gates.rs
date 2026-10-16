@@ -1184,7 +1184,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(gh_pools::default_linux())
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
-                    let publish_baseline_artifact = pub_openhcl_baseline
+                    let mut publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_typed_artifact(baseline_artifact));
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
@@ -1230,10 +1230,11 @@ impl IntoPipeline for CheckinGatesCli {
                                     openhcl_igvm_extras: ctx
                                         .publish_typed_artifact(pub_openhcl_igvm_extras),
                                     vmfirmwareigvm_dll,
+                                    artifact_openhcl_verify_size_baseline:
+                                        publish_baseline_artifact.take(),
                                 }
                             })
                             .collect(),
-                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                     }
                 });
 

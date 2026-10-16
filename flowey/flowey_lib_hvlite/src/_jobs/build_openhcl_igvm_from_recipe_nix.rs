@@ -11,7 +11,6 @@
 //! like `checkin_gates` inject it across all jobs via `inject_all_jobs_with`.
 
 use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmFile;
-use crate::_jobs::build_and_publish_openvmm_hcl_baseline::OpenvmmHclBaselineOutput;
 use crate::common::CommonArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey::node::prelude::*;
@@ -21,7 +20,6 @@ flowey_request! {
         pub arch: CommonArch,
         pub kernel_kind: OpenhclKernelPackageKind,
         pub igvm_files: Vec<OpenhclIgvmFile>,
-        pub artifact_openhcl_verify_size_baseline: Option<WriteVar<OpenvmmHclBaselineOutput>>,
     }
 }
 
@@ -40,17 +38,11 @@ impl SimpleFlowNode for Node {
             arch,
             kernel_kind,
             igvm_files,
-            artifact_openhcl_verify_size_baseline,
         } = request;
 
         ctx.req(crate::_jobs::cfg_nix::Params { arch, kernel_kind });
 
-        ctx.req(
-            crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
-                igvm_files,
-                artifact_openhcl_verify_size_baseline,
-            },
-        );
+        ctx.req(crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params { igvm_files });
 
         Ok(())
     }
