@@ -56,15 +56,15 @@ const ICMPV4_HEADER_LEN: usize = 8;
 pub(crate) struct Icmp {
     connections: HashMap<SocketAddrV4, IcmpConnection>,
     timeout: Duration,
-    max_connections: usize,
+    max_connections: Option<usize>,
 }
 
 impl Icmp {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration, max_connections: Option<usize>) -> Self {
         Self {
             connections: HashMap::new(),
             timeout,
-            max_connections: crate::limits::DEFAULT_MAX_ACTIVE_ICMP_FLOWS,
+            max_connections,
         }
     }
 }
