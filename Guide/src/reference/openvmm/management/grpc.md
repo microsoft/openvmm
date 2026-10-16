@@ -70,11 +70,11 @@ is populated:
   as the clone's writable backing; otherwise OpenVMM allocates a fresh shared
   memory object. The source snapshot remains reusable by other clones.
 
-The initial eager-copy implementation supports direct Linux guest boot and one
-memory object on KVM and WHP. The public population choices are currently
-limited to `EAGER_COPY` and `SHARED_IN_PLACE`. If `expected_snapshot_id` is
-provided, the restore fails unless it matches the snapshot ID in
-`manifest.bin`. The restored snapshot's ID is returned in
+The initial eager-copy implementation supports one memory object on KVM and
+WHP, for both direct Linux boot and UEFI. The public population choices are
+currently limited to `EAGER_COPY` and `SHARED_IN_PLACE`. If
+`expected_snapshot_id` is provided, the restore fails unless it matches the
+snapshot ID in `manifest.bin`. The restored snapshot's ID is returned in
 `RestoreVmResult.snapshot_id`. Set `resume` to start the restored VM
 immediately; otherwise it is created paused.
 

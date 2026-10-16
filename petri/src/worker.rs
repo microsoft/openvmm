@@ -11,6 +11,7 @@ use mesh_worker::WorkerHost;
 use openvmm_defs::config::Config;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::GuestRamSource;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use vmm_core_defs::HaltReason;
@@ -33,8 +34,7 @@ impl Worker {
             hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
-            shared_memory,
-            snapshot_memory_copy_source: None,
+            guest_ram: shared_memory.map(GuestRamSource::MapShared),
             rpc: rpc_recv,
             notify: notify_send,
         };

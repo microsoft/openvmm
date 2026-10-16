@@ -78,6 +78,7 @@ use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::GuestRamSource;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_helpers::disk::OpenDiskOptions;
@@ -676,8 +677,7 @@ enum RestoreMemoryPopulation {
 }
 
 struct PreparedRestore {
-    shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
-    snapshot_memory_copy_source: Option<openvmm_defs::worker::SharedMemoryFd>,
+    guest_ram: GuestRamSource,
     active_memory_backing_file: Option<PathBuf>,
     saved_state: mesh::payload::message::ProtobufMessage,
     snapshot_id: Guid,
@@ -774,17 +774,14 @@ fn prepare_snapshot_restore(
         ));
     }
 
-    let (shared_memory, snapshot_memory_copy_source, active_memory_backing_file) = match population
-    {
+    let (guest_ram, active_memory_backing_file) = match population {
         RestoreMemoryPopulation::SharedInPlace => (
-            Some(openvmm_helpers::shared_memory::file_to_shared_memory_fd(
+            GuestRamSource::MapShared(openvmm_helpers::shared_memory::file_to_shared_memory_fd(
                 memory_file.into(),
             )?),
-            None,
             Some(memory_path),
         ),
         RestoreMemoryPopulation::EagerCopy => {
-            let file: openvmm_defs::worker::SharedMemoryFd = memory_file.into();
             let destination = destination_backing_file
                 .map(|path| {
                     let destination =
@@ -810,8 +807,10 @@ fn prepare_snapshot_restore(
                 })
                 .transpose()?;
             (
-                destination,
-                Some(file),
+                GuestRamSource::CopyFrom {
+                    source: memory_file.into(),
+                    destination,
+                },
                 destination_backing_file.map(Path::to_owned),
             )
         }
@@ -820,8 +819,7 @@ fn prepare_snapshot_restore(
         .context("failed to decode saved state from snapshot")
         .with_code(Code::FailedPrecondition)?;
     Ok(PreparedRestore {
-        shared_memory,
-        snapshot_memory_copy_source,
+        guest_ram,
         active_memory_backing_file,
         saved_state,
         snapshot_id: manifest.snapshot_id,
@@ -1284,7 +1282,6 @@ impl VmService {
                         bail!("VM-service IGVM boot with UEFI personality is not yet supported");
                     }
                 };
-
                 let igvm_path = PathBuf::from(&boot.igvm_path);
                 let file = File::open(&igvm_path)
                     .with_context(|| format!("failed to open IGVM {}", igvm_path.display()))?;
@@ -1374,15 +1371,6 @@ impl VmService {
                 )
             }
         };
-
-        if restore_memory_population == Some(RestoreMemoryPopulation::EagerCopy) {
-            if !matches!(&load_mode, LoadMode::Linux { .. }) {
-                return Err(code_error(
-                    Code::InvalidArgument,
-                    "eager-copy restore currently requires direct Linux boot",
-                ));
-            }
-        }
 
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
@@ -1651,37 +1639,35 @@ impl VmService {
             .await
             .context("spawning vm process failed")?;
 
-        let (
-            shared_memory,
-            snapshot_memory_copy_source,
-            saved_state,
-            active_memory_backing_file,
-            snapshot_id,
-        ) = if let Some(restore) = &restore {
-            let prepared = prepare_snapshot_restore(
-                restore,
-                config_mem_size,
-                config_proc_count,
-                restore_memory_population
-                    .expect("restore memory population must be resolved for RestoreVM"),
-                memory_backing_file.as_deref(),
-            )?;
-            (
-                prepared.shared_memory,
-                prepared.snapshot_memory_copy_source,
-                Some(prepared.saved_state),
-                prepared.active_memory_backing_file,
-                Some(prepared.snapshot_id),
-            )
-        } else {
-            let shared_memory = memory_backing_file
-                .as_ref()
-                .map(|path| {
-                    openvmm_helpers::shared_memory::open_memory_backing_file(path, config_mem_size)
-                })
-                .transpose()?;
-            (shared_memory, None, None, memory_backing_file, None)
-        };
+        let (guest_ram, saved_state, active_memory_backing_file, snapshot_id) =
+            if let Some(restore) = &restore {
+                let prepared = prepare_snapshot_restore(
+                    restore,
+                    config_mem_size,
+                    config_proc_count,
+                    restore_memory_population
+                        .expect("restore memory population must be resolved for RestoreVM"),
+                    memory_backing_file.as_deref(),
+                )?;
+                (
+                    Some(prepared.guest_ram),
+                    Some(prepared.saved_state),
+                    prepared.active_memory_backing_file,
+                    Some(prepared.snapshot_id),
+                )
+            } else {
+                let guest_ram = memory_backing_file
+                    .as_ref()
+                    .map(|path| {
+                        openvmm_helpers::shared_memory::open_memory_backing_file(
+                            path,
+                            config_mem_size,
+                        )
+                        .map(GuestRamSource::MapShared)
+                    })
+                    .transpose()?;
+                (guest_ram, None, memory_backing_file, None)
+            };
 
         let worker = vm_host
             .launch_worker(
@@ -1690,8 +1676,7 @@ impl VmService {
                     hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
                     cfg: config,
                     saved_state,
-                    shared_memory,
-                    snapshot_memory_copy_source,
+                    guest_ram,
                     rpc: recv,
                     notify: notify_send,
                 },
