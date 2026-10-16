@@ -30,5 +30,8 @@ windows-sys = { workspace = true, features = [
 cc.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
