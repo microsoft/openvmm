@@ -14,7 +14,7 @@ use crate::gpadl::GpadlView;
 use crate::gpadl::UnknownGpadlId;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use guestmem::LockedPages;
+use guestmem::UserLockedPages;
 use pal_async::driver::Driver;
 use ring::IncomingRing;
 use ring::OutgoingRing;
@@ -80,8 +80,8 @@ impl AlignedGpadlView {
 }
 
 struct GpadlPagedMemory {
+    pages: UserLockedPages,
     _gpadl: AlignedGpadlView,
-    pages: LockedPages,
 }
 
 impl GpadlPagedMemory {
@@ -93,10 +93,10 @@ impl GpadlPagedMemory {
             .chain(gpadl.gpns().iter().skip(1))
             .copied()
             .collect();
-        let pages = mem.lock_gpns(guestmem::AccessType::Write, false, &gpns)?;
+        let pages = mem.lock_user_gpns(guestmem::AccessType::Write, &gpns)?;
         Ok(Self {
-            _gpadl: gpadl,
             pages,
+            _gpadl: gpadl,
         })
     }
 }

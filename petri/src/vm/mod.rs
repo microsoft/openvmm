@@ -228,6 +228,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     enable_screenshots: bool,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
     use_virtio_vsock: bool,
+    // Force owned staging for the in-process virtio-vsock transport.
+    virtio_vsock_bounce: bool,
     // Use the Linux kernel vhost-vsock backend with this guest CID.
     #[cfg(target_os = "linux")]
     vhost_vsock_guest_cid: Option<u32>,
@@ -263,6 +265,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("enable_serial", &self.enable_serial)
             .field("enable_screenshots", &self.enable_screenshots)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
+            .field("virtio_vsock_bounce", &self.virtio_vsock_bounce)
             .field("no_vmbus", &self.no_vmbus)
             .field("no_hv", &self.no_hv)
             .finish()
@@ -366,6 +369,8 @@ pub struct PetriVmProperties {
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
     pub use_virtio_vsock: bool,
+    /// Force owned staging for in-process virtio-vsock.
+    pub virtio_vsock_bounce: bool,
     /// Linux kernel vhost-vsock guest CID, when that backend is enabled.
     #[cfg(target_os = "linux")]
     pub vhost_vsock_guest_cid: Option<u32>,
@@ -704,6 +709,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: false,
             enable_screenshots: true,
             use_virtio_vsock: false,
+            virtio_vsock_bounce: false,
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: None,
             no_vmbus: !T::SUPPORTS_VMBUS,
@@ -877,6 +883,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Use in-process virtio-vsock with owned payload staging forced on.
+    pub fn with_virtio_vsock_bounce(mut self) -> Self {
+        self = self.with_virtio_vsock();
+        self.virtio_vsock_bounce = true;
+        self
+    }
+
     /// Use the Linux kernel vhost-vsock backend for guest communication.
     ///
     /// The host connects directly to the guest's `AF_VSOCK` listener at
@@ -884,6 +897,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// which is required by kernel vhost.
     #[cfg(target_os = "linux")]
     pub fn with_vhost_vsock(mut self, guest_cid: u32) -> Self {
+        assert!(
+            !self.virtio_vsock_bounce,
+            "forced virtio-vsock staging is not supported by kernel vhost"
+        );
         assert!(
             (3..u32::MAX).contains(&guest_cid),
             "vhost-vsock guest CID must be between 3 and {}",
@@ -1240,6 +1257,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             enable_serial: self.enable_serial,
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
+            virtio_vsock_bounce: self.virtio_vsock_bounce,
             #[cfg(target_os = "linux")]
             vhost_vsock_guest_cid: self.vhost_vsock_guest_cid,
             no_vmbus: self.no_vmbus,

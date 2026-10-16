@@ -110,7 +110,7 @@ describes the source definitions.
   openvmm --hypervisor mshv --isolation snp \
     --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
     --com1 console \
-    --hv --no-vmbus -m 160MB -p 1
+    --hv --no-vmbus --memory size=160MB,thp=off -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
@@ -119,6 +119,87 @@ describes the source definitions.
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
   `--isolation snp`.
+* MSHV SNP always uses copy-only host access and owned bounce buffers.
+  There is no direct-access mode or host-access opt-in. The former
+  `snp_scoped_host_access` parameter is not accepted. Non-isolated MSHV
+  guests retain their existing device and guest-memory behavior.
+  Base-page backing is required: pass `--memory size=<SIZE>,thp=off`.
+  Transparent huge pages and explicit huge pages are not supported.
+  For NUMA configurations, pass `thp=off` on every `--numa` node instead
+  of using `--memory`. Existing guest-memory backing files are not supported.
+
+  Bouncing is automatic for virtio block, virtio network with Consomme,
+  Linux TAP, or `none`, and in-process vsock. Per-device `bounce`, `bounce:`,
+  and `--virtio-vsock-bounce` options remain valid but are not needed.
+  Block backends are limited to plain buffered regular files and RAM disks.
+  See [block bounce I/O](#per-device-block-bounce-io) and
+  [network and vsock bounce I/O](#per-device-network-and-vsock-bounce-io).
+
+  The device allowlist contains these three bounced virtio devices, serial
+  ports, and the minimal chipset. Other devices are rejected before their
+  resources are opened. This includes kernel vhost, vhost-user, assigned
+  devices, remote PCIe devices, CXL, persistent memory, filesystem devices,
+  RNG, and virtio console. With `--hv`, also pass `--no-vmbus`.
+  Snapshot restore, guest memory dumps, and the debugger are not supported.
+  The VM-service supports only the minimal chipset and serial for MSHV SNP;
+  disable VMBus and omit device configurations. It selects base-page backing
+  by default and rejects explicit NUMA huge-page settings. Use the CLI for
+  bounced virtio devices.
+
+  Kernel locks are denied. Copies use fault-contained `GuestMemory`
+  operations, without per-copy permission
+  leases or VP cancellation. A mapping fault requests read or write host
+  permission and retries the full operation. Confirmed grants remain until
+  a guest GPA-attribute conflict requires release. The selected backend and
+  isolation mode fix the backing's copy-only policy before memory views exist;
+  changing guest page visibility does not change that policy.
+  Grant denial returns a guest-memory I/O error, not partition-wide poison.
+  If an access faults again at the same or an earlier offset after reported
+  resolution, the operation returns an I/O error. Forward-moving first-touch
+  faults can continue across pages. Restarting a copy does not provide an
+  atomic guest-memory snapshot. Staging uses the normal host allocator;
+  host out-of-memory failures follow its existing behavior.
+  GPA-attribute conflicts release host access and let the next VP run retry
+  the existing guest operation. Valid repeated requests remain supported.
+
+  `GuestMemory::supports_kernel_lock()` is false for SNP guest RAM.
+  `requires_owned_io()` makes supported devices select owned staging.
+  Translation-only memory can retain its ordinary copying fallback while
+  forwarding the underlying ownership restriction.
+
+  Protected usermode VA locks are separate. `supports_user_lock()` becomes
+  available only after SNP launch and tracker installation. `lock_user_gpns()`
+  returns a `UserLockedPages` handle that keeps the backing owner, mapping,
+  and required permissions valid through unlock. A guest attribute or control
+  request that conflicts with a held lock halts the requesting VP without
+  releasing locked permissions. Overlapping locks remain protected until
+  every holder unlocks.
+
+  These are not kernel pins, an OS-residency guarantee, or mutual exclusion
+  for the bytes. They do not authorize kernel I/O or DMA. Ordinary bounce
+  copies do not register locks and remain revocable. Remote mappers cannot
+  acquire these locks because they do not share the local tracking state.
+
+  Control-page preparation validates guest addresses and holds loan admission
+  closed through the backend operation. It does not release cached grants.
+  Normal GPA-attribute conflicts revoke those grants.
+  It does not keep a separate control-page reservation table. The kernel
+  and hypervisor enforce their control-page and permission contracts.
+  GHCB replacement clears the old registration before setting the new one.
+  Unregister waits for a successful clear before acknowledgement.
+  Control-operation failures remain explicit; supported replacement and
+  disable operations depend on the backend. VP teardown waits for processor
+  binders and their VP file descriptors to retire, not just the dispatch loop.
+  Normal and post-construction error teardown drain running devices, join
+  owned state-unit tasks, and shut down both VMBus servers before RAM disposal.
+  Normal teardown releases registered memory before its backing.
+  Closing the partition also precedes
+  release of the bootstrap VMSA's configuration-owned backing.
+
+  This mode uses existing MSHV calls. It does not add a Hyper-V ABI, kernel
+  memory-management enforcement, or large-page support. Do not treat it as
+  a completed isolation feature. Private-page handoff race tests remain an
+  acceptance requirement.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
@@ -274,6 +355,11 @@ describes the source definitions.
   `auto`. `--virtio-rng-pcie-port` overrides this option.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
+* `--virtio-vsock-bounce`: Force owned buffers for the in-process virtio-vsock
+  device. The default is off. Requires `--virtio-vsock-path`; it cannot be
+  used with `--virtio-vsock-vhost-cid`. The bus selection, guest CID, socket
+  paths, and Unix relay connection protocol do not change. See
+  [network and vsock bounce I/O](#per-device-network-and-vsock-bounce-io).
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
   virtio-vsock device created by `--virtio-vsock-path` or
   `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
@@ -507,6 +593,75 @@ PCIe root port. The syntax varies slightly between device types:
 The optional `serial` value accepts 1-20 printable ASCII bytes except commas
 and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
+#### Per-device block bounce I/O
+
+Add `bounce` to one `--virtio-blk` option to force block-data staging in owned
+buffers. The flag defaults to off. Guest memory that requires owned I/O uses
+staging even without this flag. Ordinary guest memory keeps its existing I/O
+path. This option does not change network devices. For example:
+
+```bash
+--virtio-blk file:path/to/disk.raw,pcie_port=rp0,bounce
+--virtio-blk mem:1G,bounce
+```
+
+This mode supports only buffered plain images backed by regular
+files and RAM disks in VTL0. The opened file must be a regular file; a path
+spelling alone does not establish this. It rejects host block devices,
+physical NVMe, assigned devices, disk wrappers, structured formats such as
+VHD/VHDX (regardless of extension letter case), and
+`;direct`. It does not apply to vhost-user disks or external guest-memory
+exports. `bounce` is not valid with `--disk`, `--nvme`, `dvd`, `vtl2`,
+OpenHCL relay options, or named controllers (`on`). `ro`, `serial`, and
+`pcie_port` remain available.
+
+Programmatic bounce disk resources must also use regular buffered file
+descriptors. On Linux, the resolver rejects `O_DIRECT` and `O_APPEND`.
+The CLI bounce path opens files without either flag.
+
+When guest memory is known at device resolution, its I/O capability selects
+the backend. Eligible CLI disks keep both their ordinary backend and a
+reviewed staging alternative until this selection. Known ordinary memory
+keeps the legacy feature and request-limit contract.
+Both choices use the existing `virtio-blk` frontend identity and transport
+device names. The virtio-blk frontend owns staging; the generic `Disk`
+interface does not add another staging layer.
+
+For programmatic reviewed resources whose guest memory is not yet known,
+the device advertises the bounded `SIZE_MAX` and `SEG_MAX` contract before
+feature negotiation. Activation checks the actual memory. If that memory
+requires staging, the guest must have negotiated both features. An ordinary
+device without reviewed staging support rejects later activation with memory
+that requires owned I/O instead of changing its contract after negotiation.
+
+Each selected device limits a request to 1 MiB and admits at most 64 requests
+at once. Its primary scratch memory is therefore bounded by 64 MiB. Backends
+can allocate additional owned buffers. The maximum segment size is the larger
+of 4 KiB and the disk sector size. The segment count is at most 254 and is
+reduced for larger sectors so the aggregate request limit still applies.
+Sparse and unaligned guest buffers must pass the same request checks.
+
+This mode is validated for guests with 4 KiB base pages. A guest with 64 KiB
+base pages, such as an ARM64 Linux configuration, can fail to probe a disk
+that advertises a 4 KiB maximum segment size. Use a guest with 4 KiB base
+pages, or omit `bounce` for that device. This phase does not claim support
+for every guest page size or platform.
+
+Save and restore are not supported for a device using owned staging.
+Normal VM pause and resume remain supported and retain queue progress.
+Backend I/O errors return an error status through normal queue completion.
+A status or completion-publication failure retires the device's queue;
+resuming that queue is refused to avoid replaying an I/O operation whose
+result may already be visible. An explicit device reset drains all in-flight
+I/O and permits recovery with newly initialized guest rings. This recovery
+also applies to ordinary devices without owned staging.
+
+```admonish warning
+Bounce I/O is block-data staging, not memory isolation. This phase does not
+release host access to guest memory, change the kernel ABI, or prevent other
+devices from accessing guest memory.
+```
+
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
 ```sh
@@ -523,6 +678,60 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
+```
+
+#### Per-device network and vsock bounce I/O
+
+Prefix one `--virtio-net` value with `bounce:` to stage its transmitted and
+received data in owned buffers. The flag defaults to off. Guest memory that
+requires owned I/O uses staging automatically. Other NICs keep their existing
+I/O path. Prefixes can appear in either order:
+
+```bash
+--virtio-net bounce:pcie_port=rp0:consomme
+--virtio-net pcie_port=rp0:bounce:queues=2:consomme:10.0.0.0/24,hostfwd=tcp::8080-:80
+--virtio-net bounce:tap:tap0
+--virtio-vsock-path path/to/vsock --virtio-vsock-bounce --virtio-vsock-bus pci
+```
+
+Network bounce I/O supports Consomme, Linux TAP, and `none` for tests without
+network traffic. It is limited to VTL0 virtio-net devices. It rejects `--net`,
+`--mana`, `uh:`, `vtl2:`, Direct I/O, assigned NICs, and vhost-user backends.
+It does not change MAC address generation, Consomme CIDR and port-forwarding
+options, or host NIC configuration. `queues=` and `pcie_port=` remain
+available. There is no VM-wide bounce switch.
+
+Vsock bounce I/O supports only the in-process Unix relay selected by
+`--virtio-vsock-path`. It preserves the relay protocol and guest connection
+behavior. `--virtio-vsock-bus` still accepts `mmio`, `pci`, and `pcie[:PORT]`.
+Kernel vhost-vsock and external vhost-user devices reject memory that requires
+owned I/O or does not support kernel locks. Ordinary Direct/IOMMU memory keeps
+its existing copy fallback and does not require owned I/O.
+
+Network I/O uses bounded owned TX/RX buffers. Each active network queue pair
+reserves 4.25 MiB: 32 RX and 32 TX slots of 68 KiB each. Packets are limited
+to 64 KiB and 256 descriptors. Full arenas apply backpressure instead of
+allocating from guest-provided queue lengths. Backend and queue metadata can
+use additional memory.
+Backend packet IDs wrap without reusing an ID held by an outstanding RX or TX
+packet. Slots stay reserved until completion or backend quiescence.
+
+Vsock uses the existing fallback paths within its credit bounds. RX allocation
+is capped by the posted capacity, available credit, and the 64 KiB stream
+buffer limit. Save and restore are not supported for devices that use owned
+staging. Only software backends are supported; hardware DMA support is deferred.
+Healthy vsock devices support pause and resume with their stopped queue cursors.
+All old queues must stop before an owned-I/O queue generation can resume.
+Stopping the worker closes existing host connections; new connections can
+transfer data after resume. This does not add snapshot support.
+In Direct mode, recoverable packet errors do not stop independent connections.
+Queue publication failures retire the vsock worker and disable save and restore
+until all queues have been stopped and a fresh queue generation starts.
+
+```admonish warning
+Bounce I/O stages data; it is not memory isolation or memory management.
+Per-device bounce options do not select a host-permission protocol or add
+kernel memory-management enforcement.
 ```
 
 **Filesystems and other virtio devices** (colon-prefixed):

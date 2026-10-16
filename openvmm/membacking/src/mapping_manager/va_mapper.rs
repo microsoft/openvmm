@@ -128,8 +128,9 @@ pub(crate) enum MapperRole {
 /// static snapshot of the RAM layout.
 #[derive(Debug)]
 struct MappingProps {
+    writable: bool,
     /// Backed by private anonymous memory (committed up front) rather than a
-    /// shared file/section mapping.
+    /// shared file/section mapping. This is not SNP guest page visibility.
     private: bool,
     /// General per-mapping fault counters, always present. See [`FaultStats`].
     stats: FaultStats,
@@ -250,7 +251,18 @@ struct MapperInner {
     supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
     /// Maintains a weak reference to avoid a reference cycle with the partition.
-    host_access: OnceLock<HostAccess>,
+    host_access: Arc<OnceLock<HostAccess>>,
+    copy_only: bool,
+    user_locks_require_host_access: bool,
+    user_locks: Arc<guestmem::GuestMemoryUserLocks>,
+    local_user_locks: bool,
+    active: AtomicBool,
+}
+
+#[derive(Default)]
+pub(crate) struct MapperSharedState {
+    pub(crate) user_locks: Arc<guestmem::GuestMemoryUserLocks>,
+    host_access: Arc<OnceLock<HostAccess>>,
 }
 
 #[derive(Clone)]
@@ -300,13 +312,19 @@ impl MapperTask {
     async fn run(mut self, mut req_recv: mesh::Receiver<MapperRequest>) {
         while let Ok(req) = req_recv.recv().await {
             match req {
-                MapperRequest::Unmap(rpc) => rpc.handle_sync(|range| {
+                MapperRequest::Unmap(rpc) => rpc.handle_failable_sync(|range| {
                     tracing::debug!(%range, "invalidate received");
+                    let _change = self
+                        .inner
+                        .user_locks
+                        .begin_change(&[range.start()..range.end()])
+                        .map_err(|error| MappingError::new(range, std::io::Error::other(error)))?;
                     self.inner
                         .mapping
                         .unmap(range.start() as usize, range.len() as usize)
-                        .expect("invalidate request should be valid");
+                        .map_err(|error| MappingError::new(range, error))?;
                     self.inner.remove_mapping(range);
+                    Ok::<_, MappingError>(())
                 }),
                 MapperRequest::MapEager(rpc) => {
                     rpc.handle_failable_sync(|params| {
@@ -344,11 +362,32 @@ impl MapperTask {
         // Don't allow more waiters.
         *self.inner.waiters.lock() = None;
         // Invalidate everything.
-        let _ = self.inner.mapping.unmap(0, self.inner.mapping.len());
+        self.inner.active.store(false, Ordering::Release);
+        match self
+            .inner
+            .user_locks
+            .begin_change(&[0..self.inner.mapping.len() as u64])
+        {
+            Ok(_change) => {
+                if let Err(error) = self.inner.mapping.unmap(0, self.inner.mapping.len()) {
+                    tracing::error!(%error, "failed to invalidate retired guest-memory mapper");
+                }
+                self.inner
+                    .remove_mapping(MemoryRange::new(0..self.inner.mapping.len() as u64));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "retaining guest-memory mappings until outstanding CPU loans close");
+            }
+        }
     }
 
     /// Establishes a mapping in the VA space, dispatching on how it is backed.
     fn map(&self, params: MappingParams) -> Result<(), MappingError> {
+        let _change = self
+            .inner
+            .user_locks
+            .begin_change(&[params.range.start()..params.range.end()])
+            .map_err(|error| MappingError::new(params.range, std::io::Error::other(error)))?;
         // Soft large pages apply only to writable THP-eligible RAM on the primary
         // mapper (Windows); `SoftLp::new` returns `None` otherwise. See the
         // `soft_lp` module. They also depend on the partition delivering write
@@ -386,6 +425,7 @@ impl MapperTask {
         self.inner.record_mapping(
             params.range,
             MappingProps {
+                writable: params.writable,
                 private,
                 stats: FaultStats::default(),
                 soft_lp,
@@ -615,6 +655,44 @@ pub enum VaMapperError {
 pub struct NoMapping(MemoryRange);
 
 impl MapperInner {
+    fn validate_copy_range(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+    ) -> Result<(), GuestMemoryBackingError> {
+        let end = address
+            .checked_add(len as u64)
+            .filter(|end| *end <= self.mapping.len() as u64)
+            .ok_or_else(|| {
+                GuestMemoryBackingError::new(
+                    GuestMemoryErrorKind::OutOfRange,
+                    address,
+                    UnexpectedPageFault,
+                )
+            })?;
+        let mappings = self.mappings.read();
+        let mut next = address;
+        while next < end {
+            let Some(&(_, last, ref props)) = mappings.get_entry(&next) else {
+                return Err(GuestMemoryBackingError::new(
+                    GuestMemoryErrorKind::OutOfRange,
+                    next,
+                    UnexpectedPageFault,
+                ));
+            };
+            if write && !props.writable {
+                return Err(GuestMemoryBackingError::new(
+                    GuestMemoryErrorKind::Other,
+                    next,
+                    UnexpectedPageFault,
+                ));
+            }
+            next = end.min(last + 1);
+        }
+        Ok(())
+    }
+
     /// Records an established mapping in the index, replacing any stale entry
     /// for the same range.
     fn record_mapping(&self, range: MemoryRange, props: MappingProps) {
@@ -728,6 +806,9 @@ impl VaMapper {
         minimum_alignment: Option<usize>,
         eager: bool,
         role: MapperRole,
+        copy_only: bool,
+        user_locks_require_host_access: bool,
+        shared_state: Option<Arc<MapperSharedState>>,
     ) -> Result<Self, VaMapperError> {
         // Soft large pages apply only to the primary mapper, and only when the
         // partition resolves faults; `supports_memory_fault_resolution` rides on
@@ -762,6 +843,8 @@ impl VaMapper {
 
         let (send, req_recv) = mesh::channel();
 
+        let local_user_locks = shared_state.is_some();
+        let shared_state = shared_state.unwrap_or_default();
         let inner = Arc::new(MapperInner {
             mapping,
             waiters: Mutex::new(Some(Vec::new())),
@@ -770,7 +853,12 @@ impl VaMapper {
             primary,
             supports_memory_fault_resolution,
             req_send,
-            host_access: OnceLock::new(),
+            host_access: shared_state.host_access.clone(),
+            copy_only,
+            user_locks_require_host_access,
+            user_locks: shared_state.user_locks.clone(),
+            local_user_locks,
+            active: AtomicBool::new(true),
         });
 
         // Spawn the mapper thread *before* the AddMapper RPC. The manager
@@ -826,7 +914,13 @@ impl VaMapper {
 
     /// Installs the callback used to recover eager-mapper faults caused by
     /// missing host permission.
-    pub(crate) fn install_host_access(&self, host_access: Arc<dyn virt::PartitionHostAccess>) {
+    ///
+    /// This callback does not select or change the backing's IO policy.
+    pub(crate) fn install_host_access(
+        &self,
+        host_access: Arc<dyn virt::PartitionHostAccess>,
+    ) -> anyhow::Result<()> {
+        host_access.install_user_locks(self.inner.user_locks.clone())?;
         assert!(
             self.inner
                 .host_access
@@ -834,6 +928,11 @@ impl VaMapper {
                 .is_ok(),
             "host access is already installed"
         );
+        Ok(())
+    }
+
+    pub(crate) fn user_locks(&self) -> Arc<guestmem::GuestMemoryUserLocks> {
+        self.inner.user_locks.clone()
     }
 
     /// Returns the length of the VA reservation in bytes.
@@ -860,6 +959,80 @@ impl VaMapper {
 /// SAFETY: the underlying VA mapping is guaranteed to be valid for the lifetime
 /// of this object.
 unsafe impl GuestMemoryAccess for VaMapper {
+    fn supports_kernel_lock(&self) -> bool {
+        self.io_policy() == guestmem::GuestMemoryIoPolicy::Direct
+    }
+
+    fn supports_user_lock(&self) -> bool {
+        if !self.inner.local_user_locks
+            || !self.inner.active.load(Ordering::Acquire)
+            || !self.is_eager()
+            || !self.inner.mapping.is_local()
+        {
+            return false;
+        }
+        if self.inner.user_locks_require_host_access {
+            return self
+                .inner
+                .host_access
+                .get()
+                .and_then(|host| host.0.upgrade())
+                .is_some_and(|host| host.supports_user_locks());
+        }
+        true
+    }
+
+    fn lock_lifetime(&self) -> Result<Option<Arc<dyn Send + Sync>>, GuestMemoryBackingError> {
+        match self.inner.host_access.get() {
+            Some(host) => {
+                let host = host.0.upgrade().ok_or_else(|| {
+                    GuestMemoryBackingError::other(
+                        0,
+                        std::io::Error::other("partition host access is gone"),
+                    )
+                })?;
+                Ok(Some(Arc::new(host)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn lock_kernel_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        if !self.inner.active.load(Ordering::Acquire) {
+            return Err(GuestMemoryBackingError::other(
+                0,
+                std::io::Error::other("guest-memory mapper is retired"),
+            ));
+        }
+        Ok(false)
+    }
+
+    fn lock_user_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        if !self.supports_user_lock() {
+            return Err(GuestMemoryBackingError::other(
+                0,
+                std::io::Error::other("CPU-only loans are not supported by this mapper"),
+            ));
+        }
+        self.inner
+            .user_locks
+            .lock_gpns(gpns)
+            .map_err(|error| GuestMemoryBackingError::other(0, error))?;
+        Ok(!gpns.is_empty())
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        self.inner.user_locks.unlock_gpns(gpns);
+    }
+
+    fn io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        if self.inner.copy_only {
+            guestmem::GuestMemoryIoPolicy::CopyOnly
+        } else {
+            guestmem::GuestMemoryIoPolicy::Direct
+        }
+    }
+
     fn mapping(&self) -> Option<NonNull<u8>> {
         // No one should be using this as a GuestMemoryAccess for remote
         // mappings, but it's convenient to have the same type for both local
@@ -916,6 +1089,11 @@ unsafe impl GuestMemoryAccess for VaMapper {
                 .get()
                 .and_then(|host_access| host_access.0.upgrade())
             {
+                // Reject holes and read-only mappings before requesting host
+                // permission. Drop the index lock before the callback.
+                if let Err(err) = self.inner.validate_copy_range(address, len, write) {
+                    return PageFaultAction::Fail(PageFaultError::new(err.kind, err.err));
+                }
                 let start = address & !(hvdef::HV_PAGE_SIZE - 1);
                 let end = address
                     .checked_add(len as u64)
@@ -1028,7 +1206,372 @@ impl ResolveMemoryFault for VaMapper {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use guestmem::GuestMemory;
+    use guestmem::GuestMemoryIoPolicy;
     use sparse_mmap::SparseMapping;
+    use test_with_tracing::test;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum HostEvent {
+        Acquire(u64, u64, bool),
+    }
+
+    struct TestHost {
+        events: Arc<Mutex<Vec<HostEvent>>>,
+        fail_acquire: AtomicBool,
+        rewrite_prefix: AtomicBool,
+        mapper: std::sync::Weak<MapperInner>,
+    }
+
+    impl virt::PartitionHostAccess for TestHost {
+        fn supports_user_locks(&self) -> bool {
+            true
+        }
+        fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()> {
+            // No caller-held mapping-index lock may span this callback.
+            // Allow other faulting threads to finish their range validation.
+            assert!(
+                self.mapper
+                    .upgrade()
+                    .unwrap()
+                    .mappings
+                    .try_write_for(std::time::Duration::from_secs(1))
+                    .is_some()
+            );
+            self.events
+                .lock()
+                .push(HostEvent::Acquire(addr, size, write));
+            anyhow::ensure!(
+                !self.fail_acquire.load(Ordering::Relaxed),
+                "acquire failure"
+            );
+            let mapper = self.mapper.upgrade().unwrap();
+            mapper.mapping.alloc(addr as usize, size as usize)?;
+            if self.rewrite_prefix.load(Ordering::Relaxed) {
+                mapper.mapping.write_at(0, &[0x77; 64])?;
+            }
+            Ok(())
+        }
+    }
+
+    fn test_mapper_with_policy(populated: bool, copy_only: bool) -> Arc<VaMapper> {
+        let mapping = SparseMapping::new(4 * SparseMapping::page_size()).unwrap();
+        if populated {
+            mapping.alloc(0, mapping.len()).unwrap();
+        }
+        let (req_send, _req_recv) = mesh::channel();
+        Arc::new(VaMapper {
+            inner: Arc::new(MapperInner {
+                mapping,
+                waiters: Mutex::new(Some(Vec::new())),
+                mappings: RwLock::new(RangeMap::new()),
+                eager: AtomicBool::new(true),
+                primary: true,
+                supports_memory_fault_resolution: false,
+                req_send,
+                host_access: Arc::new(OnceLock::new()),
+                copy_only,
+                user_locks_require_host_access: copy_only,
+                user_locks: Arc::new(guestmem::GuestMemoryUserLocks::default()),
+                local_user_locks: true,
+                active: AtomicBool::new(true),
+            }),
+            id: MapperId(0),
+            process: None,
+            _thread: std::thread::spawn(|| {}),
+        })
+    }
+
+    fn test_mapper(populated: bool) -> Arc<VaMapper> {
+        test_mapper_with_policy(populated, true)
+    }
+
+    fn record(mapper: &VaMapper, start: u64, end: u64, writable: bool) {
+        mapper.inner.record_mapping(
+            MemoryRange::new(start..end),
+            MappingProps {
+                writable,
+                private: false,
+                stats: FaultStats::default(),
+                soft_lp: None,
+            },
+        );
+    }
+
+    fn install_test_host(mapper: &VaMapper) -> Arc<TestHost> {
+        let host = Arc::new(TestHost {
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_acquire: AtomicBool::new(false),
+            rewrite_prefix: AtomicBool::new(false),
+            mapper: Arc::downgrade(&mapper.inner),
+        });
+        mapper.install_host_access(host.clone()).unwrap();
+        host
+    }
+
+    #[test]
+    fn cpu_loans_on_copy_only_memory_block_revocation_until_drop() {
+        let mapper = test_mapper(true);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let _host = install_test_host(&mapper);
+        let gm = GuestMemory::new("CPU loans", mapper.clone());
+        assert!(gm.supports_user_lock());
+        assert!(!gm.supports_kernel_lock());
+        let loan = gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).unwrap();
+        assert!(mapper.inner.user_locks.begin_change(&[0..4096]).is_err());
+        assert!(
+            gm.lock_kernel_gpns(guestmem::AccessType::Read, &[0])
+                .is_err()
+        );
+        assert!(gm.full_mapping().is_none());
+        drop(loan);
+        mapper.inner.user_locks.begin_change(&[0..4096]).unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn secondary_loan_retains_backend_owner_during_shutdown(
+        spawn: impl pal_async::task::Spawn,
+    ) {
+        let (manager, primary) = super::super::MappingManager::new(
+            &spawn,
+            0x10000,
+            None,
+            false,
+            GuestMemoryIoPolicy::CopyOnly,
+            true,
+        )
+        .await
+        .unwrap();
+        manager
+            .client()
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x1000),
+                backing: MappingBacking::File {
+                    mappable: sparse_mmap::alloc_shared_memory(0x1000, "loan-owner")
+                        .unwrap()
+                        .into(),
+                    file_offset: 0,
+                },
+                writable: true,
+                mapping_type: crate::region_manager::MappingType::Ram,
+                policy: MemoryPolicy::none(),
+            })
+            .await
+            .unwrap();
+        let secondary = manager.client().new_local_secondary_mapper().await.unwrap();
+        let host = install_test_host(&primary);
+        let weak = Arc::downgrade(&host);
+        assert!(Arc::ptr_eq(
+            &primary.inner.user_locks,
+            &secondary.inner.user_locks
+        ));
+        let gm = GuestMemory::new("secondary owner", secondary);
+        assert_eq!(gm.io_policy(), GuestMemoryIoPolicy::CopyOnly);
+        let loan = gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).unwrap();
+        drop(host);
+        drop(gm);
+        drop(primary);
+        drop(manager);
+        assert!(weak.upgrade().is_some());
+        drop(loan);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn accessible_mapper_does_not_acquire_host_access() {
+        let mapper = test_mapper_with_policy(true, false);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let host = Arc::new(TestHost {
+            events: Arc::new(Mutex::new(Vec::new())),
+            fail_acquire: AtomicBool::new(false),
+            rewrite_prefix: AtomicBool::new(false),
+            mapper: Arc::downgrade(&mapper.inner),
+        });
+        mapper.install_host_access(host.clone()).unwrap();
+        let gm = GuestMemory::new("direct", mapper);
+        assert_eq!(gm.io_policy(), GuestMemoryIoPolicy::Direct);
+        gm.write_plain(8, &42u64).unwrap();
+        assert_eq!(gm.read_plain::<u64>(8).unwrap(), 42);
+        assert!(host.events.lock().is_empty());
+    }
+
+    #[test]
+    fn direct_kernel_locks_do_not_reserve_cpu_loan_tracker() {
+        let mapper = test_mapper_with_policy(true, false);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let gm = GuestMemory::new("direct lock admission", mapper.clone());
+        assert_eq!(gm.io_policy(), GuestMemoryIoPolicy::Direct);
+        let kernel = gm
+            .lock_kernel_gpns(guestmem::AccessType::Read, &[0])
+            .unwrap();
+        {
+            let change = mapper.inner.user_locks.begin_change(&[0..4096]).unwrap();
+            assert!(gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).is_err());
+            drop(change);
+        }
+        let cpu = gm.lock_user_gpns(guestmem::AccessType::Read, &[0]).unwrap();
+        assert!(mapper.inner.user_locks.begin_change(&[0..4096]).is_err());
+        drop(kernel);
+        assert!(mapper.inner.user_locks.begin_change(&[0..4096]).is_err());
+        drop(cpu);
+        mapper.inner.user_locks.begin_change(&[0..4096]).unwrap();
+        mapper.inner.active.store(false, Ordering::Release);
+        assert!(GuestMemoryAccess::lock_kernel_gpns(&*mapper, &[0]).is_err());
+        assert!(GuestMemoryAccess::lock_user_gpns(&*mapper, &[0]).is_err());
+    }
+
+    #[test]
+    fn fault_acquisition_checks_holes_and_permissions() {
+        let mapper = test_mapper(false);
+        let page = SparseMapping::page_size() as u64;
+        record(&mapper, 0, page, true);
+        record(&mapper, page, 2 * page, false);
+        record(&mapper, 3 * page, 4 * page, true);
+        let gm = GuestMemory::new("scoped", mapper.clone());
+        let range = gm.subrange(0, page, false).unwrap();
+        assert!(gm.full_mapping().is_none());
+        let host = install_test_host(&mapper);
+        assert_eq!(gm.io_policy(), GuestMemoryIoPolicy::CopyOnly);
+        assert_eq!(range.io_policy(), GuestMemoryIoPolicy::CopyOnly);
+        assert!(gm.full_mapping().is_none());
+        assert!(!gm.supports_kernel_lock());
+        gm.read_at(page - 1, &mut [0; 2]).unwrap();
+        assert_eq!(
+            std::mem::take(&mut *host.events.lock()),
+            [HostEvent::Acquire(0, 2 * page, false)]
+        );
+        // Fault the read-only range again, now for a write.
+        mapper.inner.mapping.unmap(0, 2 * page as usize).unwrap();
+        gm.write_at(page - 1, &[0; 2]).unwrap_err();
+        gm.read_at(2 * page - 1, &mut [0; 2]).unwrap_err();
+        gm.read_at(4 * page - 1, &mut [0; 2]).unwrap_err();
+        gm.read_at(0, &mut []).unwrap();
+        gm.read_plain::<()>(0).unwrap();
+        assert!(host.events.lock().is_empty());
+        range.fill_at(8, 0, 8).unwrap();
+        assert_eq!(
+            std::mem::take(&mut *host.events.lock()),
+            [HostEvent::Acquire(0, page, true)]
+        );
+        drop(host);
+        assert_eq!(gm.io_policy(), GuestMemoryIoPolicy::CopyOnly);
+        gm.read_plain::<u8>(0).unwrap();
+    }
+
+    #[test]
+    fn denied_fault_grant_is_an_io_error_not_sticky_poison() {
+        let mapper = test_mapper(false);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let host = install_test_host(&mapper);
+        let gm = GuestMemory::new("scoped", mapper.clone());
+        host.fail_acquire.store(true, Ordering::Relaxed);
+        let err = gm.read_plain::<u8>(8).unwrap_err();
+        assert_eq!(err.kind(), GuestMemoryErrorKind::Other);
+        assert_eq!(
+            std::mem::take(&mut *host.events.lock()),
+            [HostEvent::Acquire(
+                0,
+                SparseMapping::page_size() as u64,
+                false
+            )]
+        );
+        host.fail_acquire.store(false, Ordering::Relaxed);
+        gm.write_plain(8, &42u64).unwrap();
+        assert_eq!(gm.read_plain::<u64>(8).unwrap(), 42);
+        assert_eq!(host.events.lock().len(), 1);
+    }
+
+    #[test]
+    fn copy_only_mapper_retries_the_full_partial_read_and_write() {
+        let mapper = test_mapper(false);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let host = install_test_host(&mapper);
+        let gm = GuestMemory::new("retry", mapper.clone());
+        let page = SparseMapping::page_size();
+        mapper.inner.mapping.alloc(0, page).unwrap();
+        mapper.inner.mapping.write_at(0, &[0x11; 64]).unwrap();
+        host.rewrite_prefix.store(true, Ordering::Relaxed);
+        let mut bytes = vec![0xff; 2 * page];
+        gm.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..64], &[0x77; 64]);
+        assert!(bytes[page..].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            std::mem::take(&mut *host.events.lock()),
+            [HostEvent::Acquire(page as u64, page as u64, false)]
+        );
+        mapper.inner.mapping.unmap(page, page).unwrap();
+        bytes.fill(0x42);
+        gm.write_at(0, &bytes).unwrap();
+        gm.read_at(0, &mut bytes).unwrap();
+        assert!(bytes.iter().all(|byte| *byte == 0x42));
+        assert_eq!(
+            std::mem::take(&mut *host.events.lock()),
+            [HostEvent::Acquire(page as u64, page as u64, true)]
+        );
+    }
+
+    #[test]
+    fn copy_only_primitives_acquire_only_on_fault() {
+        let mapper = test_mapper(false);
+        let page = SparseMapping::page_size();
+        record(&mapper, 0, mapper.len() as u64, true);
+        let host = install_test_host(&mapper);
+        let gm = GuestMemory::new("primitives", mapper.clone());
+        for (operation, write) in [
+            (0, false),
+            (1, true),
+            (2, false),
+            (3, true),
+            (4, true),
+            (5, true),
+            (6, false),
+            (7, true),
+        ] {
+            mapper.inner.mapping.unmap(0, page).unwrap();
+            match operation {
+                0 => assert_eq!(gm.read_plain::<u8>(8).unwrap(), 0),
+                1 => gm.write_plain(8, &42u8).unwrap(),
+                2 => assert_eq!(gm.read_plain::<u64>(8).unwrap(), 0),
+                3 => gm.write_plain(8, &42u64).unwrap(),
+                4 => gm.fill_at(8, 0x42, 64).unwrap(),
+                5 => assert!(gm.compare_exchange(8, 0u64, 42).unwrap().is_ok()),
+                6 => gm.probe_gpa_readable(8).unwrap(),
+                7 => gm.probe_gpa_writable(8).unwrap(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                std::mem::take(&mut *host.events.lock()),
+                [HostEvent::Acquire(0, page as u64, write)]
+            );
+            gm.read_plain::<u8>(8).unwrap();
+            assert!(host.events.lock().is_empty());
+        }
+        mapper.inner.mapping.unmap(0, page).unwrap();
+        gm.read_at(0, &mut []).unwrap();
+        gm.write_at(0, &[]).unwrap();
+        gm.fill_at(0, 0, 0).unwrap();
+        assert!(host.events.lock().is_empty());
+    }
+
+    #[test]
+    fn concurrent_copy_only_faults_do_not_take_copy_leases() {
+        let mapper = test_mapper(false);
+        record(&mapper, 0, mapper.len() as u64, true);
+        let host = install_test_host(&mapper);
+        let gm = GuestMemory::new("concurrent", mapper);
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    assert_eq!(gm.read_plain::<u64>(0).unwrap(), 0);
+                });
+            }
+        });
+        assert!(!host.events.lock().is_empty());
+        gm.read_plain::<u64>(0).unwrap();
+    }
 
     /// Tests that private RAM pages can be allocated, written to, and read from.
     #[test]

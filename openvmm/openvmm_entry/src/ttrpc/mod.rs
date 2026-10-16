@@ -650,6 +650,50 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn validate_snp_bounce_config(
+    config: &vmservice::VmConfig,
+    hypervisor: &str,
+) -> anyhow::Result<bool> {
+    let snp = matches!(
+        config
+            .isolation_config
+            .as_ref()
+            .and_then(|config| config.isolation_type.as_ref()),
+        Some(vmservice::isolation_config::IsolationType::Snp(_))
+    );
+    if !openvmm_helpers::hypervisor::requires_snp_bounce(hypervisor, snp) {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        config.disable_vmbus
+            && config.hvsocket_config.is_none()
+            && config.iommufds.is_empty()
+            && config.pcie.is_none()
+            && config.crash_dump_path.is_none()
+            && config.devices_config.as_ref().is_none_or(|devices| {
+                devices.scsi_disks.is_empty()
+                    && devices.nic_config.is_empty()
+                    && devices.virtiofs_config.is_empty()
+                    && devices
+                        .virtio_console
+                        .as_ref()
+                        .is_none_or(|console| console.socket_path.is_empty())
+            }),
+        "VM-service MSHV SNP only supports the minimal chipset and serial, without crash dumps; use the CLI for bounced virtio devices"
+    );
+    if let Some(numa) = &config.numa_config {
+        for memory in numa.nodes.iter().filter_map(|node| node.memory.as_ref()) {
+            anyhow::ensure!(
+                !memory.transparent_hugepages.unwrap_or(false)
+                    && !memory.hugepages
+                    && memory.hugepage_size_bytes.is_none(),
+                "MSHV SNP requires base-page backing on every NUMA node"
+            );
+        }
+    }
+    Ok(true)
+}
+
 enum VmLifecycle {
     Uninitialized,
     Running,
@@ -851,6 +895,8 @@ impl VmService {
         }
 
         validate_platform_config(&req_config)?;
+        let hypervisor = openvmm_helpers::hypervisor::choose_hypervisor()?;
+        let snp_bounce = validate_snp_bounce_config(&req_config, hypervisor.id())?;
 
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
@@ -1085,7 +1131,7 @@ impl VmService {
             if req_config.memory_config.is_some() {
                 bail!("memory_config and numa_config are mutually exclusive");
             }
-            build_numa_topology(numa_config)?
+            build_numa_topology(numa_config, !snp_bounce)?
         } else {
             let mem_size = req_config
                 .memory_config
@@ -1100,7 +1146,7 @@ impl VmService {
                         mem_size,
                         prefetch_memory: false,
                         private_memory: false,
-                        transparent_hugepages: true,
+                        transparent_hugepages: !snp_bounce,
                         hugepages: false,
                         hugepage_size: None,
                         host_numa_node: None,
@@ -1307,7 +1353,7 @@ impl VmService {
             .launch_worker(
                 VM_WORKER,
                 VmWorkerParameters {
-                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
+                    hypervisor,
                     cfg: config,
                     saved_state: None,
                     shared_memory: None,
@@ -1876,7 +1922,10 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
 
 /// Builds a [`NumaTopology`] from the proto `NumaConfig`, returning the
 /// topology and the total guest memory in bytes (summed across the nodes).
-fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopology, u64)> {
+fn build_numa_topology(
+    numa: vmservice::NumaConfig,
+    default_transparent_hugepages: bool,
+) -> anyhow::Result<(NumaTopology, u64)> {
     let vmservice::NumaConfig {
         nodes: proto_nodes,
         distances: proto_distances,
@@ -1905,7 +1954,8 @@ fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopol
                 mem_size,
                 prefetch_memory: prefetch,
                 private_memory,
-                transparent_hugepages: transparent_hugepages.unwrap_or(true),
+                transparent_hugepages: transparent_hugepages
+                    .unwrap_or(default_transparent_hugepages),
                 hugepages,
                 hugepage_size: hugepage_size_bytes,
                 host_numa_node,
@@ -2329,6 +2379,8 @@ async fn build_virtio_device(
                 disk,
                 read_only,
                 serial,
+                bounce_io: false,
+                bounce_disk: None,
             }
             .into_resource()
         }
@@ -2346,6 +2398,7 @@ async fn build_virtio_device(
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,
                 endpoint,
+                bounce_io: false,
             }
             .into_resource()
         }
@@ -2362,6 +2415,7 @@ async fn build_virtio_device(
                 guest_cid: guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID),
                 base_path: socket_path,
                 listener,
+                bounce_io: false,
             }
             .into_resource()
         }
@@ -2569,6 +2623,119 @@ mod tests {
     use test_with_tracing::test;
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
+
+    fn snp_service_config() -> vmservice::VmConfig {
+        vmservice::VmConfig {
+            disable_vmbus: true,
+            isolation_config: Some(vmservice::IsolationConfig {
+                isolation_type: Some(vmservice::isolation_config::IsolationType::Snp(
+                    Default::default(),
+                )),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn snp_service_uses_base_pages_without_changing_other_backends() {
+        let config = snp_service_config();
+        assert!(validate_snp_bounce_config(&config, "mshv").unwrap());
+        assert!(!validate_snp_bounce_config(&config, "kvm").unwrap());
+        assert!(!validate_snp_bounce_config(&vmservice::VmConfig::default(), "mshv").unwrap());
+        for (hypervisor, expected_thp) in [("mshv", false), ("kvm", true)] {
+            let mut config = snp_service_config();
+            config.numa_config = Some(vmservice::NumaConfig {
+                nodes: vec![vmservice::NumaNode {
+                    memory: Some(vmservice::NodeMemoryConfig {
+                        memory_mb: 256,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let snp_bounce = validate_snp_bounce_config(&config, hypervisor).unwrap();
+            let (numa, size) =
+                build_numa_topology(config.numa_config.unwrap(), !snp_bounce).unwrap();
+            assert_eq!(size, 256 * 1024 * 1024);
+            let memory = numa.nodes[0].mem.as_ref().unwrap();
+            assert_eq!(memory.transparent_hugepages, expected_thp);
+            assert!(!memory.hugepages);
+        }
+    }
+
+    #[test]
+    fn snp_service_rejects_explicit_huge_pages_before_resource_creation() {
+        for memory in [
+            vmservice::NodeMemoryConfig {
+                transparent_hugepages: Some(true),
+                ..Default::default()
+            },
+            vmservice::NodeMemoryConfig {
+                hugepages: true,
+                ..Default::default()
+            },
+            vmservice::NodeMemoryConfig {
+                hugepage_size_bytes: Some(2 * 1024 * 1024),
+                ..Default::default()
+            },
+        ] {
+            let mut config = snp_service_config();
+            config.numa_config = Some(vmservice::NumaConfig {
+                nodes: vec![vmservice::NumaNode {
+                    memory: Some(memory),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            assert!(
+                validate_snp_bounce_config(&config, "mshv")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("base-page backing")
+            );
+            assert!(!validate_snp_bounce_config(&config, "kvm").unwrap());
+            config.isolation_config = None;
+            assert!(!validate_snp_bounce_config(&config, "mshv").unwrap());
+        }
+    }
+
+    #[test]
+    fn snp_service_rejects_devices_without_bounce_admission() {
+        for config in [
+            vmservice::VmConfig {
+                disable_vmbus: false,
+                ..snp_service_config()
+            },
+            vmservice::VmConfig {
+                pcie: Some(Default::default()),
+                ..snp_service_config()
+            },
+            vmservice::VmConfig {
+                crash_dump_path: Some("path/to/dump".into()),
+                ..snp_service_config()
+            },
+            vmservice::VmConfig {
+                iommufds: vec![vmservice::IommufdConfig { id: "iommu".into() }],
+                ..snp_service_config()
+            },
+            vmservice::VmConfig {
+                devices_config: Some(vmservice::DevicesConfig {
+                    virtiofs_config: vec![Default::default()],
+                    ..Default::default()
+                }),
+                ..snp_service_config()
+            },
+        ] {
+            assert!(
+                validate_snp_bounce_config(&config, "mshv")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("minimal chipset and serial")
+            );
+            assert!(!validate_snp_bounce_config(&config, "kvm").unwrap());
+        }
+    }
 
     #[test]
     fn platform_config_flags() {

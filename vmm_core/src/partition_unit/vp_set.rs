@@ -142,6 +142,16 @@ where
         match r.unwrap_err() {
             VpHaltReason::Stop(stop) => Ok(StopReason::OnRequest(stop)),
             VpHaltReason::Cancel => Ok(StopReason::Cancel),
+            VpHaltReason::BackendError(error) => {
+                tracing::error!(
+                    error = &*error,
+                    vp = self.vp_index.index(),
+                    "VP backend failed"
+                );
+                Err(HaltReason::DebugBreak {
+                    vp: Some(self.vp_index.index()),
+                })
+            }
             VpHaltReason::PowerOff => Err(HaltReason::PowerOff),
             VpHaltReason::Reset => Err(HaltReason::Reset),
             VpHaltReason::Hibernate => Err(HaltReason::Hibernate),

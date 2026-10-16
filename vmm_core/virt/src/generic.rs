@@ -441,6 +441,22 @@ pub trait ProtoPartition {
         false
     }
 
+    /// The immutable IO policy for this backend and isolation mode.
+    ///
+    /// Select this before constructing any guest-memory views. Guest page
+    /// visibility changes do not change this policy.
+    fn guest_memory_io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        guestmem::GuestMemoryIoPolicy::Direct
+    }
+
+    /// Whether CPU loans need the attached host-access callback's readiness.
+    ///
+    /// This is independent of IO policy: non-isolated copy-only memory can
+    /// support local loans without a host-grant callback.
+    fn user_locks_require_host_access(&self) -> bool {
+        false
+    }
+
     /// Constructs the full partition.
     fn build(
         self,
@@ -914,6 +930,8 @@ pub enum VpHaltReason {
     Stop(VpStopped),
     /// The processor task should be restarted, possibly on a different thread.
     Cancel,
+    /// The backend reported an inconsistent or unusable execution state.
+    BackendError(anyhow::Error),
     /// The processor initiated a power off.
     PowerOff,
     /// The processor initiated a reboot.

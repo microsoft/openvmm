@@ -1834,13 +1834,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+    ) -> Result<guestmem::UserLockedPages, hvdef::HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
-        Ok(self
-            .0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
-            .unwrap())
+        self.0
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
+            .map_err(|_| hvdef::HvError::OperationDenied)
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {

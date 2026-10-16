@@ -20,8 +20,9 @@
 //! # I/O model
 //!
 //! All I/O is **async** and uses **scatter-gather** buffers via
-//! [`RequestBuffers`]. Callers must pass
-//! buffers that are an integral number of sectors.
+//! [`RequestBuffers`]. Buffer lengths must be an integral number of sectors.
+//! Invalid lengths return [`DiskError::InvalidInput`]. Frontends that require
+//! owned staging must supply their own backend-accessible buffers.
 //!
 //! The key operations are:
 //!
@@ -430,14 +431,16 @@ impl Disk {
 
     /// Returns the number of sectors spanned by `buffers`.
     ///
-    /// Callers must pass a whole number of sectors, so this is normally exact.
-    /// Rounding down is nonetheless the right choice for a caller that does
-    /// not: `max_sector` is `i64::MAX` rounded *down* to a sector, which for a
-    /// power-of-two sector size leaves exactly `sector_size - 1` bytes of slack
-    /// below `i64::MAX` — enough to cover a partial trailing sector. So the end
-    /// byte offset stays representable either way.
+    /// Buffer validation ensures that this is an exact sector count.
     fn buffer_sectors(&self, buffers: &RequestBuffers<'_>) -> u64 {
         (buffers.len() as u64) >> self.0.sector_shift
+    }
+
+    fn check_buffers(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
+        if !buffers.len().is_multiple_of(self.sector_size() as usize) {
+            return Err(DiskError::InvalidInput);
+        }
+        self.check_representable(sector, self.buffer_sectors(buffers))
     }
 
     /// Unmap sectors from the disk.
@@ -502,7 +505,7 @@ impl Disk {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
-        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.check_buffers(buffers, sector)?;
         self.0.disk.read_vectored(buffers, sector).await
     }
 
@@ -514,16 +517,14 @@ impl Disk {
     /// * `sector` - The logical sector at which the write operation starts.
     /// * `fua` - A flag indicates if FUA (force unit access) is requested.
     ///
-    /// # Panics
-    ///
-    /// The caller must pass a buffer with an integer number of sectors.
+    /// Returns [`DiskError::InvalidInput`] for a partial sector.
     pub async fn write_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
-        self.check_representable(sector, self.buffer_sectors(buffers))?;
+        self.check_buffers(buffers, sector)?;
         self.0.disk.write_vectored(buffers, sector, fua).await
     }
 
