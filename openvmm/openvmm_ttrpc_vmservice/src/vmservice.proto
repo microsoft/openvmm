@@ -910,6 +910,15 @@ message VirtioFs {
     string tag = 1;
     string root_path = 2;
     bool read_only = 3;
+    // Additional backend mount options, separated by ';'. When read_only is
+    // set, "ro" is appended.
+    string mount_options = 4;
+    reserved 5;
+    // Windows only. Expose shared-memory section objects instead of host files.
+    // root_path is the NT path of an existing object directory, e.g.
+    // \Sessions\1\BaseNamedObjects\<name>. read_only and mount_options must be
+    // unset; access uses the VM service process token.
+    bool shared_mem = 6;
 }
 
 message VirtioConsoleConfig {

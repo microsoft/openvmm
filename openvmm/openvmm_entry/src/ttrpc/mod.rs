@@ -2380,6 +2380,8 @@ fn build_virtio_fs(
         tag,
         root_path,
         read_only,
+        mut mount_options,
+        shared_mem,
     } = config;
     const VIRTIO_FS_TAG_LEN: usize = 36;
     anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
@@ -2399,15 +2401,29 @@ fn build_virtio_fs(
         !root_path.contains('\0'),
         "virtio-fs root path must not contain NUL bytes"
     );
+
+    if shared_mem {
+        anyhow::ensure!(
+            !read_only && mount_options.is_empty(),
+            "virtio-fs shared_mem does not support read_only or mount_options"
+        );
+        return Ok(virtio_resources::fs::VirtioFsHandle {
+            tag,
+            fs: virtio_resources::fs::VirtioFsBackend::SectionFs { root_path },
+        });
+    }
+
+    if read_only {
+        if !mount_options.is_empty() {
+            mount_options.push(';');
+        }
+        mount_options.push_str("ro");
+    }
     Ok(virtio_resources::fs::VirtioFsHandle {
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
-            mount_options: if read_only {
-                "ro".to_string()
-            } else {
-                String::new()
-            },
+            mount_options,
         },
     })
 }

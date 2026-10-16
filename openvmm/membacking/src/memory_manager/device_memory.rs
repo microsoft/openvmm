@@ -83,6 +83,57 @@ impl DeviceMemoryRegion {
     }
 }
 
+impl DeviceRegionState {
+    fn add_mapping(&mut self, mapping: DeviceMapping) -> io::Result<()> {
+        if let Some(handle) = &self.handle {
+            block_on(handle.add_mapping(
+                mapping.range,
+                MappingBacking::File {
+                    mappable: mapping.mappable.clone(),
+                    file_offset: mapping.file_offset,
+                },
+                mapping.writable,
+                MemoryPolicy::none(),
+            ))
+            .map_err(io::Error::other)?;
+        }
+        self.mappings.push(mapping);
+        Ok(())
+    }
+
+    /// Removes `range` from the region. Mappings that partially overlap
+    /// `range` are split, and the parts outside `range` are mapped again.
+    /// virtiofs DAX relies on this to replace or upgrade existing mappings.
+    fn remove_range(&mut self, range: MemoryRange) -> io::Result<()> {
+        let (overlapping, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mappings)
+            .into_iter()
+            .partition(|mapping| mapping.range.overlaps(&range));
+        self.mappings = kept;
+        for mapping in overlapping {
+            if let Some(handle) = &self.handle {
+                block_on(handle.remove_mappings(mapping.range));
+            }
+            if mapping.range.start() < range.start() {
+                self.add_mapping(DeviceMapping {
+                    range: MemoryRange::new(mapping.range.start()..range.start()),
+                    file_offset: mapping.file_offset,
+                    mappable: mapping.mappable.clone(),
+                    writable: mapping.writable,
+                })?;
+            }
+            if mapping.range.end() > range.end() {
+                self.add_mapping(DeviceMapping {
+                    range: MemoryRange::new(range.end()..mapping.range.end()),
+                    file_offset: mapping.file_offset + (range.end() - mapping.range.start()),
+                    mappable: mapping.mappable,
+                    writable: mapping.writable,
+                })?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl MappedMemoryRegion for DeviceMemoryRegion {
     fn map(
         &self,
@@ -106,43 +157,13 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         };
 
         let mut state = self.state.lock();
-        for mapping in &state.mappings {
-            if mapping.range.overlaps(&new_mapping.range) {
-                todo!("support overlapping mappings");
-            }
-        }
-
-        if let Some(handle) = &state.handle {
-            if let Err(e) = block_on(handle.add_mapping(
-                new_mapping.range,
-                MappingBacking::File {
-                    mappable: new_mapping.mappable.clone(),
-                    file_offset: new_mapping.file_offset,
-                },
-                new_mapping.writable,
-                MemoryPolicy::none(),
-            )) {
-                return Err(io::Error::other(e));
-            }
-        }
-        state.mappings.push(new_mapping);
-        Ok(())
+        state.remove_range(range)?;
+        state.add_mapping(new_mapping)
     }
 
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let range = self.validated_memory_range(offset, len)?;
-        let mut state = self.state.lock();
-        state.mappings.retain(|mapping| {
-            if !range.contains(&mapping.range) && range.overlaps(&mapping.range) {
-                todo!("support overlapping mappings");
-            }
-            range.contains(&mapping.range)
-        });
-
-        if let Some(handle) = &state.handle {
-            block_on(handle.remove_mappings(range));
-        }
-        Ok(())
+        self.state.lock().remove_range(range)
     }
 }
 
