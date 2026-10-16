@@ -3,6 +3,7 @@
 
 //! Configuration for the VM worker.
 
+pub use serial_uart_resources::UartId;
 pub use smbios_defs::SmbiosBiosOverrides;
 pub use smbios_defs::SmbiosConfig;
 pub use smbios_defs::SmbiosSystemOverrides;
@@ -15,6 +16,7 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
+use tpm_resources::TpmVersion;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -151,7 +153,7 @@ pub enum LoadMode {
         enable_debugging: bool,
         enable_memory_protections: bool,
         disable_frontpage: bool,
-        enable_tpm: bool,
+        tpm_version: Option<TpmVersion>,
         enable_battery: bool,
         enable_serial: bool,
         enable_vpci_boot: bool,
@@ -166,6 +168,7 @@ pub enum LoadMode {
         enable_hv: bool,
         /// Whether the guest firmware should enable hibernation (S4) support.
         hibernation_enabled: bool,
+        force_firmware_version: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -181,15 +184,9 @@ pub enum LoadMode {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
-        com_serial: Option<SerialInformation>,
+        com_serial: Option<UartId>,
     },
     None,
-}
-
-#[derive(Debug, Clone, Copy, MeshPayload)]
-pub struct SerialInformation {
-    pub io_port: u16,
-    pub irq: u32,
 }
 
 /// Different types to specify the base address for the VTL2 region of the IGVM
@@ -622,7 +619,10 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
-    Snp,
+    Snp {
+        /// Optional host-provided data included in SNP launch finish.
+        host_data: Option<[u8; 32]>,
+    },
     Cca,
 }
 
@@ -630,7 +630,7 @@ impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp,
+            IsolationType::Snp { .. } => Self::Snp,
             IsolationType::Cca => Self::Cca,
         }
     }

@@ -127,7 +127,8 @@ rustflags = [
 rustflags = [
   # Use the musl from the sysroot, not from the Rust distribution.
   "-Clink-self-contained=n",
-  # Force musl to be statically linked in
+  # Force musl to be statically linked in. Note that changing this breaks
+  # assumptions the musl binaries can run in gnu environments.
   "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",

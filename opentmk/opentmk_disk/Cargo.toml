@@ -14,7 +14,7 @@ disk_vhd1.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fscommon.workspace = true
 gptman.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 tempfile.workspace = true
 
 [lints]

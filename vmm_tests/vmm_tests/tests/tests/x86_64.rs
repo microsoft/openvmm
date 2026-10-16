@@ -3,6 +3,7 @@
 
 //! Integration tests for x86_64 guests.
 
+mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
 mod storage;
@@ -60,7 +61,10 @@ async fn crash_dump_on_triple_fault(
     let dump_dir = tempfile::tempdir().context("failed to create temp dir for crash dump")?;
     let dump_path = dump_dir.path().join("crash.vmrs");
 
+    // The template provides the `db` variable, which `test_dbdefault` needs
+    // to pass before the image reaches its watchdog test.
     let mut vm = config
+        .with_windows_secure_boot_template()
         .with_memory(petri::MemoryConfig {
             startup_bytes: 256 * 1024 * 1024,
             ..Default::default()
@@ -359,6 +363,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                     VirtioBlkHandle {
                         disk: disk_resource,
                         read_only: false,
+                        serial: None,
                     }
                     .into_resource(),
                 ));

@@ -11,7 +11,8 @@ vm_resource.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 guid = { workspace = true, features = ["mesh"] }
-vmgs_format.workspace = true
+
+async-trait.workspace = true
 
 [lints]
 workspace = true

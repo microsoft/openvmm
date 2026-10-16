@@ -12,7 +12,7 @@ bitvec = { workspace = true, features = ["std"] }
 crc32c.workspace = true
 event-listener.workspace = true
 futures.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 mesh.workspace = true
 pal_async.workspace = true
 parking_lot = { workspace = true, features = ["arc_lock"] }

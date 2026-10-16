@@ -246,12 +246,13 @@ impl SmmuDevice {
             // in the nested path).
             .with_st_level(0b00); // Linear stream table only
 
+        // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the accel
+        // path must validate the host SMMU's SSIDSIZE >= the advertised value
+        // in resolve_host_caps.
+        let ssid_bits = 0;
         let idr1 = registers::Idr1::new()
             .with_sidsize(config.sidsize)
-            // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the
-            // accel path must validate the host SMMU's SSIDSIZE >= the
-            // advertised value in resolve_host_caps.
-            .with_ssidsize(0)
+            .with_ssidsize(ssid_bits)
             .with_cmdqs(8) // 256 entries max
             .with_eventqs(8) // 256 entries max
             // ATTR_TYPES_OVR / ATTR_PERMS_OVR are left 0: this SMMU does not
@@ -299,6 +300,7 @@ impl SmmuDevice {
         let shared_state = SmmuSharedState::new(
             guest_memory.clone(),
             oas_bits,
+            ssid_bits,
             config.oas_policy,
             config.accel,
             evtq_irq,
@@ -1486,6 +1488,8 @@ mod tests {
         // IDR1: SIDSIZE=16, CMDQS=8, EVTQS=8, ATTR_TYPES_OVR=0
         let idr1 = Idr1::from(read32(&mut dev, IDR1));
         assert_eq!(idr1.sidsize(), 16);
+        assert_eq!(idr1.ssidsize(), 0);
+        assert_eq!(dev.shared_state.ssid_bits(), idr1.ssidsize());
         assert_eq!(idr1.cmdqs(), 8);
         assert_eq!(idr1.eventqs(), 8);
         assert!(!idr1.attr_types_ovr());

@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 pub use crate::aml::*;
+use alloc::vec;
+use alloc::vec::Vec;
 use memory_range::MemoryRange;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

@@ -43,7 +43,7 @@ virtio_resources.workspace = true
 vm_resource.workspace = true
 disk_vhd1.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 hvs_file.workspace = true
 kmsg.workspace = true
 mesh.workspace = true

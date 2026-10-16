@@ -14,7 +14,7 @@ vmswitch.workspace = true
 vm_resource.workspace = true
 
 inspect.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 pal_async.workspace = true
 
 anyhow.workspace = true

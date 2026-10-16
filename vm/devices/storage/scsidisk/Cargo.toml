@@ -18,7 +18,7 @@ vm_resource.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 
-guid = { workspace = true, features = ["mesh", "inspect"] }
+guid = { workspace = true, features = ["getrandom", "inspect", "mesh"] }
 mesh.workspace = true
 
 anyhow.workspace = true

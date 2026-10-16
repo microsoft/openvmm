@@ -16,13 +16,13 @@ use serde::Serialize;
 use spin::Mutex;
 use spin::MutexGuard;
 
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::InstrIoAccess;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::Serial;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
-#[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
 use minimal_rt::arch::Serial;
 
 #[derive(Serialize)]
@@ -108,14 +108,14 @@ where
     fn flush(&self) {}
 }
 
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 type SerialPortWriter = Serial<InstrIoAccess>;
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
 /// The global logger instance for x86_64 architecture, using COM2 serial port.
 pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
     TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
 
-#[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
 /// The global logger instance for aarch64 architecture, using the default serial implementation.
 pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
 

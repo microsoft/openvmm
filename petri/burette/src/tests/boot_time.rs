@@ -10,6 +10,7 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
+use petri::PetriInitrd;
 use petri_artifacts_common::tags::MachineArch;
 
 /// Boot time configuration profile.
@@ -66,7 +67,7 @@ impl BootProfile {
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>> {
         let mut builder = if self.uses_minimal_builder() {
-            petri::PetriVmBuilder::minimal(params, artifacts, driver)?
+            petri::PetriVmBuilder::minimal(params.test_name, params.log_source, artifacts, driver)?
         } else {
             petri::PetriVmBuilder::new(params, artifacts, driver)?
         };
@@ -93,23 +94,18 @@ impl BootProfile {
     pub fn prepare_initrd(
         &self,
         resolver: &petri::ArtifactResolver<'_>,
-    ) -> anyhow::Result<Option<tempfile::TempPath>> {
+    ) -> anyhow::Result<Option<PetriInitrd>> {
         if !self.uses_minimal_builder() {
             return Ok(None);
         }
 
         let artifacts = build_artifacts(resolver)?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "initrd_prep",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         let initrd = pal_async::DefaultPool::run_with(async |driver| {
-            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            let builder =
+                petri::PetriVmBuilder::minimal("initrd_prep", &log_source, artifacts, &driver)?;
             builder.prepare_initrd().context("failed to prepare initrd")
         })?;
 
@@ -126,7 +122,7 @@ pub struct BootTimeTest {
     /// RAM size in MiB (default: 2048).
     pub mem_mb: u64,
     /// Pre-built initrd (kept alive for the duration of the test).
-    initrd: tempfile::TempPath,
+    initrd: PetriInitrd,
 }
 
 /// Build the firmware configuration for Linux direct boot.
@@ -172,16 +168,15 @@ impl BootTimeTest {
         // minimal builder which knows how to build it.
         let artifacts = build_artifacts(resolver)?;
 
-        let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "boot_time_initrd_prep",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
 
         let initrd = pal_async::DefaultPool::run_with(async |driver| {
-            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            let builder = petri::PetriVmBuilder::minimal(
+                "boot_time_initrd_prep",
+                &log_source,
+                artifacts,
+                &driver,
+            )?;
             builder.prepare_initrd().context("failed to prepare initrd")
         })?;
 
@@ -218,7 +213,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
         let log_source = crate::log_source();
         let params = petri::PetriTestParams {
             test_name: "boot_time",
-            logger: &log_source,
+            log_source: &log_source,
             post_test_hooks: &mut post_test_hooks,
         };
 
@@ -236,7 +231,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             });
 
         if self.profile.uses_minimal_builder() {
-            config = config.with_prebuilt_initrd(self.initrd.to_path_buf());
+            config = config.with_prebuilt_initrd(self.initrd.clone());
         }
 
         // Measure: start timing right before run(), stop when pipette connects.

@@ -4,6 +4,8 @@
 //! State unit for managing the VM partition and associated virtual processors.
 
 mod debug;
+#[cfg(test)]
+mod tests;
 mod vp_set;
 
 pub use vp_set::Halt;
@@ -58,6 +60,14 @@ pub struct PartitionUnit {
 pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore {
     /// Returns the source of the initial virtual processor state.
     fn initial_vp_state_source(&self) -> InitialVpStateSource;
+
+    /// Freezes backend partition time, if owned and supported by this backend.
+    /// All VPs have stopped before this is called.
+    fn freeze_time(&mut self) {}
+
+    /// Thaws backend partition time before VP execution can start.
+    /// This must be a no-op for time that is already running.
+    fn thaw_time(&mut self) {}
 
     /// Resets the partition.
     fn reset(&mut self) -> anyhow::Result<()>;
@@ -396,7 +406,7 @@ impl PartitionUnitRunner {
         }
 
         if self.unit_started {
-            self.vp_set.stop().await;
+            StateUnit::stop(self).await;
         }
     }
 
@@ -510,6 +520,8 @@ impl PartitionUnitRunner {
 
     fn try_start(&mut self) {
         if self.unit_started && self.halt_reason.is_none() && self.vp_stop_count == 0 {
+            // A VTL scrub can reset its clock during a temporary VP stop.
+            self.partition.thaw_time();
             self.needs_reset = true;
             self.vp_set.start();
         }
@@ -583,12 +595,14 @@ impl Drop for StopGuard {
 
 impl StateUnit for PartitionUnitRunner {
     async fn start(&mut self) {
+        self.partition.thaw_time();
         self.unit_started = true;
         self.try_start();
     }
 
     async fn stop(&mut self) {
         self.vp_set.stop().await;
+        self.partition.freeze_time();
         self.unit_started = false;
 
         // Now that the VM is stopped, flush any guest-initiated

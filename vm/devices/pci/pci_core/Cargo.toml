@@ -14,7 +14,7 @@ vmcore.workspace = true
 
 anyhow.workspace = true
 bitfield-struct.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true

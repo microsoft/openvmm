@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 pub use crate::aml::*;
+use alloc::vec;
+use alloc::vec::Vec;
 use memory_range::MemoryRange;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::FromBytes;
@@ -409,6 +411,7 @@ impl Dsdt {
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use alloc::format;
 
     pub fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);

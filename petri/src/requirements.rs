@@ -69,6 +69,8 @@ pub enum VmmType {
     OpenVmm,
     /// Microsoft Hyper-V.
     HyperV,
+    /// QEMU.
+    Qemu,
 }
 
 /// Hypervisor backends that OpenVMM can use.
@@ -305,6 +307,17 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         (VmmType::OpenVmm, Some(OpenVmmHypervisor::Mshv))
     ) {
         capabilities.insert(capabilities::WINDOWS_PARTITION_RESET);
+    }
+
+    // MSHV doesn't support nested virtualization yet
+    if matches!(
+        (vmm, context.openvmm_hypervisor),
+        (
+            VmmType::OpenVmm,
+            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp)
+        ) | (VmmType::Qemu, _)
+    ) {
+        capabilities.insert(capabilities::NESTED_VIRT);
     }
 
     match std::env::var("PETRI_CAPABILITIES") {

@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The openhcl boot loader, which loads before the kernel to set up the
-//! kernel's boot parameters.
+//! Bare-metal OpenHCL boot loader that prepares VTL2 before Linux starts.
+//!
+//! This measured payload validates its imported regions and host parameters,
+//! establishes the VTL2 address space and processor state, constructs Linux
+//! boot parameters and a device tree, and initializes the sidecar kernel when
+//! configured. It then transfers control to the OpenHCL Linux kernel.
 
 // See build.rs.
 #![cfg_attr(minimal_rt, no_std, no_main)]

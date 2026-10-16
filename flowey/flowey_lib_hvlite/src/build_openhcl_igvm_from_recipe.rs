@@ -57,13 +57,13 @@ pub enum OpenhclIgvmOutput {
         #[serde(rename = "openhcl-x64-cvm.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     X64CvmDevkern {
         #[serde(rename = "openhcl-x64-cvm-devkern.bin")]
         igvm_bin: PathBuf,
         #[serde(flatten)]
-        endorsements: OpenhclIgvmEndorsements,
+        endorsements: Option<OpenhclIgvmEndorsements>,
     },
     Aarch64 {
         #[serde(rename = "openhcl-aarch64.bin")]
@@ -152,9 +152,9 @@ impl OpenhclIgvmOutput {
 
     pub fn endorsements(&self) -> Option<&OpenhclIgvmEndorsements> {
         match self {
-            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. } => endorsements.as_ref(),
-            OpenhclIgvmOutput::X64Cvm { endorsements, .. }
-            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => Some(endorsements),
+            OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. }
+            | OpenhclIgvmOutput::X64Cvm { endorsements, .. }
+            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => endorsements.as_ref(),
             _ => None,
         }
     }
@@ -223,17 +223,21 @@ impl OpenhclIgvmOutput {
                     }
                     OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmOutput::X64Cvm {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
                         igvm_bin,
-                        endorsements: endorsements
-                            .take()
-                            .filter(OpenhclIgvmEndorsements::is_complete)
-                            .expect("missing endorsements"),
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
                     },
                     OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmOutput::Aarch64 { igvm_bin },
                     OpenhclIgvmRecipe::Aarch64Devkern => {
@@ -578,6 +582,7 @@ flowey_request! {
         /// Additional features to enable on top of the recipe's defaults.
         pub extra_features: BTreeSet<OpenvmmHclFeature>,
         pub disable_secure_avic: bool,
+        pub uefi_firmware_flavor: Option<crate::download_uefi_mu_msvm::FirmwareFlavor>,
         /// Add the confidential debug flag to the measured OpenHCL command
         /// line, enabling confidential diagnostics on CVM builds.
         pub confidential_debug: bool,
@@ -616,6 +621,7 @@ impl SimpleFlowNode for Node {
             custom_target,
             extra_features,
             disable_secure_avic,
+            uefi_firmware_flavor,
             confidential_debug,
             openhcl_igvm,
             openhcl_igvm_extras,
@@ -704,8 +710,11 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource: Option<UefiResource> = with_uefi.then(|| UefiResource {
-            msvm_fd: ctx
-                .reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd { arch, msvm_fd: v }),
+            msvm_fd: ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
+                flavor: uefi_firmware_flavor,
+                msvm_fd,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {

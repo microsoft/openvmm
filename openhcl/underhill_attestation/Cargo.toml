@@ -12,7 +12,7 @@ guest_emulation_transport.workspace = true
 openhcl_attestation_protocol.workspace = true
 vmgs = { workspace = true, features = ["encryption"] }
 get_protocol.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 mesh.workspace = true
 tee_call.workspace = true
 pal_async.workspace = true

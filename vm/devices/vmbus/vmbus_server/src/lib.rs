@@ -64,6 +64,7 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
+use vmbus_channel::TaggedStream;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -81,7 +82,6 @@ use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
-use vmbus_core::TaggedStream;
 use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
@@ -1998,10 +1998,13 @@ impl ServerTaskInner {
             .get_mut(&offer_id)
             .expect("channel does not exist");
 
-        assert!(
-            channel.reserved_state.message_port.is_some(),
-            "channel is not reserved"
-        );
+        // There may be no message port when attempting to send an OpenResult message for a failed
+        // open that was caused by a failure to create the message port. In that case, there is no
+        // way to send the message, so we return None.
+        if channel.reserved_state.message_port.is_none() {
+            tracelimit::warn_ratelimited!(key = %channel.key, "channel has no reserved message port");
+            return None;
+        }
 
         // On close, the guest may have changed the message target it wants to use for the close
         // response. If so, update the message port.

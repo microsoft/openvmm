@@ -169,8 +169,8 @@ impl SimpleFlowNode for Node {
 
         ctx.req(flowey_lib_common::publish_gh_release::Request(
             flowey_lib_common::publish_gh_release::GhReleaseParams {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
                 target,
                 tag,
                 title,

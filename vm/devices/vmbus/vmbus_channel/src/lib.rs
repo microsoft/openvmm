@@ -12,6 +12,9 @@ pub mod gpadl_ring;
 pub mod offer;
 pub mod resources;
 pub mod simple;
+pub mod stream;
+
+pub use stream::TaggedStream;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
