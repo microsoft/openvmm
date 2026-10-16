@@ -31,7 +31,9 @@ pub fn create_random_rsa_key_in_tpm2_import_blob_format(
     private_key_tpm2b_file: &str,
 ) -> anyhow::Result<()> {
     let private_key = RsaKeyPair::generate(2048).context("failed to generate RSA key")?;
-    let public_components = private_key.to_components();
+    let public_components = private_key
+        .to_components()
+        .context("failed to export RSA public key components")?;
     let public_key_der = pkcs1::RsaPublicKey {
         modulus: der::asn1::UintRef::new(&public_components.modulus)
             .context("failed to encode RSA modulus")?,
