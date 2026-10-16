@@ -37,6 +37,8 @@ impl InspectMut for ArcMutexChipsetDeviceUnit {
 trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn stop(&mut self);
+    async fn quiesce_input(&mut self) -> anyhow::Result<()>;
+    async fn resume_input(&mut self) -> anyhow::Result<()>;
     async fn reset(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
     fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
@@ -51,6 +53,12 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn stop(&mut self) {
         self.stop().await
+    }
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        vmcore::device_state::ChangeDeviceState::quiesce_input(self).await
+    }
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        vmcore::device_state::ChangeDeviceState::resume_input(self).await
     }
 
     async fn reset(&mut self) {
@@ -139,13 +147,14 @@ impl ArcMutexChipsetDeviceUnit {
 }
 
 impl StateUnit for ArcMutexChipsetDeviceUnit {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.running = true;
 
         // Poll the device at least once.
         let mut device = self.device.lock();
         device.start();
         device.poll_device(&mut Context::from_waker(&waker_ref(&self.poll_event)));
+        Ok(())
     }
 
     async fn stop(&mut self) {
@@ -160,6 +169,14 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
         //    (e.g., no calls are made to the device while the VM is stopped).
         //
         // These are currently not true.
+    }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.device.clone().close().quiesce_input().await
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.device.clone().close().resume_input().await
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {

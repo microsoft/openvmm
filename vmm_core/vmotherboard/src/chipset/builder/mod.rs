@@ -379,7 +379,9 @@ mod chipset_unit {
     pub struct ChipsetUnit<'a>(pub &'a Chipset);
 
     impl StateUnit for ChipsetUnit<'_> {
-        async fn start(&mut self) {}
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         async fn stop(&mut self) {}
 
