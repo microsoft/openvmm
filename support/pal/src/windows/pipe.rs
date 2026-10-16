@@ -43,6 +43,7 @@ use windows_sys::Win32::Foundation::GENERIC_WRITE;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
 use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Foundation::STATUS_PIPE_DISCONNECTED;
 use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
@@ -305,8 +306,7 @@ pub trait PipeExt {
     ///
     /// On a server end, this is true once the client closes its handle or the
     /// pipe is disconnected. On a client end, this is true once the server
-    /// closes its handle, and fails with `ERROR_PIPE_NOT_CONNECTED` once the
-    /// server disconnects the pipe.
+    /// closes its handle or disconnects the pipe.
     fn is_pipe_peer_closed(&self) -> io::Result<bool>;
     /// Returns the ID of the process at the other end of the pipe.
     ///
@@ -456,20 +456,26 @@ impl PipeExt for File {
 
     fn is_pipe_peer_closed(&self) -> io::Result<bool> {
         // SAFETY: calling with an appropriately sized output buffer.
-        let state = unsafe {
+        let (status, info) = unsafe {
             let mut iosb = zeroed();
             let mut info: FILE_PIPE_LOCAL_INFORMATION = zeroed();
-            chk_status(NtQueryInformationFile(
+            let status = NtQueryInformationFile(
                 self.as_raw_handle().cast::<c_void>(),
                 &mut iosb,
                 std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
                 FilePipeLocalInformation,
-            ))?;
-            info.NamedPipeState
+            );
+            (status, info)
         };
+        // Once the server disconnects the pipe, a client end can no longer be
+        // queried, but its peer is gone.
+        if status == STATUS_PIPE_DISCONNECTED {
+            return Ok(true);
+        }
+        chk_status(status)?;
         Ok(matches!(
-            state,
+            info.NamedPipeState,
             FILE_PIPE_DISCONNECTED_STATE | FILE_PIPE_CLOSING_STATE
         ))
     }
@@ -603,12 +609,16 @@ mod tests {
         }
     }
 
+    fn random_pipe_path() -> String {
+        let mut name = [0; 16];
+        getrandom::fill(&mut name).unwrap();
+        format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name))
+    }
+
     #[test]
     fn protected_named_pipe_reports_peer_information() {
         let descriptor: LocalSecurityDescriptor = "D:P(A;;GA;;;OW)".parse().unwrap();
-        let mut name = [0; 16];
-        getrandom::fill(&mut name).unwrap();
-        let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name));
+        let path = random_pipe_path();
 
         let server = new_named_pipe_with_security(
             &path,
@@ -643,6 +653,26 @@ mod tests {
         server.disconnect_pipe().unwrap();
         assert!(server.is_pipe_peer_closed().unwrap());
         assert!(server.get_pipe_peer_process_id().is_err());
+    }
+
+    #[test]
+    fn client_end_reports_peer_closed_after_server_disconnects() {
+        let path = random_pipe_path();
+        let server = new_named_pipe(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            Disposition::Create,
+            PipeMode::Byte,
+        )
+        .unwrap();
+        let client = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(!client.is_pipe_peer_closed().unwrap());
+        server.disconnect_pipe().unwrap();
+        assert!(client.is_pipe_peer_closed().unwrap());
     }
 
     #[test]
