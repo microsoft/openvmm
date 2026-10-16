@@ -54,6 +54,11 @@ impl Device {
 
         let metadata = file.metadata().context("failed to get metadata")?;
         let file_len = metadata.len();
+        anyhow::ensure!(file_len != 0, "persistent memory file must not be empty");
+        anyhow::ensure!(
+            file_len.is_multiple_of(4096),
+            "persistent memory file size must be a multiple of 4 KiB"
+        );
         let len = file_len
             .checked_add(PMEM_ALIGNMENT - 1)
             .context("persistent memory file is too large")?
