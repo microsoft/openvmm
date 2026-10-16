@@ -75,7 +75,7 @@ enum Command {
     },
     /// Creates a random RSA key in TPM2 import blob format.
     CreateRandomKeyInTpm2ImportBlobFormat {
-        #[arg(value_name = "algorithm")]
+        #[arg(value_name = "algorithm", value_enum)]
         algorithm: KeyAlgorithm,
         #[arg(value_name = "public-key")]
         public_key_file: String,
@@ -123,6 +123,45 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn create_random_key_accepts_rsa() {
+        let args = CmdArgs::try_parse_from([
+            "vtpm-util",
+            "create-random-key-in-tpm2-import-blob-format",
+            "rsa",
+            "rsa.pub",
+            "rsa.tpm2b",
+        ])
+        .expect("arguments should parse");
+
+        match args.command {
+            Command::CreateRandomKeyInTpm2ImportBlobFormat {
+                algorithm: KeyAlgorithm::Rsa,
+                public_key_file,
+                private_key_tpm2b_file,
+            } => {
+                assert_eq!(public_key_file, "rsa.pub");
+                assert_eq!(private_key_tpm2b_file, "rsa.tpm2b");
+            }
+            _ => panic!("expected RSA key creation command"),
+        }
+    }
+
+    #[test]
+    fn create_random_key_rejects_unsupported_algorithm() {
+        let error = CmdArgs::try_parse_from([
+            "vtpm-util",
+            "create-random-key-in-tpm2-import-blob-format",
+            "ecc",
+            "rsa.pub",
+            "rsa.tpm2b",
+        ])
+        .expect_err("unsupported algorithm should be rejected");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
 
     #[test]
     fn create_blob_defaults_to_tpm_138() {

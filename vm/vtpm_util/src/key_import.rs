@@ -26,6 +26,8 @@ use zerocopy::FromZeros;
 ///
 /// Both artifacts are fully written to temporary files before being persisted
 /// to their destinations. Existing destination files are never overwritten.
+/// If persisting the private artifact fails after publishing the public key,
+/// the public key is retained and its path is included in the error.
 pub fn create_random_rsa_key_in_tpm2_import_blob_format(
     public_key_file: &str,
     private_key_tpm2b_file: &str,
@@ -120,16 +122,16 @@ fn write_key_files_with(
     write(private_file.as_file_mut(), private_key)
         .context("failed to write TPM import blob file")?;
 
-    let public_file = public_file
+    public_file
         .persist_noclobber(public_key_file)
         .context("failed to persist public key file")?;
-    if let Err(error) = private_file.persist_noclobber(private_key_file) {
-        drop(public_file);
-        fs::remove_file(public_key_file).with_context(|| {
-            format!("failed to roll back public key file after TPM import blob persistence failed: {error}")
+    private_file
+        .persist_noclobber(private_key_file)
+        .with_context(|| {
+            format!(
+                "failed to persist TPM import blob file; public key file was retained at {public_key_file}"
+            )
         })?;
-        return Err(error).context("failed to persist TPM import blob file");
-    }
     Ok(())
 }
 
@@ -220,21 +222,25 @@ mod tests {
     }
 
     #[test]
-    fn key_files_reject_same_destination() {
+    fn key_files_report_partial_failure_for_same_destination() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("key");
 
+        let error = write_key_files(
+            path.to_str().unwrap(),
+            b"public",
+            path.to_str().unwrap(),
+            b"private",
+        )
+        .unwrap_err();
         assert!(
-            write_key_files(
-                path.to_str().unwrap(),
-                b"public",
-                path.to_str().unwrap(),
-                b"private",
-            )
-            .is_err()
+            error
+                .to_string()
+                .contains("public key file was retained at")
         );
-        assert!(!path.exists());
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+        assert!(error.to_string().contains(path.to_str().unwrap()));
+        assert_eq!(fs::read(&path).unwrap(), b"public");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -362,26 +368,35 @@ mod tests {
             };
             let mut writes = 0;
 
-            assert!(
-                write_key_files_with(
-                    public_path.to_str().unwrap(),
-                    b"public",
-                    private_path.to_str().unwrap(),
-                    b"private",
-                    |file, contents| {
-                        file.write_all(contents)?;
-                        writes += 1;
-                        if writes == 2 {
-                            fs::write(existing_path, b"existing key")?;
-                        }
-                        Ok(())
-                    },
-                )
-                .is_err()
-            );
+            let error = write_key_files_with(
+                public_path.to_str().unwrap(),
+                b"public",
+                private_path.to_str().unwrap(),
+                b"private",
+                |file, contents| {
+                    file.write_all(contents)?;
+                    writes += 1;
+                    if writes == 2 {
+                        fs::write(existing_path, b"existing key")?;
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
 
             assert_eq!(fs::read(existing_path).unwrap(), b"existing key");
-            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+            if create_public {
+                assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+            } else {
+                assert_eq!(fs::read(&public_path).unwrap(), b"public");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("public key file was retained at")
+                );
+                assert!(error.to_string().contains(public_path.to_str().unwrap()));
+                assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+            }
         }
     }
 
