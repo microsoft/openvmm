@@ -73,14 +73,11 @@ pub(super) fn make_room(
 }
 
 impl TcpConnection {
-    /// Whether the connection only lingers in TIME-WAIT, with both directions
-    /// closed and nothing left to write to its host socket, so that dropping
-    /// it early loses no data.
+    /// Whether the connection only lingers in TIME-WAIT and has released its
+    /// host socket, which happens once both directions are closed and nothing
+    /// is left to write to it, so that dropping it early loses no data.
     fn is_reclaimable(&self) -> bool {
         self.inner.state == TcpState::TimeWait
-            && matches!(
-                &self.backend,
-                TcpBackend::Socket { socket, .. } if socket.is_none() || self.inner.is_shutdown
-            )
+            && matches!(self.backend, TcpBackend::Socket { socket: None, .. })
     }
 }

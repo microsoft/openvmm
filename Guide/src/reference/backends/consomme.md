@@ -152,6 +152,12 @@ represents the 2*MSL wait required by RFC 9293, unless the TCP flow limit
 reclaims the connection earlier (see below). A separate fixed 60-second
 timeout bounds initial handshakes that receive no close request.
 
+Consomme closes a connection's host socket as soon as both directions of the
+host connection are closed, that is, once the host has sent its FIN and
+Consomme has passed the guest's data and FIN on to the host. The connection
+itself can outlive its socket, for example in `TimeWait`, while it completes
+the close with the guest.
+
 Inbound connections require explicit port forwarding — OpenVMM can
 programmatically bind host ports and forward them into the guest.
 
@@ -168,9 +174,10 @@ creating its host socket; it never evicts an active flow to make room.
 Only a guest SYN that would open a TCP connection is checked against the TCP
 limit, so other segments of an unknown connection, such as a stale ACK, still
 get a reset while the limit is reached. A connection lingering in `TimeWait`
-after both sides closed it holds no data and counts toward the TCP limit only
-until a new flow needs its slot: when the limit is reached, Consomme reclaims
-the `TimeWait` connection closest to expiry instead of rejecting the new flow.
+after both sides closed it holds no data or host socket and counts toward the
+TCP limit only until a new flow needs its slot: when the limit is reached,
+Consomme reclaims the `TimeWait` connection closest to expiry instead of
+rejecting the new flow.
 Embedders can change these limits through the `flow_limits` field on
 `ConsommeParams`, a `FlowLimits { tcp, udp, icmp }` of `Option<usize>`
 values. `None` leaves a protocol unbounded, and `FlowLimits::UNBOUNDED`
