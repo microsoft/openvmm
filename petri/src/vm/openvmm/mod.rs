@@ -38,6 +38,8 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+/// mshv root-partition boot recipe.
+pub mod mshv;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -86,6 +88,15 @@ pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
+impl OpenVmmPetriBackend {
+    /// Launch a separately supplied, protocol-compatible native executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            openvmm_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
@@ -124,10 +135,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         Ok(None) // TODO #2403
     }
 
-    fn build_custom_init_script(
-        _pipette_path: &str,
-        _mount_shares: Vec<(String, String)>,
-    ) -> Option<String> {
+    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
         None
     }
 
@@ -152,7 +160,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
 
         if let Some(f) = modify_vmm_config {
-            config = f.0(config);
+            config = f.0(config)?;
         }
 
         config.run().await
@@ -161,6 +169,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
+    guest_shares: std::collections::HashMap<String, crate::GuestShare>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,

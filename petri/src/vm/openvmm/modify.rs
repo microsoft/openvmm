@@ -10,6 +10,7 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
+use anyhow::Context;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use disk_backend_resources::LayeredDiskHandle;
@@ -468,14 +469,14 @@ impl PetriVmConfigOpenVmm {
     /// so the segment numbers in the `sXrcY` names continue from where the last
     /// call left off.
     pub fn with_pcie_root_topology(
-        mut self,
+        self,
         segment_count: u64,
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
     ) -> Self {
-        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
-        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
-
+        if segment_count == 0 {
+            return self;
+        }
         // Offset the segments and global indices added by this call so that it
         // can be called multiple times. New segments are numbered after any
         // existing ones, and the global index continues from the existing
@@ -487,6 +488,42 @@ impl PetriVmConfigOpenVmm {
             .map(|rc| u64::from(rc.segment) + 1)
             .max()
             .unwrap_or(0);
+        self.with_pcie_root_topology_at(
+            segment_base,
+            segment_count,
+            root_complex_per_segment,
+            root_ports_per_root_complex,
+        )
+        .expect("invalid PCIe topology")
+    }
+
+    /// Append a topology starting at an explicit PCI segment, without
+    /// renumbering existing root complexes or their ports.
+    pub fn with_pcie_root_topology_at(
+        mut self,
+        segment_base: u64,
+        segment_count: u64,
+        root_complex_per_segment: u64,
+        root_ports_per_root_complex: u64,
+    ) -> anyhow::Result<Self> {
+        let segment_end = segment_base
+            .checked_add(segment_count)
+            .filter(|end| *end <= u16::MAX as u64 + 1)
+            .context("PCI segment range exceeds u16")?;
+        anyhow::ensure!(
+            !self
+                .config
+                .pcie_root_complexes
+                .iter()
+                .any(|rc| (segment_base..segment_end).contains(&u64::from(rc.segment))),
+            "PCI segment range overlaps an existing root complex"
+        );
+        anyhow::ensure!(
+            (1..=256).contains(&root_complex_per_segment),
+            "PCI topology requires between 1 and 256 root complexes per segment"
+        );
+        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
         let index_base = self.config.pcie_root_complexes.len() as u64;
 
         // Add the root complexes to the VM
@@ -533,7 +570,73 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        self
+        Ok(self)
+    }
+
+    /// Attach configured guest shares to distinct PCIe ports, in tag order.
+    ///
+    /// The caller supplies one port per share. Petri mounts each share at its
+    /// configured guest path after Pipette connects.
+    pub fn with_pcie_guest_shares(
+        mut self,
+        ports: impl IntoIterator<Item = String>,
+    ) -> anyhow::Result<Self> {
+        let ports = ports.into_iter().collect::<Vec<_>>();
+        anyhow::ensure!(
+            ports.len() == self.guest_shares.len(),
+            "expected one PCIe port per guest share"
+        );
+        let mut unique = std::collections::HashSet::new();
+        for port in &ports {
+            anyhow::ensure!(
+                unique.insert(port),
+                "duplicate guest-share PCIe port: {port}"
+            );
+            anyhow::ensure!(
+                self.config
+                    .pcie_root_complexes
+                    .iter()
+                    .any(|rc| rc.ports.iter().any(|p| &p.name == port))
+                    || self
+                        .config
+                        .pcie_switches
+                        .iter()
+                        .any(|s| s.ports.iter().any(|p| &p.name == port)),
+                "unknown guest-share PCIe port: {port}"
+            );
+            anyhow::ensure!(
+                !self
+                    .config
+                    .pcie_devices
+                    .iter()
+                    .any(|d| &d.port_name == port),
+                "guest-share PCIe port is occupied: {port}"
+            );
+        }
+        let mut shares = std::mem::take(&mut self.guest_shares)
+            .into_iter()
+            .collect::<Vec<_>>();
+        shares.sort_by(|a, b| a.0.cmp(&b.0));
+        for ((tag, share), port_name) in shares.into_iter().zip(ports) {
+            let root_path = share
+                .host_path
+                .into_os_string()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("guest share path must be UTF-8"))?;
+            self.config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: virtio_resources::VirtioPciDeviceHandle(
+                    virtio_resources::p9::VirtioPlan9Handle {
+                        tag,
+                        root_path,
+                        debug: false,
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+        }
+        Ok(self)
     }
 
     /// Add a PCIe switch to the VM.
