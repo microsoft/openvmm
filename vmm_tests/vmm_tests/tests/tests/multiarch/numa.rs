@@ -94,6 +94,206 @@ async fn guest_node_distances(agent: &PipetteClient, node: u32) -> anyhow::Resul
         .collect()
 }
 
+fn check_acpi_header<'a>(table: &'a [u8], signature: &[u8; 4]) -> anyhow::Result<&'a [u8]> {
+    anyhow::ensure!(
+        table.len() >= 36,
+        "truncated ACPI header: expected at least 36 bytes, actual {}",
+        table.len()
+    );
+    anyhow::ensure!(
+        &table[..4] == signature,
+        "unexpected ACPI signature: expected {:?}, actual {:?}",
+        String::from_utf8_lossy(signature),
+        String::from_utf8_lossy(&table[..4])
+    );
+    let length = u32::from_le_bytes(table[4..8].try_into()?) as usize;
+    anyhow::ensure!(
+        length == table.len(),
+        "incorrect ACPI length: declared {length} bytes, actual {}",
+        table.len()
+    );
+    anyhow::ensure!(
+        table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)) == 0,
+        "invalid ACPI checksum"
+    );
+    Ok(&table[36..])
+}
+
+petri::test_sync!(acpi_header_diagnostics, |_| Some(()));
+
+fn acpi_header_diagnostics(_: petri::PetriTestParams<'_>, _: ()) -> anyhow::Result<()> {
+    let mut table = [0u8; 36];
+    table[..4].copy_from_slice(b"SLIT");
+    table[4..8].copy_from_slice(&36u32.to_le_bytes());
+    table[9] = 0u8.wrapping_sub(table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)));
+    assert!(check_acpi_header(&table, b"SLIT")?.is_empty());
+    for length in [0, 35] {
+        assert_eq!(
+            check_acpi_header(&table[..length], b"SLIT")
+                .unwrap_err()
+                .to_string(),
+            format!("truncated ACPI header: expected at least 36 bytes, actual {length}")
+        );
+    }
+    assert_eq!(
+        check_acpi_header(&table, b"SRAT").unwrap_err().to_string(),
+        "unexpected ACPI signature: expected \"SRAT\", actual \"SLIT\""
+    );
+    for length in [0u32, 35, 37] {
+        let mut invalid = table;
+        invalid[4..8].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            check_acpi_header(&invalid, b"SLIT")
+                .unwrap_err()
+                .to_string(),
+            format!("incorrect ACPI length: declared {length} bytes, actual 36")
+        );
+    }
+    table[9] = table[9].wrapping_add(1);
+    assert_eq!(
+        check_acpi_header(&table, b"SLIT").unwrap_err().to_string(),
+        "invalid ACPI checksum"
+    );
+    Ok(())
+}
+
+/// Checks the guest's two-locality SLIT, SRAT domain and memory coverage, and
+/// Linux NUMA placement and distances against the configured topology.
+/// Matching bytes alone do not prove which generation path was used.
+async fn check_openhcl_slit(agent: &PipetteClient) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let slit = sh.read_file_raw("/sys/firmware/acpi/tables/SLIT").await?;
+    let body = check_acpi_header(&slit, b"SLIT")?;
+    anyhow::ensure!(
+        &slit[10..16] == b"HVLITE" && &slit[16..24] == b"HVLITETB" && &slit[28..32] == b"MSHV",
+        "SLIT does not have the generated ACPI identity"
+    );
+    anyhow::ensure!(slit[8] == 1 && body.len() == 12, "unexpected SLIT format");
+    anyhow::ensure!(
+        u64::from_le_bytes(body[..8].try_into()?) == 2,
+        "expected two SLIT localities"
+    );
+    anyhow::ensure!(body[8..] == [10, 17, 29, 10], "SLIT distances changed");
+
+    let srat = sh.read_file_raw("/sys/firmware/acpi/tables/SRAT").await?;
+    let body = check_acpi_header(&srat, b"SRAT")?;
+    anyhow::ensure!(body.len() >= 12, "truncated SRAT header");
+    let mut entries = &body[12..];
+    let mut cpu_domains = std::collections::BTreeSet::new();
+    let mut memory_domains = std::collections::BTreeSet::new();
+    let mut memory_bytes = [0u64; 2];
+    while !entries.is_empty() {
+        anyhow::ensure!(entries.len() >= 2, "truncated SRAT record");
+        let length = entries[1] as usize;
+        anyhow::ensure!(
+            (2..=entries.len()).contains(&length),
+            "invalid SRAT record length"
+        );
+        let record = &entries[..length];
+        let (domain, enabled, cpu) = match record[0] {
+            0 => {
+                anyhow::ensure!(length == 16, "invalid SRAT APIC record");
+                (
+                    u32::from_le_bytes([record[2], record[9], record[10], record[11]]),
+                    u32::from_le_bytes(record[4..8].try_into()?) & 1 != 0,
+                    true,
+                )
+            }
+            1 => {
+                anyhow::ensure!(length == 40, "invalid SRAT memory record");
+                (
+                    u32::from_le_bytes(record[2..6].try_into()?),
+                    u32::from_le_bytes(record[28..32].try_into()?) & 1 != 0,
+                    false,
+                )
+            }
+            2 => {
+                anyhow::ensure!(length == 24, "invalid SRAT x2APIC record");
+                (
+                    u32::from_le_bytes(record[4..8].try_into()?),
+                    u32::from_le_bytes(record[12..16].try_into()?) & 1 != 0,
+                    true,
+                )
+            }
+            other => anyhow::bail!("unexpected SRAT record {other}"),
+        };
+        if enabled {
+            anyhow::ensure!(domain < 2, "SRAT domain exceeds SLIT");
+            if cpu {
+                cpu_domains.insert(domain);
+            } else {
+                memory_domains.insert(domain);
+                let size = u64::from_le_bytes(record[16..24].try_into()?);
+                memory_bytes[domain as usize] = memory_bytes[domain as usize]
+                    .checked_add(size)
+                    .context("SRAT memory size overflow")?;
+            }
+        }
+        entries = &entries[length..];
+    }
+    anyhow::ensure!(
+        cpu_domains == [0, 1].into() && memory_domains == [0, 1].into(),
+        "missing SRAT domains"
+    );
+    assert_eq!(guest_numa_node_count(agent).await?, 2);
+    assert_eq!(guest_node_cpulist(agent, 0).await?, "0-1");
+    assert_eq!(guest_node_cpulist(agent, 1).await?, "2-3");
+    assert_eq!(guest_node_distances(agent, 0).await?, vec![10, 17]);
+    assert_eq!(guest_node_distances(agent, 1).await?, vec![29, 10]);
+    for node in 0..2 {
+        let memory = guest_node_mem_bytes(agent, node).await?;
+        let expected = memory_bytes[node as usize];
+        anyhow::ensure!(
+            expected > 0 && expected <= SIZE_2_GB,
+            "unexpected SRAT memory on node {node}: {expected}"
+        );
+        anyhow::ensure!(
+            memory > expected * 85 / 100 && memory <= expected,
+            "unexpected memory on node {node}: {memory}, SRAT bytes: {expected}"
+        );
+    }
+    Ok(())
+}
+
+/// Verify IGVM SLIT reaches Linux through both OpenHCL ACPI loading paths.
+#[openvmm_test(openhcl_linux_direct_x64, openhcl_uefi_x64(vhd(alpine_3_23_x64)))]
+async fn openhcl_acpi_slit(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: SIZE_2_GB * 2,
+            numa_mem_sizes: Some(vec![SIZE_2_GB, SIZE_2_GB]),
+            ..Default::default()
+        })
+        .with_processor_topology(petri::ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            enable_smt: Some(false),
+            ..Default::default()
+        })
+        .modify_backend(|backend| {
+            backend.with_custom_config(|config| {
+                config.numa.distances = vec![
+                    NumaDistance {
+                        src: 0,
+                        dst: 1,
+                        distance: 17,
+                    },
+                    NumaDistance {
+                        src: 1,
+                        dst: 0,
+                        distance: 29,
+                    },
+                ];
+            })
+        })
+        .run()
+        .await?;
+    let result = check_openhcl_slit(&agent).await;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    result
+}
+
 /// Boot a 2-node NUMA VM and verify the guest sees the correct topology.
 ///
 /// Two nodes, 2 GB each, 4 VPs with 2 per socket. `FromTopology` assigns
