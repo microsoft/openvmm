@@ -491,7 +491,7 @@ mod tests {
         use zerocopy::FromBytes;
 
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let report = vec![0; SNP_VM_REPORT_SIZE];
         let config = crate::tests::test_attestation_config();
         let frame = |length| {
