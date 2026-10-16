@@ -81,12 +81,18 @@ describes the source definitions.
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
 
+  KVM accepts the following parameter (x86_64 guests only):
+  * `force_tsc_fallback` — force per-VP TSC capture/restore for testing rather
+    than the common-clock optimization. Defaults to `false`. This does not
+    change the host's TSC stability or enable time freezing for isolated VMs.
+
   Examples:
   ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments
   --hypervisor kvm
+  --hypervisor kvm:force_tsc_fallback
   ```
 * `--isolation <MODE>`: Enable a confidential or isolated VM mode.
   Supported modes include `vbs` and, for `x86_64` guests on KVM or MSHV,
