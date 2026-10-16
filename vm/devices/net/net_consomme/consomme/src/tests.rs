@@ -23,6 +23,8 @@ use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 
 const ETHERNET_HEADER_LEN: usize = 14;
+/// Hop limit of the IPv4 and IPv6 packets that the tests send from the guest.
+const HOP_LIMIT: u8 = 64;
 
 struct TestClient {
     driver: DefaultDriver,
@@ -79,7 +81,7 @@ fn build_ipv4_syn(
         dst_addr: dst_ip,
         next_header: IpProtocol::Tcp,
         payload_len: tcp.header_len(),
-        hop_limit: 64,
+        hop_limit: HOP_LIMIT,
     };
     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
     ip_repr.emit(&mut ipv4, &ChecksumCapabilities::default());
@@ -129,7 +131,7 @@ fn build_ipv6_syn(
         dst_addr: dst_ip,
         next_header: IpProtocol::Tcp,
         payload_len: tcp.header_len(),
-        hop_limit: 64,
+        hop_limit: HOP_LIMIT,
     };
     let mut ipv6 = Ipv6Packet::new_unchecked(eth.payload_mut());
     ip_repr.emit(&mut ipv6);
@@ -459,7 +461,7 @@ fn learn_from_ipv6_traffic(params: &mut ConsommeParams, src_addr: Ipv6Address) {
         dst_addr: gateway_ip,
         next_header: IpProtocol::Tcp,
         payload_len: 0,
-        hop_limit: 64,
+        hop_limit: HOP_LIMIT,
     }
     .emit(&mut Ipv6Packet::new_unchecked(&mut payload));
 
@@ -548,7 +550,7 @@ fn build_ipv4_dns_query(
         dst_addr: dst_ip,
         next_header: IpProtocol::Udp,
         payload_len: UDP_HEADER_LEN + dns_payload.len(),
-        hop_limit: 64,
+        hop_limit: HOP_LIMIT,
     };
     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
     ip_repr.emit(&mut ipv4, &ChecksumCapabilities::default());
@@ -590,6 +592,197 @@ impl Client for CapturingClient {
     fn rx_mtu(&mut self) -> usize {
         1514
     }
+}
+
+/// Builds an Ethernet frame from the guest that carries a UDP datagram with
+/// `payload` from `src` to `dst`.
+fn build_udp_frame(
+    src_mac: EthernetAddress,
+    dst_mac: EthernetAddress,
+    src: SocketAddr,
+    dst: SocketAddr,
+    payload: &[u8],
+) -> Vec<u8> {
+    let (ethertype, ip_header_len) = match dst {
+        SocketAddr::V4(_) => (EthernetProtocol::Ipv4, IPV4_HEADER_LEN),
+        SocketAddr::V6(_) => (EthernetProtocol::Ipv6, smoltcp::wire::IPV6_HEADER_LEN),
+    };
+    let udp_len = UDP_HEADER_LEN + payload.len();
+    let mut frame = vec![0u8; ETHERNET_HEADER_LEN + ip_header_len + udp_len];
+    let mut eth = EthernetFrame::new_unchecked(&mut frame[..]);
+    eth.set_src_addr(src_mac);
+    eth.set_dst_addr(dst_mac);
+    eth.set_ethertype(ethertype);
+    let udp_buffer = match (src.ip(), dst.ip()) {
+        (IpAddr::V4(src_addr), IpAddr::V4(dst_addr)) => {
+            let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
+            Ipv4Repr {
+                src_addr,
+                dst_addr,
+                next_header: IpProtocol::Udp,
+                payload_len: udp_len,
+                hop_limit: HOP_LIMIT,
+            }
+            .emit(&mut ipv4, &ChecksumCapabilities::default());
+            &mut eth.payload_mut()[IPV4_HEADER_LEN..]
+        }
+        (IpAddr::V6(src_addr), IpAddr::V6(dst_addr)) => {
+            let mut ipv6 = Ipv6Packet::new_unchecked(eth.payload_mut());
+            Ipv6Repr {
+                src_addr,
+                dst_addr,
+                next_header: IpProtocol::Udp,
+                payload_len: udp_len,
+                hop_limit: HOP_LIMIT,
+            }
+            .emit(&mut ipv6);
+            &mut eth.payload_mut()[smoltcp::wire::IPV6_HEADER_LEN..]
+        }
+        _ => panic!("{src} and {dst} are of different address families"),
+    };
+    let mut udp = UdpPacket::new_unchecked(udp_buffer);
+    udp.set_src_port(src.port());
+    udp.set_dst_port(dst.port());
+    udp.set_len(udp_len as u16);
+    udp.payload_mut().copy_from_slice(payload);
+    udp.fill_checksum(&src.ip().into(), &dst.ip().into());
+    frame
+}
+
+/// Returns the source, destination, and payload of the UDP datagram that
+/// `frame` carries to the guest, whose checksum must be valid.
+fn parse_udp_frame(frame: &[u8]) -> (SocketAddr, SocketAddr, Vec<u8>) {
+    let eth = EthernetFrame::new_checked(frame).unwrap();
+    let (src, dst, payload) = match eth.ethertype() {
+        EthernetProtocol::Ipv4 => {
+            let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+            assert_eq!(ipv4.next_header(), IpProtocol::Udp);
+            (
+                IpAddr::V4(ipv4.src_addr()),
+                IpAddr::V4(ipv4.dst_addr()),
+                ipv4.payload(),
+            )
+        }
+        EthernetProtocol::Ipv6 => {
+            let ipv6 = Ipv6Packet::new_checked(eth.payload()).unwrap();
+            assert_eq!(ipv6.next_header(), IpProtocol::Udp);
+            (
+                IpAddr::V6(ipv6.src_addr()),
+                IpAddr::V6(ipv6.dst_addr()),
+                ipv6.payload(),
+            )
+        }
+        other => panic!("unexpected ethertype {other}"),
+    };
+    let udp = UdpPacket::new_checked(payload).unwrap();
+    assert!(udp.verify_checksum(&src.into(), &dst.into()));
+    (
+        SocketAddr::new(src, udp.src_port()),
+        SocketAddr::new(dst, udp.dst_port()),
+        udp.payload().to_vec(),
+    )
+}
+
+/// Polls `consomme` until `client` receives a frame, and returns the frame.
+async fn next_received_frame(consomme: &mut Consomme, client: &mut CapturingClient) -> Vec<u8> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        std::future::poll_fn(|cx| {
+            consomme.access(client).poll(cx);
+            std::task::Poll::Ready(())
+        })
+        .await;
+        if !client.received.is_empty() {
+            return client.received.remove(0);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for a frame to the guest"
+        );
+        pal_async::timer::PolledTimer::new(&client.driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+    }
+}
+
+/// Sends a datagram from the guest's `guest` address to `peer`, as the guest
+/// addresses it, answers it from the `host` socket that it reaches, and
+/// returns the host address of the guest's flow and the answer as the guest
+/// receives it.
+async fn exchange_udp(
+    consomme: &mut Consomme,
+    client: &mut CapturingClient,
+    guest: SocketAddr,
+    peer: SocketAddr,
+    host: &std::net::UdpSocket,
+) -> (SocketAddr, (SocketAddr, SocketAddr, Vec<u8>)) {
+    let params = consomme.params_mut();
+    let frame = build_udp_frame(params.client_mac, params.gateway_mac, guest, peer, b"guest");
+    consomme
+        .access(client)
+        .send(&frame, &ChecksumState::NONE)
+        .unwrap();
+    let mut request = [0; 16];
+    let (len, flow) = host.recv_from(&mut request).unwrap();
+    assert_eq!(&request[..len], b"guest");
+    host.send_to(b"host:guest", flow).unwrap();
+    (
+        flow,
+        parse_udp_frame(&next_received_frame(consomme, client).await),
+    )
+}
+
+/// Checks that the answers of host services on the loopback address of the
+/// family of `gateway`, which the guest's `guest` address reaches at
+/// `gateway`, come from the gateway address and port that the guest addressed,
+/// as a connected guest socket requires, also when one guest socket addresses
+/// several services, as an unconnected one may. Another host-local peer still
+/// appears at a virtual address, from which it answers once the guest
+/// addresses it there.
+async fn check_gateway_udp_replies(
+    mut consomme: Consomme,
+    driver: DefaultDriver,
+    guest: SocketAddr,
+    gateway: IpAddr,
+) {
+    let loopback = match gateway {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    };
+    let bind = || {
+        let socket = std::net::UdpSocket::bind((loopback, 0)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+    };
+    let mut client = CapturingClient::new(driver);
+    let services = [bind(), bind()];
+    let mut flow = None;
+    for _ in 0..2 {
+        for service in &services {
+            let address = SocketAddr::new(gateway, service.local_addr().unwrap().port());
+            let (host_flow, reply) =
+                exchange_udp(&mut consomme, &mut client, guest, address, service).await;
+            assert_eq!(reply, (address, guest, b"host:guest".to_vec()));
+            assert!(flow.is_none_or(|flow| flow == host_flow));
+            flow = Some(host_flow);
+        }
+    }
+
+    let stranger = bind();
+    stranger.send_to(b"stranger", flow.unwrap()).unwrap();
+    let (virtual_peer, destination, payload) =
+        parse_udp_frame(&next_received_frame(&mut consomme, &mut client).await);
+    assert_eq!((destination, payload.as_slice()), (guest, &b"stranger"[..]));
+    assert_ne!(virtual_peer.ip(), gateway);
+    assert!(!virtual_peer.ip().is_loopback());
+    assert_eq!(
+        consomme.state.resolve_destination(&virtual_peer),
+        stranger.local_addr().unwrap()
+    );
+    let (_, reply) = exchange_udp(&mut consomme, &mut client, guest, virtual_peer, &stranger).await;
+    assert_eq!(reply, (virtual_peer, guest, b"host:guest".to_vec()));
 }
 
 /// End to end validation for a static DNS A record.
