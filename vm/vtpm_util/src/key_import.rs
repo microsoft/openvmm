@@ -162,9 +162,14 @@ fn get_key_in_tpm2_import_format_rsa(
             .context("RSA prime is too large for TPM sensitive data")?,
     };
     let sensitive = sensitive.serialize();
+    let sensitive_size =
+        u16::try_from(sensitive.len()).context("TPM sensitive data is too large")?;
+    let private_size =
+        u16::try_from(sensitive.len() + 2).context("TPM private data is too large")?;
 
     let mut import_blob = public.serialize();
-    import_blob.extend_from_slice(&(sensitive.len() as u16).to_be_bytes());
+    import_blob.extend_from_slice(&private_size.to_be_bytes());
+    import_blob.extend_from_slice(&sensitive_size.to_be_bytes());
     import_blob.extend_from_slice(&sensitive);
     import_blob.extend_from_slice(&0_u16.to_be_bytes());
     Ok(import_blob)
@@ -195,6 +200,21 @@ mod tests {
         let encrypted_secret_offset = private_offset + 2 + private_size;
 
         assert_eq!(&blob[encrypted_secret_offset..], &[0, 0]);
+        let sensitive_offset = private_offset + 2;
+        let sensitive_size = u16::from_be_bytes(
+            blob[sensitive_offset..sensitive_offset + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        assert_eq!(private_size, sensitive_size + 2);
+        assert_eq!(sensitive_size, 8 + private_components.prime1.len());
+        let sensitive = &blob[sensitive_offset + 2..encrypted_secret_offset];
+        assert_eq!(&sensitive[..6], &[0, 1, 0, 0, 0, 0]);
+        assert_eq!(
+            u16::from_be_bytes(sensitive[6..8].try_into().unwrap()) as usize,
+            private_components.prime1.len(),
+        );
+        assert_eq!(&sensitive[8..], private_components.prime1.as_slice());
     }
 
     #[test]
