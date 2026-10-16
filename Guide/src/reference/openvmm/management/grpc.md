@@ -61,8 +61,13 @@ The API does not expose force-bounce options. Device resolution selects
 bouncing from the VM's guest-memory policy. The same restrictions and
 resource construction apply to `CreateVM` and `AddPcieDevice`.
 
-Block disks must use buffered plain regular files (`FileDisk.direct: false`).
-Structured disk images and host block devices are not supported. Disable
+Block disks can use buffered plain regular files (`FileDisk.direct: false`)
+or Linux host block devices, including device-mapper devices. Block devices
+support buffered or direct I/O through `FileDisk.direct`. The opened
+descriptor determines the backend; a block device is not device assignment.
+All payload I/O still uses owned bounce buffers. Structured image files,
+including VMDK files, are not parsed; expose such images as host block
+devices instead. Character devices and FIFOs are rejected. Disable
 VMBus and omit legacy device configurations, HVSocket, crash dumps, iommufd
 contexts, and guest-visible IOMMUs. Other PCIe device types, vhost-user, and
 VPCI are not supported for these VMs. Empty PCIe hotplug ports and nested

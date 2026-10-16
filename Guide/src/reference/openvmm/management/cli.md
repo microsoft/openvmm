@@ -145,7 +145,9 @@ describes the source definitions.
   including PCIe hot-add. Bouncing is automatic; the API does not expose
   force-bounce options. Disable VMBus. The service selects base-page backing
   by default and rejects explicit NUMA huge-page settings. Its block API
-  supports buffered plain regular files, not RAM disks or structured images.
+  supports buffered plain regular files and Linux host block devices,
+  including device-mapper devices. Host block devices also support direct
+  I/O. The API does not expose RAM disks or parse structured image files.
 
   Both usermode VA locks and kernel locks are denied. Copies use
   fault-contained `GuestMemory` operations, without per-copy permission
@@ -591,7 +593,7 @@ This mode supports only buffered plain images backed by regular
 files and RAM disks in VTL0. The opened file must be a regular file; a path
 spelling alone does not establish this. It rejects host block devices,
 physical NVMe, assigned devices, disk wrappers, structured formats such as
-VHD/VHDX (regardless of extension letter case), and
+VHD/VHDX/VMDK (regardless of extension letter case), and
 `;direct`. It does not apply to vhost-user disks or external guest-memory
 exports. `bounce` is not valid with `--disk`, `--nvme`, `dvd`, `vtl2`,
 OpenHCL relay options, or named controllers (`on`). `ro`, `serial`, and

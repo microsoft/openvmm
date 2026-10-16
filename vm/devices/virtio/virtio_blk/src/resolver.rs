@@ -26,7 +26,7 @@ pub struct VirtioBlkResolver;
 
 fn validate_bounce_resource_id(id: &str) -> anyhow::Result<()> {
     if id != VirtioBlkBounceDiskHandle::ID {
-        anyhow::bail!("bounce I/O requires a reviewed regular-file or RAM disk resource");
+        anyhow::bail!("bounce I/O requires a reviewed file, RAM, or Linux block-device resource");
     }
     Ok(())
 }
@@ -35,19 +35,35 @@ fn validate_bounce_file(file: &std::fs::File) -> anyhow::Result<()> {
     if !file.metadata()?.is_file() {
         anyhow::bail!("bounce I/O requires a regular file, not a host device");
     }
+    validate_bounce_flags(file, false)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_bounce_block_device(file: &std::fs::File) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+    anyhow::ensure!(
+        file.metadata()?.file_type().is_block_device(),
+        "bounce I/O requires a Linux block device"
+    );
+    validate_bounce_flags(file, true)
+}
+
+fn validate_bounce_flags(file: &std::fs::File, allow_direct: bool) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use nix::fcntl::FcntlArg;
         use nix::fcntl::OFlag;
         use nix::fcntl::fcntl;
         let flags = OFlag::from_bits_retain(fcntl(file, FcntlArg::F_GETFL)?);
-        if flags.contains(OFlag::O_DIRECT) {
+        if !allow_direct && flags.contains(OFlag::O_DIRECT) {
             anyhow::bail!("bounce I/O requires a buffered file, not O_DIRECT");
         }
         if flags.contains(OFlag::O_APPEND) {
             anyhow::bail!("bounce I/O does not support O_APPEND file descriptors");
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (file, allow_direct);
     Ok(())
 }
 
@@ -138,6 +154,11 @@ impl AsyncResolveResource<DiskHandleKind, VirtioBlkBounceDiskHandle> for VirtioB
                 })
                 .into_resource()
             }
+            #[cfg(target_os = "linux")]
+            VirtioBlkBounceDiskHandle::BlockDevice(file) => {
+                validate_bounce_block_device(&file)?;
+                disk_backend_resources::BlockDeviceDiskHandle { file }.into_resource()
+            }
         };
         Ok(resolver.resolve(disk, input).await?)
     }
@@ -203,8 +224,9 @@ mod tests {
             .err()
             .unwrap();
         assert!(
-            format!("{error:#}")
-                .contains("bounce I/O requires a reviewed regular-file or RAM disk resource"),
+            format!("{error:#}").contains(
+                "bounce I/O requires a reviewed file, RAM, or Linux block-device resource"
+            ),
             "{error:#}"
         );
     }
@@ -242,7 +264,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("requires a reviewed regular-file or RAM disk resource")
+                .contains("requires a reviewed file, RAM, or Linux block-device resource")
         );
     }
 
@@ -291,7 +313,9 @@ mod tests {
                 let error = format!("{error:#}");
                 if force || copy_only {
                     assert!(
-                        error.contains("requires a reviewed regular-file or RAM disk resource"),
+                        error.contains(
+                            "requires a reviewed file, RAM, or Linux block-device resource"
+                        ),
                         "{error}"
                     );
                 } else {
@@ -314,8 +338,9 @@ mod tests {
         match resolve_disk(disk, driver, false, &memory).await {
             Ok(device) => assert!(device.0.supports_save_restore()),
             Err(error) => assert!(
-                !format!("{error:#}")
-                    .contains("bounce I/O requires a reviewed regular-file or RAM disk resource"),
+                !format!("{error:#}").contains(
+                    "bounce I/O requires a reviewed file, RAM, or Linux block-device resource"
+                ),
                 "{error:#}"
             ),
         }
@@ -328,8 +353,9 @@ mod tests {
                 .into_resource();
         let error = resolve_bounced_disk(disk, driver).await.err().unwrap();
         assert!(
-            format!("{error:#}")
-                .contains("bounce I/O requires a reviewed regular-file or RAM disk resource"),
+            format!("{error:#}").contains(
+                "bounce I/O requires a reviewed file, RAM, or Linux block-device resource"
+            ),
             "{error:#}"
         );
     }
@@ -388,6 +414,26 @@ mod tests {
             .open("Cargo.toml")
             .unwrap();
         assert!(validate_bounce_file(&file).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[async_test]
+    async fn reviewed_block_resource_rejects_other_descriptor_types(driver: DefaultDriver) {
+        for path in ["Cargo.toml", ".", "/dev/null"] {
+            let file = std::fs::File::open(path).unwrap();
+            assert!(validate_bounce_block_device(&file).is_err());
+            let error = resolve_bounced_disk(
+                VirtioBlkBounceDiskHandle::BlockDevice(file).into_resource(),
+                driver.clone(),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(
+                format!("{error:#}").contains("requires a Linux block device"),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]
