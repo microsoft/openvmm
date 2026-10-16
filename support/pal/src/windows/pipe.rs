@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub mod peer;
-
 use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
@@ -45,11 +43,14 @@ use windows_sys::Win32::Foundation::GENERIC_WRITE;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
 use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
+use windows_sys::Win32::Storage::FileSystem::GetFileType;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Ioctl::FILE_ANY_ACCESS;
 use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
@@ -160,6 +161,28 @@ pub fn new_named_pipe(
     )
 }
 
+/// Creates a new named-pipe path with an explicit security descriptor.
+///
+/// Windows only applies a named pipe's security descriptor when its path is
+/// first created, so this does not support opening another instance of an
+/// existing pipe.
+pub fn new_named_pipe_with_security(
+    path: impl AsRef<Path>,
+    access: u32,
+    mode: PipeMode,
+    security_descriptor: &SecurityDescriptor,
+) -> io::Result<File> {
+    create_named_pipe(
+        null_mut(),
+        path.as_ref(),
+        access,
+        FILE_CREATE,
+        true,
+        mode == PipeMode::Message,
+        Some(security_descriptor),
+    )
+}
+
 fn create_named_pipe(
     root: RawHandle,
     path: &Path,
@@ -181,7 +204,12 @@ fn create_named_pipe(
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
             Attributes: OBJ_CASE_INSENSITIVE,
-            SecurityDescriptor: peer::security_descriptor_ptr(security_descriptor),
+            SecurityDescriptor: security_descriptor.map_or(null_mut(), |descriptor| {
+                descriptor
+                    .as_ptr()
+                    .cast::<SECURITY_DESCRIPTOR>()
+                    .cast_const()
+            }),
             SecurityQualityOfService: null_mut(),
         };
 
@@ -254,6 +282,15 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         let write_pipe = File::from_raw_handle(write_pipe_handle.cast::<c_void>());
         Ok((read_pipe, write_pipe))
     }
+}
+
+/// Returns whether `file` is a pipe, as reported by `GetFileType`.
+///
+/// `GetFileType` also reports sockets as pipes, so this does not guarantee that
+/// [`PipeExt`] operations succeed on `file`.
+pub fn is_pipe(file: &File) -> bool {
+    // SAFETY: `file` owns a valid Windows handle.
+    unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_PIPE }
 }
 
 pub trait PipeExt {
@@ -418,7 +455,23 @@ impl PipeExt for File {
     }
 
     fn is_pipe_peer_closed(&self) -> io::Result<bool> {
-        peer::is_peer_closed(self)
+        // SAFETY: calling with an appropriately sized output buffer.
+        let state = unsafe {
+            let mut iosb = zeroed();
+            let mut info: FILE_PIPE_LOCAL_INFORMATION = zeroed();
+            chk_status(NtQueryInformationFile(
+                self.as_raw_handle().cast::<c_void>(),
+                &mut iosb,
+                std::ptr::from_mut(&mut info).cast(),
+                size_of_val(&info) as u32,
+                FilePipeLocalInformation,
+            ))?;
+            info.NamedPipeState
+        };
+        Ok(matches!(
+            state,
+            FILE_PIPE_DISCONNECTED_STATE | FILE_PIPE_CLOSING_STATE
+        ))
     }
 
     fn get_pipe_peer_process_id(&self) -> io::Result<u32> {
@@ -490,4 +543,113 @@ const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
 struct FILE_PIPE_EVENT_SELECT_BUFFER {
     event_types: u32,
     event_handle: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows::security::LocalSecurityDescriptor;
+    use std::fs::OpenOptions;
+    use test_with_tracing::test;
+    use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+    use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::GetKernelObjectSecurity;
+
+    fn dacl_sddl(file: &File) -> io::Result<String> {
+        // SAFETY: both API calls use buffers of the reported size, and the
+        // returned SDDL string is owned by LocalFree.
+        unsafe {
+            let mut descriptor_size = 0;
+            GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut descriptor_size,
+            );
+            if descriptor_size == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut descriptor = vec![0u8; descriptor_size as usize];
+            if GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr().cast(),
+                descriptor_size,
+                &mut descriptor_size,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut sddl = null_mut();
+            if ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_mut_ptr().cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let sddl_string = U16CStr::from_ptr_str(sddl).to_string_lossy();
+            LocalFree(sddl.cast());
+            Ok(sddl_string)
+        }
+    }
+
+    #[test]
+    fn protected_named_pipe_reports_peer_information() {
+        let descriptor: LocalSecurityDescriptor = "D:P(A;;GA;;;OW)".parse().unwrap();
+        let mut name = [0; 16];
+        getrandom::fill(&mut name).unwrap();
+        let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name));
+
+        let server = new_named_pipe_with_security(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            PipeMode::Byte,
+            &descriptor,
+        )
+        .unwrap();
+        assert_eq!(dacl_sddl(&server).unwrap(), "D:P(A;;FA;;;OW)");
+        assert!(is_pipe(&server));
+        assert!(!server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
+
+        let client = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        assert_eq!(
+            server.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
+        assert_eq!(
+            client.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
+        assert!(is_pipe(&client));
+        assert!(!server.is_pipe_peer_closed().unwrap());
+
+        drop(client);
+        assert!(server.is_pipe_peer_closed().unwrap());
+        server.disconnect_pipe().unwrap();
+        assert!(server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
+    }
+
+    #[test]
+    fn peer_helpers_reject_non_pipes() {
+        let file = File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(!is_pipe(&file));
+        assert!(file.get_pipe_peer_process_id().is_err());
+        assert!(file.is_pipe_peer_closed().is_err());
+    }
 }
