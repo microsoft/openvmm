@@ -42,8 +42,7 @@ pub struct OpenhclIgvmBuildParams {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct OpenhclIgvmFile {
-    pub build_params: OpenhclIgvmBuildParams,
+pub struct OpenhclIgvmOutputs {
     pub openhcl_igvm: WriteVar<OpenhclIgvmOutput>,
     pub openhcl_igvm_extras: WriteVar<OpenhclIgvmExtrasOutput>,
     pub vmfirmwareigvm_dll: Option<WriteVar<VmfirmwareigvmDllOutput>>,
@@ -52,7 +51,7 @@ pub struct OpenhclIgvmFile {
 
 flowey_request! {
     pub struct Params {
-        pub igvm_files: Vec<OpenhclIgvmFile>,
+        pub igvm_files: Vec<(OpenhclIgvmBuildParams, OpenhclIgvmOutputs)>,
     }
 }
 
@@ -69,12 +68,7 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let requests = group_by(
-            requests
-                .into_iter()
-                .flat_map(|r| r.igvm_files)
-                .map(|r| (r.build_params.clone(), r)),
-        );
+        let requests = group_by(requests.into_iter().flat_map(|r| r.igvm_files));
 
         for (
             OpenhclIgvmBuildParams {
@@ -103,10 +97,8 @@ impl FlowNode for Node {
                 openhcl_igvm_extras,
             });
             let mut built_dll = None;
-            let mut built_baseline = None;
 
-            for OpenhclIgvmFile {
-                build_params: _,
+            for OpenhclIgvmOutputs {
                 openhcl_igvm,
                 openhcl_igvm_extras,
                 vmfirmwareigvm_dll,
@@ -135,15 +127,12 @@ impl FlowNode for Node {
                 }
 
                 if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
-                    let built_baseline = built_baseline.get_or_insert_with(|| {
-                        ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
-                            target: custom_target
-                                .clone()
-                                .unwrap_or_else(|| recipe.recipe_details(release_cfg).target),
-                            baseline: v,
-                        })
+                    ctx.req(build_and_publish_openvmm_hcl_baseline::Request {
+                        target: custom_target
+                            .clone()
+                            .unwrap_or_else(|| recipe.recipe_details(release_cfg).target),
+                        baseline: sizecheck_artifact,
                     });
-                    built_baseline.write_into(ctx, sizecheck_artifact);
                 }
             }
         }

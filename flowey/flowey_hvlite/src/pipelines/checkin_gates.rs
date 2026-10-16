@@ -14,7 +14,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
-use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmFile;
+use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmOutputs;
 use flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::artifact_name_openhcl_baseline;
 use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
 use flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode;
@@ -1184,8 +1184,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(gh_pools::default_linux())
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
-                    let mut publish_baseline_artifact = pub_openhcl_baseline
-                        .map(|baseline_artifact| ctx.publish_typed_artifact(baseline_artifact));
+                    let mut pub_openhcl_baseline = pub_openhcl_baseline;
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
@@ -1198,14 +1197,19 @@ impl IntoPipeline for CheckinGatesCli {
                                     && arch == CommonArch::X86_64
                                     && !mi_secure
                                 {
-                                    pub_vmfirmwareigvm_cvm_x64
-                                        .take()
-                                        .map(|artifact| ctx.publish_typed_artifact(artifact))
+                                    pub_vmfirmwareigvm_cvm_x64.take()
                                 } else {
                                     None
                                 };
-                                OpenhclIgvmFile {
-                                    build_params: OpenhclIgvmBuildParams {
+                                // The size baseline always uses the standard recipe,
+                                let baseline_artifact = match recipe {
+                                    OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64 => {
+                                        pub_openhcl_baseline.take()
+                                    }
+                                    _ => None,
+                                };
+                                (
+                                    OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
                                         recipe,
                                         custom_target: Some(CommonTriple::Custom(
@@ -1226,13 +1230,16 @@ impl IntoPipeline for CheckinGatesCli {
                                         // consumed by the VMM tests.
                                         confidential_debug: true,
                                     },
-                                    openhcl_igvm: ctx.publish_typed_artifact(pub_openhcl_igvm),
-                                    openhcl_igvm_extras: ctx
-                                        .publish_typed_artifact(pub_openhcl_igvm_extras),
-                                    vmfirmwareigvm_dll,
-                                    artifact_openhcl_verify_size_baseline:
-                                        publish_baseline_artifact.take(),
-                                }
+                                    OpenhclIgvmOutputs {
+                                        openhcl_igvm: ctx.publish_typed_artifact(pub_openhcl_igvm),
+                                        openhcl_igvm_extras: ctx
+                                            .publish_typed_artifact(pub_openhcl_igvm_extras),
+                                        vmfirmwareigvm_dll: vmfirmwareigvm_dll
+                                            .map(|artifact| ctx.publish_typed_artifact(artifact)),
+                                        artifact_openhcl_verify_size_baseline: baseline_artifact
+                                            .map(|artifact| ctx.publish_typed_artifact(artifact)),
+                                    },
+                                )
                             })
                             .collect(),
                     }

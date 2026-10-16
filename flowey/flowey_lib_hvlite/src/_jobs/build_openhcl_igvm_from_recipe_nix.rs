@@ -10,7 +10,8 @@
 //! Note: `cfg_hvlite_reposource` is intentionally excluded, since pipelines
 //! like `checkin_gates` inject it across all jobs via `inject_all_jobs_with`.
 
-use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmFile;
+use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use crate::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmOutputs;
 use crate::common::CommonArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey::node::prelude::*;
@@ -19,7 +20,7 @@ flowey_request! {
     pub struct Params {
         pub arch: CommonArch,
         pub kernel_kind: OpenhclKernelPackageKind,
-        pub igvm_files: Vec<OpenhclIgvmFile>,
+        pub igvm_files: Vec<(OpenhclIgvmBuildParams, OpenhclIgvmOutputs)>,
     }
 }
 
