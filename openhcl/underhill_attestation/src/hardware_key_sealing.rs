@@ -25,6 +25,8 @@ pub(crate) enum HardwareDerivedKeysError {
 
 #[derive(Debug, Error)]
 pub(crate) enum HardwareKeySealingError {
+    #[error("failed to generate the sealing IV")]
+    GenerateIv(#[source] getrandom::Error),
     #[error("failed to encrypt the egress key")]
     EncryptEgressKey(#[source] crypto::aes_256_cbc::Aes256CbcError),
     #[error("invalid egress key encryption size {0}, expected {1}")]
@@ -103,7 +105,7 @@ impl HardwareDerivedKeys {
         aes_key.copy_from_slice(&output[..vmgs::AES_CBC_KEY_LENGTH]);
         hmac_key.copy_from_slice(&output[vmgs::AES_CBC_KEY_LENGTH..]);
 
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             CVM_ALLOWED,
             svn = ?policy.svn,
             mix_measurement = policy.mix_measurement,
@@ -195,7 +197,7 @@ fn unseal_key_bytes(
     }
     decrypted_ingress_key.copy_from_slice(&output[..vmgs::AES_GCM_KEY_LENGTH]);
 
-    tracing::info!(
+    tracelimit::info_ratelimited!(
         CVM_ALLOWED,
         "decrypt ingress_key using hardware derived key"
     );
@@ -282,7 +284,7 @@ pub fn seal_key(
     );
 
     let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
-    getrandom::fill(&mut iv).expect("rng failure");
+    getrandom::fill(&mut iv).map_err(HardwareKeySealingError::GenerateIv)?;
 
     let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
     let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
@@ -309,7 +311,7 @@ pub fn seal_key(
     )
     .map_err(HardwareKeySealingError::HmacAfterEncrypt)?;
 
-    tracing::info!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
+    tracelimit::info_ratelimited!(CVM_ALLOWED, "encrypt egress_key using hardware derived key");
 
     Ok(hardware_key_protector)
 }
