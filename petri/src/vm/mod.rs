@@ -2659,7 +2659,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             cmd.env(k, v);
         }
 
-        if !self.guest_shares.is_empty() {
+        if self.guest_shares.contains_key(NESTED_CONTENT_TAG) {
             cmd.env(PETRI_NESTED_TEST_PARENT, &self.name);
         }
 
@@ -2685,7 +2685,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         let output = child.wait_with_output().await?;
 
         // copy the files if we aren't sharing the results folder directly
-        if self.guest_shares.is_empty() {
+        if !self.guest_shares.contains_key(NESTED_CONTENT_TAG) {
             let test_results_dir = self.agent_disk_path(&[
                 NESTED_TEST_CONTENT_DIR.into(),
                 NESTED_RESULTS_DIR.into(),
