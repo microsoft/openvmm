@@ -2344,6 +2344,7 @@ dependencies = [
  "clap",
  "flowey",
  "flowey_cli",
+ "flowey_core",
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",
