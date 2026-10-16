@@ -4558,6 +4558,13 @@ impl LoadedVm {
             }
         }
 
+        // Stop the devices before tearing down the partition and guest
+        // memory. Device workers run on their own threads and access guest
+        // memory through direct mappings (e.g., vmbus ring control pages), so
+        // a worker that is still running can touch memory that teardown has
+        // already unmapped, which aborts the process.
+        self.pause().await;
+
         while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
             entry.device.remove().await;
         }
