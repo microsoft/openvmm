@@ -100,6 +100,9 @@ impl Udp {
 /// remembers.
 const MAX_PUBLISHED_PORT_PEERS: usize = 256;
 
+/// Largest number of translated peers that a guest UDP flow remembers.
+const MAX_TRANSLATED_PEERS: usize = 64;
+
 impl InspectMut for Udp {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
@@ -157,6 +160,22 @@ struct UdpConnection {
     #[inspect(debug)]
     last_activity: Instant,
     gso_size: Option<u16>,
+    /// The peers that the guest recently addressed at another address than
+    /// the host address that its datagrams reached, such as the gateway on
+    /// host loopback, by that host address without an IPv6 flow label or
+    /// scope, so that their replies come from the address that the guest
+    /// addressed.
+    #[inspect(with = "HashMap::len")]
+    translated_peers: HashMap<SocketAddr, TranslatedPeer>,
+}
+
+/// A peer that a guest UDP flow addresses at another address than the host
+/// address that its datagrams reach.
+struct TranslatedPeer {
+    /// The peer's address as the guest addresses it.
+    address: SocketAddr,
+    /// When the guest last sent the peer a datagram or the peer last replied.
+    seen: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -176,6 +195,7 @@ impl UdpConnection {
         dst_addr: &SocketAddr,
         state: &mut ConsommeState,
         client: &mut impl Client,
+        timeout: Duration,
     ) -> bool {
         if self.recycle {
             return false;
@@ -208,16 +228,27 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    let ft = match ConsommeState::translate_remote_address(
-                        &state.params,
-                        &mut state.local_addr_map,
-                        &src_addr,
-                        dst_addr.port(),
-                    ) {
-                        Some(ft) => ft,
-                        None => FourTuple {
-                            src: src_addr,
+                    let now = Instant::now();
+                    // A peer that the guest addressed at another address, such
+                    // as the gateway on host loopback, replies from that
+                    // address, as a connected guest socket requires. Other
+                    // host-local peers appear at virtual addresses.
+                    let ft = match self.translated_peer(&src_addr, now, timeout) {
+                        Some(peer) => FourTuple {
+                            src: peer,
                             dst: *dst_addr,
+                        },
+                        None => match ConsommeState::translate_remote_address(
+                            &state.params,
+                            &mut state.local_addr_map,
+                            &src_addr,
+                            dst_addr.port(),
+                        ) {
+                            Some(ft) => ft,
+                            None => FourTuple {
+                                src: src_addr,
+                                dst: *dst_addr,
+                            },
                         },
                     };
                     let packet_len = build_udp_packet(
@@ -236,7 +267,7 @@ impl UdpConnection {
                     };
                     client.recv(&eth.as_ref()[..packet_len], &checksum_state);
                     self.stats.rx_packets.increment();
-                    self.last_activity = Instant::now();
+                    self.last_activity = now;
                 }
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
@@ -249,6 +280,63 @@ impl UdpConnection {
                 Poll::Pending => break true,
             }
         }
+    }
+
+    /// Returns the address at which the guest addressed the peer at host
+    /// address `host`, when they exchanged a datagram within `timeout`, and
+    /// refreshes the peer.
+    fn translated_peer(
+        &mut self,
+        host: &SocketAddr,
+        now: Instant,
+        timeout: Duration,
+    ) -> Option<SocketAddr> {
+        let peer = self
+            .translated_peers
+            .get_mut(&unscoped(*host))
+            .filter(|peer| now.duration_since(peer.seen) <= timeout)?;
+        peer.seen = now;
+        Some(peer.address)
+    }
+
+    /// Remembers that the guest sent a datagram to the peer that it addresses
+    /// as `address` at host address `host`, or forgets the peer at `host` when
+    /// the guest addressed `host` itself. Expired peers and then the oldest
+    /// one are forgotten to stay within [`MAX_TRANSLATED_PEERS`].
+    fn remember_translated_peer(
+        &mut self,
+        host: SocketAddr,
+        address: SocketAddr,
+        now: Instant,
+        timeout: Duration,
+    ) {
+        let host = unscoped(host);
+        if address == host {
+            if !self.translated_peers.is_empty() {
+                self.translated_peers.remove(&host);
+            }
+            return;
+        }
+        if let Some(peer) = self.translated_peers.get_mut(&host) {
+            peer.address = address;
+            peer.seen = now;
+            return;
+        }
+        if self.translated_peers.len() >= MAX_TRANSLATED_PEERS {
+            self.translated_peers
+                .retain(|_, peer| now.duration_since(peer.seen) <= timeout);
+            if self.translated_peers.len() >= MAX_TRANSLATED_PEERS
+                && let Some(oldest) = self
+                    .translated_peers
+                    .iter()
+                    .min_by_key(|(_, peer)| peer.seen)
+                    .map(|(host, _)| *host)
+            {
+                self.translated_peers.remove(&oldest);
+            }
+        }
+        self.translated_peers
+            .insert(host, TranslatedPeer { address, seen: now });
     }
 }
 
@@ -459,7 +547,7 @@ impl<T: Client> Access<'_, T> {
                 return false;
             }
 
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client, timeout)
         });
 
         for listener in self.inner.udp.listeners.values_mut() {
@@ -622,6 +710,8 @@ impl<T: Client> Access<'_, T> {
             }
         };
 
+        // The peer as the guest addresses it, from which its replies come.
+        let peer_addr = dst_sock_addr;
         // Resolve virtual mapped addresses back to the real host address.
         let mut dst_sock_addr = self
             .inner
@@ -637,6 +727,7 @@ impl<T: Client> Access<'_, T> {
             }
         }
 
+        let timeout = self.inner.udp.timeout;
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
         let socket = conn.socket.as_ref().unwrap().get();
         if conn.gso_size != checksum.gso {
@@ -647,8 +738,10 @@ impl<T: Client> Access<'_, T> {
         let result = platform::send_to(socket, udp_packet.payload(), &dst_sock_addr, checksum.gso);
         match result {
             Ok(_) => {
+                let now = Instant::now();
                 conn.stats.tx_packets.increment();
-                conn.last_activity = Instant::now();
+                conn.last_activity = now;
+                conn.remember_translated_peer(dst_sock_addr, peer_addr, now, timeout);
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -717,6 +810,7 @@ impl<T: Client> Access<'_, T> {
                     recycle: false,
                     last_activity: Instant::now(),
                     gso_size: None,
+                    translated_peers: HashMap::new(),
                 };
                 Ok(e.insert(conn))
             }
@@ -1030,6 +1124,7 @@ fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
 #[cfg(all(unix, test))]
 mod tests {
     mod limits;
+    mod translated_peers;
 
     use super::*;
     use crate::Consomme;

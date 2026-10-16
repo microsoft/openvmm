@@ -104,7 +104,9 @@ headers, including fragments. The legacy `--allow-host`, `--block-host`, and
 The portable profile provides generic bidirectional host-loopback connectivity
 with explicit `--host-loopback allow`, which needs no port list. The
 guest-visible gateway then maps to host loopback, and the guest may reach
-host-local destinations subject to the egress policy. Consomme presents host
+host-local destinations subject to the egress policy. Replies on the guest's
+own flows come from the address and port that the guest addressed, such as the
+gateway, as connected UDP sockets require. Consomme presents other host
 peers to the guest at virtual addresses inside the guest's subnet of their
 family, allocated downward from its high end, so that the guest answers them
 from its address in that subnet. The endpoint's egress policy evaluates the
