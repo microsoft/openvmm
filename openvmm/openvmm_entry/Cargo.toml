@@ -103,6 +103,7 @@ unicycle.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap.workspace = true
+nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 vmswitch.workspace = true

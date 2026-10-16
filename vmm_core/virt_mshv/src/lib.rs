@@ -652,7 +652,8 @@ impl virt::Processor for MshvProcessor<'_> {
                 }
             }
 
-            match self.runner.run() {
+            let exit = self.runner.run();
+            match exit {
                 Ok(exit) => {
                     self.handle_exit(&exit, dev).await?;
                 }
@@ -925,16 +926,9 @@ impl virt::PartitionMemoryMapper for MshvPartition {
 // TODO: figure out a better abstraction that also works for KVM and WHP.
 impl virt::PartitionHostAccess for MshvPartitionInner {
     fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
-        // TODO: The current prototype only provides the acquisition half of
-        // the host-visibility lifecycle. This is sufficient for single-threaded
-        // bring-up with no concurrent page-state changes, but the GPA attribute
-        // intercept revocation path must share serialized state with
-        // acquire_snp_host_access before concurrent use is safe.
-        // TODO: Investigate whether MSHV supports read-only host-access
-        // requests and use `_write` to avoid granting write access for reads.
         #[cfg(guest_arch = "x86_64")]
-        if self.isolation.snp().is_some() {
-            return arch::acquire_snp_host_access(self, _addr, _size);
+        if let Some(snp) = self.isolation.snp() {
+            return snp.acquire_host_access(self, _addr, _size, _write);
         }
         anyhow::bail!("acquiring host access is not supported")
     }
@@ -1100,7 +1094,6 @@ impl MshvDoorbellEntry {
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }
-
         Ok(Self {
             partition: Arc::downgrade(partition),
             event,

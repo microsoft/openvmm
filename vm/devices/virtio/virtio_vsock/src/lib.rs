@@ -47,6 +47,9 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use task_control::AsyncRun;
 use task_control::StopTask;
 use task_control::TaskControl;
@@ -82,6 +85,10 @@ pub struct VirtioVsockDevice {
     started_queues: [Option<VirtioQueue>; QUEUE_COUNT],
     #[inspect(skip)]
     base_path: PathBuf,
+    bounce_io: bool,
+    fresh_queues: bool,
+    #[inspect(skip)]
+    failed: Arc<AtomicBool>,
 }
 
 impl VirtioVsockDevice {
@@ -108,13 +115,29 @@ impl VirtioVsockDevice {
         let driver = driver_source.simple();
         let listener = PolledSocket::new(&driver, listener)
             .context("failed to create polled socket for vsock relay listener")?;
+        let failed = Arc::new(AtomicBool::new(false));
         Ok(Self {
             guest_cid,
             driver: driver.clone(),
-            worker: TaskControl::new(VsockWorker { driver, listener }),
+            worker: TaskControl::new(VsockWorker {
+                driver,
+                listener,
+                failed: failed.clone(),
+            }),
             started_queues: [const { None }; QUEUE_COUNT],
             base_path,
+            bounce_io: false,
+            fresh_queues: false,
+            failed,
         })
+    }
+
+    /// Uses bounded owned buffers for socket I/O instead of guest mappings.
+    ///
+    /// This changes device memory access, not hypervisor host-access permissions.
+    pub fn with_bounce_io(mut self) -> Self {
+        self.bounce_io = true;
+        self
     }
 }
 
@@ -159,6 +182,29 @@ impl VirtioDevice for VirtioVsockDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<virtio::queue::QueueState>,
     ) -> anyhow::Result<()> {
+        if resources.guest_memory.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            anyhow::ensure!(
+                self.bounce_io || self.started_queues.iter().all(Option::is_none),
+                "cannot change vsock memory policy with active queues"
+            );
+            self.bounce_io = true;
+        }
+        anyhow::ensure!(
+            !self.worker.has_state(),
+            "virtio-vsock worker already started"
+        );
+        if self.failed.load(Ordering::Relaxed) {
+            anyhow::ensure!(
+                initial_state.is_none(),
+                "cannot restore retired virtio-vsock queues"
+            );
+        }
+        if self.bounce_io || self.failed.load(Ordering::Relaxed) {
+            anyhow::ensure!(
+                self.fresh_queues || self.started_queues.iter().all(Option::is_none),
+                "stop all old virtio-vsock queues before resetting"
+            );
+        }
         if self
             .started_queues
             .get(idx as usize)
@@ -182,10 +228,15 @@ impl VirtioDevice for VirtioVsockDevice {
         let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create queue event")?;
 
+        let memory = if self.bounce_io {
+            resources.guest_memory.copy_only_view()
+        } else {
+            resources.guest_memory
+        };
         let queue = VirtioQueue::new(
             *features,
             resources.params,
-            resources.guest_memory.clone(),
+            memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
@@ -193,14 +244,19 @@ impl VirtioDevice for VirtioVsockDevice {
         .context("failed to create virtio queue")?;
 
         self.started_queues[idx as usize] = Some(queue);
+        self.fresh_queues |= self.bounce_io || self.failed.load(Ordering::Relaxed);
 
         // Start the worker if all queues are started.
         if self.started_queues.iter().all(|q| q.is_some()) {
+            // Only a complete fresh queue generation can clear retirement.
+            // Old queue cursors must not replay socket I/O or used markers.
+            self.failed.store(false, Ordering::Relaxed);
+            self.fresh_queues = false;
             let state = VsockWorkerState {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
                 _event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
-                memory: resources.guest_memory.clone(),
+                memory,
                 connections: ConnectionManager::new(self.guest_cid, self.base_path.clone()),
                 rx_ready: FuturesUnordered::new(),
                 write_ready: FuturesUnordered::new(),
@@ -216,7 +272,8 @@ impl VirtioDevice for VirtioVsockDevice {
 
     async fn stop_queue(&mut self, idx: u16) -> Option<virtio::queue::QueueState> {
         // Stop the worker task (cancels the run loop via until_stopped).
-        if self.worker.stop().await {
+        if self.worker.has_state() {
+            self.worker.stop().await;
             let state = self.worker.remove();
 
             // Transfer the queues back, so we can return the state as each one is stopped
@@ -227,9 +284,14 @@ impl VirtioDevice for VirtioVsockDevice {
         }
 
         // Remove the queue state (drops VirtioQueue).
-        self.started_queues[idx as usize]
+        self.started_queues
+            .get_mut(idx as usize)?
             .take()
             .map(|queue| queue.queue_state())
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        !self.bounce_io && !self.failed.load(Ordering::Relaxed)
     }
 }
 
@@ -321,19 +383,27 @@ impl VsockWorkerState {
 struct VsockWorker {
     driver: VmTaskDriver,
     listener: PolledSocket<UnixListener>,
+    failed: Arc<AtomicBool>,
 }
 
 impl VsockWorker {
     /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
+    fn handle_guest_tx(
+        &mut self,
+        state: &mut VsockWorkerState,
+        work: VirtioQueueCallbackWork,
+    ) -> anyhow::Result<()> {
         if let Err(err) = self.handle_guest_tx_inner(state, &work) {
-            tracelimit::error_ratelimited!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "error handling vsock tx work"
-            );
+            if state.memory.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+                return Err(err);
+            }
+            tracelimit::error_ratelimited!(%err, "error handling vsock tx work");
         }
-
-        state.tx_queue.get_mut().complete(work, 0);
+        state
+            .tx_queue
+            .get_mut()
+            .complete(work.into_completion(), 0)
+            .context("failed to publish vsock tx completion")
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
@@ -343,7 +413,11 @@ impl VsockWorker {
         work: &VirtioQueueCallbackWork,
     ) -> anyhow::Result<()> {
         let mut header = VsockHeader::new_zeroed();
-        work.read(&state.memory, header.as_mut_bytes())?;
+        let capacity = payload_capacity(&work.payload, false)?;
+        anyhow::ensure!(
+            work.read(&state.memory, header.as_mut_bytes())? == VSOCK_HEADER_SIZE,
+            "guest buffer too small for vsock header"
+        );
 
         let rw_len = if header.operation() == Operation::RW {
             // Unaligned field read.
@@ -361,6 +435,10 @@ impl VsockWorker {
             // Ignore the length field for other packets (it should always be zero).
             0
         };
+        anyhow::ensure!(
+            capacity >= VSOCK_HEADER_SIZE as u64 + u64::from(rw_len),
+            "data length mismatch in vsock tx packet"
+        );
 
         tracing::trace!(?header, "got tx packet from guest");
         let pending = {
@@ -383,7 +461,7 @@ impl VsockWorker {
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
             } else {
                 // Use a temp bounce buffer if the payload couldn't be locked.
-                let mut temp_buf = vec![0u8; rw_len as usize];
+                let mut temp_buf = payload_buffer(rw_len as usize)?;
                 let read_bytes =
                     work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
                 if read_bytes != temp_buf.len() {
@@ -391,6 +469,12 @@ impl VsockWorker {
                         "expected to read {} bytes of payload, but only read {}",
                         temp_buf.len(),
                         read_bytes
+                    );
+                }
+                if state.memory.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+                    tracelimit::info_ratelimited!(
+                        bytes = read_bytes,
+                        "virtio-vsock TX uses owned stream memory"
                     );
                 }
                 state.connections.handle_guest_tx(
@@ -429,14 +513,23 @@ impl VsockWorker {
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
-    fn handle_host_rx(&mut self, state: &mut VsockWorkerState, rx_ready: RxReady) {
+    fn handle_host_rx(
+        &mut self,
+        state: &mut VsockWorkerState,
+        rx_ready: RxReady,
+    ) -> anyhow::Result<()> {
         // Due to lifetime issues the PeekedWork cannot be passed into this function so get it
         // back here.
         let peeked_work = state
             .rx_queue
-            .try_peek()
-            .expect("peek already succeeded before")
-            .expect("queue was already checked to have items");
+            .try_peek()?
+            .context("vsock rx descriptor disappeared")?;
+        if state.memory.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            anyhow::ensure!(
+                payload_capacity(peeked_work.payload(), true)? >= VSOCK_HEADER_SIZE as u64,
+                "guest buffer too small for vsock header"
+            );
+        }
 
         let (packet, pending) = state.connections.get_rx_packet(
             &state.memory,
@@ -451,23 +544,24 @@ impl VsockWorker {
             let bytes = match Self::write_packet(state, &queue_work, &packet) {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    tracelimit::error_ratelimited!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "failed to write vsock packet"
-                    );
-
-                    // We can't recover from this. Remove the connection so any future attempts to use
-                    // it will fail.
+                    if state.memory.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+                        return Err(err);
+                    }
+                    tracelimit::error_ratelimited!(%err, "failed to write vsock packet");
                     state
                         .connections
                         .remove(&ConnectionKey::from_rx_packet(&packet.header));
                     0
                 }
             };
-            state.rx_queue.complete(queue_work, bytes);
+            state
+                .rx_queue
+                .complete(queue_work.into_completion(), bytes)
+                .context("failed to publish vsock rx completion")?;
         }
 
         state.queue_pending(pending);
+        Ok(())
     }
 }
 
@@ -483,11 +577,11 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                 let peeked = match state.rx_queue.try_peek() {
                     Ok(p) => p,
                     Err(err) => {
-                        tracing::error!(
+                        tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             "error peeking virtio rx queue"
                         );
-                        return;
+                        break;
                     }
                 };
 
@@ -509,22 +603,30 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     }
                     r = state.tx_queue.select_next_some() => {
                         match r {
-                            Ok(work) => self.handle_guest_tx(state, work),
+                            Ok(work) => {
+                                if let Err(err) = self.handle_guest_tx(state, work) {
+                                    tracelimit::error_ratelimited!(%err, "vsock tx failed; retiring queues");
+                                    break;
+                                }
+                            }
                             Err(err) => {
                                 // The queue is retired: the rejected chain is
                                 // never consumed, so retrying would fail
                                 // identically forever.
-                                tracing::error!(
+                                tracelimit::error_ratelimited!(
                                     error = &err as &dyn std::error::Error,
                                     "error reading from virtio tx queue, stopping worker"
                                 );
-                                return;
+                                break;
                             }
                         }
                     }
                     r = rx_ready => {
                         let work = r.unwrap();
-                        self.handle_host_rx(state, work);
+                        if let Err(err) = self.handle_host_rx(state, work) {
+                            tracelimit::error_ratelimited!(%err, "vsock rx failed; retiring queues");
+                            break;
+                        }
                     }
                     _ = rx_queue_kick => {
                         // New buffers are available in the rx queue; repeat the loop to peek again.
@@ -535,7 +637,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                 tracing::trace!("host unix socket accepted");
                                 match state.connections.handle_host_connect(&self.driver, stream) {
                                     Err(err) => {
-                                        tracing::error!(
+                                        tracelimit::error_ratelimited!(
                                             error = err.as_ref() as &dyn std::error::Error,
                                             "error handling Unix socket connect"
                                         );
@@ -546,7 +648,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                     }
                                 }
                             }
-                            Err(err) => tracing::error!(
+                            Err(err) => tracelimit::error_ratelimited!(
                                 error = &err as &dyn std::error::Error,
                                 "error accepting host connections"
                             ),
@@ -554,6 +656,12 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     }
                 };
             }
+            self.failed.store(true, Ordering::Relaxed);
+            // Close sockets before dropping their readiness futures. No socket
+            // operation retains a guest mapping or an owned payload buffer.
+            state.connections.clear();
+            state.rx_ready = FuturesUnordered::new();
+            state.write_ready = FuturesUnordered::new();
         })
         .await
     }
@@ -613,9 +721,18 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     writable: bool,
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
-    if !mem.supports_locking() {
-        // Memory behind an emulated IOMMU has no stable host mapping to lock,
-        // so fall back to a bounce buffer via read_at/write_at.
+    let capacity = payload_capacity(payload, writable)?;
+    anyhow::ensure!(
+        data_len <= u64::from(TX_BUF_SIZE),
+        "vsock payload too large"
+    );
+    anyhow::ensure!(
+        capacity >= VSOCK_HEADER_SIZE as u64
+            && (!require_exact_len || capacity - VSOCK_HEADER_SIZE as u64 >= data_len),
+        "data length mismatch in vsock packet"
+    );
+    if !mem.supports_kernel_lock() {
+        // Copy-only memory and emulated IOMMUs use read_at/write_at.
         return Ok(None);
     }
 
@@ -626,7 +743,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
             anyhow::bail!("data length mismatch in vsock tx packet");
         }
         let paged_range =
-            PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
+            PagedRange::new(*offset, *len, gpns).context("invalid vsock paged range")?;
         Some(mem.lock_range(
             if writable {
                 guestmem::AccessType::Write
@@ -642,4 +759,126 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     };
 
     Ok(locked)
+}
+
+/// Validate guest ranges before copy operations or GPN expansion.
+fn payload_capacity(payload: &[VirtioQueuePayload], writable: bool) -> anyhow::Result<u64> {
+    payload.iter().try_fold(0u64, |capacity, p| {
+        p.address
+            .checked_add(u64::from(p.length))
+            .context("vsock descriptor address overflow")?;
+        if p.writeable == writable {
+            capacity
+                .checked_add(u64::from(p.length))
+                .context("vsock descriptor capacity overflow")
+        } else {
+            Ok(capacity)
+        }
+    })
+}
+
+fn payload_buffer(len: usize) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(len <= TX_BUF_SIZE as usize, "vsock payload too large");
+    Ok(vec![0; len])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn copy_only_uses_bounce_for_direct_compatible_payload() {
+        let memory = GuestMemory::allocate(3 * guestmem::PAGE_SIZE);
+        let payload = [
+            VirtioQueuePayload {
+                address: 0,
+                length: VSOCK_HEADER_SIZE as u32,
+                writeable: false,
+            },
+            VirtioQueuePayload {
+                address: guestmem::PAGE_SIZE as u64,
+                length: guestmem::PAGE_SIZE as u32,
+                writeable: false,
+            },
+        ];
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                true,
+                false,
+                LockedIoSlice::new(),
+            )
+            .unwrap()
+            .is_some()
+        );
+        let memory = memory.copy_only_view();
+        assert!(!memory.supports_kernel_lock());
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                true,
+                false,
+                LockedIoSlice::new(),
+            )
+            .unwrap()
+            .is_none()
+        );
+        let payload = [
+            VirtioQueuePayload {
+                address: 0,
+                length: VSOCK_HEADER_SIZE as u32,
+                writeable: true,
+            },
+            VirtioQueuePayload {
+                address: guestmem::PAGE_SIZE as u64,
+                length: guestmem::PAGE_SIZE as u32,
+                writeable: true,
+            },
+        ];
+        assert!(
+            lock_payload_data(
+                &memory,
+                &payload,
+                guestmem::PAGE_SIZE as u64,
+                false,
+                true,
+                LockedIoSliceMut::new(),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn payload_validation_rejects_overflow_short_header_and_oversize() {
+        let memory = GuestMemory::allocate(guestmem::PAGE_SIZE).copy_only_view();
+        for (address, length, data_len) in [
+            (u64::MAX - 10, 44, 0),
+            (0, 43, 0),
+            (0, 44, u64::from(TX_BUF_SIZE) + 1),
+            (0, 45, 2),
+        ] {
+            assert!(
+                lock_payload_data(
+                    &memory,
+                    &[VirtioQueuePayload {
+                        address,
+                        length,
+                        writeable: false,
+                    }],
+                    data_len,
+                    true,
+                    false,
+                    LockedIoSlice::new(),
+                )
+                .is_err()
+            );
+        }
+        assert!(payload_buffer(TX_BUF_SIZE as usize + 1).is_err());
+    }
 }

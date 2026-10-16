@@ -70,8 +70,11 @@ pub trait PartitionMemoryMap: Send + Sync {
 pub trait PartitionHostAccess: Send + Sync {
     /// Acquires host access without changing guest visibility.
     ///
-    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
-    /// required to safely lower host access and track that pages are not
-    /// currently in use before revoking access.
+    /// Called on a contained mapping fault. Confirmed grants remain until a
+    /// guest attribute conflict requires their release.
+    /// Repeated acquisition and read-to-write upgrades must be supported.
+    ///
+    /// An error does not promise that no page in the range was granted.
+    /// The backend owns permission-state recovery and backing lifetime on failure.
     fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()>;
 }
