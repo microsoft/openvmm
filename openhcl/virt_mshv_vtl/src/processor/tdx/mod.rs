@@ -1285,7 +1285,7 @@ impl BackingPrivate for TdxBacked {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
+    fn poll_interrupt_controller(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
         if !this.try_poll_apic(vtl, scan_irr) {
             tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
