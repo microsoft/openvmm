@@ -52,8 +52,11 @@ specifying the output directory:
 save-snapshot path/to/snapshot-dir
 ```
 
-OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
-into the specified directory.
+OpenVMM writes `state.bin`, a hard link to `memory.bin`, and finally
+`manifest.bin` into the specified directory. The save is refused if the
+directory already contains a snapshot (`manifest.bin`) or a `memory.bin` that
+is not the VM's memory backing file, so an existing snapshot is never
+overwritten. If the save fails, the files it created are removed.
 
 ```admonish warning
 After saving, the VM remains **paused** and resume is blocked. Resuming
@@ -78,6 +81,21 @@ cargo run -- \
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
+
+```admonish warning
+`memory.bin` is used in place as the restored VM's memory, so running the
+restored VM modifies the snapshot. A snapshot can be restored only once;
+restoring it again would combine modified memory with the original device
+state.
+```
+
+The programmatic `RestoreVM` API also supports eager-copy restore. In that
+mode OpenVMM allocates independent RAM for the restored VM and copies
+`memory.bin` into it before applying processor and device state. Multiple
+OpenVMM processes can therefore restore isolated clones from the same
+snapshot. This option is currently exposed through
+`VMConfig.memory_config.source`; the `--restore-snapshot` CLI continues to use
+the shared-in-place behavior described above.
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -181,9 +199,9 @@ immediately with a clear error if any active device does not support it.
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
 - After restoring, `memory.bin` in the snapshot directory becomes the live
-  guest RAM backing file and will be modified as the VM runs. To restore
-  from the same snapshot multiple times, copy the snapshot directory before
-  each restore.
+  guest RAM backing file and will be modified as the VM runs when using the
+  CLI or the programmatic shared-in-place mode. Programmatic eager-copy
+  restore keeps the snapshot reusable.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - VMs using PCAT firmware do not support save/restore

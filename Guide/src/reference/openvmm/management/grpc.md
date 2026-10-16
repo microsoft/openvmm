@@ -32,6 +32,8 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
+* SaveVM
+* RestoreVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -41,6 +43,40 @@ before their implementation is connected end to end.
 * AddVpciDevice
 * RemoveVpciDevice
 * Quit
+
+`SaveVM` is a compound operation that pauses the VM and writes `manifest.bin`,
+`state.bin`, and `memory.bin` to the requested directory. The VM must use the
+`MemoryConfig.backing_file_path` setting. The currently supported
+implementation hard-links that backing file into the snapshot, and the VM
+remains paused and cannot be resumed afterward. Each save generates a unique
+snapshot ID (a GUID string) that is stored in
+`manifest.bin` and returned in `SaveVmResult.snapshot_id`. A destination that
+already contains a snapshot is rejected, and `manifest.bin` is written last.
+Cancelling `SaveVM` only stops the caller from waiting; the save may still
+complete.
+
+`RestoreVM` creates a VM from a snapshot directory and a compatible
+`VMConfig`. Device configuration is not stored in the snapshot and must be
+supplied by the caller. `MemoryConfig.source` selects how the snapshot memory
+is populated:
+
+* If `source` is absent, or explicitly selects `SHARED_IN_PLACE`,
+  `memory.bin` is used directly as mutable guest memory.
+  `MemoryConfig.backing_file_path` must be absent, and the snapshot is no
+  longer reusable after the restored VM runs.
+* `EAGER_COPY` allocates independent guest RAM and copies `memory.bin` into it
+  before processor and device state is restored. If
+  `MemoryConfig.backing_file_path` is supplied, that file is created or reused
+  as the clone's writable backing; otherwise OpenVMM allocates a fresh shared
+  memory object. The source snapshot remains reusable by other clones.
+
+The initial eager-copy implementation supports one memory object on KVM and
+WHP, for both direct Linux boot and UEFI. The public population choices are
+currently limited to `EAGER_COPY` and `SHARED_IN_PLACE`. If
+`expected_snapshot_id` is provided, the restore fails unless it matches the
+snapshot ID in `manifest.bin`. The restored snapshot's ID is returned in
+`RestoreVmResult.snapshot_id`. Set `resume` to start the restored VM
+immediately; otherwise it is created paused.
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host

@@ -26,7 +26,11 @@ use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use pal_async::DefaultPool;
 use sparse_mmap::SparseMapping;
+use std::fs::File;
 use std::io;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
@@ -75,6 +79,9 @@ struct RamBacking {
     transparent_hugepages: bool,
     /// Host NUMA node for this backing. `None` means OS default placement.
     host_numa_node: Option<u32>,
+    /// File to populate this backing from at build time. Taken (and closed)
+    /// once population completes.
+    copy_from: Option<File>,
 }
 
 #[derive(Debug)]
@@ -151,6 +158,38 @@ pub enum MemoryBuildError {
     /// Private memory is incompatible with an existing memory backing.
     #[error("private memory is incompatible with an existing memory backing")]
     PrivateMemoryWithExistingBacking,
+    /// Populating a backing from a file requires shared memory.
+    #[error("populating guest RAM from a file requires shared memory")]
+    PopulateWithPrivateMemory,
+    /// Failed to inspect the population source file.
+    #[error("failed to inspect the guest RAM population source")]
+    PopulateSource(#[source] io::Error),
+    /// The population source does not match the backing size.
+    #[error("guest RAM population source has size {file_len} bytes, expected {backing_len} bytes")]
+    PopulateSizeMismatch {
+        /// Size of the population source.
+        file_len: u64,
+        /// Total size of the backing's RAM ranges.
+        backing_len: u64,
+    },
+    /// Failed to read the population source.
+    #[error("failed to read guest RAM population source for RAM range {range}")]
+    PopulateRead {
+        /// The GPA range being populated.
+        range: MemoryRange,
+        /// The read error.
+        #[source]
+        error: io::Error,
+    },
+    /// Failed to write populated data into guest RAM.
+    #[error("failed to populate RAM range {range}")]
+    PopulateWrite {
+        /// The GPA range being populated.
+        range: MemoryRange,
+        /// The write error.
+        #[source]
+        error: guestmem::GuestMemoryError,
+    },
     /// Hugepage size is too large.
     #[error("hugepage size {0} is too large")]
     HugepageSizeTooLarge(MemorySize),
@@ -213,6 +252,7 @@ pub struct RamBackingRequest {
     hugepage_size: Option<u64>,
     existing_mappable: Option<Mappable>,
     host_numa_node: Option<u32>,
+    copy_from: Option<File>,
 }
 
 impl RamBackingRequest {
@@ -230,6 +270,7 @@ impl RamBackingRequest {
             hugepage_size: None,
             existing_mappable: None,
             host_numa_node: None,
+            copy_from: None,
         }
     }
 
@@ -269,6 +310,19 @@ impl RamBackingRequest {
     /// When set, no new allocation is performed for this backing.
     pub fn existing_mappable(mut self, mappable: Mappable) -> Self {
         self.existing_mappable = Some(mappable);
+        self
+    }
+
+    /// Populate this backing from `file` at build time.
+    ///
+    /// `file` must hold this backing's contents in backing layout order: each
+    /// RAM range's bytes at the same offset the range occupies within the
+    /// backing. Its length must equal the sum of the range lengths. The
+    /// backing itself is allocated normally (or taken from
+    /// [`Self::existing_mappable`]); `file` is only read. Requires shared
+    /// memory.
+    pub fn copy_from(mut self, file: File) -> Self {
+        self.copy_from = Some(file);
         self
     }
 
@@ -337,6 +391,34 @@ fn validate_hugepage_ram_alignment(
                 range_size: MemorySize(range.len()),
                 hugepage_size: MemorySize(hugepage_size),
             });
+        }
+    }
+    Ok(())
+}
+
+/// Copies `(range, offset)` pairs from `file` into guest memory: the bytes at
+/// `offset` within `file` are written to `range`.
+fn populate_ranges(
+    file: &mut (impl Read + Seek),
+    guest_memory: &GuestMemory,
+    plan: impl IntoIterator<Item = (MemoryRange, u64)>,
+) -> Result<(), MemoryBuildError> {
+    const BUFFER_SIZE: usize = 1024 * 1024;
+
+    let mut buffer = vec![0; BUFFER_SIZE];
+    for (range, offset) in plan {
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| MemoryBuildError::PopulateRead { range, error })?;
+        let mut copied = 0u64;
+        while copied < range.len() {
+            let chunk_len = (range.len() - copied).min(BUFFER_SIZE as u64) as usize;
+            let chunk = &mut buffer[..chunk_len];
+            file.read_exact(chunk)
+                .map_err(|error| MemoryBuildError::PopulateRead { range, error })?;
+            guest_memory
+                .write_at(range.start() + copied, chunk)
+                .map_err(|error| MemoryBuildError::PopulateWrite { range, error })?;
+            copied += chunk_len as u64;
         }
     }
     Ok(())
@@ -428,6 +510,9 @@ impl GuestMemoryBuilder {
             if req.private_memory && req.existing_mappable.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
             }
+            if req.private_memory && req.copy_from.is_some() {
+                return Err(MemoryBuildError::PopulateWithPrivateMemory);
+            }
             if req.host_numa_node.is_some()
                 && cfg!(not(any(target_os = "linux", target_os = "windows")))
             {
@@ -489,6 +574,7 @@ impl GuestMemoryBuilder {
                     prefetch: req.prefetch,
                     transparent_hugepages: req.transparent_hugepages,
                     host_numa_node: req.host_numa_node,
+                    copy_from: None,
                 });
                 continue;
             }
@@ -551,6 +637,7 @@ impl GuestMemoryBuilder {
                 // backings are already huge, so suppress THP there.
                 transparent_hugepages: req.transparent_hugepages && !req.hugepages,
                 host_numa_node: req.host_numa_node,
+                copy_from: req.copy_from,
             });
         }
 
@@ -583,7 +670,12 @@ impl GuestMemoryBuilder {
 
         // Build RAM regions from each backing's ranges.
         let mut ram_regions = Vec::new();
-        for backing in &backings {
+        // (backing index, GPA range, offset within the backing) for every
+        // range of a backing that is populated from a file. Recorded with the
+        // same `file_offset` used to map the range, so population can never
+        // disagree with the backing layout.
+        let mut populate_plan = Vec::new();
+        for (backing_index, backing) in backings.iter().enumerate() {
             let mut file_offset = 0u64;
             for range in &backing.ranges {
                 // Split for x86 legacy PAM/VGA regions if needed.
@@ -664,8 +756,43 @@ impl GuestMemoryBuilder {
                         range: *sub_range,
                         handle: region,
                     });
+                    if backing.copy_from.is_some() {
+                        populate_plan.push((backing_index, *sub_range, file_offset));
+                    }
                     file_offset += sub_range.len();
                 }
+            }
+        }
+
+        if !populate_plan.is_empty() {
+            let guest_memory = GuestMemory::new(
+                "ram-populate",
+                mapping_manager
+                    .client()
+                    .new_mapper(false)
+                    .await
+                    .map_err(MemoryBuildError::VaMapper)?,
+            );
+            for (backing_index, backing) in backings.iter_mut().enumerate() {
+                let Some(mut file) = backing.copy_from.take() else {
+                    continue;
+                };
+                let backing_len: u64 = backing.ranges.iter().map(|r| r.len()).sum();
+                let file_len = file
+                    .metadata()
+                    .map_err(MemoryBuildError::PopulateSource)?
+                    .len();
+                if file_len != backing_len {
+                    return Err(MemoryBuildError::PopulateSizeMismatch {
+                        file_len,
+                        backing_len,
+                    });
+                }
+                let plan = populate_plan
+                    .iter()
+                    .filter(|(index, ..)| *index == backing_index)
+                    .map(|&(_, range, offset)| (range, offset));
+                populate_ranges(&mut file, &guest_memory, plan)?;
             }
         }
 
@@ -947,6 +1074,140 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    /// Returns a file containing `bytes`.
+    fn source_file(bytes: &[u8]) -> File {
+        use std::io::Write;
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        file
+    }
+
+    /// Returns `len` bytes where each page is filled with its page index.
+    fn page_indexed(len: u64) -> Vec<u8> {
+        let page = SparseMapping::page_size() as u64;
+        (0..len).map(|offset| (offset / page) as u8).collect()
+    }
+
+    #[async_test]
+    async fn copy_from_populates_discontiguous_ranges() {
+        let page = SparseMapping::page_size() as u64;
+        let ranges = vec![
+            MemoryRange::new(0..page),
+            MemoryRange::new(2 * page..3 * page),
+        ];
+        let mut bytes = vec![0xaa; page as usize];
+        bytes.extend(vec![0xbb; page as usize]);
+        let mgr = GuestMemoryBuilder::new()
+            .add_backing(RamBackingRequest::new(ranges).copy_from(source_file(&bytes)))
+            .build(3 * page)
+            .await
+            .unwrap();
+        let gm = mgr.client().guest_memory().await.unwrap();
+
+        let mut buf = vec![0u8; page as usize];
+        gm.read_at(0, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0xaa));
+        gm.read_at(2 * page, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0xbb));
+    }
+
+    /// The x86 legacy split carves low memory into PAM/VGA regions. Population
+    /// must follow the same layout, so every byte lands at its GPA.
+    #[async_test]
+    async fn copy_from_follows_x86_legacy_split() {
+        const SIZE: u64 = 0x200000;
+        let page = SparseMapping::page_size() as u64;
+        let bytes = page_indexed(SIZE);
+        let mgr = GuestMemoryBuilder::new()
+            .x86_legacy_support(true)
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..SIZE)])
+                    .copy_from(source_file(&bytes)),
+            )
+            .build(SIZE)
+            .await
+            .unwrap();
+        let gm = mgr.client().guest_memory().await.unwrap();
+
+        let mut buf = vec![0u8; page as usize];
+        for gpa in [0, 0x9f000, 0xa0000, 0xc4000, 0xf0000, 0x100000, SIZE - page] {
+            gm.read_at(gpa, &mut buf).unwrap();
+            let expected = (gpa / page) as u8;
+            assert!(
+                buf.iter().all(|&b| b == expected),
+                "GPA {gpa:#x} expected page index {expected:#x}"
+            );
+        }
+    }
+
+    #[async_test]
+    async fn copy_from_writes_into_existing_mappable() {
+        let page = SparseMapping::page_size() as u64;
+        let size = 4 * page;
+        let ranges = vec![MemoryRange::new(0..size)];
+        let destination: Mappable = sparse_mmap::alloc_shared_memory(size as usize, "dest")
+            .unwrap()
+            .into();
+        let bytes = page_indexed(size);
+        let mgr = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(ranges.clone())
+                    .existing_mappable(destination.clone())
+                    .copy_from(source_file(&bytes)),
+            )
+            .build(size)
+            .await
+            .unwrap();
+        drop(mgr);
+
+        // Map the destination again without population: the bytes must
+        // already be in the destination object itself.
+        let mgr = GuestMemoryBuilder::new()
+            .add_backing(RamBackingRequest::new(ranges).existing_mappable(destination))
+            .build(size)
+            .await
+            .unwrap();
+        let gm = mgr.client().guest_memory().await.unwrap();
+        let mut buf = vec![0u8; size as usize];
+        gm.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, bytes);
+    }
+
+    #[async_test]
+    async fn copy_from_rejects_size_mismatch() {
+        let page = SparseMapping::page_size() as u64;
+        let err = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..page)])
+                    .copy_from(source_file(&vec![0; (page / 2) as usize])),
+            )
+            .build(page)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MemoryBuildError::PopulateSizeMismatch {
+                file_len,
+                backing_len,
+            } if file_len == page / 2 && backing_len == page
+        ));
+    }
+
+    #[async_test]
+    async fn copy_from_rejects_private_memory() {
+        let page = SparseMapping::page_size() as u64;
+        let err = GuestMemoryBuilder::new()
+            .add_backing(
+                RamBackingRequest::new(vec![MemoryRange::new(0..page)])
+                    .private_memory(true)
+                    .copy_from(source_file(&vec![0; page as usize])),
+            )
+            .build(page)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MemoryBuildError::PopulateWithPrivateMemory));
     }
 
     #[async_test]

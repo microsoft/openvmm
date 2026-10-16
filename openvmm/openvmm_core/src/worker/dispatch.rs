@@ -52,6 +52,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
+use membacking::Mappable;
 use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
@@ -86,6 +87,7 @@ use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::GuestRamSource;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_pcat_locator::RomFileLocation;
@@ -347,15 +349,11 @@ impl Worker for VmWorker {
         let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
             .context("failed to resolve hypervisor backend")?;
 
-        let shared_memory = parameters
-            .shared_memory
-            .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
-
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor.0,
             manifest,
-            shared_memory,
+            parameters.guest_ram,
         ))?;
         let saved_state = parameters
             .saved_state
@@ -393,7 +391,7 @@ impl Worker for VmWorker {
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor.0,
             manifest,
-            shared_memory,
+            shared_memory.map(|smb| GuestRamSource::MapShared(smb.into_mappable().into())),
         ))?;
         pal_async::local::block_on(async {
             let mut vm = vm.load(Some(saved_state), notify).await?;
@@ -1103,9 +1101,9 @@ impl InitializedVm {
         driver_source: VmTaskDriverSource,
         create_vm: crate::hypervisor_backend::CreateVmFn,
         cfg: Manifest,
-        shared_memory: Option<SharedMemoryBacking>,
+        guest_ram: Option<GuestRamSource>,
     ) -> anyhow::Result<Self> {
-        create_vm(driver_source, cfg, shared_memory).await
+        create_vm(driver_source, cfg, guest_ram).await
     }
 
     /// Creates and initializes a VM with the given hypervisor backend.
@@ -1119,7 +1117,7 @@ impl InitializedVm {
         #[cfg_attr(not(guest_arch = "aarch64"), expect(unused_variables))]
         platform_info: virt::PlatformInfo,
         cfg: Manifest,
-        shared_memory: Option<SharedMemoryBacking>,
+        guest_ram: Option<GuestRamSource>,
     ) -> anyhow::Result<Self>
     where
         H: virt::Hypervisor<Partition = P>,
@@ -1436,18 +1434,19 @@ impl InitializedVm {
             ranges_by_node[first_mem_node].push(vtl2_range);
         }
 
-        // For restore, an existing mappable can only be applied to
-        // single-node configurations.
+        // A guest RAM source can only be applied to single-node
+        // configurations.
         let nodes_with_ranges = ranges_by_node.iter().filter(|r| !r.is_empty()).count();
-        let mut existing_mappable = if let Some(smb) = shared_memory {
-            if nodes_with_ranges > 1 {
-                anyhow::bail!(
-                    "shared memory restore not supported with {nodes_with_ranges} memory nodes"
-                );
-            }
-            Some(smb.into_mappable())
-        } else {
-            None
+        if guest_ram.is_some() && nodes_with_ranges > 1 {
+            anyhow::bail!("guest RAM source not supported with {nodes_with_ranges} memory nodes");
+        }
+        let (mut existing_mappable, mut copy_from) = match guest_ram {
+            None => (None, None),
+            Some(GuestRamSource::MapShared(fd)) => (Some(Mappable::from(fd)), None),
+            Some(GuestRamSource::CopyFrom {
+                source,
+                destination,
+            }) => (destination.map(Mappable::from), Some(source)),
         };
 
         let mut memory_builder = GuestMemoryBuilder::new();
@@ -1484,6 +1483,9 @@ impl InitializedVm {
             }
             if let Some(mappable) = existing_mappable.take() {
                 backing = backing.existing_mappable(mappable);
+            }
+            if let Some(file) = copy_from.take() {
+                backing = backing.copy_from(file);
             }
 
             memory_builder = memory_builder.add_backing(backing);
