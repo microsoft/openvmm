@@ -5,10 +5,17 @@
 
 use super::*;
 
+/// Returns default parameters with the TCP active-flow limit set to `limit`.
+fn params_with_tcp_limit(limit: Option<usize>) -> ConsommeParams {
+    let mut params = ConsommeParams::new().unwrap();
+    params.flow_limits.tcp = limit;
+    params
+}
+
 #[pal_async::async_test]
 async fn test_tcp_port_forward_connection_limit(driver: DefaultDriver) {
-    let mut harness = TcpTestHarness::connect(driver.clone()).await;
-    harness.consomme.tcp.max_connections = 1;
+    let mut harness =
+        TcpTestHarness::connect_with_params(driver.clone(), params_with_tcp_limit(Some(1))).await;
     assert_eq!(harness.consomme.tcp.connections.len(), 1);
 
     let guest_port = 7777;
@@ -69,8 +76,8 @@ async fn test_tcp_port_forward_connection_limit(driver: DefaultDriver) {
 #[cfg(unix)]
 #[pal_async::async_test]
 async fn test_tcp_connection_limit_rejects_and_recovers(driver: DefaultDriver) {
-    let mut harness = TcpTestHarness::connect(driver).await;
-    harness.consomme.tcp.max_connections = 1;
+    let mut harness =
+        TcpTestHarness::connect_with_params(driver, params_with_tcp_limit(Some(1))).await;
     assert_eq!(harness.consomme.tcp.connections.len(), 1);
 
     let syn = TcpRepr {

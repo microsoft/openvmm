@@ -164,6 +164,11 @@ configurable timeout (5 minutes by default, per RFC 4787).
 Consomme admits at most 256 active guest UDP flows, 128 active guest TCP flows,
 and 16 guest ICMP source flows by default. It rejects an excess flow before
 creating its host socket; it never evicts an active flow to make room.
+Embedders can change these limits through the `flow_limits` field on
+`ConsommeParams`, a `FlowLimits { tcp, udp, icmp }` of `Option<usize>`
+values. `None` leaves a protocol unbounded, and `FlowLimits::UNBOUNDED`
+lifts all three limits for a guest that is trusted not to exhaust host
+sockets and memory.
 
 UDP packets to the gateway on well-known ports are intercepted:
 
