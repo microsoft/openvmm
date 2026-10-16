@@ -190,6 +190,9 @@ pub struct ConsommeParams {
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     pub allow_host_local_access: bool,
+    /// If true, start the built-in DNS resolver. If false, the guest is given
+    /// the host's DNS servers instead. Static DNS records are still answered.
+    pub internal_dns: bool,
     /// Per-connection TCP receive ring buffer bounds (guest-to-host).
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
@@ -257,6 +260,7 @@ impl ConsommeParams {
             tcp_close_timeout: Duration::from_secs(60),
             skip_ipv6_checks: false,
             allow_host_local_access: false,
+            internal_dns: true,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
         })
@@ -341,30 +345,6 @@ impl ConsommeParams {
             "inferred client link-local IPv6 address from routable SLAAC address"
         );
         self.client_ip_ipv6 = Some(link_local);
-    }
-
-    /// Returns the list of IPv6 nameservers suitable for advertisement to
-    /// guests via NDP RDNSS or DHCPv6.
-    ///
-    /// Filters out addresses that are not useful as DNS servers in a
-    /// guest-facing context: unspecified, loopback, multicast, unique-local
-    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
-    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
-        self.nameservers
-            .iter()
-            .filter_map(|ip| match ip {
-                IpAddress::Ipv6(addr) => Some(*addr),
-                _ => None,
-            })
-            .filter(|addr| {
-                let octets = addr.octets();
-                !(addr.is_unspecified()
-                    || addr.is_loopback()
-                    || addr.is_multicast()
-                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
-                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
-            })
-            .collect()
     }
 
     /// Returns the default internal nameserver list for use when the DNS
@@ -696,6 +676,9 @@ pub enum DropReason {
     /// or link-local when host-local access is disabled).
     #[error("destination address not allowed")]
     DestinationNotAllowed,
+    /// No guest-reachable alias could be allocated for a host DNS server.
+    #[error("virtual address pool exhausted for DNS server {0}")]
+    NameserverAddressUnavailable(IpAddr),
 }
 
 /// An error from a port bind or unbind operation.
@@ -797,6 +780,48 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 }
 
 impl Consomme {
+    /// Returns guest-facing DNS servers, mapping host loopback stubs to
+    /// virtual addresses without changing the host resolver configuration.
+    fn guest_nameservers(&mut self) -> Result<Vec<IpAddress>, DropReason> {
+        let nameservers = self.state.params.nameservers.clone();
+        if self.dns.is_available() {
+            return Ok(nameservers);
+        }
+        nameservers
+            .into_iter()
+            .map(|nameserver| {
+                let address = IpAddr::from(nameserver);
+                if address.is_loopback() {
+                    self.create_virtual_address(address)
+                        .map(IpAddress::from)
+                        .ok_or(DropReason::NameserverAddressUnavailable(address))
+                } else {
+                    Ok(nameserver)
+                }
+            })
+            .collect()
+    }
+
+    /// Returns IPv6 DNS servers suitable for NDP RDNSS or DHCPv6 advertisement.
+    fn filtered_ipv6_nameservers(&mut self) -> Result<Vec<Ipv6Address>, DropReason> {
+        Ok(self
+            .guest_nameservers()?
+            .into_iter()
+            .filter_map(|ip| match ip {
+                IpAddress::Ipv6(addr) => Some(addr),
+                _ => None,
+            })
+            .filter(|addr| {
+                let octets = addr.octets();
+                !(addr.is_unspecified()
+                    || addr.is_loopback()
+                    || addr.is_multicast()
+                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
+                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
+            })
+            .collect())
+    }
+
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
         let host_has_ipv6 = if params.skip_ipv6_checks {
@@ -817,7 +842,11 @@ impl Consomme {
                 }
             }
         };
-        let dns =
+        let dns = if !params.internal_dns {
+            dns_resolver::DnsResolver::without_backend(
+                dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
+            )
+        } else {
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
@@ -832,7 +861,8 @@ impl Consomme {
                         dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS,
                     )
                 }
-            };
+            }
+        };
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
         let udp_timeout = params.udp_timeout;
@@ -1028,6 +1058,12 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access
             && is_blocked_host_local_ipv4(ipv4.dst_addr())
+            && self
+                .inner
+                .state
+                .local_addr_map
+                .resolve_virtual(&ipv4.dst_addr().into())
+                .is_none()
         {
             return Err(DropReason::DestinationNotAllowed);
         }
@@ -1077,6 +1113,12 @@ impl<T: Client> Access<'_, T> {
         // Reject guest traffic to host-local-only destinations.
         if !self.inner.state.params.allow_host_local_access
             && is_blocked_host_local_ipv6(ipv6.dst_addr())
+            && self
+                .inner
+                .state
+                .local_addr_map
+                .resolve_virtual(&ipv6.dst_addr().into())
+                .is_none()
         {
             return Err(DropReason::DestinationNotAllowed);
         }
