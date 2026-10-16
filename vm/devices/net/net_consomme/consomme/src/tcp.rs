@@ -1800,6 +1800,15 @@ impl TcpConnectionInner {
             }
         }
 
+        // Once the host has closed its side and the guest's data and FIN have
+        // been passed to the host socket, nothing will use the socket again.
+        // Release it now instead of waiting for a hangup, which Windows
+        // reports only for an aborted connection, so that a connection
+        // lingering in TIME-WAIT toward the guest holds no host socket.
+        if self.state.tx_fin() && self.is_shutdown {
+            *opt_socket = None;
+        }
+
         // Send any pending data or ACKs. Always use Flush: if no data was
         // read from the socket and no ACK is pending, send_data will find
         // nothing to do anyway.
