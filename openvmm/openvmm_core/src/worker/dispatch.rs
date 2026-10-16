@@ -3909,6 +3909,26 @@ impl LoadedVm {
                             ))));
                         }
                     }
+                    VmRpc::AddHvsockListener(rpc) => {
+                        rpc.handle_failable_sync(|(vtl, service_id, listener)| {
+                            self.hvsock_relay_mut(vtl)
+                                .context("hvsock is not available")?
+                                .add_service_listener(service_id, listener)
+                        })
+                    }
+                    VmRpc::RemoveHvsockListener(rpc) => {
+                        rpc.handle(async |(vtl, service_id)| {
+                            let relay = self
+                                .hvsock_relay_mut(vtl)
+                                .context("hvsock is not available")
+                                .map_err(RemoteError::new)?;
+                            relay
+                                .remove_service_listener(service_id)
+                                .await
+                                .map_err(RemoteError::new)
+                        })
+                        .await
+                    }
                     VmRpc::PulseSaveRestore(rpc) => {
                         rpc.handle(async |()| {
                             if !self.inner.partition.supports_reset() {
@@ -4290,6 +4310,14 @@ impl LoadedVm {
             DeviceVtl::Vtl0 => self.inner.vtl0_hvsock_relay.as_ref(),
             DeviceVtl::Vtl1 => None,
             DeviceVtl::Vtl2 => self.inner.vtl2_hvsock_relay.as_ref(),
+        }
+    }
+
+    fn hvsock_relay_mut(&mut self, vtl: DeviceVtl) -> Option<&mut HvsockRelay> {
+        match vtl {
+            DeviceVtl::Vtl0 => self.inner.vtl0_hvsock_relay.as_mut(),
+            DeviceVtl::Vtl1 => None,
+            DeviceVtl::Vtl2 => self.inner.vtl2_hvsock_relay.as_mut(),
         }
     }
 
