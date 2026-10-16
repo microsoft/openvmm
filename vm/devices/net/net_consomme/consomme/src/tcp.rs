@@ -1049,8 +1049,9 @@ impl<T: Client> Access<'_, T> {
         let inspect_static_dns =
             ft.dst.port() == crate::DNS_PORT && self.inner.dns.should_intercept_static_queries();
 
-        let replace_time_wait = tcp.control == TcpControl::Syn
-            && tcp.ack_number.is_none()
+        // Only a SYN without an ACK can open a connection.
+        let opens_connection = tcp.control == TcpControl::Syn && tcp.ack_number.is_none();
+        let replace_time_wait = opens_connection
             && self.inner.tcp.connections.get(&ft).is_some_and(|conn| {
                 conn.inner.state == TcpState::TimeWait && tcp.seq_number > conn.inner.rx_seq
             });
@@ -1073,7 +1074,12 @@ impl<T: Client> Access<'_, T> {
             state: &mut self.inner.state,
         };
 
-        self.inner.tcp.check_flow_limit(&ft)?;
+        // Check the limit only for a packet that would open a connection, so
+        // that other packets of an unknown flow, such as a stale ACK, still
+        // get the reset below while the flow map is full.
+        if opens_connection {
+            self.inner.tcp.check_flow_limit(&ft)?;
+        }
 
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
@@ -1112,7 +1118,7 @@ impl<T: Client> Access<'_, T> {
                 } else if let Some(ack) = tcp.ack_number {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
-                } else if tcp.control == TcpControl::Syn {
+                } else if opens_connection {
                     let conn = if is_dns_tcp {
                         TcpConnection::new_dns(
                             &mut sender,
