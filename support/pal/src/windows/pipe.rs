@@ -556,8 +556,15 @@ mod tests {
     use super::*;
     use crate::windows::security::LocalSecurityDescriptor;
     use std::fs::OpenOptions;
+    use std::process::Child;
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use std::time::Instant;
     use test_with_tracing::test;
     use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
@@ -609,10 +616,44 @@ mod tests {
         }
     }
 
+    /// Tells a child running `pipe_peer_child` which end of which pipe to hold.
+    const PEER_CHILD_ENV: &str = "PAL_PIPE_PEER_CHILD";
+
     fn random_pipe_path() -> String {
         let mut name = [0; 16];
         getrandom::fill(&mut name).unwrap();
         format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name))
+    }
+
+    /// Opens the client end of `path`, waiting for its server to create it.
+    fn open_client(path: &str) -> File {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match OpenOptions::new().read(true).write(true).open(path) {
+                Ok(file) => return file,
+                Err(err)
+                    if Instant::now() < deadline
+                        && matches!(
+                            err.raw_os_error().map(|code| code as u32),
+                            Some(ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY)
+                        ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("failed to open {path}: {err}"),
+            }
+        }
+    }
+
+    /// Runs this test binary as a child process that holds the `role` end of
+    /// `path` in `pipe_peer_child`.
+    fn spawn_peer_child(role: &str, path: &str) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows::pipe::tests::pipe_peer_child"])
+            .env(PEER_CHILD_ENV, format!("{role}|{path}"))
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 
     #[test]
@@ -673,6 +714,60 @@ mod tests {
         assert!(!client.is_pipe_peer_closed().unwrap());
         server.disconnect_pipe().unwrap();
         assert!(client.is_pipe_peer_closed().unwrap());
+    }
+
+    /// Holds one end of a pipe when `pipe_ends_report_peer_process_id` runs
+    /// this binary as its child, and does nothing otherwise.
+    #[test]
+    fn pipe_peer_child() {
+        let Ok(arg) = std::env::var(PEER_CHILD_ENV) else {
+            return;
+        };
+        let (role, path) = arg.split_once('|').unwrap();
+        match role {
+            // Connect, then exit, which closes the client end.
+            "client" => drop(open_client(path)),
+            // Serve until the client closes its end.
+            "server" => {
+                let server = new_named_pipe(
+                    path,
+                    GENERIC_READ | GENERIC_WRITE,
+                    Disposition::Create,
+                    PipeMode::Byte,
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !server.is_pipe_peer_closed().unwrap() {
+                    assert!(Instant::now() < deadline, "no client closed {path}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            _ => panic!("unknown pipe role {role}"),
+        }
+    }
+
+    #[test]
+    fn pipe_ends_report_peer_process_id() {
+        // A server end reports the client process, even after it exits.
+        let path = random_pipe_path();
+        let server = new_named_pipe(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            Disposition::Create,
+            PipeMode::Byte,
+        )
+        .unwrap();
+        let mut child = spawn_peer_child("client", &path);
+        assert!(child.wait().unwrap().success());
+        assert_eq!(server.get_pipe_peer_process_id().unwrap(), child.id());
+
+        // A client end reports the server process.
+        let path = random_pipe_path();
+        let mut child = spawn_peer_child("server", &path);
+        let client = open_client(&path);
+        assert_eq!(client.get_pipe_peer_process_id().unwrap(), child.id());
+        drop(client);
+        assert!(child.wait().unwrap().success());
     }
 
     #[test]
