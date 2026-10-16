@@ -183,7 +183,8 @@ pub struct ConsommeParams {
     /// Inactivity timeout for TCP connections waiting for a close handshake
     /// to make progress, including closes initiated before the initial
     /// handshake completes. ACKs and newly accepted data restart the timeout.
-    /// The same duration is used as the `TimeWait` interval.
+    /// The same duration is used as the `TimeWait` interval, which the TCP
+    /// active-flow limit cuts short when a new flow needs the slot.
     pub tcp_close_timeout: Duration,
     /// If true, skip checks for host IPv6 support and assume the host has a
     /// routable IPv6 address.
