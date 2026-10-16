@@ -1213,14 +1213,35 @@ impl GuestEventPort for MshvGuestEventPort {
         Interrupt::from_fn(move || {
             let MshvEventPortParams { vp, sint, flag } = *params.lock();
             if let Some(partition) = partition.upgrade() {
-                partition
+                match partition
                     .signal_event_direct(vp.index(), sint, flag)
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Failed signal synic sint {} on vp {:?} with flag {}",
-                            sint, vp, flag
-                        )
-                    });
+                    .map_err(KernelError::from)
+                {
+                    Ok(()) => {}
+                    Err(
+                        err @ KernelError::Hypercall {
+                            error: HvError::InvalidSynicState,
+                            ..
+                        },
+                    ) => {
+                        tracing::debug!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = &err as &dyn std::error::Error,
+                            "failed to signal synic (expected)"
+                        );
+                    }
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = &err as &dyn std::error::Error,
+                            "failed to signal synic"
+                        );
+                    }
+                }
             }
         })
     }
