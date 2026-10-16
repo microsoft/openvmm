@@ -56,8 +56,10 @@ use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
 use windows_sys::Win32::System::Ioctl::METHOD_BUFFERED;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::Pipes::GetNamedPipeHandleStateW;
 use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Pipes::PIPE_SERVER_END;
 use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
 
@@ -261,7 +263,26 @@ pub trait PipeExt {
     fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()>;
     fn get_pipe_select_events(&self) -> io::Result<u32>;
     fn is_pipe_connected(&self) -> io::Result<bool>;
+    /// Returns whether the pipe's peer is gone, that is, whether the pipe is in
+    /// the disconnected or closing state.
+    ///
+    /// On a server end, this is true once the client closes its handle or the
+    /// pipe is disconnected. On a client end, this is true once the server
+    /// closes its handle, and fails with `ERROR_PIPE_NOT_CONNECTED` once the
+    /// server disconnects the pipe.
     fn is_pipe_peer_closed(&self) -> io::Result<bool>;
+    /// Returns the ID of the process at the other end of the pipe.
+    ///
+    /// On a server end, this is the client process that
+    /// `GetNamedPipeClientProcessId` reports. On a client end, where that
+    /// function reports the client's own process, this is the server process
+    /// that `GetNamedPipeServerProcessId` reports instead. Either way, it is the
+    /// process that created or opened the peer end, which may no longer hold it.
+    ///
+    /// Fails if this is not a pipe or no peer has connected. After the peer
+    /// closes its handle, this can still report the peer's process ID, which
+    /// Windows can reuse once that process exits.
+    fn get_pipe_peer_process_id(&self) -> io::Result<u32>;
     fn disconnect_pipe(&self) -> io::Result<()>;
 }
 
@@ -398,6 +419,35 @@ impl PipeExt for File {
 
     fn is_pipe_peer_closed(&self) -> io::Result<bool> {
         peer::is_peer_closed(self)
+    }
+
+    fn get_pipe_peer_process_id(&self) -> io::Result<u32> {
+        let mut flags = 0;
+        let mut process_id = 0;
+        // SAFETY: the handle is valid for the lifetime of `self` and the output
+        // pointers are valid. Windows fails these calls for handles that are
+        // not pipes.
+        unsafe {
+            if GetNamedPipeInfo(
+                self.as_raw_handle(),
+                &mut flags,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let succeeded = if flags & PIPE_SERVER_END != 0 {
+                GetNamedPipeClientProcessId(self.as_raw_handle(), &mut process_id)
+            } else {
+                GetNamedPipeServerProcessId(self.as_raw_handle(), &mut process_id)
+            };
+            if succeeded == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(process_id)
     }
 
     fn disconnect_pipe(&self) -> io::Result<()> {
