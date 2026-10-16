@@ -25,8 +25,11 @@ async fn shared_directory(
         directory.path().join("marker"),
         b"shared after agent startup",
     )?;
+    let cache = tempfile::tempdir()?;
+    fs_err::write(cache.path().join("marker"), b"child share")?;
     let (vm, agent) = config
-        .with_shared_directory("data", directory.path(), "/shared directory")?
+        .with_shared_directory("a-cache", cache.path(), "/shared directory/cache")?
+        .with_shared_directory("z-data", directory.path(), "/shared directory/././")?
         .run()
         .await?;
     assert_eq!(
@@ -40,6 +43,14 @@ async fn shared_directory(
         fs_err::read(directory.path().join("result"))?,
         b"guest write"
     );
+    assert_eq!(
+        agent.read_file("/shared directory/cache/marker").await?,
+        b"child share",
+    );
+    agent
+        .write_file("/shared directory/cache/result", b"child write".as_slice())
+        .await?;
+    assert_eq!(fs_err::read(cache.path().join("result"))?, b"child write");
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())

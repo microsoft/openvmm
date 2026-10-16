@@ -2382,7 +2382,17 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                 "directory sharing requires a Linux guest"
             );
             let mut shares = self.guest_shares.iter().collect::<Vec<_>>();
-            shares.sort_by(|a, b| a.0.cmp(b.0));
+            // Mount parents first so they do not hide descendant shares.
+            shares.sort_by_key(|(tag, share)| {
+                (
+                    share
+                        .guest_path
+                        .split('/')
+                        .filter(|part| !part.is_empty() && *part != ".")
+                        .count(),
+                    *tag,
+                )
+            });
             for (tag, share) in shares {
                 let shell = client.unix_shell();
                 shell

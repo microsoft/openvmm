@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+pub mod mshv;
 mod runtime;
 mod start;
 
@@ -38,8 +39,6 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-/// mshv root-partition boot recipe.
-pub mod mshv;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
