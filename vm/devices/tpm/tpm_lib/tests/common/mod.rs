@@ -13,7 +13,6 @@ use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
 use tpm_protocol::TPM_NV_INDEX_MITIGATED;
 use tpm_protocol::TPM_RSA_SRK_HANDLE;
-use tpm_protocol::tpm20proto::AlgId;
 use tpm_protocol::tpm20proto::AlgIdEnum;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::ReservedHandle;
@@ -30,9 +29,9 @@ use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 use tpm_protocol::tpm20proto::protocol::TpmsRsaParams;
 use tpm_protocol::tpm20proto::protocol::TpmtPublic;
 use tpm_protocol::tpm20proto::protocol::TpmtRsaScheme;
+use tpm_protocol::tpm20proto::protocol::TpmtSensitive;
 use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
 use zerocopy::FromZeros;
-use zerocopy::IntoBytes;
 
 impl TpmEngine for TestTpmPlatform {
     fn execute_command(
@@ -1623,30 +1622,6 @@ fn test_clear() {
         panic!()
     }
 }
-struct TpmtSensitive {
-    /// TPMI_ALG_PUBLIC
-    sensitive_type: AlgId,
-    /// `TPM2B_AUTH`
-    auth_value: Tpm2bBuffer,
-    /// `TPM2B_DIGEST`
-    seed_value: Tpm2bBuffer,
-    /// `TPM2B_PRIVATE_KEY_RSA`
-    sensitive: Tpm2bBuffer,
-}
-
-impl TpmtSensitive {
-    fn serialize(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
-
-        buffer.extend_from_slice(self.sensitive_type.as_bytes());
-        buffer.extend_from_slice(&self.auth_value.serialize());
-        buffer.extend_from_slice(&self.seed_value.serialize());
-        buffer.extend_from_slice(&self.sensitive.serialize());
-
-        buffer
-    }
-}
-
 fn generate_rsa() -> (TpmtPublic, Tpm2bBuffer) {
     // Using hard-coded value to avoid OpenSSL dependency
     // RSA-2k public modulus

@@ -744,7 +744,7 @@ impl Tpm {
 
             // Initialize `TpmKeys`.
             // The procedure also generates randomized AK based on the TPM seed
-            // and writes the AK into `TPM_AZURE_AIK_HANDLE` NV store.
+            // and persists the AK at the Azure AIK handle.
             let start_time = std::time::SystemTime::now();
             tracing::info!(
                 CVM_ALLOWED,
