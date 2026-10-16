@@ -144,10 +144,11 @@ describes the source definitions.
   devices, remote PCIe devices, CXL, persistent memory, filesystem devices,
   RNG, and virtio console. With `--hv`, also pass `--no-vmbus`.
   Snapshot restore, guest memory dumps, and the debugger are not supported.
-  The VM-service supports only the minimal chipset and serial for MSHV SNP;
-  disable VMBus and omit device configurations. It selects base-page backing
-  by default and rejects explicit NUMA huge-page settings. Use the CLI for
-  bounced virtio devices.
+  The VM service also supports these devices over PCIe for MSHV SNP,
+  including PCIe hot-add. Bouncing is automatic; the API does not expose
+  force-bounce options. Disable VMBus. The service selects base-page backing
+  by default and rejects explicit NUMA huge-page settings. Its block API
+  supports buffered plain regular files, not RAM disks or structured images.
 
   Both usermode VA locks and kernel locks are denied. Copies use
   fault-contained `GuestMemory` operations, without per-copy permission
