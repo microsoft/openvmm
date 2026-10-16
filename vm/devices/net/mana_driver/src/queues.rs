@@ -69,7 +69,8 @@ pub struct DoorbellPage {
 }
 
 impl DoorbellPage {
-    pub(crate) fn null() -> Self {
+    /// Returns a null doorbell page that silently discards all writes.
+    pub fn null() -> Self {
         Self {
             doorbell: Arc::new(NullDoorbell),
             doorbell_id: 0,
