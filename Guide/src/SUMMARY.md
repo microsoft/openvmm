@@ -20,6 +20,7 @@
     - [On Linux](./user_guide/openhcl/run/openvmm_linux.md)
   - [Troubleshooting](./user_guide/openhcl/troubleshooting.md)
   - [Next Steps](./user_guide/openhcl/next_steps.md)
+- [`openvmm-img`](./user_guide/openvmm-img.md)
 
 # Developer Guide
 

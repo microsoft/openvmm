@@ -76,6 +76,7 @@ pub mod x509;
 pub mod xts_aes_256;
 
 mod hashes;
+mod helpers;
 
 pub use hashes::HashAlgorithm;
 
