@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! Named-pipe helpers for local peer endpoints: creating a pipe with an
-//! explicit security descriptor, identifying the client process, checking
-//! whether a file is a pipe, and detecting a closed peer.
+//! explicit security descriptor, checking whether a file is a pipe, and
+//! detecting a closed peer.
 
 use super::PipeMode;
 use super::create_named_pipe;
@@ -24,7 +24,6 @@ use windows_sys::Wdk::Storage::FileSystem::FilePipeLocalInformation;
 use windows_sys::Wdk::Storage::FileSystem::NtQueryInformationFile;
 use windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE;
 use windows_sys::Win32::Storage::FileSystem::GetFileType;
-use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 
 /// Creates a new named-pipe path with an explicit security descriptor.
 ///
@@ -61,16 +60,10 @@ pub(super) fn security_descriptor_ptr(
     })
 }
 
-pub fn client_process_id(pipe: &File) -> io::Result<u32> {
-    let mut process_id = 0;
-    // SAFETY: `pipe` is a live named-pipe handle and the output pointer is
-    // valid for the documented call.
-    if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut process_id) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(process_id)
-}
-
+/// Returns whether `file` is a pipe, as reported by `GetFileType`.
+///
+/// `GetFileType` also reports sockets as pipes, so this does not guarantee that
+/// [`PipeExt`](super::PipeExt) operations succeed on `file`.
 pub fn is_pipe(file: &File) -> bool {
     // SAFETY: `file` owns a valid Windows handle.
     unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_PIPE }
@@ -176,17 +169,36 @@ mod tests {
         assert_eq!(dacl_sddl(&server).unwrap(), "D:P(A;;FA;;;OW)");
         assert!(is_pipe(&server));
         assert!(!server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
 
         let client = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
             .unwrap();
-        assert_eq!(client_process_id(&server).unwrap(), std::process::id());
+        assert_eq!(
+            server.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
+        assert_eq!(
+            client.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
         assert!(is_pipe(&client));
         assert!(!server.is_pipe_peer_closed().unwrap());
 
         drop(client);
         assert!(server.is_pipe_peer_closed().unwrap());
+        server.disconnect_pipe().unwrap();
+        assert!(server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
+    }
+
+    #[test]
+    fn peer_helpers_reject_non_pipes() {
+        let file = File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(!is_pipe(&file));
+        assert!(file.get_pipe_peer_process_id().is_err());
+        assert!(file.is_pipe_peer_closed().is_err());
     }
 }
