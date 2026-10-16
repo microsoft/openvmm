@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod limits;
+
 use super::*;
 use pal_async::DefaultDriver;
 use smoltcp::phy::ChecksumCapabilities;
