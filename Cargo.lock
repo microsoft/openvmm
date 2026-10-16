@@ -2831,6 +2831,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_vhdx_open"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "guid",
+ "libfuzzer-sys",
+ "pal_async",
+ "parking_lot",
+ "vhdx",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_x86emu"
 version = "0.0.0"
 dependencies = [
