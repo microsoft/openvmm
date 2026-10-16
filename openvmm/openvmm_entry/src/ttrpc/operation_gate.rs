@@ -7,7 +7,9 @@
 //! operations (hot add/remove of devices and resources) are independent of one
 //! another and share the gate; pause, resume, and teardown are exclusive and
 //! exclude everything else. The gate never queues: a conflicting caller is
-//! rejected immediately with `ABORTED`.
+//! rejected immediately with `ABORTED`. Teardown and quit are terminal: the
+//! service cancels in-flight topology operations before acquiring the gate, so
+//! they are never rejected by them.
 //!
 //! The gate must be acquired before any side effect of the operation, and is
 //! released when its guard drops, so completion, error, and cancellation all
