@@ -12,9 +12,13 @@ use petri::PetriHaltReason;
 use petri::PetriHardwareSealingPolicy;
 use petri::PetriTpmVersion;
 use petri::PetriVmBuilder;
+#[cfg(windows)]
+use petri::PetriVmRuntime;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
+#[cfg(windows)]
+use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
@@ -26,6 +30,8 @@ use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use pipette_client::PipetteClient;
 use std::path::Path;
 #[cfg(windows)]
@@ -196,13 +202,9 @@ impl<'a> TpmGuestTests<'a> {
         }
     }
 
-    /// Read the vTPM Attestation Key public modulus (`HCLAkPub.n`) from the
-    /// attestation report's runtime claims.
-    ///
-    /// The modulus uniquely identifies the AK, so comparing it across reboots
-    /// detects whether the AK was regenerated.
+    /// Parse the report's runtime claims, ignoring the tool's preamble and trailer.
     #[cfg(windows)]
-    async fn read_ak_pub_modulus(&self) -> anyhow::Result<String> {
+    async fn read_runtime_claims(&self) -> anyhow::Result<serde_json::Value> {
         let output = self.read_report().await?;
 
         // The report binary prints preamble lines followed by:
@@ -215,11 +217,66 @@ impl<'a> TpmGuestTests<'a> {
             .with_context(|| format!("report output missing runtime claims JSON: {output}"))?;
 
         // Parse the first JSON value, ignoring any trailing output.
-        let claims = serde_json::Deserializer::from_str(output[json_start..].trim_start())
+        serde_json::Deserializer::from_str(output[json_start..].trim_start())
             .into_iter::<serde_json::Value>()
             .next()
             .context("no JSON value found after runtime claims marker")?
-            .context("failed to parse runtime claims JSON")?;
+            .context("failed to parse runtime claims JSON")
+    }
+
+    /// Check field presence as well as value: an absent context must not be null.
+    #[cfg(windows)]
+    async fn check_context_hash(
+        &self,
+        expected: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let claims = self.read_runtime_claims().await?;
+        let config = claims
+            .get("vm-configuration")
+            .and_then(serde_json::Value::as_object)
+            .context("runtime claims missing vm-configuration object")?;
+        let actual = config.get("key-release-context-hash");
+        ensure!(
+            match expected {
+                Some(hash) => actual.and_then(serde_json::Value::as_str) == Some(hash),
+                None => actual.is_none(),
+            },
+            "unexpected key-release-context-hash: expected {expected:?}, got {actual:?}"
+        );
+        let policy = config
+            .get("hardware-sealing-policy")
+            .and_then(serde_json::Value::as_str)
+            .context("runtime claims missing hardware-sealing-policy")?;
+        tracing::info!(?expected, policy, "verified guest key-release context");
+        Ok(claims)
+    }
+
+    /// Read a canonical context hash from stateful, hash-policy runtime claims.
+    #[cfg(windows)]
+    async fn read_stateful_context_hash(&self) -> anyhow::Result<String> {
+        let claims = self.read_runtime_claims().await?;
+        let config = &claims["vm-configuration"];
+        ensure!(
+            config["hardware-sealing-policy"] == "hash" && config["tpm-persisted"] == true,
+            "expected stateful hash hardware-sealing policy: {claims}"
+        );
+        let hash = config["key-release-context-hash"]
+            .as_str()
+            .context("runtime claims missing key-release-context-hash string")?;
+        ensure!(
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "expected canonical 64-character lowercase context hash, got {hash:?}"
+        );
+        Ok(hash.to_owned())
+    }
+
+    /// Read `HCLAkPub.n`; equality across boots detects AK regeneration.
+    #[cfg(windows)]
+    async fn read_ak_pub_modulus(&self) -> anyhow::Result<String> {
+        let claims = self.read_runtime_claims().await?;
 
         let modulus = claims
             .get("keys")
@@ -233,6 +290,30 @@ impl<'a> TpmGuestTests<'a> {
             .context("HCLAkPub missing modulus")?;
 
         Ok(modulus.to_string())
+    }
+
+    #[cfg(windows)]
+    async fn write_test_nv(&self) -> anyhow::Result<()> {
+        let output = self.nv_define(TEST_NV_INDEX, TEST_NV_SIZE).await?;
+        ensure!(
+            output.contains("defined successfully"),
+            "NV define: {output}"
+        );
+        let output = self.nv_write(TEST_NV_INDEX, TEST_NV_DATA_HEX).await?;
+        ensure!(output.contains("succeeded"), "NV write: {output}");
+        self.verify_test_nv().await
+    }
+
+    #[cfg(windows)]
+    async fn verify_test_nv(&self) -> anyhow::Result<()> {
+        let output = self
+            .nv_read_with_expected_hex(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+            .await?;
+        ensure!(
+            output.contains("matches expected value"),
+            "NV read: {output}"
+        );
+        Ok(())
     }
 
     /// Define an NV index with the given size.
@@ -817,6 +898,8 @@ pub(crate) async fn tpm_test_platform_hierarchy_disabled_impl(
 /// Exercises the CVM vTPM end-to-end against the test IGVM agent RPC server:
 /// verifies the AK certificate and attestation report runtime claims, and
 /// that the vTPM Attestation Key (AK) public key is stable across a reboot.
+/// For SNP/TDX, also verifies that each successful key release refreshes the
+/// cached context hash without losing TPM NV data under stateful HashPolicy.
 ///
 /// AK stability: the AK is derived deterministically from the TPM
 /// endorsement-hierarchy seed. With a correct OSS ms-tpm-20-ref crypto
@@ -840,7 +923,7 @@ pub(crate) async fn tpm_test_platform_hierarchy_disabled_impl(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
+async fn cvm_guest<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
@@ -855,6 +938,7 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let isolation = config.isolation();
+    let refresh_context = matches!(isolation, Some(IsolationType::Snp | IsolationType::Tdx));
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
     // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
@@ -867,6 +951,11 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
+    let config = if refresh_context {
+        config.with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
+    } else {
+        config
+    };
     let (mut vm, agent) = config.run().await?;
 
     let guest_binary_path = match os_flavor {
@@ -932,6 +1021,17 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
         "AK pub modulus should not be empty on first boot"
     );
 
+    // Hyper-V's automatic initial reboot may already have refreshed the hash.
+    // Compare guest-visible values, not a hardcoded request count or next hash;
+    // the RPC agent validates the prior hash on every key-release request.
+    let context_before = if refresh_context {
+        let hash = tpm_guest_tests.read_stateful_context_hash().await?;
+        tpm_guest_tests.write_test_nv().await?;
+        Some(hash)
+    } else {
+        None
+    };
+
     // Reboot. With no state refresh requested, the AK must be re-derived
     // identically.
     agent.reboot().await?;
@@ -949,6 +1049,15 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
         "AK pub must remain stable across reboot, but it changed \
          (first={ak_pub_first}, second={ak_pub_second})"
     );
+
+    if let Some(context_before) = context_before {
+        let context_after = tpm_guest_tests.read_stateful_context_hash().await?;
+        ensure!(
+            context_before != context_after,
+            "successful key release must refresh the cached context hash across reboot"
+        );
+        tpm_guest_tests.verify_test_nv().await?;
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -1147,11 +1256,11 @@ pub(crate) async fn skip_hw_unseal_impl<T, U: PetriVmmBackend>(
 /// hardware unsealing fallback to succeed.
 ///
 /// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
-/// key protector, TPM state is sealed.  AK cert is verified.
-/// Second boot: KEY_RELEASE fails (plain failure, no skip_hw_unsealing
-/// signal), hardware unsealing fallback is attempted and succeeds because
-/// the hardware key protector was saved on first boot.  The VM boots
-/// normally and the AK cert remains accessible.
+/// key protector and context A, and TPM state is sealed under HashPolicy.
+/// Every later release validates request context A and fails with 0x1234,
+/// without skip_hw_unsealing. Hardware recovery must therefore succeed on
+/// Hyper-V's automatic initial reboot before run() returns, and again on
+/// the explicit reboot. Cached context A, the AK, and TPM NV must survive.
 ///
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
@@ -1190,6 +1299,7 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
         .with_tpm(true)
         .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
+        .with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
         .await?;
@@ -1204,7 +1314,8 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // First boot: KEY_RELEASE succeeds. Verify AK cert is present.
+    // run() has already survived hardware recovery during the initial reboot.
+    // The mock never returns another successful key release after issuing A.
     let expected_hex = expected_ak_cert_hex();
     let ak_cert_output = tpm_guest_tests
         .read_ak_cert_with_expected_hex(expected_hex.as_str())
@@ -1215,9 +1326,16 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
         format!("{ak_cert_output}")
     );
 
-    // Reboot: triggers second KEY_RELEASE which fails (plain failure,
-    // no skip_hw_unsealing signal).  Hardware unsealing fallback kicks
-    // in and succeeds — the VM boots normally.
+    ensure!(
+        tpm_guest_tests.read_stateful_context_hash().await? == CONTEXT_HASH_A,
+        "initial hardware recovery did not preserve cached context A"
+    );
+    let ak_before = tpm_guest_tests.read_ak_pub_modulus().await?;
+    ensure!(!ak_before.is_empty(), "first boot AK modulus is empty");
+    tpm_guest_tests.write_test_nv().await?;
+
+    // The next release again validates A, then fails explicitly without
+    // skip_hw_unsealing. Recovery must preserve the newly written NV data.
     agent.reboot().await?;
     let agent = vm.wait_for_reset().await?;
 
@@ -1235,6 +1353,16 @@ pub(crate) async fn use_hw_unseal_impl<T, S, U: PetriVmmBackend>(
         ak_cert_output.contains("AK certificate matches expected value"),
         "AK cert should still be accessible after hw unsealing fallback: {ak_cert_output}"
     );
+
+    ensure!(
+        tpm_guest_tests.read_stateful_context_hash().await? == CONTEXT_HASH_A,
+        "hardware recovery across explicit reboot did not preserve cached context A"
+    );
+    ensure!(
+        tpm_guest_tests.read_ak_pub_modulus().await? == ak_before,
+        "hardware-unsealing fallback changed AK"
+    );
+    tpm_guest_tests.verify_test_nv().await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -1309,6 +1437,162 @@ const TEST_NV_SIZE: &str = "64";
 /// Test data written to the NV index (hex).
 #[cfg(windows)]
 const TEST_NV_DATA_HEX: &str = "0xdeadbeefcafebabe0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738";
+
+// Keep this expectation independent of the production codec and mock agent.
+#[cfg(windows)]
+const CONTEXT_HASH_A: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+/// V2 key releases carry no context. Verify the legacy V3 hardware protector
+/// and persistent TPM state across a controlled cold start under HashPolicy.
+/// The VM name selects the RPC agent's KeyReleaseV2 configuration.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64, VMGSTOOL_NATIVE],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64, VMGSTOOL_NATIVE],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64, VMGSTOOL_NATIVE],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64, VMGSTOOL_NATIVE],
+)]
+async fn ctx_v2<T, S, V>(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+    extra_deps: (
+        ResolvedArtifact<T>,
+        ResolvedArtifact<S>,
+        ResolvedArtifact<V>,
+    ),
+) -> anyhow::Result<()> {
+    context_cold_boot(config, extra_deps).await
+}
+
+#[cfg(windows)]
+async fn context_cold_boot<T, S, V>(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+    extra_deps: (
+        ResolvedArtifact<T>,
+        ResolvedArtifact<S>,
+        ResolvedArtifact<V>,
+    ),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let guest_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => anyhow::bail!("context tests require Linux or Windows"),
+    };
+    let (guest_tool, rpc_server, vmgstool) = extra_deps;
+    let _rpc_guard = ensure_rpc_server_running(rpc_server.get())?;
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_version(PetriTpmVersion::V185)
+        .with_tpm_state_persistence(true)
+        .with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, guest_tool.get(), guest_path, os_flavor)
+            .await?;
+    let claims = tests.check_context_hash(None).await?;
+    ensure!(
+        claims["vm-configuration"]["hardware-sealing-policy"] == "hash"
+            && claims["vm-configuration"]["tpm-persisted"] == true,
+        "expected stateful hash hardware-sealing policy: {claims}"
+    );
+    let ak_before = tests.read_ak_pub_modulus().await?;
+    ensure!(!ak_before.is_empty(), "first boot AK modulus is empty");
+    tests.write_test_nv().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_shutdown().await?;
+    vm.backend().wait_for_stopped().await?;
+    drop(agent);
+
+    // Fetch the actual backend VMGS path only while stopped, before teardown.
+    verify_v3_hardware_protector(&vm, vmgstool.get()).await?;
+    vm.backend()
+        .start_after_shutdown()
+        .await
+        .context("cold start failed")?;
+    // This is a cold boot, not a reset. Use the public runtime API because
+    // PetriVm::wait_for_agent is private; preserve its shutdown-IC workaround.
+    vm.backend().wait_for_enlightened_shutdown_ready().await?;
+    let agent = vm.backend().wait_for_agent(false).await?;
+    let tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, guest_tool.get(), guest_path, os_flavor)
+            .await?;
+    let claims = tests.check_context_hash(None).await?;
+    ensure!(
+        claims["vm-configuration"]["hardware-sealing-policy"] == "hash"
+            && claims["vm-configuration"]["tpm-persisted"] == true,
+        "stateful hardware-sealing policy changed: {claims}"
+    );
+    ensure!(
+        tests.read_ak_pub_modulus().await? == ak_before,
+        "cold boot changed AK"
+    );
+    tests.verify_test_nv().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_shutdown().await?;
+    vm.backend().wait_for_stopped().await?;
+    verify_v3_hardware_protector(&vm, vmgstool.get()).await?;
+    vm.teardown().await?;
+    Ok(())
+}
+
+/// Offline V2-release checks: callers must wait for shutdown before copying VMGS.
+#[cfg(windows)]
+async fn verify_v3_hardware_protector(
+    vm: &petri::PetriVm<HyperVPetriBackend>,
+    vmgstool: &Path,
+) -> anyhow::Result<()> {
+    const HWKP_V3_SIZE: usize = 128;
+
+    let vmgs = vm
+        .get_guest_state_file()
+        .await?
+        .context("Hyper-V VMGS is missing")?;
+    let hardware = dump_vmgs_entry(vmgstool, &vmgs, "HW_KEY_PROTECTOR").await?;
+    ensure!(
+        hardware.len() == HWKP_V3_SIZE,
+        "V2 release must produce a context-free {HWKP_V3_SIZE}-byte V3 HW_KEY_PROTECTOR, got {} bytes",
+        hardware.len()
+    );
+    ensure!(
+        hardware[..4] == 3u32.to_le_bytes(),
+        "unexpected HW_KEY_PROTECTOR version"
+    );
+    ensure!(
+        hardware[4..8] == (HWKP_V3_SIZE as u32).to_le_bytes(),
+        "unexpected HW_KEY_PROTECTOR length field"
+    );
+
+    // Stateful key release allocates KEY_PROTECTOR. query-encryption returns
+    // success only for AES-GCM with that protector (6 means GspById instead).
+    let mut command = std::process::Command::new(vmgstool);
+    command.arg("query-encryption").arg("--filepath").arg(&vmgs);
+    petri::run_host_cmd(command)
+        .await
+        .context("expected AES-GCM encrypted VMGS with KEY_PROTECTOR")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn dump_vmgs_entry(vmgstool: &Path, vmgs: &Path, file_id: &str) -> anyhow::Result<Vec<u8>> {
+    let temp = tempfile::tempdir().context("creating VMGS dump directory")?;
+    let data = temp.path().join("protector.bin");
+    let mut command = std::process::Command::new(vmgstool);
+    command
+        .arg("dump")
+        .arg("--filepath")
+        .arg(vmgs)
+        .arg("--file-id")
+        .arg(file_id)
+        .arg("--data-path")
+        .arg(&data);
+    petri::run_host_cmd(command)
+        .await
+        .with_context(|| format!("dumping {file_id}"))?;
+    std::fs::read(&data).with_context(|| format!("reading dumped {file_id}"))
+}
 
 /// Test that hardware sealing with hash-based key derivation persists
 /// TPM NV index data across reboots.
@@ -1579,6 +1863,7 @@ pub(crate) async fn hw_ak_stable_impl<T, S, U: PetriVmmBackend>(
             .await?;
 
     // First boot: capture the AK public modulus.
+    tpm_guest_tests.check_context_hash(None).await?;
     let ak_pub_first = tpm_guest_tests.read_ak_pub_modulus().await?;
     ensure!(
         !ak_pub_first.is_empty(),
@@ -1598,6 +1883,7 @@ pub(crate) async fn hw_ak_stable_impl<T, S, U: PetriVmmBackend>(
 
     let ak_pub_second = tpm_guest_tests.read_ak_pub_modulus().await?;
 
+    tpm_guest_tests.check_context_hash(None).await?;
     ensure!(
         ak_pub_first == ak_pub_second,
         "AK pub must remain stable across reboot in stateless + sealing mode, \
