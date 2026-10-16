@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineError;
+use tpm_resources::default_vtpm_size;
 
 use crate::TpmVersion;
 
@@ -129,13 +130,17 @@ pub fn create_tpm_engine_helper(
     let tpm_engine = match version {
         TpmVersion::V138 => MsTpm20RefPlatform::initialize(
             Box::new(callbacks),
-            ms_tpm_20_ref::InitKind::ColdInitWithSize(version.nvram_size()),
+            ms_tpm_20_ref::InitKind::ColdInitWithSize(default_vtpm_size(
+                tpm_resources::TpmVersion::V138,
+            )),
         )
         .map(CvmTpmEngine::V138)
         .map_err(anyhow::Error::from),
         TpmVersion::V185 => MsTpm185Platform::initialize(
             Box::new(callbacks),
-            ms_tcg_tpm_sys::InitKind::ColdInitWithSize(version.nvram_size()),
+            ms_tcg_tpm_sys::InitKind::ColdInitWithSize(default_vtpm_size(
+                tpm_resources::TpmVersion::V185,
+            )),
         )
         .map(CvmTpmEngine::V185)
         .map_err(anyhow::Error::from),

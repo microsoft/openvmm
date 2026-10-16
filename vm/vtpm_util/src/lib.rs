@@ -4,7 +4,6 @@
 //! The module includes `vtpm-util`, a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
 mod key_import;
-mod marshal;
 mod vtpm_helper;
 
 pub use key_import::create_random_rsa_key_in_tpm2_import_blob_format;
@@ -17,8 +16,8 @@ use crypto::sha_256::sha_256;
 use parking_lot::Mutex;
 use std::fs;
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::vec;
 use tpm_lib as tpm_helper;
@@ -39,32 +38,24 @@ pub enum TpmVersion {
     V185,
 }
 
-impl TpmVersion {
-    const fn nvram_size(self) -> usize {
-        match self {
-            Self::V138 => 32 * 1024,
-            Self::V185 => 128 * 1024,
-        }
-    }
-}
-
-pub(crate) fn create_sensitive_file(path: &str) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        options.mode(0o600);
-    }
-
-    options.open(path)
-}
-
 fn write_sensitive_file(path: &str, contents: &[u8]) -> std::io::Result<()> {
-    let mut file = create_sensitive_file(path)?;
-    file.write_all(contents)
+    write_sensitive_file_with(path, contents, File::write_all)
+}
+
+fn write_sensitive_file_with(
+    path: &str,
+    contents: &[u8],
+    write: impl FnOnce(&mut File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    write(file.as_file_mut(), contents)?;
+    file.persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 /// Creates a vTPM blob and writes it to `path`.
@@ -297,9 +288,11 @@ mod tests {
     use super::create_vtpm_blob_file_with_version;
     use super::print_key_name;
     use super::write_sensitive_file;
+    use super::write_sensitive_file_with;
     use super::write_srk;
     use super::write_srk_with_version;
     use std::fs;
+    use std::io::Write;
     use test_with_tracing::test;
     use tpm_protocol::tpm20proto::AlgIdEnum;
     use tpm_protocol::tpm20proto::TpmaObjectBits;
@@ -317,6 +310,60 @@ mod tests {
 
         assert!(write_sensitive_file(path.to_str().unwrap(), b"replacement").is_err());
         assert_eq!(fs::read(path).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn sensitive_file_is_published_only_after_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sensitive");
+
+        write_sensitive_file_with(path.to_str().unwrap(), b"secret", |file, contents| {
+            file.write_all(&contents[..1])?;
+            assert!(!path.exists());
+            file.write_all(&contents[1..])
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"secret");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn sensitive_file_cleans_up_failed_writes_and_allows_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sensitive");
+
+        let error =
+            write_sensitive_file_with(path.to_str().unwrap(), b"secret", |file, contents| {
+                file.write_all(&contents[..1])?;
+                Err(std::io::Error::other("injected write failure"))
+            })
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected write failure");
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+
+        write_sensitive_file(path.to_str().unwrap(), b"secret").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"secret");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn sensitive_file_preserves_destination_created_during_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sensitive");
+
+        let error =
+            write_sensitive_file_with(path.to_str().unwrap(), b"secret", |file, contents| {
+                file.write_all(contents)?;
+                fs::write(&path, b"existing")
+            })
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"existing");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]

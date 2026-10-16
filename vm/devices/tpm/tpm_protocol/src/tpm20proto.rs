@@ -1139,6 +1139,68 @@ pub mod protocol {
         }
     }
 
+    /// `TPMT_SENSITIVE` payload for an RSA object.
+    #[repr(C)]
+    pub struct TpmtSensitive {
+        /// Algorithm identifying the sensitive data (`TPMI_ALG_PUBLIC`).
+        pub sensitive_type: AlgId,
+        /// Authorization value (`TPM2B_AUTH`).
+        pub auth_value: Tpm2bBuffer,
+        /// Seed value (`TPM2B_DIGEST`).
+        pub seed_value: Tpm2bBuffer,
+        /// RSA private key material (`TPM2B_PRIVATE_KEY_RSA`).
+        pub sensitive: Tpm2bBuffer,
+    }
+
+    impl TpmtSensitive {
+        /// Serializes the structure into a TPM buffer.
+        pub fn serialize(&self) -> Vec<u8> {
+            let mut buffer = Vec::new();
+
+            buffer.extend_from_slice(self.sensitive_type.as_bytes());
+            buffer.extend_from_slice(&self.auth_value.serialize());
+            buffer.extend_from_slice(&self.seed_value.serialize());
+            buffer.extend_from_slice(&self.sensitive.serialize());
+
+            buffer
+        }
+    }
+
+    #[cfg(test)]
+    mod sensitive_tests {
+        use super::Tpm2bBuffer;
+        use super::TpmtSensitive;
+        use crate::tpm20proto::AlgIdEnum;
+        use test_with_tracing::test;
+
+        #[test]
+        fn tpmt_sensitive_has_one_size_prefix_per_buffer() {
+            let sensitive = TpmtSensitive {
+                sensitive_type: AlgIdEnum::RSA.into(),
+                auth_value: Tpm2bBuffer::new(&[]).unwrap(),
+                seed_value: Tpm2bBuffer::new(&[]).unwrap(),
+                sensitive: Tpm2bBuffer::new(&[1, 2, 3]).unwrap(),
+            };
+
+            assert_eq!(sensitive.serialize(), [0, 1, 0, 0, 0, 0, 0, 3, 1, 2, 3]);
+        }
+
+        #[test]
+        fn tpmt_sensitive_serializes_auth_and_seed_values() {
+            let sensitive = TpmtSensitive {
+                sensitive_type: AlgIdEnum::RSA.into(),
+                auth_value: Tpm2bBuffer::new(&[1]).unwrap(),
+                seed_value: Tpm2bBuffer::new(&[2, 3]).unwrap(),
+                sensitive: Tpm2bBuffer::new(&[4, 5, 6]).unwrap(),
+            };
+
+            assert_eq!(
+                sensitive.serialize(),
+                [0, 1, 0, 1, 1, 0, 2, 2, 3, 0, 3, 4, 5, 6]
+            );
+        }
+    }
+
     /// `TPMS_SENSITIVE_CREATE`
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]

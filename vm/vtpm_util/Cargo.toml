@@ -22,14 +22,15 @@ ms-tpm-20-ref = { workspace = true, features = ["openssl", "vendored"] }
 ms-tcg-tpm-sys = { workspace = true, features = ["openssl", "vendored"] }
 parking_lot.workspace = true
 pkcs1.workspace = true
+tempfile.workspace = true
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
+tpm_resources.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [lints]
