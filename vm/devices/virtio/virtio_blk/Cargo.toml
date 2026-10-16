@@ -39,5 +39,8 @@ pal_event.workspace = true
 parking_lot.workspace = true
 test_with_tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+disk_blockdevice.workspace = true
+
 [lints]
 workspace = true

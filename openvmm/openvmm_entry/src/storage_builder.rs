@@ -55,7 +55,7 @@ fn bounce_disk_candidate(kind: &DiskCliKind) -> bool {
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| {
-                    ["vhd", "vhdx", "vmgs", "iso"]
+                    ["vhd", "vhdx", "vmgs", "iso", "vmdk"]
                         .iter()
                         .any(|format| extension.eq_ignore_ascii_case(format))
                 });
@@ -80,7 +80,7 @@ pub(crate) fn validate_bounce_file(path: &std::path::Path, direct: bool) -> anyh
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            ["vhd", "vhdx", "vmgs", "iso"]
+            ["vhd", "vhdx", "vmgs", "iso", "vmdk"]
                 .iter()
                 .any(|format| extension.eq_ignore_ascii_case(format))
         })
@@ -155,6 +155,13 @@ fn open_auto_disks(
             {
                 disk_backend_resources::FileDiskHandle(file).into_resource()
             }
+        }
+        #[cfg(target_os = "linux")]
+        VirtioBlkBounceDiskHandle::BlockDevice(file) => {
+            disk_backend_resources::BlockDeviceDiskHandle {
+                file: file.try_clone()?,
+            }
+            .into_resource()
         }
     };
     Ok((direct, bounce.into_resource()))
