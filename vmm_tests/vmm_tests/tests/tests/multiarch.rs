@@ -45,6 +45,8 @@ mod ic;
 mod large_pages;
 // Memory Validation tests.
 mod memstat;
+/// Windows netvsc adapter binding-stack tests.
+mod netvsc_bindings;
 /// NUMA topology tests.
 mod numa;
 /// Servicing tests.
