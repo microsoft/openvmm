@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Software freezing of KVM clocks and native LAPIC timers.
+//! Software freezing of KVM clocks and TSC deadlines, with countdown snapshots.
 
 use super::vp_state::get_msrs_state;
 use super::vp_state::set_msrs_state;
@@ -64,7 +64,7 @@ impl TscAccess {
         if *self == Self::Msr {
             // Legacy TSC writes within a second of the previous write can
             // reuse its offset, retaining paused time. Break that matching
-            // generation while VPs are stopped and LAPIC timers disarmed.
+            // generation while VPs are stopped and TSC deadlines disarmed.
             let [unmatched, target] = legacy_tsc_restore_values(value);
             processor.set_msrs(&[
                 (x86defs::X86X_MSR_TSC, unmatched),
@@ -98,12 +98,14 @@ struct FrozenVpTime {
     tsc: u64,
     deadline: vp::TscDeadline,
     timer: Option<LapicTimer>,
+    restore_timer: bool,
     restored_stimers: Option<vp::SynicTimers>,
 }
 
 impl FrozenVpTime {
     fn set_apic(&mut self, apic: &vp::Apic) {
         self.timer = Some(LapicTimer::capture(apic));
+        self.restore_timer = true;
         // Switching out of deadline mode disarms the architectural MSR,
         // just as KVM does for a live LAPIC mode change.
         if !deadline_mode(apic) {
@@ -115,7 +117,7 @@ impl FrozenVpTime {
         // KVM ignores deadline writes outside TSC-deadline mode.
         if self
             .timer
-            .is_some_and(|timer| Lvt::from(timer.lvt).timer_mode() == TimerMode::TSC_DEADLINE.0)
+            .is_some_and(|timer| timer.deadline_mode())
         {
             self.deadline = value;
         }
@@ -131,6 +133,10 @@ struct LapicTimer {
 }
 
 impl LapicTimer {
+    fn deadline_mode(&self) -> bool {
+        Lvt::from(self.lvt).timer_mode() == TimerMode::TSC_DEADLINE.0
+    }
+
     fn capture(apic: &vp::Apic) -> Self {
         let regs = apic.registers();
         Self {
@@ -304,37 +310,27 @@ impl PartitionTime {
         let mut vps = Vec::new();
         for apic_id in apic_ids.clone() {
             let processor = kvm.vp(apic_id);
-            let mut apic = read_apic(&processor)?;
+            let apic = read_apic(&processor)?;
             let timer = LapicTimer::capture(&apic);
             let deadline = if deadline_mode(&apic) {
                 let deadline = get_msrs_state::<vp::TscDeadline, 1>(&processor)?;
-                // SET_LAPIC can rearm the previous deadline. Clear the MSR
-                // before replacing the page and restore it only after thaw
-                // has installed both the APIC mode and the guest TSC offset.
+                // Only touch the deadline MSR, not the LAPIC image: external
+                // interrupts can still arrive while the VPs are stopped.
                 set_msrs_state(&processor, &vp::TscDeadline::default())?;
                 deadline
             } else {
                 vp::TscDeadline::default()
             };
-            // KVM cannot export its private timer-pending bit. For a
-            // countdown one-shot, nonzero initial count with zero current
-            // count can mean either pending or already delivered. Preserve
-            // that image: SET_LAPIC makes it immediately due, preferring a
-            // possible duplicate over losing a wakeup. For periodic timers,
-            // a pending tick can coalesce and a zero count restarts a full
-            // period. TSC-deadline mode is not ambiguous: KVM clears the
-            // deadline MSR when transferring the expiration into the LAPIC.
-            LapicTimer::disarm(&mut apic);
-            write_apic(&processor, &apic)?;
+            // Countdown capture is for snapshots only. Leaving the live timer
+            // alone preserves KVM's private pending/consumed state on resume.
             vps.push(FrozenVpTime {
                 timer: Some(timer),
                 deadline,
                 ..Default::default()
             });
         }
-        // There is no atomic clock/timer snapshot UAPI. Disarm countdowns
-        // before sampling clocks, so this skew delays rather than advances
-        // their expiration relative to the frozen reference time.
+        // Capture countdowns before clocks so snapshot skew delays rather
+        // than advances expiration relative to the restored reference time.
         let clock_ns = if matches!(self.tsc_access, TscAccess::CommonClock { .. }) {
             let sample = sample_clock(kvm)?;
             for (apic_id, frozen) in apic_ids.zip(&mut vps) {
@@ -380,15 +376,19 @@ impl PartitionTime {
         }
         for (apic_id, saved) in apic_ids.zip(&frozen.vps) {
             let processor = kvm.vp(apic_id);
-            if let Some(timer) = saved.timer {
+            if saved.restore_timer {
+                let timer = saved.timer.expect("restored APIC has a timer image");
                 // Keep interrupts received while stopped. Do not replace
                 // IRR/ISR with the LAPIC image captured at freeze.
                 let mut apic = read_apic(&processor)?;
                 timer.apply(&mut apic);
                 write_apic(&processor, &apic)?;
-                if deadline_mode(&apic) {
-                    set_msrs_state(&processor, &saved.deadline)?;
-                }
+            }
+            if saved
+                .timer
+                .is_some_and(|timer| timer.deadline_mode())
+            {
+                set_msrs_state(&processor, &saved.deadline)?;
             }
             if let Some(stimers) = &saved.restored_stimers {
                 write_stimers(&processor, stimers)?;
@@ -401,19 +401,25 @@ impl PartitionTime {
 
 impl KvmPartitionInner {
     fn freeze_time(&self) -> Result<(), KvmError> {
-        let mut time = self.time.lock();
-        let routing = self.gsi_routing.lock();
-        routing.with_irqfds_suspended(&self.kvm, || {
-            time.freeze(&self.kvm, self.vps.iter().map(|vp| vp.vp_info.apic_id))
-        })
+        self.time
+            .lock()
+            .freeze(&self.kvm, self.vps.iter().map(|vp| vp.vp_info.apic_id))
     }
 
     fn thaw_time(&self) -> Result<(), KvmError> {
         let mut time = self.time.lock();
-        let routing = self.gsi_routing.lock();
-        routing.with_irqfds_suspended(&self.kvm, || {
+        if time
+            .frozen
+            .as_ref()
+            .is_some_and(|frozen| frozen.vps.iter().any(|vp| vp.restore_timer))
+        {
+            let routing = self.gsi_routing.lock();
+            routing.with_irqfds_suspended(&self.kvm, || {
+                time.thaw(&self.kvm, self.vps.iter().map(|vp| vp.vp_info.apic_id))
+            })
+        } else {
             time.thaw(&self.kvm, self.vps.iter().map(|vp| vp.vp_info.apic_id))
-        })
+        }
     }
 
     pub(crate) fn read_reference_time(&self) -> Result<kvm::kvm_clock_data, KvmError> {
@@ -728,6 +734,29 @@ mod tests {
     }
 
     #[test]
+    fn countdown_capture_does_not_request_restoration() {
+        let apic = timer_apic();
+        let mut frozen = FrozenVpTime {
+            timer: Some(LapicTimer::capture(&apic)),
+            ..Default::default()
+        };
+        let mut snapshot = apic.clone();
+        frozen.timer.unwrap().apply(&mut snapshot);
+        assert_eq!(snapshot, apic);
+        assert!(!frozen.restore_timer);
+
+        frozen.set_apic(&snapshot);
+        assert!(frozen.restore_timer);
+        frozen.set_apic(&vp::Apic::new(
+            apic.apic_base.into(),
+            vp::ApicRegisters::new_zeroed(),
+            [0; 8],
+        ));
+        assert_eq!(frozen.timer.unwrap().initial, 0);
+        assert!(frozen.restore_timer);
+    }
+
+    #[test]
     fn frozen_deadline_is_independent_of_apic_state_and_obeys_mode_changes() {
         let mut apic = timer_apic();
         let deadline = vp::TscDeadline {
@@ -795,7 +824,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires /dev/kvm with a stable TSC and KVM_VCPU_TSC_OFFSET"]
-    fn kvm_freezes_clocks_and_preserves_remaining_countdown() -> Result<(), KvmError> {
+    fn kvm_freezes_clocks_and_captures_countdown_for_restore() -> Result<(), KvmError> {
         let kvm = kvm::Kvm::new()?;
         let mut vm = kvm.new_vm(kvm::VmType::Default)?;
         vm.enable_split_irqchip(24)?;
@@ -813,7 +842,7 @@ mod tests {
         let mut regs = *apic.registers();
         regs.timer_ccr = regs.timer_icr;
         apic.registers = *regs.as_array();
-        frozen.vps[0].timer = Some(LapicTimer::capture(&apic));
+        frozen.vps[0].set_apic(&apic);
         LapicTimer::disarm(&mut apic);
         write_apic(&vm.vp(0), &apic)?;
 
@@ -838,16 +867,14 @@ mod tests {
         let timer = frozen.vps[0].timer.unwrap();
         assert!(timer.remaining > 0 && timer.remaining < timer.initial);
         assert_eq!(frozen.vps[1].tsc.wrapping_sub(frozen.vps[0].tsc), 123_456);
-        assert_eq!(read_apic(&vm.vp(0))?.registers().timer_icr, 0);
+        assert_eq!(read_apic(&vm.vp(0))?.registers().timer_icr, timer.initial);
+        assert!(!frozen.vps[0].restore_timer);
 
         std::thread::sleep(Duration::from_millis(20));
         time.freeze(&vm, [0, 1].into_iter())?;
         assert_eq!(time.frozen.as_ref().unwrap().clock_ns, clock);
-        let mut live = read_apic(&vm.vp(0))?;
-        let mut regs = *live.registers();
-        regs.irr[3] |= 1 << 7;
-        live.registers = *regs.as_array();
-        write_apic(&vm.vp(0), &live)?;
+        let live_remaining = read_apic(&vm.vp(0))?.registers().timer_ccr;
+        assert!(live_remaining < timer.remaining);
         let before_thaw = std::time::Instant::now();
         time.thaw(&vm, [0, 1].into_iter())?;
         let resumed_clock = vm.get_clock_ns()?.clock;
@@ -860,10 +887,26 @@ mod tests {
                 <= max_elapsed_ns * u128::from(khz) / 1_000_000
         );
         let resumed = read_apic(&vm.vp(0))?;
-        assert_ne!(resumed.registers().irr[3] & (1 << 7), 0);
         assert!(resumed.registers().timer_ccr > 0);
-        assert!(resumed.registers().timer_ccr <= timer.remaining);
+        assert!(resumed.registers().timer_ccr <= live_remaining);
         assert_eq!(resumed.registers().timer_icr, timer.initial);
+
+        time.freeze(&vm, [0, 1].into_iter())?;
+        let mut restored = read_apic(&vm.vp(0))?;
+        timer.apply(&mut restored);
+        time.frozen.as_mut().unwrap().vps[0].set_apic(&restored);
+        LapicTimer::disarm(&mut restored);
+        write_apic(&vm.vp(0), &restored)?;
+        let mut regs = *restored.registers();
+        regs.irr[3] |= 1 << 7;
+        restored.registers = *regs.as_array();
+        write_apic(&vm.vp(0), &restored)?;
+        time.thaw(&vm, [0, 1].into_iter())?;
+        let restored = read_apic(&vm.vp(0))?;
+        assert_ne!(restored.registers().irr[3] & (1 << 7), 0);
+        assert_eq!(restored.registers().timer_icr, timer.initial);
+        assert!(restored.registers().timer_ccr <= timer.remaining);
+        assert!(restored.registers().timer_ccr > live_remaining);
         Ok(())
     }
 }

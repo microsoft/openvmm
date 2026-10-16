@@ -274,7 +274,7 @@ fn countdown_restore(
     std::thread::sleep(FROZEN_WAIT);
     anyhow::ensure!(
         countdown(processor)? == expected,
-        "frozen countdown advanced"
+        "captured countdown changed while paused"
     );
     let clocks = ClockState::read(partition, processor)?;
     let saved = SavedState::save(partition, processor)?;

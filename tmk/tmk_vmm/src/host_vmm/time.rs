@@ -67,6 +67,10 @@ pub(super) fn checkpoint(
 
     let vm = mesh::payload::encode(partition.access_state(Vtl::Vtl0).save_all()?);
     let vp = mesh::payload::encode(runner.vp.access_state(Vtl::Vtl0).save_all()?);
+    if matches!(request.action, TimeAction::SaveOnly) {
+        resume(partition, runner, request, result)?;
+        return Ok(None);
+    }
     let mut memory = vec![
         0;
         runner

@@ -89,6 +89,8 @@ pub enum TimeAction {
     SaveRestore,
     /// Restore serialized state into a newly created partition.
     Recreate,
+    /// Serialize state while frozen, then resume without restoring it.
+    SaveOnly,
 }
 
 /// A guest/host rendezvous for timekeeping tests.

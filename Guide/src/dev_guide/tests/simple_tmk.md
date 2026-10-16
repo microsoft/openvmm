@@ -79,15 +79,18 @@ leaking into another test implementation.
 The x86 tests `frozen_clock`, `frozen_countdown_xapic`,
 `frozen_countdown_x2apic`, `frozen_deadline_xapic`, and
 `frozen_deadline_x2apic` exercise native partition time control without Hyper-V
-enlightenments. Each covers ordinary pause/resume, serialized save/reset/restore,
-and serialized restore into a fresh partition.
+enlightenments. Each covers ordinary pause/resume, save without restore,
+serialized save/reset/restore, and serialized restore into a fresh partition.
 
 The guest calibrates its TSC against a host wait before testing. The host then
 holds partition time frozen for one second at each rendezvous. Assertions check
-actual guest RDTSC continuity, partially elapsed one-shot countdowns rather than
-just initial counts, absolute TSC deadlines, disarmed deadlines, and an unrelated
-MSI injected while frozen. Scheduling tolerance is 250 ms, substantially less
-than either the stopped interval or an erroneous full countdown restart.
+actual guest RDTSC continuity, restoration of partially elapsed one-shot
+countdowns rather than just initial counts, absolute TSC deadlines, disarmed
+deadlines, and an unrelated MSI injected while frozen. Ordinary resume permits
+countdowns to have expired during the pause. After consuming a one-shot, both
+pause/resume and save-without-restore must leave it consumed, even with a
+nonzero initial count. Scheduling tolerance is 250 ms, substantially less than
+either the stopped interval or an erroneous full countdown restart.
 
 These tests use `#[tmk_test(time_control)]`; deadline tests also specify
 `tsc_deadline`. The executor reports a skip for unavailable capabilities,
@@ -96,9 +99,10 @@ time. Test each available native backend explicitly with `--hv kvm`,
 `--hv mshv`, or `--hv whp`, rather than relying on automatic backend selection.
 
 KVM does not expose enough state to distinguish an expired, consumed countdown
-one-shot from an expired timer awaiting delivery. These tests deliberately
-freeze nonzero remaining countdowns; they do not require exact pending periodic
-tick preservation or prove that consumed one-shots cannot be duplicated.
+one-shot from an expired timer awaiting delivery in a snapshot. Restore tests
+deliberately capture nonzero remaining countdowns; they do not require exact
+pending periodic tick preservation or prove that restoring a snapshot of a
+consumed one-shot cannot duplicate it.
 
 ## Running and listing
 

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Guest-visible clock and native APIC timer continuity across full stops.
+//! Clock/deadline continuity and countdown snapshots across full stops.
 
 use super::apic::ApicMode;
 use crate::prelude::*;
@@ -14,8 +14,9 @@ use x86defs::apic::Dcr;
 use x86defs::apic::Lvt;
 use x86defs::apic::TimerMode;
 
-const ACTIONS: [TimeAction; 3] = [
+const ACTIONS: [TimeAction; 4] = [
     TimeAction::Pause,
+    TimeAction::SaveOnly,
     TimeAction::SaveRestore,
     TimeAction::Recreate,
 ];
@@ -139,7 +140,11 @@ fn countdown(t: TestContext<'_>, apic: ApicMode) {
             assert!(remaining > initial / 4 && remaining < initial / 2);
             checkpoint(action, OTHER_VECTOR, rate);
             let restored = apic.read(s, ApicRegister::TIMER_CCR);
-            assert!(restored <= remaining && restored > remaining.saturating_sub(initial / 4));
+            let restoring = matches!(action, TimeAction::SaveRestore | TimeAction::Recreate);
+            assert!(restored <= remaining);
+            if restoring {
+                assert!(restored > remaining.saturating_sub(initial / 4));
+            }
             s.enable_interrupts();
             assert!(
                 other.load(Relaxed),
@@ -151,17 +156,27 @@ fn countdown(t: TestContext<'_>, apic: ApicMode) {
                 core::hint::spin_loop();
             }
             let delivered = fired.load(Relaxed);
-            assert!(
-                delivered >= due - rate / 10,
-                "countdown fired early or was lost"
-            );
+            assert_ne!(delivered, 0, "countdown interrupt was lost");
+            if restoring {
+                assert!(delivered >= due - rate / 10, "restored countdown fired early");
+            }
             assert!(
                 delivered <= due + rate / 4,
                 "countdown restarted its full initial interval"
             );
             s.disable_interrupts();
-            apic.write(s, ApicRegister::TIMER_ICR, 0);
             apic.write(s, ApicRegister::EOI, 0);
+            // Leave the nonzero initial count intact after consuming the
+            // one-shot. Neither pausing nor saving may rearm it.
+            for action in [TimeAction::Pause, TimeAction::SaveOnly] {
+                fired.store(0, Relaxed);
+                checkpoint(action, 0, rate);
+                s.enable_interrupts();
+                wait_until(tsc() + rate / 10);
+                s.disable_interrupts();
+                assert_eq!(fired.load(Relaxed), 0, "consumed one-shot was rearmed");
+            }
+            apic.write(s, ApicRegister::TIMER_ICR, 0);
         });
     }
 }

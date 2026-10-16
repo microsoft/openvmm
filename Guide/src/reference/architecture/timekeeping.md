@@ -224,6 +224,8 @@ Deadline state requires guest/backend support and restores after APIC/TSC:
 zero disarms; absent state is not restored. Native MSHV/WHP and KVM support
 it, unlike software APICs. Reference time is independent of Hyper-V on KVM.
 Lifecycle freeze is separate; `can_freeze_time` gates exact state comparison.
+Clock freeze does not require native countdown timers to stop. KVM captures
+their pause-time state for snapshots but leaves them running on ordinary pause.
 
 Arm state coverage differs: the generic `virt` partition-state schema is
 empty and its VP schema does not currently include architectural
@@ -240,7 +242,7 @@ Guest-visible Hyper-V facilities require the relevant enlightenments.
 | MSHV, x86 or Arm | Hyper-V partition `ReferenceTime` property | Yes, through `TimeFreeze`. |
 | WHP, offloaded Hyper-V | Native WHP reference time | Yes, separately for each backing partition. |
 | WHP, emulated Hyper-V on x86 | Software `VmTime` | Yes for native WHP time; `VmTime` stops separately. |
-| KVM, non-isolated x86 | KVM clock, converted from ns to 100 ns | Yes, through software clock rebasing and LAPIC timer staging, with per-VP fallback when stable clock correlation or offset access is unavailable. |
+| KVM, non-isolated x86 | KVM clock, converted from ns to 100 ns | Clocks and TSC deadlines freeze in software, with per-VP clock fallback. Native countdowns continue; their pause-time state is captured for snapshots. |
 | KVM, isolated x86 | KVM clock, converted from ns to 100 ns | No. |
 | KVM, Arm | No Hyper-V reference-time source exposed | No; architectural timers remain KVM-owned. |
 | HVF, Arm | Software `VmTime` | No architectural-counter freeze; software time still stops. |
@@ -292,7 +294,7 @@ the current guest TSC and adjusts its offset by the difference to the saved
 value, without requiring a known frequency or a userspace host-TSC anchor.
 Capture and restoration are sequential, so this path has per-VP sampling skew.
 On older kernels without offset access, restore first writes a distant
-temporary TSC with VPs stopped and LAPIC timers disarmed, then the saved value.
+temporary TSC with VPs stopped and TSC deadlines disarmed, then the saved value.
 This avoids KVM's legacy nearby-write synchronization heuristic retaining a
 short pause. A saved zero is restored as one tick because a zero MSR write
 unconditionally requests synchronization. Frozen state still reads as zero.
@@ -305,15 +307,28 @@ configuration separately as `kvm_tsc_fallback`.
 Reference time is saved/reset without Hyper-V too, rounded up to 100 ns for
 snapshots. `KVM_SET_CLOCK` flags zero exclude UTC downtime.
 
-Freeze caches deadlines privately and disarms LAPIC timers. Thaw merges
-countdowns into live APIC state, preserving IRQs, then restores the deadline
-MSR. Injection is serialized and irqfds briefly detached. UAPI limitations:
+Pause captures countdown state for snapshots without rewriting the LAPIC or
+stopping the live countdown. Ordinary resume discards that capture, preserving
+KVM's private pending/consumed state. A countdown can expire while paused and
+deliver an interrupt early relative to the resumed guest clock. Saving without
+restoring is observational: it does not change this resume behavior.
 
-- Clock/timer capture is not atomic; countdown skew delays expiration.
-- Zero remaining countdown cannot distinguish pending from delivered
+TSC deadlines are different because their expiration is expressed in the clock
+being rebased. Pause captures and clears the deadline MSR; resume restores it
+after TSC. These operations do not replace the LAPIC image or suspend irqfds.
+
+Reset and snapshot restore stage countdown state for installation at thaw.
+Only this path merges staged timer fields into live APIC state, preserving
+interrupts received while stopped. LAPIC state writes serialize injection and
+briefly detach irqfds; ordinary pause/resume does neither. UAPI limitations:
+
+- Clock/timer capture is not atomic; snapshot countdown skew delays expiration.
+- A snapshot's zero remaining countdown cannot distinguish pending from delivered
   one-shots. Rearming nonzero initial count makes it immediately due,
-  preferring a possible duplicate over a lost wakeup.
-- Periodic pending ticks can coalesce; zero count restarts a full period.
+  preferring a possible duplicate over a lost wakeup on restore, not ordinary
+  resume.
+- Snapshot restoration can coalesce periodic pending ticks; zero count restarts
+  a full period.
 - TSC-deadline mode is distinguishable: KVM clears the deadline on delivery.
 - Ordinary pause leaves synthetic timers' private state intact; KVM rechecks
   deadlines after clock updates. Snapshot config/count writes wait for thaw,

@@ -47,6 +47,9 @@ freeze/thaw transitions, reset values, and serialized restoration of clocks,
 countdown timers, and TSC deadlines. Reference time is checked when the backend
 advertises access to it. Initial clock values need not be zero; zero is expected
 only after an explicit reset.
+Countdown readback while paused describes the captured snapshot, not whether
+the native timer is still running. Guest-visible pause behavior is covered by
+the TMK tests.
 
 The contract functions operate on the public `virt` interfaces. Each function
 has an adjacent `backend_test!` declaration that registers it with Petri for

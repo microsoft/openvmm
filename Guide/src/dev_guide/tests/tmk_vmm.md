@@ -100,6 +100,8 @@ The executor thaws supporting partitions only after binding the VP and setting
 its initial state. For a timekeeping rendezvous, the MMIO callback requests a
 stop; freezing, saving, restoring, and thawing happen after the VP run loop has
 returned. A calibration rendezvous instead keeps partition time advancing.
+The save-only rendezvous serializes VM/VP state and resumes without installing
+it, checking that taking a snapshot does not change ordinary resume behavior.
 Snapshots serialize VM and VP state and copy guest RAM. Restore tests either
 reset the existing partition first or create a new partition and VP, so private
 backend caches cannot substitute for serialized state.
