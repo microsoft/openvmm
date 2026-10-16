@@ -195,6 +195,10 @@ pub struct ConsommeParams {
     pub tcp_rx_buffer: TcpBufferBounds,
     /// Per-connection TCP transmit ring buffer bounds (host-to-guest).
     pub tcp_tx_buffer: TcpBufferBounds,
+    /// Limits on simultaneously active guest TCP, UDP, and ICMP flows, read
+    /// when the instance is created. Bounded by default; set
+    /// [`limits::FlowLimits::UNBOUNDED`] only for a trusted guest.
+    pub flow_limits: limits::FlowLimits,
 }
 
 /// Bounds for a per-connection TCP ring buffer.
@@ -260,6 +264,7 @@ impl ConsommeParams {
             allow_host_local_access: false,
             tcp_rx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
             tcp_tx_buffer: DEFAULT_TCP_BUFFER_BOUNDS,
+            flow_limits: limits::FlowLimits::default(),
         })
     }
 
@@ -846,15 +851,16 @@ impl Consomme {
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
         let udp_timeout = params.udp_timeout;
+        let flow_limits = params.flow_limits;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
                 local_addr_map: local_addr_map::LocalAddrMap::new(),
             },
-            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer),
-            udp: udp::Udp::new(udp_timeout),
-            icmp: icmp::Icmp::new(udp_timeout),
+            tcp: tcp::Tcp::new(tcp_rx_buffer, tcp_tx_buffer, flow_limits.tcp),
+            udp: udp::Udp::new(udp_timeout, flow_limits.udp),
+            icmp: icmp::Icmp::new(udp_timeout, flow_limits.icmp),
             dns,
             host_has_ipv6,
         }

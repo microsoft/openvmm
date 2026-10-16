@@ -71,16 +71,16 @@ pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
     listeners: HashMap<PortForwardKey, UdpListener>,
     timeout: Duration,
-    max_connections: usize,
+    max_connections: Option<usize>,
 }
 
 impl Udp {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration, max_connections: Option<usize>) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             timeout,
-            max_connections: crate::limits::DEFAULT_MAX_ACTIVE_UDP_FLOWS,
+            max_connections,
         }
     }
 }

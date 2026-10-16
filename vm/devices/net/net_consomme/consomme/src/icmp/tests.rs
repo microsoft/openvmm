@@ -28,8 +28,8 @@ async fn test_icmp_connection_limit_rejects_and_recovers(driver: DefaultDriver) 
     let timeout = Duration::from_millis(1);
     let mut params = ConsommeParams::new().unwrap();
     params.udp_timeout = timeout;
+    params.flow_limits.icmp = Some(1);
     let mut consomme = Consomme::new(params);
-    consomme.icmp.max_connections = 1;
 
     let existing_addr = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 0);
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();

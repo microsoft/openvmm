@@ -4,12 +4,27 @@
 //! Tests of the UDP active-flow limit.
 
 use super::*;
+use crate::limits::FlowLimits;
+
+/// Creates a Consomme instance with the given UDP idle timeout and active-flow
+/// limits.
+fn create_consomme_with_flow_limits(timeout: Duration, flow_limits: FlowLimits) -> Consomme {
+    let mut params = ConsommeParams::new().expect("Failed to create params");
+    params.udp_timeout = timeout;
+    params.flow_limits = flow_limits;
+    Consomme::new(params)
+}
 
 #[pal_async::async_test]
 async fn test_udp_connection_limit_rejects_and_recovers(driver: DefaultDriver) {
     let driver = Arc::new(driver);
-    let mut consomme = create_consomme_with_timeout(Duration::from_millis(1));
-    consomme.udp.max_connections = 2;
+    let mut consomme = create_consomme_with_flow_limits(
+        Duration::from_millis(1),
+        FlowLimits {
+            udp: Some(2),
+            ..FlowLimits::default()
+        },
+    );
     let mut client = TestClient::new(driver);
     let mut access = consomme.access(&mut client);
 

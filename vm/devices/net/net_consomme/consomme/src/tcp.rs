@@ -76,7 +76,7 @@ pub(crate) struct Tcp {
     listeners: HashMap<PortForwardKey, TcpListener>,
     #[inspect(skip)]
     timer: Option<TcpTimer>,
-    max_connections: usize,
+    max_connections: Option<usize>,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
 }
@@ -166,12 +166,16 @@ impl Tcp {
         resp.field("active_connections", self.connections.len());
     }
 
-    pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
+    pub fn new(
+        rx_buffer: crate::TcpBufferBounds,
+        tx_buffer: crate::TcpBufferBounds,
+        max_connections: Option<usize>,
+    ) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             timer: None,
-            max_connections: crate::limits::DEFAULT_MAX_ACTIVE_TCP_FLOWS,
+            max_connections,
             connection_params: ConnectionParams {
                 rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
                 tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
@@ -822,13 +826,15 @@ impl<T: Client> Access<'_, T> {
                             dst: ft.src,
                         };
 
-                        let at_capacity = self.inner.tcp.connections.len()
-                            >= self.inner.tcp.max_connections;
+                        let reached_limit = crate::limits::reached(
+                            self.inner.tcp.max_connections,
+                            self.inner.tcp.connections.len(),
+                        );
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {
-                                if at_capacity {
+                                if let Some(max_connections) = reached_limit {
                                     tracelimit::warn_ratelimited!(
-                                        max_connections = self.inner.tcp.max_connections,
+                                        max_connections,
                                         "dropping inbound TCP flow because the active-flow limit was reached"
                                     );
                                     return true;
