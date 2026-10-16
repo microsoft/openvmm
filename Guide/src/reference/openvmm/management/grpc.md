@@ -99,31 +99,40 @@ hotplug semantics or a non-VPCI host backend is required.
 VM-changing operations never overlap in a conflicting way. Device and resource
 changes (`ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`,
 `AddVpciDevice`, `RemoveVpciDevice`) run in the background and may overlap one
-another. `PauseVM`, `ResumeVM`, and `TeardownVM` are exclusive: if a device or
-resource change is still in flight, they are rejected immediately with
-`ABORTED` and a message naming both operations (for example, `VM busy: device
-or resource modification in progress, cannot start pause`). A rejected request
-has no side effects, and the server never retries it; the caller decides
-whether to retry.
+another. `PauseVM` and `ResumeVM` are exclusive: if a device or resource change
+is still in flight, they are rejected immediately with `ABORTED` and a message
+naming both operations (for example, `VM busy: device or resource modification
+in progress, cannot start pause`). A rejected request has no side effects, and
+the server never retries it; the caller decides whether to retry.
 
-| Operation | Class | May run alongside |
+`TeardownVM` and `Quit` are terminal and are never rejected by in-flight
+device or resource changes. They cancel those changes first, and the cancelled
+calls return `CANCELLED`. Cancellation stops the server waiting for the change;
+a change already delivered to the VM is completed or discarded when the VM
+stops.
+
+| Operation | Class | In-flight device or resource changes |
 |---|---|---|
-| `PauseVM`, `ResumeVM` | Exclusive | Nothing |
-| `TeardownVM` | Exclusive | Nothing |
-| `ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`, `AddVpciDevice`, `RemoveVpciDevice` | Shared | Other shared operations |
+| `PauseVM`, `ResumeVM` | Exclusive | Rejects the request with `ABORTED` |
+| `TeardownVM`, `Quit` | Terminal | Cancelled; they return `CANCELLED` |
+| `ModifyResource`, `AddPcieDevice`, `RemovePcieDevice`, `AddVpciDevice`, `RemoveVpciDevice` | Shared | Run alongside |
 
 `PauseVM`, `ResumeVM`, and `TeardownVM` run to completion before the server
 reads its next request. Requests that arrive while one of them is running
 therefore wait and are processed after it finishes, rather than being
 rejected.
 
-`CreateVM`, `Quit`, and the read-only RPCs (`WaitVM`, `CapabilitiesVM`,
-`PropertiesVM`) are not gated. `Quit` first waits for any in-flight device or
-resource changes to finish, then stops the VM.
+`CreateVM` and the read-only RPCs (`WaitVM`, `CapabilitiesVM`, `PropertiesVM`)
+are not gated.
 
-The gate is held until the operation finishes, whether it succeeds or fails.
-A client that cancels or disconnects does not release it early, because the
-operation itself keeps running to completion.
+Otherwise, the gate is held until the operation finishes, whether it succeeds
+or fails. A client that cancels or disconnects does not release it early,
+because the operation itself keeps running to completion.
+
+Consomme port changes (`ModifyResource` updating or removing a Consomme NIC's
+ports) require a running VM and fail with `FAILED_PRECONDITION` otherwise,
+because the ports are serviced by the NIC's queue processing, which is stopped
+while the VM is paused.
 
 ## VFIO and accelerated SMMU
 
