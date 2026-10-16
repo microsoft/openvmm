@@ -219,6 +219,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) =
             pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm");
+        let (pub_vmfirmwareigvm_cvm_mi_secure_x64, use_vmfirmwareigvm_cvm_mi_secure_x64) =
+            pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm-mi-secure");
 
         // initialize the various "VmmTestsArtifactsBuilder" containers, which
         // are used to "skim off" various artifacts that the VMM test jobs
@@ -1088,6 +1090,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         let mut use_openhcl_igvm_files_mi_secure_x86 = BTreeMap::new();
         let mut pub_vmfirmwareigvm_cvm_x64 = Some(pub_vmfirmwareigvm_cvm_x64);
+        let mut pub_vmfirmwareigvm_cvm_mi_secure_x64 = Some(pub_vmfirmwareigvm_cvm_mi_secure_x64);
 
         // emit openhcl build job
         for (arch, mi_secure) in [
@@ -1195,9 +1198,12 @@ impl IntoPipeline for CheckinGatesCli {
                                     pub_openhcl_igvms_extras.remove(&recipe).unwrap();
                                 let vmfirmwareigvm_dll = if recipe == OpenhclIgvmRecipe::X64Cvm
                                     && arch == CommonArch::X86_64
-                                    && !mi_secure
                                 {
-                                    pub_vmfirmwareigvm_cvm_x64.take()
+                                    if mi_secure {
+                                        pub_vmfirmwareigvm_cvm_mi_secure_x64.take()
+                                    } else {
+                                        pub_vmfirmwareigvm_cvm_x64.take()
+                                    }
                                 } else {
                                     None
                                 };
@@ -1469,6 +1475,7 @@ impl IntoPipeline for CheckinGatesCli {
             })?;
         let vmm_tests_artifacts_windows_intel_mi_secure_x86 = {
             let mut builder = vmm_tests_artifacts_windows_x86.clone();
+            builder.use_vmfirmwareigvm_cvm_x64 = Some(use_vmfirmwareigvm_cvm_mi_secure_x64);
             builder.use_openhcl_standard_x64 = use_openhcl_igvm_files_mi_secure_x86
                 .get(&OpenhclIgvmRecipe::X64)
                 .cloned();

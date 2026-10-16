@@ -1084,6 +1084,8 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct" | $FLOWEY_BIN v 13 'artifact_publish_from_x64-mi-secure-openhcl-igvm-test-linux-direct' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct-extras"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct-extras" | $FLOWEY_BIN v 13 'artifact_publish_from_x64-mi-secure-openhcl-igvm-test-linux-direct-extras' --is-raw-string update
+      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-vmfirmwareigvm-cvm-mi-secure"
+      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-vmfirmwareigvm-cvm-mi-secure" | $FLOWEY_BIN v 13 'artifact_publish_from_x64-vmfirmwareigvm-cvm-mi-secure' --is-raw-string update
     displayName: 🌼🛫 Initialize job
   - bash: |-
       set -e
@@ -1153,7 +1155,7 @@ jobs:
     displayName: unpack protoc
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0 flowey_lib_hvlite::init_cross_build 3 flowey_lib_hvlite::run_cargo_build 6 flowey_lib_hvlite::run_cargo_build 7
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0 flowey_lib_hvlite::init_cross_build 4 flowey_lib_hvlite::run_cargo_build 6 flowey_lib_hvlite::run_cargo_build 7
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -1187,7 +1189,7 @@ jobs:
     displayName: split debug symbols
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_uefi_mu_msvm 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7 flowey_lib_hvlite::init_cross_build 2
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_uefi_mu_msvm 0 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7 flowey_lib_hvlite::init_cross_build 3
     displayName: unpack mu_msvm package (x64)
   - bash: |-
       set -e
@@ -1233,8 +1235,16 @@ jobs:
     displayName: building openhcl initrd
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_igvmfilegen 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4 flowey_core::pipeline::artifact::publish 4 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5 flowey_core::pipeline::artifact::publish 5
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::run_igvmfilegen 2 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4 flowey_core::pipeline::artifact::publish 4 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5 flowey_core::pipeline::artifact::publish 5 flowey_lib_hvlite::build_vmfirmwareigvm_dll 0
     displayName: building igvm file
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 13 flowey_lib_hvlite::build_vmfirmwareigvm_dll 1 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_build 13 flowey_lib_hvlite::run_cargo_build 14
+    displayName: determine vmfirmwareigvm_dll env vars
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 13 flowey_lib_common::run_cargo_build 4 flowey_lib_hvlite::run_cargo_build 15 flowey_lib_hvlite::build_vmfirmwareigvm_dll 2 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 6 flowey_core::pipeline::artifact::publish 6
+    displayName: cargo build vmfirmwareigvm_dll
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-mi-secure-openhcl-igvm
@@ -1255,6 +1265,9 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct-extras
     displayName: 🌼📦 Publish x64-mi-secure-openhcl-igvm-test-linux-direct-extras
     artifact: x64-mi-secure-openhcl-igvm-test-linux-direct-extras
+  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-vmfirmwareigvm-cvm-mi-secure
+    displayName: 🌼📦 Publish x64-vmfirmwareigvm-cvm-mi-secure
+    artifact: x64-vmfirmwareigvm-cvm-mi-secure
 - job: job12
   displayName: build openhcl [x64-linux]
   pool:
@@ -4130,7 +4143,6 @@ jobs:
     name: openvmm-ado-intel-westus3-v6
   dependsOn:
   - job0
-  - job12
   - job13
   - job3
   - job4
@@ -4186,10 +4198,10 @@ jobs:
       artifact: x64-tmks
       path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-tmks
   - task: DownloadPipelineArtifact@2
-    displayName: 🌼📦 Download x64-vmfirmwareigvm-cvm
+    displayName: 🌼📦 Download x64-vmfirmwareigvm-cvm-mi-secure
     inputs:
-      artifact: x64-vmfirmwareigvm-cvm
-      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-vmfirmwareigvm-cvm
+      artifact: x64-vmfirmwareigvm-cvm-mi-secure
+      path: $(FLOWEY_TEMP_DIR)/used_artifacts/x64-vmfirmwareigvm-cvm-mi-secure
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-windows-openvmm
     inputs:
@@ -4261,7 +4273,7 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-mi-secure-openhcl-igvm-cvm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-mi-secure-openhcl-igvm-cvm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-mi-secure-openhcl-igvm-test-linux-direct" | $FLOWEY_BIN v 18 'artifact_use_from_x64-mi-secure-openhcl-igvm-test-linux-direct' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-tmks" | $FLOWEY_BIN v 18 'artifact_use_from_x64-tmks' --is-raw-string update
-      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-vmfirmwareigvm-cvm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-vmfirmwareigvm-cvm' --is-raw-string update
+      echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-vmfirmwareigvm-cvm-mi-secure" | $FLOWEY_BIN v 18 'artifact_use_from_x64-vmfirmwareigvm-cvm-mi-secure' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-openvmm" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-openvmm' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-pipette" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-pipette' --is-raw-string update
       echo "$(FLOWEY_TEMP_DIR)/used_artifacts/x64-windows-prep_steps" | $FLOWEY_BIN v 18 'artifact_use_from_x64-windows-prep_steps' --is-raw-string update
@@ -4596,7 +4608,7 @@ jobs:
       $FLOWEY_BIN v 17 'flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive:3:flowey_lib_hvlite/src/_jobs/consume_and_test_nextest_vmm_tests_archive.rs' --is-raw-string update --env-source Pipeline.Workspace <<'EOF'
       $(Pipeline.Workspace)
       EOF
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2 flowey_core::pipeline::artifact::resolve 17 flowey_core::pipeline::artifact::resolve 9 flowey_core::pipeline::artifact::resolve 10 flowey_core::pipeline::artifact::resolve 13 flowey_core::pipeline::artifact::resolve 15 flowey_core::pipeline::artifact::resolve 16 flowey_core::pipeline::artifact::resolve 14 flowey_core::pipeline::artifact::resolve 12 flowey_core::pipeline::artifact::resolve 8 flowey_core::pipeline::artifact::resolve 4 flowey_core::pipeline::artifact::resolve 5 flowey_core::pipeline::artifact::resolve 6 flowey_core::pipeline::artifact::resolve 1 flowey_core::pipeline::artifact::resolve 2 flowey_core::pipeline::artifact::resolve 3 flowey_core::pipeline::artifact::resolve 0 flowey_core::pipeline::artifact::resolve 7
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2 flowey_core::pipeline::artifact::resolve 7 flowey_core::pipeline::artifact::resolve 17 flowey_core::pipeline::artifact::resolve 9 flowey_core::pipeline::artifact::resolve 10 flowey_core::pipeline::artifact::resolve 13 flowey_core::pipeline::artifact::resolve 15 flowey_core::pipeline::artifact::resolve 16 flowey_core::pipeline::artifact::resolve 14 flowey_core::pipeline::artifact::resolve 12 flowey_core::pipeline::artifact::resolve 8 flowey_core::pipeline::artifact::resolve 4 flowey_core::pipeline::artifact::resolve 5 flowey_core::pipeline::artifact::resolve 6 flowey_core::pipeline::artifact::resolve 1 flowey_core::pipeline::artifact::resolve 2 flowey_core::pipeline::artifact::resolve 3 flowey_core::pipeline::artifact::resolve 0
     displayName: remove leftover Hyper-V VMs
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_hvlite::resolve_openvmm_test_initrd 0
     displayName: unpack openvmm-test-initrd archives
