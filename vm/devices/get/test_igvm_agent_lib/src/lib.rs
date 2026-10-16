@@ -1247,7 +1247,7 @@ mod tests {
         use openhcl_attestation_protocol::igvm_attest::get::decode_key_release_context_hash;
 
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
         for config in [
             IgvmAttestTestConfig::KeyReleaseV2,
@@ -1386,7 +1386,7 @@ mod tests {
     #[test]
     fn refresh_commits_only_built_extended_responses_and_legacy_does_not_change_context() {
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let request_type = IgvmAttestRequestType::KEY_RELEASE_REQUEST;
         let setting =
             IgvmAgentTestSetting::TestConfig(IgvmAttestTestConfig::KeyReleaseContextRefresh);
@@ -1580,7 +1580,7 @@ mod tests {
 
     fn exercise_key_responses(request_type: IgvmAttestRequestType, use_sha384: bool) {
         let transfer_key = RsaKeyPair::generate(2048).unwrap();
-        let components = transfer_key.to_components();
+        let components = transfer_key.to_components().unwrap();
         let context_hash = encode_key_release_context_hash(&[0x42; 32]);
         let config = vm_config(Some(context_hash.clone()));
         let claims = RuntimeClaims::key_release_request_runtime_claims(
@@ -1970,7 +1970,7 @@ mod tests {
 
     #[test]
     fn oversized_extended_envelope_is_rejected_not_truncated() {
-        let transfer_key = RsaKeyPair::generate(2048).unwrap().to_components();
+        let transfer_key = RsaKeyPair::generate(2048).unwrap().to_components().unwrap();
         let claims = serde_json::to_vec(&RuntimeClaims::key_release_request_runtime_claims(
             &transfer_key.public_exponent,
             &transfer_key.modulus,
