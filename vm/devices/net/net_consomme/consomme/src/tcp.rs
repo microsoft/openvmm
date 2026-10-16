@@ -94,6 +94,9 @@ struct TcpAggregateStats {
     connections_closed_local_error: Counter,
     /// Connections reaped after the peer did not finish a handshake or shutdown.
     connections_closed_timeout: Counter,
+    /// Connections in TIME-WAIT reclaimed early to admit a new flow at the
+    /// active-flow limit. Also counted as normal closes.
+    connections_reclaimed_time_wait: Counter,
 }
 
 impl TcpAggregateStats {
@@ -164,6 +167,13 @@ impl TcpError {
 impl Tcp {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field("active_connections", self.connections.len());
+        resp.field(
+            "time_wait_connections",
+            self.connections
+                .values()
+                .filter(|conn| conn.inner.state == TcpState::TimeWait)
+                .count(),
+        );
     }
 
     pub fn new(
@@ -826,9 +836,11 @@ impl<T: Client> Access<'_, T> {
                             dst: ft.src,
                         };
 
-                        let reached_limit = crate::limits::reached(
+                        let reached_limit = limits::make_room(
+                            &mut self.inner.tcp.connections,
                             self.inner.tcp.max_connections,
-                            self.inner.tcp.connections.len(),
+                            &ft,
+                            &mut self.inner.tcp.aggregate_stats,
                         );
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {

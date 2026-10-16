@@ -12,7 +12,8 @@ use inspect::Inspect;
 /// Default maximum number of simultaneously active guest TCP flows.
 ///
 /// The limit is checked before creating a host TCP socket or allocating
-/// per-flow TCP buffers.
+/// per-flow TCP buffers. A connection lingering in TIME-WAIT counts toward the
+/// limit only until a new flow needs its slot.
 pub const DEFAULT_MAX_ACTIVE_TCP_FLOWS: usize = 128;
 /// Default maximum number of simultaneously active guest UDP flows.
 ///
