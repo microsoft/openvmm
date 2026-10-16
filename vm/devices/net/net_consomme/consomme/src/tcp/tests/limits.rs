@@ -37,7 +37,6 @@ fn insert_socketless_flows(tcp: &mut Tcp, count: usize) {
 }
 
 /// Returns a guest SYN that opens a flow from `src_port` to `dst_port`.
-#[cfg(unix)]
 fn guest_syn(src_port: u16, dst_port: u16) -> TcpRepr<'static> {
     TcpRepr {
         src_port,
@@ -160,6 +159,85 @@ fn test_tcp_flow_limit_admission_beyond_default() {
         bounded.tcp.check_flow_limit(&guest_flow(10000)).is_ok(),
         "a full TCP flow map must keep admitting packets of its active flows"
     );
+}
+
+#[pal_async::async_test]
+async fn test_tcp_flow_limit_applies_only_to_opening_syn(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(params_with_tcp_limit(Some(1)));
+    insert_socketless_flows(&mut consomme.tcp, 1);
+    let mut client = TestClient::new(driver);
+    let params = consomme.params_mut();
+    let (guest_mac, gateway_mac, guest_ip) =
+        (params.client_mac, params.gateway_mac, params.client_ip);
+    let dst_ip = Ipv4Address::new(192, 0, 2, 1);
+    let mut buf = vec![0; 1514];
+
+    // While the flow map is full, a segment of an unknown flow that cannot
+    // open a connection still takes the usual path: one that acknowledges
+    // something gets a reset, and any other one is ignored.
+    let ack = TcpSeqNumber(4000);
+    for (control, ack_number) in [
+        (TcpControl::None, Some(ack)),
+        (TcpControl::Psh, Some(ack)),
+        (TcpControl::Fin, Some(ack)),
+        (TcpControl::Syn, Some(ack)),
+        (TcpControl::Rst, Some(ack)),
+        (TcpControl::Rst, None),
+        (TcpControl::Fin, None),
+        (TcpControl::None, None),
+    ] {
+        let segment = TcpRepr {
+            control,
+            ack_number,
+            window_scale: None,
+            max_seg_size: None,
+            ..guest_syn(20000, 80)
+        };
+        let len = build_tcp_packet(&mut buf, guest_mac, gateway_mac, guest_ip, dst_ip, &segment);
+        if let Err(err) = consomme
+            .access(&mut client)
+            .send(&buf[..len], &ChecksumState::NONE)
+        {
+            panic!("{control:?} segment acknowledging {ack_number:?} was dropped: {err}");
+        }
+
+        let replies = std::mem::take(&mut *client.received_packets.lock());
+        if ack_number.is_some() && control != TcpControl::Rst {
+            assert_eq!(replies.len(), 1, "{control:?} segment must get a reset");
+            let (src_ip, reply_dst_ip, reply) = parse_tcp_packet(&replies[0]);
+            assert_eq!((src_ip, reply_dst_ip), (dst_ip, guest_ip));
+            assert_eq!((reply.src_port, reply.dst_port), (80, 20000));
+            assert_eq!(reply.control, TcpControl::Rst);
+            assert_eq!(reply.seq_number, ack);
+            assert_eq!(reply.ack_number, None);
+        } else {
+            assert!(
+                replies.is_empty(),
+                "{control:?} segment acknowledging {ack_number:?} must be ignored"
+            );
+        }
+        assert_eq!(consomme.tcp.connections.len(), 1);
+    }
+
+    // A SYN that would open a connection is still rejected before a host
+    // socket is created for it.
+    let len = build_tcp_packet(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        dst_ip,
+        &guest_syn(20000, 80),
+    );
+    assert!(matches!(
+        consomme
+            .access(&mut client)
+            .send(&buf[..len], &ChecksumState::NONE),
+        Err(DropReason::TcpConnectionLimit)
+    ));
+    assert!(client.received_packets.lock().is_empty());
+    assert_eq!(consomme.tcp.connections.len(), 1);
+    assert!(consomme.tcp.connections.contains_key(&guest_flow(10000)));
 }
 
 #[cfg(unix)]
