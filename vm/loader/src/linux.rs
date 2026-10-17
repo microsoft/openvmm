@@ -3,6 +3,8 @@
 
 //! Linux specific loader definitions and implementation.
 
+pub mod mptable_boot;
+
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
@@ -14,6 +16,7 @@ use crate::importer::BootPageAcceptance;
 use crate::importer::GuestArch;
 use crate::importer::ImageLoad;
 use crate::importer::X86Register;
+use crate::mptable;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
 use aarch64defs::SctlrEl1;
@@ -113,7 +116,7 @@ fn build_zero_page(
     //
     // The RSDP lives at the fixed 0xe0000 and the tables it points to live in
     // reclaimable ACPI memory below; the kernel discovers the RSDP via its
-    // legacy scan, so no `acpi_rsdp_addr` (Linux 5.0+) is required. The SMBIOS
+    // legacy scan, so no `acpi_rsdp_addr` (Linux 4.20+) is required. The SMBIOS
     // structure table sits just above the ACPI tables in its own reserved
     // region so it can grow well past the 64 KiB F-segment.
     const ONE_MB: u64 = 0x100000;
@@ -223,6 +226,25 @@ pub enum Error {
     TooManyMemoryRanges(usize),
     #[error("acpi tables are empty")]
     EmptyAcpiTables,
+    #[error("MP-table Linux direct boot requires an uncompressed ELF kernel")]
+    MpTableRequiresElf,
+    #[error("failed to construct MP tables")]
+    MpTable(#[from] mptable::Error),
+    #[error("MP table ending at {table_end:#x} overlaps the GDT at {gdt_addr:#x}")]
+    MpTableOverlap { table_end: usize, gdt_addr: u64 },
+    #[error("invalid MP-table reserved memory range {start:#x}..{end:#x}")]
+    InvalidReservedMemoryRange { start: u64, end: u64 },
+    #[error(
+        "MP-table boot image range {image_start:#x}..{image_end:#x} overlaps reserved range {reserved_start:#x}..{reserved_end:#x}"
+    )]
+    MpTableImageOverlap {
+        image_start: u64,
+        image_end: u64,
+        reserved_start: u64,
+        reserved_end: u64,
+    },
+    #[error("the memory layout cannot represent the fixed MP-table platform ranges")]
+    InvalidMpTableMemoryLayout,
 }
 
 /// ACPI tables to place in guest memory: a one-page RSDP plus the tables it
@@ -261,7 +283,7 @@ const LOW_METADATA_END: u64 = CR3_BASE + PAGE_TABLE_MAX_BYTES as u64;
 const ACPI_TABLES_BASE: u64 = LOW_METADATA_END + 0x1000;
 /// The RSDP is pinned at the fixed 0xe0000 so the kernel's legacy RSDP scan of
 /// `[0xe0000, 0x100000)` finds it, with no dependency on
-/// `boot_params.acpi_rsdp_addr` (Linux 5.0+).
+/// `boot_params.acpi_rsdp_addr` (Linux 4.20+).
 const RSDP_BASE: u64 = 0xe0000;
 /// The x86 kernel brute-force scans the F-segment `[0xf0000, 0x100000)` for the
 /// SMBIOS `_SM3_` DMI anchor, so the 24-byte entry point is pinned there. Its
