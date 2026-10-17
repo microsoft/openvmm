@@ -140,12 +140,16 @@ The file `windows.vhdx` can be any format of VHD(X).
 VHDX files (dynamic, fixed, and differencing) are supported on non-Windows
 platforms via the pure-Rust [`vhdx`](../../reference/backends/vhdx.md)
 parser. On Windows, `.vhdx` files use the native kernel-mode VHD path
-instead. Fixed VHD1 images work on all platforms. Dynamic and differencing VHD1
-files are **not** supported — convert them to VHDX first:
+instead. OpenVMM identifies VHD1 images by the `.vhd` extension. Fixed VHD1
+images work on all platforms, while dynamic and differencing VHD1 images
+require Windows. Convert non-fixed VHD1 images to VHDX for use on Linux:
 
 ```bash
 qemu-img convert -f vpc -O vhdx dynamic.vhd converted.vhdx
 ```
+
+Fixed VHD1 images require cached I/O on every host. VHDX images also require
+cached I/O on Linux.
 
 Also, note the use of `memdiff`, which creates a memory-backed "differencing
 disk" shim between the VMM and the backing disk image, which ensures that any
