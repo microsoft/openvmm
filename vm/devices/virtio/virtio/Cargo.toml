@@ -28,6 +28,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
+smallvec.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
