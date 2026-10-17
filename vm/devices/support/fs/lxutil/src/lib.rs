@@ -701,6 +701,7 @@ pub struct LxVolumeOptions {
     metadata: bool,
     create_case_sensitive_dirs: bool,
     sandbox: bool,
+    no_follow: bool,
     sandbox_disallowed_extensions: Vec<OsString>,
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
@@ -722,6 +723,7 @@ impl LxVolumeOptions {
             metadata: false,
             create_case_sensitive_dirs: false,
             sandbox: false,
+            no_follow: false,
             sandbox_disallowed_extensions: Vec::new(),
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
@@ -981,6 +983,16 @@ impl LxVolumeOptions {
     /// Hide files and directories that are marked as hidden or may cause hydration (e.g. OneDrive backed).
     pub fn sandbox(&mut self, enabled: bool) -> &mut Self {
         self.sandbox = enabled;
+        self
+    }
+
+    /// Reject traversal through reparse points on Windows.
+    ///
+    /// Paths must contain only relative, normal components. Final reparse points
+    /// can still be accessed without following them, including for readlink and rename.
+    /// This option has no effect on Unix.
+    pub fn no_follow(&mut self, enabled: bool) -> &mut Self {
+        self.no_follow = enabled;
         self
     }
 
