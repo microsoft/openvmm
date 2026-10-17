@@ -371,6 +371,15 @@ impl virt::Hypervisor for Kvm {
             if !supported {
                 return Err(KvmError::NestedVirtUnsupported);
             }
+            // Without nested state, a vCPU in nested operation can be neither
+            // saved nor taken out of it on reset.
+            let nested_state = self
+                .kvm
+                .check_extension(kvm::KVM_CAP_NESTED_STATE)
+                .map_err(kvm::Error::CheckExtension)?;
+            if nested_state <= 0 {
+                return Err(kvm::Error::MissingCapability("KVM_CAP_NESTED_STATE").into());
+            }
         }
 
         let snp_config = match &config.isolation {
@@ -1101,31 +1110,22 @@ impl KvmProcessor<'_> {
     /// The VP must be known to be stopped and must have an open interrupt
     /// window.
     fn deliver_pic_interrupt(&mut self, dev: &impl CpuIo) -> Result<(), KvmRunVpError> {
-        if self.partition.caps.nested_virt {
-            // Let KVM decide whether the interrupt must first exit a nested
-            // guest. A queued interrupt is missing from the saved state, but
-            // KVM partitions cannot save nested state either.
-            if let Some(vector) = dev.acknowledge_pic_interrupt() {
-                self.runner
-                    .queue_extint_interrupt(vector)
-                    .map_err(KvmRunVpError::ExtintInterrupt)?;
-            }
-        } else {
-            // Keep the interrupt in the saved VP state until the guest takes
-            // it. KVM delivers it without checking whether the guest can take
-            // it, so KVM must have reported the open window for the current VP
-            // state.
-            assert!(
-                !self.interrupt_window_stale,
-                "extint injected without a current interrupt window"
-            );
-            // Acknowledge the PIC only once the VP is known to be able to take
-            // the interrupt.
-            if extint::inject(&self.kvm, || dev.acknowledge_pic_interrupt())? {
-                // The VP state changed, so the window that KVM reported no
-                // longer applies.
-                self.interrupt_window_stale = true;
-            }
+        // KVM delivers an interrupt through the injected-interrupt slot without
+        // checking whether the guest can take it, so KVM must have reported the
+        // open window for the current VP state.
+        assert!(
+            !self.interrupt_window_stale,
+            "extint injected without a current interrupt window"
+        );
+        if extint::deliver(
+            &self.kvm,
+            &mut self.runner,
+            self.partition.caps.nested_virt,
+            || dev.acknowledge_pic_interrupt(),
+        )? {
+            // The VP state changed, so the window that KVM reported no longer
+            // applies.
+            self.interrupt_window_stale = true;
         }
         Ok(())
     }
@@ -1916,7 +1916,16 @@ impl<'p> Processor for KvmProcessor<'p> {
 
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0).reset_all(&vp_info)
+        let mut access = self.access_state(Vtl::Vtl0);
+        // Leave nested operation before resetting registers: KVM rejects the
+        // at-reset CR4 while the vCPU is still in VMX operation.
+        access
+            .kvm()
+            .clear_nested_state()
+            .map_err(KvmError::LeaveNested)?;
+        access
+            .reset_all(&vp_info)
+            .map_err(|err| KvmError::State(Box::new(err)))
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
