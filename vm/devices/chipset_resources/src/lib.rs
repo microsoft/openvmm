@@ -226,6 +226,55 @@ pub mod pit {
     }
 }
 
+pub mod generation_id {
+    //! Resource definitions for the standalone VM Generation ID device, used
+    //! when no firmware hosts the generation ID (e.g. Linux direct boot).
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Guest physical address of the generation ID page for x86 Linux direct
+    /// boot, in the x86 architectural reserved zone `[0xfe00_0000, 4 GiB)`.
+    /// Saved VMs depend on it (the guest's DSDT and `vmgenid` driver keep it),
+    /// so it must not change.
+    pub const X86_DIRECT_BOOT_GENERATION_ID_GPA: u32 = 0xfed3_e000;
+
+    /// Size of the page that backs the generation ID buffer.
+    pub const GENERATION_ID_PAGE_SIZE: u32 = 0x1000;
+
+    // Keep the page in the reserved zone and clear of the other fixed-address
+    // platform devices in it.
+    const _: () = {
+        const START: u64 = X86_DIRECT_BOOT_GENERATION_ID_GPA as u64;
+        const END: u64 = START + GENERATION_ID_PAGE_SIZE as u64;
+        const fn overlaps(base: u64, len: u64) -> bool {
+            START < base + len && base < END
+        }
+        assert!(START.is_multiple_of(GENERATION_ID_PAGE_SIZE as u64));
+        assert!(START >= 0xfe00_0000 && END <= 0x1_0000_0000);
+        assert!(!overlaps(0xfeb0_0000, 0x1000)); // PSP
+        assert!(!overlaps(0xfec0_0000, 0x1000)); // IOAPIC
+        assert!(!overlaps(0xfed0_0000, 0x1000)); // HPET
+        assert!(!overlaps(0xfed3_f000, 0x1000)); // battery
+        assert!(!overlaps(0xfed4_0000, 0x5000)); // TPM
+        assert!(!overlaps(0xfee0_0000, 0x10_0000)); // LAPIC
+    };
+
+    /// A handle to a standalone VM Generation ID device.
+    #[derive(MeshPayload)]
+    pub struct GenerationIdDeviceHandle {
+        /// The generation ID for a fresh boot.
+        pub initial_generation_id: [u8; 16],
+        /// Channel to receive host-requested generation ID updates.
+        pub generation_id_recv: mesh::Receiver<[u8; 16]>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenerationIdDeviceHandle {
+        const ID: &'static str = "generation_id";
+    }
+}
+
 pub mod battery {
     //! Resource definitions for the battery device
 

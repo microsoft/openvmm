@@ -31,6 +31,10 @@ impl ConfigureChipsetDevice for RemoteConfigureChipsetDevice {
     fn omit_saved_state(&mut self) {
         todo!()
     }
+
+    fn start_before_processors(&mut self) {
+        todo!()
+    }
 }
 
 pub(super) struct RemoteRegisterMmio {}

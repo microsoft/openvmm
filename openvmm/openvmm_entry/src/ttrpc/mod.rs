@@ -1073,6 +1073,13 @@ impl VmService {
                 None,
             ));
         }
+        let generation_id_send = if !matches!(load_mode, LoadMode::Igvm { .. }) {
+            let (send, recv) = mesh::channel();
+            chipset_builder = chipset_builder.with_generation_id(recv);
+            Some(send)
+        } else {
+            None
+        };
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder
             .build()
@@ -1173,6 +1180,7 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
+            generation_id_send,
         };
 
         let guest_power_actions = {

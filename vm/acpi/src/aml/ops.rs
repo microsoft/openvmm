@@ -145,6 +145,22 @@ impl OperationObject for ReturnOp {
     }
 }
 
+/// An AML Notify operation (`Notify(object, value)`).
+pub struct NotifyOp {
+    /// Encoded name of the object to notify (see `encode_name`).
+    pub object: Vec<u8>,
+    /// The notification value, e.g. 0x80 for a device-specific change.
+    pub value: u64,
+}
+
+impl OperationObject for NotifyOp {
+    fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
+        byte_stream.push(0x86); // NotifyOp
+        byte_stream.extend_from_slice(&self.object);
+        byte_stream.extend_from_slice(&super::helpers::encode_integer(self.value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

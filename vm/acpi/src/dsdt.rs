@@ -405,6 +405,73 @@ impl Dsdt {
         rtc.add_object(&rtc_crs);
         self.add_object(&rtc);
     }
+
+    /// Add a VM Generation ID device (Microsoft "Virtual Machine Generation
+    /// ID" specification) whose 16-byte ID lives in a `len`-byte buffer at
+    /// `gpa`, plus the x86 GPE0 handler that notifies it:
+    /// ```text
+    /// Device(\_SB.GENC)
+    /// {
+    ///     Name(_HID, "MSFT1002")
+    ///     Name(_CID, Package(2) { "VM_Gen_Counter", "VMGENCTR" })
+    ///     Name(_DDN, "VM_Gen_Counter")
+    ///     Name(_CRS, ResourceTemplate() { Memory32Fixed(ReadOnly, <gpa>, <len>) })
+    ///     Method(ADDR, 0) { Return(Package(2) { <gpa>, 0 }) }
+    /// }
+    /// Scope(\_GPE)
+    /// {
+    ///     Method(_Exx) { Notify(\_SB.GENC, 0x80) } // xx = gpe0_bit
+    /// }
+    /// ```
+    /// `VM_Gen_Counter` is the compatible ID required by the specification;
+    /// Linux binds its `vmgenid` driver via `VMGENCTR` and finds the buffer via
+    /// `ADDR`. `_CRS` makes the guest reserve the buffer's range.
+    pub fn add_generation_id(&mut self, gpa: u32, len: u32, gpe0_bit: u8) {
+        let mut genc = Device::new(b"\\_SB.GENC");
+        genc.add_object(&NamedString::new(b"_HID", b"MSFT1002"));
+        let cids: [&[u8]; 2] = [b"VM_Gen_Counter", b"VMGENCTR"];
+        genc.add_object(&NamedObject::new(
+            b"_CID",
+            &StructuredPackage {
+                elem_count: cids.len() as u8,
+                elem_data: cids
+                    .iter()
+                    .flat_map(|cid| encode_string(cid))
+                    .collect::<Vec<_>>(),
+            },
+        ));
+        genc.add_object(&NamedString::new(b"_DDN", b"VM_Gen_Counter"));
+        let mut crs = CurrentResourceSettings::new();
+        crs.add_resource(&Memory32Fixed::new(gpa, len, false));
+        genc.add_object(&crs);
+        let mut addr = Method::new(b"ADDR");
+        let mut elems = encode_integer(gpa.into());
+        elems.extend_from_slice(&encode_integer(0));
+        addr.add_operation(&ReturnOp {
+            result: StructuredPackage {
+                elem_count: 2,
+                elem_data: elems,
+            }
+            .to_bytes(),
+        });
+        genc.add_object(&addr);
+        self.add_object(&genc);
+
+        let hex = b"0123456789ABCDEF";
+        let mut gpe_method = Method::new(&[
+            b'_',
+            b'E',
+            hex[(gpe0_bit >> 4) as usize],
+            hex[(gpe0_bit & 0xf) as usize],
+        ]);
+        gpe_method.add_operation(&NotifyOp {
+            object: encode_name(b"\\_SB.GENC"),
+            value: 0x80,
+        });
+        let mut gpe = Scope::new(b"\\_GPE");
+        gpe.add_object(&gpe_method);
+        self.add_object(&gpe);
+    }
 }
 
 #[cfg(test)]
@@ -467,6 +534,46 @@ mod tests {
         // creator_rev
         let creator_rev = u32::from_le_bytes(bytes[32..36].try_into().unwrap());
         assert_eq!(creator_rev, 0x5000000);
+    }
+
+    #[test]
+    fn verify_generation_id() {
+        let mut dsdt = Dsdt::new();
+        dsdt.add_generation_id(0xfed3_e000, 0x1000, 0);
+        let bytes = dsdt.to_bytes();
+        verify_header(&bytes);
+        let body = &bytes[36..];
+
+        // Device(\_SB.GENC)
+        assert_eq!(&body[..2], &[0x5b, 0x82]);
+        let genc_name = [b'\\', 0x2e, b'_', b'S', b'B', b'_', b'G', b'E', b'N', b'C'];
+        assert!(body.windows(genc_name.len()).any(|w| w == genc_name));
+        let addr = [
+            0x14, 0x10, b'A', b'D', b'D', b'R', 0x00, // Method(ADDR, 0)
+            0xa4, // Return
+            0x12, 0x08, 0x02, // Package(2)
+            0x0c, 0x00, 0xe0, 0xd3, 0xfe, // 0xfed3e000
+            0x00, // 0
+        ];
+        assert!(body.windows(addr.len()).any(|w| w == addr));
+        let crs = [
+            0x86, 0x09, 0x00, 0x00, // Memory32Fixed(ReadOnly,
+            0x00, 0xe0, 0xd3, 0xfe, // 0xfed3e000,
+            0x00, 0x10, 0x00, 0x00, // 0x1000)
+        ];
+        assert!(body.windows(crs.len()).any(|w| w == crs));
+        let mut cid = vec![0x08, b'_', b'C', b'I', b'D']; // Name(_CID,
+        cid.extend_from_slice(&[0x12, 0x1c, 0x02]); // Package(2)
+        cid.extend_from_slice(b"\x0dVM_Gen_Counter\x00");
+        cid.extend_from_slice(b"\x0dVMGENCTR\x00");
+        assert!(body.windows(cid.len()).any(|w| w == cid));
+        let gpe = [
+            0x10, 0x1a, b'\\', b'_', b'G', b'P', b'E', // Scope(\_GPE)
+            0x14, 0x13, b'_', b'E', b'0', b'0', 0x00, // Method(_E00, 0)
+            0x86, b'\\', 0x2e, b'_', b'S', b'B', b'_', b'G', b'E', b'N', b'C', 0x0a,
+            0x80, // Notify(\_SB.GENC, 0x80)
+        ];
+        assert!(body.ends_with(&gpe));
     }
 
     #[test]

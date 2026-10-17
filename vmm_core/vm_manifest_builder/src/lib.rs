@@ -21,6 +21,7 @@ use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::generation_id::GenerationIdDeviceHandle;
 use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
@@ -91,6 +92,7 @@ pub struct VmManifestBuilder {
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
+    generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
 }
 
 /// Configuration for the Hyper-V UEFI helper device.
@@ -299,6 +301,7 @@ impl VmManifestBuilder {
             uefi: None,
             debugcon: None,
             vmbus,
+            generation_id_recv: None,
         }
     }
 
@@ -359,6 +362,22 @@ impl VmManifestBuilder {
     /// Enable the battery device.
     pub fn with_battery(mut self, battery_status_recv: mesh::Receiver<HostBatteryUpdate>) -> Self {
         self.battery_status_recv = Some(battery_status_recv);
+        self
+    }
+
+    /// Enable the VM Generation ID device, which receives new generation IDs
+    /// (e.g. when the VM is created from a snapshot) on `generation_id_recv`
+    /// and notifies the guest, which reseeds its RNG.
+    ///
+    /// - [`BaseChipsetType::HypervGen2Uefi`]: connects the channel to the UEFI
+    ///   helper device, which hosts the generation ID.
+    /// - x86_64 [`BaseChipsetType::UnenlightenedLinuxDirect`] and
+    ///   [`BaseChipsetType::HyperVGen2LinuxDirect`]: adds a standalone
+    ///   generation ID device, whose buffer the platform maps and describes in
+    ///   the ACPI tables.
+    /// - Otherwise: ignored.
+    pub fn with_generation_id(mut self, generation_id_recv: mesh::Receiver<[u8; 16]>) -> Self {
+        self.generation_id_recv = Some(generation_id_recv);
         self
     }
 
@@ -552,6 +571,9 @@ impl VmManifestBuilder {
                 if self.guest_watchdog {
                     result.attach_guest_watchdog();
                 }
+                if is_x86 && let Some(recv) = self.generation_id_recv {
+                    result.attach_generation_id(recv);
+                }
             }
             BaseChipsetType::EnlightenedLinuxDirect => {
                 result.chipset = BaseChipsetManifest {
@@ -640,10 +662,15 @@ impl VmManifestBuilder {
                     if self.ipmi_kcs {
                         result.attach_ipmi_kcs(self.arch);
                     }
-                    result.attach_uefi(
-                        self.uefi
-                            .expect("must have called .with_uefi to enable uefi"),
-                    );
+                    let mut uefi = self
+                        .uefi
+                        .expect("must have called .with_uefi to enable uefi");
+                    if let Some(recv) = self.generation_id_recv {
+                        uefi.generation_id_recv = recv;
+                    }
+                    result.attach_uefi(uefi);
+                } else if is_x86 && let Some(recv) = self.generation_id_recv {
+                    result.attach_generation_id(recv);
                 }
             }
             BaseChipsetType::HclHost => {
@@ -789,6 +816,20 @@ impl VmChipsetResult {
             resource: Piix4PciIsaBridgeDeviceHandle.into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_ISA_BRIDGE_BDF,
+        });
+        self
+    }
+
+    fn attach_generation_id(&mut self, generation_id_recv: mesh::Receiver<[u8; 16]>) -> &mut Self {
+        let mut initial_generation_id = [0; 16];
+        getrandom::fill(&mut initial_generation_id).expect("rng failure");
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "generation_id".to_owned(),
+            resource: GenerationIdDeviceHandle {
+                initial_generation_id,
+                generation_id_recv,
+            }
+            .into_resource(),
         });
         self
     }
@@ -1241,6 +1282,26 @@ mod tests {
     fn ipmi_kcs_rejects_non_uefi_boot() {
         let _ = VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
             .with_ipmi_kcs();
+    }
+
+    #[test]
+    fn generation_id_attaches_standalone_device_only_for_x86_direct_boot() {
+        let count = |builder: VmManifestBuilder| {
+            builder
+                .with_generation_id(mesh::channel().1)
+                .build()
+                .unwrap()
+                .chipset_devices
+                .iter()
+                .filter(|device| device.resource.id() == "generation_id")
+                .count()
+        };
+        let direct = |arch| VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, arch);
+
+        assert_eq!(count(direct(MachineArch::X86_64)), 1);
+        assert_eq!(count(direct(MachineArch::Aarch64)), 0);
+        // UEFI hosts the generation ID in the UEFI device instead.
+        assert_eq!(count(uefi_builder(MachineArch::X86_64)), 0);
     }
 
     #[test]
