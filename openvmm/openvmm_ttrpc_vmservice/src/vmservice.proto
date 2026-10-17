@@ -141,6 +141,10 @@ message UEFI {
     // Whether the firmware enforces Secure Boot policy. This is independent
     // of whether initial Secure Boot variables are supplied above.
     bool secure_boot_enabled = 5;
+
+    // The guest watchdog is enabled by default for UEFI.
+    // Set to omit the device.
+    bool disable_guest_watchdog = 6;
 }
 
 message MemoryConfig {
@@ -646,7 +650,8 @@ message VMConfig {
         GuestPowerAction reset = 2;
         // The guest triple faulted. Defaults to HALT.
         GuestPowerAction crash = 3;
-        // The guest's watchdog timer expired. Defaults to RESTART.
+        // The guest's watchdog timer expired. Defaults to no action (logs
+        // only). A non-DEFAULT action requires the UEFI guest watchdog.
         GuestPowerAction watchdog = 4;
     }
 
