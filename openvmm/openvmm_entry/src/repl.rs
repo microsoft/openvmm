@@ -68,6 +68,8 @@ use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 
+mod headless;
+
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
     let (radix, prefix_len) = if s.starts_with("0x") || s.starts_with("0X") {
         (16, 2)
@@ -440,6 +442,69 @@ pub(crate) struct ReplResources {
     pub has_vtl2: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleInputEnd {
+    InputMode,
+    Eof,
+}
+
+fn forward_console_input<R, W>(stdin: &mut R, output: &mut W) -> io::Result<ConsoleInputEnd>
+where
+    R: Read + ?Sized,
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    let mut buf = [0; 32];
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            return Ok(ConsoleInputEnd::Eof);
+        }
+
+        let mut bytes = &buf[..n];
+        let end = if let Some(ctrlq) = bytes.iter().position(|x| *x == 0x11) {
+            bytes = &bytes[..ctrlq];
+            Some(ConsoleInputEnd::InputMode)
+        } else {
+            None
+        };
+        block_on(output.write_all(bytes))?;
+        if let Some(end) = end {
+            return Ok(end);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use test_with_tracing::test;
+
+    #[test]
+    fn console_input_stops_at_eof() {
+        let mut stdin = Cursor::new(b"guest input");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::Eof
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
+    }
+
+    #[test]
+    fn console_input_stops_at_ctrl_q() {
+        let mut stdin = Cursor::new(b"guest input\x11ignored");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::InputMode
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
+    }
+}
+
 /// Run the interactive REPL.
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
@@ -526,35 +591,25 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
+                let terminal =
+                    headless::enable_raw_mode(&stdin).expect("failed to enable raw console mode");
 
-                if let Some(input) = console_in.as_mut() {
-                    let mut buf = [0; 32];
-                    loop {
-                        let n = stdin.read(&mut buf).unwrap();
-                        let mut b = &buf[..n];
-                        let stop = if let Some(ctrlq) = b.iter().position(|x| *x == 0x11) {
-                            b = &b[..ctrlq];
-                            true
-                        } else {
-                            false
-                        };
-                        block_on(input.as_mut().write_all(b)).expect("BUGBUG");
-                        if stop {
-                            break;
-                        }
-                    }
+                let input_end = console_in.as_mut().map(|input| {
+                    forward_console_input(&mut stdin, input.as_mut())
+                        .expect("failed to forward console input")
+                });
+
+                headless::disable_raw_mode(terminal).expect("failed to disable raw console mode");
+                if input_end == Some(ConsoleInputEnd::Eof) {
+                    return;
                 }
 
-                crossterm::terminal::disable_raw_mode()
-                    .expect("failed to disable raw console mode");
-
                 loop {
-                    let line = rl.readline("openvmm> ");
-                    if line.is_err() {
-                        break;
-                    }
-                    let line = line.unwrap();
+                    let line = match rl.readline("openvmm> ") {
+                        Ok(line) => line,
+                        Err(rustyline::error::ReadlineError::Eof) if !terminal => return,
+                        Err(_) => break,
+                    };
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
                         continue;
