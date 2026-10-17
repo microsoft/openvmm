@@ -39,52 +39,56 @@ VTL2 ran out of memory while unpacking the initramfs. Changing the VM
 startup RAM does not enlarge VTL2. An 8 GB startup setting sizes the guest
 pool, which is separate from VTL2.
 
-For an image built in-tree, VTL2 RAM is `memory_page_count` from the recipe
-manifest. Counts are 4 KiB pages. The AArch64 manifests below are one
-example.
+For an image built in-tree, one VTL2 RAM value is `memory_page_count` from
+the recipe manifest: the size embedded at build time. Counts are 4 KiB
+pages. That is the size VTL2 uses when the host does not supply its own
+range or a larger requested size. The host can provide a larger VTL2
+range, or tell VTL2 to allocate more. The boot shim accepts either and
+exposes those ranges to Linux, so runtime RAM can exceed the embedded
+count. The manifest size is meant to work for a small VM. The AArch64
+manifests below are one example.
 
 ```bash
-cargo xflowey build-igvm aarch64 --release
+cargo xflowey build-igvm aarch64 --release --release-cfg
 ```
 
-That command reads `vm/loader/manifests/openhcl-aarch64-release.json`:
-12288 pages (48 MiB), with command line
-`OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release`.
+`--release` selects the binary profile. `--release-cfg` selects the
+release manifest. That command reads
+`vm/loader/manifests/openhcl-aarch64-release.json`: 12288 pages (48 MiB),
+with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release`.
 
 ```bash
 cargo xflowey build-igvm aarch64
 ```
 
-Without `--release`, the same recipe reads
+Without `--release-cfg`, the same recipe reads
 `vm/loader/manifests/openhcl-aarch64-dev.json`: 131072 pages (512 MiB),
-with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug`. That dev
-count, 131072 pages, got past this panic on that image. The x64 release
-manifest is a separate budget, 17920 pages (70 MiB).
+with command line `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug`. The x64
+release manifest is a separate budget, 17920 pages (70 MiB).
 
-To fix it:
+Give VTL2 more RAM from the host. That step alone fixes the unpack, and
+the in-tree manifest can stay as it is.
 
-1. Raise `memory_page_count` in the recipe manifest and rebuild the IGVM.
-   Keep the count a multiple of 512 pages so the byte size stays
-   2 MiB-aligned. `load_openhcl_arm64` rejects an unaligned size. A new
-   count takes effect only after you rebuild. 12288 pages remains the
-   in-tree AArch64 release budget; use a higher multiple of 512 when
-   unpacking fails. See
-   [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
-2. When the larger image needs more VTL2 memory than the host provides,
-   for example the 131072-page (512 MiB) count, also pass
-   `-IncreaseVtl2Memory` to `Set-OpenHCLFirmware` on the host:
+1. On Hyper-V, pass `-IncreaseVtl2Memory` to `Set-OpenHCLFirmware`.
+   The switch selects auto placement and enlarges the host VTL2 window
+   (`Vtl2AddressRangeSize` 1024 MB minus `Vtl2MmioAddressRangeSize`
+   512 MB, so 512 MiB of RAM).
 
    ```powershell
    Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile -IncreaseVtl2Memory
    ```
 
-```admonish warning
-`-IncreaseVtl2Memory` complements the manifest change and does not
-replace it. The switch selects auto placement and enlarges the host-side
-VTL2 window (`Vtl2AddressRangeSize` 1024 MB minus
-`Vtl2MmioAddressRangeSize` 512 MB, so 512 MiB of RAM), but it does not
-change the image's own `memory_page_count`: a 48 MiB image stays 48 MiB.
-```
+2. On OpenVMM, pass a larger size to `--igvm-vtl2-relocation-type`.
+   `vtl2=<size>` tells VTL2 to allocate that much. `auto=<size>` reserves
+   it in the host memory layout. Either size must be at least the embedded
+   byte size. `auto=<size>` must be 2 MiB-aligned. The default,
+   `auto=filesize`, keeps the embedded size.
+
+Raising `memory_page_count` changes only the embedded size. A larger host
+allocation still increases runtime RAM. Keep the count a multiple of 512
+pages so the byte size stays 2 MiB-aligned. `load_openhcl_arm64` rejects
+an unaligned size. A new count takes effect only after you rebuild. See
+[Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md).
 
 Create the VM under "Create VM with OpenHCL (but not Trusted Launch)":
 [that section](run/hyperv.md#create-vm-with-openhcl-but-not-trusted-launch).
