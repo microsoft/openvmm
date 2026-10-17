@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod start;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -69,7 +71,7 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(Debug, MeshPayload)]
 pub enum StateRequest {
     /// Start asynchronous operations.
-    Start(Rpc<(), ()>),
+    Start(FailableRpc<(), ()>),
 
     /// Stop asynchronous operations.
     Stop(Rpc<(), ()>),
@@ -95,7 +97,7 @@ pub enum StateRequest {
 #[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
-    async fn start(&mut self);
+    async fn start(&mut self) -> anyhow::Result<()>;
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
@@ -189,7 +191,7 @@ impl StateRequest {
     /// Runs this state request against `unit`.
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
-            StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::Start(rpc) => rpc.handle_failable(async |()| unit.start().await).await,
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
             StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
             StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
@@ -218,6 +220,8 @@ enum State {
     Resetting,
     Saving,
     Restoring,
+    StartUncertain,
+    StartFailedStopped,
 }
 
 #[derive(Debug)]
@@ -458,35 +462,68 @@ impl StateUnits {
         self.running
     }
 
+    fn check_no_terminal_units(&self, op: &'static str) -> Result<(), StateTransitionError> {
+        let inner = self.inner.lock();
+        check(
+            op,
+            inner
+                .units
+                .values()
+                .filter(|unit| {
+                    matches!(
+                        unit.state,
+                        State::StartUncertain | State::StartFailedStopped
+                    )
+                })
+                .map(|unit| {
+                    (
+                        unit.name.clone(),
+                        Err::<(), _>(anyhow::anyhow!(
+                            "unit is in terminal state {:?}",
+                            unit.state
+                        )),
+                    )
+                }),
+        )
+    }
+
     /// Starts any units that are individually stopped, because they were added
     /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
-    pub async fn start_stopped_units(&mut self) {
+    pub async fn start_stopped_units(&mut self) -> anyhow::Result<()> {
         if self.is_running() {
-            self.start().await;
+            self.start().await?;
         }
+        Ok(())
     }
 
     /// Starts all the state units.
-    pub async fn start(&mut self) {
-        self.run_op(
-            "start",
-            None,
-            State::Stopped,
-            State::Starting,
-            State::Running,
-            StateRequest::Start,
-            |_, _| Some(()),
-            |unit| &unit.dependencies,
-        )
-        .await;
-        self.running = true;
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        self.start_with_rollback().await
     }
 
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
+        // Make uncertain starts receive Stop and already-cleaned failures skip
+        // it, then restore both terminal markers after the ordered operation.
+        let terminal_states = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter_map(|(&id, unit)| {
+                    let state = unit.state;
+                    match state {
+                        State::StartUncertain => unit.state = State::Running,
+                        State::StartFailedStopped => unit.state = State::Stopped,
+                        _ => return None,
+                    }
+                    Some((id, state))
+                })
+                .collect::<Vec<_>>()
+        };
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -500,6 +537,13 @@ impl StateUnits {
             |unit| &unit.dependents,
         )
         .await;
+        let mut inner = self.inner.lock();
+        for (id, state) in terminal_states {
+            if let Some(unit) = inner.units.get_mut(&id) {
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = state;
+            }
+        }
         self.running = false;
     }
 
@@ -508,6 +552,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("reset")?;
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
         let r = self
@@ -532,6 +577,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("save")?;
         // Save can occur in any order since it will not observably mutate
         // state.
         let r = self
@@ -565,6 +611,7 @@ impl StateUnits {
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.check_no_terminal_units("restore")?;
 
         #[derive(Debug, Error)]
         enum RestoreUnitError {
@@ -753,7 +800,7 @@ impl Inner {
         let units = if let Some(unit_ids) = unit_ids {
             unit_ids
                 .iter()
-                .map(|id| map(*id, &self.units[id]))
+                .filter_map(|id| self.units.get(id).map(|unit| map(*id, unit)))
                 .collect()
         } else {
             self.units.iter().map(|(id, unit)| map(*id, unit)).collect()
@@ -1007,6 +1054,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod start;
+
     use super::StateUnit;
     use super::StateUnits;
     use crate::run_unit;
@@ -1037,7 +1086,9 @@ mod tests {
     struct SavedState(bool);
 
     impl StateUnit for TestUnit {
-        async fn start(&mut self) {}
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         async fn stop(&mut self) {}
 
@@ -1079,7 +1130,9 @@ mod tests {
     }
 
     impl StateUnit for TestUnitSetDep {
-        async fn start(&mut self) {}
+        async fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         async fn stop(&mut self) {}
 
@@ -1131,13 +1184,13 @@ mod tests {
             .add("b")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
 
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
         units.stop().await;
-        units.start().await;
+        units.start().await.unwrap();
 
         units.stop().await;
 
@@ -1184,7 +1237,7 @@ mod tests {
                 )
             })
             .unwrap();
-        units.start().await;
+        units.start().await.unwrap();
         units.stop().await;
 
         let state = units.save().await.unwrap();
