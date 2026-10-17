@@ -563,13 +563,15 @@ pub fn file_info_to_stat(
     let mut stat = fs::get_lx_attr(
         fs_context,
         &mut information.stat,
-        fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
-        block_size,
-        options.default_uid,
-        options.default_gid,
-        options.umask,
-        options.dmask,
-        options.fmask,
+        fs::LxAttrOptions {
+            flags: fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
+            block_size,
+            default_uid: options.default_uid,
+            default_gid: options.default_gid,
+            umask: options.umask,
+            fmask: options.fmask,
+            dmask: options.dmask,
+        },
     )?;
 
     // The uid, gid and mode options are applied to all files, even if they have metadata.
