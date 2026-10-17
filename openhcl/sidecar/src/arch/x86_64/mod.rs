@@ -16,8 +16,10 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Acquire;
 use hvdef::HvError;
 use hvdef::HypercallCode;
-use minimal_rt::arch::Serial;
+use minimal_rt::arch::com3;
 use minimal_rt::arch::msr::write_msr;
+use uart_16550::Uart16550Tty;
+use uart_16550::backend::PioBackend;
 use x86defs::Exception;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -170,7 +172,9 @@ static mut VSM_CAPABILITIES: hvdef::HvRegisterVsmCapabilities =
     hvdef::HvRegisterVsmCapabilities::new();
 static AFTER_INIT: AtomicBool = AtomicBool::new(false);
 static ENABLE_LOG: AtomicBool = AtomicBool::new(false);
-static SERIAL: spin::Mutex<Serial<InstrIoAccess>> = spin::Mutex::new(Serial::new(InstrIoAccess));
+// The boot shim already initialized the device.
+static SERIAL: spin::Mutex<Uart16550Tty<PioBackend>> =
+    spin::Mutex::new(Uart16550Tty::from_inner(com3()));
 
 macro_rules! log {
     () => {};
@@ -185,7 +189,6 @@ use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::hypercall::HvInputVtl;
 pub(crate) use log;
-use minimal_rt::arch::InstrIoAccess;
 
 fn log_fmt(args: core::fmt::Arguments<'_>) {
     if ENABLE_LOG.load(Acquire) {
@@ -216,7 +219,7 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
         } else {
             // We may have panicked while holding the lock, so trying to acquire it may deadlock.
             // Best effort, we can't guarantee no tearing but print the message anyways.
-            let _ = writeln!(Serial::new(InstrIoAccess), "{panic}");
+            let _ = writeln!(Uart16550Tty::from_inner(com3()), "{panic}");
         }
     }
     minimal_rt::arch::fault();
