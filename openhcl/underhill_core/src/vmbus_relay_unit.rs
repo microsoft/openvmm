@@ -43,8 +43,9 @@ impl VmbusRelayHandle {
 struct VmbusRelayUnit(HostVmbusTransport);
 
 impl StateUnit for &'_ VmbusRelayUnit {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         self.0.start();
+        Ok(())
     }
 
     async fn stop(&mut self) {

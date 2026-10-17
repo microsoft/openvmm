@@ -644,6 +644,7 @@ dependencies = [
 name = "chipset_device_resources"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "guestmem",
@@ -670,6 +671,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
  "vmcore",

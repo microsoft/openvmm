@@ -359,6 +359,10 @@ impl ChangeDeviceState for VirtioMmioDevice {
         self.core.start(&mut self.mmio);
     }
 
+    async fn start_fallible(&mut self) -> anyhow::Result<()> {
+        self.core.start_fallible(&mut self.mmio).await
+    }
+
     async fn stop(&mut self) {
         self.core.stop(&mut self.mmio).await;
     }
