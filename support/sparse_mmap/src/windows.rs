@@ -5,6 +5,8 @@
 
 #![cfg(windows)]
 
+mod flush;
+
 use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
 use Memory::GetLargePageMinimum;
