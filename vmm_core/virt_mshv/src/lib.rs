@@ -9,6 +9,7 @@
 
 #[cfg(guest_arch = "aarch64")]
 mod aarch64;
+mod timing;
 #[cfg(guest_arch = "x86_64")]
 mod x86_64;
 
@@ -143,6 +144,7 @@ impl<'a> MshvProtoPartition<'a> {
     /// Performs the post-init partition setup common to both architectures:
     /// creates VPs, BSP, installs intercepts, sets up the signal handler,
     /// and checks for unsupported VTL2 configuration.
+    /// On x86_64, the BSP is instead created when partition memory is finalized.
     fn new(config: ProtoPartitionConfig<'a>, vmfd: VmFd) -> Result<Self, Error> {
         if config.processor_topology.vp_count() > u8::MAX as u32 {
             return Err(ErrorInner::TooManyVps(config.processor_topology.vp_count()).into());
@@ -161,6 +163,7 @@ impl<'a> MshvProtoPartition<'a> {
             })
             .collect();
 
+        #[cfg(guest_arch = "aarch64")]
         let bsp = vmfd
             .create_vcpu(0)
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
@@ -214,6 +217,7 @@ impl<'a> MshvProtoPartition<'a> {
             isolation: arch::MshvProtoPartitionIsolation::None,
             vmfd,
             vps,
+            #[cfg(guest_arch = "aarch64")]
             bsp,
         })
     }
@@ -235,6 +239,7 @@ pub struct MshvProtoPartition<'a> {
     isolation: arch::MshvProtoPartitionIsolation,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
+    #[cfg(guest_arch = "aarch64")]
     bsp: VcpuFd,
 }
 
@@ -273,7 +278,7 @@ impl MshvIsolationState {
     fn map_user_memory(&self, vmfd: &VmFd, region: mshv_user_mem_region) -> anyhow::Result<bool> {
         match self {
             Self::None => {
-                vmfd.map_user_memory(region)?;
+                timing::map_user_memory(vmfd, region)?;
                 Ok(true)
             }
             #[cfg(guest_arch = "x86_64")]
@@ -285,7 +290,7 @@ impl MshvIsolationState {
                     anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
                 }
                 arch::SnpLaunchState::Finished => {
-                    vmfd.map_user_memory(region)?;
+                    timing::map_user_memory(vmfd, region)?;
                     Ok(true)
                 }
                 arch::SnpLaunchState::Failed => {
@@ -302,8 +307,15 @@ struct MshvPartitionInner {
     vmfd: VmFd,
     /// The BSP's VcpuFd, retained for partition-level register access
     /// (VM state get/set). Only used while VPs are stopped.
+    #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     bsp_vcpufd: VcpuFd,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(rename = "memory_finalized", with = "|x| x.get().is_some()")]
+    finalized: std::sync::OnceLock<arch::finalize::MshvFinalizedPartition>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    finalize_lock: Mutex<()>,
     #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
@@ -314,8 +326,12 @@ struct MshvPartitionInner {
     irq_routes: virt::irqcon::IrqRoutes,
     #[inspect(skip)]
     gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
+    #[cfg(guest_arch = "aarch64")]
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(flatten)]
+    config: arch::finalize::CreationConfig,
     #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
     #[inspect(skip)]
@@ -732,6 +748,15 @@ enum ErrorInner {
     #[cfg(guest_arch = "x86_64")]
     #[error(transparent)]
     Snp(#[from] arch::SnpError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("guest memory is not attached")]
+    GuestMemoryNotAttached,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("partition memory has not been finalized")]
+    PartitionNotFinalized,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("partition memory was already finalized")]
+    PartitionAlreadyFinalized,
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -901,10 +926,21 @@ struct MshvMemoryRangeState {
     ranges: Vec<Option<MshvMemoryRange>>,
 }
 
+impl MshvMemoryRangeState {
+    #[cfg(guest_arch = "x86_64")]
+    fn guest_memory_attached(&self) -> bool {
+        self.ranges.iter().flatten().any(|range| range.guest_memory)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 struct MshvMemoryRange {
     region: mshv_user_mem_region,
     mapped: bool,
+    /// Whether this range maps guest RAM rather than an internal mapping,
+    /// such as the SNP VMSA. Only x86_64 memory finalization consumes it.
+    #[cfg(guest_arch = "x86_64")]
+    guest_memory: bool,
 }
 
 impl virt::PartitionMemoryMapper for MshvPartition {
@@ -997,6 +1033,8 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         state.ranges[slot_to_use] = Some(MshvMemoryRange {
             region: mem_region,
             mapped,
+            #[cfg(guest_arch = "x86_64")]
+            guest_memory: true,
         });
         Ok(())
     }

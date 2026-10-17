@@ -33,6 +33,7 @@ impl MshvPartition {
         });
 
         self.inner
+            .finalized()?
             .bsp_vcpufd
             .get_hvdef_regs(&mut assoc[..])
             .map_err(ErrorInner::Register)?;
@@ -54,6 +55,7 @@ impl MshvPartition {
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
 
         self.inner
+            .finalized()?
             .bsp_vcpufd
             .set_hvdef_regs(&assoc[..])
             .map_err(ErrorInner::Register)?;
@@ -65,7 +67,7 @@ impl AccessVmState for &'_ MshvPartition {
     type Error = Error;
 
     fn caps(&self) -> &virt::PartitionCapabilities {
-        &self.inner.caps
+        self.inner.caps()
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
