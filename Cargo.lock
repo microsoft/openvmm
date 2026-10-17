@@ -1759,6 +1759,7 @@ dependencies = [
 name = "disk_vhdmp"
 version = "0.0.0"
 dependencies = [
+ "blocking",
  "disk_backend",
  "disk_file",
  "disk_vhd1",
@@ -1769,11 +1770,13 @@ dependencies = [
  "mesh",
  "pal_async",
  "scsi_buffers",
+ "scsi_defs",
  "storage_tests",
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
  "windows-sys 0.61.0",
+ "zerocopy",
 ]
 
 [[package]]
