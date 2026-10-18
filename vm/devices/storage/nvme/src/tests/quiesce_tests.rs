@@ -101,12 +101,20 @@ fn read_cmd(cid: u16, data_gpa: u64) -> spec::Command {
 /// stop() waits for an in-flight command and posts its completion.
 #[async_test]
 async fn stop_waits_for_in_flight_command(driver: DefaultDriver) {
-    let (mut f, mut gate) = fixture(driver).await;
+    let (mut f, mut gate) = fixture(driver.clone()).await;
     write_command_to_queue(&f.gm, &f.io_sq, 0, &read_cmd(7, 0x8000));
     f.nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
     gate.wait_entered().await;
 
     let mut stop = std::pin::pin!(f.nvmec.stop());
+    assert!(matches!(futures::poll!(stop.as_mut()), Poll::Pending));
+    // Let stop() reach the drain before releasing the read, so the completion
+    // can only come from the drain and not from the I/O task's run loop. Each
+    // step (admin task stopped, I/O task stopped, drain started) takes one
+    // round on this single-threaded executor.
+    for _ in 0..8 {
+        run_woken_tasks(&driver).await;
+    }
     assert!(matches!(futures::poll!(stop.as_mut()), Poll::Pending));
 
     gate.release();
