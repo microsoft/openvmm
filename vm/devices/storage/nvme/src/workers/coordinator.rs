@@ -163,25 +163,46 @@ impl NvmeWorkers {
         }
     }
 
+    /// Waits for a guest-initiated enable to finish.
+    pub async fn wait_enabled(&mut self) {
+        let EnableState::Enabling(recv) = &mut self.state else {
+            panic!("not enabling: {:?}", self.state)
+        };
+        recv.await.unwrap();
+        self.state = EnableState::Enabled;
+    }
+
+    /// Waits for a guest-initiated controller reset to finish.
+    pub async fn wait_controller_reset(&mut self) {
+        let EnableState::Resetting(recv) = &mut self.state else {
+            panic!("not resetting: {:?}", self.state)
+        };
+        recv.await.unwrap();
+        self.state = EnableState::Disabled;
+        self.doorbells.write().reset();
+    }
+
     // Reset the workers from whatever state they are in.
     pub async fn reset(&mut self) {
         loop {
-            match &mut self.state {
+            match &self.state {
                 EnableState::Disabled => break,
-                EnableState::Enabling(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Enabled;
-                }
-                EnableState::Enabled => {
-                    self.controller_reset();
-                }
-                EnableState::Resetting(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Disabled;
-                }
+                EnableState::Enabling(_) => self.wait_enabled().await,
+                EnableState::Enabled => self.controller_reset(),
+                EnableState::Resetting(_) => self.wait_controller_reset().await,
             }
         }
         self.doorbells.write().reset();
+    }
+
+    /// Stops all worker tasks and completes their in-flight commands.
+    pub async fn stop(&mut self) {
+        self.send.call(CoordinatorRequest::Stop, ()).await.unwrap();
+    }
+
+    /// Restarts the worker tasks stopped by `stop`.
+    pub fn start(&mut self) {
+        self.send.send(CoordinatorRequest::Start);
     }
 }
 
@@ -224,6 +245,8 @@ enum CoordinatorRequest {
     RemoveNamespace(Rpc<u32, bool>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
+    Stop(Rpc<(), ()>),
+    Start,
 }
 
 struct EnableAdminParams {
@@ -306,6 +329,24 @@ impl Coordinator {
                     CoordinatorRequest::ControllerReset(rpc) => {
                         assert!(self.reset.is_none());
                         self.reset = Some(rpc);
+                    }
+                    CoordinatorRequest::Stop(rpc) => {
+                        rpc.handle(async |()| {
+                            // Stop admin first, since admin commands can
+                            // restart I/O tasks.
+                            self.admin.stop().await;
+                            if let Some(state) = self.admin.state_mut() {
+                                state.quiesce().await;
+                            }
+                        })
+                        .await
+                    }
+                    CoordinatorRequest::Start => {
+                        assert!(!self.admin.is_running(), "start without stop");
+                        if let Some(state) = self.admin.state_mut() {
+                            state.resume();
+                        }
+                        self.admin.start();
                     }
                     CoordinatorRequest::Inspect(req) => req.inspect(&self),
                 },

@@ -19,6 +19,11 @@
 //!   commands: READ, WRITE, FLUSH, Dataset Management (TRIM), and persistent
 //!   reservation commands.
 //!
+//! # Device state
+//!
+//! - `ChangeDeviceState::stop` quiesces: it completes in-flight commands and
+//!   stops all queue processing until `start`.
+//!
 //! # What it doesn't implement
 //!
 //! Firmware update, admin-level namespace management (create/delete), multi-path

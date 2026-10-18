@@ -3,15 +3,24 @@
 
 //! Mock types for unit-testing various NVMe behaviors.
 
+use crate::NvmeController;
 use crate::PAGE_SIZE;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use disk_backend::Disk;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
+use futures::StreamExt;
 use guestmem::GuestMemory;
+use guestmem::MemoryWrite;
+use inspect::Inspect;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
+use scsi_buffers::RequestBuffers;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -145,4 +154,165 @@ pub fn read_completion_from_queue(
     let gpa = (dm.range().gpns()[page_in_queue] * PAGE_SIZE64) + offset_in_page as u64;
 
     gm.read_plain::<spec::Completion>(gpa).unwrap()
+}
+
+const GATED_SECTOR_SIZE: u32 = 512;
+
+/// A disk whose first read blocks until the test releases it.
+#[derive(Inspect)]
+pub struct GatedDisk {
+    sectors: u64,
+    #[inspect(skip)]
+    entered: mesh::Sender<()>,
+    #[inspect(skip)]
+    gate: Mutex<Option<mesh::OneshotReceiver<()>>>,
+}
+
+/// The test's handle on a [`GatedDisk`].
+pub struct DiskGate {
+    entered: mesh::Receiver<()>,
+    release: Option<mesh::OneshotSender<()>>,
+}
+
+impl DiskGate {
+    /// Blocks until a read has entered the disk.
+    pub async fn wait_entered(&mut self) {
+        self.entered.next().await.expect("disk dropped");
+    }
+
+    /// Lets the held read complete.
+    pub fn release(&mut self) {
+        self.release.take().expect("released twice").send(());
+    }
+
+    /// Returns whether a read has entered the disk since the last check,
+    /// without waiting.
+    pub fn try_entered(&mut self) -> bool {
+        self.entered.try_recv().is_ok()
+    }
+}
+
+/// Returns a [`GatedDisk`] of `sectors` 512-byte sectors, wrapped as a
+/// [`Disk`], plus the test's handle on its gate.
+pub fn gated_disk(sectors: u64) -> (Disk, DiskGate) {
+    let (entered_send, entered_recv) = mesh::channel();
+    let (release_send, release_recv) = mesh::oneshot();
+    let disk = GatedDisk {
+        sectors,
+        entered: entered_send,
+        gate: Mutex::new(Some(release_recv)),
+    };
+    (
+        Disk::new(disk).unwrap(),
+        DiskGate {
+            entered: entered_recv,
+            release: Some(release_send),
+        },
+    )
+}
+
+impl DiskIo for GatedDisk {
+    fn disk_type(&self) -> &str {
+        "gated"
+    }
+
+    fn sector_count(&self) -> u64 {
+        self.sectors
+    }
+
+    fn sector_size(&self) -> u32 {
+        GATED_SECTOR_SIZE
+    }
+
+    fn disk_id(&self) -> Option<[u8; 16]> {
+        None
+    }
+
+    fn physical_sector_size(&self) -> u32 {
+        GATED_SECTOR_SIZE
+    }
+
+    fn is_fua_respected(&self) -> bool {
+        false
+    }
+
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    async fn read_vectored(
+        &self,
+        buffers: &RequestBuffers<'_>,
+        _sector: u64,
+    ) -> Result<(), DiskError> {
+        self.entered.send(());
+        let gate = self.gate.lock().take();
+        if let Some(gate) = gate {
+            gate.await.expect("gate dropped");
+        }
+        buffers.writer().zero(buffers.len())?;
+        Ok(())
+    }
+
+    async fn write_vectored(
+        &self,
+        _buffers: &RequestBuffers<'_>,
+        _sector: u64,
+        _fua: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    async fn unmap(
+        &self,
+        _sector: u64,
+        _count: u64,
+        _block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        Ok(())
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        UnmapBehavior::Ignored
+    }
+}
+
+/// Forwards every MSI to an inner target and to a channel.
+pub struct TeeMsi {
+    pub inner: Arc<dyn SignalMsi>,
+    pub tap: mesh::Sender<(u64, u32)>,
+}
+
+impl SignalMsi for TeeMsi {
+    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
+        self.inner.signal_msi(devid, address, data);
+        self.tap.send((address, data));
+    }
+}
+
+/// The receiving end of a [`TeeMsi`], as `(address, data)` pairs.
+pub struct MsiTap(pub mesh::Receiver<(u64, u32)>);
+
+impl MsiTap {
+    /// Waits for the next MSI with this data value, skipping any others.
+    pub async fn next_with_data(&mut self, data: u32) {
+        while let Some((_, d)) = self.0.next().await {
+            if d == data {
+                return;
+            }
+        }
+        panic!("msi tap closed");
+    }
+}
+
+/// Returns once every task the controller has already woken has run.
+///
+/// This is an inspect round trip through the coordinator, which the executor
+/// runs only after the tasks already queued ahead of it.
+pub async fn settle(nvmec: &mut NvmeController) {
+    inspect::inspect("", nvmec).resolve().await;
 }
