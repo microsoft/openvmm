@@ -20,6 +20,22 @@ let job = pipeline
     .finish();
 ```
 
+### Check-in gate artifact jobs
+
+The `flowey_hvlite` check-in gates group build artifacts by their VMM-test
+consumers:
+
+- `(shared VMM tests)` jobs publish artifacts used by multiple test platforms.
+- `(for VMM tests) [<PLATFORM>]` jobs publish artifacts used only by that test
+  platform.
+- `(not for VMM tests)` jobs publish artifacts with no VMM-test consumers. Other
+  jobs, such as release publishing or performance tests, may still use them.
+
+The platform is the test binary's target architecture and OS, not the build
+worker's platform or an emulated guest's architecture. For example, ARM64 Linux
+binaries used by TCG tests belong to the x64 Linux test platform. Keeping
+auxiliary builds separate avoids adding them to the VMM-test critical path.
+
 ### Pipeline Parameters
 
 Parameters allow runtime configuration of pipelines. In Azure DevOps, parameters appear as editable fields in the Run pipeline UI (name, description, default).
