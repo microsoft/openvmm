@@ -636,6 +636,11 @@ pub trait AcceptInitialPages {
 ///
 /// State access while frozen must observe frozen time, and restoring time
 /// must not thaw it. Implementations may provide this behavior in software.
+/// Native countdown timers need not stop with the clocks: a backend may retain
+/// their pause-time values for snapshots while allowing expiration during the
+/// pause. An ordinary resume can therefore deliver a countdown interrupt early
+/// relative to the resumed clock. TSC-deadline timers must remain consistent
+/// with the resumed TSC.
 /// These transitions are infallible lifecycle operations; a backend must
 /// treat an unexpected failure as fatal rather than return with unknown time
 /// state.

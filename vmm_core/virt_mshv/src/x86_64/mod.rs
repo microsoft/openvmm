@@ -391,6 +391,7 @@ impl MshvProtoPartition<'_> {
         Ok(X86PartitionCapabilities {
             vendor,
             hv1,
+            reference_time: hv1,
             hv1_reference_tsc_page: hv1_reference_tsc_page_supported(
                 hv1,
                 self.config.isolation.isolation_type(),
@@ -410,6 +411,7 @@ impl MshvProtoPartition<'_> {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            tsc_deadline: false,
             vtom: None,
             physical_address_width: self
                 .vmfd
@@ -545,6 +547,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 }
             };
             caps.hv1 = self.config.hv_config.is_some();
+            caps.reference_time = caps.hv1;
             caps.hv1_reference_tsc_page = hv1_reference_tsc_page_supported(
                 caps.hv1,
                 self.config.isolation.isolation_type(),

@@ -77,6 +77,29 @@ fn log_str(msg: &str) {
     }
 }
 
+/// Ask the host to stop this VP and exercise partition time control.
+///
+/// The host completes the operation before allowing the MMIO write to return
+/// to guest execution. Use only in tests marked `time_control`.
+pub fn time_checkpoint(
+    action: tmk_protocol::TimeAction,
+    interrupt_vector: u8,
+) -> tmk_protocol::TimeCheckpointResult {
+    let mut result = tmk_protocol::TimeCheckpointResult::default();
+    // SAFETY: the command and its writable result remain live until the host
+    // resumes this VP. The TMK uses an identity mapping.
+    unsafe {
+        command(&tmk_protocol::Command::TimeCheckpoint(
+            tmk_protocol::TimeCheckpoint {
+                action,
+                interrupt_vector: interrupt_vector.into(),
+                result_gpa: core::ptr::from_mut(&mut result) as u64,
+            },
+        ));
+        core::ptr::read_volatile(&result)
+    }
+}
+
 /// Logs a message to the TMK log.
 pub fn log_fmt(args: core::fmt::Arguments<'_>) {
     use core::fmt::Write;
