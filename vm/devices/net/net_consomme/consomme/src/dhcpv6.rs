@@ -229,7 +229,7 @@ impl<T: Client> Access<'_, T> {
                 reply.server_id = Some(duid_bytes);
 
                 // Add DNS Name Server option if we have nameservers
-                let dns_servers = self.inner.filtered_ipv6_nameservers()?;
+                let dns_servers = self.inner.filtered_ipv6_nameservers();
 
                 if !dns_servers.is_empty() {
                     reply.dns_servers = Some(dns_servers);

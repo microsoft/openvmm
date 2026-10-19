@@ -708,7 +708,7 @@ fn external_dns_keeps_reachable_host_nameservers() {
     params.internal_dns = false;
     let mut consomme = Consomme::new(params);
     assert!(!consomme.dns.is_available());
-    assert_eq!(consomme.guest_nameservers().unwrap(), host_nameservers);
+    assert_eq!(consomme.guest_nameservers(), host_nameservers);
     assert_eq!(consomme.params_mut().nameservers, host_nameservers);
 }
 

@@ -676,9 +676,6 @@ pub enum DropReason {
     /// or link-local when host-local access is disabled).
     #[error("destination address not allowed")]
     DestinationNotAllowed,
-    /// No guest-reachable alias could be allocated for a host DNS server.
-    #[error("virtual address pool exhausted for DNS server {0}")]
-    NameserverAddressUnavailable(IpAddr),
 }
 
 /// An error from a port bind or unbind operation.
@@ -780,32 +777,42 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 }
 
 impl Consomme {
-    /// Returns guest-facing DNS servers, mapping host loopback stubs to
-    /// virtual addresses without changing the host resolver configuration.
-    fn guest_nameservers(&mut self) -> Result<Vec<IpAddress>, DropReason> {
+    /// Returns guest-facing DNS servers, aliasing host addresses that conflict
+    /// with guest addressing and omitting servers whose aliases cannot be allocated.
+    fn guest_nameservers(&mut self) -> Vec<IpAddress> {
         let nameservers = self.state.params.nameservers.clone();
         if self.dns.is_available() {
-            return Ok(nameservers);
+            return nameservers;
         }
         nameservers
             .into_iter()
-            .map(|nameserver| {
+            .filter_map(|nameserver| {
                 let address = IpAddr::from(nameserver);
-                if address.is_loopback() {
-                    self.create_virtual_address(address)
-                        .map(IpAddress::from)
-                        .ok_or(DropReason::NameserverAddressUnavailable(address))
+                if self
+                    .state
+                    .params
+                    .is_local_address(&SocketAddr::new(address, DNS_PORT))
+                    || address == IpAddr::V4(self.state.params.gateway_ip)
+                    || address == IpAddr::V6(self.state.params.gateway_link_local_ipv6)
+                {
+                    let alias = self.create_virtual_address(address);
+                    if alias.is_none() {
+                        tracelimit::warn_ratelimited!(
+                            %address,
+                            "omitting DNS server because the virtual address pool is exhausted"
+                        );
+                    }
+                    alias.map(IpAddress::from)
                 } else {
-                    Ok(nameserver)
+                    Some(nameserver)
                 }
             })
             .collect()
     }
 
     /// Returns IPv6 DNS servers suitable for NDP RDNSS or DHCPv6 advertisement.
-    fn filtered_ipv6_nameservers(&mut self) -> Result<Vec<Ipv6Address>, DropReason> {
-        Ok(self
-            .guest_nameservers()?
+    fn filtered_ipv6_nameservers(&mut self) -> Vec<Ipv6Address> {
+        self.guest_nameservers()
             .into_iter()
             .filter_map(|ip| match ip {
                 IpAddress::Ipv6(addr) => Some(addr),
@@ -819,7 +826,7 @@ impl Consomme {
                     || matches!(octets[0], 0xfc | 0xfd) // unique local address
                     || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
             })
-            .collect())
+            .collect()
     }
 
     /// Creates a new consomme instance with specified state.

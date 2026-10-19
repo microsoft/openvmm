@@ -212,7 +212,7 @@ impl<T: Client> Access<'_, T> {
             prefix_info,
         };
 
-        let dns_servers = self.inner.filtered_ipv6_nameservers()?;
+        let dns_servers = self.inner.filtered_ipv6_nameservers();
 
         let rdnss_size = rdnss_option_size(dns_servers.len());
         let icmpv6_len = ndp_repr.buffer_len() + rdnss_size;

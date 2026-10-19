@@ -80,7 +80,7 @@ impl<T: Client> Access<'_, T> {
             HeaplessVec::new();
         dns_servers.extend(
             self.inner
-                .guest_nameservers()?
+                .guest_nameservers()
                 .into_iter()
                 .filter_map(|ip| match ip {
                     IpAddress::Ipv4(addr) => Some(addr),

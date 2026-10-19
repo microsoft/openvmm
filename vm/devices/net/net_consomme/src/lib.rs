@@ -757,7 +757,6 @@ impl net_backend::Queue for ConsommeQueue {
                 tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
                 match err {
                     consomme::DropReason::SendBufferFull
-                    | consomme::DropReason::NameserverAddressUnavailable(_)
                     | consomme::DropReason::DestinationNotAllowed => {
                         self.stats.tx_dropped.increment()
                     }
