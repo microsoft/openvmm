@@ -210,7 +210,9 @@ message DevicesConfig {
     // housed.
     repeated WindowsPCIDevice windows_device = 4;
     repeated VirtioFs virtiofs_config = 5;
-    VirtioConsoleConfig virtio_console = 6;
+    // Single-port console devices, enumerated by the guest as hvc0, hvc1, and
+    // so on in list order.
+    repeated VirtioConsoleConfig virtio_consoles = 6;
 }
 
 // An endpoint PCIe device function. Attached behind a port in the topology
@@ -692,6 +694,8 @@ message VMConfig {
     bool disable_hv = 17;
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
+    // Expose hardware virtualization extensions to the guest.
+    bool nested_virt = 20;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

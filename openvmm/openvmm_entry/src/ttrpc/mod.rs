@@ -640,9 +640,9 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                 anyhow::ensure!(
                     devices.virtiofs_config.is_empty()
                         && devices
-                            .virtio_console
-                            .as_ref()
-                            .is_none_or(|console| console.socket_path.is_empty()),
+                            .virtio_consoles
+                            .iter()
+                            .all(|console| console.socket_path.is_empty()),
                     "legacy virtio-fs and console configuration requires VMBus on this host; use PCIe devices instead"
                 );
             }
@@ -1074,6 +1074,7 @@ impl VmService {
             ));
         }
         let layout_config = chipset_builder.layout_config();
+        let layout_config = apply_mmio_overrides(layout_config, req_config.memory_config.as_ref())?;
         let chipset = chipset_builder
             .build()
             .context("failed to build vm configuration")?;
@@ -1150,6 +1151,7 @@ impl VmService {
             hypervisor: HypervisorConfig {
                 with_hv: !req_config.disable_hv,
                 with_isolation: isolation,
+                nested_virt: req_config.nested_virt,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -1256,7 +1258,7 @@ impl VmService {
                 }
             }
 
-            if let Some(virtio_console) = devices_config.virtio_console {
+            for virtio_console in devices_config.virtio_consoles {
                 if !virtio_console.socket_path.is_empty() {
                     let (serial_fn, action) = open_socket_backend(virtio_console.connect);
                     let backend =
@@ -1873,6 +1875,34 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
         }
         .into_resource(),
     })
+}
+
+/// Applies the MMIO gap sizes from the request's `MemoryConfig` to the
+/// chipset's default layout. A zero-sized request field leaves the chipset
+/// default in place.
+fn apply_mmio_overrides(
+    mut layout: vmm_core_defs::LayoutConfig,
+    memory_config: Option<&vmservice::MemoryConfig>,
+) -> anyhow::Result<vmm_core_defs::LayoutConfig> {
+    const MB: u64 = 0x100000;
+
+    if let Some(memory_config) = memory_config {
+        if memory_config.low_mmio_gap_in_mb != 0 {
+            layout.chipset_low_mmio_size = memory_config
+                .low_mmio_gap_in_mb
+                .checked_mul(MB)
+                .and_then(|v| u32::try_from(v).ok())
+                .context("invalid low MMIO gap size")?;
+        }
+        if memory_config.high_mmio_gap_in_mb != 0 {
+            layout.chipset_high_mmio_size = memory_config
+                .high_mmio_gap_in_mb
+                .checked_mul(MB)
+                .context("invalid high MMIO gap size")?;
+        }
+    }
+
+    Ok(layout)
 }
 
 /// Builds a [`NumaTopology`] from the proto `NumaConfig`, returning the

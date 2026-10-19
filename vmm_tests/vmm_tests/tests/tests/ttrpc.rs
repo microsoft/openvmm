@@ -652,10 +652,13 @@ async fn test_ttrpc_interface(
                                 )),
                                 ..Default::default()
                             }],
-                            virtio_console: (i != 2).then(|| vmservice::VirtioConsoleConfig {
-                                socket_path: console_path.to_string_lossy().into(),
-                                connect: use_connect,
-                            }),
+                            virtio_consoles: (i != 2)
+                                .then(|| vmservice::VirtioConsoleConfig {
+                                    socket_path: console_path.to_string_lossy().into(),
+                                    connect: use_connect,
+                                })
+                                .into_iter()
+                                .collect(),
                             virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
                                 root_path: virtiofs_root.to_string_lossy().into(),
