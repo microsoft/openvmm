@@ -697,21 +697,6 @@ async fn static_dns_aaaa_query_answered_without_data(driver: DefaultDriver) {
     assert_eq!(&response[12..], &query[12..]);
 }
 
-#[test]
-fn external_dns_keeps_reachable_host_nameservers() {
-    let mut params = ConsommeParams::new().unwrap();
-    params.nameservers = vec![
-        "192.0.2.53".parse().unwrap(),
-        "2001:db8::53".parse().unwrap(),
-    ];
-    let host_nameservers = params.nameservers.clone();
-    params.internal_dns = false;
-    let mut consomme = Consomme::new(params);
-    assert!(!consomme.dns.is_available());
-    assert_eq!(consomme.guest_nameservers(), host_nameservers);
-    assert_eq!(consomme.params_mut().nameservers, host_nameservers);
-}
-
 /// Static records are still inspected when the platform resolver backend is
 /// unavailable and the guest is using the advertised external DNS server.
 #[pal_async::async_test]

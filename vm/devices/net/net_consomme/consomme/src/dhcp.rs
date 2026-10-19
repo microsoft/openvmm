@@ -80,10 +80,12 @@ impl<T: Client> Access<'_, T> {
             HeaplessVec::new();
         dns_servers.extend(
             self.inner
-                .guest_nameservers()
-                .into_iter()
+                .state
+                .params
+                .nameservers
+                .iter()
                 .filter_map(|ip| match ip {
-                    IpAddress::Ipv4(addr) => Some(addr),
+                    IpAddress::Ipv4(addr) => Some(*addr),
                     _ => None,
                 })
                 .take(DHCP_MAX_DNS_SERVER_COUNT),

@@ -347,6 +347,25 @@ impl ConsommeParams {
         self.client_ip_ipv6 = Some(link_local);
     }
 
+    /// Returns IPv6 DNS servers suitable for NDP RDNSS or DHCPv6 advertisement.
+    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
+        self.nameservers
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddress::Ipv6(addr) => Some(*addr),
+                _ => None,
+            })
+            .filter(|addr| {
+                let octets = addr.octets();
+                !(addr.is_unspecified()
+                    || addr.is_loopback()
+                    || addr.is_multicast()
+                    || matches!(octets[0], 0xfc | 0xfd)
+                    || octets.starts_with(&[0xfe, 0xc0]))
+            })
+            .collect()
+    }
+
     /// Returns the default internal nameserver list for use when the DNS
     /// resolver is active. Includes the IPv6 gateway only when the host
     /// has a routable IPv6 address.
@@ -356,6 +375,21 @@ impl ConsommeParams {
             ns.push(self.gateway_link_local_ipv6.into());
         }
         ns
+    }
+
+    fn warn_unreachable_nameservers(&self) {
+        for nameserver in &self.nameservers {
+            let address = IpAddr::from(*nameserver);
+            if self.is_local_address(&SocketAddr::new(address, DNS_PORT))
+                || address == IpAddr::V4(self.gateway_ip)
+                || address == IpAddr::V6(self.gateway_link_local_ipv6)
+            {
+                tracelimit::warn_ratelimited!(
+                    %address,
+                    "host DNS server is not reachable from the guest without the internal resolver; enable internal DNS or configure a guest-reachable nameserver"
+                );
+            }
+        }
     }
 
     fn is_local_address(&self, addr: &SocketAddr) -> bool {
@@ -777,58 +811,6 @@ fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
 }
 
 impl Consomme {
-    /// Returns guest-facing DNS servers, aliasing host addresses that conflict
-    /// with guest addressing and omitting servers whose aliases cannot be allocated.
-    fn guest_nameservers(&mut self) -> Vec<IpAddress> {
-        let nameservers = self.state.params.nameservers.clone();
-        if self.dns.is_available() {
-            return nameservers;
-        }
-        nameservers
-            .into_iter()
-            .filter_map(|nameserver| {
-                let address = IpAddr::from(nameserver);
-                if self
-                    .state
-                    .params
-                    .is_local_address(&SocketAddr::new(address, DNS_PORT))
-                    || address == IpAddr::V4(self.state.params.gateway_ip)
-                    || address == IpAddr::V6(self.state.params.gateway_link_local_ipv6)
-                {
-                    let alias = self.create_virtual_address(address);
-                    if alias.is_none() {
-                        tracelimit::warn_ratelimited!(
-                            %address,
-                            "omitting DNS server because the virtual address pool is exhausted"
-                        );
-                    }
-                    alias.map(IpAddress::from)
-                } else {
-                    Some(nameserver)
-                }
-            })
-            .collect()
-    }
-
-    /// Returns IPv6 DNS servers suitable for NDP RDNSS or DHCPv6 advertisement.
-    fn filtered_ipv6_nameservers(&mut self) -> Vec<Ipv6Address> {
-        self.guest_nameservers()
-            .into_iter()
-            .filter_map(|ip| match ip {
-                IpAddress::Ipv6(addr) => Some(addr),
-                _ => None,
-            })
-            .filter(|addr| {
-                let octets = addr.octets();
-                !(addr.is_unspecified()
-                    || addr.is_loopback()
-                    || addr.is_multicast()
-                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
-                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
-            })
-            .collect()
-    }
-
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
         let host_has_ipv6 = if params.skip_ipv6_checks {
@@ -870,6 +852,9 @@ impl Consomme {
                 }
             }
         };
+        if !dns.is_available() {
+            params.warn_unreachable_nameservers();
+        }
         let tcp_rx_buffer = params.tcp_rx_buffer;
         let tcp_tx_buffer = params.tcp_tx_buffer;
         let udp_timeout = params.udp_timeout;
@@ -1205,6 +1190,8 @@ impl<T: Client> Access<'_, T> {
                 .state
                 .params
                 .internal_nameservers(self.inner.host_has_ipv6);
+        } else {
+            self.inner.state.params.warn_unreachable_nameservers();
         }
     }
 }
