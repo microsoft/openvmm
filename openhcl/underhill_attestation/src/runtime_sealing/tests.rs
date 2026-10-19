@@ -443,11 +443,12 @@ fn legacy_protector(tee: &MutableTee, config: &AttestationVmConfig) -> vmgs::Har
     };
     let secret = tee.get_derived_key(policy).unwrap();
     let context = serde_json::to_string(config).unwrap();
-    let keys = crypto::kbkdf::kbkdf_hmac_sha256(
+    let keys = crypto::kbkdf::kbkdf_hmac(
         &secret,
         context.as_bytes(),
         b"ISOHWKEY",
         vmgs::AES_CBC_KEY_LENGTH + vmgs::HMAC_SHA_256_KEY_LENGTH,
+        crypto::HashAlgorithm::Sha256,
     )
     .unwrap();
     let mut legacy = vmgs::HardwareKeyProtector {
