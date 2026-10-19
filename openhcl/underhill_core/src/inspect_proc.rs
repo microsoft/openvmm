@@ -12,18 +12,69 @@ use vmcore::vm_task::VmTaskDriver;
 
 /// Writes inspection results based on the contents of /proc/meminfo and /proc/zoneinfo
 fn inspect_meminfo(req: Request<'_>) {
+    const FIELDS: &[&str] = &[
+        "MemTotal",
+        "MemFree",
+        "MemAvailable",
+        "Buffers",
+        "Cached",
+        "SwapCached",
+        "Active",
+        "Inactive",
+        "Active(anon)",
+        "Inactive(anon)",
+        "Active(file)",
+        "Inactive(file)",
+        "Unevictable",
+        "Mlocked",
+        "SwapTotal",
+        "SwapFree",
+        "Dirty",
+        "Writeback",
+        "AnonPages",
+        "Mapped",
+        "Shmem",
+        "KReclaimable",
+        "Slab",
+        "SReclaimable",
+        "SUnreclaim",
+        "KernelStack",
+        "PageTables",
+        "SecPageTables",
+        "NFS_Unstable",
+        "Bounce",
+        "WritebackTmp",
+        "CommitLimit",
+        "Committed_AS",
+        "VmallocTotal",
+        "VmallocUsed",
+        "VmallocChunk",
+        "Percpu",
+        "AnonHugePages",
+        "ShmemHugePages",
+        "ShmemPmdMapped",
+        "FileHugePages",
+        "FilePmdMapped",
+        "Balloon",
+        "DirectMap4k",
+        "DirectMap2M",
+        "DirectMap1G",
+    ];
+
     let mut resp = req.respond();
     fn inner(resp: &mut Response<'_>) -> anyhow::Result<()> {
         let mut contents = fs_err::read_to_string("/proc/meminfo")?;
         for line in contents.lines() {
             let (name, rest) = line.split_once(':').context("line had no :")?;
-            // Remove the units for lines that have it, just report a number
-            let value = rest
-                .split_ascii_whitespace()
-                .next()
-                .context("line had no value")?;
-            let value = value.parse::<u64>().context("value failed to parse")?;
-            resp.sensitivity_field(name, SensitivityLevel::Safe, value);
+            if FIELDS.contains(&name) {
+                // Remove the units for lines that have it, just report a number
+                let value = rest
+                    .split_ascii_whitespace()
+                    .next()
+                    .context("line had no value")?;
+                let value = value.parse::<u64>().context("value failed to parse")?;
+                resp.sensitivity_field(name, SensitivityLevel::Safe, value);
+            }
         }
 
         contents = fs_err::read_to_string("/proc/zoneinfo")?;
