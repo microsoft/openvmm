@@ -29,8 +29,8 @@ mod dio_nic;
 mod ic;
 // Memory Validation tests.
 mod memstat;
-/// Windows netvsc adapter binding-stack tests.
-mod netvsc_bindings;
+// The netvsc binding-stack regression test from microsoft/openvmm#4658 is omitted
+// from this backport: release/1.8.2607 lacks the windows_partition_reset capability.
 /// NUMA topology tests.
 mod numa;
 /// Servicing tests.
