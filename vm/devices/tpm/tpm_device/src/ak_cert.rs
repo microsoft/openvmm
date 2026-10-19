@@ -4,6 +4,8 @@
 //! Helper traits for TPM Attestation Key Certificate (AK cert).
 
 use std::sync::Arc;
+use tpm_resources::AkCertRequest;
+use tpm_resources::AkCertResponse;
 use tpm_resources::RequestAkCertKind;
 use vm_resource::CanResolveTo;
 
@@ -72,11 +74,12 @@ pub trait RequestAkCert: Send + Sync {
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
         is_attestation_report: bool,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+        existing_cert: Option<&[u8]>,
+    ) -> Result<AkCertRequest, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Helper function to request an AK cert.
     async fn request_ak_cert(
         &self,
         request: Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>;
+    ) -> Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }
