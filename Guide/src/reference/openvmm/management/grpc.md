@@ -32,6 +32,7 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
+* ShutdownVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -82,6 +83,84 @@ output survives a host crash or power failure.
 If a write fails, OpenVMM logs the error and disconnects the file backend.
 Further console output is discarded; the backend does not automatically retry
 or reopen the file.
+
+## Graceful guest shutdown
+
+`ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+It describes the operation, not a particular shutdown mechanism, and remains
+separate from resource teardown.
+
+`ShutdownVMRequest` has two fields:
+
+* `mechanism`: `MECHANISM_UNSPECIFIED` (the default) selects Hyper-V IC, as
+  does explicit `MECHANISM_HYPERV_IC`. The default is not automatic mechanism
+  selection. Unknown values return `INVALID_ARGUMENT` without issuing a
+  shutdown request.
+* `force`: defaults to `false`. Setting it to `true` passes the guest-side
+  force flag to the IC. Its interpretation depends on the guest; it may
+  discard unsaved application data and does not guarantee shutdown completion.
+  It never requests a host-side hard power-off. Linux guests may handle
+  forced and non-forced IC requests identically.
+
+An empty request preserves the default non-forced Hyper-V IC behavior.
+For example, this JSON request explicitly selects IC and sets its force flag:
+
+```json
+{
+  "mechanism": "MECHANISM_HYPERV_IC",
+  "force": true
+}
+```
+
+Success means the request was issued successfully, not that the guest will
+shut down or has powered off. Mechanism-specific rejection errors are reported
+when available.
+Call `WaitVM` to observe the guest halt, then `TeardownVM` to release resources.
+`WaitVM` observes any halt, not only a clean power-off; check the halt reason
+reported by `PropertiesVM` when distinguishing shutdown from a crash matters.
+`TeardownVM` and `Quit` do not request a graceful guest shutdown themselves.
+Guest power-event policies still apply; retain the default shutdown `HALT`
+policy for this sequence.
+
+Currently, the only implemented mechanism is the Hyper-V shutdown integration
+component (IC). The VM must be running, Hyper-V enlightenments and VMBus must
+be enabled, and the guest must support and service the request. API-created
+VMs expose the shutdown component when both features are enabled. This
+implementation waits for the guest's acknowledgement before returning success.
+ACPI power-button shutdown is not yet implemented by this RPC. If added, it
+would not imply a guest acknowledgement or guarantee that the guest's
+power-button policy initiates shutdown.
+
+The request has a maximum wait of 30 seconds, shortened by the caller's
+deadline. Set a shorter RPC timeout on the client, not in
+`ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can limit the
+acknowledgement wait to five seconds:
+
+```rust
+let result = client
+    .call()
+    .timeout(Some(std::time::Duration::from_secs(5)))
+    .start(
+        vmservice::Vm::ShutdownVm,
+        vmservice::ShutdownVmRequest::default(),
+    )
+    .await;
+```
+
+For gRPC clients, set the call's deadline/timeout using the client library.
+This limits waiting for the shutdown request response, not completion of the
+guest's shutdown sequence. Give `WaitVM` its own deadline for that wait.
+Cancelling or timing out does not undo a request already delivered to the
+guest and never triggers a fallback to another mechanism or hard power-off.
+
+With the current Hyper-V IC implementation, a missing, paused, or halted VM,
+disabled Hyper-V/VMBus, or an IC that reports not-ready returns
+`FAILED_PRECONDITION`. An IC request already in progress returns
+`ALREADY_EXISTS`; a guest rejection returns `INTERNAL` with the guest status
+code. Caller cancellation and deadline expiry are reported as `CANCELLED` and
+`DEADLINE_EXCEEDED`.
+
+## VPCI hotplug
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
