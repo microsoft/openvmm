@@ -137,6 +137,47 @@ impl IoState {
             self.sqs[io_result.sq_idx].io_count -= 1;
         }
     }
+
+    /// Waits for every in-flight command and posts its completion.
+    pub async fn complete_in_flight(&mut self) {
+        while let Some(io_result) = self.ios.next().await {
+            if let Err(err) = self.post_completion(io_result) {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to post completion while stopping"
+                );
+            }
+        }
+    }
+
+    /// Posts a finished command's completion, or queues it if the CQ is full.
+    fn post_completion(&mut self, io_result: IoResult) -> Result<(), QueueError> {
+        let sq = &mut self.sqs[io_result.sq_idx];
+        let completion = spec::Completion {
+            dw0: io_result.result.dw[0],
+            dw1: io_result.result.dw[1],
+            sqhd: sq.sq.sqhd(),
+            sqid: sq.sqid,
+            cid: io_result.cid,
+            status: spec::CompletionStatus::new().with_status(io_result.result.status.0),
+        };
+        match self.cq.write(completion) {
+            Ok(true) => {}
+            Ok(false) => {
+                if !sq.deleting {
+                    self.completions.push_back(io_result);
+                    return Ok(());
+                }
+                tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
+            }
+            Err(err) => {
+                self.completions.push_back(io_result);
+                return Err(err);
+            }
+        }
+        sq.io_count -= 1;
+        Ok(())
+    }
 }
 
 struct IoResult {
@@ -262,32 +303,7 @@ impl IoHandler {
                 }
             };
 
-            let sq = &mut state.sqs[io_result.sq_idx];
-            let completion = spec::Completion {
-                dw0: io_result.result.dw[0],
-                dw1: io_result.result.dw[1],
-                sqhd: sq.sq.sqhd(),
-                sqid: sq.sqid,
-                cid: io_result.cid,
-                status: spec::CompletionStatus::new().with_status(io_result.result.status.0),
-            };
-
-            match state.cq.write(completion) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if !sq.deleting {
-                        state.completions.push_back(io_result);
-                        continue;
-                    }
-                    tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
-                }
-                Err(err) => {
-                    state.completions.push_back(io_result);
-                    return Err(err.into());
-                }
-            }
-
-            sq.io_count -= 1;
+            state.post_completion(io_result)?;
         }
     }
 }

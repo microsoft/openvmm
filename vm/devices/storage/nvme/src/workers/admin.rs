@@ -251,6 +251,33 @@ impl AdminState {
         }
     }
 
+    /// Stops every I/O queue task and completes its in-flight commands.
+    ///
+    /// The admin task must already be stopped.
+    pub async fn quiesce(&mut self) {
+        for cq in &mut self.io_cqs {
+            let was_running = cq.task.stop().await;
+            if let Some(state) = cq.task.state_mut() {
+                if was_running {
+                    state.complete_in_flight().await;
+                } else {
+                    // The task failed, so its commands would never have
+                    // completed; discard them as a controller reset does.
+                    state.drain().await;
+                }
+            }
+        }
+    }
+
+    /// Restarts every I/O queue task that has a queue.
+    pub fn resume(&mut self) {
+        for cq in &mut self.io_cqs {
+            if cq.task.has_state() {
+                cq.task.start();
+            }
+        }
+    }
+
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
         self.io_sqs.truncate(num_sqs.into());
