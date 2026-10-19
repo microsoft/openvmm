@@ -2738,7 +2738,6 @@ fn build_vhost_user_device(
     anyhow::bail!("vhost-user is only supported on unix hosts")
 }
 
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
