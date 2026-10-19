@@ -34,6 +34,11 @@ use anyhow::bail;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
+use hyperv_ic_resources::shutdown::ShutdownIcHandle;
+use hyperv_ic_resources::shutdown::ShutdownParams;
+use hyperv_ic_resources::shutdown::ShutdownResult;
+use hyperv_ic_resources::shutdown::ShutdownRpc;
+use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
@@ -548,6 +553,7 @@ impl VmService {
 
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
+    shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     iommufds: Arc<IommufdContexts>,
@@ -749,6 +755,10 @@ impl VmService {
             }
             vmservice::Vm::ResumeVm((), response) => {
                 response.send(map_grpc(self.resume_vm().await));
+            }
+            vmservice::Vm::ShutdownVm(request, response) => {
+                let r = self.shutdown_vm(ctx, request);
+                self.start_rpc(response, r);
             }
             vmservice::Vm::WaitVm((), response) => {
                 if self.vm.is_none() {
@@ -1195,6 +1205,16 @@ impl VmService {
             }
         };
 
+        let shutdown_rpc = if config.hypervisor.with_hv && config.vmbus.is_some() {
+            let (send, recv) = mesh::channel();
+            config
+                .vmbus_devices
+                .push((DeviceVtl::Vtl0, ShutdownIcHandle { recv }.into_resource()));
+            Some(send)
+        } else {
+            None
+        };
+
         let mut scsi_rpc = None;
         let mut consomme_rpc = None;
         if let Some(devices_config) = req_config.devices_config {
@@ -1354,6 +1374,7 @@ impl VmService {
         self.vm_controller_events = Some(event_recv);
         self.controller_task = Some(controller_task);
         self.vm = Some(Arc::new(Vm {
+            shutdown_rpc,
             scsi_rpc,
             consomme_rpc,
             worker_rpc: send,
@@ -1425,6 +1446,67 @@ impl VmService {
             ],
             supported_guest_os: vec![SupportedGuestOs::Linux as i32],
         }
+    }
+
+    fn shutdown_vm(
+        &self,
+        ctx: mesh::CancelContext,
+        request: vmservice::ShutdownVmRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        use vmservice::shutdown_vm_request::Mechanism;
+
+        match Mechanism::from_i32(request.mechanism) {
+            Some(Mechanism::Unspecified | Mechanism::HypervIc) => {}
+            None => {
+                return Err(anyhow!(Code::InvalidArgument)
+                    .context(format!("unknown shutdown mechanism {}", request.mechanism)));
+            }
+        }
+        let vm = self
+            .vm
+            .as_ref()
+            .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+            .context("VM not created yet")?;
+        anyhow::ensure!(
+            matches!(self.lifecycle, VmLifecycle::Running),
+            anyhow!(Code::FailedPrecondition).context("VM must be running to request shutdown")
+        );
+        let send = vm
+            .shutdown_rpc
+            .as_ref()
+            .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+            .context("guest shutdown requires Hyper-V enlightenments and VMBus")?
+            .clone();
+        Ok(async move {
+            let mut ctx = ctx.with_timeout(Duration::from_secs(30));
+            if let Some(reason) = ctx.cancelled().now_or_never() {
+                return Err(
+                    anyhow!(reason).context("guest shutdown request cancelled or timed out")
+                );
+            }
+            let result = ctx
+                .until_cancelled(send.call(
+                    ShutdownRpc::Shutdown,
+                    ShutdownParams {
+                        shutdown_type: ShutdownType::PowerOff,
+                        force: request.force,
+                    },
+                ))
+                .await
+                .context("guest shutdown request cancelled or timed out")?
+                .context("communication failure during guest shutdown")?;
+            match result {
+                ShutdownResult::Ok => Ok(()),
+                ShutdownResult::NotReady => {
+                    Err(anyhow!(Code::FailedPrecondition).context("shutdown IC not ready"))
+                }
+                ShutdownResult::AlreadyInProgress => {
+                    Err(anyhow!(Code::AlreadyExists).context("shutdown already in progress"))
+                }
+                ShutdownResult::Failed(status) => Err(anyhow!(Code::Internal)
+                    .context(format!("guest rejected shutdown with status {status:#x}"))),
+            }
+        })
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
@@ -2558,6 +2640,318 @@ fn build_vhost_user_device(
     _vhost_user: vmservice::VhostUser,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     anyhow::bail!("vhost-user is only supported on unix hosts")
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn service(
+        driver: DefaultDriver,
+        shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
+    ) -> VmService {
+        let (worker_rpc, _) = mesh::channel();
+        VmService {
+            driver,
+            vm: Some(Arc::new(Vm {
+                worker_rpc,
+                shutdown_rpc,
+                scsi_rpc: None,
+                consomme_rpc: None,
+                iommufds: Arc::new(IommufdContexts::default()),
+            })),
+            vm_controller: None,
+            vm_controller_events: None,
+            controller_task: None,
+            wait_vm_response: None,
+            lifecycle: VmLifecycle::Running,
+            rpc_tasks: Vec::new(),
+            transport: ResolvedTransport::Auto,
+            registry: FdRegistry::default(),
+        }
+    }
+
+    #[test]
+    fn shutdown_request_acceptance_does_not_halt_or_teardown_vm() {
+        DefaultPool::run_with(async |driver| {
+            use vmservice::shutdown_vm_request::Mechanism;
+
+            for mechanism in [Mechanism::Unspecified, Mechanism::HypervIc] {
+                for force in [false, true] {
+                    let (send, mut recv) = mesh::channel();
+                    let mut service = service(driver.clone(), Some(send));
+                    let (response, result) = mesh::oneshot();
+                    service
+                        .handle(
+                            mesh::CancelContext::new(),
+                            vmservice::Vm::ShutdownVm(
+                                vmservice::ShutdownVmRequest {
+                                    mechanism: mechanism as i32,
+                                    force,
+                                },
+                                response,
+                            ),
+                        )
+                        .await;
+                    assert_eq!(service.rpc_tasks.len(), 1);
+                    let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                        panic!("expected shutdown request");
+                    };
+                    assert!(matches!(rpc.input().shutdown_type, ShutdownType::PowerOff));
+                    assert_eq!(rpc.input().force, force);
+                    rpc.complete(ShutdownResult::Ok);
+                    result.await.unwrap().unwrap();
+                    assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                    assert!(service.vm.is_some());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_request_defaults_and_unknown_mechanisms() {
+        DefaultPool::run_with(async |driver| {
+            use prost::Message;
+            use vmservice::shutdown_vm_request::Mechanism;
+
+            let defaults = vmservice::ShutdownVmRequest::decode(&[][..]).unwrap();
+            assert_eq!(defaults.mechanism, Mechanism::Unspecified as i32);
+            assert!(!defaults.force);
+            assert_eq!(defaults, vmservice::ShutdownVmRequest::default());
+
+            let (send, mut recv) = mesh::channel();
+            let mut service = service(driver, Some(send));
+            for mechanism in [-1, 2, i32::MIN, i32::MAX] {
+                for force in [false, true] {
+                    let request = vmservice::ShutdownVmRequest { mechanism, force };
+                    let request =
+                        vmservice::ShutdownVmRequest::decode(request.encode_to_vec().as_slice())
+                            .unwrap();
+                    let (response, result) = mesh::oneshot();
+                    service
+                        .handle(
+                            mesh::CancelContext::new(),
+                            vmservice::Vm::ShutdownVm(request, response),
+                        )
+                        .await;
+                    let status = result.await.unwrap().unwrap_err();
+                    assert_eq!(status.code, Code::InvalidArgument as i32);
+                    assert!(
+                        status
+                            .message
+                            .contains(&format!("unknown shutdown mechanism {mechanism}"))
+                    );
+                    assert!(service.rpc_tasks.is_empty());
+                    assert!(futures::poll!(recv.next()).is_pending());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_guest_errors() {
+        DefaultPool::run_with(async |driver| {
+            for (reply, code, message) in [
+                (
+                    ShutdownResult::NotReady,
+                    Code::FailedPrecondition,
+                    "shutdown IC not ready",
+                ),
+                (
+                    ShutdownResult::AlreadyInProgress,
+                    Code::AlreadyExists,
+                    "shutdown already in progress",
+                ),
+                (
+                    ShutdownResult::Failed(0x80004005),
+                    Code::Internal,
+                    "0x80004005",
+                ),
+            ] {
+                let (send, mut recv) = mesh::channel();
+                let service = service(driver.clone(), Some(send));
+                let request = service
+                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                    .unwrap();
+                let guest = async {
+                    let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                        panic!("expected shutdown request");
+                    };
+                    rpc.complete(reply);
+                };
+                let (result, ()) = futures::join!(request, guest);
+                let status = grpc_error(result.unwrap_err());
+                assert_eq!(status.code, code as i32);
+                assert!(status.message.contains(message));
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_requires_running_vm_and_integration_component() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let vm = service.vm.take();
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("VM not created"));
+            service.vm = vm;
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("Hyper-V enlightenments and VMBus"));
+
+            let (send, mut recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .shutdown_rpc = Some(send);
+            for lifecycle in [
+                VmLifecycle::Paused,
+                VmLifecycle::Halted("power off".into()),
+                VmLifecycle::Uninitialized,
+            ] {
+                service.lifecycle = lifecycle;
+                let status = grpc_error(
+                    service
+                        .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                        .err()
+                        .unwrap(),
+                );
+                assert_eq!(status.code, Code::FailedPrecondition as i32);
+                assert!(status.message.contains("VM must be running"));
+            }
+            assert!(futures::poll!(recv.next()).is_pending());
+        });
+    }
+
+    #[test]
+    fn shutdown_cancellation_after_dispatch() {
+        DefaultPool::run_with(async |driver| {
+            let (send, mut recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            let (ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
+            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
+            let cancel_request = async {
+                let rpc = recv.next().await.unwrap();
+                cancel.cancel();
+                rpc
+            };
+            let (result, pending_rpc) = futures::join!(request, cancel_request);
+            assert_eq!(grpc_error(result.unwrap_err()).code, Code::Cancelled as i32);
+            drop(pending_rpc);
+        });
+    }
+
+    #[test]
+    fn shutdown_cancelled_before_dispatch_does_not_send() {
+        DefaultPool::run_with(async |driver| {
+            for expired in [false, true] {
+                let (send, mut recv) = mesh::channel();
+                let service = service(driver.clone(), Some(send));
+                let (ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
+                let ctx = if expired {
+                    ctx.with_timeout(Duration::ZERO)
+                } else {
+                    ctx
+                };
+                let request = service.shutdown_vm(ctx, Default::default()).unwrap();
+                if !expired {
+                    cancel.cancel();
+                }
+                let status = grpc_error(request.await.unwrap_err());
+                let expected = if expired {
+                    Code::DeadlineExceeded
+                } else {
+                    Code::Cancelled
+                };
+                assert_eq!(status.code, expected as i32);
+                assert!(
+                    recv.next().now_or_never().is_none(),
+                    "cancelled shutdown must not enqueue an IC request"
+                );
+            }
+        });
+    }
+
+    #[cfg(feature = "ttrpc")]
+    #[test]
+    fn shutdown_deadline_over_ttrpc() {
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut server = mesh_rpc::Server::new();
+                    let mut requests = server.add_service::<vmservice::Vm>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("shutdown-test-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let client = mesh_rpc::Client::new(
+                        &driver,
+                        mesh_rpc::client::ExistingConnection::new(
+                            pal_async::socket::PolledSocket::new(&driver, client_socket).unwrap(),
+                        ),
+                    );
+                    let (send, mut recv) = mesh::channel();
+                    let mut service = service(driver.clone(), Some(send));
+                    let request = client.call().timeout(Some(Duration::from_secs(1))).start(
+                        vmservice::Vm::ShutdownVm,
+                        vmservice::ShutdownVmRequest::default(),
+                    );
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    assert!(ctx.deadline().is_some());
+                    service.handle(ctx, rpc).await;
+
+                    // Keep the IC reply pending to exercise the server's deadline,
+                    // rather than a client-side timeout or a closed IC channel.
+                    let pending_rpc = recv.next().await.unwrap();
+                    assert!(matches!(&pending_rpc, ShutdownRpc::Shutdown(_)));
+                    service.rpc_tasks.pop().unwrap().await;
+                    let status = request.await.unwrap_err();
+                    assert_eq!(status.code, Code::DeadlineExceeded as i32);
+                    assert!(
+                        status
+                            .message
+                            .contains("guest shutdown request cancelled or timed out")
+                    );
+                    assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                    drop(pending_rpc);
+                    client.shutdown().await;
+                    server_task.await.unwrap();
+                })
+                .await
+                .expect("shutdown handler did not honor the one-second RPC deadline");
+        });
+    }
+
+    #[test]
+    fn shutdown_communication_failure() {
+        DefaultPool::run_with(async |driver| {
+            let (send, recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            drop(recv);
+            let result = service
+                .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                .unwrap()
+                .await;
+            assert!(
+                grpc_error(result.unwrap_err())
+                    .message
+                    .contains("communication failure")
+            );
+        });
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

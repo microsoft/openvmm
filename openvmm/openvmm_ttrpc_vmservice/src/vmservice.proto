@@ -27,6 +27,20 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
+    // ShutdownVM requests a cooperative guest power-off, non-forced by default.
+    // Success means the request was issued successfully, not that the guest
+    // will shut down or has powered off. Mechanism-specific rejection errors
+    // are reported when available.
+    // Use WaitVM to observe a halt and TeardownVM to release resources.
+    // Currently only the Hyper-V shutdown integration component is supported;
+    // it requires a running VM with Hyper-V enlightenments and VMBus enabled,
+    // and a guest that services the request. This implementation waits for the
+    // guest's acknowledgement before returning success.
+    // The request is bounded by the caller's deadline or 30 seconds, whichever
+    // is earlier. Cancellation does not undo an already delivered request.
+    // There is no fallback to another mechanism or to hard power-off.
+    rpc ShutdownVM(ShutdownVMRequest) returns (google.protobuf.Empty);
+
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
     // via TeardownVM.
     rpc WaitVM(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -67,6 +81,22 @@ service VM {
 //
 // VM lifecycle request/response
 //
+message ShutdownVMRequest {
+    enum Mechanism {
+        // Use Hyper-V IC. This default does not perform automatic fallback.
+        MECHANISM_UNSPECIFIED = 0;
+        // Explicitly request the Hyper-V shutdown integration component.
+        MECHANISM_HYPERV_IC = 1;
+    }
+
+    // Unknown values are rejected, not treated as the default.
+    Mechanism mechanism = 1;
+    // Set the guest-side force flag. Its interpretation is guest-specific and
+    // may cause loss of unsaved data. This never forces a host-side power-off
+    // or guarantees shutdown completion. Omitted means false.
+    bool force = 2;
+}
+
 message DirectBoot {
     string kernel_path = 1;
     string initrd_path = 2;
