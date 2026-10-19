@@ -61,6 +61,23 @@ impl ResourceKind for RequestAkCertKind {
     const NAME: &'static str = "tpm_request_ak_cert";
 }
 
+/// A prepared AK certificate request or guest attestation report.
+pub struct AkCertRequest {
+    /// Serialized request or report.
+    pub data: Vec<u8>,
+    /// Whether the request includes metadata from an existing certificate.
+    pub has_cert: bool,
+}
+
+/// The result of requesting an AK certificate.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AkCertResponse {
+    /// A replacement certificate. Empty data indicates an unavailable service.
+    Certificate(Vec<u8>),
+    /// The service recommends keeping the certificate described in the request.
+    NoRenewal,
+}
+
 /// `TpmAkCertType`-equivalent enum for resource
 #[derive(MeshPayload)]
 pub enum TpmAkCertTypeResource {

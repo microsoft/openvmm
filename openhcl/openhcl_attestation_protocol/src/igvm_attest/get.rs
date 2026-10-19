@@ -252,6 +252,8 @@ impl IgvmAttestRequestDataExt {
 ///     CKM_RSA_AES_KEY_WRAP scheme (inner RSA-OAEP using SHA-1).
 /// 3 - IGVM_SIGNAL_CORIM_ENDORSEMENT_REQUESTED_BIT: Set by the IGVM Agent to
 ///     indicate that the agent requested the CoRIM endorsement.
+/// 5 - IGVM_SIGNAL_NO_RENEW_CERT_BIT: Keep the AK certificate described in
+///     the request instead of issuing a replacement.
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
@@ -259,7 +261,10 @@ pub struct IgvmSignal {
     pub skip_hw_unsealing: bool,
     pub rsa_aes_key_wrap_384_used: bool,
     pub corim_endorsement_requested: bool,
-    #[bits(28)]
+    #[bits(1)]
+    _reserved_bit4: u32,
+    pub no_renew_cert: bool,
+    #[bits(26)]
     _reserved: u32,
 }
 
@@ -335,6 +340,22 @@ pub mod runtime_claims {
 
     base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 
+    /// Metadata describing the existing AK certificate for renewal decisions.
+    /// These claims do not establish certificate trust.
+    #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+    pub struct AkCertMetadata {
+        /// Issuer common name.
+        pub issuer: String,
+        /// Subject common name.
+        pub subject: String,
+        /// ASN.1 UTCTime or GeneralizedTime content, including the trailing `Z`.
+        pub not_before: String,
+        /// ASN.1 UTCTime or GeneralizedTime content, including the trailing `Z`.
+        pub not_after: String,
+        /// Uppercase hex-encoded authority key identifier, or empty if absent.
+        pub authority: String,
+    }
+
     /// Measured runtime claim in JSON format.
     /// The hash of the data is expected be put into the user_data field of
     /// the attestation report.
@@ -348,6 +369,9 @@ pub mod runtime_claims {
         /// Optional user data
         #[serde(default, skip_serializing_if = "String::is_empty")]
         pub user_data: String,
+        /// Existing AK certificate metadata, present only on renewal requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub akcert: Option<AkCertMetadata>,
     }
 
     impl RuntimeClaims {
@@ -362,6 +386,7 @@ pub mod runtime_claims {
                 keys: transfer_key_jwks,
                 vm_configuration: attestation_vm_config.clone(),
                 user_data: "".to_string(),
+                akcert: None,
             }
         }
 
@@ -384,6 +409,7 @@ pub mod runtime_claims {
                 keys: tpm_jwks,
                 vm_configuration: attestation_vm_config.clone(),
                 user_data: hex::encode(user_data),
+                akcert: None,
             }
         }
     }
