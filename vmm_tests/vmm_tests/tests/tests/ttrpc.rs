@@ -1030,7 +1030,7 @@ async fn test_ttrpc_interface(
 async fn openvmm_rpc_failure(
     operation: &str,
     rpc_error: mesh_rpc::service::Status,
-    child: &mut OpenvmmChild,
+    child: &mut TestChild,
     stderr_task: Task<anyhow::Result<()>>,
 ) -> anyhow::Error {
     let wait_result = CancelContext::new()
