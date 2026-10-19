@@ -10,42 +10,55 @@ use pal_async::timer::PolledTimer;
 use std::time::Duration;
 use vmcore::vm_task::VmTaskDriver;
 
-/// Writes inspection results based on the contents of /proc/meminfo
+/// Writes inspection results based on the contents of /proc/meminfo and /proc/zoneinfo
 fn inspect_meminfo(req: Request<'_>) {
-    const FIELDS: &[&str] = &[
-        "MemTotal",
-        "MemFree",
-        "MemAvailable",
-        "Mapped",
-        "Slab",
-        "AnonPages",
-        "Active(anon)",
-        "Inactive(anon)",
-        "SReclaimable",
-        "SUnreclaim",
-        "Mlocked",
-        "KernelStack",
-        "PageTables",
-        "Shmem",
-        "Percpu",
-        "Committed_AS",
-    ];
-
     let mut resp = req.respond();
     fn inner(resp: &mut Response<'_>) -> anyhow::Result<()> {
-        let contents = fs_err::read_to_string("/proc/meminfo")?;
+        let mut contents = fs_err::read_to_string("/proc/meminfo")?;
         for line in contents.lines() {
             let (name, rest) = line.split_once(':').context("line had no :")?;
-            if FIELDS.contains(&name) {
-                // Remove the units for lines that have it, just report a number
-                let value = rest
-                    .split_ascii_whitespace()
+            // Remove the units for lines that have it, just report a number
+            let value = rest
+                .split_ascii_whitespace()
+                .next()
+                .context("line had no value")?;
+            let value = value.parse::<u64>().context("value failed to parse")?;
+            resp.sensitivity_field(name, SensitivityLevel::Safe, value);
+        }
+
+        contents = fs_err::read_to_string("/proc/zoneinfo")?;
+        let mut zoneinfo_nr_free_pages: u64 = 0;
+        let mut zoneinfo_per_cpu_page_count: u64 = 0;
+        for line in contents.lines() {
+            let mut split_line = line.split_ascii_whitespace();
+            let Some(field) = split_line.next() else {
+                continue;
+            };
+
+            if matches!(field, "count:") {
+                zoneinfo_per_cpu_page_count += split_line
                     .next()
-                    .context("line had no value")?;
-                let value = value.parse::<u64>().context("value failed to parse")?;
-                resp.sensitivity_field(name, SensitivityLevel::Safe, value);
+                    .context("line had no value")?
+                    .parse::<u64>()
+                    .context("value failed to parse")?;
+            } else if matches!(field, "nr_free_pages") {
+                zoneinfo_nr_free_pages += split_line
+                    .next()
+                    .context("line had no value")?
+                    .parse::<u64>()
+                    .context("value failed to parse")?
             }
         }
+        resp.sensitivity_field(
+            "ZoneInfoFreeMem",
+            SensitivityLevel::Safe,
+            zoneinfo_nr_free_pages * 4,
+        );
+        resp.sensitivity_field(
+            "ZoneInfoPerCPUMem",
+            SensitivityLevel::Safe,
+            zoneinfo_per_cpu_page_count * 4,
+        );
 
         Ok(())
     }
