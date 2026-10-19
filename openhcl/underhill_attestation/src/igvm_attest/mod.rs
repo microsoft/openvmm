@@ -439,8 +439,8 @@ mod tests {
     impl AkCertTestInput {
         fn new() -> Self {
             Self {
-                ak: RsaKeyPair::generate(2048).unwrap().to_components(),
-                ek: RsaKeyPair::generate(2048).unwrap().to_components(),
+                ak: RsaKeyPair::generate(2048).unwrap().to_components().unwrap(),
+                ek: RsaKeyPair::generate(2048).unwrap().to_components().unwrap(),
                 config: AttestationVmConfig {
                     current_time: None,
                     root_cert_thumbprint: "A".repeat(64),
