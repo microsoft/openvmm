@@ -1932,9 +1932,9 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
     );
 }
 
-/// RX TCP GSO metadata is reproduced in the guest virtio-net header.
+/// RX ECN metadata is dropped when VIRTIO_NET_F_GUEST_ECN is not supported.
 #[async_test]
-async fn rx_offload_tcp_gso_header(driver: DefaultDriver) {
+async fn rx_offload_ecn_without_feature_is_dropped(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -1961,20 +1961,15 @@ async fn rx_offload_tcp_gso_header(driver: DefaultDriver) {
     };
     handle.inject_rx_packet_with_metadata(payload, &metadata);
 
-    let (used_id, _) = harness.wait_for_rx_used().await;
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
     assert_eq!(used_id, desc_index);
-
-    let hdr = read_virtio_header(&harness.mem, gpa);
-    let flags = VirtioNetHeaderFlags::from(hdr.flags);
-    let gso = VirtioNetHeaderGso::from(hdr.gso_type);
-    assert!(flags.needs_csum());
-    assert!(!flags.data_valid());
-    assert_eq!(gso.protocol(), VirtioNetHeaderGsoProtocol::TCPV4);
-    assert!(gso.ecn());
-    assert_eq!(hdr.hdr_len, 54);
-    assert_eq!(hdr.gso_size, 1460);
-    assert_eq!(hdr.csum_start, 34);
-    assert_eq!(hdr.csum_offset, 16);
+    assert_eq!(used_len, 0);
+    assert!(
+        read_virtio_header(&harness.mem, gpa)
+            .as_bytes()
+            .iter()
+            .all(|&byte| byte == 0)
+    );
 }
 
 // --- Feature Negotiation Tests ---
