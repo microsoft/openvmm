@@ -531,7 +531,7 @@ mod tests {
                 disk_size: 64 * 1024,
                 logical_sector_size: 512,
                 physical_sector_size: 512,
-                is_fully_allocated: true,
+                disk_type: vhdx::DiskType::Fixed,
                 ..Default::default()
             },
         )

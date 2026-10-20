@@ -1061,8 +1061,7 @@ async fn check_discard(
     let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
     assert_eq!(harness.wait_for_used().await, (0, 1));
     assert_eq!(harness.read_status(status_gpa), expected_status);
-    let calls = std::mem::take(&mut state.lock().calls);
-    calls
+    std::mem::take(&mut state.lock().calls)
 }
 
 /// Discard with properly aligned sector and num_sectors on a 4K disk

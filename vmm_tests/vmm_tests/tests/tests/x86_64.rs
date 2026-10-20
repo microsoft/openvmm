@@ -512,7 +512,7 @@ async fn virtio_blk_device_vhdx(config: PetriVmBuilder<OpenVmmPetriBackend>) -> 
             disk_size,
             logical_sector_size: 512,
             physical_sector_size: 512,
-            is_fully_allocated: false,
+            disk_type: vhdx::DiskType::Dynamic,
             page_83_data: page83,
             ..Default::default()
         },
