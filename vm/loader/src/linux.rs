@@ -1805,6 +1805,32 @@ mod tests {
     }
 
     #[test]
+    fn mptable_loader_rejects_elf_without_load_segments() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE, &[]);
+        let config = mptable::MpTableConfig {
+            apic_ids: &[0],
+            level_triggered_irqs: &[],
+        };
+        let error = mptable_boot::load_x86_mptable(
+            &mut importer,
+            &mut kernel_image,
+            None,
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &config,
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
     fn elf_with_only_empty_load_segment_is_rejected() {
         let mut importer = RecordingImporter::default();
         let mut kernel_image = test_elf(KERNEL_BASE + 1, &[(KERNEL_BASE + 1, 0)]);
