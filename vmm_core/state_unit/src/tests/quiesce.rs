@@ -574,6 +574,62 @@ async fn test_input_timeout_is_serialized_with_resume_and_stop(driver: DefaultDr
 }
 
 #[async_test]
+async fn test_quiesce_waits_for_pending_input(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let quiesces = Arc::new(AtomicUsize::new(0));
+    let resumes = Arc::new(AtomicUsize::new(0));
+    let stops = Arc::new(AtomicUsize::new(0));
+    let _unit = units
+        .add("slow-input")
+        .spawn(&driver, {
+            let driver = driver.clone();
+            let quiesces = quiesces.clone();
+            let resumes = resumes.clone();
+            let stops = stops.clone();
+            |recv| {
+                run_async_unit(
+                    AsyncSlowInputUnit {
+                        driver,
+                        delay: Duration::from_millis(100),
+                        quiesces,
+                        resumes,
+                        stops,
+                    },
+                    recv,
+                )
+            }
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    units
+        .quiesce_input_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    let started = std::time::Instant::now();
+    let error = units
+        .quiesce_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(!error.has_uncertain_state());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(stops.load(Ordering::Relaxed), 0);
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .all(|unit| { unit.state == State::Running && unit.pending_input.is_some() })
+    );
+
+    units.stop().await;
+    assert_eq!(quiesces.load(Ordering::Relaxed), 1);
+    assert_eq!(resumes.load(Ordering::Relaxed), 0);
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
+}
+
+#[async_test]
 async fn test_input_hooks_reject_terminal_units(driver: DefaultDriver) {
     let mut units = StateUnits::new();
     let _running = units

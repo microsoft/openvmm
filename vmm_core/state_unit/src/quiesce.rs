@@ -198,6 +198,7 @@ impl StateUnits {
             Stopped,
             DependencyFailed,
             NotSent(anyhow::Error),
+            InputPending(anyhow::Error, PendingInput),
             Uncertain(anyhow::Error, Option<PendingStop>),
         }
 
@@ -256,12 +257,26 @@ impl StateUnits {
                 quiesced_units.push(id);
                 let name = unit.name.clone();
                 let dependencies = unit.dependents.iter().copied().collect::<Vec<_>>();
+                let pending_input = unit.pending_input.take();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
                 let mut stop = PendingStop {
                     future: state_change(name.clone(), unit, StateRequest::Stop, Some(())).boxed(),
                 };
                 operations.push(async move {
+                    if let Some(mut pending_input) = pending_input {
+                        if let Err(reason) =
+                            context.until_cancelled(pending_input.future.as_mut()).await
+                        {
+                            ready_set.done(id, false);
+                            return (
+                                name,
+                                id,
+                                UnitResult::InputPending(reason.into(), pending_input),
+                            );
+                        }
+                    }
+
                     let ready = match context
                         .until_cancelled(ready_set.wait("quiesce_for_save", id, &dependencies))
                         .await
@@ -318,6 +333,15 @@ impl StateUnits {
                 UnitResult::NotSent(error) => {
                     unit.state = State::Running;
                     failures.push((name.to_string(), format!("{error:#}")));
+                }
+                UnitResult::InputPending(error, pending_input) => {
+                    unit.state = State::Running;
+                    assert!(unit.pending_input.is_none());
+                    unit.pending_input = Some(pending_input);
+                    failures.push((
+                        name.to_string(),
+                        format!("pending input operation did not complete: {error:#}"),
+                    ));
                 }
                 UnitResult::Uncertain(error, pending_stop) => {
                     unit.state = State::QuiesceUncertain;
