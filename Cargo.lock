@@ -8049,6 +8049,7 @@ dependencies = [
  "socket2",
  "tempfile",
  "test_with_tracing",
+ "tracelimit",
  "tracing",
  "unix_socket",
  "vm_resource",
