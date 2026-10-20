@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::limits::DEFAULT_MAX_ACTIVE_TCP_FLOWS;
+use pal_async::task::Spawn;
 
 /// Returns default parameters with the TCP active-flow limit set to `limit`.
 fn params_with_tcp_limit(limit: Option<usize>) -> ConsommeParams {
@@ -129,6 +130,89 @@ async fn test_tcp_port_forward_connection_limit(driver: DefaultDriver) {
         harness.consomme.tcp.connections.len(),
         1,
         "an over-limit accepted socket must not grow the TCP flow map"
+    );
+}
+
+#[pal_async::async_test]
+async fn test_tcp_port_forward_repolls_after_limit_rejection(driver: DefaultDriver) {
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let host_addr = listener.local_addr().unwrap();
+    let (connect_tx, connect_rx) = std::sync::mpsc::channel();
+    // Connect only when signaled so the second connection arrives after the
+    // first one has been rejected.
+    let connector_thread = std::thread::spawn(move || {
+        let mut connectors = Vec::new();
+        for _ in 0..2 {
+            connect_rx.recv().unwrap();
+            connectors.push(std::net::TcpStream::connect(host_addr).unwrap());
+        }
+        connectors
+    });
+
+    let mut consomme = Consomme::new(params_with_tcp_limit(Some(0)));
+    let mut client = TestClient::new(driver.clone());
+    let guest_port = 7777;
+    let key = PortForwardKey::new(IpVersion::Ipv4, guest_port);
+    consomme
+        .access(&mut client)
+        .bind_tcp_port(Socket::from(listener), guest_port)
+        .expect("bind should succeed");
+
+    let task = driver.spawn("poll rejected TCP accepts", async move {
+        let mut listener_armed = false;
+        let mut rejected_first = false;
+        std::future::poll_fn(move |cx| {
+            if !listener_armed {
+                // Avoid carrying an extra wake from immediately-ready IO into
+                // the poll that rejects the first connection.
+                assert!(
+                    consomme
+                        .tcp
+                        .listeners
+                        .get_mut(&key)
+                        .unwrap()
+                        .socket
+                        .poll_ready(cx, PollEvents::IN)
+                        .is_pending()
+                );
+                connect_tx.send(()).unwrap();
+                listener_armed = true;
+                return Poll::Pending;
+            }
+
+            consomme.access(&mut client).poll(cx);
+            if !rejected_first {
+                assert!(
+                    consomme.tcp.connections.is_empty(),
+                    "the zero flow limit should reject the first connection"
+                );
+                consomme.tcp.max_connections = Some(1);
+                connect_tx.send(()).unwrap();
+                rejected_first = true;
+                return Poll::Pending;
+            }
+
+            if consomme.tcp.connections.len() == 1 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    });
+
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    let timeout = timer.sleep(Duration::from_secs(5));
+    let task = std::pin::pin!(task);
+    let timeout = std::pin::pin!(timeout);
+    let completed = !matches!(
+        futures::future::select(task, timeout).await,
+        futures::future::Either::Right(_)
+    );
+    connector_thread.join().unwrap();
+    assert!(
+        completed,
+        "timed out waiting for a later inbound connection to be accepted"
     );
 }
 
