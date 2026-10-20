@@ -1840,6 +1840,145 @@ fn read_virtio_header(mem: &GuestMemory, gpa: u64) -> VirtioNetHeader {
     h
 }
 
+fn assert_rx_payload(mem: &GuestMemory, gpa: u64, expected: &[u8]) {
+    let mut payload = vec![0; expected.len()];
+    mem.read_at(gpa + NET_HEADER_SIZE as u64, &mut payload)
+        .unwrap();
+    assert_eq!(payload, expected);
+}
+
+#[async_test]
+async fn rx_offload_checksum_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"checksum-offload";
+    let gpa = harness.post_rx_buffer_and_signal(0, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            ip_checksum: RxChecksumState::Good,
+            l4_checksum: RxChecksumState::Good,
+            checksum_offload: Some(RxChecksumOffload {
+                start: 34,
+                offset: 16,
+            }),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::NONE
+    );
+    assert_eq!(hdr.hdr_len, 0);
+    assert_eq!(hdr.gso_size, 0);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
+#[async_test]
+async fn rx_offload_tcpv4_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"tcpv4-gso";
+    let gpa = harness.post_rx_buffer_and_signal(0, 65535);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            checksum_offload: Some(RxChecksumOffload {
+                start: 34,
+                offset: 16,
+            }),
+            gso: Some(RxGso {
+                protocol: RxGsoProtocol::TcpV4,
+                header_len: 54,
+                max_segment_size: 1460,
+                ecn: false,
+            }),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(flags.needs_csum());
+    assert!(!flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::TCPV4
+    );
+    assert_eq!(hdr.hdr_len, 54);
+    assert_eq!(hdr.gso_size, 1460);
+    assert_eq!(hdr.csum_start, 34);
+    assert_eq!(hdr.csum_offset, 16);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
+#[async_test]
+async fn rx_offload_tcpv6_data_valid_gso_header(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    let payload = b"tcpv6-data-valid-gso";
+    let gpa = harness.post_rx_buffer_and_signal(0, 65535);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        payload,
+        &RxMetadata {
+            offset: 0,
+            len: payload.len(),
+            ip_checksum: RxChecksumState::Good,
+            l4_checksum: RxChecksumState::Good,
+            gso: Some(RxGso {
+                protocol: RxGsoProtocol::TcpV6,
+                header_len: 74,
+                max_segment_size: 1440,
+                ecn: false,
+            }),
+            ..Default::default()
+        },
+    );
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    let flags = VirtioNetHeaderFlags::from(hdr.flags);
+    assert!(!flags.needs_csum());
+    assert!(flags.data_valid());
+    assert_eq!(
+        VirtioNetHeaderGso::from(hdr.gso_type).protocol(),
+        VirtioNetHeaderGsoProtocol::TCPV6
+    );
+    assert_eq!(hdr.hdr_len, 74);
+    assert_eq!(hdr.gso_size, 1440);
+    assert_eq!(hdr.csum_start, 0);
+    assert_eq!(hdr.csum_offset, 0);
+    assert_rx_payload(&harness.mem, gpa, payload);
+}
+
 /// RX packet with both IP and L4 checksums Good → data_valid should be set.
 #[async_test]
 async fn rx_offload_data_valid_set(driver: DefaultDriver) {
