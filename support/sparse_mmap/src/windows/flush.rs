@@ -61,6 +61,9 @@ impl SparseMapping {
     /// [`io::ErrorKind::Unsupported`].
     pub fn flush(&self, offset: usize, len: usize) -> Result<(), Error> {
         let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
         if self.process.is_some() {
             return Err(Error::new(
                 io::ErrorKind::Unsupported,
@@ -98,6 +101,20 @@ mod tests {
     use test_with_tracing::test;
 
     const SNAPSHOT_RAM_BYTES: usize = 128 * 1024 * 1024;
+
+    #[test]
+    fn flush_empty_remote_mapping_is_a_noop() {
+        let process = pal::windows::process::empty_process().unwrap();
+        let mapping = SparseMapping::new_remote(process.process, None, PAGE_SIZE, 1).unwrap();
+
+        mapping.flush(0, 0).unwrap();
+        mapping.flush(PAGE_SIZE, 0).unwrap();
+
+        let err = mapping.flush(PAGE_SIZE * 2, 0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let err = mapping.flush(0, PAGE_SIZE).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
 
     #[test]
     fn flush_file_range_covers_each_page_once() {
