@@ -700,10 +700,10 @@ mod tests {
         let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
         let mut contract = test_machine_contract();
         let prefix = "console=hvc0 ";
-        let saved = format!(
-            "{prefix}{}",
-            "x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE - prefix.len())
-        );
+        let fill = MICROVM_COMMAND_LINE_MAX_SIZE
+            .checked_sub(prefix.len())
+            .expect("the prefix fits within the limit");
+        let saved = format!("{prefix}{}", "x".repeat(fill));
         // The shared check's error, whose text openvmm_defs tests.
         let expected = format!(
             "snapshot effective command line is invalid: {}",
