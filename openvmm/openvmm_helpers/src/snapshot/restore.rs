@@ -499,6 +499,7 @@ fn validate_snapshot_directory(
 mod tests {
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
     use super::super::microvm::paired_scratch_manifest;
+    use super::super::microvm::test_machine_contract;
     use super::super::publish::write_snapshot;
     #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_memory_and_scratch_files;
@@ -683,6 +684,52 @@ mod tests {
         let error = format!("{:#}", read_snapshot(&snap_dir, 1024).err().unwrap());
         assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
         assert!(error.contains("recapture the snapshot"), "{error}");
+    }
+
+    #[test]
+    fn read_snapshot_rejects_a_command_line_over_the_limit_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+        // A snapshot whose saved command line no longer fits, as one captured
+        // under a larger limit would record.
+        let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
+        let mut contract = test_machine_contract();
+        contract.set_effective_command_line(format!("console=hvc0 {}", "x".repeat(2048 - 13)));
+        manifest.machine_contract = Some(contract);
+        let encoded = mesh::payload::encode(manifest);
+        std::fs::write(snap_dir.join(MANIFEST_FILE_NAME), &encoded).unwrap();
+        let entries = || {
+            let mut names = std::fs::read_dir(&snap_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let before = entries();
+
+        for error in [
+            read_snapshot(&snap_dir, 1024).err().unwrap(),
+            read_snapshot_manifest(&snap_dir).err().unwrap(),
+        ] {
+            let error = format!("{error:#}");
+            assert!(
+                error.contains(
+                    "snapshot effective command line is invalid: microVM kernel command line \
+                     is 2048 bytes; the limit is 2047 bytes plus the terminating NUL"
+                ),
+                "{error}"
+            );
+        }
+        // The restore neither rewrites the saved string nor migrates the snapshot.
+        assert_eq!(
+            std::fs::read(snap_dir.join(MANIFEST_FILE_NAME)).unwrap(),
+            encoded
+        );
+        assert_eq!(entries(), before);
     }
 
     #[test]
