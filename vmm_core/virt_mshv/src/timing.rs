@@ -11,7 +11,7 @@ use mshv_ioctls::VmFd;
 pub(crate) fn map_user_memory(vmfd: &VmFd, region: mshv_user_mem_region) -> Result<(), MshvError> {
     let started = std::time::Instant::now();
     let result = vmfd.map_user_memory(region);
-    tracing::info!(
+    tracelimit::info_ratelimited!(
         guest_pfn = region.guest_pfn,
         size = region.size,
         elapsed_us = started.elapsed().as_micros() as u64,
