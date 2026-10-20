@@ -15,6 +15,10 @@
 //! before MSHV registers them.
 
 use super::hv1_reference_tsc_page_supported;
+use super::register_cpuid_overrides;
+use super::snp::is_hv_max_leaf;
+use super::snp::snp_hv_cpuid_max_leaf;
+use super::snp::snp_hv_max_leaf_override;
 use crate::Error;
 use crate::ErrorInner;
 use crate::MshvPartitionInner;
@@ -76,22 +80,6 @@ fn finalize_memory_once<T>(
         .map_err(|_| ErrorInner::PartitionAlreadyFinalized.into())
 }
 
-/// Returns the hypervisor maximum CPUID leaf for the SNP hypervisor CPUID
-/// overrides.
-///
-/// This reads the configured CPUID results, since the BSP that could be
-/// queried does not exist until memory is finalized.
-pub(super) fn snp_native_hv_max_leaf(cpuid: &[virt::CpuidLeaf]) -> u32 {
-    cpuid
-        .iter()
-        .find(|leaf| {
-            leaf.function == hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION
-                && leaf.index.unwrap_or(0) == 0
-        })
-        .map(|leaf| leaf.result[0])
-        .unwrap_or(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION)
-}
-
 impl MshvPartitionInner {
     pub(super) fn finalized(&self) -> Result<&MshvFinalizedPartition, Error> {
         finalized_partition(&self.finalized)
@@ -132,9 +120,46 @@ impl MshvPartitionInner {
                     "MSHV_CREATE_VCPU completed"
                 );
                 let bsp_vcpufd = result.map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+                if self.isolation.snp().is_some() && self.config.hv_configured {
+                    self.install_snp_hv_max_leaf_override(&bsp_vcpufd)?;
+                }
                 let caps = self.build_caps(&bsp_vcpufd)?;
                 Ok(MshvFinalizedPartition { bsp_vcpufd, caps })
             },
+        )
+    }
+
+    fn install_snp_hv_max_leaf_override(&self, bsp: &VcpuFd) -> Result<(), Error> {
+        let native_max_leaf = match bsp.get_cpuid_values(
+            hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+            0,
+            0,
+            0,
+        ) {
+            Ok(values) => Some(values[0]),
+            Err(error) => {
+                tracing::warn!(
+                    error = &error as &dyn std::error::Error,
+                    "failed to query native Hyper-V maximum CPUID leaf; using configured fallback"
+                );
+                None
+            }
+        };
+        let max_leaf = snp_hv_cpuid_max_leaf(&self.config.cpuid, native_max_leaf);
+        let max_leaf_override = snp_hv_max_leaf_override(max_leaf);
+        let mut max_leaf_overrides = self
+            .config
+            .cpuid
+            .leaves()
+            .iter()
+            .copied()
+            .filter(is_hv_max_leaf)
+            .collect::<Vec<_>>();
+        max_leaf_overrides.push(max_leaf_override);
+
+        register_cpuid_overrides(
+            &self.vmfd,
+            virt::CpuidLeafSet::new(max_leaf_overrides).into_leaves(),
         )
     }
 

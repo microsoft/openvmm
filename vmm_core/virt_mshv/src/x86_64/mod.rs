@@ -37,6 +37,7 @@ use hvdef::hypercall::HvRegisterAssoc;
 use memory_range::MemoryRange;
 use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::VcpuFd;
+use mshv_ioctls::VmFd;
 use pal::unix::pthread::Pthread;
 use parking_lot::Mutex;
 use pci_core::msi::SignalMsi;
@@ -76,6 +77,7 @@ pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
 pub(crate) use snp::acquire_snp_host_access;
+use snp::is_hv_max_leaf;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
@@ -88,6 +90,49 @@ use snp::snp_start_vp_vmsa_gpa;
 const MSHV_PT_SNP_INJECTION_POLICY_SHIFT: u32 = 6;
 const MSHV_PT_SNP_RESTRICTED_INJECTION: u64 = 0;
 const MSHV_PT_SNP_NORMAL_INJECTION: u64 = 1;
+
+fn register_cpuid_overrides(
+    vmfd: &VmFd,
+    cpuid: impl IntoIterator<Item = virt::CpuidLeaf>,
+) -> Result<(), Error> {
+    for leaf in cpuid {
+        let input = hvdef::hypercall::RegisterInterceptResultCpuid {
+            partition_id: 0,
+            vp_index: hvdef::HV_ANY_VP,
+            intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
+            parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
+                input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
+                    eax: leaf.function,
+                    ecx: leaf.index.unwrap_or(0),
+                    subleaf_specific: u8::from(leaf.index.is_some()),
+                    always_override: 1,
+                    padding: 0,
+                },
+                result: hvdef::hypercall::HvRegisterX64CpuidResultParametersOutput {
+                    eax: leaf.result[0],
+                    eax_mask: leaf.mask[0],
+                    ebx: leaf.result[1],
+                    ebx_mask: leaf.mask[1],
+                    ecx: leaf.result[2],
+                    ecx_mask: leaf.mask[2],
+                    edx: leaf.result[3],
+                    edx_mask: leaf.mask[3],
+                },
+            },
+            _reserved: 0,
+        };
+        let mut args = mshv_bindings::mshv_root_hvcall {
+            code: hvdef::HypercallCode::HvCallRegisterInterceptResult.0,
+            in_sz: size_of_val(&input) as u16,
+            in_ptr: std::ptr::addr_of!(input) as u64,
+            ..Default::default()
+        };
+        vmfd.hvcall(&mut args)
+            .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
+    }
+
+    Ok(())
+}
 
 pub(crate) enum MshvProtoPartitionIsolation {
     None,
@@ -512,54 +557,27 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 return Err(ErrorInner::SnpVmsaOverlapsRam.into());
             }
         }
+        let snp = matches!(&self.isolation, MshvProtoPartitionIsolation::Snp { .. });
+        let expose_hypervisor = snp && self.config.hv_config.is_some();
         let mut cpuid = config.cpuid.to_vec();
-        if matches!(&self.isolation, MshvProtoPartitionIsolation::Snp { .. }) {
-            let expose_hypervisor = self.config.hv_config.is_some();
+        if snp {
             cpuid.extend(snp_cpuid_overrides(expose_hypervisor));
             if expose_hypervisor {
-                let native_max_leaf = finalize::snp_native_hv_max_leaf(&cpuid);
-                cpuid.extend(snp_hv_cpuid_overrides(native_max_leaf));
+                cpuid.extend(snp_hv_cpuid_overrides());
             }
         }
         let cpuid = virt::CpuidLeafSet::new(cpuid);
 
-        // Apply CPUID overrides partition-wide.
-        for leaf in cpuid.leaves().iter() {
-            let input = hvdef::hypercall::RegisterInterceptResultCpuid {
-                partition_id: 0,
-                vp_index: hvdef::HV_ANY_VP,
-                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
-                parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
-                    input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
-                        eax: leaf.function,
-                        ecx: leaf.index.unwrap_or(0),
-                        subleaf_specific: u8::from(leaf.index.is_some()),
-                        always_override: 1,
-                        padding: 0,
-                    },
-                    result: hvdef::hypercall::HvRegisterX64CpuidResultParametersOutput {
-                        eax: leaf.result[0],
-                        eax_mask: leaf.mask[0],
-                        ebx: leaf.result[1],
-                        ebx_mask: leaf.mask[1],
-                        ecx: leaf.result[2],
-                        ecx_mask: leaf.mask[2],
-                        edx: leaf.result[3],
-                        edx_mask: leaf.mask[3],
-                    },
-                },
-                _reserved: 0,
-            };
-            let mut args = mshv_bindings::mshv_root_hvcall {
-                code: hvdef::HypercallCode::HvCallRegisterInterceptResult.0,
-                in_sz: size_of_val(&input) as u16,
-                in_ptr: std::ptr::addr_of!(input) as u64,
-                ..Default::default()
-            };
-            self.vmfd
-                .hvcall(&mut args)
-                .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
-        }
+        // Defer the SNP Hyper-V maximum-leaf override until the BSP can be
+        // queried for MSHV's native result.
+        register_cpuid_overrides(
+            &self.vmfd,
+            cpuid
+                .leaves()
+                .iter()
+                .copied()
+                .filter(|leaf| !expose_hypervisor || !is_hv_max_leaf(leaf)),
+        )?;
 
         let apic_id_map = self
             .config
