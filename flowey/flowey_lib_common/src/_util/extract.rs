@@ -78,44 +78,8 @@ pub fn extract_zip_if_new(
         None => rt.sh.current_dir(),
     };
 
-    let filename = file.file_name().expect("zip file was not a file");
-    let extract_dir = root_dir.join(FLOWEY_EXTRACT_DIR).join(filename);
-    fs_err::create_dir_all(&extract_dir)?;
-
-    let pkg_info_dir = root_dir.join(FLOWEY_INFO_DIR);
-    fs_err::create_dir_all(&pkg_info_dir)?;
-    let pkg_info_file = pkg_info_dir.join(filename);
-
-    let mut already_extracted = false;
-    if let Ok(info) = fs_err::read_to_string(&pkg_info_file) {
-        if info == file_version {
-            already_extracted = true;
-        }
-    }
-
-    if !already_extracted {
-        // clear out any old version that was present
-        //
-        // FUTURE: maybe reconsider this approach, and keep
-        // old versions lying around, to make branch
-        // switching easier?
-        fs_err::remove_dir_all(&extract_dir)?;
-        fs_err::create_dir(&extract_dir)?;
-
-        rt.sh.change_dir(&extract_dir);
-
-        let bsdtar = crate::_util::bsdtar_name(rt);
-        flowey::shell_cmd!(rt, "{bsdtar} -xf {file}").run()?;
-        fs_err::write(pkg_info_file, file_version)?;
-
-        // change back to the root dir so subsequent extractions don't get
-        // nested when there is no persistent dir
-        rt.sh.change_dir(&root_dir);
-    } else {
-        log::info!("already extracted!");
-    }
-
-    Ok(extract_dir)
+    let bsdtar = crate::_util::bsdtar_name(rt);
+    extract_archive_if_new(rt, &root_dir, file, file_version, bsdtar)
 }
 
 /// Extracts the given `.tar.gz` `file` into `persistent_dir` (or into
@@ -141,42 +105,7 @@ pub fn extract_tar_gz_if_new(
         None => rt.sh.current_dir(),
     };
 
-    let filename = file.file_name().expect("tar.gz file was not a file");
-    let extract_dir = root_dir.join(FLOWEY_EXTRACT_DIR).join(filename);
-    fs_err::create_dir_all(&extract_dir)?;
-
-    let pkg_info_dir = root_dir.join(FLOWEY_INFO_DIR);
-    fs_err::create_dir_all(&pkg_info_dir)?;
-    let pkg_info_file = pkg_info_dir.join(filename);
-
-    let mut already_extracted = false;
-    if let Ok(info) = fs_err::read_to_string(&pkg_info_file) {
-        if info == file_version {
-            already_extracted = true;
-        }
-    }
-
-    if !already_extracted {
-        // clear out any old version that was present
-        fs_err::remove_dir_all(&extract_dir)?;
-        fs_err::create_dir(&extract_dir)?;
-
-        rt.sh.change_dir(&extract_dir);
-
-        // windows builds past Windows 10 build 17063 come with tar installed,
-        // and `tar -xf` auto-detects gzip compression on all platforms
-        flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
-
-        fs_err::write(pkg_info_file, file_version)?;
-
-        // change back to the root dir so subsequent extractions don't get
-        // nested when there is no persistent dir
-        rt.sh.change_dir(&root_dir);
-    } else {
-        log::info!("already extracted!");
-    }
-
-    Ok(extract_dir)
+    extract_archive_if_new(rt, &root_dir, file, file_version, "tar")
 }
 
 #[derive(Clone)]
@@ -215,9 +144,9 @@ pub fn extract_tar_bz2_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractTarBz2Deps {
 /// Extracts the given `file` into `persistent_dir` (or into
 /// [`std::env::current_dir()`], if no persistent dir is available).
 ///
-/// To avoid redundant unzips between pipeline runs, callers must provide a
+/// To avoid redundant extractions between pipeline runs, callers must provide a
 /// `file_version` string that identifies the current file. If the previous run
-/// already unzipped a zip with the given `file_version`, this function will
+/// already extracted an archive with the given `file_version`, this function will
 /// return nearly instantaneously.
 pub fn extract_tar_bz2_if_new(
     rt: &mut RustRuntimeServices<'_>,
@@ -235,43 +164,75 @@ pub fn extract_tar_bz2_if_new(
         None => rt.sh.current_dir(),
     };
 
-    let filename = file.file_name().expect("tar.bz2 file was not a file");
-    let extract_dir = root_dir.join(FLOWEY_EXTRACT_DIR).join(filename);
-    fs_err::create_dir_all(&extract_dir)?;
+    extract_archive_if_new(rt, &root_dir, file, file_version, "tar")
+}
 
+fn extract_archive_if_new(
+    rt: &mut RustRuntimeServices<'_>,
+    root_dir: &Path,
+    file: &Path,
+    file_version: &str,
+    tar: &str,
+) -> anyhow::Result<PathBuf> {
+    let current_dir = rt.sh.current_dir();
+    let file = current_dir.join(file).absolute()?;
+    let root_dir = current_dir.join(root_dir).absolute()?;
+    extract_if_new(&root_dir, &file, file_version, |extract_dir| {
+        let _dir = rt.sh.push_dir(extract_dir);
+        flowey::shell_cmd!(rt, "{tar} -xf {file}").run()?;
+        Ok(())
+    })
+}
+
+fn extract_if_new(
+    root_dir: &Path,
+    file: &Path,
+    file_version: &str,
+    extract: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<PathBuf> {
+    let filename = file
+        .file_name()
+        .with_context(|| format!("archive path has no filename: {}", file.display()))?;
+    let extract_dir = root_dir.join(FLOWEY_EXTRACT_DIR).join(filename);
     let pkg_info_dir = root_dir.join(FLOWEY_INFO_DIR);
-    fs_err::create_dir_all(&pkg_info_dir)?;
     let pkg_info_file = pkg_info_dir.join(filename);
 
-    let mut already_extracted = false;
-    if let Ok(info) = fs_err::read_to_string(&pkg_info_file) {
-        if info == file_version {
-            already_extracted = true;
+    let cached_version = match fs_err::read_to_string(&pkg_info_file) {
+        Ok(info) => Some(info),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err).context("failed to read archive extraction version"),
+    };
+    let extracted = match fs_err::metadata(&extract_dir) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "archive extraction path is not a directory: {}",
+                extract_dir.display()
+            );
+            true
         }
-    }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err).context("failed to inspect archive extraction directory"),
+    };
 
-    if !already_extracted {
-        rt.sh.change_dir(&extract_dir);
-
-        // clear out any old version that was present
-        //
-        // FUTURE: maybe reconsider this approach, and keep
-        // old versions lying around, to make branch
-        // switching easier?
-        fs_err::remove_dir_all(&extract_dir)?;
-        fs_err::create_dir(&extract_dir)?;
-
-        // windows builds past Windows 10 build 17063 come with tar installed
-        flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
-
-        fs_err::write(pkg_info_file, file_version)?;
-
-        // change back to the root dir so subsequent extractions don't get
-        // nested when there is no persistent dir
-        rt.sh.change_dir(&root_dir);
-    } else {
+    if extracted && cached_version.as_deref() == Some(file_version) {
         log::info!("already extracted!");
+        return Ok(extract_dir);
     }
+
+    // Invalidate the old marker before replacing files, so a failed extraction
+    // cannot leave a partial directory that looks like a cache hit.
+    if cached_version.is_some() {
+        fs_err::remove_file(&pkg_info_file)?;
+    }
+    if extracted {
+        fs_err::remove_dir_all(&extract_dir)?;
+    }
+    fs_err::create_dir_all(&extract_dir)?;
+    extract(&extract_dir)
+        .with_context(|| format!("failed to extract archive {}", file.display()))?;
+    fs_err::create_dir_all(&pkg_info_dir)?;
+    fs_err::write(pkg_info_file, file_version)?;
 
     Ok(extract_dir)
 }

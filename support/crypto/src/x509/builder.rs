@@ -56,7 +56,7 @@ pub(super) fn self_signed_builder(
         "CN={common_name},O={organization},L={locality},ST={state},C={country}"
     ))?;
 
-    let components = key.to_components();
+    let components = key.to_components()?;
     let pkcs1_pub = pkcs1::RsaPublicKey {
         modulus: der::asn1::UintRef::new(&components.modulus)?,
         public_exponent: der::asn1::UintRef::new(&components.public_exponent)?,

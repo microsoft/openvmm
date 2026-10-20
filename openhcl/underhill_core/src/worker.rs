@@ -377,6 +377,28 @@ pub struct NicConfig {
     pub max_sub_channels: Option<u16>,
 }
 
+fn netvsp_vmbus_instance_id(vport_index: usize, mac_address: [u8; 6]) -> Guid {
+    // Some guest behaviors require the NIC interfaces to be enumerated in a
+    // particular order. VMBus channel offers are by default sorted using the
+    // instance id. `offer_order` will override the default sorting.
+    // Incorporate the vport index and MAC address for ease of search.
+    Guid {
+        data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1`
+        data2: vport_index as u16,
+        data3: 1 << 12, // type 1 GUID
+        data4: [
+            0x20,
+            0,
+            mac_address[0],
+            mac_address[1],
+            mac_address[2],
+            mac_address[3],
+            mac_address[4],
+            mac_address[5],
+        ], // variant 2
+    }
+}
+
 impl Worker for UnderhillVmWorker {
     type Parameters = UnderhillWorkerParameters;
     type State = RestartState;
@@ -905,19 +927,9 @@ impl UhVmNetworkSettings {
             },
         ) in endpoints.into_iter().enumerate()
         {
-            let vmbus_instance_id = {
-                let m = mac_address.to_bytes();
-                // Some guest behaviors requires the nic interfaces to be enumerated in a
-                // particular order. vmbus channel offers are by default sorted using the
-                // instance id. Leverage that to sort the network offers based on the
-                // vport index.
-                Guid {
-                    data1: 0xf8615163, // keeping it same as netvsp `interface_id:data1` for ease of search.
-                    data2: i as u16,
-                    data3: 1 << 12, // type 1 GUID
-                    data4: [0x20, 0, m[0], m[1], m[2], m[3], m[4], m[5]], // variant 2
-                }
-            };
+            let vmbus_instance_id = netvsp_vmbus_instance_id(i, mac_address.to_bytes());
+            // `adapter_index` is unique across all MANA endpoints and assigned in order.
+            let offer_order = adapter_index.into();
             let p = partition.clone();
             let get_guest_os_id = move || -> HvGuestOsId {
                 p.vtl0_guest_os_id()
@@ -925,6 +937,7 @@ impl UhVmNetworkSettings {
             };
 
             let mut nic_builder = netvsp::Nic::builder()
+                .offer_order(offer_order)
                 .limit_ring_buffer(true)
                 .get_guest_os_id(Box::new(get_guest_os_id))
                 .max_queues(nic_max_sub_channels);
@@ -2603,28 +2616,12 @@ async fn new_underhill_vm(
         use firmware_uefi_resources::x64_secure_boot_templates as secure_boot_templates;
         let base_template = match &dps.general.secure_boot_template {
             SecureBootTemplateType::None => None,
-            SecureBootTemplateType::MicrosoftWindows => Some({
-                #[cfg(guest_arch = "aarch64")]
-                let template = secure_boot_templates::microsoft_windows();
-                #[cfg(guest_arch = "x86_64")]
-                let template = if isolation.is_isolated() {
-                    secure_boot_templates::microsoft_windows_confidential()
-                } else {
-                    secure_boot_templates::microsoft_windows()
-                };
-                template
-            }),
-            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => Some({
-                #[cfg(guest_arch = "aarch64")]
-                let template = secure_boot_templates::microsoft_uefi_ca();
-                #[cfg(guest_arch = "x86_64")]
-                let template = if isolation.is_isolated() {
-                    secure_boot_templates::microsoft_uefi_ca_confidential()
-                } else {
-                    secure_boot_templates::microsoft_uefi_ca()
-                };
-                template
-            }),
+            SecureBootTemplateType::MicrosoftWindows => {
+                Some(secure_boot_templates::microsoft_windows())
+            }
+            SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
+                Some(secure_boot_templates::microsoft_uefi_ca())
+            }
         };
 
         // check if vmgs includes custom UEFI JSON

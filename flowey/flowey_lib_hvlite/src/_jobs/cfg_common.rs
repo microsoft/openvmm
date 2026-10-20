@@ -68,7 +68,7 @@ impl SimpleFlowNode for Node {
             no_incremental,
         } = request;
 
-        if matches!(ctx.backend(), FlowBackend::Github) {
+        if matches!(ctx.backend(), FlowBackend::Github | FlowBackend::Ado) {
             if local_only.is_some() {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
             }
@@ -78,22 +78,14 @@ impl SimpleFlowNode for Node {
                 ignore_version: Some(false),
                 ..Default::default()
             });
-            let token = ctx.get_gh_context_var().global().token();
-            ctx.config(flowey_lib_common::use_gh_cli::Config {
-                auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
-                    ConfigVar(token),
-                )),
-            });
-        } else if matches!(ctx.backend(), FlowBackend::Ado) {
-            if local_only.is_some() {
-                anyhow::bail!("can only set `local_only` params when using Local backend");
+            if matches!(ctx.backend(), FlowBackend::Github) {
+                let token = ctx.get_gh_context_var().global().token();
+                ctx.config(flowey_lib_common::use_gh_cli::Config {
+                    auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
+                        ConfigVar(token),
+                    )),
+                });
             }
-
-            ctx.config(flowey_lib_common::install_rust::Config {
-                auto_install: Some(true),
-                ignore_version: Some(false),
-                ..Default::default()
-            });
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;

@@ -20,6 +20,7 @@
     - [On Linux](./user_guide/openhcl/run/openvmm_linux.md)
   - [Troubleshooting](./user_guide/openhcl/troubleshooting.md)
   - [Next Steps](./user_guide/openhcl/next_steps.md)
+- [`openvmm-img`](./user_guide/openvmm-img.md)
 
 # Developer Guide
 
@@ -148,10 +149,12 @@
   - [Networking](./reference/backends/networking.md)
     - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)
+  - [Timekeeping](./reference/architecture/timekeeping.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [Memory Layout](./reference/architecture/openvmm/memory-layout.md)
     - [Memory Backing](./reference/architecture/openvmm/memory-backing.md)
     - [NUMA Topology](./reference/architecture/openvmm/numa.md)
+    - [Device Tree](./reference/architecture/openvmm/device-tree.md)
     - [mesh](./reference/architecture/openvmm/mesh.md)
       - [Using mesh](./reference/architecture/openvmm/mesh/usage.md)
       - [How mesh works](./reference/architecture/openvmm/mesh/internals.md)
@@ -159,6 +162,9 @@
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
     - [Processes and Components](./reference/architecture/openhcl/processes.md)
     - [`openvmm_hcl`](./reference/architecture/openhcl/openvmm_hcl.md)
+    - [Attestation and VMGS Protection](./reference/architecture/openhcl/attestation.md)
+      - [IGVM Attestation Protocol](./reference/architecture/openhcl/attestation_protocol.md)
+      - [AK Certificate Renewal](./reference/architecture/openhcl/ak_cert.md)
     - [VMBus Relay and Device Interception](./reference/architecture/openhcl/vmbus.md)
     - [Storage Translation](./reference/architecture/openhcl/storage_translation.md)
     - [Storage Configuration Model](./reference/architecture/openhcl/storage_configuration.md)

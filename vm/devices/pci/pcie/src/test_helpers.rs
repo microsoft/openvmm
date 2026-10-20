@@ -8,6 +8,7 @@ use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use pci_bus::GenericPciBusDevice;
 use std::fmt::Debug;
+use std::sync::mpsc;
 
 pub struct TestPcieMmioRegistration {}
 
@@ -60,6 +61,55 @@ impl ControlMmioIntercept for TestPcieControlMmioIntercept {
 
     fn region_name(&self) -> &str {
         "???"
+    }
+}
+
+pub struct TestPciDevice;
+
+impl GenericPciBusDevice for TestPciDevice {
+    fn pci_cfg_read(&mut self, _offset: u16, _value: ByteEnabledDwordRead<'_>) -> Option<IoResult> {
+        Some(IoResult::Ok)
+    }
+
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        Some(IoResult::Ok)
+    }
+}
+
+pub struct BlockingEndpoint {
+    access_started: mpsc::Sender<()>,
+    release_access: mpsc::Receiver<()>,
+}
+
+impl BlockingEndpoint {
+    pub fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (access_started, access_started_rx) = mpsc::channel();
+        let (release_access, release_access_rx) = mpsc::channel();
+        (
+            Self {
+                access_started,
+                release_access: release_access_rx,
+            },
+            access_started_rx,
+            release_access,
+        )
+    }
+}
+
+impl GenericPciBusDevice for BlockingEndpoint {
+    fn pci_cfg_read(
+        &mut self,
+        _offset: u16,
+        mut value: ByteEnabledDwordRead<'_>,
+    ) -> Option<IoResult> {
+        self.access_started.send(()).unwrap();
+        self.release_access.recv().unwrap();
+        value.set(0x1234_5678);
+        Some(IoResult::Ok)
+    }
+
+    fn pci_cfg_write(&mut self, _offset: u16, _value: ByteEnabledDwordWrite) -> Option<IoResult> {
+        Some(IoResult::Ok)
     }
 }
 

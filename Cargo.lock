@@ -33,6 +33,7 @@ dependencies = [
  "cxl_spec",
  "guid",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -579,6 +580,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "chipset"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
@@ -716,6 +718,7 @@ dependencies = [
 name = "chipset_resources"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "arbitrary",
  "inspect",
  "ipmi_protocol",
@@ -1215,21 +1218,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxl_spec"
+name = "cxl"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bitfield-struct 0.11.0",
  "chipset_device",
+ "cxl_spec",
  "inspect",
  "mesh",
- "open_enum",
  "pci_core",
  "pci_resources",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "cxl_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2345,6 +2357,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -2362,6 +2375,7 @@ dependencies = [
  "sysinfo",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "which 8.0.0",
  "xshell",
@@ -2473,6 +2487,7 @@ dependencies = [
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "zerocopy",
 ]
@@ -3445,6 +3460,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "test_with_tracing",
  "tracing",
 ]
 
@@ -3885,11 +3901,9 @@ dependencies = [
 name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
- "acpi_spec",
  "anyhow",
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
- "chipset_resources",
  "clap",
  "corim",
  "crypto",
@@ -3908,14 +3922,12 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "serial_16550_resources",
  "signature",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
  "vm_topology",
- "vmm_core",
  "x509-cert",
  "x86defs",
  "zerocopy",
@@ -4071,6 +4083,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -4849,6 +4862,7 @@ dependencies = [
  "arrayvec",
  "cfg-if",
  "hvdef",
+ "memory_range",
  "minimal_rt_build",
  "minimal_rt_reloc",
  "zerocopy",
@@ -5668,13 +5682,18 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "hcl",
  "hvdef",
  "inspect",
+ "memory_range",
  "parking_lot",
+ "sev_guest_device",
  "tdisp",
  "tdisp_proto",
+ "tracelimit",
  "tracing",
  "virt",
+ "x86defs",
 ]
 
 [[package]]
@@ -5849,6 +5868,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm-img"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "blocking",
+ "clap",
+ "fs-err",
+ "guid",
+ "pal_async",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "vhdx",
+ "vmm_cli",
+]
+
+[[package]]
 name = "openvmm_build_info"
 version = "0.2.0"
 dependencies = [
@@ -5920,6 +5958,8 @@ dependencies = [
  "scsi_core",
  "scsidisk",
  "serial_16550_resources",
+ "serial_pl011_resources",
+ "serial_uart_resources",
  "smmu",
  "sparse_mmap",
  "state_unit",
@@ -5971,6 +6011,7 @@ dependencies = [
  "mesh_worker",
  "net_backend_resources",
  "openvmm_pcat_locator",
+ "serial_uart_resources",
  "smbios_defs",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -5997,6 +6038,7 @@ dependencies = [
  "console_relay",
  "crossterm",
  "crypto",
+ "cxl",
  "cxl_spec",
  "debug_worker_defs",
  "diag_client",
@@ -6182,7 +6224,7 @@ dependencies = [
  "chipset",
  "chipset_legacy",
  "chipset_resources",
- "cxl_spec",
+ "cxl",
  "debug_worker",
  "disk_blob",
  "disk_blockdevice",
@@ -6327,6 +6369,7 @@ dependencies = [
  "pal_event",
  "seccompiler",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "widestring",
@@ -6553,6 +6596,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cxl",
  "cxl_spec",
  "inspect",
  "memory_range",
@@ -6659,6 +6703,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
@@ -6675,6 +6720,7 @@ dependencies = [
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
+ "target-lexicon",
  "tempfile",
  "thiserror 2.0.16",
  "tpm_resources",
@@ -6737,8 +6783,10 @@ name = "petri_artifacts_core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "linkme",
  "paste",
  "serde",
+ "serde_json",
  "target-lexicon",
 ]
 
@@ -7681,6 +7729,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "vm_resource",
+ "x86defs",
 ]
 
 [[package]]
@@ -7766,9 +7815,19 @@ dependencies = [
  "pal_async",
  "serial_core",
  "socket2",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unix_socket",
  "vm_resource",
+]
+
+[[package]]
+name = "serial_uart_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "serial_16550_resources",
 ]
 
 [[package]]
@@ -8001,10 +8060,18 @@ dependencies = [
 name = "snp_bootshim"
 version = "0.0.0"
 dependencies = [
+ "acpi",
+ "acpi_spec",
+ "arrayvec",
+ "fdt",
  "loader_defs",
+ "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "test_with_tracing",
+ "thiserror 2.0.16",
  "x86defs",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8427,11 +8494,13 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "crypto",
+ "der",
  "get_resources",
  "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
  "serde_json",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
@@ -8449,6 +8518,7 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "test_igvm_agent_lib",
+ "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.0",
@@ -8927,9 +8997,9 @@ dependencies = [
 
 [[package]]
 name = "uefi"
-version = "0.35.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da7569ceafb898907ff764629bac90ac24ba4203c38c33ef79ee88c74aa35b11"
+checksum = "368cef7d94514897e6dad4350945c7910a9f5bf9021191d1c58ee3ec09962697"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
@@ -8943,20 +9013,20 @@ dependencies = [
 
 [[package]]
 name = "uefi-macros"
-version = "0.18.1"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3dad47b3af8f99116c0f6d4d669c439487d9aaf1c8d9480d686cda6f3a8aa23"
+checksum = "643efa8b64be89780bc498b290fab04337c7c4d171cc82cce2e133a74616dcc4"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.106",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "uefi-raw"
-version = "0.11.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cad96b8baaf1615d3fdd0f03d04a0b487d857c1b51b19dcbfe05e2e3c447b78"
+checksum = "3636327a6d88a38c0f2567fb695ec7ba27b3483d1877730486605aa0866da201"
 dependencies = [
  "bitflags 2.9.3",
  "uguid",
@@ -9022,9 +9092,9 @@ dependencies = [
 
 [[package]]
 name = "uguid"
-version = "2.2.0"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab14ea9660d240e7865ce9d54ecdbd1cd9fa5802ae6f4512f093c7907e921533"
+checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
 
 [[package]]
 name = "uidevices"
@@ -9077,6 +9147,7 @@ dependencies = [
  "constant_time_eq",
  "crypto",
  "cvm_tracing",
+ "der",
  "disk_backend",
  "disklayer_ram",
  "get_protocol",
@@ -9092,6 +9163,7 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "tee_call",
+ "test_igvm_agent_lib",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
@@ -10067,7 +10139,6 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
- "tracing",
  "virtio",
  "virtio_resources",
  "vm_resource",
@@ -10846,6 +10917,7 @@ dependencies = [
  "power_resources",
  "slab",
  "state_unit",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",
@@ -10950,6 +11022,7 @@ dependencies = [
  "static_assertions",
  "storvsp_resources",
  "tempfile",
+ "test_igvm_agent_lib",
  "tmk_tests",
  "tracing",
  "unix_socket",

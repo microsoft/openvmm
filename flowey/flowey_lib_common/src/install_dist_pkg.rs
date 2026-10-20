@@ -187,10 +187,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        // maybe a questionable design choice... but we'll allow non-linux
-        // platforms from taking a dep on this, and simply report that it was
-        // installed.
-        if !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+        if packages.is_empty() || !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
             ctx.emit_side_effect_step([], did_install);
             return Ok(());
         }

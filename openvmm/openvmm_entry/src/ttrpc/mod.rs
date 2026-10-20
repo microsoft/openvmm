@@ -23,6 +23,7 @@ use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
+use crate::serial_io::file_serial;
 use crate::vm_controller::GuestPowerActions;
 use crate::vm_controller::InspectTarget;
 use crate::vm_controller::VmController;
@@ -58,6 +59,7 @@ use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::IsolationType;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -886,16 +888,25 @@ impl VmService {
         let isolation = match req_config.isolation_config.take() {
             // Unset isolation config defaults to no isolation
             None => None,
-            Some(config) => match config.isolation_type() {
-                // Setting isolation config with an unspecified type returns an error
-                vmservice::isolation_config::Type::Unspecified => {
-                    bail!(
-                        "unspecified or invalid isolation type {}",
-                        config.isolation_type
-                    )
+            Some(config) => match config
+                .isolation_type
+                .context("missing or unsupported isolation type")?
+            {
+                vmservice::isolation_config::IsolationType::None(_) => None,
+                vmservice::isolation_config::IsolationType::Snp(config) => {
+                    let host_data: Option<[u8; 32]> = if config.host_data.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            config
+                                .host_data
+                                .as_slice()
+                                .try_into()
+                                .context("SNP host data must be exactly 32 bytes")?,
+                        )
+                    };
+                    Some(IsolationType::Snp { host_data })
                 }
-                vmservice::isolation_config::Type::None => None,
-                vmservice::isolation_config::Type::Snp => Some(IsolationType::Snp),
             },
         };
 
@@ -935,7 +946,7 @@ impl VmService {
                 if smbios_requested {
                     bail!("VM-service IGVM boot does not support SMBIOS overrides");
                 }
-                if isolation != Some(IsolationType::Snp) {
+                if !matches!(isolation, Some(IsolationType::Snp { .. })) {
                     bail!("VM-service IGVM boot currently supports only SNP isolation");
                 }
                 let base_chipset_type = match boot.personality() {
@@ -961,6 +972,7 @@ impl VmService {
                         cmdline: String::new(),
                         vtl2_base_address: Vtl2BaseAddressType::File,
                         com_serial: None,
+                        personality: IgvmPersonality::LinuxDirect,
                     },
                     base_chipset_type,
                     None,
@@ -2343,13 +2355,14 @@ async fn build_virtio_device(
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
         }
-        Kind::Vsock(vmservice::VirtioVsock { socket_path }) => {
+        Kind::Vsock(vmservice::VirtioVsock {
+            socket_path,
+            guest_cid,
+        }) => {
             let listener = UnixListener::bind(&socket_path)
                 .with_context(|| format!("failed to bind virtio-vsock socket: {socket_path}"))?;
             virtio_resources::vsock::VirtioVsockHandle {
-                // The guest CID does not matter for the UDS relay; it just needs
-                // to be a non-reserved value.
-                guest_cid: 0x3,
+                guest_cid: guest_cid.unwrap_or(OPENVMM_DEFAULT_VSOCK_GUEST_CID),
                 base_path: socket_path,
                 listener,
             }
@@ -2363,6 +2376,8 @@ async fn build_virtio_device(
         Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
     })
 }
+
+const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
 
 fn build_virtio_fs(
     config: vmservice::VirtioFs,
@@ -2487,6 +2502,10 @@ fn build_serial_backend(
             let (serial_fn, action) = open_socket_backend(connect);
             serial_fn(socket_path.as_ref())
                 .with_context(|| format!("failed to {action} serial socket: {socket_path}"))
+        }
+        vmservice::serial_backend::Kind::File(vmservice::SerialFile { path, append }) => {
+            anyhow::ensure!(!path.is_empty(), "serial file path must not be empty");
+            file_serial(path.as_ref(), append)
         }
     }
 }

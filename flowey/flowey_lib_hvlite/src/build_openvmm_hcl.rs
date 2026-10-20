@@ -6,8 +6,8 @@
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::_util::group_by;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -92,17 +92,11 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // de-dupe incoming requests
-        let requests = requests
-            .into_iter()
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut m, r| {
-                let Request {
-                    build_params,
-                    openvmm_hcl_output,
-                } = r;
-                m.entry(build_params).or_default().push(openvmm_hcl_output);
-                m
-            });
+        let requests = group_by(
+            requests
+                .into_iter()
+                .map(|r| (r.build_params, r.openvmm_hcl_output)),
+        );
 
         // -- end of req processing -- //
 
@@ -146,17 +140,7 @@ impl FlowNode for Node {
             // Forbid cc-rs and CMake from compiling anything for the openvmm_hcl build.
             // Every C library it links comes prebuilt out of the openvmm-deps
             // sdk sysroot, so a build script reaching for either is a bug.
-            let extra_env = Some(ReadVar::from_static(
-                [
-                    ("CC_FORCE_DISABLE".to_string(), "1".to_string()),
-                    (
-                        "CMAKE".to_string(),
-                        "cmake-is-forbidden-during-openvmm-hcl-build".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ));
+            let extra_env = Some(ReadVar::from_static(crate::common::openhcl_build_env()));
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
@@ -190,9 +174,7 @@ impl FlowNode for Node {
                         _ => unreachable!(),
                     };
 
-                    for var in outvars {
-                        rt.write(var, &output);
-                    }
+                    rt.write_all(outvars, &output);
                 }
             });
         }
