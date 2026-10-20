@@ -7,6 +7,8 @@ mod extint;
 mod vm_state;
 mod vp_state;
 
+pub(crate) use extint::ExtintState;
+
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
