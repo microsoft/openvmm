@@ -35,8 +35,12 @@ pub const fn microvm_processor_count_supported(processor_count: u32) -> bool {
 pub const MICROVM_BASE_COMMAND_LINE: &str = "earlycon=xe9 console=hvc0 reboot=t panic=-1";
 /// Command line when the microVM virtio console is present.
 pub const MICROVM_CONSOLE_COMMAND_LINE: &str = "earlycon=xe9 console=hvc1 reboot=t panic=-1";
-/// Maximum microVM command-line size, including its trailing NUL.
-pub const MICROVM_COMMAND_LINE_MAX_SIZE: usize = 64 * 1024;
+/// Maximum size of the effective microVM kernel command line, including its
+/// terminating NUL: the x86 guest kernel's `COMMAND_LINE_SIZE`.
+///
+/// The guest kernel silently truncates a longer command line, which would lose
+/// the profile's own tokens first, because the profile appends them last.
+pub const MICROVM_COMMAND_LINE_MAX_SIZE: usize = 2048;
 /// Fixed distro virtio-blk MMIO base.
 pub const MICROVM_VIRTIO_BLK_MMIO_BASE: u64 = 0xd000_3000;
 /// Reserved microVM virtio-net MMIO base.
@@ -1335,11 +1339,7 @@ pub fn append_microvm_virtio_discovery(
     for (filesystem, slot) in filesystems.iter().zip(&MICROVM_FILESYSTEM_SLOTS) {
         write!(cmdline, " {}", filesystem.command_line_fragment(slot))?;
     }
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM kernel command line exceeds the 64-KiB ABI limit after device discovery"
-    );
-    Ok(())
+    check_microvm_command_line(cmdline)
 }
 
 /// Validates the virtio-fs device inventory against the attached filesystem
@@ -1446,14 +1446,7 @@ fn validate_microvm_command_line(
         } => cmdline,
         _ => anyhow::bail!("microVM requires Linux MP-table load mode"),
     };
-    anyhow::ensure!(
-        !cmdline.contains('\0'),
-        "microVM command line contains an embedded NUL"
-    );
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM command line exceeds the 64-KiB ABI limit"
-    );
+    check_microvm_command_line(cmdline)?;
 
     let tokens = cmdline.split_ascii_whitespace().collect::<Vec<_>>();
     let has_console = config
@@ -1621,6 +1614,26 @@ fn validate_microvm_command_line(
     Ok(())
 }
 
+/// Checks that the guest kernel can receive `cmdline` whole: it contains no
+/// NUL, and with its terminating NUL it fits in
+/// [`MICROVM_COMMAND_LINE_MAX_SIZE`] bytes.
+///
+/// The profile applies this check after appending each of its tokens, and to
+/// the effective command line of every cold boot and restore.
+pub fn check_microvm_command_line(cmdline: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !cmdline.contains('\0'),
+        "microVM kernel command line contains an embedded NUL"
+    );
+    anyhow::ensure!(
+        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
+        "microVM kernel command line is {} bytes; the limit is {} bytes plus the terminating NUL",
+        cmdline.len(),
+        MICROVM_COMMAND_LINE_MAX_SIZE - 1
+    );
+    Ok(())
+}
+
 /// Builds the microVM command line and rejects profile-owned user tokens.
 pub fn build_microvm_command_line(
     user_args: &[String],
@@ -1647,11 +1660,7 @@ pub fn append_microvm_processor_limit(
         "microVM does not support {processor_count} vCPUs"
     );
     write!(cmdline, " nr_cpus={processor_count}")?;
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM kernel command line exceeds the 64-KiB ABI limit"
-    );
-    Ok(())
+    check_microvm_command_line(cmdline)
 }
 
 /// Appends the host-owned fixed workload identity to a microVM command line.
@@ -1663,22 +1672,14 @@ pub fn append_microvm_workload_identity(
     anyhow::ensure!(uid != 0, "microVM workload UID must be nonzero");
     anyhow::ensure!(gid != 0, "microVM workload GID must be nonzero");
     write!(cmdline, " nvx_workload_uid={uid} nvx_workload_gid={gid}")?;
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM kernel command line exceeds the 64-KiB ABI limit"
-    );
-    Ok(())
+    check_microvm_command_line(cmdline)
 }
 
 /// Appends the host-owned workload lifecycle to a microVM command line.
 pub fn append_microvm_lifecycle(cmdline: &mut String, managed: bool) -> anyhow::Result<()> {
     let lifecycle = if managed { "managed" } else { "one-shot" };
     write!(cmdline, " nvx_lifecycle={lifecycle}")?;
-    anyhow::ensure!(
-        cmdline.len() < MICROVM_COMMAND_LINE_MAX_SIZE,
-        "microVM kernel command line exceeds the 64-KiB ABI limit"
-    );
-    Ok(())
+    check_microvm_command_line(cmdline)
 }
 
 fn kernel_parameter_name_matches(token: &str, expected: &str) -> bool {
@@ -1781,9 +1782,7 @@ fn build_microvm_command_line_inner(
         cmdline.push(' ');
         cmdline.push_str(arg);
     }
-    if cmdline.len() >= MICROVM_COMMAND_LINE_MAX_SIZE {
-        anyhow::bail!("microVM kernel command line exceeds the 64-KiB ABI limit");
-    }
+    check_microvm_command_line(&cmdline)?;
     Ok(cmdline)
 }
 
@@ -2285,6 +2284,101 @@ mod tests {
         assert_eq!(cmdline, format!("{MICROVM_BASE_COMMAND_LINE} nr_cpus=8"));
         assert!(append_microvm_processor_limit(&mut cmdline, 3).is_err());
         assert!(build_microvm_command_line(&["nr_cpus=1".to_owned()], false).is_err());
+    }
+
+    const LIMIT_ERROR: &str = "microVM kernel command line is 2048 bytes; the limit is 2047 bytes plus the terminating NUL";
+
+    #[test]
+    fn microvm_command_line_fits_the_guest_kernel_limit() {
+        // 2,047 bytes of text and the terminating NUL fill the guest kernel's
+        // 2,048-byte buffer.
+        assert_eq!(MICROVM_COMMAND_LINE_MAX_SIZE, 2048);
+        check_microvm_command_line(&"x".repeat(2047)).unwrap();
+        assert_eq!(
+            check_microvm_command_line(&"x".repeat(2048))
+                .unwrap_err()
+                .to_string(),
+            LIMIT_ERROR
+        );
+        assert_eq!(
+            check_microvm_command_line("console=hvc0 \0")
+                .unwrap_err()
+                .to_string(),
+            "microVM kernel command line contains an embedded NUL"
+        );
+
+        let longest = build_microvm_command_line(
+            &["x".repeat(2047 - MICROVM_CONSOLE_COMMAND_LINE.len() - 1)],
+            true,
+        )
+        .unwrap();
+        assert_eq!(longest.len(), 2047);
+        assert_eq!(
+            build_microvm_control_command_line(
+                &["x".repeat(2048 - MICROVM_CONSOLE_COMMAND_LINE.len() - 1)],
+                true,
+            )
+            .unwrap_err()
+            .to_string(),
+            LIMIT_ERROR
+        );
+    }
+
+    #[test]
+    fn microvm_command_line_limit_includes_the_profile_tokens() {
+        // Every token that the profile appends is checked with the line that
+        // precedes it.
+        type Append = fn(&mut String) -> anyhow::Result<()>;
+        let appends: [(Append, &str); 3] = [
+            (
+                |cmdline| append_microvm_processor_limit(cmdline, 8),
+                " nr_cpus=8",
+            ),
+            (
+                |cmdline| append_microvm_workload_identity(cmdline, u32::MAX, u32::MAX),
+                " nvx_workload_uid=4294967295 nvx_workload_gid=4294967295",
+            ),
+            (
+                |cmdline| append_microvm_lifecycle(cmdline, false),
+                " nvx_lifecycle=one-shot",
+            ),
+        ];
+        for (append, token) in appends {
+            let mut longest = "x".repeat(2047 - token.len());
+            append(&mut longest).unwrap();
+            assert_eq!(longest.len(), 2047);
+            assert!(longest.ends_with(token));
+            let mut over = "x".repeat(2048 - token.len());
+            assert_eq!(append(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
+        }
+
+        // Device discovery and the network bootstrap come last, so the line
+        // that they complete is the effective one.
+        let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
+        let discover = |cmdline: &mut String| {
+            append_microvm_virtio_discovery(
+                cmdline,
+                Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None, None)),
+                false,
+                &[],
+                false,
+                false,
+                &[],
+            )
+        };
+        let mut shortest = build_microvm_command_line(&["x".to_owned()], false).unwrap();
+        discover(&mut shortest).unwrap();
+        let fill = 2047 - (shortest.len() - 1);
+        let mut longest = build_microvm_command_line(&["x".repeat(fill)], false).unwrap();
+        discover(&mut longest).unwrap();
+        assert_eq!(longest.len(), 2047);
+        assert_eq!(
+            longest,
+            shortest.replacen(" x ", &format!(" {} ", "x".repeat(fill)), 1)
+        );
+        assert!(longest.ends_with(" virtnet_gw6=fd00::a00:1"));
+        let mut over = build_microvm_command_line(&["x".repeat(fill + 1)], false).unwrap();
+        assert_eq!(discover(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
     }
 
     #[test]

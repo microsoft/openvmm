@@ -342,7 +342,9 @@ For standard-machine snapshots, device flags must still be supplied on restore
 and must reproduce the saved machine. For microVM snapshots, the manifest is
 authoritative for RAM, topology, ABI, fixed devices, placement,
 features, interrupts, and the effective Linux direct command line. Restore-time
-guest-visible overrides are rejected.
+guest-visible overrides are rejected. Restore reuses the saved command line
+verbatim, and rejects one longer than the microVM limit of 2047 bytes plus the
+terminating NUL instead of rewriting it.
 
 Every snapshot records a complete state-unit inventory. Each emulated device
 saves state under a unique name (for example `"pit"`, `"vmbus"`, or `"ide"`),
