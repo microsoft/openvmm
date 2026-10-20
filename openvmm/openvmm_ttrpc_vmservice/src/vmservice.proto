@@ -145,6 +145,7 @@ message UEFI {
 
 message MemoryConfig {
     uint64 memory_mb = 1;
+    // The fields below are not supported yet. CreateVM fails if any is set.
     bool allow_overcommit = 2;
     bool deferred_commit = 3;
     bool hot_hint = 4;
@@ -157,6 +158,7 @@ message MemoryConfig {
 
 message ProcessorConfig {
     uint32 processor_count = 1;
+    // Not supported yet. CreateVM fails if either is set.
     uint32 processor_weight = 2;
     uint32 processor_limit = 3;
 

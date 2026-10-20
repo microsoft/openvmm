@@ -608,6 +608,34 @@ impl IommufdContexts {
     }
 }
 
+/// Rejects resource fields that OpenVMM does not implement yet, instead of
+/// silently ignoring them.
+fn validate_resource_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
+    if let Some(m) = &config.memory_config {
+        for (set, name) in [
+            (m.allow_overcommit, "allow_overcommit"),
+            (m.deferred_commit, "deferred_commit"),
+            (m.hot_hint, "hot_hint"),
+            (m.cold_hint, "cold_hint"),
+            (m.cold_discard_hint, "cold_discard_hint"),
+            (m.low_mmio_gap_in_mb != 0, "low_mmio_gap_in_mb"),
+            (m.high_mmio_base_in_mb != 0, "high_mmio_base_in_mb"),
+            (m.high_mmio_gap_in_mb != 0, "high_mmio_gap_in_mb"),
+        ] {
+            anyhow::ensure!(!set, "MemoryConfig.{name} is not supported");
+        }
+    }
+    if let Some(p) = &config.processor_config {
+        for (set, name) in [
+            (p.processor_weight != 0, "processor_weight"),
+            (p.processor_limit != 0, "processor_limit"),
+        ] {
+            anyhow::ensure!(!set, "ProcessorConfig.{name} is not supported");
+        }
+    }
+    Ok(())
+}
+
 fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         !config.disable_hv || config.disable_vmbus,
@@ -852,6 +880,7 @@ impl VmService {
         }
 
         validate_platform_config(&req_config)?;
+        validate_resource_config(&req_config)?;
 
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
@@ -2568,6 +2597,89 @@ fn build_vhost_user_device(
     anyhow::bail!("vhost-user is only supported on unix hosts")
 }
 
+#[cfg(test)]
+mod resource_config_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn config(
+        memory: vmservice::MemoryConfig,
+        processor: vmservice::ProcessorConfig,
+    ) -> vmservice::VmConfig {
+        vmservice::VmConfig {
+            memory_config: Some(memory),
+            processor_config: Some(processor),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn accepts_supported_fields() {
+        let ok = config(
+            vmservice::MemoryConfig {
+                memory_mb: 1024,
+                ..Default::default()
+            },
+            vmservice::ProcessorConfig {
+                processor_count: 2,
+                ..Default::default()
+            },
+        );
+        validate_resource_config(&ok).unwrap();
+        validate_resource_config(&vmservice::VmConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn rejects_unsupported_fields() {
+        let memory = |m: vmservice::MemoryConfig| config(m, Default::default());
+        let processor = |p: vmservice::ProcessorConfig| config(Default::default(), p);
+        let cases = [
+            memory(vmservice::MemoryConfig {
+                allow_overcommit: true,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                deferred_commit: true,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                hot_hint: true,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                cold_hint: true,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                cold_discard_hint: true,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                low_mmio_gap_in_mb: 1024,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                high_mmio_base_in_mb: 65536,
+                ..Default::default()
+            }),
+            memory(vmservice::MemoryConfig {
+                high_mmio_gap_in_mb: 4096,
+                ..Default::default()
+            }),
+            processor(vmservice::ProcessorConfig {
+                processor_weight: 100,
+                ..Default::default()
+            }),
+            processor(vmservice::ProcessorConfig {
+                processor_limit: 5000,
+                ..Default::default()
+            }),
+        ];
+        for c in cases {
+            assert!(validate_resource_config(&c).is_err(), "{c:?}");
+        }
+    }
+}
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
