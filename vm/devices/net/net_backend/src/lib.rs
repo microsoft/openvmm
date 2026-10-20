@@ -252,6 +252,13 @@ pub trait BufferAccess {
     /// Sets the packet metadata for the receive.
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata);
 
+    /// Prepares a receive buffer to be completed as a dropped packet.
+    ///
+    /// Backends call this before returning an RX ID that did not receive packet
+    /// data, allowing each frontend to publish a safe, protocol-specific drop
+    /// completion instead of exposing stale buffer contents.
+    fn write_drop(&mut self, id: RxId, packet_len: usize);
+
     /// Writes the packet header and data in a single call.
     fn write_packet(&mut self, id: RxId, metadata: &RxMetadata, data: &[u8]) {
         self.write_data(id, data);

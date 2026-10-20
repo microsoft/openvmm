@@ -164,6 +164,16 @@ impl BufferAccess for GuestBuffers {
         };
         packet.oob.ppi[0].pkt_len = metadata.len as u16;
     }
+
+    fn write_drop(&mut self, id: RxId, packet_len: usize) {
+        self.write_header(
+            id,
+            &RxMetadata {
+                len: packet_len,
+                ..Default::default()
+            },
+        );
+    }
 }
 
 /// Configuration for the emulated BNIC device.

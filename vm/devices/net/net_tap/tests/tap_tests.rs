@@ -321,6 +321,53 @@ mod tap_tests {
         );
     }
 
+    /// Validates that an undersized receive buffer is retired so a usable
+    /// buffer behind it can receive a later packet.
+    async fn test_tap_rx_retires_undersized_buffer(driver: DefaultDriver) {
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        configure_tap("tap0", "10.0.0.1/24");
+
+        let (mut pool, _mem) = make_pool();
+        let undersized = RxId(1);
+        let usable = RxId(2);
+        pool.set_capacity(undersized, 0);
+
+        let config = vec![QueueConfig {
+            driver: Box::new(driver.clone()),
+            rx_offload_support: Default::default(),
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        let queue = &mut queues[0];
+        queue.rx_avail(&mut pool, &[undersized, usable]);
+
+        let sock = std::net::UdpSocket::bind("10.0.0.1:0").unwrap();
+        sock.send_to(b"first", "10.0.0.2:12345").unwrap();
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+
+        let mut packets = [RxId(0); 2];
+        let mut n = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        assert!(n >= 1);
+        assert_eq!(packets[0].0, undersized.0);
+        assert!(pool.rx_dropped(undersized));
+
+        if !packets[..n].iter().any(|packet| packet.0 == usable.0) {
+            sock.send_to(b"second", "10.0.0.3:12345").unwrap();
+            poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+            n = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        }
+
+        assert!(packets[..n].iter().any(|packet| packet.0 == usable.0));
+        assert!(
+            pool.rx_metadata(usable)
+                .is_some_and(|metadata| metadata.len > 0),
+            "usable buffer should receive a later packet"
+        );
+    }
+
     /// Validates that flooding tx_avail doesn't panic or error — packets are
     /// silently dropped when the kernel buffer fills up.
     async fn test_tap_tx_wouldblock_drops(driver: DefaultDriver) {
@@ -639,6 +686,10 @@ mod tap_tests {
             async_trial("tap_get_queues", test_tap_get_queues),
             async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
+            async_trial(
+                "tap_rx_retires_undersized_buffer",
+                test_tap_rx_retires_undersized_buffer,
+            ),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
             async_trial("tap_tso_ipv4_checksum", test_tap_tso_ipv4_checksum),

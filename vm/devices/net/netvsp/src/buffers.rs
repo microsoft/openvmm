@@ -300,6 +300,11 @@ impl BufferAccess for BufferPool {
             (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize
         );
     }
+
+    fn write_drop(&mut self, id: RxId, _packet_len: usize) {
+        // A zero-length RNDIS packet avoids exposing stale payload bytes.
+        self.write_header(id, &RxMetadata::default());
+    }
 }
 
 #[cfg(test)]
