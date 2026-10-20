@@ -1135,22 +1135,13 @@ impl PartitionInfo {
         partition_ram.extend(parsed.memory.iter().copied());
         *memory_allocation_mode = topology.memory_allocation_mode;
 
-        // Set vmbus fields. The connection ID comes from the host, but mmio
-        // comes from topology.
+        // The host must describe both vmbus nodes, but mmio comes from topology.
+        parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
         *vmbus_vtl0 = VmbusInfo {
-            connection_id: parsed
-                .vmbus_vtl0
-                .as_ref()
-                .ok_or(DtError::Vtl0Vmbus)?
-                .connection_id,
             mmio: topology.vtl0_mmio,
         };
         *vmbus_vtl2 = VmbusInfo {
-            connection_id: parsed
-                .vmbus_vtl2
-                .as_ref()
-                .ok_or(DtError::Vtl2Vmbus)?
-                .connection_id,
             mmio: topology.vtl2_mmio,
         };
 

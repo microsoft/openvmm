@@ -46,6 +46,7 @@ use guestmem::LockedRange;
 use guestmem::LockedRangeImpl;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::GuestMemoryView;
 use guestmem::ranges::PagedRange;
 use guestmem::ranges::PagedRangeWriter;
 use safeatomic::AsAtomicBytes;

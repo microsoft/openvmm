@@ -19,6 +19,17 @@ use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::PciDeviceHandleKind;
 
+fn pasid_capabilities_for_guest(
+    ssid_bits: u8,
+    capabilities: crate::iommufd_nesting::DeviceIommuCaps,
+) -> Option<crate::PasidCapabilities> {
+    (ssid_bits != 0 && capabilities.max_pasid_log2 != 0).then_some(crate::PasidCapabilities {
+        width: capabilities.max_pasid_log2,
+        exec: capabilities.pasid_exec,
+        privileged: capabilities.pasid_priv,
+    })
+}
+
 /// Resource resolver for [`VfioDeviceHandle`].
 ///
 /// Spawns a `VfioContainerManager` task internally and communicates with it
@@ -228,14 +239,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
         // StreamID here — PCI routing supplies the BDF one is derived from,
         // so it stays blocked until the guest assigns it.
         let mut accel_stream = None;
+        let mut pasid_capabilities = None;
         if let (Some(ctx), Some(nesting)) = (nesting_ctx, nesting) {
             // Bind the vSMMU to the physical SMMU and vIOMMU backing this
             // device, finalizing host-derived parameters (OAS, ...). Runs once
             // per vSMMU; a later device on a different physical SMMU or vIOMMU
             // is rejected here.
+            let host_caps = nesting.host_caps;
             ctx.shared
-                .bind_accel_viommu(nesting.host_caps, &nesting.accel_state)
+                .bind_accel_viommu(host_caps, &nesting.accel_state)
                 .with_context(|| format!("device {pci_id} is incompatible with the host SMMU"))?;
+
+            pasid_capabilities =
+                pasid_capabilities_for_guest(ctx.shared.ssid_bits(), nesting.device_caps);
 
             accel_stream = Some(
                 crate::iommufd_nesting::AccelStream::new(
@@ -263,9 +279,40 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             memory_mapper,
             bar_addresses,
             accel_stream,
+            pasid_capabilities,
         )
         .await?;
 
         Ok(assigned.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pasid_capabilities_require_guest_and_endpoint_support() {
+        let supported = crate::iommufd_nesting::DeviceIommuCaps {
+            max_pasid_log2: 14,
+            pasid_exec: true,
+            pasid_priv: true,
+        };
+        let unsupported = crate::iommufd_nesting::DeviceIommuCaps {
+            max_pasid_log2: 0,
+            pasid_exec: false,
+            pasid_priv: false,
+        };
+
+        assert!(pasid_capabilities_for_guest(0, supported).is_none());
+        assert!(pasid_capabilities_for_guest(14, unsupported).is_none());
+        assert_eq!(
+            pasid_capabilities_for_guest(14, supported),
+            Some(crate::PasidCapabilities {
+                width: 14,
+                exec: true,
+                privileged: true,
+            })
+        );
     }
 }

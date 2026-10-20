@@ -4,8 +4,6 @@
 //! `petri` test artifact declarations used by all petri-based tests, no matter
 //! what VMM backend is being used.
 
-#![forbid(unsafe_code)]
-
 /// Runtime capabilities that VMM tests can require.
 pub mod capabilities {
     /// Software VPCI device emulation support.
@@ -14,12 +12,15 @@ pub mod capabilities {
     /// Support for resetting a partition running Windows.
     pub const WINDOWS_PARTITION_RESET: &str = "windows_partition_reset";
 
+    /// Support for nested virtualization
+    pub const NESTED_VIRT: &str = "nested_virt";
+
     /// All capability names known to petri, including those defined by
-    /// incubators. Incubator device capabilities are the device's profile
-    /// `name` with `-` replaced by `_` (e.g. `edu-initiator` → `edu_initiator`).
+    /// tests.
     pub const KNOWN_CAPABILITIES: &[&str] = &[
         VPCI,
         WINDOWS_PARTITION_RESET,
+        NESTED_VIRT,
         "test_disk",
         "edu_initiator",
         "ivshmem_target",
@@ -45,15 +46,15 @@ pub mod artifacts {
 
     declare_artifacts! {
         /// Pipette windows x86_64 executable
-        PIPETTE_WINDOWS_X64,
-        /// Pipette linux x86_64 executable
-        PIPETTE_LINUX_X64,
+        PIPETTE_WINDOWS_X64("pipette.exe", WINDOWS_X64),
+        /// Pipette linux x86_64 musl executable
+        PIPETTE_LINUX_X64_MUSL("pipette", LINUX_X64_MUSL),
         /// Pipette windows aarch64 executable
-        PIPETTE_WINDOWS_AARCH64,
-        /// Pipette linux aarch64 executable
-        PIPETTE_LINUX_AARCH64,
+        PIPETTE_WINDOWS_AARCH64("pipette.exe", WINDOWS_AARCH64),
+        /// Pipette linux aarch64 musl executable
+        PIPETTE_LINUX_AARCH64_MUSL("pipette", LINUX_AARCH64_MUSL),
         /// Directory to put petri test logs in
-        TEST_LOG_DIRECTORY,
+        TEST_LOG_DIRECTORY("test_results", ANY),
     }
 }
 

@@ -4,7 +4,8 @@
 //! Crate to help build a VM manifest.
 //!
 //! The VM's _manifest_ is a list of device handles (and, for now, legacy device
-//! configuration for [`vmotherboard`]) for devices that are present in a VM.
+//! configuration for [`vmotherboard`]) for devices that are present in a VM,
+//! plus the list of UARTs that the VM's device tree describes.
 //!
 //! This crate helps build the manifest via the [`VmManifestBuilder`] type. This
 //! can be used to construct common manifests for different VM types, such as
@@ -26,6 +27,8 @@ use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
 use chipset_resources::i440bx_host_pci_bridge::I440BxHostPciBridgeDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::ioapic::GenericIoApicDeviceHandle;
+use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleAArch64;
+use chipset_resources::ipmi_kcs::IpmiKcsDeviceHandleX64;
 use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
@@ -50,6 +53,10 @@ use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_debugcon_resources::SerialDebugconDeviceHandle;
+use serial_pl011_resources::PL011_SERIAL0_BASE;
+use serial_pl011_resources::PL011_SERIAL0_SPI;
+use serial_pl011_resources::PL011_SERIAL1_BASE;
+use serial_pl011_resources::PL011_SERIAL1_SPI;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
@@ -78,6 +85,7 @@ pub struct VmManifestBuilder {
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
     framebuffer: bool,
     guest_watchdog: bool,
+    ipmi_kcs: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
     uefi: Option<UefiManifest>,
@@ -248,11 +256,6 @@ fn serial_pl011_devices(
     debugger_mode: [bool; 4],
     backends: [Option<Resource<SerialBackendHandle>>; 4],
 ) -> Result<[SerialPl011DeviceHandle; 2], ErrorInner> {
-    const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
-    const PL011_SERIAL0_IRQ: u32 = 1;
-    const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
-    const PL011_SERIAL1_IRQ: u32 = 2;
-
     let [backend0, backend1, backend2, backend3] = backends;
     if backend2.is_some() || backend3.is_some() {
         return Err(ErrorInner::UnsupportedSerialCount);
@@ -261,13 +264,13 @@ fn serial_pl011_devices(
     Ok([
         SerialPl011DeviceHandle {
             base: PL011_SERIAL0_BASE,
-            irq: PL011_SERIAL0_IRQ,
+            irq: PL011_SERIAL0_SPI,
             io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
             debugger_mode: debugger_mode[0],
         },
         SerialPl011DeviceHandle {
             base: PL011_SERIAL1_BASE,
-            irq: PL011_SERIAL1_IRQ,
+            irq: PL011_SERIAL1_SPI,
             io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
             debugger_mode: debugger_mode[1],
         },
@@ -290,6 +293,7 @@ impl VmManifestBuilder {
             battery_status_recv: None,
             framebuffer: false,
             guest_watchdog: false,
+            ipmi_kcs: false,
             psp: false,
             platform_pm_timer_assist: false,
             uefi: None,
@@ -388,6 +392,15 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Enable the architecture-specific IPMI KCS virtual BMC.
+    ///
+    /// This is supported only for UEFI-booted guests.
+    pub fn with_ipmi_kcs(mut self) -> Self {
+        assert!(matches!(self.ty, BaseChipsetType::HypervGen2Uefi));
+        self.ipmi_kcs = true;
+        self
+    }
+
     /// Enable the AMD64 PSP device.
     pub fn with_psp(mut self) -> Self {
         self.psp = true;
@@ -445,6 +458,8 @@ impl VmManifestBuilder {
                 with_psp: false,
                 with_guest_watchdog: false,
                 with_i440bx_host_pci_bridge: false,
+                dt_com_ports: [false; 4],
+                dt_pl011_uarts: false,
             },
         };
         let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -622,6 +637,9 @@ impl VmManifestBuilder {
                     result.attach_guest_watchdog();
                 }
                 if matches!(self.ty, BaseChipsetType::HypervGen2Uefi) {
+                    if self.ipmi_kcs {
+                        result.attach_ipmi_kcs(self.arch);
+                    }
                     result.attach_uefi(
                         self.uefi
                             .expect("must have called .with_uefi to enable uefi"),
@@ -787,6 +805,26 @@ impl VmChipsetResult {
         self
     }
 
+    fn attach_ipmi_kcs(&mut self, arch: MachineArch) -> &mut Self {
+        let resource = match arch {
+            MachineArch::X86_64 => IpmiKcsDeviceHandleX64 {
+                event_sink: PlatformResource.into_resource(),
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+            MachineArch::Aarch64 => IpmiKcsDeviceHandleAArch64 {
+                event_sink: PlatformResource.into_resource(),
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+        };
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "ipmi-kcs".to_owned(),
+            resource,
+        });
+        self
+    }
+
     fn attach_hyperv_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self {
         let pm_timer_assist = platform_pm_timer_assist.then(|| PlatformResource.into_resource());
         self.chipset_devices.push(ChipsetDeviceHandle {
@@ -900,6 +938,17 @@ impl VmChipsetResult {
         debugger_mode: [bool; 4],
         backends: [Option<Resource<SerialBackendHandle>>; 4],
     ) -> &mut Self {
+        // Describe COM1/COM2 as a pair when any COM backend is configured.
+        // Device attachment does not depend on this device-tree rule.
+        let dt_com_ports = &mut self.capabilities.dt_com_ports;
+        if backends.iter().any(Option::is_some) {
+            dt_com_ports[..2].fill(true);
+        }
+        // Additional ports require their own backend. In particular, OpenHCL
+        // selects COM3 as its console whenever the device tree describes it.
+        for (described, backend) in zip(&mut dt_com_ports[2..], &backends[2..]) {
+            *described = backend.is_some();
+        }
         let devices = serial_16550_devices(wait_for_rts, debugger_mode, backends);
 
         self.chipset_devices.extend(
@@ -931,6 +980,7 @@ impl VmChipsetResult {
                 resource: serial1.into_resource(),
             },
         ]);
+        self.capabilities.dt_pl011_uarts = true;
         Ok(self)
     }
 
@@ -1032,6 +1082,125 @@ mod tests {
         [(); 4].map(|_| None)
     }
 
+    fn uefi_builder(arch: MachineArch) -> VmManifestBuilder {
+        VmManifestBuilder::new(BaseChipsetType::HypervGen2Uefi, arch).with_uefi(UefiManifest::new(
+            arch,
+            None,
+            None,
+            false,
+            LogLevel::default(),
+            None,
+            PlatformResource.into_resource(),
+            None,
+        ))
+    }
+
+    fn uart_handle_count(result: &VmChipsetResult) -> usize {
+        result
+            .chipset_devices
+            .iter()
+            .filter(|d| matches!(d.resource.id(), "serial_16550" | "serial_pl011"))
+            .count()
+    }
+
+    fn dt_uarts(result: &VmChipsetResult) -> ([bool; 4], bool) {
+        (
+            result.capabilities.dt_com_ports,
+            result.capabilities.dt_pl011_uarts,
+        )
+    }
+
+    #[test]
+    fn no_serial_has_no_dt_uarts() {
+        for arch in [MachineArch::X86_64, MachineArch::Aarch64] {
+            let result = VmManifestBuilder::new(BaseChipsetType::HclHost, arch)
+                .build()
+                .unwrap();
+            assert_eq!(dt_uarts(&result), ([false; 4], false));
+            assert_eq!(uart_handle_count(&result), 0);
+        }
+    }
+
+    #[test]
+    fn com_dt_uarts_depend_on_configured_backends() {
+        for mask in 0..16 {
+            let backends = std::array::from_fn(|index| {
+                (mask & (1 << index) != 0).then(|| DisconnectedSerialBackendHandle.into_resource())
+            });
+            let result = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::X86_64)
+                .with_serial(backends)
+                .build()
+                .unwrap();
+            let expected = [mask != 0, mask != 0, mask & 4 != 0, mask & 8 != 0];
+            assert_eq!(
+                dt_uarts(&result),
+                (expected, false),
+                "backend mask {mask:#x}"
+            );
+            assert_eq!(uart_handle_count(&result), 4);
+        }
+    }
+
+    #[test]
+    fn mandatory_disconnected_com_uarts_are_not_in_device_tree() {
+        let result = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .build()
+            .unwrap();
+        assert_eq!(dt_uarts(&result), ([false; 4], false));
+        assert_eq!(uart_handle_count(&result), 4);
+    }
+
+    #[test]
+    fn placeholders_and_debugcon_are_not_uarts() {
+        let result = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .with_debugcon(DisconnectedSerialBackendHandle.into_resource(), 0xe9)
+        .build()
+        .unwrap();
+        assert_eq!(dt_uarts(&result), ([false; 4], false));
+        assert_eq!(uart_handle_count(&result), 0);
+        assert!(
+            result
+                .chipset_devices
+                .iter()
+                .any(|d| d.name == "missing-serial")
+        );
+        assert!(
+            result
+                .chipset_devices
+                .iter()
+                .any(|d| d.resource.id() == "debugcon")
+        );
+    }
+
+    #[test]
+    fn arm_serial_attaches_both_pl011_uarts() {
+        let mut backends = no_serial_backends();
+        backends[0] = Some(DisconnectedSerialBackendHandle.into_resource());
+        let result = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::Aarch64)
+            .with_serial(backends)
+            .build()
+            .unwrap();
+        assert_eq!(dt_uarts(&result), ([false; 4], true));
+        assert_eq!(uart_handle_count(&result), 2);
+    }
+
+    #[test]
+    fn explicit_disconnected_uarts_are_included() {
+        for (arch, expected, count) in [
+            (MachineArch::X86_64, false, 4),
+            (MachineArch::Aarch64, true, 2),
+        ] {
+            let result = VmManifestBuilder::new(BaseChipsetType::HclHost, arch)
+                .with_serial(no_serial_backends())
+                .build()
+                .unwrap();
+            assert_eq!(dt_uarts(&result), ([false; 4], expected));
+            assert_eq!(uart_handle_count(&result), count);
+        }
+    }
     #[test]
     fn serial_debugger_mode_builder_flag_defaults_false_and_can_enable() {
         let builder = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64);
@@ -1042,12 +1211,59 @@ mod tests {
     }
 
     #[test]
+    fn ipmi_kcs_is_opt_in_and_uses_arch_specific_resource() {
+        for (arch, resource_id) in [
+            (MachineArch::X86_64, "ipmi-kcs-x64"),
+            (MachineArch::Aarch64, "ipmi-kcs-aarch64"),
+        ] {
+            let manifest = uefi_builder(arch).build().unwrap();
+            assert!(
+                manifest
+                    .chipset_devices
+                    .iter()
+                    .all(|device| device.name != "ipmi-kcs")
+            );
+
+            let manifest = uefi_builder(arch).with_ipmi_kcs().build().unwrap();
+            let ipmi_devices: Vec<_> = manifest
+                .chipset_devices
+                .iter()
+                .filter(|device| device.name == "ipmi-kcs")
+                .collect();
+
+            assert_eq!(ipmi_devices.len(), 1);
+            assert_eq!(ipmi_devices[0].resource.id(), resource_id);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn ipmi_kcs_rejects_non_uefi_boot() {
+        let _ = VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
+            .with_ipmi_kcs();
+    }
+
+    #[test]
     fn serial_debugger_mode_defaults_false_on_generated_handles() {
         let serial_16550 = serial_16550_devices(false, [false; 4], no_serial_backends());
         assert!(serial_16550.iter().all(|handle| !handle.debugger_mode));
 
         let serial_pl011 = serial_pl011_devices([false; 4], no_serial_backends()).unwrap();
         assert!(serial_pl011.iter().all(|handle| !handle.debugger_mode));
+    }
+
+    #[test]
+    fn standard_com_resources_are_unchanged() {
+        let devices = serial_16550_devices(false, [false; 4], no_serial_backends());
+        for (device, (base, irq)) in zip(devices, [(0x3f8, 4), (0x2f8, 3), (0x3e8, 4), (0x2e8, 3)])
+        {
+            assert!(matches!(
+                device.base,
+                serial_16550_resources::MmioOrIoPort::IoPort(actual) if actual == base
+            ));
+            assert_eq!(device.irq, irq);
+            assert_eq!(device.register_width, 1);
+        }
     }
 
     #[test]
@@ -1067,6 +1283,39 @@ mod tests {
         assert_eq!(
             serial_pl011.map(|handle| handle.debugger_mode),
             [true, false]
+        );
+    }
+
+    #[test]
+    fn null_backend_adds_serial_ports_to_optional_serial_chipset() {
+        let without_serial = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .build()
+        .unwrap();
+        assert!(
+            without_serial
+                .chipset_devices
+                .iter()
+                .all(|device| device.name != "serial-com1")
+        );
+
+        let null_backend = serial_core::resources::NullSerialBackendHandle.into_resource();
+        assert_eq!(null_backend.id(), "null");
+
+        let with_null = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .with_serial([Some(null_backend), None, None, None])
+        .build()
+        .unwrap();
+        assert!(
+            with_null
+                .chipset_devices
+                .iter()
+                .any(|device| device.name == "serial-com1")
         );
     }
 }

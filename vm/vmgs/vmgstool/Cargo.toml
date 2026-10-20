@@ -3,7 +3,7 @@
 
 [package]
 name = "vmgstool"
-version = "2.1.0"
+version = "2.1.1"
 publish = false
 edition.workspace = true
 rust-version.workspace = true

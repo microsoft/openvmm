@@ -16,6 +16,7 @@ pub mod cfg_gh_azure_login;
 pub mod cfg_hvlite_reposource;
 pub mod cfg_nix;
 pub mod cfg_versions;
+pub mod check_cargo_hack;
 pub mod check_clippy;
 pub mod check_distro_build;
 pub mod check_distro_build_from_checkout;

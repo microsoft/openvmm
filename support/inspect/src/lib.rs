@@ -2072,12 +2072,14 @@ impl<T: Inspect + ?Sized> Inspect for Arc<T> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<T: Inspect + ?Sized> Inspect for parking_lot::Mutex<T> {
     fn inspect(&self, req: Request<'_>) {
         T::inspect(&*self.lock(), req)
     }
 }
 
+#[cfg(feature = "std")]
 impl<T: Inspect + ?Sized> Inspect for parking_lot::RwLock<T> {
     fn inspect(&self, req: Request<'_>) {
         T::inspect(&*self.read(), req)

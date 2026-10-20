@@ -43,6 +43,7 @@ vm_resource::register_static_resolvers! {
     serial_pl011::resolver::SerialPl011Resolver,
     chipset::battery::resolver::BatteryResolver,
     guest_watchdog::resolver::HyperVGuestWatchdogResolver,
+    ipmi_kcs::resolver::IpmiKcsResolver,
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
@@ -50,6 +51,7 @@ vm_resource::register_static_resolvers! {
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
+    serial_core::null::resolver::NullSerialBackendResolver,
     vmbus_serial_guest::VmbusSerialGuestResolver,
 
     // Disks.

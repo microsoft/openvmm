@@ -7,7 +7,7 @@
 //! entries into runtime root-port definitions and validate that the configured
 //! root complexes form a consistent bus-number topology before the VM is built.
 
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use pci_core::spec::caps::acs::DEFAULT_ACS_CAP_MASK;

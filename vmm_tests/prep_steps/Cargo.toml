@@ -18,7 +18,7 @@ storvsp_resources.workspace = true
 vm_resource.workspace = true
 
 fs-err.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 gptman.workspace = true
 pal_async.workspace = true
 pipette_protocol.workspace = true

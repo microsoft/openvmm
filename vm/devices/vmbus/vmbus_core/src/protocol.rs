@@ -3,16 +3,16 @@
 
 use crate::VersionInfo;
 use bitfield_struct::bitfield;
+use core::mem::size_of;
+use core::ops::BitAnd;
+use core::ops::BitAndAssign;
+use core::ops::BitOr;
+use core::ops::Deref;
+use core::ops::DerefMut;
 use hvdef::Vtl;
 use inspect::Inspect;
-use mesh::payload::Protobuf;
+use mesh_protobuf::Protobuf;
 use open_enum::open_enum;
-use std::mem::size_of;
-use std::ops::BitAnd;
-use std::ops::BitAndAssign;
-use std::ops::BitOr;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -470,8 +470,8 @@ impl Default for UserDefinedData {
     }
 }
 
-impl std::fmt::Debug for UserDefinedData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for UserDefinedData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.0.iter().all(|&b| b == 0) {
             // Compact output for all-zeroes
             write!(f, "UserDefinedData([<all-zeroes>])")

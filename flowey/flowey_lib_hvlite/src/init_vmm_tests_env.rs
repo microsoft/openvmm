@@ -4,6 +4,8 @@
 //! Setup the environment variables that the VMM tests require to run.
 
 use flowey::node::prelude::*;
+use petri_artifacts_core::env::*;
+use petri_artifacts_vmm_test::env::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -95,7 +97,7 @@ impl SimpleFlowNode for Node {
                 // otherwise just make it absolute.
                 let wsl_convert_path = |path: &Path| -> anyhow::Result<String> {
                     if windows_via_wsl2 {
-                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
+                        flowey_lib_common::_util::wslpath::linux_to_win(rt, path)
                     } else {
                         std::path::absolute(path)
                             .with_context(|| format!("invalid path {}", path.display()))
@@ -116,13 +118,13 @@ impl SimpleFlowNode for Node {
                     fs_err::create_dir_all(&test_content_dir)?
                 };
 
-                env.insert("VMM_TESTS_CONTENT_DIR".into(), converted_content_dir);
+                env.insert(VMM_TESTS_CONTENT_DIR.into(), converted_content_dir);
 
                 if test_log_dir.exists() {
                     fs_err::remove_dir_all(&test_log_dir)?;
                 };
                 fs_err::create_dir(&test_log_dir)?;
-                env.insert("TEST_OUTPUT_PATH".into(), converted_log_dir);
+                env.insert(TEST_OUTPUT_PATH.into(), converted_log_dir);
 
                 if temp_dir.exists() {
                     fs_err::remove_dir_all(&temp_dir)?;
@@ -138,23 +140,23 @@ impl SimpleFlowNode for Node {
                 }
 
                 if let Some(disk_image_dir) = converted_disk_image_dir {
-                    env.insert("VMM_TEST_IMAGES".into(), disk_image_dir);
+                    env.insert(VMM_TEST_IMAGES.into(), disk_image_dir);
                 }
 
                 if disable_remote_artifacts {
-                    env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
+                    env.insert(PETRI_REMOTE_ARTIFACTS.into(), "0".into());
                 }
 
                 if reuse_prepped_vhds {
-                    env.insert("PETRI_REUSE_PREPPED_VHDS".into(), "1".into());
+                    env.insert(PETRI_REUSE_PREPPED_VHDS.into(), "1".into());
                 }
 
                 if ignore_unstable_failures {
-                    env.insert("PETRI_IGNORE_UNSTABLE_FAILURES".into(), "1".into());
+                    env.insert(PETRI_IGNORE_UNSTABLE_FAILURES.into(), "1".into());
                 }
 
                 if require_2mb_hugetlb {
-                    env.insert("OPENVMM_REQUIRE_2MB_HUGETLB".into(), "1".into());
+                    env.insert(OPENVMM_REQUIRE_2MB_HUGETLB.into(), "1".into());
                 };
 
                 rt.write(get_env, &env);

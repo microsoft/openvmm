@@ -275,8 +275,15 @@ impl KvmPartitionInner {
         }
         self.prepare_snp_vmsa_register_state()?;
         tracing::debug!("KVM_SEV_SNP_LAUNCH_FINISH");
-        self.kvm
-            .sev_snp_launch_finish(sev.as_fd(), &mut Default::default())?;
+        let mut finish = kvm::kvm_sev_snp_launch_finish {
+            host_data: self
+                .snp_config
+                .as_ref()
+                .and_then(|config| config.generic.host_data)
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        self.kvm.sev_snp_launch_finish(sev.as_fd(), &mut finish)?;
         Ok(())
     }
 
@@ -814,6 +821,7 @@ mod tests {
 
     fn snp_config_with_contexts(vp_contexts: Vec<virt::SnpVpContext>) -> virt::SnpConfig {
         virt::SnpConfig {
+            host_data: None,
             policy: 0x30000,
             highest_vtl: 0,
             shared_gpa_boundary: 0,

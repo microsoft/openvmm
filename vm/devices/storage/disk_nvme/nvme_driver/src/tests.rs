@@ -472,7 +472,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
             subsystem_id: Guid::new_random(),
         },
         fault_configuration,
-        None,
+        false,
     );
 
     nvme.client() // 2MB namespace
